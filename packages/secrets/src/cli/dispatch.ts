@@ -3,7 +3,9 @@
 
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import type { SecretBackend, SecretScope, SecretValueType } from "../registry";
-import { type ManagedEnvironment, resolveWriteTargets } from "../scope";
+import type { ManagedEnvironment } from "../scope";
+import { partialWriteReport } from "./partialWrite";
+import { secretWriteTargets } from "./writeTargets";
 
 /**
  * One write/delete dispatched to a single environment's manager Workflow. The CLI never encrypts or
@@ -63,14 +65,51 @@ export interface SecretWrite {
   valueType: SecretValueType;
   /** The validated value for create/update; omitted for delete. */
   value?: string;
-  /** The operator-requested env, used for an `environment`-scoped write. */
-  requested: ManagedEnvironment;
+  /**
+   * The environment the operator named, or `undefined` when they named none.
+   *
+   * Optional, and that is the point. A missing `--env` on a `global` secret used to be resolved to the
+   * canonical environment before it got here, which erased the difference between *narrow this write*
+   * and *say nothing* — and `secretWriteTargets` refuses on exactly that difference. An
+   * `environment`-scoped write still requires one; the rule says so rather than a default hiding it.
+   */
+  requested?: ManagedEnvironment;
+}
+
+/** Every environment written before an interrupted fan-out threw. See {@link environmentsWrittenBeforeFailure}. */
+const dispatched = partialWriteReport<ManagedEnvironment[]>(
+  "pithy.secrets.dispatchedBeforeFailure",
+  (value): value is ManagedEnvironment[] => Array.isArray(value) && value.every((env) => typeof env === "string"),
+);
+
+/**
+ * The environments an interrupted {@link dispatchSecretWrite} actually reached, in order. Empty when the
+ * thrown thing carries no report — which is the honest answer for a throw from anywhere else.
+ *
+ * **This is the whole of what the product can offer against a mid-fan-out fault.** There is no
+ * transaction across environments and no rollback — each is a separate Workflow in a separate Worker,
+ * and a compensating write is itself a Workflow that can fail. So a split that a fault created is not
+ * prevented; it is *reported*, by name, to the operator who has to repair it. `runSecretWrite` puts these
+ * environments in the failure audit and `pithy secrets` prints them before the error.
+ */
+export function environmentsWrittenBeforeFailure(error: unknown): ManagedEnvironment[] {
+  return dispatched.read(error) ?? [];
 }
 
 /**
- * Route a write by backend × scope (`resolveWriteTargets`) and dispatch it to each target
- * environment's manager, in order. A `global` write reaches every declared environment; an
- * `environment` write reaches exactly one. Returns the environments written, for the CLI to report.
+ * Decide where a write may land (`secretWriteTargets`), then dispatch it to each target environment's
+ * manager, in order. A `global` write reaches every declared environment; an `environment` write reaches
+ * exactly one. Returns the environments written, for the CLI to report.
+ *
+ * **The decision is taken before the first dispatch, and it is not taken here.** `secretWriteTargets`
+ * owns it, `mintDeclaredSecrets` asks the same function, and a `global` write that names an environment
+ * is refused with nothing sent. That is what keeps an operator from creating a split by asking for one.
+ *
+ * **What it cannot do is undo a fan-out that died in the middle**, so it does not pretend to. The
+ * environments already written are attached to whatever ended the run and read back with
+ * {@link environmentsWrittenBeforeFailure}. Grown one at a time and pushed only *after* the write it
+ * describes lands, because an environment named before its dispatch resolved is a plan, and a plan
+ * printed as a result is how a partial run reports work it never did (#324).
  *
  * `declared` is the project's environment set, from the root `pithy.config.ts`. It is what a `global`
  * write fans out across, so passing the wrong one writes a shared secret into some environments and not
@@ -81,16 +120,31 @@ export async function dispatchSecretWrite(
   write: SecretWrite,
   declared: DeclaredEnvironments | readonly string[],
 ): Promise<ManagedEnvironment[]> {
-  const targets = resolveWriteTargets(write.backend, write.scope, write.requested, declared);
-  for (const env of targets) {
-    await dispatcher.dispatch({
-      env,
-      mode: write.mode,
-      name: write.name,
-      value: write.value,
-      valueType: write.valueType,
-      rotatable: write.rotatable,
-    });
+  const targets = secretWriteTargets({
+    name: write.name,
+    backend: write.backend,
+    scope: write.scope,
+    mode: write.mode,
+    requested: write.requested,
+    declared,
+  });
+  const written: ManagedEnvironment[] = [];
+  try {
+    for (const env of targets) {
+      await dispatcher.dispatch({
+        env,
+        mode: write.mode,
+        name: write.name,
+        value: write.value,
+        valueType: write.valueType,
+        rotatable: write.rotatable,
+      });
+      written.push(env);
+    }
+  } catch (error) {
+    throw dispatched.carry(error, written);
   }
-  return targets;
+  // What landed, not what was planned. They agree on every run that finishes, and the one that does not
+  // is the run whose answer matters.
+  return written;
 }

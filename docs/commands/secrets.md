@@ -23,7 +23,16 @@ pithy secrets deprovision [--keys] [--json]
 | `deprovision` | `--keys` | Also delete each environment's master key. Irreversible: every stored secret becomes undecryptable. Default `false`. |
 | all | `--json` | Machine-readable output. Default `false`. |
 
-`--env` here is the **managed** set — every environment the root `pithy.config.ts` declares, `["staging", "prod"]` unless it says otherwise — not the three `--env` takes elsewhere. `dev` is local-only, so it is refused with a sentence pointing at `pithy dev`, and an environment the project does not declare is refused by name with the ones that are. A global secret ignores `--env`: a `d1`-backed one reaches every declared environment regardless, and a `cf-secrets-store` one is written once through the last declared environment, since it is a single account-level secret every environment binds.
+`--env` here is the **managed** set — every environment the root `pithy.config.ts` declares, `["staging", "prod"]` unless it says otherwise — not the three `--env` takes elsewhere. `dev` is local-only, so it is refused with a sentence pointing at `pithy dev`, and an environment the project does not declare is refused by name with the ones that are.
+
+**`--env` on a `global` secret is refused, not ignored.** A global secret is defined by holding one value everywhere, so naming an environment asks for something the scope does not permit. The command says so and stops, with nothing written:
+
+```
+email-link-signing-key is global. It holds one value across every environment, so --env cannot narrow it.
+Run it again without --env to set it in every environment.
+```
+
+The re-run is the confirmation, so there is no prompt and no `--yes`. It could have printed that sentence and proceeded — but an operator who typed `--env staging` would then have had **prod** rewritten by a command they did not intend, with a notice printed after the fact as cover. One extra command is cheaper than that, every time. `rm` gets the same refusal, and it matters more there: removing a global secret from one environment is the same category error arriving from the destructive direction.
 
 There is no `--worker`. Every subcommand reads the **project's** registry: each Worker's, merged by secret name.
 
@@ -33,7 +42,15 @@ The registry is the definition. `pithy secrets` never invents a name — a secre
 
 **A value never comes from a flag.** `create` and `update` read the value from stdin when it is piped, and from a masked prompt otherwise. A flag would leave a live credential in shell history and in every process list on the machine. Nothing here prints a value back, on any subcommand, in either output mode.
 
-`create`, `update` and `rm` dispatch through the environment's manager Workflow rather than writing storage directly, and each is audited (`secrets/set`, `secrets/rotated`, `secrets/removed`) recording the secret's name and the environments reached — never its value. Which environments a write reaches is the registry's decision, not the flag's: an `environment`-scoped secret reaches exactly the one you named; a `global` one in D1 fans out across every managed environment; a `global` one in the CF Secrets Store is written once, canonically, through `prod`.
+`create`, `update` and `rm` dispatch through the environment's manager Workflow rather than writing storage directly, and each is audited (`secrets/set`, `secrets/rotated`, `secrets/removed`) recording the secret's name and the environments reached — never its value. A write that fails is audited too, with the environments it reached before it failed. Which environments a write reaches is the registry's decision, not the flag's: an `environment`-scoped secret reaches exactly the one you named; a `global` one in D1 fans out across every managed environment; a `global` one in the CF Secrets Store is written once, canonically, through the last declared environment.
+
+**A `global` D1 write is the one fan-out, and it is not a transaction.** Each environment is a separate Workflow in a separate Worker; there is no rollback across them, and a compensating write is itself a Workflow that can fail. So the guarantee the command gives is narrower than "all or nothing", and it is stated rather than implied: **no ordinary command can create a split**, because a narrowed global write is refused before anything is dispatched. A *fault* part-way through the fan-out still can, and when it does the command names the environments it reached before it failed — on stdout, before the error:
+
+```
+email-link-signing-key written to staging, canary before this failed.
+```
+
+Under `--json` that is one line with `"interrupted": true`, `environments` naming only what landed, the `{ "error": … }` line on stderr, and exit code 1. Nothing reports success. A `global` CF-Secrets-Store secret needs none of this: it is one account-level entry every environment binds, so there is one write and nothing for it to disagree with.
 
 `ls` lists the declared names with their routing facts, offline. It reads the registry and nothing else — no credentials, no network.
 
@@ -53,7 +70,8 @@ One line on stdout. A failure is one `{"error": …}` line on stderr and a non-z
 |---|---|---|
 | `command` | string | `"secrets create"`, `"secrets update"`, or `"secrets delete"` — `rm` reports the mode it ran, which is `delete`. |
 | `name` | string | The secret name given on the command line. |
-| `environments` | string[] | The managed environments the write reached: `"staging"`, `"prod"`, or both. |
+| `environments` | string[] | The managed environments the write reached: `"staging"`, `"prod"`, or both. What landed, never what was planned — on an interrupted fan-out it names only the environments actually written. |
+| `interrupted` | boolean | Present and `true` only on a `global` fan-out that failed after at least one environment was written. `environments` then names what landed, the `{ "error": … }` line is on stderr, and the exit code is 1. Absent on a run that finished, and absent on a failure that wrote nothing. |
 
 ### `secrets ls`
 
@@ -93,10 +111,13 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 | `generated[].name` | string | The secret's registry name. Never its value — nothing here, or in the audit trail, carries one. |
 | `generated[].environments` | string[] | Where the secret belongs: one environment for an `environment`-scoped secret, every declared one for a `global` secret. |
 | `generated[].created` | string[] | The environments this run **created** it in. A subset of `environments`, and empty on every run after the first. Separate from `environments`, because "sent" is not "made" — this is the field that answers *did this run generate a production signing key*. |
+| `interrupted` | boolean | Present and `true` only on a run that failed part-way through creating the `d1` secrets. `generated` then names what landed before the failure, the `{ "error": … }` line is on stderr, and the exit code is 1. Absent on a run that finished. |
 
 **`provision` creates every secret the registry says nobody chooses.** A registry entry declares whether its value is *arbitrary* — a session signing key, a link signing key: any random string works, because nothing outside the project validates one. Provisioning creates those rather than printing a `pithy secrets create` line for each. A `cf-secrets-store` secret is written and bound in the same pass (`wired[].created`); for a `d1` secret every environment's manager is **asked first** — it holds the master key and is the only thing that can say whether a value is already there — and only then written to (`generated`). **An existing value is never replaced, on either path.** Replacing a session secret signs everyone out, replacing a link key stops verifying links already in inboxes, and replacing a key-encryption key orphans everything sealed under it — so creating a missing secret and replacing a live one are different acts, and only the first happens here. A secret whose value must match something issued elsewhere — an OAuth client secret, a payment rail's key — declares nothing, and stays a question for the person who can answer it.
 
-**A `global` secret has one value in every environment, or the command stops.** `global` is the promise that a link signed in staging verifies wherever the recipient's click lands, and it is a property of the whole declaration rather than of any one environment — so it is decided across every environment at once, before anything is written. All present, and nothing happens; all absent, and one minted value goes to each. **Split — some environments hold it, some do not — and the run fails, naming the secret and both sides.** That state is what a run interrupted part-way through leaves behind, and completing it means minting a *second* value for a secret defined by having one. Repairing it is a choice with different consequences per secret: give the empty environments the existing value with `pithy secrets create`, or remove it everywhere and start again. The tool names the split and leaves the choice.
+**A `global` secret has one value in every environment, or the command stops.** `global` is the promise that a link signed in staging verifies wherever the recipient's click lands, and it is a property of the whole declaration rather than of any one environment — so it is decided across every environment at once, before anything is written. All present, and nothing happens; all absent, and one minted value goes to each. **Split — some environments hold it, some do not — and the run fails, naming the secret and both sides.** That state is what a run interrupted part-way through leaves behind, and completing it means minting a *second* value for a secret defined by having one. There is one repair, and it is destructive: remove the secret everywhere with `pithy secrets rm <name>`, then run this again. The other-sounding option — give the empty environments the value the others hold — cannot be performed by anyone. A `d1` secret is sealed under a master key that never leaves its environment's manager Worker, so nothing reads the value back out to copy it. The refusal therefore names that one command and says what it costs: a live signing key destroyed, and everything signed by it stops verifying.
+
+**A run that fails part-way says what it wrote.** The fan-out creates a signing key per environment, so a fault after the first write leaves key material behind. Whatever landed is printed before the failure — as `created in <environments>` lines, or as `generated` beside `"interrupted": true` under `--json` — and the failure itself goes to stderr with exit code 1. That report is what makes the destructive repair safe to perform: it names the environments a previous run reached.
 
 **`provision` also writes the adopter's `secrets_store_secrets` stanza.** `pithy add secrets` cannot: a `secret` binding needs a `store_id` and a `secret_name` that do not exist until an account has been reached, and `ensureSecretsStoreId` records nothing in five further cases. That deferral was right and nothing came back for it, so a project deployed to staging and its Worker booted without `SECRETS_ENCRYPTION_KEYS`, failing at the first request with no message anywhere. Provisioning is when the store certainly exists and every entry has certainly been written, so it is where the stanza is written or corrected — upserting by binding, never duplicating, and leaving a binding the registry does not declare exactly where the adopter put it.
 
@@ -113,6 +134,7 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 - **`Secret '<name>' is not declared in the registry.`** Add it to the registry first. Nothing writes a name the registry has never heard of.
 - **`Secret '<name>' is a keyspace, not a secret.`** A keyspace has no single value; its members belong to the application that mints them, and it writes them with `putKeyed`.
 - **`Secret '<name>' is environment-scoped — choose an environment.`** Pass `--env staging` or `--env prod`.
+- **`Secret '<name>' is global. It holds one value across every environment, so --env cannot narrow it.`** Run it again without `--env`. Nothing was dispatched, so nothing was written — the re-run is the confirmation, and there is no flag that skips it. `rm` says *remove it from every environment* instead of *set it in*.
 - **`--env dev`.** Refused with `--env must be one of staging, prod`, and pointed at `pithy dev` — this writes to a Cloudflare account, and `dev` is local.
 - **`Cloudflare credentials are missing.`** Run `pithy init` to record the pair, or export it. Raised by every subcommand that reaches Cloudflare — not by `ls`.
 - **`The CF Secrets Store id is missing.`** `provision` and `deprovision` only. Run `pithy add secrets` to record `SECRETS_STORE_ID`.
@@ -140,6 +162,7 @@ pithy secrets edit
 
 ```json
 {"command":"secrets create","name":"STRIPE_SECRET_KEY","environments":["prod"]}
+{"command":"secrets update","name":"email-link-signing-key","environments":["staging","canary"],"interrupted":true}
 {"command":"secrets ls","secrets":[{"name":"SESSION_SIGNING_KEY","description":"d1 · environment · rotatable"},{"name":"TENANT_KEYS","description":"d1 · environment · keyspace"}]}
 {"command":"secrets edit","path":"/home/you/.config/pithy/acme/secrets.jsonc","changed":true,"secrets":4}
 {"command":"secrets provision","environments":[{"env":"staging","databaseId":"<database-id>","storeId":"<store-id>"},{"env":"prod","databaseId":"<database-id>","storeId":"<store-id>"}]}

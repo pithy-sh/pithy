@@ -78,6 +78,32 @@ So `apps/<worker>/wrangler.jsonc` declared `"database_name": "<project>-staging-
 7. **Retargets `service` bindings** at this environment's copy of the callee, resolved through each Worker's real deploy name rather than its `apps/<name>` directory.
 8. **Migrates**, and seeds when asked. A feature also mints its own master key and records a manifest so `pithy feature destroy` deletes exactly what was created — the two things a declared environment has no equivalent of, which are [`feature.md`](feature.md)'s subject.
 
+## The secrets it cannot create
+
+A `d1` secret — the auth session secret, the email link-signing key — is sealed under a master key that lives inside an environment's secrets manager Worker. Only that manager can write one, and this command runs before the managers are necessarily deployed. So it creates none of them, and it says which, rather than reporting `Provisioned prod. Migrated.` for an environment that cannot serve a request.
+
+**Who can create them is not the same answer in both modes.**
+
+`--env` names the command:
+
+```
+auth-session-secret, email-link-signing-key: not created here — they need a deployed manager.
+Run pithy secrets provision to create them.
+```
+
+`--feature` names none, because there is none:
+
+```
+auth-session-secret, email-link-signing-key: not created here — they need a deployed manager.
+A branch gets no manager, and no command creates these for one. This environment comes up without them.
+```
+
+`pithy secrets provision` spans the environments the project **declares**, deploying a manager into each. A branch is not declared and gets no manager, deliberately: a manager is a Worker with its own D1 and its own rotation cron, and one per open pull request is not a thing anybody wants. Running that command from a feature worktree does nothing for the branch. It used to be printed anyway, which cost an operator a command and taught them nothing.
+
+So this is a stated shortfall rather than an invented remedy. A feature environment comes up without its `d1` secrets, and every capability that reads one fails at its first request. The run warns and does not refuse: `--feature` runs per pull request in CI, and failing every one of them would not close the gap.
+
+`--json` carries the distinction as `pendingSecretsRemedy` — the command, or `null`.
+
 ## Production
 
 `--yes` is not enough for production, and never becomes enough. A production environment — the built-in `prod`/`production`, plus anything the project declares in `seed.productionEnvironments` — additionally requires the exact phrase:
@@ -109,12 +135,12 @@ For a declared environment there is none, deliberately. Staging and production a
 
 ```
 $ pithy provision --env staging --yes --json
-{"command":"provision","env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}],"workers":[{"worker":"replay-board","name":"replay-board-staging"}],"services":[],"secretBindings":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true,"pendingSecrets":["auth-session-secret","email-link-signing-key"]}
+{"command":"provision","env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}],"workers":[{"worker":"replay-board","name":"replay-board-staging"}],"services":[],"secretBindings":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true,"pendingSecrets":["auth-session-secret","email-link-signing-key"],"pendingSecretsRemedy":"pithy secrets provision"}
 ```
 
 ```
 $ pithy provision --feature --json
-{"command":"provision","env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command-db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command-replay-board"}],"services":[],"secretBindings":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret","email-link-signing-key"]}
+{"command":"provision","env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command-db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command-replay-board"}],"services":[],"secretBindings":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret","email-link-signing-key"],"pendingSecretsRemedy":null}
 ```
 
 | key | type | meaning |
@@ -143,7 +169,8 @@ $ pithy provision --feature --json
 | `configs[].path` | `string` | The file written, relative to the project root |
 | `configs[].ids` | `number` | How many binding ids landed in it |
 | `committed` | `boolean` | Whether those files are committed. `true` for `--env`, `false` for `--feature` — the one field a pipeline reads to know it has nothing to commit |
-| `pendingSecrets` | `string[]` | The `d1` secrets this run declares and **cannot create**. Their values are sealed under a master key inside the environment's secrets manager, which this command runs before deploying, so only `pithy secrets provision` can make them. Empty when the project declares none |
+| `pendingSecrets` | `string[]` | The `d1` secrets this run declares and **cannot create**. Their values are sealed under a master key inside the environment's secrets manager, which this command runs before deploying. The same set in both modes — it is a fact about the registry. Empty when the project declares none |
+| `pendingSecretsRemedy` | `string \| null` | The command that does create them, or `null` when no command does. `"pithy secrets provision"` for `--env`; **`null` for `--feature`**, because a branch gets no manager and nothing mints these for one. A pipeline branches on this rather than on the mode |
 
 ## Exit codes
 

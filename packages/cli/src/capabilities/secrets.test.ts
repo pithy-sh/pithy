@@ -52,10 +52,28 @@ describe("runSecretWrite", () => {
       mode: "create",
       name: "npm-token",
       value: "t",
-      env: "staging",
+      // No environment, because a global secret is not narrowed to one. `--env staging` here is the
+      // refusal below, not this.
+      env: undefined,
       environments: DEFAULT_ENVIRONMENTS,
     });
     expect(envs).toEqual(["prod"]);
+  });
+
+  test("refuses to narrow a global secret to one environment, and dispatches nothing", async () => {
+    for (const mode of ["create", "update", "delete"] as const) {
+      const dispatcher = new StubDispatcher();
+      await expect(
+        runSecretWrite(registry, dispatcher, {
+          mode,
+          name: "npm-token",
+          value: "t",
+          env: "staging",
+          environments: DEFAULT_ENVIRONMENTS,
+        }),
+      ).rejects.toBeInstanceOf(ValidationError);
+      expect(dispatcher.calls, mode).toEqual([]);
+    }
   });
 
   test("rejects an undeclared secret", async () => {
@@ -144,13 +162,13 @@ describe("runSecretWrite", () => {
     await runSecretWrite(
       registry,
       dispatcher,
-      { mode: "update", name: "npm-token", value: "v", env: "staging", environments: DEFAULT_ENVIRONMENTS },
+      { mode: "update", name: "npm-token", value: "v", env: undefined, environments: DEFAULT_ENVIRONMENTS },
       audit,
     );
     await runSecretWrite(
       registry,
       dispatcher,
-      { mode: "delete", name: "npm-token", env: "prod", environments: DEFAULT_ENVIRONMENTS },
+      { mode: "delete", name: "npm-token", env: undefined, environments: DEFAULT_ENVIRONMENTS },
       audit,
     );
 
@@ -158,7 +176,7 @@ describe("runSecretWrite", () => {
     expect(events.every((e) => e.outcome === "success")).toBe(true);
   });
 
-  test("audits a failed dispatch, still recording only the name", async () => {
+  test("audits a failed dispatch, recording the name and nothing it reached", async () => {
     const failing: SecretDispatcher = {
       dispatch: async () => {
         throw new Error("workflow unreachable");
@@ -176,8 +194,51 @@ describe("runSecretWrite", () => {
     ).rejects.toThrow("workflow unreachable");
 
     expect(events).toEqual([
-      expect.objectContaining({ action: "secrets/set", outcome: "failure", metadata: { name: "auth-signing-key" } }),
+      expect.objectContaining({
+        action: "secrets/set",
+        outcome: "failure",
+        // The environments it reached before it failed — none, because the first dispatch is what threw.
+        // Never the value, and nothing derived from one.
+        metadata: { name: "auth-signing-key", environments: [] },
+      }),
     ]);
+  });
+
+  test("a fan-out that dies part-way audits the environments it wrote, not none of them", async () => {
+    // `email-link-signing-key` is the shape that matters: `global` + `d1`, so it fans out. The third
+    // environment throws, and the trail has to say the first two now hold the new value.
+    const fanOut = defineSecretRegistry({
+      "email-link-signing-key": { backend: "d1", scope: "global", rotatable: true, valueType: "text" },
+    });
+    const written: string[] = [];
+    const failing: SecretDispatcher = {
+      dispatch: async (request) => {
+        if (request.env === "prod") throw new Error("D1_ERROR: storage caused object to be reset");
+        written.push(request.env);
+      },
+    };
+    const events: CliAuditEvent[] = [];
+
+    await expect(
+      runSecretWrite(
+        fanOut,
+        failing,
+        {
+          mode: "update",
+          name: "email-link-signing-key",
+          value: "v",
+          env: undefined,
+          environments: ["staging", "canary", "prod"],
+        },
+        async (event) => void events.push(event),
+      ),
+    ).rejects.toThrow("storage caused object to be reset");
+
+    // Checked against what the dispatcher actually accepted, not against the run's own bookkeeping.
+    expect(written).toEqual(["staging", "canary"]);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.outcome).toBe("failure");
+    expect(events[0]?.metadata).toEqual({ name: "email-link-signing-key", environments: written });
   });
 
   test("never dispatches or audits an undeclared secret", async () => {

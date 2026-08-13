@@ -5,13 +5,24 @@ import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS, type DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
-import type { SecretDispatcher, SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
+import {
+  environmentsWrittenBeforeFailure,
+  type SecretDispatcher,
+  type SecretProbe,
+} from "@pithy-sh/secrets/src/cli/dispatch";
+import { secretWriteTargets } from "@pithy-sh/secrets/src/cli/writeTargets";
 import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { canonicalGlobalEnvironment, type ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
-import { mintDeclaredSecrets, storeSecretMinter } from "../capabilities/mintSecrets";
+import {
+  type MintedSecret,
+  mintDeclaredSecrets,
+  mintedBeforeFailure,
+  mintReportLines,
+  storeSecretMinter,
+} from "../capabilities/mintSecrets";
 import { resolveSecretRegistry, runSecretWrite } from "../capabilities/secrets";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import {
@@ -139,24 +150,40 @@ async function readValue(name: string): Promise<string> {
   return answer;
 }
 
-/** Resolve the target env for a write: required for an environment-scoped secret, ignored for a global one. */
-function resolveEnv(
+/**
+ * **Ask the rule before asking for a value.**
+ *
+ * `secretWriteTargets` is what decides whether a write is coherent, and `dispatchSecretWrite` asks it
+ * again with nothing sent if the answer is no — that second call is what makes it a guarantee rather
+ * than a courtesy. This one exists so an operator is not prompted to type a production signing key into
+ * a command that was never going to run.
+ *
+ * The refusals `runSecretWrite` owns — an undeclared name, a keyspace — are left to it. Answering them
+ * here as well would be a second producer of two more rules.
+ */
+function checkWriteIsCoherent(
   registry: SecretRegistry,
+  mode: "create" | "update" | "delete",
   name: string,
-  requested: string | undefined,
+  requested: ManagedEnvironment | undefined,
   declared: DeclaredEnvironments,
-): ManagedEnvironment {
-  if (requested) return requireManagedEnvironment(requested, declared);
+): void {
   const entry = registry[name];
-  if (entry && entry.scope === "environment") {
-    throw new ValidationError({
-      message: `Secret '${name}' is environment-scoped — choose an environment.`,
-      action: `Pass one of ${declared.map((env) => `--env ${env}`).join(" or ")}.`,
-    });
-  }
-  // A global write reaches every declared environment regardless; the requested env is unused. The
-  // canonical one is named here rather than the literal `prod`, which a project without one does not have.
-  return canonicalGlobalEnvironment(declared) ?? declared[0] ?? "prod";
+  if (!entry || entry.keyed) return;
+  secretWriteTargets({ name, backend: entry.backend, scope: entry.scope, mode, requested, declared });
+}
+
+/**
+ * The environment a write's **audit** is recorded from — never the write's target, which
+ * `secretWriteTargets` decides from what the operator actually typed.
+ *
+ * A global write has no single origin, so the canonical environment stands in: the trail has to name
+ * somewhere, and the canonical one is the manager a `cf-secrets-store` write goes through anyway. The
+ * environments a run *reached* are in the event's metadata, which is the field that answers where a
+ * value landed.
+ */
+function auditOrigin(requested: ManagedEnvironment | undefined, declared: DeclaredEnvironments): string {
+  return requested ?? canonicalGlobalEnvironment(declared) ?? declared[0] ?? "prod";
 }
 
 /** Shared body for create/update/rm: discover the registry, dispatch, and report the envs written. */
@@ -167,17 +194,33 @@ async function write(
   const projectDir = process.cwd();
   const registry = await projectSecretRegistry(projectDir);
   const environments = await projectEnvironments(projectDir);
-  const env = resolveEnv(registry, args.name, args.env, environments);
+  // `--env` as the operator gave it, or nothing. Not resolved to a default: the absence is the whole
+  // difference between *narrow this write* and *say nothing*, and it is what the rule turns on.
+  const env = args.env ? requireManagedEnvironment(args.env, environments) : undefined;
+  checkWriteIsCoherent(registry, mode, args.name, env, environments);
   const value = mode === "delete" ? undefined : await readValue(args.name);
   const dispatcher = await buildDispatcher(projectDir);
-  const audit = await buildAudit(projectDir, env);
+  const audit = await buildAudit(projectDir, auditOrigin(env, environments));
 
-  const targets = await runSecretWrite(
-    registry,
-    dispatcher,
-    { mode, name: args.name, value, env, environments },
-    audit,
-  );
+  let targets: ManagedEnvironment[];
+  try {
+    targets = await runSecretWrite(registry, dispatcher, { mode, name: args.name, value, env, environments }, audit);
+  } catch (error) {
+    // **A fan-out has no rollback, so what it wrote is said before the error is.** Three environments and
+    // the third throws leaves the first two holding the new value; without this the operator reads a
+    // failure and has no way to know that. `withErrorReporting` then puts `{ error }` on stderr and exits
+    // 1 — the streams agree, and neither reports success.
+    const written = environmentsWrittenBeforeFailure(error);
+    if (written.length > 0) {
+      const landed = mode === "delete" ? "removed from" : "written to";
+      process.stdout.write(
+        args.json
+          ? `${formatJsonLine({ command: `secrets ${mode}`, name: args.name, environments: written, interrupted: true })}\n`
+          : `${args.name} ${landed} ${written.join(", ")} before this failed.\n`,
+      );
+    }
+    throw error;
+  }
 
   if (args.json) {
     process.stdout.write(`${formatJsonLine({ command: `secrets ${mode}`, name: args.name, environments: targets })}\n`);
@@ -355,14 +398,40 @@ const provision = defineCommand({
       // One audit emitter is picked rather than one per environment: this loop spans every environment
       // a `global` secret reaches, and the event's own `environments` field is what says where a value
       // went. `dev` is the same fallback `buildAudit` above uses for a command with no single target.
+      //
+      // **A run that fails here has usually written something.** The fan-out creates a signing key per
+      // environment, so a fault after the first write leaves key material behind — and until #324 the
+      // report of it was assembled after the loop and died with the throw. So what landed is caught and
+      // printed *before* the error is rethrown: `withErrorReporting` then writes the failure to stderr
+      // and exits 1, and stdout carries what the run actually did. Both streams, and the exit code,
+      // agree that it failed and name what it wrote on the way.
       const managers = await buildDispatcher(projectDir);
-      const generated = await mintDeclaredSecrets({
-        registry: await projectSecretRegistry(projectDir),
-        dispatcher: managers,
-        probe: managers,
-        environments,
-        audit: await buildAudit(projectDir, "dev"),
-      });
+      let generated: MintedSecret[];
+      try {
+        generated = await mintDeclaredSecrets({
+          registry: await projectSecretRegistry(projectDir),
+          dispatcher: managers,
+          probe: managers,
+          environments,
+          audit: await buildAudit(projectDir, "dev"),
+        });
+      } catch (error) {
+        const landed = mintedBeforeFailure(error);
+        if (args.json) {
+          process.stdout.write(
+            `${formatJsonLine({
+              command: "secrets provision",
+              environments: result.perEnv,
+              wired,
+              generated: landed,
+              interrupted: true,
+            })}\n`,
+          );
+        } else {
+          for (const line of mintReportLines(landed)) process.stdout.write(`${line}\n`);
+        }
+        throw error;
+      }
 
       if (args.json) {
         process.stdout.write(
@@ -381,14 +450,10 @@ const provision = defineCommand({
       }
       // It used to say only "ready", because the manager decided whether a value was written and never
       // reported back. It reports now, so the run can say the thing an operator actually needs to know:
-      // whether this run generated a production signing key, or found one already there.
-      for (const secret of generated) {
-        process.stdout.write(
-          secret.created.length > 0
-            ? `${secret.name} created in ${secret.created.join(", ")}.\n`
-            : `${secret.name} already in ${secret.environments.join(", ")}.\n`,
-        );
-      }
+      // whether this run generated a production signing key, or found one already there. The same
+      // renderer as the interrupted path above — one phrasing, so a partial report cannot read as a
+      // complete one.
+      for (const line of mintReportLines(generated)) process.stdout.write(`${line}\n`);
       process.stdout.write(`${formatDone()}\n`);
     }),
 });

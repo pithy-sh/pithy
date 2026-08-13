@@ -5,10 +5,12 @@ import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyErro
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { bindingValue } from "@pithy-sh/secrets/src/bindingValue";
 import type { SecretDispatcher, SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
+import { partialWriteReport } from "@pithy-sh/secrets/src/cli/partialWrite";
+import { secretWriteTargets } from "@pithy-sh/secrets/src/cli/writeTargets";
 import { initialVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import { mintSecretValue } from "@pithy-sh/secrets/src/mintValue";
 import { isMintableSecret, type SecretRegistry, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
-import { type ManagedEnvironment, resolveWriteTargets } from "@pithy-sh/secrets/src/scope";
+import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import type { MintStoreSecret } from "../provision/secretBindings";
 
@@ -102,6 +104,48 @@ export interface MintedSecret {
 }
 
 /**
+ * What a run reports about the secrets it accounted for, one line each — names and environments, never
+ * a value.
+ *
+ * **One renderer for the run that finishes and the run that fails part-way.** Two would let a partial
+ * report be phrased as a plan: a secret whose fan-out died before prod has an empty `created` under the
+ * old shape, and the line for an empty `created` reads *already in staging, prod* — a sentence about an
+ * environment that never received it.
+ */
+export function mintReportLines(minted: readonly MintedSecret[]): string[] {
+  return minted.map((secret) =>
+    secret.created.length > 0
+      ? `${secret.name} created in ${secret.created.join(", ")}.`
+      : `${secret.name} already in ${secret.environments.join(", ")}.`,
+  );
+}
+
+/**
+ * **Where the report rides out of a run that failed (#324).**
+ *
+ * A throw part-way through a fan-out leaves environments holding a brand-new signing key, and the
+ * return value that would have said so never happens. The report used to be assembled after the
+ * delivery loop, so the throw took it with it: the operator was told nothing was created, arrived at
+ * the next run's refusal, and had no record of what the previous run had done.
+ *
+ * The mechanism is `partialWriteReport`'s, not this module's. `dispatchSecretWrite` needed the same
+ * thing for the same reason (#325), and a second copy of *how a report survives a throw* is the shape
+ * this repository has produced four times over. What stays here is the payload: what a mint run
+ * created, which is not what a dispatch run reports.
+ */
+const mintReport = partialWriteReport<MintedSecret[]>("pithy.cli.mintReport", (value): value is MintedSecret[] =>
+  Array.isArray(value),
+);
+
+/**
+ * What a failed {@link mintDeclaredSecrets} run created before it failed, in registry order. Empty when
+ * the thrown thing carries no report — which is the honest answer for a throw from anywhere else.
+ */
+export function mintedBeforeFailure(error: unknown): MintedSecret[] {
+  return mintReport.read(error) ?? [];
+}
+
+/**
  * The declared registry names this creates: every `d1` secret whose value is arbitrary. Exported so a
  * command that **cannot** create them — `pithy provision`, which runs before the managers necessarily
  * exist — can name them rather than finish quietly leaving them absent.
@@ -172,64 +216,90 @@ export async function mintDeclaredSecrets(options: {
   const audit = options.audit ?? (async () => {});
   const declared = [...options.environments] as ManagedEnvironment[];
   const minted: MintedSecret[] = [];
-  for (const name of Object.keys(options.registry).sort()) {
-    const entry = options.registry[name];
-    if (!isManagerMinted(entry)) continue;
-    // `requested` is unread for a `global` d1 secret (see `resolveWriteTargets`, which answers with the
-    // whole declaration) but has to be a real environment. For an `environment` secret each declared one
-    // is its own target, resolved separately so the routing rule stays in one place.
-    const targets =
-      entry.scope === "global"
-        ? resolveWriteTargets(entry.backend, entry.scope, declared[0] as ManagedEnvironment, declared)
-        : declared.flatMap((env) => resolveWriteTargets(entry.backend, entry.scope, env, declared));
+  try {
+    for (const name of Object.keys(options.registry).sort()) {
+      const entry = options.registry[name];
+      if (!isManagerMinted(entry)) continue;
+      // Through the one rule (`secretWriteTargets`), the same one `dispatchSecretWrite` asks, so where a
+      // minted value lands cannot disagree with where `pithy secrets create` puts the same secret.
+      //
+      // A `global` secret names **no** environment: it is not narrowed, and the rule refuses a narrowed
+      // global write. This used to pass `declared[0]` as a placeholder the routing table ignored — a
+      // value invented to satisfy a signature, which is precisely the difference the rule now turns on.
+      // An `environment` secret resolves each declared environment as its own target.
+      const facts = { name, backend: entry.backend, scope: entry.scope, mode: "create" as const, declared };
+      const targets =
+        entry.scope === "global"
+          ? secretWriteTargets({ ...facts, requested: undefined })
+          : declared.flatMap((env) => secretWriteTargets({ ...facts, requested: env }));
 
-    const absent: ManagedEnvironment[] = [];
-    const present: ManagedEnvironment[] = [];
-    for (const env of targets) {
-      ((await options.probe.probe({ env, name })) ? present : absent).push(env);
-    }
+      const absent: ManagedEnvironment[] = [];
+      const present: ManagedEnvironment[] = [];
+      for (const env of targets) {
+        ((await options.probe.probe({ env, name })) ? present : absent).push(env);
+      }
 
-    if (absent.length === 0) {
-      minted.push({ name, environments: targets, created: [] });
-      continue;
-    }
-    if (entry.scope === "global" && present.length > 0) {
-      // The value itself is what disagrees, and no part of the CLI may look at it — so the report is the
-      // split, by environment name, and the repair is the operator's.
-      throw new ConflictError({
-        message: `Secret '${name}' is global, and only some environments have it.`,
-        action: `Give ${absent.join(", ")} the same value with pithy secrets create ${name}, or remove it from ${present.join(", ")} and run this again.`,
-        detail: `global secret '${name}': present in ${present.join(", ")}, absent in ${absent.join(", ")}`,
-      });
-    }
+      if (absent.length === 0) {
+        minted.push({ name, environments: targets, created: [] });
+        continue;
+      }
+      if (entry.scope === "global" && present.length > 0) {
+        // The value itself is what disagrees, and no part of the CLI may look at it — so the report is
+        // the split, by environment name, and the repair is the operator's.
+        //
+        // **One remedy, because there is only one.** This used to offer *"give the others the same
+        // value with `pithy secrets create`"* first. For a secret this function creates that names an
+        // act with no way to perform it: the value is 256 bits of `crypto.getRandomValues` sealed under
+        // a master key that never leaves the manager Worker, so nobody — operator, CLI, or another
+        // Worker — can read it back out of the environment that holds it. An operator who reached for
+        // the first branch found no first step. The branch that works destroys a live signing key, so
+        // it is stated plainly with its cost rather than offered second as the safer-looking option.
+        throw new ConflictError({
+          message: `Secret '${name}' is global, and only some environments have it.`,
+          action: `Its value cannot be copied to ${absent.join(", ")} — it is sealed under a master key no command can read. Remove it everywhere with pithy secrets rm ${name}, then run this again. That destroys a live key: everything signed by the value ${present.join(", ")} holds stops verifying.`,
+          detail: `global secret '${name}': present in ${present.join(", ")}, absent in ${absent.join(", ")}`,
+        });
+      }
 
-    // Minted here and nowhere earlier. A value generated before absence is known is 256 bits of key
-    // material created for a secret that already exists, handed to a Workflow, and discarded unread.
-    // One value for a `global` secret, a fresh one per environment otherwise — that is what the two
-    // scopes mean, and it is the whole reason this owns the environment loop rather than a caller.
-    const shared = entry.scope === "global" ? mintSecretValue(entry.devValue) : undefined;
-    for (const env of absent) {
-      // The dispatcher directly, because `targets` above already came from `resolveWriteTargets` — the
-      // routing decision is made once, and this loop only delivers to the environments it found empty.
-      await options.dispatcher.dispatch({
-        env,
-        mode: "create",
-        name,
-        value: shared ?? mintSecretValue(entry.devValue),
-        valueType: entry.valueType,
-        rotatable: entry.rotatable,
-      });
-      await audit({
-        environment: env,
-        action: "secrets/set",
-        outcome: "success",
-        severity: "warning",
-        resourceType: "secret",
-        resourceId: name,
-        metadata: { name, environments: [env], kind: "generated" },
-      });
+      // Minted here and nowhere earlier. A value generated before absence is known is 256 bits of key
+      // material created for a secret that already exists, handed to a Workflow, and discarded unread.
+      // One value for a `global` secret, a fresh one per environment otherwise — that is what the two
+      // scopes mean, and it is the whole reason this owns the environment loop rather than a caller.
+      const shared = entry.scope === "global" ? mintSecretValue(entry.devValue) : undefined;
+      // Grown one environment at a time, and put in the report by the first write that lands. Assembled
+      // after the loop instead, a throw inside took the whole record with it — the environments already
+      // written held a new secret and the run reported nothing created (#324). Pushed *before* the first
+      // write it would be a plan: an entry with an empty `created` reads *already in staging, prod*,
+      // which is the #321 shape exactly.
+      const created: ManagedEnvironment[] = [];
+      for (const env of absent) {
+        // The dispatcher directly, because `targets` above already came from `resolveWriteTargets` — the
+        // routing decision is made once, and this loop only delivers to the environments it found empty.
+        await options.dispatcher.dispatch({
+          env,
+          mode: "create",
+          name,
+          value: shared ?? mintSecretValue(entry.devValue),
+          valueType: entry.valueType,
+          rotatable: entry.rotatable,
+        });
+        if (created.length === 0) minted.push({ name, environments: targets, created });
+        created.push(env);
+        await audit({
+          environment: env,
+          action: "secrets/set",
+          outcome: "success",
+          severity: "warning",
+          resourceType: "secret",
+          resourceId: name,
+          metadata: { name, environments: [env], kind: "generated" },
+        });
+      }
     }
-    minted.push({ name, environments: targets, created: absent });
+  } catch (error) {
+    // Carried, never replaced: the refusal or the fault is what the operator has to read, and what this
+    // run wrote is what makes the remedy in it safe to perform.
+    throw mintReport.carry(error, minted);
   }
   return minted;
 }
