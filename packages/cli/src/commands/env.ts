@@ -47,6 +47,23 @@ const NOT_PROVISIONED = "not provisioned";
 const LOCAL = "local";
 
 /**
+ * The half `local` does not cover, said once per stanza rather than once per binding.
+ *
+ * **The top-level stanza is the local environment and the stanza a bare `pithy deploy` ships.** `wrangler
+ * deploy` with no `--env` takes it to Cloudflare, and it is the one deploy path with no
+ * `assertEnvironmentProvisioned` in front of it — every `--env` deploy is refused before a binding with
+ * no id reaches wrangler (#240), and this one is not. So `local` is a true statement about Miniflare and
+ * an incomplete one about the file: an operator reading `pithy env` before a deploy read it as *nothing
+ * to provision here* (#320 gave the word, this gives back what it took).
+ *
+ * A property of the stanza, so it is printed under the stanza, and only where it is a fact — a local
+ * environment whose bindings all carry ids has nothing ungated about it, and a deployed one already says
+ * `not provisioned`, which is the action item. A line under every environment would be the wallpaper the
+ * word was introduced to remove.
+ */
+const UNGATED = "Miniflare needs no id. A bare pithy deploy ships this stanza, and nothing gates it on one.";
+
+/**
  * Render an id-carrying value: the resource's state when it has no id, a clickable link when
  * hyperlinks render and a dashboard URL exists, the plain id + printed URL as the fallback, or the
  * bare id when there is no URL (no account id, or an unlinkable kind).
@@ -99,6 +116,9 @@ export function renderLines(inventory: EnvInventory, filter?: string): string[] 
         lines.push(
           `    ${resource.binding} (${KIND_LABEL[resource.kind]})  ${renderValue(resource.id, resource.provisioned, resource.dashboardUrl, environment.local)}`,
         );
+      }
+      if (environment.local && environment.resources.some((resource) => !resource.provisioned)) {
+        lines.push(`    ${dim(UNGATED)}`);
       }
     }
   }
