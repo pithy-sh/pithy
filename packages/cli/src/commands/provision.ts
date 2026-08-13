@@ -7,6 +7,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
+import { storeSecretMinter } from "../capabilities/mintSecrets";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { branchIdentity } from "../feature/identity";
 import { provisionFeature } from "../feature/provision";
@@ -186,11 +187,17 @@ function writeReport(report: ProvisionReport, options: { json: boolean; seeded: 
     process.stdout.write(`${service.binding} bound to ${service.service}.\n`);
   }
   for (const secret of report.secretBindings) {
-    process.stdout.write(
-      secret.bound
-        ? `${secret.binding} reads ${secret.entry}.\n`
-        : `${secret.binding} has no store entry yet. Create it with pithy secrets create ${secret.binding}.\n`,
-    );
+    // Three states, and the middle one is new (#321): created by this run, already there, or waiting on
+    // a human. The value never appears — what was made and where it went is the whole useful report.
+    if (secret.minted) {
+      process.stdout.write(`${secret.binding} created. Reads ${secret.entry}.\n`);
+    } else if (secret.bound) {
+      process.stdout.write(`${secret.binding} reads ${secret.entry}.\n`);
+    } else {
+      process.stdout.write(
+        `${secret.binding} has no store entry yet. Create it with pithy secrets create ${secret.binding}.\n`,
+      );
+    }
   }
   for (const line of describeConfigs(report)) process.stdout.write(`${line}\n`);
   process.stdout.write(`Provisioned ${report.env}. ${options.seeded ? "Migrated and seeded." : "Migrated."}\n`);
@@ -223,6 +230,7 @@ async function provisionDeclared(projectDir: string, env: string, options: Provi
   // The scope carries both the names and the stanza. There is no second argument to disagree with.
   const scope = environmentScope(requireProjectName(config), environment);
   const store = buildStore(account);
+  const audit = await buildAudit(projectDir, capabilities, account);
   const report = await provisionEnvironment({
     projectDir,
     scope,
@@ -237,13 +245,16 @@ async function provisionDeclared(projectDir: string, env: string, options: Provi
               scope,
               storeId: store.storeId,
               exists: (name) => store.exists(name),
+              // A declared secret whose value is arbitrary is created here rather than printed as
+              // homework (#321). Absence is checked first, so an existing value is never replaced.
+              mint: storeSecretMinter({ store, environment: scope.stanza, audit }),
             }),
         }
       : {}),
     // Off unless asked. A declared environment already holds real rows; seeding one is `pithy seed`'s
     // job, with its own gate, and it must not be something provisioning did on the way past.
     seedData: options.seed,
-    audit: await buildAudit(projectDir, capabilities, account),
+    audit,
   });
   writeReport(report, { json: options.json, seeded: options.seed });
 }

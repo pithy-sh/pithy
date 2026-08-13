@@ -4,7 +4,15 @@
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
-import { defineSecretRegistry, SecretBackend, type SecretRegistry, SecretScope, SecretValueType } from "./registry";
+import {
+  defineSecretRegistry,
+  isMintableSecret,
+  SecretBackend,
+  type SecretRegistry,
+  type SecretRegistryEntry,
+  SecretScope,
+  SecretValueType,
+} from "./registry";
 
 /** Build an invalid registry without `any`: route a loose object through the param type. */
 function asRegistry(value: unknown): SecretRegistry {
@@ -299,5 +307,32 @@ describe("rotateEveryDays — the declared freshness expectation", () => {
         }),
       ),
     ).toThrow(InternalError);
+  });
+});
+
+describe("isMintableSecret", () => {
+  const text: SecretRegistryEntry = { backend: "d1", scope: "environment", rotatable: true, valueType: "text" };
+
+  test("a secret that declares how its value is minted is mintable", () => {
+    expect(isMintableSecret({ ...text, devValue: "random" })).toBe(true);
+  });
+
+  /** No declaration is the answer "somebody else issued this". Nothing may invent it. */
+  test("a secret with no declaration is not", () => {
+    expect(isMintableSecret(text)).toBe(false);
+  });
+
+  /** A keyspace has no one value. `defineSecretRegistry` refuses the pair; this refuses it again. */
+  test("a keyspace is never mintable, even carrying a declaration", () => {
+    expect(isMintableSecret({ ...text, keyed: true, devValue: "random" })).toBe(false);
+  });
+
+  /**
+   * The property is about the **value**, not the environment. A session signing key is arbitrary in
+   * production for the same reason it is arbitrary in dev — nothing outside the project validates it —
+   * so the predicate takes no environment and cannot answer differently in one.
+   */
+  test("takes no environment — the answer is a fact about the value", () => {
+    expect(isMintableSecret.length).toBe(1);
   });
 });

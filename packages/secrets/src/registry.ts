@@ -77,13 +77,21 @@ interface SecretRegistryEntryBase {
    */
   rotateEveryDays?: number;
   /**
-   * How this secret's **dev** value may be minted, when it may be minted at all.
+   * How this secret's value may be minted, when it may be minted at all.
    *
    * Set it when the value is *arbitrary* — a session signing key, a link signing key: any random
    * string works, because nothing outside the project has to agree with it. Leave it off when the
    * value must match something that already exists — an OAuth app's client secret, a Stripe key, a
    * storage credential. A generated value there authenticates against nothing, and hides the real gap
    * behind one that looks filled in.
+   *
+   * **The name says dev; the property does not (#321).** *Nothing outside the project has to agree with
+   * this* is a fact about the value, and it is as true of production as of a laptop: a session signing
+   * key is arbitrary in prod for exactly the reason it is arbitrary in dev, because no third party
+   * validates it. For four releases only local dev read this field, so provisioning a deployed
+   * environment stopped to ask a human to run `pithy secrets create` on values with no human decision in
+   * them. Every environment reads it now. Ask {@link isMintableSecret} rather than the field, so the day
+   * the name is corrected there is one site to correct.
    *
    * The declaration lives here, with the capability that owns the secret, so `pithy add` never carries
    * a list of names that drifts as capabilities are added. It is mirrored into the capability's
@@ -178,6 +186,23 @@ export type KeyedSecretName<R extends SecretRegistry> = {
   [K in keyof R]: R[K] extends { keyed: true } ? K : never;
 }[keyof R] &
   string;
+
+/**
+ * **May this secret's value be minted?** The one question every creator asks, in every environment.
+ *
+ * Two kinds of secret, and the difference is the whole of it. A *supplied* secret was issued elsewhere —
+ * an OAuth client secret, a payment rail's key — and only the person holding it can provide one; a
+ * creator must stop and say so. A *generated* secret is random bytes nobody chooses, and stopping to ask
+ * a human to ask a tool to generate them is a round trip and nothing else.
+ *
+ * The answer is {@link SecretRegistryEntryBase.devValue}, read through here rather than directly: the
+ * field is named for the environment that happened to read it first, the property is not, and one
+ * predicate is what keeps the two from being confused again. A keyspace is refused a second time — the
+ * define-time check already refuses the pair, and this stays true of a registry assembled by hand.
+ */
+export function isMintableSecret(entry: SecretRegistryEntry): boolean {
+  return entry.devValue !== undefined && !entry.keyed;
+}
 
 /**
  * Author a registry. Validates each entry's enum axes, that `rotatable` is a boolean, and that

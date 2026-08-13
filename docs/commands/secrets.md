@@ -88,6 +88,7 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 | `wired[].worker` | string | The Worker, as `pithy worker list` shows it. |
 | `wired[].env` | string | The environment whose `env.<name>` stanza was written. Never `dev`: local dev materialises these secrets into the generated `.dev.vars` instead. |
 | `wired[].bindings` | string[] | The binding names written into that stanza. |
+| `wired[].created` | string[] | The binding names whose value **this run** minted, because the registry declared it may be. A subset of `bindings`, and empty on a re-run — an existing value is never replaced. |
 
 **`provision` also writes the adopter's `secrets_store_secrets` stanza.** `pithy add secrets` cannot: a `secret` binding needs a `store_id` and a `secret_name` that do not exist until an account has been reached, and `ensureSecretsStoreId` records nothing in five further cases. That deferral was right and nothing came back for it, so a project deployed to staging and its Worker booted without `SECRETS_ENCRYPTION_KEYS`, failing at the first request with no message anywhere. Provisioning is when the store certainly exists and every entry has certainly been written, so it is where the stanza is written or corrected — upserting by binding, never duplicating, and leaving a binding the registry does not declare exactly where the adopter put it.
 

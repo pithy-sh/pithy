@@ -149,6 +149,14 @@ export interface ProvisionedSecret {
    * value would fail the Worker's deploy rather than one read.
    */
   bound: boolean;
+  /**
+   * True when **this run** created the value, because the registry declared it may be minted (#321).
+   *
+   * Reported for the same reason a created resource is distinguished from an adopted one: a run that
+   * generated a key-encryption key did something an operator needs to be able to see in the log, and a
+   * re-run that found one already there did not. The value itself is nowhere — here or anywhere.
+   */
+  minted: boolean;
 }
 
 /** One Worker as provisioning needs it: where it lives, and what *it* composes. */
@@ -204,7 +212,9 @@ export interface ProvisionEnvironmentOptions {
    * not write. Omitted when no account or store id is in hand, in which case no stanza is written and
    * nothing already there is disturbed.
    */
-  secretBindings?: (capabilities: Capability[]) => Promise<{ bound: SecretStoreBinding[]; missing: string[] }>;
+  secretBindings?: (
+    capabilities: Capability[],
+  ) => Promise<{ bound: SecretStoreBinding[]; missing: string[]; minted: string[] }>;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
   /**
@@ -308,11 +318,22 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   const configs: ProvisionedConfig[] = [];
   for (const worker of workers) {
     const declared = new Set(provisionableBindings(worker.capabilities).map((binding) => binding.binding));
-    const workerSecrets = (await options.secretBindings?.(worker.capabilities)) ?? { bound: [], missing: [] };
-    for (const entry of workerSecrets.bound)
-      secrets.push({ binding: entry.binding, entry: entry.secret_name, bound: true });
+    const workerSecrets = (await options.secretBindings?.(worker.capabilities)) ?? {
+      bound: [],
+      missing: [],
+      minted: [],
+    };
+    const minted = new Set(workerSecrets.minted);
+    for (const entry of workerSecrets.bound) {
+      secrets.push({
+        binding: entry.binding,
+        entry: entry.secret_name,
+        bound: true,
+        minted: minted.has(entry.binding),
+      });
+    }
     for (const binding of workerSecrets.missing) {
-      secrets.push({ binding, entry: scope.secretEntry(binding, "environment"), bound: false });
+      secrets.push({ binding, entry: scope.secretEntry(binding, "environment"), bound: false, minted: false });
     }
     const written = resources.filter((resource) => declared.has(resource.binding));
     const destination = await applyProvisionedEnv({

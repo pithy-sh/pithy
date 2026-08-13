@@ -11,6 +11,7 @@ import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import { storeSecretMinter } from "../capabilities/mintSecrets";
 import {
   type BackendRunner,
   type ProvisionReport,
@@ -178,6 +179,15 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
               scope,
               storeId: store.storeId,
               exists: (name) => store.exists(name),
+              // **What makes `pithy feature` true (#321).** It says "an isolated, fully-provisioned
+              // feature environment", and one that needed three follow-up commands per branch was not
+              // that. Every secret the registry declares mintable is created here, in the branch's own
+              // scope, so nothing is shared with a declared environment and nothing is left to do.
+              mint: storeSecretMinter({
+                store,
+                environment: scope.stanza,
+                ...(options.audit !== undefined ? { audit: options.audit } : {}),
+              }),
             }),
         }
       : {}),

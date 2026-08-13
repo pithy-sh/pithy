@@ -11,6 +11,7 @@ import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { canonicalGlobalEnvironment, type ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
+import { storeSecretMinter } from "../capabilities/mintSecrets";
 import { resolveSecretRegistry, runSecretWrite } from "../capabilities/secrets";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import {
@@ -313,20 +314,32 @@ const provision = defineCommand({
       // `dev` is deliberately not among them: local dev materialises every `cf-secrets-store` secret into
       // the generated `.dev.vars` (#179), so a stanza there would name entries a local run never reads.
       const store = cloudflareSecretsStore(cf, storeId);
-      const wired: { worker: string; env: string; bindings: string[] }[] = [];
+      // One emitter per environment, resolved once: `buildAudit` reaches the account and the Worker set,
+      // and it is the same answer for every Worker in a given environment.
+      const audits = new Map(
+        await Promise.all(environments.map(async (env) => [env, await buildAudit(projectDir, env)] as const)),
+      );
+      const wired: { worker: string; env: string; bindings: string[]; created: string[] }[] = [];
       for (const worker of await resolveWorkers({ projectDir })) {
         const registry = workerSecretRegistry(worker.capabilities);
         if (!registry) continue;
         for (const env of environments) {
-          const { bound } = await secretsStoreBindings({
+          const { bound, minted } = await secretsStoreBindings({
             registry,
             scope: environmentScope(project, env),
             storeId,
             exists: (name) => store.exists(name),
+            // Every environment's master key exists by now, so this is the point where a declared
+            // mintable secret can be created and bound in one pass rather than named as homework (#321).
+            mint: storeSecretMinter({
+              store,
+              environment: env,
+              ...(audits.get(env) ? { audit: audits.get(env) } : {}),
+            }),
           });
           if (bound.length === 0) continue;
           await applySecretBindings(worker.dir, env, bound);
-          wired.push({ worker: worker.name, env, bindings: bound.map((entry) => entry.binding) });
+          wired.push({ worker: worker.name, env, bindings: bound.map((entry) => entry.binding), created: minted });
         }
       }
 
@@ -341,6 +354,9 @@ const provision = defineCommand({
       }
       for (const entry of wired) {
         process.stdout.write(`${entry.worker} env.${entry.env} binds ${entry.bindings.join(", ")}.\n`);
+        if (entry.created.length > 0) {
+          process.stdout.write(`${entry.env}: created ${entry.created.join(", ")}.\n`);
+        }
       }
       process.stdout.write(`${formatDone()}\n`);
     }),

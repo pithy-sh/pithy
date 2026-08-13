@@ -651,7 +651,11 @@ describe("provisionFeature / deprovisionFeature", () => {
       // Its own key, under its own name — never staging's, which teardown would then delete.
       expect([...entries.keys()]).toEqual([entry]);
       expect(JSON.parse(entries.get(entry) as string)).toMatchObject({ currentVersion: "1" });
-      expect(report.secretBindings).toEqual([{ binding: "SECRETS_ENCRYPTION_KEYS", entry, bound: true }]);
+      // `minted: false` — the master key is `json` against `EncryptionConfig`, so it declares no
+      // `devValue` and the #321 minter never touches it. `provisionFeature` writes it itself, above.
+      expect(report.secretBindings).toEqual([
+        { binding: "SECRETS_ENCRYPTION_KEYS", entry, bound: true, minted: false },
+      ]);
 
       const wrangler = parse(await readFile(featureConfigPath(join(dir, "apps", "app")), "utf8")) as unknown as {
         env: Record<string, { secrets_store_secrets?: { binding: string; store_id: string; secret_name: string }[] }>;
@@ -710,6 +714,125 @@ describe("provisionFeature / deprovisionFeature", () => {
       });
 
       expect([...entries.keys()]).toEqual(["acme-staging-secrets-encryption-keys"]);
+    });
+
+    /**
+     * #321: `pithy feature` promises "an isolated, fully-provisioned feature environment", and one that
+     * printed `pithy secrets create` three times was not that — once per branch, forever. The registry
+     * already said which of those values were arbitrary; only local dev read it.
+     */
+    describe("secrets the registry says may be minted", () => {
+      /** One arbitrary value, one somebody else issued. The whole distinction, in two entries. */
+      const withRegistry = [
+        secrets({
+          registry: {
+            RELEASE_INGEST_SECRET: {
+              backend: "cf-secrets-store",
+              scope: "environment",
+              rotatable: true,
+              valueType: "text",
+              devValue: "random",
+            },
+            STRIPE_SECRET_KEY: {
+              backend: "cf-secrets-store",
+              scope: "environment",
+              rotatable: false,
+              valueType: "text",
+            },
+          },
+        }),
+      ];
+
+      test("creates the arbitrary one, binds it, and still stops for the supplied one", async () => {
+        const { provisioners } = fakeProvisioners();
+        const { entries, store } = fakeStore();
+
+        const report = await provisionFeature({
+          projectDir: dir,
+          capabilities: withRegistry,
+          identity,
+          provisioners,
+          store,
+          resolveWorkers: async () => [{ name: "acme-api", dir: join(dir, "apps", "app"), capabilities: withRegistry }],
+          migrate: async () => {},
+          seed: async () => {},
+        });
+
+        const ingest = report.secretBindings.find((secret) => secret.binding === "RELEASE_INGEST_SECRET");
+        expect(ingest).toEqual({
+          binding: "RELEASE_INGEST_SECRET",
+          entry: "acme-f69-demo-release-ingest-secret",
+          bound: true,
+          minted: true,
+        });
+        // A value went in, as the uniform envelope every other secret of this backend is stored as.
+        expect(JSON.parse(entries.get("acme-f69-demo-release-ingest-secret") as string)).toMatchObject({
+          currentVersion: "1",
+        });
+
+        // A random string authenticates against nothing. This one stays a question for a human.
+        expect(report.secretBindings.find((secret) => secret.binding === "STRIPE_SECRET_KEY")).toMatchObject({
+          bound: false,
+          minted: false,
+        });
+        expect(entries.has("acme-f69-demo-stripe-secret-key")).toBe(false);
+
+        const wrangler = parse(await readFile(featureConfigPath(join(dir, "apps", "app")), "utf8")) as unknown as {
+          env: Record<string, { secrets_store_secrets?: { binding: string }[] }>;
+        };
+        expect(wrangler.env.feature?.secrets_store_secrets?.map((binding) => binding.binding)).toEqual([
+          "SECRETS_ENCRYPTION_KEYS",
+          "RELEASE_INGEST_SECRET",
+        ]);
+      });
+
+      test("re-running never replaces a minted value", async () => {
+        const { provisioners } = fakeProvisioners();
+        const { entries, store } = fakeStore();
+        const options = {
+          projectDir: dir,
+          capabilities: withRegistry,
+          identity,
+          provisioners,
+          store,
+          resolveWorkers: async () => [{ name: "acme-api", dir: join(dir, "apps", "app"), capabilities: withRegistry }],
+          migrate: async () => {},
+          seed: async () => {},
+        };
+
+        const first = await provisionFeature(options);
+        const value = entries.get("acme-f69-demo-release-ingest-secret");
+        const second = await provisionFeature(options);
+
+        expect(first.secretBindings.find((secret) => secret.binding === "RELEASE_INGEST_SECRET")?.minted).toBe(true);
+        expect(second.secretBindings.find((secret) => secret.binding === "RELEASE_INGEST_SECRET")?.minted).toBe(false);
+        expect(entries.get("acme-f69-demo-release-ingest-secret")).toBe(value);
+      });
+
+      /** The trail says a secret was created and where. It never says what. */
+      test("audits the creation without the value", async () => {
+        const { provisioners } = fakeProvisioners();
+        const { entries, store } = fakeStore();
+        const events: CliAuditEvent[] = [];
+
+        await provisionFeature({
+          projectDir: dir,
+          capabilities: withRegistry,
+          identity,
+          provisioners,
+          store,
+          resolveWorkers: async () => [{ name: "acme-api", dir: join(dir, "apps", "app"), capabilities: withRegistry }],
+          migrate: async () => {},
+          seed: async () => {},
+          audit: async (event) => void events.push(event),
+        });
+
+        const created = events.filter((event) => event.resourceType === "secret");
+        expect(created.map((event) => event.resourceId)).toEqual(["acme-f69-demo-release-ingest-secret"]);
+        const envelope = entries.get("acme-f69-demo-release-ingest-secret") as string;
+        const value = (JSON.parse(envelope) as { versions: Record<string, string> }).versions["1"];
+        expect(JSON.stringify(events)).not.toContain(value);
+      });
     });
 
     test("without a store the feature provisions exactly as before, and the report says so", async () => {
