@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { bindingValue } from "@pithy-sh/secrets/src/bindingValue";
-import { dispatchSecretWrite, type SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
+import type { SecretDispatcher, SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
 import { initialVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import { mintSecretValue } from "@pithy-sh/secrets/src/mintValue";
-import { isMintableSecret, type SecretRegistry } from "@pithy-sh/secrets/src/registry";
-import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
+import { isMintableSecret, type SecretRegistry, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
+import { type ManagedEnvironment, resolveWriteTargets } from "@pithy-sh/secrets/src/scope";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import type { MintStoreSecret } from "../provision/secretBindings";
 
@@ -28,8 +28,8 @@ import type { MintStoreSecret } from "../provision/secretBindings";
  * - {@link storeSecretMinter}, for `cf-secrets-store`. The CLI can read the account's store, so
  *   `secretsStoreBindings` asks whether the entry is there and this writes it when it is not.
  * - {@link mintDeclaredSecrets}, for `d1`. The CLI cannot read one: the value is sealed under a master
- *   key that never leaves the manager Worker. So it dispatches `ensure` and the manager — which holds
- *   the store — does the read and the write together, atomically. See `management/writeSecret.ts`.
+ *   key that never leaves the manager Worker. So it asks each manager (`probe`) and then writes with
+ *   `create`, which refuses a name already there. See `management/writeSecret.ts`.
  *
  * #321 shipped only the first, and the kit declares no `cf-secrets-store` secret that a random string
  * could satisfy, so nothing the kit ships could reach it. `provision/mintCoverage.test.ts` is the gate
@@ -85,41 +85,85 @@ export function storeSecretMinter(options: {
   };
 }
 
-/** One secret this run asked the managers to create, and the environments the request reached. */
+/** One secret this run accounted for: where it belongs, and where this run actually created it. */
 export interface MintedSecret {
   /** The secret's registry name. Never its value. */
   name: string;
-  /** The environments the write was dispatched to — one for an `environment` secret, all for a `global` one. */
+  /** The environments the secret belongs in — one for an `environment` secret, all for a `global` one. */
   environments: ManagedEnvironment[];
+  /**
+   * The environments this run **created** it in, which is empty on every run after the first.
+   *
+   * Separate from {@link environments} because the two used to be one field saying only where a request
+   * was sent, and "sent" is not "made". A report that cannot tell a creation from a no-op is a report an
+   * operator cannot use to answer *did this run generate a production signing key*.
+   */
+  created: ManagedEnvironment[];
+}
+
+/**
+ * The declared registry names this creates: every `d1` secret whose value is arbitrary. Exported so a
+ * command that **cannot** create them — `pithy provision`, which runs before the managers necessarily
+ * exist — can name them rather than finish quietly leaving them absent.
+ */
+export function managerMintedSecrets(registry: SecretRegistry): string[] {
+  return Object.keys(registry)
+    .sort()
+    .filter((name) => isManagerMinted(registry[name]));
+}
+
+/** A registry entry this creates: `d1`, mintable, and carrying the declaration a value is minted from. */
+type ManagerMintedEntry = SecretRegistryEntry & { devValue: NonNullable<SecretRegistryEntry["devValue"]> };
+
+/** `d1`, mintable, not a keyspace. The one predicate, so the creator and the reporter cannot disagree. */
+function isManagerMinted(entry: SecretRegistryEntry | undefined): entry is ManagerMintedEntry {
+  if (!entry) return false;
+  if (entry.backend !== "d1") return false;
+  // `cf-secrets-store` is the other creator's, and `isMintableSecret` refuses both a supplied secret and
+  // a keyspace. The `devValue` re-check is for the type; the predicate is what decides.
+  return isMintableSecret(entry) && entry.devValue !== undefined;
 }
 
 /**
  * Create every `d1` secret the registry declares mintable, across the environments the project declares.
  *
- * **`ensure`, never `create` and never an upsert.** `create` fails on a re-run, which would make
- * provisioning a one-shot command; the `create`-then-`update` upsert the storage, turnstile and media
- * provisioners use is right for a credential the provisioner just obtained from a third party and is
- * wrong here, because it would replace a live minted key on every run. `ensure` writes only when the
- * name is absent, decided inside the manager where the check and the write are one read apart. See
- * `management/writeSecret.ts`.
+ * **Ask every environment first, then decide once.** This is the whole shape, and it replaced a
+ * per-environment `ensure` that could not hold the property it was written for. `ensure` wrote when a
+ * name was absent and skipped silently when it was present — a per-environment answer to a
+ * cross-environment question. Concretely, and this happened: a run wrote staging and lost prod; the
+ * re-run minted a **second** value, found staging present, skipped it, and wrote the second value into
+ * prod. Two environments, two values, no error, and every link signed by one refused by the other.
  *
- * **Scope decides how many values are minted, and it is the whole reason this owns the environment
- * loop.** A `global` secret is minted **once** and fanned out unchanged — that is what `global` means,
- * and a value that differed per environment would leave a link signed in staging unverifiable in prod.
- * An `environment` secret is minted **afresh for each** — a staging session key that also signs prod
- * sessions makes the environment boundary decorative. A caller iterating environments and calling this
- * once per environment would get the first wrong, so it does not get to.
+ * So the decision moves in front of the writes, where the whole picture exists:
  *
- * `dispatchSecretWrite` still owns the routing, so where a write lands cannot disagree with where
- * `pithy secrets create` puts the same secret.
+ * - **Every target already has it** — nothing is dispatched and, just as importantly, **nothing is
+ *   minted**. No key material is generated on a re-run at all.
+ * - **Every target lacks it** — for a `global` secret, one value is minted and written to each; for an
+ *   `environment` secret, a fresh value per environment. A staging session key that also signed prod
+ *   sessions would make the environment boundary decorative.
+ * - **Some have it and some do not, and the secret is `global`** — the run **fails**, naming the secret
+ *   and both sides of the split. This is the state that used to be completed silently. Repairing it is a
+ *   decision about a live signing key — copy the existing value across, or retire it everywhere and
+ *   start again — and the consequences differ by secret, so a tool does not get to pick.
  *
- * Returns what it dispatched for, in registry order. Never a value.
+ * **The writes use `create`, which raises rather than skipping.** Probing narrows the race but cannot
+ * close it: two runs can both see a global secret absent. `create` closes it — the loser is refused at
+ * its first write instead of fanning its own value into the environments the winner has not reached.
+ * That is also why `ensure` is gone from `management/writeSecret.ts` entirely: a mode whose whole
+ * behaviour is to be quiet has no safe caller here.
+ *
+ * `resolveWriteTargets` is the same routing `dispatchSecretWrite` applies, so where a value lands cannot
+ * disagree with where `pithy secrets create` puts the same secret.
+ *
+ * Returns what it accounted for, in registry order. Never a value.
  */
 export async function mintDeclaredSecrets(options: {
   /** The registry to read — every declared secret, of every backend. This picks its own out. */
   registry: SecretRegistry;
   /** Where a write goes: the target environment's manager write-Workflow. */
   dispatcher: SecretDispatcher;
+  /** Whether a manager already holds a name. Asked of every target before anything is minted. */
+  probe: SecretProbe;
   /** Every environment the project declares. Both the targets and the fan-out set. */
   environments: DeclaredEnvironments | readonly string[];
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
@@ -130,43 +174,62 @@ export async function mintDeclaredSecrets(options: {
   const minted: MintedSecret[] = [];
   for (const name of Object.keys(options.registry).sort()) {
     const entry = options.registry[name];
-    // `cf-secrets-store` is the other creator's, and `isMintableSecret` refuses both a supplied secret
-    // and a keyspace. The `devValue` re-check is for the type; the predicate is what decides.
-    if (!entry) continue;
-    if (entry.backend !== "d1") continue;
-    if (!isMintableSecret(entry) || entry.devValue === undefined) continue;
-    // A global write reaches every declared environment from any one request, so it is dispatched once.
-    // `requested` is unread for that case (see `resolveWriteTargets`) but has to be a real environment.
-    const requests = entry.scope === "global" ? declared.slice(0, 1) : declared;
-    for (const requested of requests) {
-      const environments = await dispatchSecretWrite(
-        options.dispatcher,
-        {
-          mode: "ensure",
-          name,
-          backend: entry.backend,
-          scope: entry.scope,
-          rotatable: entry.rotatable,
-          valueType: entry.valueType,
-          value: mintSecretValue(entry.devValue),
-          requested,
-        },
-        options.environments,
-      );
-      minted.push({ name, environments });
-      // The name and where it was sent. Never the value. `mode: ensure` is recorded because it is the
-      // honest limit of what the CLI knows: the manager decides whether a value was written and does not
-      // report back, so this says a creation was dispatched rather than claiming one happened.
+    if (!isManagerMinted(entry)) continue;
+    // `requested` is unread for a `global` d1 secret (see `resolveWriteTargets`, which answers with the
+    // whole declaration) but has to be a real environment. For an `environment` secret each declared one
+    // is its own target, resolved separately so the routing rule stays in one place.
+    const targets =
+      entry.scope === "global"
+        ? resolveWriteTargets(entry.backend, entry.scope, declared[0] as ManagedEnvironment, declared)
+        : declared.flatMap((env) => resolveWriteTargets(entry.backend, entry.scope, env, declared));
+
+    const absent: ManagedEnvironment[] = [];
+    const present: ManagedEnvironment[] = [];
+    for (const env of targets) {
+      ((await options.probe.probe({ env, name })) ? present : absent).push(env);
+    }
+
+    if (absent.length === 0) {
+      minted.push({ name, environments: targets, created: [] });
+      continue;
+    }
+    if (entry.scope === "global" && present.length > 0) {
+      // The value itself is what disagrees, and no part of the CLI may look at it — so the report is the
+      // split, by environment name, and the repair is the operator's.
+      throw new ConflictError({
+        message: `Secret '${name}' is global, and only some environments have it.`,
+        action: `Give ${absent.join(", ")} the same value with pithy secrets create ${name}, or remove it from ${present.join(", ")} and run this again.`,
+        detail: `global secret '${name}': present in ${present.join(", ")}, absent in ${absent.join(", ")}`,
+      });
+    }
+
+    // Minted here and nowhere earlier. A value generated before absence is known is 256 bits of key
+    // material created for a secret that already exists, handed to a Workflow, and discarded unread.
+    // One value for a `global` secret, a fresh one per environment otherwise — that is what the two
+    // scopes mean, and it is the whole reason this owns the environment loop rather than a caller.
+    const shared = entry.scope === "global" ? mintSecretValue(entry.devValue) : undefined;
+    for (const env of absent) {
+      // The dispatcher directly, because `targets` above already came from `resolveWriteTargets` — the
+      // routing decision is made once, and this loop only delivers to the environments it found empty.
+      await options.dispatcher.dispatch({
+        env,
+        mode: "create",
+        name,
+        value: shared ?? mintSecretValue(entry.devValue),
+        valueType: entry.valueType,
+        rotatable: entry.rotatable,
+      });
       await audit({
-        environment: requested,
+        environment: env,
         action: "secrets/set",
         outcome: "success",
         severity: "warning",
         resourceType: "secret",
         resourceId: name,
-        metadata: { name, environments, kind: "generated", mode: "ensure" },
+        metadata: { name, environments: [env], kind: "generated" },
       });
     }
+    minted.push({ name, environments: targets, created: absent });
   }
   return minted;
 }

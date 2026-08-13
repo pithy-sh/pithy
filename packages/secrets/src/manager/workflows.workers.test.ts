@@ -64,8 +64,8 @@ describe("runWriteWorkflow — config resolved from the SECRETS_ENCRYPTION_KEYS 
       rotatable: false,
       audit: true,
     });
-    // Only a boolean escapes — never the value.
-    expect(result).toEqual({ audited: true });
+    // Only the outcome and a boolean escape — never the value.
+    expect(result).toEqual({ outcome: "written", audited: true });
   });
 
   test("a write without audit returns no audit result", async () => {
@@ -102,6 +102,31 @@ describe("runWriteWorkflow — config resolved from the SECRETS_ENCRYPTION_KEYS 
     await expect(
       runWriteWorkflow(managerEnv(), { mode: "create", name: "x", value: "v2", valueType: "text", rotatable: false }),
     ).rejects.toThrow();
+  });
+
+  /**
+   * The end of the read path the CLI depends on: a probe crosses out of the Worker as this instance
+   * output and is decoded on the far side (`manager/dispatcher.ts`). It carries the presence bit and
+   * nothing else — no value, no envelope, no version — and `audit: true` cannot coax one out, because
+   * a probe wrote nothing to read back.
+   */
+  test("probe answers presence and returns no value, even when asked to audit", async () => {
+    await runWriteWorkflow(managerEnv(), {
+      mode: "create",
+      name: "session",
+      value: "the-live-one",
+      valueType: "text",
+      rotatable: false,
+    });
+
+    expect(await runWriteWorkflow(managerEnv(), { mode: "probe", name: "session", audit: true })).toEqual({
+      outcome: "present",
+    });
+    expect(await runWriteWorkflow(managerEnv(), { mode: "probe", name: "absent-one" })).toEqual({ outcome: "absent" });
+
+    const store = await SystemSecretsStore.fromEnv(managerEnv());
+    expect(await store.getValue("session")).toEqual({ currentVersion: "1", versions: { "1": "the-live-one" } });
+    expect(await store.getValue("absent-one")).toBeUndefined();
   });
 
   test("delete removes the secret", async () => {

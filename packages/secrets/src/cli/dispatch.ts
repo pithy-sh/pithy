@@ -12,8 +12,7 @@ import { type ManagedEnvironment, resolveWriteTargets } from "../scope";
  */
 export interface SecretWriteRequest {
   env: ManagedEnvironment;
-  /** See `management/writeSecret.ts` — `ensure` writes only when the name is absent, and never replaces. */
-  mode: "create" | "update" | "ensure" | "delete";
+  mode: "create" | "update" | "delete";
   name: string;
   /** Present for create/update; omitted for delete. Already validated + canonicalized by the CLI. */
   value?: string;
@@ -30,10 +29,33 @@ export interface SecretDispatcher {
   dispatch(request: SecretWriteRequest): Promise<void>;
 }
 
+/** One presence question, asked of one environment's manager. Carries a name and nothing else. */
+export interface SecretProbeRequest {
+  env: ManagedEnvironment;
+  /** The secret to ask about. */
+  name: string;
+}
+
+/**
+ * **The read seam, and it is deliberately its own.** A `d1` secret's value is sealed under a master
+ * key that never leaves the manager Worker, so whether one exists is a question only the manager can
+ * answer — and provisioning has to ask it *before* deciding, because a per-environment decision taken
+ * during a fan-out cannot preserve a cross-environment invariant.
+ *
+ * Separate from {@link SecretDispatcher} because the contracts are opposites: one mutates and returns
+ * nothing, this returns and mutates nothing. Folding a read into a writer is how a "check" ends up
+ * being the write it was meant to gate.
+ *
+ * It resolves to a bit. It never resolves to a value, and there is no shape of request that would make
+ * it.
+ */
+export interface SecretProbe {
+  probe(request: SecretProbeRequest): Promise<boolean>;
+}
+
 /** A value-touching command before routing — the CLI resolves backend/scope from the registry. */
 export interface SecretWrite {
-  /** See `management/writeSecret.ts` — `ensure` writes only when the name is absent, and never replaces. */
-  mode: "create" | "update" | "ensure" | "delete";
+  mode: "create" | "update" | "delete";
   name: string;
   backend: SecretBackend;
   scope: SecretScope;

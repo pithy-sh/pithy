@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
+import { UpstreamError } from "@pithy-sh/core/src/error/pithyError";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
-import type { SecretDispatcher, SecretWriteRequest } from "../cli/dispatch";
+import type { SecretDispatcher, SecretProbe, SecretProbeRequest, SecretWriteRequest } from "../cli/dispatch";
 import type { ManagedEnvironment } from "../scope";
+import { WriteWorkflowResult } from "./writeWorkflow";
 
 /**
  * The `<capability>` segment of every name the secrets manager deploys under — its Worker script, its
@@ -51,7 +53,7 @@ export function secretsRotateWorkflowName(project: string, env: ManagedEnvironme
  * the environment quietly invited a caller to supply an unscoped name that resolves to whichever
  * project provisioned the account last.
  */
-export class WorkflowSecretDispatcher implements SecretDispatcher {
+export class WorkflowSecretDispatcher implements SecretDispatcher, SecretProbe {
   readonly #client: CloudflareWorkflowsClient;
   readonly #project: string;
 
@@ -68,5 +70,30 @@ export class WorkflowSecretDispatcher implements SecretDispatcher {
       valueType: request.valueType,
       rotatable: request.rotatable,
     });
+  }
+
+  /**
+   * Ask one environment's manager whether a name is in its store. The same Workflow, in the one mode
+   * that writes nothing (`management/writeSecret.ts`), so a presence check cannot drift from the write
+   * it gates: they read the same store, in the same worker, through the same code.
+   *
+   * The instance output is **decoded, never trusted**. It arrives over the Workflows REST API as
+   * `unknown`, and an unread field would default to absent — which is the answer that makes
+   * provisioning mint a second value over a live one. A shape nobody expected stops the run instead.
+   */
+  async probe(request: SecretProbeRequest): Promise<boolean> {
+    const output = await this.#client.dispatchAndPoll(secretsWriteWorkflowName(this.#project, request.env), {
+      mode: "probe",
+      name: request.name,
+    });
+    const parsed = WriteWorkflowResult.safeParse(output);
+    if (!parsed.success) {
+      throw new UpstreamError({
+        message: `The ${request.env} secrets manager gave no usable answer about '${request.name}'.`,
+        action: "Redeploy the manager with pithy secrets provision, then run this again.",
+        detail: `probe ${request.name} in ${request.env}: unexpected write-workflow output`,
+      });
+    }
+    return parsed.data.outcome === "present";
   }
 }

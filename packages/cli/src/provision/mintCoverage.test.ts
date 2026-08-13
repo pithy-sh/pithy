@@ -10,7 +10,7 @@ import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
 import { managerRegistry } from "@pithy-sh/secrets/src/manager/managerRegistry";
 import { isMintableSecret, type SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { describe, expect, test } from "vitest";
-import { mintDeclaredSecrets } from "../capabilities/mintSecrets";
+import { managerMintedSecrets, mintDeclaredSecrets } from "../capabilities/mintSecrets";
 import { secretsStoreBindings } from "./secretBindings";
 
 /**
@@ -86,6 +86,10 @@ async function everythingTheCliCreates(registry: SecretRegistry): Promise<string
         dispatched.push(request);
       },
     },
+    // A manager holding nothing, which is what a freshly provisioned environment is. The gate is about
+    // whether a creator *exists* for every arbitrary secret, so this is the state where every one of
+    // them has work to do — an `always present` probe would make the whole check vacuously green.
+    probe: { probe: async () => false },
     environments: ["staging", "prod"],
   });
   for (const request of dispatched) created.add(request.name);
@@ -107,5 +111,47 @@ describe("what the kit declares mintable, and what the CLI can actually mint", (
 
   test.each(Object.entries(SHIPPED_REGISTRIES))("%s leaves nothing arbitrary for a human", async (_, registry) => {
     expect(await everythingTheCliCreates(registry)).toEqual(declaredMintable(registry));
+  });
+});
+
+/**
+ * **The half of provisioning that runs before the thing that could do the work.**
+ *
+ * `pithy provision --env` and `pithy provision --feature` create an environment's resources, and they
+ * run before its secrets manager is necessarily deployed. A `d1` secret is sealed under a master key
+ * inside that manager, so only the manager can say whether one exists — which means these two commands
+ * cannot create a single one of them, and cannot be made to without deploying a manager first.
+ *
+ * That limit is real. Finishing quietly was not: a run reported `Provisioned prod. Migrated.` with the
+ * session signing key and the link signing key absent, and the next thing to find out was a request.
+ *
+ * So `pithy provision` names them, out of the same predicate the creator uses. That shared predicate is
+ * the whole gate — a capability that adds an arbitrary `d1` secret tomorrow is named by the warning
+ * without anyone remembering to add it to a list.
+ */
+describe("what pithy provision declares and cannot create", () => {
+  test.each(Object.entries(SHIPPED_REGISTRIES))(
+    "%s: the names provision defers are exactly the ones secrets provision creates",
+    async (_, registry) => {
+      const deferred = managerMintedSecrets(registry);
+      const dispatched: SecretWriteRequest[] = [];
+      await mintDeclaredSecrets({
+        registry,
+        dispatcher: { dispatch: async (request) => void dispatched.push(request) },
+        probe: { probe: async () => false },
+        environments: ["staging", "prod"],
+      });
+
+      expect(deferred).toEqual([...new Set(dispatched.map((request) => request.name))].sort());
+    },
+  );
+
+  /**
+   * The gate cannot pass by there being nothing to defer. As the kit ships, a project composing auth and
+   * email has two secrets `pithy provision` will not create — so the warning fires on a real project
+   * rather than being a branch nothing enters.
+   */
+  test("the kit as shipped gives provision something to warn about", () => {
+    expect(managerMintedSecrets(everyShippedSecret()).length).toBeGreaterThan(0);
   });
 });

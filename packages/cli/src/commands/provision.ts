@@ -7,7 +7,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
-import { storeSecretMinter } from "../capabilities/mintSecrets";
+import { managerMintedSecrets, storeSecretMinter } from "../capabilities/mintSecrets";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { branchIdentity } from "../feature/identity";
 import { provisionFeature } from "../feature/provision";
@@ -171,10 +171,31 @@ function describeConfigs(report: ProvisionReport): string[] {
   });
 }
 
+/**
+ * **What this command declares and cannot create.**
+ *
+ * A `d1` secret's value is sealed under a master key that lives inside the environment's manager
+ * Worker, so only that manager can say whether one exists — and `pithy provision` runs *before* the
+ * managers are necessarily deployed. It therefore creates none of them, which is a real limit and not a
+ * bug to be papered over.
+ *
+ * The bug was that it finished quietly anyway. A run that says `Provisioned prod. Migrated.` while the
+ * session signing key and the link signing key are absent has reported success for an environment that
+ * cannot serve a request, and the next person to find out is a user. So the run names them, and names
+ * the one command that does make them.
+ */
+function pendingSecrets(capabilities: Capability[]): string[] {
+  const registry = workerSecretRegistry(capabilities);
+  return registry ? managerMintedSecrets(registry) : [];
+}
+
 /** Write the report: one JSON line, or the human summary. */
-function writeReport(report: ProvisionReport, options: { json: boolean; seeded: boolean }): void {
+function writeReport(
+  report: ProvisionReport,
+  options: { json: boolean; seeded: boolean; pending: readonly string[] },
+): void {
   if (options.json) {
-    process.stdout.write(`${formatJsonLine({ command: "provision", ...report })}\n`);
+    process.stdout.write(`${formatJsonLine({ command: "provision", ...report, pendingSecrets: options.pending })}\n`);
     return;
   }
   for (const resource of report.resources) {
@@ -201,6 +222,11 @@ function writeReport(report: ProvisionReport, options: { json: boolean; seeded: 
   }
   for (const line of describeConfigs(report)) process.stdout.write(`${line}\n`);
   process.stdout.write(`Provisioned ${report.env}. ${options.seeded ? "Migrated and seeded." : "Migrated."}\n`);
+  // Before `Done.`, because it is the part of the job this command did not do. See `pendingSecrets`.
+  if (options.pending.length > 0) {
+    process.stdout.write(`${options.pending.join(", ")}: not created here — they need a deployed manager.\n`);
+    process.stdout.write("Run pithy secrets provision to create them.\n");
+  }
   process.stdout.write(`${formatDone()}\n`);
 }
 
@@ -256,7 +282,7 @@ async function provisionDeclared(projectDir: string, env: string, options: Provi
     seedData: options.seed,
     audit,
   });
-  writeReport(report, { json: options.json, seeded: options.seed });
+  writeReport(report, { json: options.json, seeded: options.seed, pending: pendingSecrets(capabilities) });
 }
 
 /**
@@ -280,7 +306,7 @@ async function provisionBranch(projectDir: string, options: ProvisionRunOptions)
     provisioners,
     audit: await buildAudit(projectDir, capabilities, account),
   });
-  writeReport(report, { json: options.json, seeded: true });
+  writeReport(report, { json: options.json, seeded: true, pending: pendingSecrets(capabilities) });
 }
 
 /**

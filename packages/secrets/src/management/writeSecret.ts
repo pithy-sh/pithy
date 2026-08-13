@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { z } from "zod";
 import { initialVersionedValue } from "../crypto/versionedValue";
 import { SecretAlreadyExistsError, SecretNotFoundError } from "../error/errors";
 import type { SecretValueType } from "../registry";
@@ -20,54 +21,73 @@ import type { SystemSecretsStore } from "../store/systemSecretsStore";
  * (a store read, atomic with the write, so no TOCTOU), encrypt, store, and seed a rotation baseline.
  *
  * `create` refuses an existing name; `update` refuses a missing one — the guard that keeps a typo
- * from creating a second secret or silently overwriting one. `ensure` writes only when the name is
- * absent and is otherwise a no-op. A new value is written as a fresh one-version envelope
+ * from creating a second secret or silently overwriting one. `probe` writes nothing and answers
+ * whether a name is there. A new value is written as a fresh one-version envelope
  * (`initialVersionedValue`); value rotation (append) is a deferred feature.
  */
 export type WriteSecretParams =
   | {
-      /**
-       * `create` refuses an existing name, `update` refuses a missing one, and `ensure` refuses to
-       * replace anything.
-       *
-       * **`ensure` is how a minted value is written, and the refusal is the point.** A value the kit
-       * generates is created once and never regenerated: a second session secret signs everyone out, a
-       * second link-signing key stops verifying links already sitting in inboxes, a second
-       * key-encryption key orphans everything sealed under the first. The CLI cannot check absence for
-       * itself — a `d1` secret is sealed under a master key that never leaves this worker — so the
-       * check belongs here, where it is the same store read the write is already atomic with. A
-       * caller-side read followed by a write is a race; this is not.
-       *
-       * It is deliberately not an upsert. `create`-then-`update`-on-failure is what the storage,
-       * turnstile and media provisioners do, and it is right for a credential the provisioner just
-       * obtained and is the authority on. It is exactly wrong for a minted one.
-       */
-      mode: "create" | "update" | "ensure";
+      /** `create` refuses an existing name; `update` refuses a missing one. */
+      mode: "create" | "update";
       name: string;
       value: string;
       valueType: SecretValueType;
       /** Whether the secret is rotatable — drives whether a rotation baseline is seeded. */
       rotatable: boolean;
     }
+  | {
+      /**
+       * **Is this name in the store?** The one read the CLI cannot do for itself: a `d1` value is
+       * sealed under a master key that never leaves this worker, so only the manager can answer.
+       *
+       * It writes nothing, decrypts nothing, and returns nothing but `present` or `absent` — a
+       * presence bit is not a secret, and no path here can be coaxed into returning a value.
+       *
+       * **It replaced `ensure`, and the replacement is the fix.** `ensure` wrote only when the name
+       * was absent and was otherwise a silent no-op, which is a *per-environment* answer to a
+       * *cross-environment* question. A `global` secret is defined by being identical everywhere, and
+       * a run that wrote staging, lost prod, and was re-run minted a second value, found staging
+       * present, skipped it, and wrote the second value to prod — two environments, two values, no
+       * error. Silence is what made that unnoticeable, so the mode that could be silent is gone. The
+       * caller asks first, decides across every environment at once, and writes with `create`, which
+       * cannot skip: it raises. See `cli/mintSecrets.ts` in the CLI.
+       */
+      mode: "probe";
+      name: string;
+    }
   | { mode: "delete"; name: string };
+
+/**
+ * What one write actually did — the manager's answer, and the thing the caller could not otherwise
+ * know. A `d1` secret is sealed under a master key that never leaves this worker, so "was it already
+ * there" is a question only the store holder can be asked, and dropping the answer on the floor is how
+ * a partial fan-out completes silently.
+ *
+ * A Zod enum rather than a bare union because it crosses back out of the Worker as a Workflow
+ * instance's `output` and is decoded on the far side like every other external input.
+ */
+export const WriteSecretOutcome = z
+  .enum(["written", "present", "absent", "deleted"])
+  .describe(
+    "What a management write did: wrote a new value, found the name already present, found it absent, or removed it.",
+  );
+export type WriteSecretOutcome = z.output<typeof WriteSecretOutcome>;
 
 export interface WriteSecretDeps {
   store: SystemSecretsStore;
   tracker: RotationTracker;
 }
 
-export async function runWriteSecret(deps: WriteSecretDeps, params: WriteSecretParams): Promise<void> {
+export async function runWriteSecret(deps: WriteSecretDeps, params: WriteSecretParams): Promise<WriteSecretOutcome> {
   if (params.mode === "delete") {
     await deps.store.delete(params.name);
     await deps.tracker.purgeHistory(params.name);
-    return;
+    return "deleted";
   }
 
   const exists = await deps.store.has(params.name);
-  // Nothing to do, and nothing to say about it. The value in hand is discarded unread — the caller
-  // minted it speculatively, and a run that reported "already there" per secret would be a list of
-  // names an operator learns to skip past. See {@link WriteSecretParams.mode}.
-  if (params.mode === "ensure" && exists) return;
+  // The read, and only the read. Nothing is written, nothing is decrypted, and the answer is one bit.
+  if (params.mode === "probe") return exists ? "present" : "absent";
   if (params.mode === "create" && exists) {
     throw new SecretAlreadyExistsError({
       message: `Secret '${params.name}' already exists.`,
@@ -89,4 +109,5 @@ export async function runWriteSecret(deps: WriteSecretDeps, params: WriteSecretP
   if (params.rotatable && !exists && (await deps.tracker.getLatestSuccess(params.name)) === null) {
     await deps.tracker.recordBaseline(params.name);
   }
+  return "written";
 }

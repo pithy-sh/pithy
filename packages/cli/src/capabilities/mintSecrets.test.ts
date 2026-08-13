@@ -1,14 +1,35 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretWriteRequest } from "@pithy-sh/secrets/src/cli/dispatch";
 import { decodeVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
+import { SecretAlreadyExistsError } from "@pithy-sh/secrets/src/error/errors";
 import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import { mintDeclaredSecrets, storeSecretMinter } from "./mintSecrets";
+
+/**
+ * **A counter around the one producer of key material, so "nothing was minted" is checkable.**
+ *
+ * Every other property here is observable in what was dispatched. This one is not: a value minted
+ * before absence is known, handed to a Workflow, and discarded unread leaves no trace in any request —
+ * which is exactly why it survived a review. `mintSecretValue` keeps its real behaviour (the entropy
+ * assertions elsewhere in this file still hold); the wrapper only counts.
+ */
+const mints = vi.hoisted(() => ({ count: 0 }));
+vi.mock("@pithy-sh/secrets/src/mintValue", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@pithy-sh/secrets/src/mintValue")>();
+  return {
+    ...actual,
+    mintSecretValue: (kind: Parameters<typeof actual.mintSecretValue>[0]) => {
+      mints.count += 1;
+      return actual.mintSecretValue(kind);
+    },
+  };
+});
 
 const entry: SecretRegistryEntry = {
   backend: "cf-secrets-store",
@@ -129,7 +150,61 @@ describe("storeSecretMinter", () => {
 /** A dispatcher that records every request, so a test can read what the manager was asked to do. */
 function recordingDispatcher() {
   const sent: SecretWriteRequest[] = [];
-  return { sent, dispatch: async (request: SecretWriteRequest) => void sent.push(request) };
+  return {
+    sent,
+    dispatch: async (request: SecretWriteRequest) => void sent.push(request),
+    probe: async () => false,
+  };
+}
+
+/**
+ * **The deployed managers, one per environment, modelled to their contract and no further.**
+ *
+ * Each environment's manager owns a separate store keyed by a separate master key, and the CLI can
+ * neither read one nor coordinate two. So the only two behaviours that matter here are the two the
+ * manager guarantees, and each is pinned in the worker runtime by `writeSecret.workers.test.ts` rather
+ * than assumed here: `create` refuses a name that is already present, and `probe` reports presence
+ * without writing anything.
+ *
+ * `breakOn` is the fault injector, and it takes the **phase** as well as the environment. That is not
+ * decoration: an environment unreachable from the start now fails during probing, before anything is
+ * written anywhere, and the half-written state this gate is about needs a manager that answered a probe
+ * and then died. A predicate that could not tell those apart would test the easy one.
+ */
+function fakeManagers(environments: readonly string[]) {
+  const stores = new Map<string, Map<string, string>>(environments.map((env) => [env, new Map()]));
+  const store = (env: string) => stores.get(env) as Map<string, string>;
+  type Fault = { env: string; phase: "probe" | "write" };
+  let fail: (fault: Fault) => boolean = () => false;
+  return {
+    /** Break every call matching `predicate` — the network loss, the manager that was never deployed. */
+    breakOn(predicate: (fault: Fault) => boolean) {
+      fail = predicate;
+    },
+    heal() {
+      fail = () => false;
+    },
+    /** What an environment actually holds. Test-only: nothing in the product reads a stored value. */
+    value(env: string, name: string): string | undefined {
+      return store(env).get(name);
+    },
+    async probe(request: { env: string; name: string }): Promise<boolean> {
+      if (fail({ env: request.env, phase: "probe" })) throw new Error(`${request.env} unreachable`);
+      return store(request.env).has(request.name);
+    },
+    async dispatch(request: SecretWriteRequest): Promise<void> {
+      if (fail({ env: request.env, phase: "write" })) throw new Error(`${request.env} unreachable`);
+      const entries = store(request.env);
+      if (request.mode === "delete") {
+        entries.delete(request.name);
+        return;
+      }
+      if (request.mode === "create" && entries.has(request.name)) {
+        throw new SecretAlreadyExistsError({ message: `Secret '${request.name}' already exists.` });
+      }
+      entries.set(request.name, request.value as string);
+    },
+  };
 }
 
 /** The two shapes the kit ships: a per-environment session secret, and a global link-signing key. */
@@ -148,20 +223,29 @@ const linkKey: SecretRegistryEntry = {
   devValue: "random",
 };
 
+/** The default declaration: least-production first, which is the order provisioning walks. */
+const environments = ["staging", "prod"] as const;
+
 describe("mintDeclaredSecrets", () => {
-  test("dispatches ensure, never create or update — a minted value is made once", async () => {
+  /**
+   * `create`, never `update` and never an upsert. `update` would replace a live minted key on every
+   * run — a second session secret signs everyone out — and `create` is also the only mode that
+   * *raises* when the name is already there, which is what stops a run losing a race quietly.
+   */
+  test("dispatches create — the mode that refuses rather than replaces or skips", async () => {
     const dispatcher = recordingDispatcher();
 
     await mintDeclaredSecrets({
       registry: { "auth-session-secret": sessionSecret },
       dispatcher,
+      probe: dispatcher,
       environments: ["staging"],
     });
 
     expect(dispatcher.sent).toHaveLength(1);
     expect(dispatcher.sent[0]).toMatchObject({
       env: "staging",
-      mode: "ensure",
+      mode: "create",
       name: "auth-session-secret",
       valueType: "text",
       rotatable: true,
@@ -179,6 +263,7 @@ describe("mintDeclaredSecrets", () => {
     await mintDeclaredSecrets({
       registry: { "email-link-signing-key": linkKey },
       dispatcher,
+      probe: dispatcher,
       environments: ["staging", "prod"],
     });
 
@@ -196,6 +281,7 @@ describe("mintDeclaredSecrets", () => {
     await mintDeclaredSecrets({
       registry: { "auth-session-secret": sessionSecret },
       dispatcher,
+      probe: dispatcher,
       environments: ["staging", "prod"],
     });
 
@@ -209,12 +295,13 @@ describe("mintDeclaredSecrets", () => {
     const minted = await mintDeclaredSecrets({
       registry: { "auth-session-secret": sessionSecret, "email-link-signing-key": linkKey },
       dispatcher,
+      probe: dispatcher,
       environments: ["staging"],
     });
 
     expect(minted).toEqual([
-      { name: "auth-session-secret", environments: ["staging"] },
-      { name: "email-link-signing-key", environments: ["staging"] },
+      { name: "auth-session-secret", environments: ["staging"], created: ["staging"] },
+      { name: "email-link-signing-key", environments: ["staging"], created: ["staging"] },
     ]);
     const values = dispatcher.sent.map((request) => request.value);
     expect(new Set(values).size).toBe(2);
@@ -234,6 +321,7 @@ describe("mintDeclaredSecrets", () => {
     await mintDeclaredSecrets({
       registry: { "auth-google-credentials": supplied },
       dispatcher,
+      probe: dispatcher,
       environments: ["staging"],
     });
 
@@ -246,6 +334,7 @@ describe("mintDeclaredSecrets", () => {
     await mintDeclaredSecrets({
       registry: { CONNECTION_KEY_ENCRYPTION_KEY: { ...entry } },
       dispatcher,
+      probe: dispatcher,
       environments: ["staging"],
     });
 
@@ -265,10 +354,162 @@ describe("mintDeclaredSecrets", () => {
     await mintDeclaredSecrets({
       registry: { CONNECTION_SIGNING_KEY: keyspace },
       dispatcher,
+      probe: dispatcher,
       environments: ["staging"],
     });
 
     expect(dispatcher.sent).toEqual([]);
+  });
+
+  /**
+   * **The invariant, under a fault.** A `global` secret is *defined* by holding one value in every
+   * environment — a link signed in staging is verified by whichever environment the recipient's click
+   * reaches. Per-environment absence checks cannot preserve a cross-environment property, and the
+   * `ensure` dispatch proved it: a run that wrote staging and then lost prod, re-run, minted a *second*
+   * value, found staging present and skipped it, and wrote the new value to prod. Two environments, two
+   * values, no error, and every link signed by one refused by the other.
+   *
+   * So the partial state is refused. Loudly, by name, with the environments that hold it and the ones
+   * that do not — because the repair is a decision about a live signing key, and the tool does not get
+   * to make it silently.
+   */
+  test("a global secret left half-written is refused, never completed with a second value", async () => {
+    const managers = fakeManagers(["staging", "prod"]);
+    const registry = { "email-link-signing-key": linkKey };
+    const run = () => mintDeclaredSecrets({ registry, dispatcher: managers, probe: managers, environments });
+
+    // Run one: prod answers the probe, then dies before its write.
+    managers.breakOn(({ env, phase }) => env === "prod" && phase === "write");
+    await expect(run()).rejects.toThrow();
+    const staged = managers.value("staging", "email-link-signing-key");
+    expect(staged).toBeDefined();
+    expect(managers.value("prod", "email-link-signing-key")).toBeUndefined();
+
+    // Run two, with prod back. It must not mint a second value into the gap.
+    managers.heal();
+    await expect(run()).rejects.toThrow(ConflictError);
+    expect(managers.value("prod", "email-link-signing-key")).toBeUndefined();
+    expect(managers.value("staging", "email-link-signing-key")).toBe(staged);
+  });
+
+  /**
+   * The other half of asking first: an environment that cannot be reached at all is discovered *before*
+   * any value is written, so a run against a half-deployed project leaves nothing behind to reconcile.
+   * Under `ensure` the same run wrote staging and then failed, which is how the split started.
+   */
+  test("an unreachable environment stops the run before anything is written anywhere", async () => {
+    const managers = fakeManagers(["staging", "prod"]);
+    managers.breakOn(({ env }) => env === "prod");
+
+    await expect(
+      mintDeclaredSecrets({
+        registry: { "email-link-signing-key": linkKey },
+        dispatcher: managers,
+        probe: managers,
+        environments,
+      }),
+    ).rejects.toThrow();
+
+    expect(managers.value("staging", "email-link-signing-key")).toBeUndefined();
+    expect(managers.value("prod", "email-link-signing-key")).toBeUndefined();
+  });
+
+  /** The refusal has to be readable at 2am: which secret, which environments hold it, which do not. */
+  test("the refusal names the secret and both sides of the split", async () => {
+    const managers = fakeManagers(["staging", "prod"]);
+    const registry = { "email-link-signing-key": linkKey };
+    managers.breakOn(({ env, phase }) => env === "prod" && phase === "write");
+    await expect(
+      mintDeclaredSecrets({ registry, dispatcher: managers, probe: managers, environments }),
+    ).rejects.toThrow();
+
+    managers.heal();
+    await expect(
+      mintDeclaredSecrets({ registry, dispatcher: managers, probe: managers, environments }),
+    ).rejects.toMatchObject({
+      payload: {
+        message: expect.stringContaining("email-link-signing-key"),
+        detail: expect.stringContaining("prod"),
+      },
+    });
+  });
+
+  /**
+   * A complete run is idempotent and, crucially, **mints nothing on the way past**. Absence is asked
+   * first, so a re-run generates no key material at all — the speculative 256-bit value that used to be
+   * minted per secret per run, handed to a Workflow, and discarded unread is simply never created.
+   */
+  test("a re-run over a fully provisioned project dispatches nothing and mints nothing", async () => {
+    const managers = fakeManagers(["staging", "prod"]);
+    const registry = { "auth-session-secret": sessionSecret, "email-link-signing-key": linkKey };
+
+    await mintDeclaredSecrets({ registry, dispatcher: managers, probe: managers, environments });
+    const before = environments.map((env) => managers.value(env, "email-link-signing-key"));
+
+    const writes: SecretWriteRequest[] = [];
+    const second = await mintDeclaredSecrets({
+      registry,
+      dispatcher: {
+        dispatch: async (request) => void writes.push(request),
+      },
+      probe: managers,
+      environments,
+    });
+
+    expect(writes).toEqual([]);
+    expect(second).toEqual([
+      { name: "auth-session-secret", environments: ["staging", "prod"], created: [] },
+      { name: "email-link-signing-key", environments: ["staging", "prod"], created: [] },
+    ]);
+    expect(environments.map((env) => managers.value(env, "email-link-signing-key"))).toEqual(before);
+  });
+
+  /**
+   * **R1-b, and the reason it needed a counter.** `mintSecretValue` used to be called for every
+   * declared secret on every run, before absence could be known — necessarily, since only the manager
+   * can answer for a `d1` secret. So `pithy secrets provision`, run nightly by a pipeline, generated
+   * fresh 256-bit key material for already-provisioned secrets and deposited it, unused, in Workflow
+   * instance params that Cloudflare retains.
+   *
+   * Asking first is what removes the exposure rather than narrowing it: on a provisioned project no key
+   * material is generated at all, so there is nothing to leave anywhere.
+   */
+  test("generates no key material at all for secrets that already exist", async () => {
+    const managers = fakeManagers(["staging", "prod"]);
+    const registry = { "auth-session-secret": sessionSecret, "email-link-signing-key": linkKey };
+    const options = { registry, dispatcher: managers, probe: managers, environments };
+
+    await mintDeclaredSecrets(options);
+    expect(mints.count).toBeGreaterThan(0);
+
+    mints.count = 0;
+    await mintDeclaredSecrets(options);
+
+    expect(mints.count).toBe(0);
+  });
+
+  /**
+   * The narrow window probing leaves open: two runs both find a global secret absent, and one writes
+   * between the other's probe and its own write. `create` is what closes it — it refuses a name already
+   * there, so the loser fails rather than fanning its own value into the environments the winner has
+   * not reached yet.
+   */
+  test("a concurrent run that wrote first makes this one fail rather than diverge", async () => {
+    const managers = fakeManagers(["staging", "prod"]);
+    const registry = { "email-link-signing-key": linkKey };
+
+    // Probe sees nothing; another operator's run lands in staging before this one writes.
+    const racing = {
+      probe: async () => false,
+      dispatch: managers.dispatch,
+    };
+    await managers.dispatch({ env: "staging", mode: "create", name: "email-link-signing-key", value: "theirs" });
+
+    await expect(mintDeclaredSecrets({ registry, dispatcher: racing, probe: racing, environments })).rejects.toThrow(
+      SecretAlreadyExistsError,
+    );
+    expect(managers.value("staging", "email-link-signing-key")).toBe("theirs");
+    expect(managers.value("prod", "email-link-signing-key")).toBeUndefined();
   });
 
   test("audits each creation by name, and never carries a value", async () => {
@@ -278,6 +519,7 @@ describe("mintDeclaredSecrets", () => {
     await mintDeclaredSecrets({
       registry: { "auth-session-secret": sessionSecret },
       dispatcher,
+      probe: dispatcher,
       environments: ["staging"],
       audit: async (event) => void events.push(event),
     });

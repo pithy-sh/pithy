@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { z } from "zod";
 import { currentValue } from "../crypto/versionedValue";
 import type { SecretsStoreEnv } from "../env/bindings";
-import { runWriteSecret, type WriteSecretParams } from "../management/writeSecret";
+import { runWriteSecret, WriteSecretOutcome, type WriteSecretParams } from "../management/writeSecret";
 import { RotationTracker } from "../store/rotationTracker";
 import { SystemSecretsStore } from "../store/systemSecretsStore";
 
@@ -17,11 +18,28 @@ export type WriteWorkflowPayload = WriteSecretParams & {
   audit?: boolean;
 };
 
-/** The write Workflow's result — its instance output. `audited` is present only when `audit` was set. */
-export interface WriteWorkflowResult {
-  /** Whether the stored secret decrypted back to the dispatched value. The value itself never leaves the worker. */
-  audited?: boolean;
-}
+/**
+ * The write Workflow's result — its instance output, and the whole of what leaves this worker.
+ *
+ * A Zod object rather than an interface because it is read back **outside** the Worker, off the
+ * Workflows REST API, by a CLI that must validate it like any other external input: a `PithyError`
+ * raised on a shape nobody expected is a run that stops, and a silently-`undefined` `outcome` is a
+ * provisioning gate that passes because it could not read its own subject.
+ */
+export const WriteWorkflowResult = z
+  .object({
+    outcome: WriteSecretOutcome.describe("What the write did — the manager's answer, never a value."),
+    audited: z
+      .boolean()
+      .optional()
+      .describe(
+        "Test-only: whether the stored secret decrypted back to the dispatched value. The value itself never leaves the worker.",
+      ),
+  })
+  .describe(
+    "One management write Workflow instance's output: what it did, and nothing that could reconstruct a value.",
+  );
+export type WriteWorkflowResult = z.output<typeof WriteWorkflowResult>;
 
 /**
  * The management write Workflow's body: build the store + tracker from the worker env and run the
@@ -41,12 +59,12 @@ export async function runWriteWorkflow(
 ): Promise<WriteWorkflowResult> {
   const store = await SystemSecretsStore.fromEnv(env);
   const tracker = RotationTracker.fromD1(env.SECRETS);
-  await runWriteSecret({ store, tracker }, payload);
+  const outcome = await runWriteSecret({ store, tracker }, payload);
 
-  if (payload.audit && payload.mode !== "delete") {
+  if (payload.audit && payload.mode !== "delete" && payload.mode !== "probe") {
     const fresh = await SystemSecretsStore.fromEnv(env);
     const stored = await fresh.getValue(payload.name);
-    return { audited: stored !== undefined && currentValue(stored) === payload.value };
+    return { outcome, audited: stored !== undefined && currentValue(stored) === payload.value };
   }
-  return {};
+  return { outcome };
 }
