@@ -60,6 +60,20 @@ function branchExists(branch: string): boolean {
   );
 }
 
+/**
+ * Say so when `main` is behind the remote, and carry on.
+ *
+ * Not a refusal. Cutting from a `main` that is a few commits behind is usually fine and sometimes
+ * deliberate; being told is what stops it becoming a surprise at merge time. Silent when the remote
+ * is unknown — a repository with no `origin/main` has nothing to be behind.
+ */
+function warnIfBehindOrigin(): void {
+  if (!gitTry(["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"])) return;
+  const behind = git(["rev-list", "--count", "main..origin/main"]).trim();
+  if (behind === "0") return;
+  console.warn(`main is ${behind} commit(s) behind origin/main. Cutting from local main. git pull to change that.`);
+}
+
 type Names = { branch: string; dir: string; wtPath: string; root: string };
 
 function names(issue: string, slug: string): Names {
@@ -80,11 +94,21 @@ function setup(issue: string, slug: string): void {
   }
 
   // Attach to the branch if it already exists (a re-run after teardown left the
-  // remote branch behind); otherwise cut a fresh one from origin/main.
+  // remote branch behind); otherwise cut a fresh one from local `main`.
+  //
+  // **Local `main`, not `origin/main`.** The integration point is whatever `main` holds here, and it
+  // is not always what the remote holds: work that is merged but deliberately unpushed is invisible
+  // to `origin/main`, so cutting from it hands the new worktree a base missing every such merge. That
+  // is not hypothetical — it stranded six lanes fourteen commits behind, and each one discovered it by
+  // finding that a file it had been asked to edit did not exist.
+  //
+  // A stale local `main` is the opposite mistake and is louder: `git pull` fixes it, and the warning
+  // below says so. A stale base that looks correct fixes nothing and is found halfway through the work.
   if (branchExists(branch)) {
     git(["worktree", "add", wtPath, branch]);
   } else {
-    git(["worktree", "add", wtPath, "-b", branch, "origin/main"]);
+    warnIfBehindOrigin();
+    git(["worktree", "add", wtPath, "-b", branch, "main"]);
   }
 
   configure(wtPath);
