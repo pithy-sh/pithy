@@ -20,7 +20,7 @@ import {
  * rail. Absent, not blocked — no grant restores a route that does not exist.
  *
  * So every table declares which side of the line it is on, and the type is
- * `Record<keyof PaymentsTables, …>` rather than a partial map: **a fifth table does not compile until
+ * `Record<keyof PaymentsTables, …>` rather than a partial map: **a sixth table does not compile until
  * somebody decides what a management client may see of it.** That is the structural half of the gate.
  * `coverage.test.ts` is the other half — it checks that a table declaring a read has a control-plane
  * `GET` demanding exactly that scope, and that every resource this capability can *write* it can also
@@ -87,4 +87,16 @@ export const PAYMENTS_TABLE_DISCLOSURE: Record<keyof PaymentsTables, PaymentsDis
    * exactly this, and an adopter granting it should not thereby disclose what anybody bought.
    */
   pithyPaymentsReconcileRuns: { reads: [PAYMENTS_RECONCILE_READ_SCOPE] },
+  /**
+   * Withheld. One opaque resume token per stream, and nothing else — no amount, no customer, no event.
+   *
+   * Withheld because there is nothing here a management client could act on and one thing it could break:
+   * a pane that could read a cursor invites a pane that could write one, and a cursor moved forward skips
+   * every event between the old value and the new, silently and unrepairably. The sweep's own state is
+   * the sweep's; what it *found* is in the purchases and webhook-event tables, which are readable.
+   */
+  pithyPaymentsSyncCursors: {
+    withheld:
+      "A sweep's resume token is internal bookkeeping, not a fact about a customer. Reading it answers nothing a management client asks, and the write it invites would silently skip every event between two cursor values.",
+  },
 };

@@ -16,6 +16,7 @@ const TABLES = [
   "pithy_payments_provider_accounts",
   "pithy_payments_webhook_events",
   "pithy_payments_reconcile_runs",
+  "pithy_payments_sync_cursors",
 ];
 
 /** Every payments object SQLite knows about, by name. Proves the `pithy_payments_` prefix rather than trusting it. */
@@ -27,7 +28,7 @@ async function catalog(): Promise<string[]> {
 }
 
 /**
- * Every object the one migration creates, in `sqlite_master` name order — five tables and seven indexes.
+ * Every object the one migration creates, in `sqlite_master` name order — six tables and seven indexes.
  * Written out rather than counted: an index a read was planned around is part of that read's contract,
  * and folding a chain into one migration is exactly the change that can lose one silently.
  */
@@ -42,6 +43,7 @@ const EXPECTED_CATALOG = [
   "pithy_payments_purchases_type_purchased_idx",
   "pithy_payments_reconcile_runs",
   "pithy_payments_reconcile_runs_started_idx",
+  "pithy_payments_sync_cursors",
   "pithy_payments_webhook_events",
   "pithy_payments_webhook_events_pending_idx",
 ];
@@ -69,9 +71,9 @@ beforeEach(async () => {
 });
 
 describe("payments_0001_purchases", () => {
-  test("up creates the five tables and all seven indexes, all prefixed pithy_payments_", async () => {
+  test("up creates the six tables and all seven indexes, all prefixed pithy_payments_", async () => {
     // The exact catalog, not a `toContain`: a table added without a prefix, or an index quietly renamed
-    // or dropped, has to fail here rather than in an adopter's database. Seven indexes — three for the
+    // or dropped, has to fail here rather than in an adopter's database. Six tables, and seven indexes — three for the
     // capability's own reads, three for the control-plane reads (#247), one for the reconciliation run
     // log's listing and its retention prune (#316) — and an index a query was planned around is part of
     // that read's contract, so it is named rather than counted.

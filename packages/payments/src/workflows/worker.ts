@@ -9,7 +9,8 @@ import { configureSharedSecrets, sharedSecretsStore } from "@pithy-sh/secrets/sr
 import { PaymentsConfig } from "../config/config";
 import type { PurchaseEnvironment } from "../data/purchase";
 import { triggerPaymentsReconcile } from "../http/dispatch";
-import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "../secret/registry";
+import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry, railCredentials } from "../secret/registry";
+import { sweepPaddle } from "./paddleSweep";
 import { batchedRailAccess } from "./railAccess";
 import { type ReconcileReport, reconcilePayments } from "./reconcile";
 import { auditLogEmit, logReconcileReport } from "./report";
@@ -88,6 +89,33 @@ export class PaymentsReconcileWorkflow extends WorkflowEntrypoint<PaymentsWorker
         railAccess: (now) => batchedRailAccess({ config, credentials, now }),
         now: () => new Date(),
         emit: auditLogEmit(log),
+        /**
+         * The Paddle events sweep, supplied only when that rail is on.
+         *
+         * Undefined otherwise, and the difference is a statement rather than an optimisation: a rail
+         * nobody sells through did not sweep, where a rail that swept and found nothing is a healthy
+         * integration. Collapsing the two makes "the webhooks are fine" indistinguishable from "we never
+         * looked", which is the exact ambiguity this pass exists to remove.
+         *
+         * Built here rather than inside `reconcilePayments`, because it needs Paddle's credentials and its
+         * own account, and that module deliberately knows nothing about any single rail.
+         */
+        ...(config.rails.paddle && config.paddle !== undefined
+          ? {
+              sweepPaddle: () =>
+                sweepPaddle({
+                  d1: this.env.DB,
+                  config,
+                  environment: deploymentEnvironment(this.env),
+                  credentials: railCredentials(credentials, "paddle"),
+                  paddleEnvironment: config.paddle?.environment ?? "sandbox",
+                  // The raw `ENVIRONMENT`, not the two-valued store environment: the shared-sandbox fence
+                  // separates `dev` from `staging`, and both are `sandbox` on the other axis.
+                  deployment: this.env.ENVIRONMENT,
+                  now: () => new Date(),
+                }),
+            }
+          : {}),
       },
       step,
       params,
