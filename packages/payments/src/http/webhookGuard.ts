@@ -267,22 +267,53 @@ export function requireSignedWebhook(
 }
 
 /**
+ * What became of a verified delivery, as the handler reports it. **Three cases, because there are three.**
+ *
+ * `{ at }` — it projected. Finished.
+ *
+ * `{ at, note }` — it was never going to project, and here is why. The rail read the notification and said
+ * it carries no transaction state: a partial refund that takes nothing away, a token Play will not show us
+ * — its rail's own words are "the answer will not change" — a subscription Lemon Squeezy no longer knows, a
+ * type the store shipped after this package did. Also finished. **A later delivery of the same bytes gets
+ * the same answer from the same build**, so the note is an explanation attached to a finished row, not a
+ * failure.
+ *
+ * `{ at, error }` — it arrived carrying a purchase and did not project, and a later attempt still could.
+ * The orphan whose account link has not arrived, the void naming a purchase not yet submitted, the SKU not
+ * yet in the catalog. `processedAt` stays null so the redelivery, the replay, or the sweep runs it again.
+ *
+ * **Why `note` and `error` are separate when both land in the same column.** #337 made the presence of a
+ * reason the discriminant, which split one state in two: a delivery with nothing to project was finished
+ * when the rail said nothing about it, and outstanding when the rail explained why. The *explanation* was
+ * the only difference, and an explanation must not be able to change a state.
+ *
+ * What that cost is the two things this column is read for. A null `processedAt` under an old `receivedAt`
+ * is this table's documented drift signal, and every explained delivery became one permanently. And the
+ * short-circuit is what makes a retry storm cost one insert instead of a projection — four of the five
+ * rails have no repair pass at all, so those rows never settled, and each of the store's retries ran the
+ * whole handler again.
+ *
+ * The three are a union rather than two optional fields so no call site can pass both and no reader has to
+ * decide what a row means that claims to be finished and failed at once. That contradiction was #337.
+ */
+export type WebhookCompletion =
+  | { readonly at: Date }
+  | { readonly at: Date; readonly note: string }
+  | { readonly at: Date; readonly error: string };
+
+/**
  * Mark a recorded notification finished, or record why it is not.
  *
- * **`error` is the discriminant, and it decides whether `processedAt` is written at all.** No error means the
- * delivery is done with — projected, or a type that deliberately projects nothing — so the timestamp goes on
- * and the guard will answer the next redelivery as a duplicate. An error means it arrived and did not
- * project, so `processedAt` stays null and the row stays reprocessable.
+ * The outcome decides whether `processedAt` is written at all — see {@link WebhookCompletion}. Only the
+ * repairable case withholds it, and withholding it is what keeps the row reprocessable: the guard's
+ * short-circuit and the Paddle sweep's freshness check both read that column.
  *
- * The presence of the reason *is* the state, rather than a second field agreeing with it. A separate
- * `finished: boolean` beside `error` would be one more pair that can disagree, and a row saying "finished,
- * and here is why it failed" is exactly the contradiction #337 was.
- *
- * That reverses what this function did before. Setting the timestamp beside the error read as "the
+ * That reverses what this function did before #337. Setting the timestamp beside an error read as "the
  * notification *was* handled" — but the guard short-circuits on that column, so it also meant a failed
  * delivery could never be repaired: the provider's retry was answered 200, a manual replay reuses the same
- * event id and was answered 200, and the Paddle sweep reads freshness off the same column and skipped it.
- * Nothing in this package repaired a failed delivery, on any rail.
+ * event id and was answered 200, and the sweep skipped it. Nothing in this package repaired a failed
+ * delivery, on any rail. #339 is the other edge of the same cut: the fix withheld the timestamp from
+ * deliveries that had nothing to repair, and made a repair pass chase them.
  *
  * **`abandonedAt` is never touched here.** It belongs to the repair pass that wrote it, and a webhook that
  * projects one of those rows sets `processedAt` — which wins, so the event reads finished while the row
@@ -292,18 +323,16 @@ export function requireSignedWebhook(
  * would answer a 5xx by retrying, the projection is idempotent, and an unmarked row would otherwise leave a
  * notification looking permanently unprocessed.
  */
-export async function completeWebhook(
-  d1: D1Database,
-  eventRowId: string,
-  outcome: { at: Date; error?: string },
-): Promise<void> {
+export async function completeWebhook(d1: D1Database, eventRowId: string, outcome: WebhookCompletion): Promise<void> {
+  const repairable = "error" in outcome;
   const db = paymentsDatabase(d1);
   await withD1Retry(() =>
     db
       .updateTable(PAYMENTS_WEBHOOK_EVENTS_TABLE)
       .set({
-        processedAt: outcome.error === undefined ? outcome.at.getTime() : null,
-        error: outcome.error ?? null,
+        processedAt: repairable ? null : outcome.at.getTime(),
+        // One column: it is "why", and an operator reads it the same way whichever of the two it is.
+        error: "error" in outcome ? outcome.error : "note" in outcome ? outcome.note : null,
         // biome-ignore lint/suspicious/noExplicitAny: encoded column values, not the app shape.
       } as any)
       .where("id", "=", eventRowId)

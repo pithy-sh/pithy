@@ -421,6 +421,7 @@ const EMPTY_SWEEP: PaddleSweepReport = {
   read: 0,
   projected: 0,
   ignored: 0,
+  orphaned: [],
   duplicate: 0,
   failed: 0,
   quarantined: [],

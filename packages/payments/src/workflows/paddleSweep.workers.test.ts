@@ -663,6 +663,45 @@ describe("sweepPaddle", () => {
     expect((await webhookRows())[0]?.attempts).toBe(PADDLE_SWEEP_MAX_ATTEMPTS);
   });
 
+  /**
+   * **An orphan is walked past, and left repairable.** (#339)
+   *
+   * The sweep used to `complete` one — `processedAt`, the column the webhook guard short-circuits on — so
+   * a sweep that reached an orphan before its delivery did answered the redelivery that follows the account
+   * link with `duplicate`, and the purchase was never projected. `routes.workers.test.ts` drives that losing
+   * order through both real doors. What this file owns is the sweep's own half: the cursor must still move,
+   * because halting in front of an orphan stalls every event behind one customer who never links.
+   */
+  test("an orphan is abandoned rather than finished, and the cursor still moves past it", async () => {
+    // No `pithy_user` stamp, and no `provider_accounts` row: authentic, and nobody to project it against.
+    const orphan = {
+      ...(await activated("evt_orphan")),
+      data: { ...(await activated("evt_orphan")).data, custom_data: {} },
+    };
+
+    const report = await sweepPaddle(deps(stream([[orphan, await activated("evt_behind", "sub_02")]])));
+    expect(report.orphaned).toEqual(["evt_orphan"]);
+    // Not counted as ignored: an ignored event is one this build was never going to act on, and a stuck
+    // sale must not read as a healthy number.
+    expect(report).toMatchObject({ read: 2, projected: 1, ignored: 0, failed: 0, quarantined: [] });
+
+    const swept = (await webhookRows()).find((row) => row.providerEventId === "evt_orphan");
+    expect(swept?.abandonedAt, "the sweep gave up on it, so it says so in its own column").not.toBeNull();
+    expect(swept?.processedAt, "an orphan is repairable, so it is not finished").toBeNull();
+    expect(swept?.error).toContain("orphaned");
+    // No attempt was counted: an orphan is not a failure being retried, and the first look is as informed
+    // as the tenth.
+    expect(swept?.attempts ?? 0).toBe(0);
+
+    // The stream moved on — the whole reason `fail` is the wrong answer here.
+    expect((await cursors())[0]?.cursor).toBe("evt_behind");
+    expect((await purchases()).map((row) => row.providerTransactionId)).toEqual(["sub_02"]);
+
+    // And the next run does not pick it up again, so one unlinkable customer is not swept for ever.
+    const second = await sweepPaddle(deps(stream([[orphan]])));
+    expect(second).toMatchObject({ read: 1, duplicate: 1, orphaned: [] });
+  });
+
   test("walks more than one page, and stops when Paddle says there is no more", async () => {
     const transport = stream([[await activated("evt_01")], [await activated("evt_02", "sub_02")]]);
     const report = await sweepPaddle(deps(transport));

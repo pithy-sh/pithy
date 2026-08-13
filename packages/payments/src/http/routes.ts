@@ -1375,13 +1375,29 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       const now = clock();
       const d1 = database(c);
 
-      /** Record the delivery's outcome and put it on the audit trail. One shape for every non-projecting path. */
+      /**
+       * Record the delivery's outcome and put it on the audit trail. One shape for every non-projecting path.
+       *
+       * **`note` and `error` are the same sentence to an operator and opposite states in the row**, so the
+       * call sites below say which they mean rather than letting the presence of a reason decide. A note is
+       * why nothing was *ever* going to project — the row is finished. An error is why this attempt did not
+       * — the row stays repairable. See {@link completeWebhook}; #339 is what happens when the two are one.
+       */
       const acknowledge = async (outcome: {
+        note?: string;
         error?: string;
         reason?: string;
         severity?: "warning";
       }): Promise<Response> => {
-        await completeWebhook(d1, eventRowId, { at: now, error: outcome.error });
+        await completeWebhook(
+          d1,
+          eventRowId,
+          outcome.error !== undefined
+            ? { at: now, error: outcome.error }
+            : outcome.note !== undefined
+              ? { at: now, note: outcome.note }
+              : { at: now },
+        );
         await c.var.emit({
           action: PaymentsAuditActions.webhookReceived,
           outcome: outcome.reason === undefined ? "success" : "failure",
@@ -1470,9 +1486,15 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
 
       // Authentic, and about no transaction. A test notification, a consumption request, a type the store
       // shipped after this package did. Where that needs an explanation the rail supplies one as a note.
+      //
+      // **A `note`, never an `error`, and these two branches are one state.** The rail has read the
+      // notification and reported there is no transaction in it; a redelivery of the same bytes gets the
+      // same answer, so the row is finished whether or not the rail explained itself. Recording the
+      // explanation as an error was #339 — it left the row outstanding, which is this table's drift signal
+      // and the guard's short-circuit both, on the deliveries that had nothing to repair.
       if (!notification.event) {
         return notification.note
-          ? await acknowledge({ error: notification.note, reason: "unresolvable", severity: "warning" })
+          ? await acknowledge({ note: notification.note, reason: "unresolvable", severity: "warning" })
           : await acknowledge({});
       }
 

@@ -7,7 +7,8 @@ import type { PaymentsPurchase } from "../../data/purchase";
 import type { PaymentsPaddleCredentials } from "../../secret/registry";
 import type { PaddleHttpFetch, PaddleHttpRequest } from "./api";
 import { PADDLE_EVENT_RETENTION_DAYS, PADDLE_SWEPT_EVENT_TYPES, sweepPaddleEvents } from "./events";
-import { accountReferenceProof } from "./objects";
+import { accountReferenceProof, type PaddleEvent } from "./objects";
+import { PADDLE_RECORDED_EVENT_TYPES, recordedPayload } from "./recorded";
 import { readPaddlePricing, refreshPaddlePurchase } from "./refresh";
 
 const CREDENTIALS: PaymentsPaddleCredentials = {
@@ -431,5 +432,80 @@ describe("readPaddlePricing", () => {
     const transport = stub({ "/subscriptions/": {} });
     expect(await readPaddlePricing(row(TXN), { ...base, transport })).toBeUndefined();
     expect(transport.calls).toHaveLength(0);
+  });
+});
+
+/**
+ * **The recording allowlist has no path around it.**
+ *
+ * `recorded.ts` states the control without an exception, and it has to: `PaddleEvent` is `.loose()`, and a
+ * `client_token.created` body carries a `token` Paddle does not redact into a table an operator greps, an
+ * export copies and a backup keeps.
+ *
+ * The failure branch wrote the parsed event straight through. It was harmless — every type that can reach
+ * that branch is on the recorded list — but harmless by coincidence of two lists agreeing, not by the
+ * control. Both halves are gated here: the branch goes through `recordedPayload`, and the subset the old
+ * code was leaning on is asserted rather than assumed.
+ */
+describe("what the failure branch writes down", () => {
+  test("every swept type is a recorded type, so no branch can reach D1 with an unvouched body", () => {
+    // The invariant the old failure branch depended on without saying so. Asserted in this direction only:
+    // the recorded list is deliberately wider — it covers the webhook path, where there is no query filter
+    // and the subscribed-event list is set by a human in Paddle's dashboard.
+    const unrecorded = PADDLE_SWEPT_EVENT_TYPES.filter((type) => !PADDLE_RECORDED_EVENT_TYPES.has(type));
+    expect(unrecorded).toEqual([]);
+  });
+
+  test("a failed event's body is what `recordedPayload` returns, not the parsed event", async () => {
+    // A loose top-level key nothing in the schema names, riding along on the event that fails its second
+    // read. `recordedPayload` decides its fate — here it keeps it, because `adjustment.created` is a
+    // recorded type — and this pins that the branch asks rather than assuming.
+    const transport = (async (url: string) => {
+      if (url.includes("/transactions/")) return { ok: false, status: 503, text: async () => "{}" };
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            data: [
+              {
+                event_id: "evt_unreadable",
+                event_type: "adjustment.created",
+                occurred_at: "2026-08-12T12:00:00Z",
+                notification_id: "ntf_01",
+                data: {
+                  id: "adj_01",
+                  action: "refund",
+                  status: "approved",
+                  transaction_id: TXN,
+                  totals: { total: "999" },
+                  created_at: "2026-08-12T12:00:00Z",
+                },
+              },
+            ],
+            meta: METADATA,
+          }),
+      };
+    }) as PaddleHttpFetch;
+
+    const page = await sweepPaddleEvents({ ...OPTIONS, transport });
+    const payload = page.events[0]?.failure?.payload;
+    expect(payload).toBeDefined();
+    expect(payload).toEqual(
+      recordedPayload({
+        event_id: "evt_unreadable",
+        event_type: "adjustment.created",
+        occurred_at: "2026-08-12T12:00:00Z",
+        notification_id: "ntf_01",
+        data: {
+          id: "adj_01",
+          action: "refund",
+          status: "approved",
+          transaction_id: TXN,
+          totals: { total: "999" },
+          created_at: "2026-08-12T12:00:00Z",
+        },
+      } as PaddleEvent),
+    );
   });
 });

@@ -3737,3 +3737,169 @@ describe("a sweep that gave up, and the delivery that arrives afterwards", () =>
     expect(await purchases()).toHaveLength(1);
   });
 });
+
+/**
+ * **An orphan is repairable, so it is not finished — and both doors write the same row.**
+ *
+ * The sweep and the webhook share `pithy_payments_webhook_events` under `UNIQUE (rail, providerEventId)`,
+ * so whichever reaches an event second sees what the first wrote. The webhook path has always treated its
+ * own orphans as outstanding. The sweep called {@link complete} on one — `processedAt`, the very column the
+ * guard short-circuits on — and its doc said so deliberately, which is why this is a reconciliation and not
+ * a missed site.
+ *
+ * The two answers cannot both stand. An orphan is an authentic purchase whose account link has not arrived
+ * yet; the link arrives, the store redelivers the same `event_id`, and that delivery is the repair. So the
+ * sweep now abandons rather than completes, and this drives the losing order — sweep first, delivery second
+ * — through both real doors on one real row. Nothing is planted.
+ */
+describe("an orphan the sweep reached first", () => {
+  /** Paddle's event stream, one page and nothing after it. */
+  function stream(events: readonly unknown[]): PaddleHttpFetch {
+    return (async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ data: events, meta: { pagination: { has_more: false } } }),
+    })) as PaddleHttpFetch;
+  }
+
+  const sweep = (events: readonly unknown[]) =>
+    sweepPaddle({
+      d1: env.DB,
+      config: PaymentsConfig.parse(PADDLE_CATALOG),
+      environment: "production",
+      credentials: { apiKey: PADDLE_TEST_API_KEY, webhookSecret: PADDLE_TEST_WEBHOOK_SECRET },
+      paddleEnvironment: "production",
+      deployment: "prod",
+      now: () => NOW,
+      transport: stream(events),
+      // Supplied explicitly so an uncomposed ledger cannot be what makes the case pass.
+      fulfill: async () => undefined,
+    });
+
+  test("is repaired by the delivery that follows the account link", async () => {
+    // No stamp, and no `provider_accounts` row: authentic, and nobody to project it against. The shape a
+    // dashboard-created transaction has, and the one the five-rail cases construct on every rail.
+    const event = await paddleSubscriptionEvent({ custom: {} });
+
+    const report = await sweep([event]);
+    // Named, not counted — an operator replays an id. And not folded into `ignored`, which is for events
+    // this build was never going to act on: a stuck sale must not read as a healthy number.
+    expect(report.orphaned).toEqual([event.event_id]);
+    expect(report.projected).toBe(0);
+    expect(await purchases()).toEqual([]);
+
+    // The row the sweep left. Read as raw columns rather than through the package's own state reader, so
+    // this says what is in the row instead of restating the function that classifies it.
+    const swept = (await webhookEvents())[0];
+    expect(swept?.abandonedAt, "the sweep walked past it, so it must say so in its own column").not.toBeNull();
+    expect(swept?.processedAt, "an orphan is repairable, so it is not a delivery that is finished").toBeNull();
+    expect(swept?.error).toContain("orphaned");
+
+    // The repair: the link arrives — a checkout, a client submission, an operator.
+    await linkProviderAccount(env.DB, "paddle", PADDLE_CUSTOMER, "ada", { now: NOW });
+
+    // Paddle's ordinary retry, or an operator's replay. The same `event_id`, so it is the same row, and
+    // this is the question the defect answered `duplicate`.
+    const response = await paddleHook(makeApp(PADDLE_CATALOG), event);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ received: true, projected: true, outcome: "created" });
+
+    const rows = await purchases();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ rail: "paddle", userId: "ada", productId: "pro_monthly", status: "active" });
+    expect((await entitlements())[0]).toMatchObject({ userId: "ada", entitlement: "pro", active: 1 });
+
+    // One row throughout: the delivery repaired the record it found rather than writing a second. Finished
+    // now, with `abandonedAt` kept — how close this sale came to being lost is worth having on the record.
+    const repaired = await webhookEvents();
+    expect(repaired).toHaveLength(1);
+    expect(repaired[0]?.processedAt).not.toBeNull();
+    expect(repaired[0]?.error).toBeNull();
+    expect(repaired[0]?.abandonedAt).not.toBeNull();
+
+    // And now it is finished, so the store's remaining fifty-nine retries cost one insert each.
+    const retry = await paddleHook(makeApp(PADDLE_CATALOG), event);
+    expect(await retry.json()).toEqual({ received: true, duplicate: true });
+    expect(await purchases()).toHaveLength(1);
+  });
+
+  test("does not hold the stream up behind it, and does not restart its own attempt count", async () => {
+    // The tension the old `complete` was reaching for, and the reason `fail` is the wrong answer here.
+    // Halting the cursor in front of an orphan would stall every event behind one customer who never links,
+    // daily, for as long as the deployment runs. `abandonedAt` advances this pass and leaves the guard shut.
+    const orphan = await paddleSubscriptionEvent({ custom: {}, eventId: "evt_orphan" });
+    const behind = await paddleSubscriptionEvent({
+      eventId: "evt_behind",
+      subscriptionId: "sub_01hv8wptq8987qeep44cybehind",
+    });
+
+    const report = await sweep([orphan, behind]);
+    expect(report.orphaned).toEqual(["evt_orphan"]);
+    // The event behind the orphan projected in the *same* run — the anti-vacuity for "the stream moved on".
+    expect(report.projected).toBe(1);
+    expect(report.failed).toBe(0);
+    expect((await purchases()).map((row) => row.providerTransactionId)).toEqual(["sub_01hv8wptq8987qeep44cybehind"]);
+
+    // A second run counts the orphan a duplicate rather than picking it up again: abandoned is invisible to
+    // this pass, which is what stops one unlinkable customer being swept for ever.
+    const second = await sweep([orphan, behind]);
+    expect(second.orphaned).toEqual([]);
+    expect(second.duplicate).toBe(2);
+    expect(await webhookEvents()).toHaveLength(2);
+  });
+});
+
+/**
+ * **An explanation is not a failure.** (#339)
+ *
+ * A delivery the rail read and reported as carrying no transaction state is finished with: a test ping, a
+ * partial refund that takes nothing away, a subscription Lemon Squeezy no longer knows, a token Play will
+ * not show us — the Google rail's own words for that one are "the answer will not change".
+ *
+ * #337 made the presence of a reason the discriminant, which split that one state in two: a delivery with
+ * nothing to project was finished, and the *same* delivery with an explanation attached was left
+ * outstanding. The explanation was the only difference.
+ *
+ * It cost the two things the column is read for. A null `processedAt` under an old `receivedAt` is this
+ * table's documented drift signal, and every explained delivery became one permanently. And the
+ * short-circuit is what makes a retry storm cost one insert instead of a projection — four of the five
+ * rails have no repair pass at all, so those rows never settled and each retry ran the whole handler again.
+ */
+describe("a delivery with nothing to project, and a reason", () => {
+  test("is finished with its reason on the row, and its redelivery is a duplicate", async () => {
+    // Play answered, and its answer is that it knows nothing about this token. Authentic, and there is
+    // nothing here to project — now or on any redelivery.
+    const app = makeApp(CATALOG, { play: {} });
+    const response = await push(app, rtdnRenewed);
+    expect(response.status).toBe(200);
+
+    const [row] = await webhookEvents();
+    expect(row?.error).toContain("Play has no subscription");
+    expect(row?.processedAt, "nothing failed here, so the row is finished — the note explains it").not.toBeNull();
+    expect(row?.abandonedAt).toBeNull();
+
+    // The store's next attempt. One insert, not a second parse and handler run.
+    const again = await push(app, rtdnRenewed);
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ received: true, duplicate: true });
+    expect(await webhookEvents()).toHaveLength(1);
+    expect(await purchases()).toEqual([]);
+  });
+
+  test("but a delivery that carried a purchase and could not place it stays repairable", async () => {
+    // The anti-vacuity, and the line the case above must not cross. This one *did* carry transaction state;
+    // it is only the owner that is missing, and the owner arrives. A build that answered "finished" to every
+    // reason would pass the case above and lose this purchase.
+    const app = makeApp(CATALOG, { play: { subscription: playSubscription } });
+    expect((await push(app, rtdnRenewed)).status).toBe(200);
+
+    const [orphaned] = await webhookEvents();
+    expect(orphaned?.error).toContain("no Pithy user");
+    expect(orphaned?.processedAt, "a purchase with nobody to project it against is not finished").toBeNull();
+
+    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, "ada", { now: NOW });
+    const again = await push(app, rtdnRenewed);
+    expect(await again.json()).toEqual({ received: true, projected: true, outcome: "created" });
+    expect(await purchases()).toHaveLength(1);
+  });
+});

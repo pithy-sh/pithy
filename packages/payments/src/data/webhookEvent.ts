@@ -65,7 +65,7 @@ export const PaymentsWebhookEvent = z
       .string()
       .nullable()
       .describe(
-        "Why processing failed, or null. Internal text: it is read by an operator and never rendered to a client.",
+        "Why this delivery did not project — or, beside a set `processedAt`, why there was never anything to project. Internal text: it is read by an operator and never rendered to a client. Its presence is not the state; the two timestamps are, because an explanation must not be able to change one.",
       ),
     attempts: z
       .number()
