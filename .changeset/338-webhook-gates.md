@@ -1,0 +1,13 @@
+---
+"@pithy-sh/payments": patch
+---
+
+Gate the Paddle webhook path, where the two invariants proved on the sweep were never checked.
+
+**The recording allowlist, on the path that has no query filter.** `pithy_payments_webhook_events` must hold no client token, and the sweep proves it: a `client_token.created` is planted and the recorded rows are asserted not to contain the token. The webhook path had nothing, and it is the weaker of the two — the sweep at least *asks* Paddle for the types this build acts on, while a notification destination's subscribed-event list is set in Paddle's dashboard by a human and one on `*` delivers the token straight to the route. A signed delivery now goes through the real guard into real D1, and the stored row is asserted equal to the envelope alone. Restoring `payload: { ...event }` in `nothing()` fails it, and so does removing the allowlist test from `recordedPayload`.
+
+**The redaction, at the call site rather than in the function.** `recorded.test.ts` proved what `recordedPayload` returns. Nothing proved the event map used it: `nothing()` is the one line every unlisted type passes through, and putting `payload: { ...event }` back there left 70 files and 1402 tests green. Three cases now cover it — the client-token event by name, every type in Paddle's published catalogue the map does not act on, each planted with a credential in its body, and the other direction, an acted-on type that projects nothing and must still be handed over whole. The population is Paddle's own enum, and the loop carries a floor so an allowlist grown toward `*` cannot empty it.
+
+**The ownership MAC on `/payments/purchases`.** `accountReferenceOf` ends `proofMatches(…) ? reference : null`, and that ternary is the whole authorization for the verify path — the one route where the attacker supplies both the transaction id and the stamp. Every existing case reached the *absence* branch: a stamp with no `pithy_ref_proof` is refused two `if`s earlier and the comparison never runs. Deleting the ternary left the entire `/payments/purchases — Paddle` block green. Six constructed forgeries now reach it — a proof minted under another destination's secret, one this deployment really minted for staging, a genuine proof lifted off another user's stamp, the right proof one hex digit off, sixty-four zeroes, and sixty-four non-hex characters — each naming the caller as its own owner, so the route's caller-vs-reference refusal cannot be what stops them. The same stamp with a proven MAC is accepted in the same case, so the refusals are the MAC and not the catalogue.
+
+Test-only. No behaviour changed.
