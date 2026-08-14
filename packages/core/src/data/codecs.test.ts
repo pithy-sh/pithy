@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
-import { PithyError } from "../error/pithyError";
+import { fromZodError, PithyError } from "../error/pithyError";
 import {
   IanaTimezone,
   isValidIanaTimezone,
@@ -68,14 +68,9 @@ describe("SQLiteDate", () => {
     expect(() => SQLiteDate.parse("not-a-date")).toThrow();
   });
 
-  test("the invalid-date throw is a typed PithyError (core/internal)", () => {
-    try {
-      SQLiteDate.parse("not-a-date");
-      throw new Error("expected SQLiteDate.parse to throw");
-    } catch (err) {
-      expect(err).toBeInstanceOf(PithyError);
-      expect((err as PithyError).payload.code).toBe("core/internal");
-    }
+  test("the invalid-date throw is a ZodError, so `parse` keeps its own contract", () => {
+    expect(() => SQLiteDate.parse("not-a-date")).toThrow(z.ZodError);
+    expect(() => SQLiteDate.parse("not-a-date")).not.toThrow(PithyError);
   });
 
   test("encodes Date -> ms-epoch number", () => {
@@ -173,5 +168,101 @@ describe("normalizeIanaTimezone", () => {
     expect(normalizeIanaTimezone(123)).toBeUndefined();
     expect(normalizeIanaTimezone("garbage")).toBeUndefined();
     expect(normalizeIanaTimezone(undefined)).toBeUndefined();
+  });
+});
+
+/**
+ * **`safeParse` cannot throw. Only `parse` throws.** That is the whole contract, and every boundary
+ * reader in this kit and in the dashboard is written on it — `const parsed = X.safeParse(body); return
+ * parsed.success ? parsed.data : null;`, documented as *never throws*.
+ *
+ * Zod's `safeParse` catches a `ZodError`. It does not catch an arbitrary exception thrown from inside a
+ * transform, which propagates straight out. So a codec reports an issue; it never throws (#358).
+ */
+describe("a codec reports, it does not throw", () => {
+  const Hostile = z.object({ at: JsonDate, on: SQLiteDate });
+
+  test("a malformed timestamp inside a shape fails safely rather than escaping", () => {
+    expect(() => Hostile.safeParse({ at: "not-a-date", on: 0 })).not.toThrow();
+    expect(() => Hostile.safeParse({ at: 0, on: "not-a-date" })).not.toThrow();
+    expect(Hostile.safeParse({ at: "not-a-date", on: 0 }).success).toBe(false);
+    expect(Hostile.safeParse({ at: 0, on: "not-a-date" }).success).toBe(false);
+  });
+
+  test("a number no Date can hold is rejected by the codec, not left to `z.date()`", () => {
+    // 8.64e15 is the largest instant a Date holds; one past it is as unusable as "not-a-date", and it
+    // arrives through the number branch. The old check looked only at strings, so this fell through to
+    // the out schema and answered "Invalid input: expected date" — true, and useless to whoever has to
+    // find the row. The message is the assertion: it proves which check refused it.
+    expect(() => SQLiteDate.safeParse(8.64e15 + 1)).not.toThrow();
+    expect(SQLiteDate.safeParse(8.64e15 + 1).error?.issues[0]?.message).toBe("Not a date.");
+    expect(() => JsonDate.safeParse(8.64e15 + 1)).not.toThrow();
+    expect(JsonDate.safeParse(8.64e15 + 1).error?.issues[0]?.message).toBe("Not a date.");
+
+    // `NaN` never reaches the transform — `z.number()` refuses it on the input side, so the union
+    // fails first and the message is Zod's. Still a return rather than a throw, which is the contract.
+    expect(() => JsonDate.safeParse(Number.NaN)).not.toThrow();
+    expect(JsonDate.safeParse(Number.NaN).success).toBe(false);
+  });
+
+  test("the issue still says it was a date, and never carries the offending value", () => {
+    const result = SQLiteDate.safeParse("not-a-date");
+    expect(result.success).toBe(false);
+    const issue = result.error?.issues[0];
+    expect(issue?.message).toBe("Not a date.");
+    expect(JSON.stringify(issue?.message)).not.toContain("not-a-date");
+  });
+
+  test("`fromZodError` still maps it — a labelled validation failure, not an unlabelled one", () => {
+    const result = SQLiteDate.safeParse("not-a-date");
+    if (result.success) throw new Error("expected a failed parse");
+    const mapped = fromZodError(result.error);
+    expect(mapped).toBeInstanceOf(PithyError);
+    expect(mapped.payload.code).toBe("validation/invalid_input");
+    expect(mapped.payload.issues?.[0]?.message).toBe("Not a date.");
+    expect(mapped.payload.issues?.[0]?.code).toBeTruthy();
+  });
+
+  test("malformed JSON fails safely — `JSON.parse` throws, so `sqliteJson` must not let it", () => {
+    const codec = sqliteJson(z.object({ a: z.number() }));
+    expect(() => codec.safeParse("{not json")).not.toThrow();
+    expect(codec.safeParse("{not json").success).toBe(false);
+    expect(codec.safeParse("{not json").error?.issues[0]?.message).toBe("Not valid JSON.");
+  });
+
+  test("a value JSON cannot hold fails safely on the way out", () => {
+    const codec = sqliteJson(z.object({ a: z.bigint() }));
+    expect(() => codec.safeEncode({ a: 1n })).not.toThrow();
+    expect(codec.safeEncode({ a: 1n }).success).toBe(false);
+  });
+
+  test("`safeEncode` never throws either — a codec runs in both directions", () => {
+    expect(() => JsonDate.safeEncode(new Date(Number.NaN))).not.toThrow();
+    expect(JsonDate.safeEncode(new Date(Number.NaN)).success).toBe(false);
+    expect(() => SQLiteDate.safeEncode(new Date(Number.NaN))).not.toThrow();
+    expect(SQLiteDate.safeEncode(new Date(Number.NaN)).success).toBe(false);
+  });
+
+  test("and a valid value still round-trips, unchanged, in both directions", () => {
+    const iso = "2026-06-09T01:02:03.000Z";
+    const date = new Date(iso);
+
+    const jsonOut: z.output<typeof JsonDate> = JsonDate.parse(iso);
+    const jsonIn: z.input<typeof JsonDate> = JsonDate.encode(date);
+    expect(jsonOut).toEqual(date);
+    expect(jsonIn).toBe(iso);
+    expect(JsonDate.parse(JsonDate.encode(date))).toEqual(date);
+    expect(JsonDate.encode(JsonDate.parse(iso))).toBe(iso);
+
+    const sqlOut: z.output<typeof SQLiteDate> = SQLiteDate.parse(date.getTime());
+    const sqlIn: z.input<typeof SQLiteDate> = SQLiteDate.encode(date);
+    expect(sqlOut).toEqual(date);
+    expect(sqlIn).toBe(date.getTime());
+    expect(SQLiteDate.parse(SQLiteDate.encode(date))).toEqual(date);
+    expect(SQLiteDate.encode(SQLiteDate.parse(date.getTime()))).toBe(date.getTime());
+
+    const codec = sqliteJson(z.object({ a: z.number() }));
+    expect(codec.parse(codec.encode({ a: 7 }))).toEqual({ a: 7 });
+    expect(codec.encode(codec.parse('{"a":7}'))).toBe('{"a":7}');
   });
 });

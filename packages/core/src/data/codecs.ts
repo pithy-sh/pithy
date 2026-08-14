@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
-import { InternalError } from "../error/pithyError";
 
 /**
  * SQLite/D1 codecs: bidirectional JS ↔ SQLite conversion through Zod.
@@ -12,7 +11,36 @@ import { InternalError } from "../error/pithyError";
  * `.parse()` decodes (DB → app); `.encode()` encodes (app → DB). Decode-side
  * input is always a `z.union` (never `z.preprocess`) so the schema stays
  * encode-compatible.
+ *
+ * **A codec reports; it never throws.** `safeParse` cannot throw — only `parse`
+ * throws — and every boundary reader in this kit and in the dashboard is written
+ * on that promise: `const parsed = X.safeParse(body); return parsed.success ?
+ * parsed.data : null;`, documented as *never throws*. Zod's `safeParse` catches a
+ * `ZodError`; it does **not** catch an arbitrary exception raised inside a
+ * transform, which propagates straight past it and out of the reader. So a
+ * transform that meets a value it cannot convert pushes a `$ZodRawIssue` onto the
+ * payload and returns `z.NEVER`. Zod aborts there, the failure arrives as
+ * `{ success: false }`, and `parse` still throws — a `ZodError`, which
+ * `fromZodError` maps to `validation/invalid_input` like every other failed parse.
+ *
+ * `JsonDate` and `SQLiteDate` threw an `InternalError` from inside `decode`, so a
+ * malformed timestamp from a customer's Worker was a 500 rather than a rejected
+ * field, on every pane that read a date (#358). The rule lives here rather than at
+ * the readers because a `try`/`catch` at a call site is the same defect one frame
+ * further out, and the next codec would not inherit it.
+ *
+ * The offending value rides along as the issue's `input`, which is where Zod puts
+ * it and which {@link fromZodError} drops — it keeps `path`, `message` and `code`
+ * only, so the value stays available to a logger at the throw site and never
+ * reaches a client. The `message` is written to be read by one: client-safe, and
+ * still specific enough to say *what* was wrong.
  */
+
+/**
+ * The invariant every transform below is written to, stated once so it can be cited:
+ * push, return `z.NEVER`, never `throw`.
+ */
+type Payload<T> = z.core.ParsePayload<T>;
 
 const TRUTHY: readonly unknown[] = [true, 1, "1", "true", "True", "TRUE"];
 
@@ -26,20 +54,22 @@ export const SQLiteBoolean = z.codec(z.union([z.literal(0), z.literal(1), z.bool
   encode: (value: boolean): 0 | 1 => (value ? 1 : 0),
 });
 
-function toDate(input: number | string | Date): Date {
-  if (input instanceof Date) return input;
-  if (typeof input === "string") {
-    const parsed = new Date(input);
-    // A corrupt stored/ingested date is an internal data fault (500). The offending value goes
-    // in `detail` (logs/audit only), never the public message.
-    if (Number.isNaN(parsed.getTime())) {
-      throw new InternalError({ message: "Invalid date value.", detail: `Invalid date string: ${input}` });
-    }
-    return parsed;
+/**
+ * The shared decode for both date codecs. A string is parsed, a number is ms-epoch — what `encode`
+ * writes, so a caller ingesting seconds-epoch from elsewhere converts explicitly — and a `Date` passes
+ * through by identity.
+ *
+ * **Every branch can produce an unusable `Date`**, not only the string one: `new Date(8.64e15 + 1)` is
+ * as invalid as `new Date("not-a-date")`. So the check is on the result, once, rather than on the input
+ * shape — which is what stops the next accepted input type from arriving without it.
+ */
+function toDate(input: number | string | Date, payload: Payload<number | string | Date>): Date {
+  const parsed = input instanceof Date ? input : new Date(input);
+  if (Number.isNaN(parsed.getTime())) {
+    payload.issues.push({ code: "invalid_format", format: "datetime", input: String(input), message: "Not a date." });
+    return z.NEVER;
   }
-  // A number is always ms-epoch — what `encode` writes. Callers ingesting
-  // seconds-epoch from elsewhere convert explicitly.
-  return new Date(input);
+  return parsed;
 }
 
 /** SQLiteDate: Date ↔ ms-epoch number. Decode accepts number/string/Date. */
@@ -58,11 +88,42 @@ export const JsonDate = z.codec(z.union([z.string(), z.number(), z.date()]), z.d
  * sqliteJson: T ↔ JSON string, validated by `schema` on both sides. Decode
  * accepts a JSON string or an already-parsed value; the result is validated
  * against `schema` before it reaches the app.
+ *
+ * **Both `JSON` functions throw**, and both were reachable. `JSON.parse` throws a
+ * `SyntaxError` on any string that is not a JSON document — which a column holding
+ * text an older writer put there, or a payload a customer's Worker returned, can be.
+ * `JSON.stringify` throws a `TypeError` on a `BigInt` and on a cycle, either of
+ * which a `schema` can legitimately admit. Both become an issue (#358).
  */
 export function sqliteJson<T extends z.ZodType>(schema: T) {
   return z.codec(z.union([z.string(), schema]), schema, {
-    decode: (value): z.input<T> => (typeof value === "string" ? JSON.parse(value) : value) as z.input<T>,
-    encode: (value): string => JSON.stringify(value),
+    decode: (value, payload): z.input<T> => {
+      if (typeof value !== "string") return value as z.input<T>;
+      try {
+        return JSON.parse(value) as z.input<T>;
+      } catch {
+        payload.issues.push({ code: "invalid_format", format: "json", input: value, message: "Not valid JSON." });
+        return z.NEVER;
+      }
+    },
+    encode: (value, payload): string => {
+      // The offending value is deliberately not carried onto the issue: it is the thing JSON could not
+      // hold, so a reporter that renders an issue would be the second place to trip over it.
+      try {
+        const json = JSON.stringify(value);
+        if (typeof json === "string") return json;
+      } catch {
+        // Falls through to the one push below. A `BigInt`, a cycle and an `undefined` result are the
+        // same answer — this value does not survive the round trip — and they deserve the same issue.
+      }
+      payload.issues.push({
+        code: "invalid_format",
+        format: "json",
+        input: undefined,
+        message: "Not serializable as JSON.",
+      });
+      return z.NEVER;
+    },
   });
 }
 

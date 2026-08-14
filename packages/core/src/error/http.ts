@@ -7,7 +7,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
 import { clientError } from "./client";
 import { ErrorPayload, PublicErrorPayload } from "./payload";
-import { InternalError, PithyError, ValidationError } from "./pithyError";
+import { InternalError, messageOf, PithyError, ValidationError } from "./pithyError";
 
 /**
  * The HTTP surface of an error, as a real codec. `encode` (server emits) maps an in-memory
@@ -29,7 +29,34 @@ import { InternalError, PithyError, ValidationError } from "./pithyError";
  */
 export const HttpError = z.codec(PublicErrorPayload, ErrorPayload, {
   decode: (wire): ErrorPayload => wire,
-  encode: (payload): PublicErrorPayload => clientError(payload),
+  // `clientError` ends in a `PublicErrorPayload.parse`, and a `parse` throws. A throw from inside a
+  // transform walks straight past `safeParse`/`safeEncode`, which is the whole of #358 — so it is
+  // reported here rather than raised, and the rule itself stays in ./client where every transport
+  // reaches it.
+  //
+  // **Defence in depth, not a live bug.** Reaching that parse means a payload that satisfies
+  // `ErrorPayload` and, stripped of `action` and `detail`, no longer satisfies `PublicErrorPayload` —
+  // which today cannot happen, because the two are built from code sets that match member for member.
+  // That they match is a property of a list somebody maintains by hand, and "cannot happen" is exactly
+  // what was said of a date column holding text.
+  //
+  // Everything is caught, not only a `ZodError`. "`safeParse` cannot throw" admits no adjective: a
+  // condition this does not anticipate is still a condition a boundary reader must survive, and it is
+  // reported rather than swallowed — the message rides out on the issue.
+  encode: (payload, result): PublicErrorPayload => {
+    try {
+      return clientError(payload);
+    } catch (error) {
+      if (error instanceof z.core.$ZodError) {
+        // `input` is dropped rather than forwarded: it is the error payload itself, and an issue that
+        // carries one is a second copy of the thing that was too internal to send.
+        for (const issue of error.issues) result.issues.push({ ...issue, input: undefined });
+      } else {
+        result.issues.push({ code: "custom", input: undefined, message: messageOf(error) });
+      }
+      return z.NEVER;
+    }
+  },
 });
 
 /**
