@@ -284,10 +284,11 @@ Both halves work. Applying a code needs nothing but `discount.read`, so codes yo
 
 Minting goes through `POST /payments/admin/discounts` behind `payments:discounts:create`, or `pithy payments discount create`.
 
-Two things Paddle does differently:
+Three things Paddle does differently:
 
 - **Its codes are `^[a-zA-Z0-9]{1,32}$`.** No dashes, no underscores. `DiscountCode` in this package is deliberately wider — narrowing it would refuse codes the Stripe and Lemon Squeezy rails accept today — so the Paddle rail refuses a code it cannot mint, and says which characters. Paddle's own refusal is the string `"Invalid request."` with no field named.
 - **`maximum_recurring_intervals` counts billing periods**, which is the unit `duration: { kind: "repeating", billingPeriods }` already uses. So the number passes through unconverted. Stripe's `duration_in_months` counts months, and that is where the translation happens. On an annual plan the difference is a year versus twelve years.
+- **`usage_limit` counts a redemption only when money moves, so it does not stop a staff comp.** Paddle's reference says a usage is counted on "a checkout, transaction, or the initial application against a subscription". The third clause does not hold, measured on the sandbox on 2026-08-14. A 50% recurring discount minted with `usage_limit: 1` (`dsc_01m00hz66ad39h03cp6peg6a37`) was applied through `PATCH /subscriptions/{id}` to `sub_01kzybw2j7rx079j091erzhp07` and then, with the limit already notionally spent, to a second subscription `sub_01kzybqsn1n00ddff56z2s239k`. **Both succeeded, and `times_used` stayed `0`.** It went to `1` when a transaction billed under the code completed, and `POST /transactions` naming the same `dsc_…` was refused after that — *"Discount usage limit has been exceeded"*. Both subscriptions still carry the discount today, on a limit of one. So `maxRedemptions` stops a customer redeeming twice and does not stop staff comping twice: a comp flow that applies discounts by updating subscriptions has no guard at the provider, and needs its own record of who was offered a code. Pithy does not keep a counter to compensate — a local count would be a second answer to a question the store already answers, and it would be wrong the moment a code is redeemed anywhere Pithy is not watching.
 
 `redeemableUntil` maps to `expires_at`, which stops **redemption**: after it the code cannot be claimed, and anyone already holding the discount keeps their rate for its full duration.
 
