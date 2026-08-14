@@ -79,3 +79,33 @@ describe("embedForIndex", () => {
     expect(await codeOf(() => embedForIndex(ai, index, ["a"]))).toBe("vector/dimension_mismatch");
   });
 });
+
+/**
+ * **A binding that throws is an outage, not a bad answer** (pithy-sh/pithy#348).
+ *
+ * `core/internal` covers a model that answered in a shape nobody recognises, and
+ * `vector/dimension_mismatch` a model pinned wrong — both deterministic, both terminal. A binding
+ * that *rejects* is Workers AI being unreachable, and a reprocess run is thousands of journalled
+ * pages: losing one to a blip throws away the whole instance's remaining work.
+ *
+ * It therefore carries `core/upstream_failed`, which is the code `vectorWorkflowRetry` states and
+ * the same one secrets and payments already use for a dependency they do not control.
+ */
+describe("a binding that cannot be reached", () => {
+  const rejecting: VectorAi = {
+    run: async () => {
+      throw new Error("Workers AI: capacity temporarily exceeded");
+    },
+  };
+
+  it("raises core/upstream_failed rather than escaping as an unclassifiable throw", async () => {
+    expect(await codeOf(() => embedTexts(rejecting, ["a"], "m"))).toBe("core/upstream_failed");
+  });
+
+  it("keeps the binding's own words in detail, which the HTTP codec strips", async () => {
+    const error = await embedTexts(rejecting, ["a"], "m").catch((thrown: unknown) => thrown);
+    const payload = (error as PithyError).payload;
+    expect(payload.message).not.toContain("capacity");
+    expect(payload.detail).toContain("m");
+  });
+});

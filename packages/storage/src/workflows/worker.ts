@@ -2,14 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
+import { NonRetryableError } from "cloudflare:workflows";
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import { bindWorkflowContext, createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
+import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { configureSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { StorageConfig } from "../config/config";
 import { storageDatabase } from "../data/tables";
 import { objectStore } from "../object/store";
 import { STORAGE_R2_SECRET, storageSecretsRegistry } from "../secret/registry";
+import { storageWorkflowRetry } from "./retryPolicy";
 import { STORAGE_CAPABILITY, StorageSweepParams } from "./specs";
 import { reportSweep, type SweepResult, sweepStorage } from "./sweep";
 
@@ -64,19 +67,24 @@ export class StorageSweepWorkflow extends WorkflowEntrypoint<StorageWorkerEnv, S
 
     // One durable step. A retry re-runs the whole reconciliation, which is safe precisely because the
     // sweep is idempotent — a second pass over a reconciled bucket finds nothing left to do.
-    const result: SweepResult = await step.do("sweep", async () =>
-      sweepStorage({
-        db: storageDatabase(this.env.DB),
-        store: objectStore({
-          bucket: this.env.STORAGE_BUCKET,
-          env: this.env,
-          secretName: STORAGE_R2_SECRET,
+    // Under `storageWorkflowRetry`, whose record is empty and says so: every delete and abort the sweep
+    // makes is already best-effort, core answers for D1, and storage retries none of its own codes. A
+    // run that fails costs one day, and the next day's run does the whole job. See `retryPolicy.ts`.
+    const result: SweepResult = await classifiedSteps(step, storageWorkflowRetry, NonRetryableError).do(
+      "sweep",
+      async () =>
+        sweepStorage({
+          db: storageDatabase(this.env.DB),
+          store: objectStore({
+            bucket: this.env.STORAGE_BUCKET,
+            env: this.env,
+            secretName: STORAGE_R2_SECRET,
+          }),
+          now: () => new Date(),
+          ttlSeconds: params.olderThanSeconds ?? config.pendingTtlSeconds,
+          dryRun: params.dryRun,
+          maxPages: params.maxPages,
         }),
-        now: () => new Date(),
-        ttlSeconds: params.olderThanSeconds ?? config.pendingTtlSeconds,
-        dryRun: params.dryRun,
-        maxPages: params.maxPages,
-      }),
     );
 
     reportSweep(log, result);

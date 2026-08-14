@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
+import { NonRetryableError } from "cloudflare:workflows";
 import type { D1Database } from "@cloudflare/workers-types";
 import { bindWorkflowContext, createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
 import { triggerWorkflow } from "@pithy-sh/core/src/workflow/dispatch";
+import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import { confirmUrl, optInUrl, optOutUrl, TestersConfig } from "../config/config";
 import type { NudgeKind } from "../data/enums";
 import type { TestersMember } from "../data/member";
@@ -13,6 +15,7 @@ import { buildNudgeEnqueue, type NudgeEnqueueEnv } from "../nudge/enqueueSeam";
 import type { EnqueueNudge } from "../nudge/send";
 import type { CohortPassResult } from "./daily";
 import { runDurableDailyPass } from "./pass";
+import { testersWorkflowRetry } from "./retryPolicy";
 import { TESTERS_CAPABILITY, TestersDailyParams, testersWorkflowRegistry } from "./specs";
 
 /**
@@ -83,7 +86,10 @@ export class TestersDailyWorkflow extends WorkflowEntrypoint<TestersWorkerEnv, T
         optOutLinkFor: (member: TestersMember) => optOutUrl(config, member.optInToken),
         suppressionD1: this.env.EMAIL_SUPPRESSIONS,
       },
-      step,
+      // Under `testersWorkflowRetry`, whose record is empty and says so: the pass is D1, core answers
+      // for D1, and a closed cohort or a deleted member is a decision rather than an outage. Contained
+      // per cohort already, so a terminal fault loses one cohort's day, not everyone's.
+      classifiedSteps(step, testersWorkflowRetry, NonRetryableError),
       params,
     );
   }

@@ -58,3 +58,51 @@ describe("extractMarkdown", () => {
     });
   });
 });
+
+/**
+ * **A binding that throws is an outage, not a bad answer** (pithy-sh/pithy#348).
+ *
+ * `media/enrichment_failed` already covers every way a model can answer *wrongly* — an unexpected
+ * shape, a conversion error, a binding with no `toMarkdown`. None of those change on a second
+ * attempt. A binding that *rejects* is the other thing entirely: Workers AI was unreachable or
+ * overloaded, and enrichment is fire-and-forget on finalize, so a fault the step calls terminal is
+ * an asset that silently never gets its alt text.
+ *
+ * So the two are separated by code rather than by prose: the outage is `core/upstream_failed`, which
+ * `mediaWorkflowRetry` states, and every wrong answer stays terminal.
+ */
+describe("a binding that cannot be reached", () => {
+  const rejecting = (): MediaAi => ({
+    run: async () => {
+      throw new Error("Workers AI: capacity temporarily exceeded");
+    },
+    toMarkdown: async () => {
+      throw new Error("Workers AI: capacity temporarily exceeded");
+    },
+  });
+
+  test("generateImageText raises core/upstream_failed", async () => {
+    await expect(generateImageText(rejecting(), new Uint8Array([1]), "@cf/vision")).rejects.toMatchObject({
+      payload: { code: "core/upstream_failed" },
+    });
+  });
+
+  test("transcribeAudioBytes raises core/upstream_failed", async () => {
+    await expect(transcribeAudioBytes(rejecting(), new Uint8Array([1]), "@cf/whisper")).rejects.toMatchObject({
+      payload: { code: "core/upstream_failed" },
+    });
+  });
+
+  test("extractMarkdown raises core/upstream_failed", async () => {
+    await expect(extractMarkdown(rejecting(), [{ name: "a.pdf", blob: new Blob() }])).rejects.toMatchObject({
+      payload: { code: "core/upstream_failed" },
+    });
+  });
+
+  test("a wrong answer is still terminal — the split is by code, not by phrasing", async () => {
+    const ai = fakeAi({ run: async () => ({ nope: true }) });
+    await expect(generateImageText(ai, new Uint8Array(), "@cf/vision")).rejects.toMatchObject({
+      payload: { code: "media/enrichment_failed" },
+    });
+  });
+});

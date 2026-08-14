@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
+import { NonRetryableError } from "cloudflare:workflows";
 import type { D1Database } from "@cloudflare/workers-types";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import type { VectorIndexConfig } from "../config/config";
 import { VectorWorkerConfig, type VectorWorkerIndex } from "../config/workerConfig";
 import { vectorDocuments } from "../data/documents";
@@ -13,6 +15,7 @@ import { VectorIndexNotFoundError } from "../error/errors";
 import { compileFilter } from "../index/filter";
 import type { VectorStore } from "../index/index";
 import { type ReprocessReport, reprocessIndex } from "./reprocess";
+import { vectorWorkflowRetry } from "./retryPolicy";
 import { VectorReprocessParams } from "./specs";
 
 /**
@@ -99,7 +102,10 @@ export class VectorReprocessWorkflow extends WorkflowEntrypoint<VectorWorkerEnv,
         indexName: params.index,
         now: () => new Date(),
       },
-      step,
+      // Under `vectorWorkflowRetry`: an unreachable embedding model re-drives the page, and a pinned
+      // dimension, a filter the index cannot answer, or a shape nobody recognises fails on page one —
+      // which is where a config error belongs in a job thousands of pages long.
+      classifiedSteps(step, vectorWorkflowRetry, NonRetryableError),
       {
         ...(params.all !== undefined ? { all: params.all } : {}),
         ...(filter ? { filter } : {}),

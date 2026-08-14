@@ -2,13 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
+import { NonRetryableError } from "cloudflare:workflows";
 import type { D1Database } from "@cloudflare/workers-types";
+import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { configureSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { emailSigningRegistry, resolveSigningKeys } from "../crypto/signingKey";
 import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
 import { mintBatchId } from "../send/batchIdentity";
 import type { SendWorkflowBinding } from "../send/enqueue";
+import { emailWorkflowRetry } from "../send/retryPolicy";
 import type { EmailSender } from "../send/sender";
 import { defaultTheme, EmailTheme } from "../templates/theme";
 import { isLiveInstanceStatus } from "./instanceLiveness";
@@ -126,17 +129,28 @@ function buildSchedulerDeps(env: EmailWorkerEnv): SchedulerDeps {
   };
 }
 
-/** Sends a batch of jobs durably. Started for immediate sends and by the scheduler's fan-out. */
+/**
+ * Sends a batch of jobs durably. Started for immediate sends and by the scheduler's fan-out.
+ *
+ * Every step runs under {@link emailWorkflowRetry}, which agrees with `errorMapping.ts` by
+ * construction: a rate limit and a transient provider fault re-drive the job, and a template that does
+ * not exist, a payload that will not render, or a job row that is gone fail it at once. See
+ * `send/retryPolicy.ts`.
+ */
 export class EmailSendWorkflow extends WorkflowEntrypoint<EmailWorkerEnv, { jobIds: string[] }> {
   override async run(event: WorkflowEvent<{ jobIds: string[] }>, step: WorkflowStep): Promise<void> {
-    await runSendBatch(await buildSendDeps(this.env), step, event.payload.jobIds);
+    await runSendBatch(
+      await buildSendDeps(this.env),
+      classifiedSteps(step, emailWorkflowRetry, NonRetryableError),
+      event.payload.jobIds,
+    );
   }
 }
 
 /** Finds due jobs and fans them out into send batches. Fired by the every-minute cron. */
 export class EmailSchedulerWorkflow extends WorkflowEntrypoint<EmailWorkerEnv, unknown> {
   override async run(_event: WorkflowEvent<unknown>, step: WorkflowStep): Promise<void> {
-    await step.do("dispatch-due", async () => {
+    await classifiedSteps(step, emailWorkflowRetry, NonRetryableError).do("dispatch-due", async () => {
       await runScheduler(buildSchedulerDeps(this.env));
     });
   }

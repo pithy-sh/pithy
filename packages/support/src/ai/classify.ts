@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { UpstreamError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { categoryEnum, describeCategories, type SupportCategories } from "../data/categories";
 import { SupportPriority, SupportSentiment, UNCATEGORIZED } from "../data/enums";
+import { SupportClassificationError } from "../error/errors";
 
 /**
  * Classification, on the adopter's own `env.AI` binding.
@@ -148,8 +150,9 @@ function unsure(model: string): Classification {
  * queryable, and is a reclassify away from being improved. Throwing would fail the Workflow step and
  * burn a retry budget on a model that is going to say the same thing next time.
  *
- * A model that is genuinely *unavailable* is a different case and does throw, from `ai.run` — that
- * one is worth a Workflow retry.
+ * A model that is genuinely *unavailable* is a different case and does throw — as
+ * `core/upstream_failed`, which `supportWorkflowRetry` states, so the durable step re-drives it.
+ * The code is the whole of how the step can tell the two apart.
  */
 export async function classifyMessage(
   ai: SupportAi,
@@ -168,14 +171,42 @@ export async function classifyMessage(
     temperature: number;
   },
 ): Promise<Classification> {
-  const raw = await ai.run(options.model, {
-    messages: [
-      { role: "system", content: classificationPrompt(options.categories) },
-      { role: "user", content: classificationInput(options.subject, options.body, options.maxChars) },
-    ],
-    temperature: options.temperature,
-    max_tokens: 128,
-  });
+  // The binding, resolved before the call rather than inside it. **A binding that is absent and a
+  // binding that rejects are opposite faults**, and wrapping the whole expression made them the same
+  // one: a worker provisioned without `AI` throws a `TypeError` on the reach, which the catch below
+  // would have called an outage and the step would have re-driven five times against an env that is
+  // not going to grow a binding. This is the deployment error `support/classification_failed` names,
+  // and it is terminal.
+  const run = (ai as Partial<SupportAi> | undefined)?.run;
+  if (typeof run !== "function") {
+    throw new SupportClassificationError({
+      detail: "the AI binding is absent from this worker's env; classification cannot run",
+    });
+  }
+
+  let raw: unknown;
+  try {
+    raw = await run.call(ai, options.model, {
+      messages: [
+        { role: "system", content: classificationPrompt(options.categories) },
+        { role: "user", content: classificationInput(options.subject, options.body, options.maxChars) },
+      ],
+      temperature: options.temperature,
+      max_tokens: 128,
+    });
+  } catch (error) {
+    // The one throw in this function, and it is deliberately not a `support/*` code: the binding did
+    // not answer at all, which is a dependency this capability does not control. `core/upstream_failed`
+    // is what `supportWorkflowRetry` states, so the durable step re-drives it — where a raw throw would
+    // have been `unclassified`, and unclassified is terminal (pithy-sh/pithy#348).
+    throw new UpstreamError(
+      {
+        message: "Support classification could not reach the model.",
+        detail: `Workers AI rejected a classification with model '${options.model}'`,
+      },
+      { cause: error },
+    );
+  }
 
   const envelope = ModelResponse.safeParse(raw);
   if (!envelope.success) return unsure(options.model);
