@@ -330,7 +330,11 @@ export interface UsePaddleCheckout {
  *
  * One open per handoff. `start` mints a new transaction on every attempt, so the transaction id is what a
  * fresh attempt looks like; a re-render with the same handoff must not open a second checkout over the
- * first.
+ * first — and neither must a second *mount* of the same one. React's `StrictMode` runs every effect,
+ * cleans it up and runs it again, and that is the mode `pithy ui add` scaffolds: `client.tsx` wraps the
+ * router in it. So the transaction that has been opened is remembered, rather than the effect trusting
+ * that it runs once. The remembered id is the last one opened, not a flag — a buyer who closed the
+ * overlay and clicked Buy again arrives with a new transaction, and that one must open.
  */
 export function usePaddleCheckout(
   handoff: PaddleCheckoutHandoff | null,
@@ -342,6 +346,8 @@ export function usePaddleCheckout(
   const latestHandoff = useLatest(handoff);
   const live = useLive();
   const transactionId = handoff?.transactionId;
+  /** The transaction this hook has already opened, so a second effect pass over it opens nothing. */
+  const opened = useRef<string | null>(null);
 
   // `transactionId` stands in for the handoff, the way `priceQueryKey` stands in for a query: the object
   // is rebuilt by `useCheckout` on every attempt and identity would be a fine dependency today, but a
@@ -349,6 +355,9 @@ export function usePaddleCheckout(
   useEffect(() => {
     const current = latestHandoff.current;
     if (transactionId === undefined || current === null) return;
+    // StrictMode's second pass, or any remount holding the same handoff. One click bought one checkout.
+    if (opened.current === transactionId) return;
+    opened.current = transactionId;
     setOpening(true);
     setFailure(null);
     void openPaddleCheckout(current, latest.current).then((refused) => {
@@ -518,6 +527,14 @@ export interface UsePricePreview {
  * A failure clears the previous quote rather than leaving it. The other hooks here keep their last good
  * value on a refusal, and this one deliberately does not: a re-quote happens because the *request*
  * changed, so the value it would be keeping is a price for something else.
+ *
+ * **Only the latest quote is rendered, whichever answers first.** Two previews can be in flight at once —
+ * an anonymous visitor's location resolves under the query, or a country picker moves — and the slower
+ * one landing last would otherwise win, putting a price for an address the visitor has left on the one
+ * screen whose entire job is showing a correct one. Superseded answers are *ignored*, not cancelled:
+ * Paddle.js's `PricePreview` takes no `AbortSignal` and hands back a bare promise, so there is nothing to
+ * cancel and ignoring it is the whole of the fix. A superseded refusal is ignored the same way, which is
+ * what stops a dead request blanking a price the visitor is already reading.
  */
 export function usePricePreview(
   setup: PaddleSetup | null,
@@ -533,6 +550,15 @@ export function usePricePreview(
   const clientToken = setup?.clientToken;
   const environment = setup?.environment;
   const queryKey = priceQueryKey(query);
+  /**
+   * Which quote is the current one.
+   *
+   * A counter rather than a comparison against `queryKey`, because two quotes for the *same* query race
+   * too — a screen calling `refresh` twice is the ordinary way to get there — and a key would read those
+   * two as one and let either win. Every ask takes the next number; only the holder of the last one
+   * issued may write state.
+   */
+  const issued = useRef(0);
 
   // `queryKey` is a dependency the body never reads, and that is the design. It is what makes "the request
   // changed" a value React can compare — the query itself is an object literal rebuilt every render, and
@@ -544,9 +570,14 @@ export function usePricePreview(
       setLoading(false);
       return;
     }
+    const ticket = ++issued.current;
     setLoading(true);
     void previewPrices({ clientToken, environment }, latestQuery.current, latest.current).then((result) => {
       if (!live.current) return;
+      // A superseded answer is not a late answer to render, it is an answer to a question nobody is
+      // asking any more. It writes nothing at all — not the price, not the failure, and not `loading`,
+      // which still belongs to the quote that is out.
+      if (ticket !== issued.current) return;
       setPreview(result.ok ? result.value : null);
       setFailure(result.ok ? null : result.failure);
       setLoading(false);

@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 // @vitest-environment happy-dom
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { type PaymentsFetch, type PaymentsRequestInit, STORE_SUBSCRIPTION_URLS } from "./api";
 import { PADDLE_FRAME_HEIGHT, PADDLE_FRAME_STYLE, PADDLE_NO_CONTAINER } from "./checkout";
-import { US_NEW_YORK } from "./fixtures/pricePreview";
+import { GB, US_NEW_YORK } from "./fixtures/pricePreview";
 import {
+  type UsePricePreview,
   useCheckout,
   useEntitlement,
   usePaddle,
@@ -101,7 +102,10 @@ afterEach(() => {
  * this resolves the first read has already landed — the only way to observe the initial state a paywall
  * renders on its first frame is to have recorded it.
  */
-async function render<T>(hook: () => T): Promise<{ current: T; history: T[]; rerender: () => Promise<void> }> {
+async function render<T>(
+  hook: () => T,
+  options?: { strict?: boolean },
+): Promise<{ current: T; history: T[]; rerender: () => Promise<void> }> {
   const handle = {
     current: undefined as T,
     history: [] as T[],
@@ -110,7 +114,7 @@ async function render<T>(hook: () => T): Promise<{ current: T; history: T[]; rer
     // screen that re-renders for any other reason.
     rerender: async () => {
       await act(async () => {
-        root.render(createElement(Probe));
+        root.render(tree());
       });
     },
   };
@@ -119,8 +123,12 @@ async function render<T>(hook: () => T): Promise<{ current: T; history: T[]; rer
     handle.history.push(handle.current);
     return null;
   }
+  // `strict` mounts the hook the way `pithy ui add` mounts a screen: `src/client.tsx` wraps the router in
+  // `StrictMode`, so every effect in a scaffolded app runs, cleans up and runs again in development. That
+  // is not a simulation of a double mount — it is the double mount the adopter actually gets.
+  const tree = () => (options?.strict ? createElement(StrictMode, null, createElement(Probe)) : createElement(Probe));
   await act(async () => {
-    root.render(createElement(Probe));
+    root.render(tree());
   });
   return handle;
 }
@@ -521,6 +529,37 @@ function stubInitializer(outcome: PaddleJs | undefined | Error): PaddleInitializ
   return Object.assign(initialize, { loads });
 }
 
+/**
+ * A Paddle.js whose `PricePreview` answers when the test says so, and in whatever order it says.
+ *
+ * The overlap defect only exists between two requests that are *both* in flight, so it cannot be seen
+ * against a stub that answers as it is asked: every quote there is finished before the next is made, and
+ * ordering never comes up. This hands back the resolvers instead, so a test can leave two real promises
+ * pending and land them in the wrong order — which is what a slow first answer and a fast second one is.
+ */
+function slowPaddle(): PaddleJs & {
+  previews: PaddlePriceQuery[];
+  answer: (index: number, value: unknown) => void;
+  refuse: (index: number) => void;
+} {
+  const previews: PaddlePriceQuery[] = [];
+  const pending: { resolve: (value: unknown) => void; reject: (reason: Error) => void }[] = [];
+  return {
+    Initialized: true,
+    Environment: { set: () => undefined },
+    PricePreview(query: PaddlePriceQuery) {
+      previews.push(query);
+      return new Promise<unknown>((resolve, reject) => {
+        pending.push({ resolve, reject });
+      });
+    },
+    Checkout: { open: () => undefined, close: () => undefined },
+    previews,
+    answer: (index, value) => pending[index]?.resolve(value),
+    refuse: (index) => pending[index]?.reject(new Error("Paddle refused this quote.")),
+  };
+}
+
 /** A fresh page for one test. */
 function paddlePage(): PaddleRegistry {
   return {};
@@ -656,6 +695,86 @@ describe("usePricePreview", () => {
     await settle();
     expect(paddle.previews).toHaveLength(2);
   });
+
+  /**
+   * Two quotes in flight at once, landing in the order the network chose rather than the order they were
+   * asked in.
+   *
+   * Both requests here are real and both are pending — the second is fired while the first has not
+   * answered, and the first is then answered last. That is the whole defect: nothing about it exists in a
+   * stub that resolves as it is called, so it is driven rather than simulated.
+   *
+   * Narrow, and worth saying why it is still worth fixing: a signed-in customer has one address on file
+   * and no reason to race. An anonymous visitor is the case — location resolves under the query, a
+   * country picker moves, and the page re-quotes while the first quote is still out. On the one screen
+   * whose entire job is showing a correct price.
+   *
+   * The fix ignores the superseded answer; it does not cancel the request. Paddle.js's `PricePreview`
+   * takes no `AbortSignal` and returns a bare promise — there is nothing to cancel, so ignoring is the
+   * whole of it.
+   */
+  describe("two quotes in flight", () => {
+    /** Ask for one price at an address, with the query written inline the way a screen writes it. */
+    function at(countryCode: string, postalCode: string): PaddlePriceQuery {
+      return {
+        items: [{ priceId: "pri_01kzvyz9e21z9vbhd7xqq3csyh", quantity: 1 }],
+        address: { countryCode, postalCode },
+      };
+    }
+
+    /** Mount against a Paddle that answers on command, and move the visitor's address once. */
+    async function overlapping(): Promise<{
+      paddle: ReturnType<typeof slowPaddle>;
+      held: { current: UsePricePreview };
+    }> {
+      const paddle = slowPaddle();
+      const initialize = stubInitializer(paddle);
+      const registry = paddlePage();
+      let address = at("US", "10001");
+      const held = await render(() => usePricePreview(PADDLE, address, { initialize, registry }));
+      await settle();
+      address = at("GB", "SW1A 1AA");
+      await held.rerender();
+      await settle();
+      // Both are out, and neither has answered. Without this the rest of the test proves nothing.
+      expect(paddle.previews.map((asked) => asked.address?.countryCode)).toEqual(["US", "GB"]);
+      return { paddle, held };
+    }
+
+    test("the second quote lands first, and the first no longer wins by arriving late", async () => {
+      const { paddle, held } = await overlapping();
+      await act(async () => {
+        paddle.answer(1, GB);
+        await Promise.resolve();
+      });
+      expect(held.current.preview?.countryCode).toBe("GB");
+
+      // The superseded answer arrives. It is for an address this visitor has left.
+      await act(async () => {
+        paddle.answer(0, US_NEW_YORK);
+        await Promise.resolve();
+      });
+      expect(held.current.preview?.countryCode).toBe("GB");
+      expect(held.current.preview?.lines[0]?.formattedUnitTotals.total).toBe("$5.00");
+      expect(held.current.loading).toBe(false);
+    });
+
+    test("a superseded refusal does not clear the quote that superseded it", async () => {
+      // The same defect in its other direction, and the worse one to look at: the stale request fails,
+      // and a price the visitor is already reading blanks itself for a request nobody is waiting on.
+      const { paddle, held } = await overlapping();
+      await act(async () => {
+        paddle.answer(1, GB);
+        await Promise.resolve();
+      });
+      await act(async () => {
+        paddle.refuse(0);
+        await Promise.resolve();
+      });
+      expect(held.current.preview?.countryCode).toBe("GB");
+      expect(held.current.failure).toBeNull();
+    });
+  });
 });
 
 /**
@@ -705,6 +824,43 @@ describe("usePaddleCheckout", () => {
     await settle();
     expect(paddle.opened).toHaveLength(1);
     expect(held.current).toEqual({ inline: false, opening: false, failure: null });
+  });
+
+  test("one mount opens one checkout under StrictMode, which is the mode the scaffolding runs in", async () => {
+    // `pithy ui add react` writes a `client.tsx` that wraps the router in `StrictMode`, so in development
+    // every effect runs, is cleaned up, and runs again. An effect keyed only on the transaction opened a
+    // second checkout over the first on that second pass — for every adopter, on every buy click, in the
+    // mode they develop in.
+    const paddle = stubPaddle(US_NEW_YORK);
+    const held = await render(
+      () =>
+        usePaddleCheckout(HANDOFF, { initialize: stubInitializer(paddle), registry: paddlePage(), frameTarget: FRAME }),
+      { strict: true },
+    );
+    await settle();
+    expect(paddle.opened).toHaveLength(1);
+    expect(held.current).toEqual({ inline: false, opening: false, failure: null });
+  });
+
+  test("a second attempt is a second transaction, and that one does open", async () => {
+    // The guard above must not be a latch on the hook. `start` mints a fresh transaction on every attempt,
+    // so a buyer who closed the overlay and clicked Buy again arrives with a new id — and that is a
+    // checkout that has to open. A guard keyed on "has opened at all" would swallow it.
+    const paddle = stubPaddle(US_NEW_YORK);
+    const initialize = stubInitializer(paddle);
+    const registry = paddlePage();
+    let handoff = HANDOFF;
+    const held = await render(() => usePaddleCheckout(handoff, { initialize, registry, frameTarget: FRAME }), {
+      strict: true,
+    });
+    await settle();
+    handoff = { ...HANDOFF, transactionId: "txn_01hv8wptq8987qeep44cyrewq0" };
+    await held.rerender();
+    await settle();
+    expect(paddle.opened.map((open) => open.transactionId)).toEqual([
+      HANDOFF.transactionId,
+      "txn_01hv8wptq8987qeep44cyrewq0",
+    ]);
   });
 
   test("the transaction, the mode and the success URL all come off the handoff", async () => {
