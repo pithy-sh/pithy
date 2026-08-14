@@ -3,8 +3,10 @@
 
 import { join, relative } from "node:path";
 import { CLOUDFLARE_ENV_KEYS, parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
-import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { type DevSecretsFile, initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
+import { devSecretPayload } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
+import type { SecretRegistry, SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { cloudflareConfigPath, parseCloudflareConfig, writeCloudflareConfig } from "../cloudflare/config";
 import { BOOTSTRAP_VARS_KEY, DevJson, readBootstrapVars, writeBootstrapVars } from "../devSecrets/bootstrapVars";
 import { readDevSecrets, writeDevSecrets } from "../devSecrets/file";
@@ -230,9 +232,20 @@ async function projectName(projectDir: string): Promise<string | null> {
   }
 }
 
-/** Every Worker's registry, merged by secret name — the same join `pithy secrets` does. */
-function mergedRegistry(targets: DevSecretsTarget[]): Record<string, { valueType: string }> {
-  const merged: Record<string, { valueType: string }> = Object.create(null) as Record<string, { valueType: string }>;
+/**
+ * Every Worker's registry, merged by secret name — the same join `pithy secrets` does.
+ *
+ * **The whole entry, `schema` included (#323).** A structural slice of `valueType` and `bootstrap` was
+ * enough while `statedValue` switched on `bootstrap` and read one fixed shape per answer. Telling a
+ * `bootstrap` payload from the old envelope around it is a question only the declared schema answers,
+ * and that answer is the seeder's — so this widened rather than a second discrimination being written.
+ *
+ * **Null-prototyped, and that is not decoration.** {@link write} looks an entry up by the adopter's own
+ * key; over a `{}` a secret named `toString` or `constructor` would find one on `Object.prototype` and be
+ * written through a registry entry no capability declared.
+ */
+function mergedRegistry(targets: DevSecretsTarget[]): SecretRegistry {
+  const merged = Object.create(null) as SecretRegistry;
   for (const target of targets) for (const [name, entry] of Object.entries(target.registry)) merged[name] = entry;
   return merged;
 }
@@ -385,7 +398,7 @@ function unplannable(path: string): MergeBaseOptions {
 function plan(
   sources: Source[],
   destinations: Destinations,
-  registry: AdoptRegistry,
+  registry: SecretRegistry,
   project: string | null,
   paths: StatePathOptions,
   unresolvable: UnresolvableWorker[],
@@ -408,7 +421,7 @@ function plan(
 function planOne(
   source: Source,
   destinations: Destinations,
-  registry: AdoptRegistry,
+  registry: SecretRegistry,
   project: string | null,
   paths: StatePathOptions,
   pending: Map<string, unknown>,
@@ -448,12 +461,14 @@ function planOne(
     return settle(base, devPreferencesPath(project, paths), source.value, destinations.bootstrap[source.key], pending);
   }
 
-  // A registry secret. The comparison is against the value the file states — the envelope's current
-  // version for an ordinary secret, and the entry itself for a `bootstrap` one, whose payload is its
-  // value (#323). A `json` secret's value is its own structure, which the `.dev.vars` line carries as
-  // serialized text. Parsing it is the registry's declaration applied, not a guess; text that is not
-  // JSON is refused by name rather than written as a string a seed would reject.
+  // A registry secret. The comparison is against the value the file states, read through the registry —
+  // an envelope's current version for an ordinary secret, the payload itself for a `bootstrap` one, and
+  // either shape for a `bootstrap` entry a `pithy seed` has not restated yet (#323). A `json` secret's
+  // value is its own structure, which the `.dev.vars` line carries as serialized text. Parsing it is the
+  // registry's declaration applied, not a guess; text that is not JSON is refused by name rather than
+  // written as a string a seed would reject.
   const declared = Object.hasOwn(registry, source.key) ? registry[source.key] : undefined;
+  const destination = devSecretsFile(project, paths);
   let candidate: unknown = source.value;
   if (declared?.valueType === "json") {
     try {
@@ -461,44 +476,56 @@ function planOne(
     } catch {
       return {
         ...base,
-        destination: devSecretsFile(project, paths),
+        destination,
         action: "refused",
         reason: `${source.key} is a json secret and its line is not JSON. Fix it, or move it by hand.`,
         safeToRemove: false,
       };
     }
   }
-  return settle(
-    base,
-    devSecretsFile(project, paths),
-    candidate,
-    statedValue(declared, destinations.secrets[source.key]),
-    pending,
-  );
+  const stated = statedValue(declared, source.key, destinations.secrets[source.key], destination);
+  if ("reason" in stated) {
+    return { ...base, destination, action: "refused", reason: stated.reason, safeToRemove: false };
+  }
+  return settle(base, destination, candidate, stated.value, pending);
 }
 
-/**
- * The **structural** slice of the registry this command reads — the two facts that decide what a value
- * looks like at its destination, and nothing else.
- *
- * Structural rather than `SecretRegistry` because `adopt` joins registries from every Worker and never
- * reads a schema; `bootstrap` joined it when the file stopped wrapping that one payload (#323).
- */
-type AdoptRegistry = Record<string, { valueType: string; bootstrap?: boolean }>;
+/** What the file states for one secret: a value to compare, or the refusal for an entry nothing can read. */
+type StatedValue = { value: unknown } | { reason: string };
 
 /**
- * What the file already states for one secret, as a value comparable with a `.dev.vars` line.
+ * What the file already states for one secret, as a value comparable with a `.dev.vars` line — **through
+ * the seeder's reading, not a second one** (#323).
  *
- * Through the same axis the writer uses. Reading the envelope's current version unconditionally is what
- * would make a migrated `SECRETS_ENCRYPTION_KEYS` compare as absent — and "absent" is the answer that
- * copies over a live master key.
+ * Two shapes reach this. The file states each secret's payload; a file written before it did states an
+ * envelope around a `bootstrap` payload, and that is the normal state of every project that has not run
+ * `pithy seed` since. {@link devSecretPayload} is the kit's one reading of both, so a value the seeder
+ * accepts is a value this command recognises, and an unmigrated master key compares as the value it is
+ * rather than as a conflict with itself.
+ *
+ * **An entry that is neither is refused, never planned as absent.** "Absent" plans a `copy`, and the copy
+ * overwrites a hand-written entry in the file that holds the master key — a value with no other copy and
+ * no undo. The refusal is the reader's own sentence, which names the secret, the file and the shape
+ * expected, and never a value.
  */
-function statedValue(declared: { bootstrap?: boolean } | undefined, stated: unknown): unknown {
-  if (stated === undefined) return undefined;
-  if (declared?.bootstrap === true) return stated;
-  const envelope = stated as { currentVersion?: string; versions?: Record<string, unknown> };
-  const current = envelope.currentVersion;
-  return current === undefined ? undefined : envelope.versions?.[current];
+function statedValue(entry: SecretRegistryEntry | undefined, name: string, stated: unknown, path: string): StatedValue {
+  if (stated === undefined) return { value: undefined };
+  // No registry entry means nothing established what payload this name takes, so there is no shape to
+  // read it as. `checkDevVars` only calls a key a `secret` when some Worker declares it, which is why
+  // this is a guard and not a branch anybody exercises.
+  if (entry === undefined) {
+    return { reason: `${name} is in ${path} and no Worker declares it, so nothing knows what shape it is.` };
+  }
+  try {
+    const read = devSecretPayload(entry, name, stated, path);
+    // The current version's value, in the form the `.dev.vars` line is compared in: its own structure for
+    // a `json` secret, the string itself for a `text` one.
+    return { value: entry.valueType === "json" ? (JSON.parse(read.value) as unknown) : read.value };
+  } catch (error) {
+    // Only the reader's own refusal. Anything else is a bug here and must not be reported as a bad file.
+    if (error instanceof PithyError) return { reason: error.message };
+    throw error;
+  }
 }
 
 /** The verdict for a value with a real destination: already there, in the way, or ready to copy. */
@@ -538,9 +565,29 @@ function unplaceable(base: Omit<AdoptEntry, "destination" | "action" | "reason" 
   };
 }
 
-/** Whether two values are the same one. Structural, so a `json` secret's key order is not a difference. */
+/**
+ * Whether two values are the same one. Structural, so a `json` secret's key order is not a difference.
+ *
+ * **Sorted first, because `JSON.stringify` alone did not make that sentence true (#323).** One side comes
+ * back through the registry's schema now, which re-serializes a `json` value in the schema's key order,
+ * and the other is the `.dev.vars` line in whatever order the adopter wrote it. Compared literally, a
+ * second `pithy adopt` conflicted with what the first one wrote, over a value nobody had touched.
+ */
 function same(current: unknown, next: unknown): boolean {
-  return JSON.stringify(current) === JSON.stringify(next);
+  return JSON.stringify(ordered(current)) === JSON.stringify(ordered(next));
+}
+
+/**
+ * One value with every object's keys in a fixed order, so two orderings of one value serialize alike.
+ *
+ * Byte order rather than `localeCompare`: this decides whether a credential is copied, and a comparison
+ * that depends on the machine's locale is one that answers differently on somebody else's laptop.
+ */
+function ordered(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(ordered);
+  if (value === null || typeof value !== "object") return value;
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return Object.fromEntries(entries.map(([key, held]) => [key, ordered(held)]));
 }
 
 /**
@@ -556,7 +603,7 @@ async function write(
   entries: AdoptEntry[],
   planned: Map<string, unknown>,
   paths: StatePathOptions,
-  registry: AdoptRegistry,
+  registry: SecretRegistry,
 ): Promise<void> {
   const credentials: Partial<Record<(typeof CLOUDFLARE_ENV_KEYS)[number], string>> = {};
   const secrets: DevSecretsFile = {};

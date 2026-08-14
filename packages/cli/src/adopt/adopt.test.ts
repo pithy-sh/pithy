@@ -261,6 +261,71 @@ describe("runAdopt", () => {
     await expect(stat(join(config, "replay", "secrets.jsonc"))).rejects.toThrow();
   });
 
+  /**
+   * The file states the payload, and a file written before it did states an envelope around it (#323).
+   *
+   * **An unmigrated file is the normal state of every project that has not run `pithy seed` since.** The
+   * seeder reads both shapes; this command has to read both too, or it compares the old shape against the
+   * `.dev.vars` line it was made from and answers `conflict` about a value that has not changed. Identical
+   * values, opposite verdicts — and the verdict here is what an adopter deletes a line on the strength of.
+   */
+  test("a master key the file still wraps is present — the shape moved, the value did not", async () => {
+    const payload = { currentVersion: "1", versions: { "1": "master-key" } };
+    const wrapped = { SECRETS_ENCRYPTION_KEYS: { currentVersion: "1", versions: { "1": payload } } };
+    await mkdir(join(config, "replay"), { recursive: true });
+    await writeFile(join(config, "replay", "secrets.jsonc"), JSON.stringify(wrapped), { mode: 0o600 });
+    await devVars({ SECRETS_ENCRYPTION_KEYS: JSON.stringify(payload) });
+
+    const result = await adopt({ apply: true });
+
+    expect(entry(result, "SECRETS_ENCRYPTION_KEYS")).toMatchObject({ action: "present", safeToRemove: true });
+    // A `present` writes nothing, so the entry is still the one the file held. Restating it is `pithy
+    // seed`'s job, and adopt does not have the second half of that (#323).
+    const after = await readFile(join(config, "replay", "secrets.jsonc"), "utf8");
+    expect(JSON.parse(after.replace(/^\/\/.*$/gm, ""))).toEqual(wrapped);
+  });
+
+  /**
+   * An entry that is neither a valid declared payload nor a valid envelope: named, and left alone.
+   *
+   * The half of #323 this closes is the same line the first half took — a malformed secret is reported as
+   * what it is, by name. Reading it as *nothing is there* is worse than a wrong message: `settle` then
+   * plans a `copy`, and the copy overwrites the entry the adopter hand-wrote, in the one file that holds
+   * their master key.
+   */
+  test("an entry that is neither payload nor envelope is refused by name, and stays exactly as written", async () => {
+    await mkdir(join(config, "replay"), { recursive: true });
+    const held = { "auth-session-secret": "bare-and-hand-written", SECRETS_ENCRYPTION_KEYS: 7 };
+    await writeFile(join(config, "replay", "secrets.jsonc"), JSON.stringify(held), { mode: 0o600 });
+    await devVars({ "auth-session-secret": "from-dev-vars", SECRETS_ENCRYPTION_KEYS: `{"currentVersion":"1"}` });
+
+    const result = await adopt({ apply: true });
+
+    const ordinary = entry(result, "auth-session-secret");
+    expect(ordinary).toMatchObject({ action: "refused", safeToRemove: false });
+    expect(ordinary.reason).toContain("auth-session-secret");
+    expect(ordinary.reason).toContain("is not a versioned envelope");
+    expect(entry(result, "SECRETS_ENCRYPTION_KEYS")).toMatchObject({ action: "refused", safeToRemove: false });
+
+    const after = await readFile(join(config, "replay", "secrets.jsonc"), "utf8");
+    expect(JSON.parse(after.replace(/^\/\/.*$/gm, ""))).toEqual(held);
+  });
+
+  /**
+   * Reading the file through the registry re-serializes a `json` value in the schema's key order, and the
+   * `.dev.vars` line it was copied from is in whatever order the adopter wrote it. Compared literally,
+   * the second run conflicts with what the first run wrote — over a value nobody touched, which is the
+   * failure this command exists to prevent, produced by the command itself.
+   */
+  test("a json secret's key order is not a difference, so the second run is not a conflict with the first", async () => {
+    await devVars({ SECRETS_ENCRYPTION_KEYS: `{"versions":{"1":"k"},"currentVersion":"1"}` });
+    await adopt({ apply: true });
+
+    const second = await adopt({ apply: true });
+
+    expect(entry(second, "SECRETS_ENCRYPTION_KEYS")).toMatchObject({ action: "present", safeToRemove: true });
+  });
+
   test("a text secret whose value is JSON text stays text, so the next run is not a conflict with itself", async () => {
     // The plan compares what it will write; the write must write what the plan compared. Deriving the
     // envelope's value a second time — from a rule the writer applies and the planner did not — put an
