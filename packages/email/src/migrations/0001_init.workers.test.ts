@@ -7,6 +7,8 @@ import { rollbackMigration, runMigrations } from "@pithy-sh/core/src/migrations/
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { EMAIL_MIGRATION_ORDER, EMAIL_SUPPRESSIONS_MIGRATION_ORDER } from "../capability";
+import { EmailEvent } from "../data/emailEvent";
+import { EmailJob } from "../data/emailJob";
 import { email_0001_init } from "./0001_init";
 import { email_0001_suppressions } from "./0001_suppressions";
 
@@ -29,6 +31,17 @@ function provider(database: "app" | "emailSuppressions"): MigrationProvider {
   const found = registry[database];
   if (!found) throw new Error(`expected a provider for database "${database}"`);
   return found;
+}
+
+/** The identifier `CamelCasePlugin` emits for a schema field, so the two lists are comparable. */
+function snakeCase(field: string): string {
+  return field.replace(/[A-Z]/g, (upper) => `_${upper.toLowerCase()}`);
+}
+
+/** The columns D1 actually holds for a table, sorted. */
+async function columnsOf(table: string): Promise<string[]> {
+  const rows = await env.DB.prepare(`select name from pragma_table_info('${table}')`).all<{ name: string }>();
+  return rows.results.map((row) => row.name).sort();
 }
 
 async function tablesLike(d1: D1Database): Promise<string[]> {
@@ -81,6 +94,28 @@ describe("email_0001_init (app database: jobs + events)", () => {
       .bind("job-1")
       .first<{ status: string; mode: string }>();
     expect(row).toEqual({ status: "pending", mode: "immediate" });
+  });
+
+  /**
+   * The table and its schema are one definition in two places, and only one of them is compiled.
+   *
+   * `EmailJob` is what every read and write is validated against; the DDL above is what D1 actually
+   * holds. Adding a field to one and forgetting the other is a column that silently reads back
+   * `undefined`, or a column nothing can ever write — and neither shows up in a test that inserts the
+   * columns it happens to remember. `pithy_email_jobs` gained `batch_id` this way (#342); this is what
+   * makes the next one a failure instead of a surprise.
+   */
+  test("every column of the jobs and events tables is a field of its schema, and the reverse", async () => {
+    await runMigrations(env.DB, provider("app"));
+
+    for (const [table, schema] of [
+      ["pithy_email_jobs", EmailJob],
+      ["pithy_email_events", EmailEvent],
+    ] as const) {
+      const declared = Object.keys(schema.shape).map(snakeCase).sort();
+      expect(declared.length, `${table}: the schema declares no fields`).toBeGreaterThan(5);
+      expect(await columnsOf(table)).toEqual(declared);
+    }
   });
 
   test("down drops the app tables and indexes", async () => {

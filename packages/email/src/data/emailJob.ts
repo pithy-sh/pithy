@@ -59,6 +59,12 @@ export const EmailJob = z
     status: EmailJobStatus.describe("The job's lifecycle state."),
     mode: SendMode.describe("How this job's send time was determined."),
     attempts: z.number().int().describe("How many send attempts have been made; incremented on each Workflow try."),
+    batchId: z
+      .string()
+      .nullish()
+      .describe(
+        "The send batch holding this job — the id of the send Workflow instance dispatched for it, minted by whoever claimed it. Null for a job nothing has claimed. This *is* the claim: liveness belongs to the batch, not to a row, so the scheduler asks the Workflow runtime whether this instance is still running rather than inferring it from how long ago the row was written.",
+      ),
     sendAt: SQLiteDate.describe("The absolute time this job should send. Equal to creation time for immediate sends."),
     timezone: z.string().nullish().describe("The recipient's IANA timezone for `timezone` mode; null otherwise."),
     localTime: z
