@@ -150,7 +150,7 @@ export const DiscountTerms = z
       .positive()
       .optional()
       .describe(
-        "How many times the code may be claimed in total, or omit for unlimited. This is what actually stops a second use — an adopter's own record of who was offered a code is a display fact, and a webhook that never arrives must not leave a code reusable.",
+        "How many times the code may be claimed in total, or omit for unlimited. It guards the customer path and only the customer path: the store counts a redemption when a checkout or a transaction uses the code and refuses the next one past the limit, and it holds when a webhook never arrives because the count is the store's rather than ours. It does not guard an administrative application against an existing subscription. Measured against the Paddle sandbox on 2026-08-14: a code with `usage_limit: 1` was applied to two subscriptions with `times_used` still `0`, went to `1` only when a transaction billed under it completed, and refused the next transaction after that. Stripe and Lemon Squeezy are unmeasured, so assume the same of them. So a staff comp applied by updating a subscription is not stopped here, and an adopter's own record of who was offered a code is the only thing that would stop it.",
       ),
     redeemableUntil: JsonDate.optional().describe(
       "After this moment the code can no longer be *claimed*. It does not end a discount already applied: a customer who redeemed it yesterday keeps their rate for its full duration. Named for that meaning because the providers' own fields do not agree on it, and a fixture pins each rail against a code already redeemed.",

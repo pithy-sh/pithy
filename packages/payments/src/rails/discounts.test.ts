@@ -210,9 +210,13 @@ describe("the code", () => {
     expect(stripe.forms[1]).not.toContain("code=");
   });
 
-  test("a redemption limit is what actually stops a second use", async () => {
-    // An adopter's own record of who was offered a code is a display fact. The limit on the object is the
-    // thing that holds when a webhook never arrives.
+  test("a redemption limit reaches the store, which is the only thing that counts against it", async () => {
+    // The limit is set on the store's own object, so it holds when a webhook never arrives — the count is
+    // theirs, not ours, and Pithy keeps no counter beside it.
+    //
+    // What it does *not* do is stop a second use on every path. Measured on the Paddle sandbox on
+    // 2026-08-14, a code with `usage_limit: 1` went onto two subscriptions with `times_used` still 0; only
+    // a billed transaction moved it. See `DiscountTerms.maxRedemptions` and `docs/paddle.md` §14 (#359).
     const ls = lsStub();
     await createLemonSqueezyDiscount(
       terms({ amount: { kind: "percent", percent: 20 }, duration: { kind: "once" }, maxRedemptions: 1 }),
