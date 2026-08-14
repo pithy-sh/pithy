@@ -17,9 +17,16 @@ import { resolveTimezoneSendAt } from "./sendAt";
  * validated against the template schema here, so a bad call fails at enqueue, not mid-send.
  */
 
-/** The Workflow binding used to start a send at enqueue (Cloudflare `Workflow.create`). Sends a batch of one. */
+/**
+ * The Workflow binding used to start a send (Cloudflare `Workflow.create`). At enqueue it sends a batch
+ * of one; the scheduler's fan-out starts one instance per batch through the same binding.
+ *
+ * `id` names the instance being created. The scheduler passes the batch's id so the instance can be
+ * looked up again by the rows that carry it (pithy-sh/pithy#342); an enqueue omits it and lets the
+ * platform mint one.
+ */
 export interface SendWorkflowBinding {
-  create(options: { params: { jobIds: string[] } }): Promise<unknown>;
+  create(options: { id?: string; params: { jobIds: string[] } }): Promise<unknown>;
 }
 
 /** What the caller provides to enqueue an email. */

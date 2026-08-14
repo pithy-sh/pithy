@@ -19,10 +19,11 @@ async function insertJob(opts: {
   sendAt: number;
   createdAt?: number;
   updatedAt?: number;
+  batchId?: string;
 }): Promise<string> {
   const id = `job-${++seq}`;
   await env.DB.prepare(
-    "insert into pithy_email_jobs (id, to_address, from_address, from_name, subject, template, category, payload, status, mode, attempts, send_at, open_tracking, click_tracking, created_at, updated_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    "insert into pithy_email_jobs (id, to_address, from_address, from_name, subject, template, category, payload, status, mode, attempts, batch_id, send_at, open_tracking, click_tracking, created_at, updated_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
   )
     .bind(
       id,
@@ -36,6 +37,7 @@ async function insertJob(opts: {
       opts.status,
       "immediate",
       0,
+      opts.batchId ?? null,
       opts.sendAt,
       0,
       0,
@@ -46,7 +48,13 @@ async function insertJob(opts: {
   return id;
 }
 
-function deps(dispatch: (ids: string[]) => Promise<void>, overrides: Partial<SchedulerDeps> = {}): SchedulerDeps {
+/** Batch ids the tick mints, in order — so a test can name the one a claim wrote. */
+let minted: string[] = [];
+
+function deps(
+  dispatch: (batchId: string, ids: string[]) => Promise<void>,
+  overrides: Partial<SchedulerDeps> = {},
+): SchedulerDeps {
   return {
     db: emailDatabase(env.DB),
     now: NOW,
@@ -54,6 +62,15 @@ function deps(dispatch: (ids: string[]) => Promise<void>, overrides: Partial<Sch
     stuckMs: 15 * MINUTE,
     batchSize: 2,
     maxJobs: 100,
+    newBatchId: () => {
+      const id = `batch-${minted.length + 1}`;
+      minted.push(id);
+      return id;
+    },
+    // No batch is alive unless a test says one is. The default answers the case the safety net exists
+    // for — a dispatch that is not there any more — so every pre-existing expectation still means what
+    // it did, and a test asserting a *held* job has to introduce the live batch itself.
+    batchIsAlive: async () => false,
     dispatch,
     ...overrides,
   };
@@ -98,6 +115,22 @@ async function statusCounts(): Promise<Record<string, number>> {
   return Object.fromEntries(results.map((row) => [row.status, row.n]));
 }
 
+async function batchIdOf(id: string): Promise<string | null> {
+  const row = await env.DB.prepare("select batch_id from pithy_email_jobs where id = ?")
+    .bind(id)
+    .first<{ batch_id: string | null }>();
+  if (!row) throw new Error(`no job ${id}`);
+  return row.batch_id;
+}
+
+async function updatedAtOf(id: string): Promise<number> {
+  const row = await env.DB.prepare("select updated_at from pithy_email_jobs where id = ?")
+    .bind(id)
+    .first<{ updated_at: number }>();
+  if (!row) throw new Error(`no job ${id}`);
+  return row.updated_at;
+}
+
 async function statusOf(id: string): Promise<string> {
   const row = await env.DB.prepare("select status from pithy_email_jobs where id = ?")
     .bind(id)
@@ -107,6 +140,7 @@ async function statusOf(id: string): Promise<string> {
 
 beforeEach(async () => {
   seq = 0;
+  minted = [];
   for (const table of ["pithy_email_jobs", "pithy_email_events", "pithy_email_suppressions"]) {
     await env.DB.prepare(`drop table if exists ${table}`).run();
   }
@@ -119,7 +153,7 @@ describe("runScheduler", () => {
     const future = await insertJob({ status: "scheduled", sendAt: NOW_MS + MINUTE });
     const dispatched: string[][] = [];
 
-    const result = await runScheduler(deps(async (ids) => void dispatched.push(ids)));
+    const result = await runScheduler(deps(async (_batchId, ids) => void dispatched.push(ids)));
 
     expect(result.due).toBe(1);
     expect(dispatched).toEqual([[due]]);
@@ -132,7 +166,7 @@ describe("runScheduler", () => {
     const fresh = await insertJob({ status: "pending", sendAt: NOW_MS, createdAt: NOW_MS });
     const dispatched: string[][] = [];
 
-    await runScheduler(deps(async (ids) => void dispatched.push(ids)));
+    await runScheduler(deps(async (_batchId, ids) => void dispatched.push(ids)));
 
     expect(dispatched.flat()).toEqual([stale]);
     expect(await statusOf(fresh)).toBe("pending");
@@ -147,7 +181,7 @@ describe("runScheduler", () => {
     const inflight = await insertJob({ status: "sending", sendAt: NOW_MS - MINUTE, updatedAt: NOW_MS - MINUTE });
     const dispatched: string[][] = [];
 
-    await runScheduler(deps(async (ids) => void dispatched.push(ids)));
+    await runScheduler(deps(async (_batchId, ids) => void dispatched.push(ids)));
 
     expect(dispatched.flat()).toEqual([stranded]);
     expect(await statusOf(inflight)).toBe("sending");
@@ -157,7 +191,7 @@ describe("runScheduler", () => {
     for (let i = 0; i < 5; i += 1) await insertJob({ status: "scheduled", sendAt: NOW_MS - MINUTE });
     const dispatched: string[][] = [];
 
-    const result = await runScheduler(deps(async (ids) => void dispatched.push(ids)));
+    const result = await runScheduler(deps(async (_batchId, ids) => void dispatched.push(ids)));
 
     expect(result.due).toBe(5);
     expect(result.batches).toBe(3); // batchSize 2 → [2,2,1]
@@ -174,8 +208,148 @@ describe("runScheduler", () => {
       }),
     );
 
-    expect(result).toEqual({ due: 0, batches: 0 });
+    expect(result).toEqual({ due: 0, batches: 0, held: 0 });
     expect(called).toBe(false);
+  });
+});
+
+/**
+ * The claim is the batch (pithy-sh/pithy#342).
+ *
+ * A row's timestamp cannot say whether the driver holding it is alive. Two live batches look exactly
+ * like a dead one from here — a batch waiting out a step's retry backoff writes nothing, and a batch
+ * three quarters down a long queue has written nothing to the quarter it has not reached — so the tick
+ * asks the Workflow runtime about the batch instead of reading the row's age as a verdict.
+ *
+ * These are the policy, in isolation. The batches they describe are driven for real in
+ * `sendBatch.workers.test.ts`, which is where the states come from something other than a stub.
+ */
+describe("runScheduler and the batch behind a stale row", () => {
+  test("a stale sending job is left where it is while its batch is alive", async () => {
+    const held = await insertJob({
+      status: "sending",
+      sendAt: NOW_MS - 30 * MINUTE,
+      updatedAt: NOW_MS - 30 * MINUTE,
+      batchId: "live-batch",
+    });
+    const dispatched: string[][] = [];
+
+    const result = await runScheduler(
+      deps(async (_batchId, ids) => void dispatched.push(ids), { batchIsAlive: async () => true }),
+    );
+
+    expect(dispatched).toEqual([]);
+    expect(result).toEqual({ due: 0, batches: 0, held: 1 });
+    // Untouched, not merely undispatched: a claim that re-stamped the row would hide the next tick's
+    // evidence and leave the job unrecoverable if the batch does die.
+    expect(await batchIdOf(held)).toBe("live-batch");
+    expect(await updatedAtOf(held)).toBe(NOW_MS - 30 * MINUTE);
+  });
+
+  test("and re-driven the moment its batch is not", async () => {
+    // The vacuity check on the test above, one dependency apart from it. A veto that could not be
+    // withdrawn would be a scheduler that never recovers anything, which is the failure this whole
+    // safety net exists to prevent — the emails simply never go out.
+    const dead = await insertJob({
+      status: "sending",
+      sendAt: NOW_MS - 30 * MINUTE,
+      updatedAt: NOW_MS - 30 * MINUTE,
+      batchId: "dead-batch",
+    });
+    const dispatched: string[][] = [];
+
+    const result = await runScheduler(
+      deps(async (_batchId, ids) => void dispatched.push(ids), { batchIsAlive: async () => false }),
+    );
+
+    expect(dispatched).toEqual([[dead]]);
+    expect(result).toEqual({ due: 1, batches: 1, held: 0 });
+    expect(await batchIdOf(dead)).toBe("batch-1");
+  });
+
+  test("a job no batch ever claimed is re-driven without a question being asked", async () => {
+    // The signal is the batch, so a row that names none is stranded by definition — nothing claimed it,
+    // or whatever did died before it could say so. Asking about a batch that does not exist would be the
+    // start of inventing an answer for it.
+    const orphan = await insertJob({
+      status: "sending",
+      sendAt: NOW_MS - 30 * MINUTE,
+      updatedAt: NOW_MS - 30 * MINUTE,
+    });
+    const asked: string[] = [];
+    const dispatched: string[][] = [];
+
+    await runScheduler(
+      deps(async (_batchId, ids) => void dispatched.push(ids), {
+        batchIsAlive: async (batchId) => {
+          asked.push(batchId);
+          return true;
+        },
+      }),
+    );
+
+    expect(asked).toEqual([]);
+    expect(dispatched).toEqual([[orphan]]);
+  });
+
+  test("one question per batch, however many of its rows look stale", async () => {
+    // Fifty stale rows of one stalled batch are one question about one Workflow. Asking per row would
+    // put the tick's cost back on the batch size, which is the shape this issue is about.
+    for (let i = 0; i < 20; i += 1) {
+      await insertJob({
+        status: "sending",
+        sendAt: NOW_MS - 30 * MINUTE,
+        updatedAt: NOW_MS - 30 * MINUTE,
+        batchId: i < 12 ? "batch-a" : "batch-b",
+      });
+    }
+    const asked: string[] = [];
+
+    await runScheduler(
+      deps(async () => {}, {
+        batchIsAlive: async (batchId) => {
+          asked.push(batchId);
+          return true;
+        },
+      }),
+    );
+
+    expect(asked).toEqual(["batch-a", "batch-b"]);
+  });
+
+  test("a batch the runtime cannot be asked about is still recovered", async () => {
+    // The answer may only ever veto a re-drive, so an unavailable one declines to save an email rather
+    // than deciding to send a second. A tick that gave up here would strand the batch for good.
+    const stale = await insertJob({
+      status: "sending",
+      sendAt: NOW_MS - 30 * MINUTE,
+      updatedAt: NOW_MS - 30 * MINUTE,
+      batchId: "unreachable",
+    });
+    const dispatched: string[][] = [];
+
+    await runScheduler(
+      deps(async (_batchId, ids) => void dispatched.push(ids), {
+        // What `worker.ts` turns a rejected `EMAIL_SENDER.get` into: not alive.
+        batchIsAlive: async () => false,
+      }),
+    );
+
+    expect(dispatched).toEqual([[stale]]);
+  });
+
+  test("each dispatched batch is claimed under the id its Workflow is created with", async () => {
+    // The two have to be the same string or the next tick asks about an instance nobody started. This is
+    // the only place they are both visible.
+    for (let i = 0; i < 3; i += 1) await insertJob({ status: "scheduled", sendAt: NOW_MS - MINUTE });
+    const dispatched: { batchId: string; ids: string[] }[] = [];
+
+    await runScheduler(deps(async (batchId, ids) => void dispatched.push({ batchId, ids })));
+
+    expect(dispatched.map((d) => d.batchId)).toEqual(["batch-1", "batch-2"]); // batchSize 2 → [2,1]
+    for (const { batchId, ids } of dispatched) {
+      for (const id of ids) expect(await batchIdOf(id)).toBe(batchId);
+    }
   });
 });
 
@@ -192,9 +366,9 @@ describe("runScheduler and D1's bound-parameter ceiling", () => {
     const ids = await insertJobs(100);
     const dispatched: string[][] = [];
 
-    const result = await runScheduler(deps(async (batch) => void dispatched.push(batch), { batchSize: 100 }));
+    const result = await runScheduler(deps(async (_batchId, batch) => void dispatched.push(batch), { batchSize: 100 }));
 
-    expect(result).toEqual({ due: 100, batches: 1 });
+    expect(result).toEqual({ due: 100, batches: 1, held: 0 });
     expect(dispatched.flat().sort()).toEqual([...ids].sort());
     expect(await statusCounts()).toEqual({ sending: 100 });
   });
@@ -208,7 +382,11 @@ describe("runScheduler and D1's bound-parameter ceiling", () => {
       const dispatched: string[][] = [];
       const { counts, error } = await recordBoundParameters(env.DB, async (d1) => {
         await runScheduler(
-          deps(async (batch) => void dispatched.push(batch), { batchSize, db: emailDatabase(d1), maxJobs: 500 }),
+          deps(async (_batchId, batch) => void dispatched.push(batch), {
+            batchSize,
+            db: emailDatabase(d1),
+            maxJobs: 500,
+          }),
         );
       });
 

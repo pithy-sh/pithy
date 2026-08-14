@@ -14,8 +14,14 @@ import type { EmailDatabase } from "../data/tables";
  * minute and does nothing when nothing is due.
  *
  * Jobs are claimed before dispatch, so a dispatch failure strands a row in `sending` rather than
- * double-sending; the `sending` re-drive (generous `stuckMs`) recovers it on a later tick, and
- * `runSend`'s idempotency makes any recovery a no-op for a job that did go out.
+ * double-sending; the `sending` re-drive recovers it on a later tick, and `runSend`'s idempotency makes
+ * any recovery a no-op for a job that did go out.
+ *
+ * **The claim is the batch.** Every job claimed in one dispatch carries that batch's id, which is the id
+ * of the send Workflow instance started for it, so the tick that finds those rows stale can ask the
+ * runtime whether the batch is still alive instead of guessing from a timestamp. That is the whole of
+ * the re-drive decision (pithy-sh/pithy#342), and it costs the claim one column and the tick one question
+ * per batch.
  */
 
 /** Inputs the scheduler needs. `dispatch` creates one send Workflow per batch. */
@@ -25,14 +31,15 @@ export interface SchedulerDeps {
   /** How stale (ms) a `pending` immediate job must be before the safety net re-drives it. */
   graceMs: number;
   /**
-   * How stale (ms) a `sending` job must be before it is treated as stranded and re-driven.
+   * How stale (ms) a job must be before this tick will *consider* re-driving it.
    *
-   * **It measures the batch, not the row.** A batch is claimed whole and walked one job at a time, so a
-   * job's own writes say nothing until the batch reaches it; `runSendBatch` renews the claim on every
-   * job it still holds at each step, which is what makes `updatedAt` a statement about the driver rather
-   * than about one row (pithy-sh/pithy#340). Past this, no step of that batch has started — it is dead.
+   * **It is a filter, not the verdict.** A row's timestamp cannot say whether the batch holding it is
+   * alive: a batch is claimed whole and walked one job at a time, so a job it has not reached carries the
+   * claim instant however busy the batch is, and a step waiting out its retry backoff writes nothing at
+   * all while being entirely alive. {@link SchedulerDeps.batchIsAlive} settles both; this only decides
+   * what is old enough to ask about (pithy-sh/pithy#342).
    *
-   * So this is not a knob for outrunning a long queue. Widening it to cover one would be a race with a
+   * So it is not a knob for outrunning a long queue. Widening it to cover one would be a race with a
    * slower horse, and the queue gets longer.
    */
   stuckMs: number;
@@ -46,8 +53,27 @@ export interface SchedulerDeps {
   batchSize: number;
   /** The most jobs to claim in one tick. */
   maxJobs: number;
-  /** Create a send Workflow for a batch of job ids. */
-  dispatch: (jobIds: string[]) => Promise<void>;
+  /**
+   * Mint the id of a batch about to be dispatched. It **is** the send Workflow's instance id, which is
+   * what lets {@link SchedulerDeps.batchIsAlive} ask the runtime about it later.
+   */
+  newBatchId: () => string;
+  /**
+   * Is the send Workflow instance holding this batch still alive? (pithy-sh/pithy#342)
+   *
+   * The question a row cannot answer. A Workflow that exists and is scheduled to retry is alive, and its
+   * rows are as untouched as a dead dispatch's; a batch three quarters of the way down a long queue is
+   * alive, and the quarter it has not reached is as untouched again. Both used to read as stranded, and
+   * a re-drive of either is a second send Workflow over a job the first will reach — a double-send.
+   *
+   * **It may only ever veto a re-drive, never cause one.** A stale row with no batch, or one whose batch
+   * this cannot vouch for, is re-driven exactly as it was before this existed. That is what keeps the
+   * safety net intact and makes the new question incapable of sending an extra email: the worst an
+   * unavailable answer can do is decline to save one.
+   */
+  batchIsAlive: (batchId: string) => Promise<boolean>;
+  /** Create a send Workflow for a batch of job ids, under the batch's id as the instance id. */
+  dispatch: (batchId: string, jobIds: string[]) => Promise<void>;
 }
 
 /** What one scheduler tick did. */
@@ -56,15 +82,17 @@ export interface SchedulerResult {
   due: number;
   /** How many batches were dispatched (scales with volume). */
   batches: number;
+  /** How many stale-looking jobs were left alone because the batch holding them is still alive. */
+  held: number;
 }
 
 /**
- * How many parameters the claim statement binds besides the job ids: `status` and `updatedAt`.
+ * How many parameters the claim statement binds besides the job ids: `status`, `updatedAt`, `batchId`.
  *
  * Named here so that adding a column to the `set` is a one-number edit beside it, rather than a silent
  * re-break of a limit nobody re-derived.
  */
-const CLAIM_FIXED_PARAMETERS = 2;
+const CLAIM_FIXED_PARAMETERS = 3;
 
 /**
  * Refuse a batch size that is not a count at all — checked before the tick does any work.
@@ -101,6 +129,37 @@ function dispatchBatches(ids: string[], batchSize: number): string[][] {
   return out;
 }
 
+/**
+ * Drop the candidates a live batch still holds, and return the rest (pithy-sh/pithy#342).
+ *
+ * A candidate is a row the timestamps say *might* be stranded. Deciding it actually is takes the batch,
+ * so every row naming one is settled by {@link SchedulerDeps.batchIsAlive} — asked **once per batch**,
+ * not once per row, because fifty rows of a stalled batch are one question about one Workflow.
+ *
+ * A row naming no batch is stranded by definition: nothing claimed it, or whatever did died before it
+ * could say so. That is the safety net, and it is deliberately untouched here.
+ */
+async function strandedIds(
+  deps: SchedulerDeps,
+  rows: readonly { id: string; batchId?: string | null }[],
+): Promise<string[]> {
+  const answered = new Map<string, boolean>();
+  const stranded: string[] = [];
+  for (const row of rows) {
+    const batchId = row.batchId;
+    if (batchId) {
+      let alive = answered.get(batchId);
+      if (alive === undefined) {
+        alive = await deps.batchIsAlive(batchId);
+        answered.set(batchId, alive);
+      }
+      if (alive) continue;
+    }
+    stranded.push(row.id);
+  }
+  return stranded;
+}
+
 /** Run one scheduler tick: find due rows, claim them, fan out batches. */
 export async function runScheduler(deps: SchedulerDeps): Promise<SchedulerResult> {
   // Before the query, so a misconfigured worker says so on its first tick rather than on its first
@@ -113,7 +172,7 @@ export async function runScheduler(deps: SchedulerDeps): Promise<SchedulerResult
 
   const rows = await deps.db
     .selectFrom("pithyEmailJobs")
-    .select(["id"])
+    .select(["id", "batchId"])
     .where((eb) =>
       eb.or([
         eb.and([eb("status", "=", "scheduled"), eb("sendAt", "<=", nowMs)]),
@@ -125,25 +184,31 @@ export async function runScheduler(deps: SchedulerDeps): Promise<SchedulerResult
     .limit(deps.maxJobs)
     .execute();
 
-  const ids = rows.map((r) => r.id);
-  if (ids.length === 0) return { due: 0, batches: 0 };
+  if (rows.length === 0) return { due: 0, batches: 0, held: 0 };
+
+  const ids = await strandedIds(deps, rows);
+  const held = rows.length - ids.length;
+  if (ids.length === 0) return { due: 0, batches: 0, held };
 
   const batches = dispatchBatches(ids, deps.batchSize);
   let dispatched = 0;
   for (const batch of batches) {
+    // The batch's id, minted before the claim so the rows can carry it: it is the send Workflow's
+    // instance id, and a row that names it is a row the next tick can ask the runtime about.
+    const batchId = deps.newBatchId();
     // Claim this batch first so a re-run never double-dispatches it, then start its send Workflow. The
     // claim is chunked against D1's cap, so a batch of any size is claimed in full before it dispatches
     // — a batch wider than one statement takes several, and the batch is still one unit of work.
     for (const claim of chunkByBoundParameters(batch, CLAIM_FIXED_PARAMETERS)) {
       await deps.db
         .updateTable("pithyEmailJobs")
-        .set({ status: "sending", updatedAt: nowMs })
+        .set({ status: "sending", updatedAt: nowMs, batchId })
         .where("id", "in", claim)
         .execute();
     }
-    await deps.dispatch(batch);
+    await deps.dispatch(batchId, batch);
     dispatched += 1;
   }
 
-  return { due: ids.length, batches: dispatched };
+  return { due: ids.length, batches: dispatched, held };
 }

@@ -33,6 +33,10 @@ export const email_0001_init: Migration = {
       .addColumn("status", "text", (c) => c.notNull())
       .addColumn("mode", "text", (c) => c.notNull())
       .addColumn("attempts", "integer", (c) => c.notNull().defaultTo(0))
+      // The send batch holding this job, which is the id of the send Workflow instance dispatched for
+      // it. Null until something claims the job. Unindexed on purpose: nothing queries by it — the
+      // scheduler reads it off rows it has already selected and asks the Workflow runtime about them.
+      .addColumn("batchId", "text")
       .addColumn("sendAt", "integer", (c) => c.notNull())
       .addColumn("timezone", "text")
       .addColumn("localTime", "text")

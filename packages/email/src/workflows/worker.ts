@@ -10,6 +10,7 @@ import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
 import type { SendWorkflowBinding } from "../send/enqueue";
 import type { EmailSender } from "../send/sender";
 import { defaultTheme, EmailTheme } from "../templates/theme";
+import { isLiveInstanceStatus } from "./instanceLiveness";
 import { runScheduler, type SchedulerDeps } from "./scheduler";
 import { runSendBatch, type SendBatchDeps } from "./sendBatch";
 
@@ -27,6 +28,18 @@ import { runSendBatch, type SendBatchDeps } from "./sendBatch";
  * runtime (excluded from the node meta-test).
  */
 
+/**
+ * The half of the Workflows binding that answers about an instance already created.
+ *
+ * Declared here rather than taken from `cloudflare:workers` because the scheduler must not depend on the
+ * platform types — it takes a question as a function, and this is the only place that answers it with a
+ * real Workflow.
+ */
+export interface SendWorkflowInstances {
+  /** Look an instance up by the id it was created with. Rejects when no such instance exists. */
+  get(id: string): Promise<{ status(): Promise<{ status: string }> }>;
+}
+
 /** The email worker's env: the app + secrets databases, the send binding, the Workflow bindings, theme/config vars. */
 export interface EmailWorkerEnv extends SecretsStoreEnv {
   /** The app database the per-environment jobs/events tables live in. */
@@ -35,8 +48,8 @@ export interface EmailWorkerEnv extends SecretsStoreEnv {
   EMAIL_SUPPRESSIONS: D1Database;
   /** The Cloudflare Email Service send binding. */
   EMAIL: EmailSender;
-  /** The send Workflow (self) — the scheduler creates batches against it. */
-  EMAIL_SENDER: SendWorkflowBinding;
+  /** The send Workflow (self) — the scheduler creates batches against it, and asks after them. */
+  EMAIL_SENDER: SendWorkflowBinding & SendWorkflowInstances;
   /** The scheduler Workflow (self) — fired by the cron. */
   EMAIL_SCHEDULER: { create(): Promise<unknown> };
   /** The resolved brand theme as a JSON string (the full `EmailTheme`), set at provision from the app config. */
@@ -92,8 +105,21 @@ function buildSchedulerDeps(env: EmailWorkerEnv): SchedulerDeps {
     stuckMs: Number(env.SCHEDULER_STUCK_MS ?? 15 * MINUTE_MS),
     batchSize: Number(env.SCHEDULER_BATCH_SIZE ?? 50),
     maxJobs: Number(env.SCHEDULER_MAX_JOBS ?? 500),
-    dispatch: async (jobIds) => {
-      await env.EMAIL_SENDER.create({ params: { jobIds } });
+    newBatchId: () => crypto.randomUUID(),
+    // The batch's id is the instance's id, so this is the whole of the lookup. A rejection means the
+    // instance is not there to ask — a dispatch that never landed — and that is stranded, not alive: the
+    // answer may only ever veto a re-drive, so the cautious reading is the one that keeps recovering.
+    batchIsAlive: async (batchId) => {
+      try {
+        const instance = await env.EMAIL_SENDER.get(batchId);
+        const { status } = await instance.status();
+        return isLiveInstanceStatus(status);
+      } catch {
+        return false;
+      }
+    },
+    dispatch: async (batchId, jobIds) => {
+      await env.EMAIL_SENDER.create({ id: batchId, params: { jobIds } });
     },
   };
 }
