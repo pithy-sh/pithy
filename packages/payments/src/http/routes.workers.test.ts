@@ -96,7 +96,7 @@ import {
   paymentsSecretsRegistry,
 } from "../secret/registry";
 import { PADDLE_SWEEP_MAX_ATTEMPTS, sweepPaddle } from "../workflows/paddleSweep";
-import { PaymentsEntitlementResponse, PaymentsEntitlementsResponse } from "./responses";
+import { PaymentsEntitlementResponse, PaymentsEntitlementsResponse, PaymentsPricingEnvelope } from "./responses";
 import { registerPaymentsRoutes } from "./routes";
 import {
   PAYMENTS_CONTROL_PLANE_SCOPES,
@@ -3385,6 +3385,80 @@ describe("POST /payments/checkout — Paddle", () => {
     const response = await request(app(), "POST", "/payments/checkout", { body: { productId: "pro_monthly" } });
     expect(response.status).toBe(401);
     expect(paddleCalls.filter((entry) => entry.url.includes("/transactions"))).toEqual([]);
+  });
+});
+
+/**
+ * #340. The quoted figure and the charged figure have to resolve location from the same row.
+ *
+ * Paddle prices in the browser, and a `PricePreview` with no customer id resolves the country from the
+ * visitor's IP — where a browser connected from, not where a card is registered. The charge settles on
+ * the billing address, so the two can differ: up to 15% inside the United States alone. The fix is not a
+ * second lookup that agrees, it is the *same* lookup — `accountFor(c, "paddle", userId)`, which is what
+ * `/checkout` already calls to decide who is billed.
+ *
+ * So this is written as an agreement test rather than as two assertions about two constants. It quotes,
+ * it buys, and it compares what the browser was told with what Paddle was sent. A change that made
+ * either side resolve its own way fails here even if both sides still look right on their own.
+ */
+describe("GET /payments/pricing — who the quote is for", () => {
+  /** What Paddle answers a transaction create with. Its `customer_id` is null: the request carries it. */
+  const CREATED = {
+    id: PADDLE_TRANSACTION,
+    status: "ready",
+    customer_id: null,
+    items: [{ price: { id: PADDLE_PRICE } }],
+    checkout: { url: null },
+    created_at: NOW.toISOString(),
+  };
+
+  const app = () => makeApp(PADDLE_CATALOG, { paddle: { transaction: CREATED } });
+
+  /** The `customer_id` on the transaction `/checkout` asked Paddle to create. */
+  function chargedCustomer(): unknown {
+    const created = paddleCalls.find((entry) => entry.url.includes("/transactions"));
+    return (JSON.parse(created?.init?.body ?? "{}") as Record<string, unknown>).customer_id;
+  }
+
+  test("the customer a screen quotes from is the customer the checkout charges", async () => {
+    await linkProviderAccount(env.DB, "paddle", PADDLE_CUSTOMER, "ada", { now: NOW });
+    const instance = app();
+
+    const quoted = await request(instance, "GET", "/payments/pricing", { user: "ada" });
+    expect(quoted.status).toBe(200);
+    const envelope = PaymentsPricingEnvelope.parse(await quoted.json());
+
+    await request(instance, "POST", "/payments/checkout", { user: "ada", body: { productId: "pro_monthly" } });
+
+    expect(envelope.quotedFrom?.providerAccountId).toBe(chargedCustomer());
+    // Anti-vacuity twice over: `undefined === undefined` would satisfy the line above, so both sides are
+    // pinned to the customer that was actually linked.
+    expect(envelope.quotedFrom).toEqual({ rail: "paddle", providerAccountId: PADDLE_CUSTOMER });
+    expect(chargedCustomer()).toBe(PADDLE_CUSTOMER);
+  });
+
+  test("a caller no store holds a customer for is quoted from nobody, and told so", async () => {
+    // The anonymous-shaped case for a signed-in visitor: an account that has never bought anything. Null
+    // is the honest answer, and the screen falls back to the IP quote with the estimate label on it.
+    const response = await request(app(), "GET", "/payments/pricing", { user: "ada" });
+    expect(PaymentsPricingEnvelope.parse(await response.json())).toEqual({ pricing: null, quotedFrom: null });
+  });
+
+  test("a caller learns their own customer and nobody else's", async () => {
+    // The route names no user, and the map is keyed on the authenticated caller. Grace holding a customer
+    // must not put it on Ada's page — that would be one visitor priced from another's billing address.
+    await linkProviderAccount(env.DB, "paddle", PADDLE_CUSTOMER, "grace", { now: NOW });
+    const response = await request(app(), "GET", "/payments/pricing", { user: "ada" });
+    const envelope = PaymentsPricingEnvelope.parse(await response.json());
+    expect(envelope.quotedFrom).toBeNull();
+    expect(JSON.stringify(envelope)).not.toContain(PADDLE_CUSTOMER);
+  });
+
+  test("an unauthenticated caller is 401 and learns nothing", async () => {
+    await linkProviderAccount(env.DB, "paddle", PADDLE_CUSTOMER, "ada", { now: NOW });
+    const response = await request(app(), "GET", "/payments/pricing");
+    expect(response.status).toBe(401);
+    expect(await response.text()).not.toContain(PADDLE_CUSTOMER);
   });
 });
 

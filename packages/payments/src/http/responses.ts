@@ -187,6 +187,48 @@ export const PaymentsPricingResponse = z
 export type PaymentsPricingResponse = z.output<typeof PaymentsPricingResponse>;
 
 /**
+ * Who a store prices this caller as — the identity a quote and a charge must both resolve from.
+ *
+ * **The point of it is agreement, not disclosure.** `POST /payments/checkout` hands this exact value to
+ * the rail as the customer being charged, read from the provider-account map keyed on the authenticated
+ * caller. A browser quoting a price without it reads an IP-derived estimate and is then charged from a
+ * billing address, and the two can differ by up to 15% in the United States alone. So the same row is
+ * published here, and the screen asks Paddle about the customer rather than about the network.
+ *
+ * **An identifier, not a credential.** `ctm_…` names a Paddle customer and authorizes nothing; Paddle's
+ * `PricePreview` reads a price with it and the publishable client token, which is the pair Paddle
+ * publishes for browsers. The route is `requireAuth()` and answers only about its own caller, so nobody
+ * learns anybody else's.
+ */
+export const PaymentsQuotedFrom = z
+  .object({
+    rail: z.literal("paddle").describe("Which store holds this identity. Paddle is the rail that quotes in a browser."),
+    providerAccountId: z
+      .string()
+      .min(1)
+      .describe("The store's own customer id — `ctm_…`. The same value this caller's checkout is charged against."),
+  })
+  .describe("Who a store prices this caller as, so a quote and a charge resolve location from one row.");
+export type PaymentsQuotedFrom = z.output<typeof PaymentsQuotedFrom>;
+
+/**
+ * What `GET /payments/pricing` answers with.
+ *
+ * Two independent facts about one caller, and each is null on its own terms. `pricing` is null when no
+ * rail can price a subscription they hold — including when they hold none. `quotedFrom` is null when no
+ * store holds a customer for them yet, which is the ordinary state of somebody who has not bought
+ * anything. A caller can have either without the other, which is why they are siblings rather than one
+ * nested in the other.
+ */
+export const PaymentsPricingEnvelope = z
+  .object({
+    pricing: PaymentsPricingResponse.nullable().describe("What this caller's subscription pays, or null."),
+    quotedFrom: PaymentsQuotedFrom.nullable().describe("Who a store prices this caller as, or null."),
+  })
+  .describe("What this caller pays, and who the store prices them as.");
+export type PaymentsPricingEnvelope = z.output<typeof PaymentsPricingEnvelope>;
+
+/**
  * The discount codes one store holds.
  *
  * A management shape, never a client one: what an adopter has issued is a commercial fact, and the client

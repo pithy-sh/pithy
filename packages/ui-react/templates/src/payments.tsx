@@ -1,4 +1,7 @@
 import { getEntitlements } from "@pithy-sh/payments/src/client/api";
+import type { PriceVisitor } from "@pithy-sh/payments/src/pricing/location";
+import { fetchPriceVisitor, type PriceVisitorOptions } from "@pithy-sh/payments/src/pricing/visitor";
+import { useEffect, useState } from "react";
 import { paymentsConfig } from "./pithy-config";
 
 /**
@@ -50,4 +53,38 @@ export async function holdsEntitlement(key: string): Promise<boolean> {
   if (!paymentsConfig.enabled) return true;
   const held = await getEntitlements(paymentsClient);
   return held.ok && held.value.some((entitlement) => entitlement.key === key && entitlement.granted);
+}
+
+/**
+ * Who Paddle prices this visitor as, once there is a session to ask about.
+ *
+ * **Two renders, and that is the design rather than a flicker to hide.** A pricing screen paints before
+ * the session resolves, so the first figure is the IP estimate — labelled `Estimated.`, because it is —
+ * and the second is the price the checkout will charge, from the billing address on file. Every checkout
+ * on the web recalculates when the address arrives; the only thing that makes it a broken promise is a
+ * first figure that did not admit what it was.
+ *
+ * `ask` is false for a stranger and while the session is still being read, so a marketing page makes no
+ * round trip for an answer known in advance to be "nobody".
+ *
+ * The reading and the guarding live in `@pithy-sh/payments`, not here — this file is yours from the day
+ * it is written, and where a customer id comes from is not a thing to freeze into your repository. A
+ * failed read answers null, which quotes from the IP and says so.
+ */
+export function usePriceVisitor(ask: boolean, options?: PriceVisitorOptions): PriceVisitor | null {
+  const [visitor, setVisitor] = useState<PriceVisitor | null>(null);
+
+  useEffect(() => {
+    if (!ask || !paymentsConfig.enabled) return;
+    let live = true;
+    void fetchPriceVisitor(options).then((answer) => {
+      if (live) setVisitor(answer);
+    });
+    return () => {
+      live = false;
+    };
+    // `options` is `paymentsClient`, a module constant, so this asks once per session resolution.
+  }, [ask, options]);
+
+  return visitor;
 }
