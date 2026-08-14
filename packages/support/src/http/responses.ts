@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { asRead } from "@pithy-sh/core/src/projection/asRead";
 import { z } from "zod";
 import {
   SupportAccountLinkSource,
@@ -298,6 +299,61 @@ export const SupportFlagsResponse = z
   .object({ ok: z.literal(true).describe("Always true. The write either happened or the request failed.") })
   .describe("The acknowledgement of one viewer's private flags.");
 export type SupportFlagsResponse = z.output<typeof SupportFlagsResponse>;
+
+/**
+ * ## The reader's contracts, beside the producers above
+ *
+ * Everything above this line is stated for a Worker checking its own projection, and it is strict on
+ * purpose: `SupportChannel` and `SupportAccountLinkSource` are what `inbound/` branches on and what D1
+ * holds, and a tolerated-unknown member there would license this capability to *store* a channel it
+ * cannot handle. Nothing below changes any of that. The enums are untouched, and so is every schema
+ * above.
+ *
+ * Below is the same projection for the other consumer: a management client reading a Worker **it does
+ * not control**. That client is crossing a trust boundary — a fork, a bug, a half-finished deploy, or a
+ * hostile Worker each put a member here that no enum of ours declares — and under the strict schema one
+ * such token costs it the entire response. It cost `pithy-sh/dashboard#15` exactly that: one
+ * unrecognised `channel` and the support pane rendered zero of twenty-five conversations. The client
+ * then had to widen our shape locally, which is the hand-held mirror `#113` exists to forbid.
+ *
+ * So the tolerance is published rather than reimplemented, by the one pattern
+ * `@pithy-sh/core/src/projection/asRead` states for the whole kit: same objects, every enum read as a
+ * string, every other field the identical schema instance.
+ *
+ * **What a client does with a widened value is ask the enum.** `SupportChannel.safeParse(value).success`
+ * answers *does this capability declare it*, and a value it does not declare is **marked, never mapped**
+ * — rendering an unknown provenance as the nearest one you know is a lie about evidence on the screen
+ * where somebody decides whether to act on a stranger's request.
+ *
+ * **Only the management surface.** The submitter's own views stay strict: an app reading its own
+ * Worker's `/feedback` is not reading a stranger, and `SupportReplySentResponse` is a union discriminated
+ * on a literal the client itself sent, where tolerating an unknown arm would mean tolerating a response
+ * with no shape at all.
+ */
+
+/** {@link SupportThreadView}, as a client that does not control the Worker must read it. */
+export const SupportThreadViewAsRead = asRead(SupportThreadView);
+export type SupportThreadViewAsRead = z.output<typeof SupportThreadViewAsRead>;
+
+/** {@link SupportListedThreadView}, as a client that does not control the Worker must read it. */
+export const SupportListedThreadViewAsRead = asRead(SupportListedThreadView);
+export type SupportListedThreadViewAsRead = z.output<typeof SupportListedThreadViewAsRead>;
+
+/** {@link SupportMessageView}, as a client that does not control the Worker must read it. */
+export const SupportMessageViewAsRead = asRead(SupportMessageView);
+export type SupportMessageViewAsRead = z.output<typeof SupportMessageViewAsRead>;
+
+/** `GET {base}/threads`, as a client that does not control the Worker must read it. */
+export const SupportThreadsResponseAsRead = asRead(SupportThreadsResponse);
+export type SupportThreadsResponseAsRead = z.output<typeof SupportThreadsResponseAsRead>;
+
+/** `GET {base}/threads/:id`, as a client that does not control the Worker must read it. */
+export const SupportThreadResponseAsRead = asRead(SupportThreadResponse);
+export type SupportThreadResponseAsRead = z.output<typeof SupportThreadResponseAsRead>;
+
+/** `POST {base}/threads/:id/archive`, as a client that does not control the Worker must read it. */
+export const SupportArchiveResponseAsRead = asRead(SupportArchiveResponse);
+export type SupportArchiveResponseAsRead = z.output<typeof SupportArchiveResponseAsRead>;
 
 /**
  * ## The submitter's own view, and what it deliberately omits
