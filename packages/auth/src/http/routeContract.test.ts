@@ -73,6 +73,45 @@ function makeApp(basePath = "/auth") {
 /** Every admin route, as `guards.ts` advertises it — the one list both the routes and the manifest read. */
 const ADMIN_ROUTES = authAdminRoutes("/auth");
 
+/**
+ * Every distinct `METHOD /path` Hono mounted, the `ALL` entries excluded.
+ *
+ * `ALL` is the turnstile middleware and the Better Auth catch-all: neither is a route with a method a
+ * client dispatches, and the catch-all matches every path there is, so including it would make the
+ * probe below answer for paths nobody registered.
+ */
+function mountedRoutes(app: Hono<PithyHonoEnv>): { method: string; path: string }[] {
+  const seen = new Map<string, { method: string; path: string }>();
+  for (const route of app.routes) {
+    if (route.method === "ALL") continue;
+    seen.set(`${route.method} ${route.path}`, { method: route.method, path: route.path });
+  }
+  return [...seen.values()];
+}
+
+/**
+ * The routes that actually answer `controlplane/not_connected` to a request carrying no credential —
+ * the admin surface as the router behaves, not as anything declares it.
+ *
+ * Read from behaviour on purpose. A set computed from `authAdminRoutes` could not observe a route
+ * mounted with `requireControlPlane` and never declared, which is the whole failure this exists for,
+ * and a path-prefix filter would miss one mounted outside `/auth/admin/`. Sending the request is the
+ * only question that cannot be answered by the declaration under test.
+ */
+async function gatedRoutes(): Promise<string[]> {
+  const found: string[] = [];
+  for (const route of mountedRoutes(makeApp())) {
+    const response = await makeApp().request(route.path.replace(":userId", "u-1"), {
+      method: route.method,
+      ...(route.method === "POST" ? { body: "{}", headers: { "content-type": "application/json" } } : {}),
+    });
+    if (response.status !== 403) continue;
+    const body = (await response.json()) as { error?: { code?: string } };
+    if (body.error?.code === "controlplane/not_connected") found.push(`${route.method} ${route.path}`);
+  }
+  return found.sort();
+}
+
 describe("route contract: every path param is validated", () => {
   test("the param-bearing routes are the admin ones that name a user, and nothing else", () => {
     const app = makeApp();
@@ -225,6 +264,38 @@ describe("the advertised admin surface matches what is mounted", () => {
       drift,
       "The control-plane manifest advertises routes that no router mounts. A management client composes its calls from that manifest, so a drifted entry is a 404 nobody can diagnose.",
     ).toEqual([]);
+  });
+
+  test("and nothing is mounted behind the control-plane gate that the manifest does not declare", async () => {
+    // The other direction, which five capabilities assert and auth did not. `missingAdminRoutes` above
+    // only asks whether a declaration has a route; a route added with `requireControlPlane(...)` and no
+    // entry in `authAdminRoutes` is invisible to it, so a management surface can grow without ever
+    // appearing in the manifest a client dispatches from — and without appearing in a review of the
+    // manifest either, because the manifest is where it is missing.
+    //
+    // Method and path together. An extra method on a declared path is an undeclared route.
+    expect(await gatedRoutes()).toEqual(ADMIN_ROUTES.map((route) => `${route.method} ${route.path}`).sort());
+  });
+
+  test("the probe reads the whole mounted surface, not a slice of it", () => {
+    // Anti-vacuity for the check above, exact rather than a floor: nine routes carry a method — the six
+    // admin ones and the three a signed-in person calls. A tenth is either a new admin route, which the
+    // check above then demands a declaration for, or a new user route, which is a deliberate edit here.
+    expect(
+      mountedRoutes(makeApp())
+        .map((route) => `${route.method} ${route.path}`)
+        .sort(),
+    ).toEqual([
+      "GET /auth/admin/devices",
+      "GET /auth/admin/users",
+      "GET /auth/admin/users/:userId",
+      "GET /auth/devices",
+      "POST /auth/admin/sessions/revoke",
+      "POST /auth/admin/users/:userId/devices/revoke",
+      "POST /auth/admin/users/:userId/sessions/revoke",
+      "POST /auth/devices/revoke",
+      "POST /auth/token/rotate",
+    ]);
   });
 
   test("the advertised paths follow a moved basePath", () => {

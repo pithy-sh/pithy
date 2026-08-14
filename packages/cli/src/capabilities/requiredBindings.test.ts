@@ -71,6 +71,34 @@ function shippedManifests(): { pkg: string; manifest: CapabilityManifest }[] {
 const MANIFESTS = shippedManifests();
 
 /**
+ * Every package that ships a `pithy.manifest.json`. **A frozen literal**, and the population every
+ * sweep in this file quantifies over.
+ *
+ * Without it the whole file is one `readdirSync` away from vacuous: an empty walk makes every `for`
+ * below iterate nothing, every `expect(x).toEqual([])` pass, and `test.each` register no tests at all —
+ * a green file asserting nothing, which is the shape this repository has shipped eight times. Exact
+ * rather than a floor, because the point is that a sixteenth capability *joins* these sweeps: a new
+ * manifest fails here once, and the fix is to add its name.
+ */
+const SHIPPED_MANIFESTS = [
+  "audit",
+  "auth",
+  "core",
+  "email",
+  "leaderboard",
+  "ledger",
+  "media",
+  "multiplayer",
+  "payments",
+  "secrets",
+  "storage",
+  "support",
+  "testers",
+  "turnstile",
+  "vector",
+];
+
+/**
  * A binding as every check here reads one: its kind and its name.
  *
  * Structural rather than `BindingSpec`, because the same two questions are asked of a manifest's
@@ -111,6 +139,23 @@ function incompleteWorkflowBindings(manifests: readonly { pkg: string; manifest:
 }
 
 describe("every required binding has somewhere to come from", () => {
+  test("the sweeps below are quantified over the real manifests", () => {
+    // The anti-vacuity guard the whole file was missing. Every assertion here is `for (… of MANIFESTS)`
+    // or `test.each(MANIFESTS)`, and both are green over nothing — so a `readdirSync` that returned an
+    // empty list, a `PACKAGES` path that moved, or a `CapabilityManifest.parse` that silently dropped
+    // every entry would leave this file passing while checking no capability at all.
+    expect(MANIFESTS.map(({ pkg }) => pkg)).toEqual(SHIPPED_MANIFESTS);
+    // And every one really parsed into something with the field the sweeps read.
+    for (const { pkg, manifest } of MANIFESTS) {
+      expect(Array.isArray(manifest.requiredBindings), `${pkg} has no requiredBindings array`).toBe(true);
+    }
+    // The sweeps would also be vacuous over fifteen manifests that declare nothing. At least one real
+    // binding of each kind the two halves of this file are about has to be in the set.
+    const kinds = new Set(MANIFESTS.flatMap(({ manifest }) => manifest.requiredBindings.map((b) => b.type)));
+    expect(kinds).toContain("d1");
+    expect(kinds).toContain("workflow");
+  });
+
   test("each is either written by pithy add or created by a provision command", () => {
     const orphaned: string[] = [];
     for (const { pkg, manifest } of MANIFESTS) {

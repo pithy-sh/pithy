@@ -53,24 +53,132 @@ function isWranglerTemplate(name: string): boolean {
   return name === "wrangler.jsonc";
 }
 
+/** The declaration this whole file hunts for. Counted as text, so nothing can be skipped silently. */
+const STORE_BACKED = 'backend: "cf-secrets-store"';
+
+/** Every shipped source, with its text. Read once — three of the four helpers below need all of it. */
+function shippedSources(): { path: string; source: string }[] {
+  const found: { path: string; source: string }[] = [];
+  for (const path of sourceFiles(isShippedSource)) {
+    const source = readSource(path);
+    if (source !== null) found.push({ path, source });
+  }
+  return found;
+}
+
+/**
+ * Every `const NAME = "literal"` in the shipped sources, so a computed key resolves to the name that
+ * actually reaches the store rather than to the identifier somebody spelled it with.
+ *
+ * `[MEDIA_STORAGE_SECRET]: { … }` is a declaration of `media-storage-credentials`; reporting
+ * `MEDIA_STORAGE_SECRET` would be reporting a binding nobody ever writes, and comparing it against a
+ * wrangler template would produce a failure with no true remedy. A name declared twice with two values
+ * is dropped from the map, so it throws at the point of use rather than resolving to whichever won.
+ */
+function stringConstants(sources: readonly { source: string }[]): Map<string, string> {
+  const found = new Map<string, string>();
+  const ambiguous = new Set<string>();
+  for (const { source } of sources) {
+    for (const match of source.matchAll(/(?:^|\n)\s*(?:export\s+)?const\s+([A-Za-z0-9_$]+)\s*=\s*"([^"]*)"/g)) {
+      const name = match[1] as string;
+      const value = match[2] as string;
+      if (found.has(name) && found.get(name) !== value) ambiguous.add(name);
+      found.set(name, value);
+    }
+  }
+  for (const name of ambiguous) found.delete(name);
+  return found;
+}
+
+/** The index of the `{` that opens the object literal containing `at`, balancing braces backwards. */
+function openingBrace(source: string, at: number): number {
+  let depth = 0;
+  for (let index = at; index >= 0; index -= 1) {
+    const char = source[index];
+    if (char === "}") depth += 1;
+    else if (char === "{") {
+      if (depth === 0) return index;
+      depth -= 1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * The registry key one `backend: "cf-secrets-store"` declaration is filed under.
+ *
+ * **Every shape, and a throw for anything else.** The previous extractor matched a bare identifier or an
+ * UPPERCASE computed key and nothing more, so `"media-storage-credentials": { … }` — the hyphenated,
+ * quoted form every non-core capability names its secrets with — was not reported as unparsed. It
+ * produced no match at all, so the declaration simply vanished before the comparison it was meant to
+ * face, and the `<unparsed>` sentinel the old file asserted against could never be reached.
+ *
+ * So the unnameable case throws. A declaration shape this cannot read is a store-backed secret nobody
+ * is checking, and that has to be loud rather than empty.
+ */
+function keyOf(
+  path: string,
+  source: string,
+  at: number,
+  constants: Map<string, string>,
+  all: readonly string[],
+): string {
+  const open = openingBrace(source, at);
+  const header = open < 0 ? "" : source.slice(Math.max(0, open - 300), open);
+  const refuse = (why: string): never => {
+    throw new Error(
+      `${path}: a \`${STORE_BACKED}\` declaration ${why}.\nTeach this extractor the shape — a declaration it cannot name is a store-backed secret nothing is holding against the wrangler templates.\n…${header.slice(-160)}{`,
+    );
+  };
+
+  const computed = /\[\s*([A-Za-z0-9_$]+)\s*\]\s*:\s*$/.exec(header);
+  if (computed) {
+    const name = computed[1] as string;
+    return constants.get(name) ?? refuse(`is keyed by \`${name}\`, which resolves to no unique string literal`);
+  }
+  const quoted = /["']([^"']+)["']\s*:\s*$/.exec(header);
+  if (quoted) return quoted[1] as string;
+  const bare = /(?:^|[\s,{])([A-Za-z0-9_$]+)\s*:\s*$/.exec(header);
+  if (bare) return bare[1] as string;
+
+  // The entry is bound to a variable and used as a registry value elsewhere — `masterKeyRegistryEntry`
+  // is declared in `secrets/capability.ts` and filed under `[MASTER_KEY_BINDING]` forty lines later.
+  // Following the variable is the only way to learn the name it is actually stored under.
+  const bound = /\bconst\s+([A-Za-z0-9_$]+)\s*(?::[^=]*)?=\s*$/.exec(header);
+  if (!bound) return refuse("is not preceded by a key or a variable binding this extractor recognises");
+  const variable = bound[1] as string;
+  for (const text of all) {
+    const used = new RegExp(
+      `(?:\\[\\s*([A-Za-z0-9_$]+)\\s*\\]|["']([^"']+)["']|([A-Za-z0-9_$]+))\\s*:\\s*${variable}\\s*[,\\n}]`,
+    ).exec(text);
+    if (!used) continue;
+    if (used[1]) {
+      return constants.get(used[1]) ?? refuse(`is filed under \`${used[1]}\`, which resolves to no unique literal`);
+    }
+    return (used[2] ?? used[3]) as string;
+  }
+  return refuse(`is bound to \`${variable}\`, which is never used as a registry key`);
+}
+
 /**
  * Every registry key declared `backend: "cf-secrets-store"`.
  *
  * For a store-backed secret the registry key **is** the Worker binding name (`secretsStore` resolves
  * it as `resolveBinding(bindings[name], name)`), which is what makes the comparison below meaningful.
- * The key is whatever precedes the entry — either `KEY: { … }` or `[KEY_CONST]: { … }` — so both
- * forms are matched, and a computed key that resolves to neither is reported rather than skipped.
+ *
+ * Driven off a plain text count of the declaration rather than off one regex that has to match both the
+ * declaration and its key. A regex that fails to match reports nothing; a count that finds a declaration
+ * and cannot name it raises. Those are the same scan with opposite failure modes, and only one of them
+ * can be trusted to have looked.
  */
 function declaredStoreBackedKeys(): string[] {
+  const sources = shippedSources();
+  const constants = stringConstants(sources);
+  const texts = sources.map(({ source }) => source);
   const keys: string[] = [];
-  for (const path of sourceFiles(isShippedSource)) {
-    const source = readSource(path);
-    if (source === null || !source.includes('backend: "cf-secrets-store"')) continue;
-    // Walk each declaration and take the nearest preceding object key.
-    for (const match of source.matchAll(
-      /(?:^|\n)\s*(?:\[([A-Z0-9_]+)\]|([A-Za-z0-9_]+)):\s*\{[^}]*?backend:\s*"cf-secrets-store"/gs,
-    )) {
-      keys.push(match[1] ?? match[2] ?? "<unparsed>");
+  for (const { path, source } of sources) {
+    for (let at = source.indexOf(STORE_BACKED); at >= 0; at = source.indexOf(STORE_BACKED, at + 1)) {
+      keys.push(keyOf(path, source, at, constants, texts));
     }
   }
   return [...new Set(keys)].sort();
@@ -100,8 +208,18 @@ function boundStoreBindings(): string[] {
 const MASTER_KEY_BINDING = "SECRETS_ENCRYPTION_KEYS";
 
 describe("a secret's declared backend is where the value actually goes", () => {
-  test("the scan finds real declarations, so a broken glob cannot make this vacuous", () => {
-    expect(declaredStoreBackedKeys().length).toBeGreaterThan(0);
+  test("the scan finds every declaration there is, named", () => {
+    // Exact, not `> 0`. The kit declares two store-backed secrets: the at-rest master key and the
+    // manager's Cloudflare token. `> 0` was satisfied by finding one of the two — and it *was* finding
+    // one of the two, because `masterKeyRegistryEntry` is a standalone const rather than an inline key
+    // and the old regex could not see it. A guard a broken scan still passes is not a guard.
+    expect(declaredStoreBackedKeys()).toEqual(["CLOUDFLARE_API_TOKEN", "SECRETS_ENCRYPTION_KEYS"]);
+    // And the text count agrees with the naming, so a third declaration cannot be found and dropped.
+    const occurrences = shippedSources().reduce(
+      (total, { source }) => total + source.split(STORE_BACKED).length - 1,
+      0,
+    );
+    expect(occurrences).toBe(2);
     expect(boundStoreBindings().length).toBeGreaterThan(0);
   });
 
@@ -113,8 +231,32 @@ describe("a secret's declared backend is where the value actually goes", () => {
     expect(unbound).toEqual([]);
   });
 
-  test("no key is left unparsed, so a new declaration shape cannot slip through the scan", () => {
-    expect(declaredStoreBackedKeys()).not.toContain("<unparsed>");
+  test("the extractor names every declaration shape, and refuses the ones it cannot", () => {
+    // The gate over the gate. `keyOf` is the whole scan, so a shape it reads as "nothing here" is a
+    // secret the check above cannot report — which is exactly what the hyphenated quoted key was.
+    const constants = new Map([["MEDIA_SECRET", "media-storage-credentials"]]);
+    const name = (text: string, all: string[] = [text]) =>
+      keyOf("sample.ts", text, text.indexOf(STORE_BACKED), constants, all);
+
+    expect(name(`const r = { CLOUDFLARE_API_TOKEN: { ${STORE_BACKED} } };`)).toBe("CLOUDFLARE_API_TOKEN");
+    expect(name(`const r = { "media-storage-credentials": { ${STORE_BACKED} } };`)).toBe("media-storage-credentials");
+    expect(name(`const r = { [MEDIA_SECRET]: { ${STORE_BACKED} } };`)).toBe("media-storage-credentials");
+    // The field need not come first in the object.
+    expect(name(`const r = { "later": { scope: "environment", origin: { kind: "minted" }, ${STORE_BACKED} } };`)).toBe(
+      "later",
+    );
+    // A standalone entry, filed under a computed key somewhere else entirely.
+    expect(
+      name(`export const entry: SecretRegistryEntry = { ${STORE_BACKED} };`, [
+        `export const entry: SecretRegistryEntry = { ${STORE_BACKED} };`,
+        "const registry = { [MEDIA_SECRET]: entry };",
+      ]),
+    ).toBe("media-storage-credentials");
+
+    // And the shapes it cannot name raise rather than vanishing.
+    expect(() => name(`const r = { [UNKNOWN_CONST]: { ${STORE_BACKED} } };`)).toThrow(/resolves to no unique/);
+    expect(() => name(`export const orphan = { ${STORE_BACKED} };`)).toThrow(/never used as a registry key/);
+    expect(() => name(`const r = [{ ${STORE_BACKED} }];`)).toThrow(/not preceded by a key/);
   });
 });
 

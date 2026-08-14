@@ -1,9 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { noopEmit } from "@pithy-sh/core/src/audit/recorder";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { missingAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
+import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
+import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { support } from "../capability";
@@ -19,11 +22,69 @@ import { registerSupportRoutes } from "./routes";
  * `routes.ts` may import `cloudflare:workers`.
  */
 
-/** The composed support sub-router. Deps are never resolved — nothing here is ever invoked. */
+/** The composed support sub-router. Deps are never resolved — no handler here is ever reached. */
 function makeApp() {
   const app = new Hono<PithyHonoEnv>();
   registerSupportRoutes({ resolveDeps: async () => ({}) as never })(app);
   return app;
+}
+
+/**
+ * The same router, mounted the way `createBackend` mounts it: the error handler installed and the
+ * request variables seeded.
+ *
+ * Only the denial probe needs it, and it needs all of it. A bare Hono app answers 500 where production
+ * answers 403, and `requireControlPlane` audits its denial through `c.var.emit` before throwing — so a
+ * probe run against a bare app would be reading the wrong status for the wrong reason.
+ * `controlPlaneVerifier` is null, as it is in a Worker that never composed `controlplane()`, which is
+ * exactly the state the guard exists to deny in.
+ */
+function makeMountedApp() {
+  const app = new Hono<PithyHonoEnv>();
+  app.onError(pithyErrorHandler);
+  app.use("*", async (c, next) => {
+    c.set("auth", null);
+    c.set("controlPlane", null);
+    c.set("controlPlaneVerifier", null);
+    c.set("emit", noopEmit);
+    c.set("log", noopLogger);
+    await next();
+  });
+  registerSupportRoutes({ resolveDeps: async () => ({}) as never })(app);
+  return app;
+}
+
+/** Every distinct `METHOD /path` support mounts. The seeded `ALL *` middleware is not a route. */
+function mountedRoutes(): { method: string; path: string }[] {
+  const seen = new Map<string, { method: string; path: string }>();
+  for (const route of makeMountedApp().routes) {
+    if (route.method === "ALL") continue;
+    seen.set(`${route.method} ${route.path}`, { method: route.method, path: route.path });
+  }
+  return [...seen.values()];
+}
+
+/**
+ * The routes that actually answer `controlplane/not_connected` to a request carrying no credential —
+ * the management surface as the router behaves, not as `scopes.ts` describes it.
+ *
+ * Read from behaviour on purpose. A set computed from `supportAdminRoutes` cannot observe a route
+ * mounted with `requireControlPlane` and never declared, and that is the whole failure this exists for.
+ * A path-prefix rule would be no better: `/support/threads` and `/support/feedback` are told apart by
+ * their guard, not by their shape, so the guard is what gets asked.
+ */
+async function gatedRoutes(): Promise<string[]> {
+  const found: string[] = [];
+  for (const route of mountedRoutes()) {
+    const response = await makeMountedApp().request(route.path.replace(":id", "t-1"), {
+      method: route.method,
+      ...(route.method === "POST" ? { body: "{}", headers: { "content-type": "application/json" } } : {}),
+    });
+    if (response.status !== 403) continue;
+    const body = (await response.json()) as { error?: { code?: string } };
+    if (body.error?.code === "controlplane/not_connected") found.push(`${route.method} ${route.path}`);
+  }
+  return found.sort();
 }
 
 describe("support route contract", () => {
@@ -87,5 +148,40 @@ describe("support route contract", () => {
     capability.routes?.(app);
     expect(capability.adminRoutes?.length).toBeGreaterThan(0);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
+  });
+
+  test("and nothing support mounts behind the control-plane gate is left undeclared", () => {
+    // The other direction, which audit, email, ledger, secrets and testers all assert and support did
+    // not. `missingAdminRoutes` only asks whether a declaration has a route; a route added with
+    // `requireControlPlane(...)` and no entry in `supportAdminRoutes` is invisible to it, so the
+    // management surface can grow without ever reaching the manifest a client dispatches from.
+    //
+    // Method and path together. An extra method on an already-declared path is an undeclared route, and
+    // on this capability the declared paths are exactly where a write would be added.
+    const declared = support({ inboundAddresses: ["support@help.example.com"] }).adminRoutes ?? [];
+    return expect(gatedRoutes()).resolves.toEqual(declared.map((route) => `${route.method} ${route.path}`).sort());
+  });
+
+  test("the probe reads the whole mounted surface, not a slice of it", () => {
+    // Anti-vacuity for the check above, exact rather than a floor: ten routes carry a method — the seven
+    // the management surface serves and the three a signed-in customer calls. An eleventh is either a
+    // new management route, which the check above then demands a declaration for, or a new customer
+    // route, which is a deliberate edit here.
+    expect(
+      mountedRoutes()
+        .map((route) => `${route.method} ${route.path}`)
+        .sort(),
+    ).toEqual([
+      "GET /support/feedback",
+      "GET /support/feedback/:id",
+      "GET /support/replies",
+      "GET /support/threads",
+      "GET /support/threads/:id",
+      "POST /support/feedback",
+      "POST /support/threads/:id/archive",
+      "POST /support/threads/:id/flags",
+      "POST /support/threads/:id/reclassify",
+      "POST /support/threads/:id/reply",
+    ]);
   });
 });
