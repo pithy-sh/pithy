@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import {
+  decodeWorkflowStepMessage,
+  MAX_WORKFLOW_STEP_TEXT,
+  splitWorkflowStepCode,
+} from "@pithy-sh/core/src/workflow/stepMessage";
 import { z } from "zod";
 
 /**
@@ -26,11 +31,17 @@ import { z } from "zod";
  *
  * - `PithyError: <text>` — the throw's own name is the proof. `PithyError.message` *is*
  *   `payload.message`, the field already written to be safe for a client.
- * - `<domain>/<reason>: <text>` inside the platform's terminal envelope — the shape core's
- *   `classifiedSteps` writes, which is `${code}: ${publicMessage}` and nothing else.
+ * - The encoding core's `classifiedSteps` writes, inside the platform's terminal envelope. **This file
+ *   does not restate that encoding**; it calls `decodeWorkflowStepMessage`, which is the same module
+ *   the writer calls, for the reason in its own doc comment: two packages agreeing about a string by
+ *   each writing it down is a coincidence, not a contract (pithy-sh/pithy#353).
  *
  * Anything else — a foreign throw, a bare string, the engine's own prose — stays in `detail`, where it
  * always was. Nothing that was not already public becomes public here.
+ *
+ * `action` rides that encoding and is promoted with the sentence, because it is already the operator's
+ * field: the CLI prints it under the problem line and `operatorError` includes it. `detail` does not
+ * cross, has no encoding, and is not read here.
  *
  * ## The literals are captured, not guessed
  *
@@ -91,6 +102,8 @@ export interface WorkflowStepFailure {
   code?: string;
   /** The step's own public sentence — present only when the text is one the kit authored. */
   sentence?: string;
+  /** The remedy the raising error stated, when it stated one. The CLI's action line. */
+  action?: string;
 }
 
 /**
@@ -110,26 +123,14 @@ const TERMINAL_STEP_ENVELOPE = Object.freeze({
  */
 const KIT_THROW_NAMES: readonly string[] = Object.freeze(["PithyError", "NonRetryableError"]);
 
-/** The `domain/reason` grammar of every kit and adopter error code, mirroring core's `codeSegment`. */
-const CODE_PREFIX = /^([a-z][a-z0-9]*(?:_[a-z0-9]+)*\/[a-z][a-z0-9]*(?:_[a-z0-9]+)*): /;
-
 /**
- * The most a recovered sentence may run to before it stops being treated as one.
- *
- * The text comes from a Worker over an API, and what it says decides how many bytes land in a terminal,
- * a log line, and an audit row. Core bounds a decoded error code for the same reason. Over the bound the
- * sentence is not truncated — it is declined, and the whole text stays in `detail`, because half a
- * sentence read as the reason is worse than a general one with the reason underneath it.
- */
-const MAX_SENTENCE_LENGTH = 512;
-
-/**
- * The kit-authored public sentence inside a step's recorded text, or `null` when there is none.
+ * The kit-authored public sentence inside a step's recorded text, and the remedy riding with it —
+ * `null` when there is none.
  *
  * Exported for the gate, which drives captured engine output through it: a platform sentence reaching an
  * operator is a test failure, and the test has to be able to ask this question directly.
  */
-export function kitSentence(raw: string): { code?: string; message: string } | null {
+export function kitSentence(raw: string): { code?: string; message: string; action?: string } | null {
   let text = raw.trim();
   if (text.startsWith(TERMINAL_STEP_ENVELOPE.prefix) && text.endsWith(TERMINAL_STEP_ENVELOPE.suffix)) {
     text = text.slice(TERMINAL_STEP_ENVELOPE.prefix.length, -TERMINAL_STEP_ENVELOPE.suffix.length);
@@ -138,16 +139,16 @@ export function kitSentence(raw: string): { code?: string; message: string } | n
   if (thrown === undefined) return null;
   text = text.slice(thrown.length);
 
-  const coded = CODE_PREFIX.exec(text);
-  const code = coded?.[1];
-  const message = (code === undefined ? text : text.slice(coded?.[0].length)).trim();
+  // A `NonRetryableError` is `classifiedSteps`' vehicle, so its text is core's encoding or it is
+  // somebody else's — anyone may throw one with anything inside, and the code prefix is the only proof.
+  if (thrown === "NonRetryableError: ") return decodeWorkflowStepMessage(text);
 
-  // A `PithyError` name is proof on its own; a `NonRetryableError` is only proof with the code
-  // `classifiedSteps` writes in front of it, since anyone may throw one with anything inside.
-  if (code === undefined && thrown !== "PithyError: ") return null;
-  if (message === "" || message.length > MAX_SENTENCE_LENGTH) return null;
-  // The CLI renders a problem line, then an action line, splitting on the first newline. A sentence
-  // carrying its own newline would forge that second line, so it is declined rather than reshaped.
+  // A `PithyError` name is proof on its own. Its recorded text is `payload.message` and carries no
+  // encoding at all — no action ever rode here — so the sentence is taken as it stands, and a newline
+  // in it is still declined rather than reshaped: it would forge the CLI's action line.
+  const { code, rest } = splitWorkflowStepCode(text);
+  const message = rest.trim();
+  if (message === "" || message.length > MAX_WORKFLOW_STEP_TEXT) return null;
   if (/[\n\r]/.test(message)) return null;
   return code === undefined ? { message } : { code, message };
 }
@@ -189,6 +190,9 @@ export function stepFailure(steps: readonly unknown[] | undefined): WorkflowStep
       raw,
       ...(kit?.code === undefined ? {} : { code: kit.code }),
       ...(kit === null ? {} : { sentence: kit.message }),
+      // Absent, not `undefined`: a step that stated no remedy must leave nothing for the CLI to print
+      // under the problem line — no empty line, no trailing separator, no `undefined`.
+      ...(kit?.action === undefined ? {} : { action: kit.action }),
     };
   }
   return null;

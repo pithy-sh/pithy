@@ -101,7 +101,11 @@ describe("SecretsWriteWorkflow — the classification the step runs under", () =
     ).catch((error: unknown) => error);
 
     expect(thrown).toBeInstanceOf(NonRetryableError);
-    expect((thrown as Error).message).toBe("secrets/already_exists: Secret 'api-token' already exists.");
+    // The remedy rides across the boundary with the sentence (pithy-sh/pithy#353) — this is the real
+    // Workflow raising the real refusal, so it is also where the operator's second line begins.
+    expect((thrown as Error).message).toBe(
+      "secrets/already_exists: Secret 'api-token' already exists.\nUse `update` to change an existing secret.",
+    );
     expect((thrown as Error).cause).toBeInstanceOf(SecretAlreadyExistsError);
     expect(step.attempts).toBe(1);
   });
