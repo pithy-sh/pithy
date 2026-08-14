@@ -69,6 +69,16 @@ function paramPaths(app: Hono<PithyHonoEnv>): string[] {
   ].sort();
 }
 
+/**
+ * Every distinct route the app mounted, as `METHOD /path`.
+ *
+ * The method is half the identity of a route and dropping it is what let the pin below be satisfied by a
+ * surface it no longer described. Hono records one entry per handler, so the set is over the pair.
+ */
+function mountedRoutes(app: Hono<PithyHonoEnv>): string[] {
+  return [...new Set(app.routes.map((route) => `${route.method} ${route.path}`))].sort();
+}
+
 describe("payments route contract", () => {
   test("every route that declares a path param validates it", async () => {
     const uncovered = await uncoveredParamRoutes(makeApp() as unknown as Hono<never>);
@@ -82,31 +92,38 @@ describe("payments route contract", () => {
 
   test("the gate is inspecting the real payments routes, not an empty app", () => {
     const app = makeApp();
-    const paths = [...new Set(app.routes.map((route) => route.path))].sort();
     // Every route this build serves — the ten from issue #79, the four management reads from #247, the
-    // catalog read from #300, and Paddle's webhook. The list is what makes adding a twentieth a deliberate
-    // edit rather than a surprise, and it is the only place a route can be counted.
-    expect(paths).toEqual([
-      "/payments/admin/catalog",
-      "/payments/admin/discounts",
-      "/payments/admin/entitlements",
-      "/payments/admin/entitlements/:userId",
-      "/payments/admin/purchases",
-      "/payments/admin/reconcile-runs",
-      "/payments/admin/subscriptions",
-      "/payments/checkout",
-      "/payments/entitlements",
-      "/payments/entitlements/grant",
-      "/payments/entitlements/revoke",
-      "/payments/portal",
-      "/payments/pricing",
-      "/payments/purchases",
-      "/payments/restore",
-      "/payments/webhooks/apple",
-      "/payments/webhooks/google",
-      "/payments/webhooks/lemon-squeezy",
-      "/payments/webhooks/paddle",
-      "/payments/webhooks/stripe",
+    // catalog read from #300, and Paddle's webhook. The list is what makes adding a twenty-first a
+    // deliberate edit rather than a surprise, and it is the only place a route can be counted.
+    //
+    // **Method and path, so an extra method on a declared path is caught** — email's phrasing, because
+    // it is the same rule. Pinned by path alone, `POST /payments/admin/purchases` mounted beside the
+    // read was a write nobody declared, nobody reviewed and this file could not see: its path was
+    // already in the set, and a set does not count. `/payments/admin/discounts` is the proof the
+    // distinction is live rather than hypothetical — it is one path serving both a GET and a POST, so
+    // the two spellings of this list genuinely differ.
+    expect(mountedRoutes(app)).toEqual([
+      "GET /payments/admin/catalog",
+      "GET /payments/admin/discounts",
+      "GET /payments/admin/entitlements",
+      "GET /payments/admin/entitlements/:userId",
+      "GET /payments/admin/purchases",
+      "GET /payments/admin/reconcile-runs",
+      "GET /payments/admin/subscriptions",
+      "GET /payments/entitlements",
+      "GET /payments/pricing",
+      "POST /payments/admin/discounts",
+      "POST /payments/checkout",
+      "POST /payments/entitlements/grant",
+      "POST /payments/entitlements/revoke",
+      "POST /payments/portal",
+      "POST /payments/purchases",
+      "POST /payments/restore",
+      "POST /payments/webhooks/apple",
+      "POST /payments/webhooks/google",
+      "POST /payments/webhooks/lemon-squeezy",
+      "POST /payments/webhooks/paddle",
+      "POST /payments/webhooks/stripe",
     ]);
     // One `:segment`, which is what makes the param gate above do work rather than pass vacuously.
     expect(paramPaths(app)).toEqual(["/payments/admin/entitlements/:userId"]);
