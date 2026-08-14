@@ -77,10 +77,16 @@ export const CapabilityDeclaration = z
       .describe(
         "Every admin route this capability contributes, or empty when it contributes none. Most capabilities are empty: having no management surface is the normal case, and saying so explicitly is what lets a client render a capability it cannot act on.",
       ),
+    // **Defaulted, not required, and that is the compatibility mechanism.** This manifest carries no schema
+    // version on purpose — a client dispatches on what the Worker declares right now — so absence is the
+    // only way a new field can ship without breaking every Worker deployed before it. A required one fails
+    // at the object level, which costs the client the *whole* manifest rather than the part it did not
+    // know about, and every pane goes dark for an adopter whose only mistake was not upgrading yet (#352).
     healthKeys: z
       .array(HealthSummaryKey)
+      .default([])
       .describe(
-        "The closed vocabulary of scalars this capability may report about its own state, or empty when it reports none. Declared alongside the routes so a client can render a key it has never heard of from what the Worker says about it — and so a *withheld* number is visible as a key with no value, rather than as silence.",
+        "The closed vocabulary of scalars this capability may report about its own state, or empty when it reports none — including when the Worker predates this field and says nothing at all. Declared alongside the routes so a client can render a key it has never heard of from what the Worker says about it — and so a *withheld* number is visible as a key with no value, rather than as silence.",
       ),
   })
   .describe(
@@ -98,9 +104,13 @@ export type CapabilityDeclaration = z.infer<typeof CapabilityDeclaration>;
  * is fine when it has simply not been allowed to look.
  */
 export const CapabilityDescriptor = CapabilityDeclaration.extend({
-  health: HealthSummary.nullable().describe(
-    "Every declared value this caller may see, or null when there is none to give — either nothing is declared, or this connection lacks the scope the value is behind. **Null is never zero.** A key declared in `healthKeys` and absent here was withheld.",
-  ),
+  // Defaulted for the same reason as `healthKeys` above, and it lands on the meaning it already had: a
+  // Worker that says nothing about health has nothing declared, which is the first of the three states.
+  health: HealthSummary.nullable()
+    .default(null)
+    .describe(
+      "Every declared value this caller may see, or null when there is none to give — either nothing is declared, or this connection lacks the scope the value is behind, or the Worker predates this field. **Null is never zero.** A key declared in `healthKeys` and absent here was withheld.",
+    ),
 }).describe(
   "One capability this Worker composes, as reported to one caller: its version, its admin surface, and the summary that caller is entitled to.",
 );
