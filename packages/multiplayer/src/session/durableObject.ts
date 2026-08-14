@@ -3,7 +3,8 @@
 
 import { DurableObject } from "cloudflare:workers";
 import type { D1Database } from "@cloudflare/workers-types";
-import { InternalError, messageOf, PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { clientError } from "@pithy-sh/core/src/error/client";
+import { InternalError, messageOf, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
 import type { MultiplayerResult } from "../data/result";
@@ -47,6 +48,19 @@ function publishFailure(error: unknown): PithyError {
 interface ClientMessage {
   type: "action" | "state";
   payload?: unknown;
+}
+
+/**
+ * One error, as a frame on a player's socket. Every error the socket sends is built here, and the payload
+ * goes through core's `clientError` — the same projection the HTTP codec encodes through, because a socket
+ * carries the error to the same browser an HTTP body would. `action` and `detail` are an operator's, and
+ * this transport has no operator on the other end of it.
+ *
+ * A `PithyError` is required rather than a loose shape on purpose: the frame cannot be hand-written, so
+ * there is no second definition of what a client may read (#344).
+ */
+function errorFrame(error: PithyError): string {
+  return JSON.stringify({ type: "error", error: clientError(error.payload) });
 }
 
 /**
@@ -534,21 +548,14 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
     const attachment = ws.deserializeAttachment() as { userId?: string } | null;
     const userId = attachment?.userId;
     if (!userId) {
-      ws.send(
-        JSON.stringify({ type: "error", error: { code: "multiplayer/not_a_member", message: "Unidentified socket." } }),
-      );
+      ws.send(errorFrame(new MultiplayerNotAMemberError({ message: "Unidentified socket." })));
       return;
     }
     let parsed: ClientMessage;
     try {
       parsed = JSON.parse(typeof message === "string" ? message : new TextDecoder().decode(message)) as ClientMessage;
-    } catch {
-      ws.send(
-        JSON.stringify({
-          type: "error",
-          error: { code: "validation/invalid_input", message: "Message must be JSON." },
-        }),
-      );
+    } catch (error) {
+      ws.send(errorFrame(new ValidationError({ message: "Message must be JSON.", detail: messageOf(error) })));
       return;
     }
 
@@ -560,12 +567,13 @@ export class MultiplayerSession extends DurableObject<MultiplayerSessionEnv> {
         ws.send(JSON.stringify(await this.snapshot(userId)));
       }
     } catch (error) {
-      // Never leak `detail` to a client — send only the public projection, the same boundary the HTTP codec holds.
-      const payload =
-        error instanceof PithyError
-          ? { code: error.payload.code, message: error.payload.message, action: error.payload.action }
-          : { code: "core/internal", message: "Something went wrong." };
-      ws.send(JSON.stringify({ type: "error", error: payload }));
+      ws.send(
+        errorFrame(
+          error instanceof PithyError
+            ? error
+            : new InternalError({ message: "Something went wrong.", detail: messageOf(error) }, { cause: error }),
+        ),
+      );
     }
   }
 

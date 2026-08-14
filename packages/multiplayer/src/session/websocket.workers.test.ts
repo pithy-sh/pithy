@@ -126,6 +126,33 @@ describe("MultiplayerSession — WebSocket (Hibernation API)", () => {
     });
   });
 
+  test("an error frame carries no operator remedy — the socket is a client transport", async () => {
+    const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
+    // Created but not filled: the session sits in `open`, so acting throws an invalid transition, whose
+    // payload carries the `action` every multiplayer error defaults. A real socket, a real thrown error.
+    await runInDurableObject(stub, (s: MultiplayerSession) => s.create(game, "alice"));
+    const socketResponse = await upgrade(stub, "alice");
+    const socket = socketResponse.webSocket;
+    if (!socket) throw new Error("no socket");
+    socket.accept();
+    await nextView(socket);
+
+    const raw = new Promise<string>((resolve) => {
+      socket.addEventListener("message", (event) => resolve(event.data as string), { once: true });
+    });
+    socket.send(JSON.stringify({ type: "action", payload: { offense: ["fire"], defense: ["guard-ice"] } }));
+    const text = await raw;
+    const frame = JSON.parse(text) as { type: string; error: Record<string, unknown> };
+
+    expect(frame.type).toBe("error");
+    expect(frame.error.code).toBe("multiplayer/invalid_transition");
+    expect(Object.hasOwn(frame.error, "action")).toBe(false);
+    expect(Object.hasOwn(frame.error, "detail")).toBe(false);
+    // The bytes, not just the parsed object — an `action` cannot ride along under another key either.
+    expect(text).not.toContain("Check the session's phase");
+    expect(text).not.toContain("in phase open");
+  });
+
   test("a malformed socket message returns an error frame, not a crash", async () => {
     const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
     await runInDurableObject(stub, (s: MultiplayerSession) => s.create(game, "alice"));
