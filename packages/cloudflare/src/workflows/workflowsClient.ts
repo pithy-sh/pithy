@@ -156,6 +156,10 @@ export class CloudflareWorkflowsClient extends CloudflareManager {
       const failure = stepFailure(instance.steps);
       throw new CloudflareRequestError({
         message: failure?.sentence ?? `Workflow ${workflowName} did not complete (${instance.status}).`,
+        // The remedy the step stated, and only ever alongside the step's own sentence — an action line
+        // under a general fallback about durable execution would be a remedy for a problem nobody was
+        // told about. `undefined` prints nothing at all, which is the whole of the no-action case.
+        action: failure?.sentence === undefined ? undefined : failure.action,
         detail: `instance ${id} ended ${instance.status}: ${describeFailure(failure, instance.error)}`,
       });
     }

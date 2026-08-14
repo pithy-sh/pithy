@@ -3,6 +3,7 @@
 
 import { d1TransientFault } from "../data/withD1Retry";
 import { PithyError } from "../error/pithyError";
+import { encodeWorkflowStepMessage } from "./stepMessage";
 
 /**
  * **Every fault that reaches a durable step is classified — retryable or terminal — at a stated site.**
@@ -97,6 +98,30 @@ function messageOf(error: unknown): string {
 }
 
 /**
+ * The operator's remedy a thrown value carries, or `undefined` when it states none.
+ *
+ * Read structurally for the same reason {@link pithyCodeOf} is: `instanceof` is per module instance,
+ * and two copies of core in one bundle would answer `false` for a perfectly good `PithyError` — here
+ * meaning a remedy the raising error stated is silently dropped at the boundary. That is the bug this
+ * function exists to end, so it is not reintroduced by the check.
+ *
+ * **`detail` is deliberately not read here, and there is no sibling for it.** `action` is already
+ * operator-facing — the CLI prints it, `operatorError` includes it. `detail` is throw-site context and
+ * stays at the throw site.
+ */
+function pithyActionOf(error: unknown): string | undefined {
+  if (error instanceof PithyError) return error.payload.action;
+  if (error && typeof error === "object" && "payload" in error) {
+    const payload = (error as { payload: unknown }).payload;
+    if (payload && typeof payload === "object" && "action" in payload) {
+      const action = (payload as { action: unknown }).action;
+      if (typeof action === "string") return action;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Classify one fault against a capability's policy. Pure, so a capability's classification is a unit
  * test rather than a claim — and so the same function decides in a test, in Miniflare, and in production.
  */
@@ -174,11 +199,17 @@ export function classifiedSteps(
           const fault = classifyWorkflowFault(error, policy);
           if (fault.disposition === "retry") throw error;
           // The one sanctioned non-`PithyError` throw in the kit: a platform contract, at the durable
-          // boundary, carrying the `PithyError` it replaced as its `cause` so nothing is lost. The
-          // message is the public one plus its code, because a Workflow's error text is read by an
-          // operator — though the engine currently reports its own sentence on the instance instead of
-          // this one, which is pithy-sh/pithy#349.
-          const terminal = new terminalError(`${fault.code}: ${messageOf(error)}`);
+          // boundary, carrying the `PithyError` it replaced as its `cause` so nothing is lost in this
+          // process. Across the boundary the text is the whole channel — the engine records it and
+          // discards the throw — so what an operator is owed is encoded into it, at one stated site,
+          // and read back at one (./stepMessage). The `cause` does not travel; `detail` never did.
+          const terminal = new terminalError(
+            encodeWorkflowStepMessage({
+              code: fault.code,
+              message: messageOf(error),
+              action: pithyActionOf(error),
+            }),
+          );
           terminal.cause = error;
           throw terminal;
         }

@@ -170,3 +170,53 @@ describe("classifiedSteps", () => {
     expect(seen).toEqual(["write:NonRetryableError"]);
   });
 });
+
+/** The text a terminal step throws for one fault — the whole of what crosses the boundary. */
+async function terminalText(thrown: unknown): Promise<string> {
+  const steps = classifiedSteps(retryingStep(5), policy, Terminal);
+  const error = await steps
+    .do("write", async () => {
+      throw thrown;
+    })
+    .catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(Terminal);
+  return (error as Error).message;
+}
+
+describe("what a terminal step carries across the boundary", () => {
+  test("the remedy rides with the sentence, on the separator core states", async () => {
+    const text = await terminalText(
+      new ConflictError({ message: "Already there.", action: "Use `update` instead.", detail: "second write" }),
+    );
+    expect(text).toBe("core/conflict: Already there.\nUse `update` instead.");
+  });
+
+  test("a fault stating no remedy leaves nothing after the sentence", async () => {
+    const text = await terminalText(new ConflictError({ message: "Already there.", detail: "second write" }));
+    expect(text).toBe("core/conflict: Already there.");
+    expect(text).not.toContain("\n");
+    expect(text).not.toContain("undefined");
+  });
+
+  test("a `PithyError` from a second copy of core still carries its remedy — the read is structural", async () => {
+    // `instanceof` is per module instance. A bundler handing a host Worker two copies of core must not
+    // silently drop the remedy, which is the bug this whole file exists downstream of.
+    const foreign = Object.assign(new Error("Already there."), {
+      payload: { code: "core/conflict", message: "Already there.", action: "Use `update` instead." },
+    });
+    expect(await terminalText(foreign)).toBe("core/conflict: Already there.\nUse `update` instead.");
+  });
+
+  test("`detail` does not cross, and there is no field for it to cross in", async () => {
+    const secret = "DETAIL-MUST-NOT-CROSS-3f9a2";
+    const text = await terminalText(
+      new ConflictError({
+        message: "Already there.",
+        action: "Use `update` instead.",
+        detail: `second write of ${secret}`,
+      }),
+    );
+    expect(text).not.toContain(secret);
+    expect(text).toBe("core/conflict: Already there.\nUse `update` instead.");
+  });
+});
