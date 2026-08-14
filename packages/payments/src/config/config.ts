@@ -444,27 +444,6 @@ export const PaymentsConfig = z
     // The same string on two different rails is fine — the rails are separate namespaces.
     for (const rail of PAYMENTS_RAILS) {
       const owners = new Map<string, string[]>();
-      // The same pair for Paddle. The client token and the account are not return URLs — they are what a
-      // browser needs to open a checkout at all — so the rail cannot start one without this block either.
-      if (config.rails.paddle && config.paddle === undefined) {
-        ctx.issues.push({
-          code: "custom",
-          input: ctx.value,
-          path: ["paddle"],
-          message:
-            "The Paddle rail is on, so `paddle` must declare `clientToken`, `environment`, and `successUrl`. Paddle.js cannot initialize and no transaction can be created without them.",
-        });
-      }
-
-      if (!config.rails.paddle && config.paddle !== undefined) {
-        ctx.issues.push({
-          code: "custom",
-          input: ctx.value,
-          path: ["paddle"],
-          message: "`paddle` declares settings, but `rails.paddle` is off. Enable the rail, or drop the block.",
-        });
-      }
-
       for (const [id, product] of entries) {
         const sku = providerProductId(product, rail);
         if (sku === undefined) continue;
