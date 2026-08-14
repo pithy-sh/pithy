@@ -5,35 +5,31 @@ import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { z } from "zod";
+import { clientError } from "./client";
 import { ErrorPayload, PublicErrorPayload } from "./payload";
 import { InternalError, PithyError, ValidationError } from "./pithyError";
 
 /**
  * The HTTP surface of an error, as a real codec. `encode` (server emits) maps an in-memory
- * `ErrorPayload` down to the public wire shape — **this is the security boundary: it drops `action`
- * and `detail`, so neither an operator's remedy nor internal context can land in an HTTP body.**
- * `decode` (client SDK parses) maps a wire body back to a payload. The one schema validates both
- * directions, so the error a server sends and the error an app receives are the same contract.
+ * `ErrorPayload` down to the public wire shape by calling {@link clientError} — **the security
+ * boundary, which drops `action` and `detail`, so neither an operator's remedy nor internal context
+ * can land in an HTTP body.** `decode` (client SDK parses) maps a wire body back to a payload. The one
+ * schema validates both directions, so the error a server sends and the error an app receives are the
+ * same contract.
  *
- * **`action` is here because it is written for an operator, not for a caller.** It names `pithy`
+ * **`action` is stripped because it is written for an operator, not for a caller.** It names `pithy`
  * commands, files in the adopter's repository, wrangler bindings and provider consoles — a
  * description of the deployment, handed out at whatever status the error carries. The operator reads
  * it on the surfaces built for them: the terminal, the CLI's `--json` line, a log, an audit row. What
  * the caller gets is `message`, which is the field that has always meant "safe to expose".
  *
- * The boundary is doubled, and deliberately: the function below removes both fields, and Zod then
- * validates the result against `PublicErrorPayload`, which has neither and so strips any that
- * survived. That second pass is what makes the boundary hold for an **adopter-defined** code as
- * well — it is a property of the schema, not of a per-member encode anyone could forget to write.
+ * **The rule is not kept here.** HTTP is one transport of several — a WebSocket frame is a client
+ * surface that never touches this codec — so the projection lives in ./client and this encoder is one
+ * of its callers. Doing it the other way round is what let an `action` reach a browser over a socket.
  */
 export const HttpError = z.codec(PublicErrorPayload, ErrorPayload, {
   decode: (wire): ErrorPayload => wire,
-  encode: (payload): PublicErrorPayload => {
-    const { action: _action, detail: _detail, ...wire } = payload;
-    // A rest spread drops the brand off an adopter code, so TypeScript stops recognizing the member
-    // it came from. The value is unchanged, and Zod re-validates it against `PublicErrorPayload`.
-    return wire as PublicErrorPayload;
-  },
+  encode: (payload): PublicErrorPayload => clientError(payload),
 });
 
 /**
