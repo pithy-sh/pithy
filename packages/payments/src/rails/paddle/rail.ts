@@ -23,11 +23,12 @@ import type {
 import { type PaddleEnvironment, type PaddleHttpFetch, paddleHttpFetch } from "./api";
 import { createPaddleCheckoutSession } from "./checkout";
 import { createPaddleDiscount, listPaddleDiscounts } from "./discounts";
+import { PaddleEvent } from "./objects";
 import { createPaddlePortalSession } from "./portal";
 import { PADDLE_ADJUSTMENTS_INCLUDE, readTransaction } from "./read";
 import { readPaddlePricing, refreshPaddlePurchase } from "./refresh";
 import { verifyPaddleTransaction } from "./verify";
-import { parsePaddleNotification } from "./webhook";
+import { parsePaddleNotification, readPaddleEvent } from "./webhook";
 
 /**
  * The Paddle rail as one provider object — the fifth, and the second merchant of record.
@@ -97,6 +98,24 @@ export function paddleRail(
         // comparison the parser cannot make without this read. The rail owns the transport, so the rail
         // supplies it — and it is the one read that asks for `include=adjustments`, which is the one read
         // that needs the key to carry `adjustment.read`.
+        readTransaction: (id) => readTransaction(id, base, PADDLE_ADJUSTMENTS_INCLUDE),
+      });
+    },
+
+    async replay(
+      payload: Record<string, unknown>,
+      context: RailRequestContext,
+    ): Promise<VerifiedNotification | undefined> {
+      // The recorded body is a Paddle event as the stream and the webhook both deliver it, so the map is the
+      // same one both paths already use. The signature is not re-checked and could not be: it covers a header
+      // this table never stored, and the row's authenticity was established when it was written.
+      const parsed = PaddleEvent.safeParse(payload);
+      if (!parsed.success) return undefined;
+      return await readPaddleEvent(parsed.data, {
+        credentials,
+        environment: options.environment,
+        now: context.now,
+        deployment: context.deployment,
         readTransaction: (id) => readTransaction(id, base, PADDLE_ADJUSTMENTS_INCLUDE),
       });
     },

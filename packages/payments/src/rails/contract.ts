@@ -189,8 +189,52 @@ export interface VerifiedNotification {
    * — Play's voided-purchase notification names no product, so the delivery is real, the refund is real, and
    * neither is projectable without a lookup only the Workflow can make. A row recording that with its reason is
    * the difference between a repairable gap and a silent drop.
+   *
+   * **Which of the two it is decides whether the row is finished** — see {@link NotificationNote}.
    */
-  note?: string | null;
+  note?: NotificationNote | null;
+}
+
+/**
+ * Why there is no event, and **where that answer came from**. Two cases, because there are two.
+ *
+ * `{ stated }` — the delivered bytes say it. A partial refund that takes nothing away, a notification type
+ * this build does not act on, an order Play reports voided. The same bytes get the same answer from the same
+ * build for ever, so the row is **finished** and a redelivery is answered `duplicate`.
+ *
+ * `{ read }` — a call to the provider came back empty and this note is that answer. Play has no purchase
+ * under the token, Lemon Squeezy no longer knows the subscription, Paddle will not show the transaction an
+ * adjustment names. **Repairable**, and this is #341: three rails derived a note this way and it finished the
+ * row. A read that answers "no such thing" can be a race — an RTDN outrunning Play's own read-after-write, a
+ * key rotated mid-flight, a shared sandbox — so the second answer differs from the first, and the delivery
+ * that would have carried it was already being told it was a duplicate.
+ *
+ * **A note is safe as terminal only when it comes from a source that cannot have failed.** The delivered
+ * bytes are such a source; a read is not. So the provenance travels with the text rather than being inferred
+ * at the far end, and the two are one field so no rail can claim both.
+ *
+ * The same rule applies wherever a note finishes a row: the webhook handler and the Paddle events sweep both
+ * read this, and both treat `read` as a repairable failure rather than a completion.
+ */
+export type NotificationNote =
+  | {
+      /** What the delivered bytes say. Terminal. */
+      readonly stated: string;
+    }
+  | {
+      /** What a provider read answered, and could answer differently next time. Repairable. */
+      readonly read: string;
+    };
+
+/** The note's text, whichever kind it is. An operator reads the two the same way; the row does not. */
+export function noteText(note: NotificationNote | null | undefined): string | undefined {
+  if (note === null || note === undefined) return undefined;
+  return "stated" in note ? note.stated : note.read;
+}
+
+/** Whether this note leaves the delivery repairable — true only for one a read produced. */
+export function noteIsRepairable(note: NotificationNote | null | undefined): boolean {
+  return note !== null && note !== undefined && "read" in note;
 }
 
 /** Every rail. Verification of a client submission, parsing of a pushed notification, and a state re-read. */
@@ -230,6 +274,29 @@ export interface PaymentsRailProvider {
    * never happened.
    */
   refresh(purchase: PaymentsPurchase, context: RailRequestContext): Promise<UnboundProviderEvent | undefined>;
+  /**
+   * Re-read a notification body this package already recorded, **without re-establishing authenticity**.
+   *
+   * The row it comes from was written by a delivery that verified, or by a sweep reading the store's own
+   * event stream over an authenticated connection, so the bytes are already vouched for. Re-verifying is not
+   * merely redundant — it is impossible: a signature covers headers this table never stored, and a JWS has a
+   * validity window that expired long ago.
+   *
+   * It exists for one caller: the repair that runs when an account links. An orphan is a purchase with
+   * nobody to project it against, and the only thing that changes is a `provider_accounts` row appearing
+   * later. Nothing about the event changes, so the payload is where the purchase is — which is precisely
+   * what {@link VerifiedNotification.payload} is stored whole for.
+   *
+   * **Optional, and a rail that cannot do it says so by not implementing it.** Apple and Google store a
+   * signed blob whose claims this build reads only through a verifier, and Lemon Squeezy's parse needs a live
+   * subscription read; a stub returning a half-read event would be worse than the absence. Those rails'
+   * orphans are repaired by the store's own redelivery, as they were.
+   *
+   * `undefined` means the payload is not one this rail can replay — a shape from an older build, an event
+   * type since dropped. That is a fact about the row, not a failure, and the repair leaves it exactly as it
+   * stood.
+   */
+  replay?(payload: Record<string, unknown>, context: RailRequestContext): Promise<VerifiedNotification | undefined>;
 }
 
 /** What a hosted checkout session needs. The catalog product is resolved before this is called. */

@@ -265,6 +265,11 @@ async function invoiceNotification(
 
   // The store no longer knows the subscription this invoice bills. Authentic, unprojectable, and worth an
   // operator's attention — so this is the one place on this rail that does set a note.
+  //
+  // **`read`, not `stated` (#341).** `readSubscription` answers `undefined` on a 404, and a 404 here is not
+  // only "deleted": an invoice webhook can outrun the subscription's own visibility, and a key scoped to the
+  // wrong store answers the same way. So this finishes nothing. The row stays repairable, and Lemon Squeezy's
+  // redelivery — which it makes for three days — runs the handler again against a store that may now answer.
   if (subscription === undefined) {
     return {
       providerEventId,
@@ -272,7 +277,9 @@ async function invoiceNotification(
       event: null,
       providerAccountId: invoice.customer_id === undefined ? null : String(invoice.customer_id),
       accountReference: await accountReferenceOf(webhook, options.deployment, options.credentials.webhookSecret),
-      note: `Lemon Squeezy no longer knows subscription ${subscriptionId}, which invoice ${webhook.data.id} bills.`,
+      note: {
+        read: `Lemon Squeezy no longer knows subscription ${subscriptionId}, which invoice ${webhook.data.id} bills.`,
+      },
     };
   }
 

@@ -3,7 +3,7 @@
 
 import { PaymentsInvalidReceiptError, PaymentsVerificationFailedError } from "../../error/errors";
 import type { PaymentsStripeCredentials } from "../../secret/registry";
-import type { VerifiedPurchase } from "../contract";
+import { noteText, type VerifiedPurchase } from "../contract";
 import { type StripeHttpFetch, stripeHttpFetch, stripeJson } from "./api";
 import { mapStripeSession, StripeCheckoutSession } from "./objects";
 
@@ -92,7 +92,7 @@ export async function verifyStripeSession(receipt: string, options: StripeVerify
     // buyer is told rather than left with a 200 and no entitlement.
     throw new PaymentsVerificationFailedError({
       detail:
-        mapped.note ??
+        noteText(mapped.note) ??
         "Stripe: that checkout has not completed into a purchase yet. It will project from the webhook when it does.",
     });
   }

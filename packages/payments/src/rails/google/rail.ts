@@ -121,7 +121,9 @@ export function googleRail(
           // A void carries no state and needs none: the order id names the row, and the route owns the
           // database that has it. See `VerifiedNotification.voidedOrderId`.
           voidedOrderId: parsed.voidedOrderId,
-          note: parsed.note,
+          // `stated`: `parseGoogleNotification` reads the delivered bytes and nothing else, so this note is
+          // what the notification says. The same bytes get the same answer for ever — terminal.
+          note: parsed.note === null ? null : { stated: parsed.note },
         };
       }
 
@@ -131,14 +133,22 @@ export function googleRail(
         transport: options.transport,
       });
       if (state === undefined) {
-        // Authentic, and about a purchase Play will not show us — a token from a deleted app, or a notification
-        // that raced its own purchase. Recorded with the reason rather than retried: the answer will not change.
+        // Authentic, and about a purchase Play will not show us — a token from a deleted app, or a
+        // notification that raced its own purchase.
+        //
+        // **`read`, not `stated`, and that is #341.** This sentence is the output of a call to Play, and the
+        // second reason above is a race by name: an RTDN is published before Play's own read-after-write has
+        // settled often enough that Google documents the retry. The note said "the answer will not change",
+        // which is true of the *bytes* and false of the *lookup* — so a note derived from it finished the row,
+        // and the redelivery Pub/Sub was already queuing was answered `duplicate`. Repairable.
         return {
           providerEventId: parsed.providerEventId,
           payload: parsed.payload,
           event: null,
           providerAccountId: null,
-          note: `google: Play has no ${parsed.pointer.kind === "subscription" ? "subscription" : "one-time purchase"} under the token this notification points at.`,
+          note: {
+            read: `google: Play has no ${parsed.pointer.kind === "subscription" ? "subscription" : "one-time purchase"} under the token this notification points at.`,
+          },
         };
       }
 

@@ -23,6 +23,7 @@ import type {
 import type { StripeHttpFetch } from "./api";
 import { createStripeCheckoutSession } from "./checkout";
 import { createStripeDiscount, listStripeDiscounts } from "./discounts";
+import { mapStripeEvent, StripeEvent } from "./objects";
 import { createStripePortalSession } from "./portal";
 import { readStripePricing } from "./pricing";
 import { refreshStripeSubscription } from "./refresh";
@@ -78,6 +79,29 @@ export function stripeRail(
         now: context.now,
         toleranceSeconds: options.toleranceSeconds,
       });
+    },
+
+    // The clock and the deployment travel with every rail call, and this one needs neither: the map reads
+    // the event's own `created` and Stripe stamps no deployment. Named `_context` so the signature still
+    // matches the contract rather than diverging from it.
+    async replay(
+      payload: Record<string, unknown>,
+      _context: RailRequestContext,
+    ): Promise<VerifiedNotification | undefined> {
+      // The recorded body is the whole Stripe event, and the map takes an event and reads nothing else — so
+      // this replay makes no call to Stripe at all. The signature is not re-checked: it covers a header this
+      // table never stored, and the row's authenticity was established when it was written.
+      const parsed = StripeEvent.safeParse(payload);
+      if (!parsed.success) return undefined;
+      const mapped = mapStripeEvent(parsed.data);
+      return {
+        providerEventId: parsed.data.id,
+        payload: parsed.data as Record<string, unknown>,
+        event: mapped.event,
+        providerAccountId: mapped.providerAccountId,
+        accountReference: mapped.accountReference,
+        note: mapped.note,
+      };
     },
 
     async refresh(purchase: PaymentsPurchase, context: RailRequestContext): Promise<UnboundProviderEvent | undefined> {

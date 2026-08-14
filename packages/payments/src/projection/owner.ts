@@ -68,6 +68,13 @@ export interface LinkProviderAccountOptions {
  * The returned user is the one actually bound, which is not always the one passed in. A caller that cares
  * about the difference compares them; the purchase-level owner check in the writer is what refuses a
  * transaction outright.
+ *
+ * **A link is also a repair signal, and this function does not act on it.** Purchases that arrived before
+ * their owner was knowable are sitting in `pithy_payments_webhook_events` waiting for exactly this row —
+ * see `projection/orphans.ts`, and #341 for what it cost while nothing looked. Acting on it here would mean
+ * this function taking a catalog, an environment and a rail able to replay its own payloads, which is three
+ * arguments a link has no business knowing about; so every call site calls `repairOrphanedEvents` beside
+ * this one instead. **A fourth call site owes the same call.**
  */
 export async function linkProviderAccount(
   d1: D1Database,

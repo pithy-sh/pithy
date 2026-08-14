@@ -7,6 +7,8 @@ import {
   isWebhookEventOutstanding,
   PaymentsWebhookEvent,
   type PaymentsWebhookEventState,
+  WEBHOOK_EVENT_ORPHANED,
+  webhookEventAwaitsOwner,
   webhookEventState,
 } from "./webhookEvent";
 
@@ -80,6 +82,40 @@ describe("the two readers", () => {
     // delivery must be able to repair it or the quarantine is terminal.
     expect(isWebhookEventFinished("abandoned")).toBe(false);
     expect(isWebhookEventOutstanding("abandoned")).toBe(false);
+  });
+});
+
+/**
+ * **The third reader, and it asks about a reason rather than a state.** (#341)
+ *
+ * The two above are enough to decide what a *delivery* may do with a row. They cannot decide what an
+ * *account linking* may do with one, because both the row a sweep quarantined after three failures and the
+ * row it walked past for want of an owner are `abandoned`, and a link repairs exactly one of them.
+ */
+describe("the reader for the relink repair", () => {
+  const orphaned = `${WEBHOOK_EVENT_ORPHANED} no Pithy user could be resolved`;
+
+  test("a row waiting on an owner is one, whether the sweep or the webhook left it", () => {
+    // Both writers, both states. The sweep abandons so its stream advances; the webhook leaves its own
+    // orphan failed so a redelivery repairs it. The link repairs both.
+    expect(webhookEventAwaitsOwner({ abandonedAt: AT, error: orphaned })).toBe(true);
+    expect(webhookEventAwaitsOwner({ processedAt: null, error: orphaned })).toBe(true);
+  });
+
+  test("a row unfinished for any other reason is not", () => {
+    // The set has to be the *right* set, not merely a small one: re-running a quarantine or an unmapped SKU
+    // on every account link is an unbounded retry loop triggered by unrelated traffic.
+    expect(webhookEventAwaitsOwner({ abandonedAt: AT, error: "quarantined: after 3 attempts" })).toBe(false);
+    expect(webhookEventAwaitsOwner({ error: "payments/product_not_found: no product" })).toBe(false);
+    expect(webhookEventAwaitsOwner({ error: null })).toBe(false);
+    // And the marker must be the prefix, not a substring: a note quoting the word is not an orphan.
+    expect(webhookEventAwaitsOwner({ error: `a delivery the sweep once called ${orphaned}` })).toBe(false);
+  });
+
+  test("a finished row is never repaired again, whatever its reason still says", () => {
+    // `finished` wins over everything — a row projected by a redelivery keeps the reason that explained why
+    // it once could not be, and re-projecting it on the next link would be a second write of the same sale.
+    expect(webhookEventAwaitsOwner({ processedAt: AT, abandonedAt: AT, error: orphaned })).toBe(false);
   });
 });
 

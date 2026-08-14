@@ -39,6 +39,9 @@ const NotificationPayload = z
  * matter ask different questions of it: {@link isWebhookEventFinished} for the guard's short-circuit, and
  * {@link isWebhookEventOutstanding} for a repair pass. Both switch over every state, so a fifth one cannot
  * be added without each reader saying what it means by it.
+ *
+ * A third reader asks a question the state cannot answer — see {@link webhookEventAwaitsOwner}. It exists
+ * because a link repairs one kind of unfinished row and not the others, and *which* kind is in `error`.
  */
 export const PaymentsWebhookEvent = z
   .object({
@@ -138,6 +141,39 @@ export function isWebhookEventFinished(state: PaymentsWebhookEventState): boolea
     case "abandoned":
       return false;
   }
+}
+
+/**
+ * The prefix an event's `error` carries when the one thing missing was **an owner**.
+ *
+ * `error` is free text an operator reads, and two writers put two different sentences in it for the same
+ * condition — the webhook handler's "no Pithy user could be resolved", and the sweep's own `orphaned:`. That
+ * was fine while nothing queried it. It stopped being fine with #341: linking an account has to find exactly
+ * the rows that were waiting on that link, and "waiting on a link" is not derivable from the two timestamps —
+ * a quarantine after three failures wears the same pair.
+ *
+ * So the reason is written on the row, once, by a constant both writers share. A prefix rather than a column
+ * because it costs no migration and stays legible to the operator reading `error`, and it is a prefix rather
+ * than a substring so the match is anchored and a note quoting the word cannot be mistaken for one.
+ *
+ * See {@link webhookEventAwaitsOwner} for the reader, and `projection/orphans.ts` for what it is read by.
+ */
+export const WEBHOOK_EVENT_ORPHANED = "orphaned:";
+
+/**
+ * Is this event outstanding for want of an owner, rather than for want of anything else?
+ *
+ * The question the relink repair asks, and it is deliberately narrower than "not finished". A quarantined
+ * event, a failed projection, an unmapped SKU — none of those is repaired by an account linking, and running
+ * them again on that signal would be a second unbounded retry loop wearing the first one's clothes.
+ *
+ * `abandoned` and `failed` both qualify, because both paths produce an orphan and they produce different
+ * states: the sweep abandons one so its stream can advance, and the webhook handler leaves one failed so a
+ * redelivery repairs it. Neither is finished, and both are waiting on the same thing.
+ */
+export function webhookEventAwaitsOwner(row: PaymentsWebhookEventProgress): boolean {
+  if (webhookEventState(row) === "finished") return false;
+  return (row.error ?? "").startsWith(WEBHOOK_EVENT_ORPHANED);
 }
 
 /**
