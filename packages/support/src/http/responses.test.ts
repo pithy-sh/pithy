@@ -2,16 +2,19 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import type { z } from "zod";
+import { z } from "zod";
+import { SupportAccountLinkSource, SupportChannel } from "../data/enums";
 import type { SupportMessage } from "../data/message";
 import type { SupportThread } from "../data/thread";
 import type { SenderContext } from "../link/sender";
 import type { ListedThread } from "../store/threads";
+import * as responses from "./responses";
 import {
   SenderContextView,
   SupportAttachmentView,
   SupportFlagsResponse,
   SupportListedThreadView,
+  SupportListedThreadViewAsRead,
   SupportMessageView,
   SupportMyMessageView,
   SupportMyThreadResponse,
@@ -22,6 +25,7 @@ import {
   SupportSubmissionResponse,
   SupportThreadResponse,
   SupportThreadsResponse,
+  SupportThreadsResponseAsRead,
   SupportThreadView,
 } from "./responses";
 import { listedThreadView, messageView, myMessageView, myThreadView, senderView, threadView } from "./views";
@@ -276,5 +280,145 @@ describe("support response schemas", () => {
       channel: "app",
       messageId: "m-3",
     });
+  });
+});
+
+/**
+ * The reader's contracts, against the two obligations they exist to keep apart.
+ *
+ * Every test below is one half of a pair: what the producer's schema must still refuse, and what the
+ * reader's must now survive. Neither half proves anything alone — a shape that tolerates an unknown
+ * member is only a contract if the strict one still refuses it, and a strict one is only a problem if
+ * something else can read past it.
+ */
+
+/** The six reader's contracts this capability publishes. Frozen: a seventh has to be written down. */
+const READERS_CONTRACTS: readonly string[] = [
+  "SupportArchiveResponseAsRead",
+  "SupportListedThreadViewAsRead",
+  "SupportMessageViewAsRead",
+  "SupportThreadResponseAsRead",
+  "SupportThreadViewAsRead",
+  "SupportThreadsResponseAsRead",
+];
+
+/**
+ * Every enum reachable in a schema, by path.
+ *
+ * It walks unions as well as the wrappers `asRead` rewrites, deliberately: a gate that could only see
+ * the shapes the rewrite handles would report a clean bill of health for the one arrangement the
+ * rewrite cannot reach, which is the arrangement worth catching.
+ */
+function enumsIn(schema: z.ZodType, path: string, found: string[] = []): string[] {
+  if (schema instanceof z.ZodEnum) found.push(path);
+  else if (schema instanceof z.ZodObject)
+    for (const [key, field] of Object.entries(schema.shape)) enumsIn(field as z.ZodType, `${path}.${key}`, found);
+  else if (schema instanceof z.ZodArray) enumsIn(schema.element as z.ZodType, `${path}[]`, found);
+  else if (schema instanceof z.ZodNullable || schema instanceof z.ZodOptional)
+    enumsIn(schema.unwrap() as z.ZodType, path, found);
+  else if (schema instanceof z.ZodUnion)
+    schema.options.forEach((option, index) => {
+      enumsIn(option as z.ZodType, `${path}|${index}`, found);
+    });
+  return found;
+}
+
+/** What `responses.ts` publishes, read by name so the gate walks the module rather than a list of it. */
+const published: Record<string, unknown> = { ...responses };
+
+/** One inbox row carrying values no enum of this capability declares. */
+function stranger(): Record<string, unknown> {
+  return { ...listedThreadView(LISTED), channel: "sms", accountLinkSource: "oauth", priority: "blocker" };
+}
+
+describe("the reader's contract beside the producer's", () => {
+  test("the producer's schemas still refuse a member they do not declare", () => {
+    expect(SupportListedThreadView.safeParse(stranger()).success).toBe(false);
+    expect(SupportThreadsResponse.safeParse({ threads: [stranger()], nextCursor: null }).success).toBe(false);
+    // And one stranger among four costs the producer's schema the whole page — the behaviour the
+    // reader's contract exists to change, stated here so the change is visible as a difference.
+    const page = { threads: [listedThreadView(LISTED), stranger()], nextCursor: null };
+    expect(SupportThreadsResponse.safeParse(page).success).toBe(false);
+    expect(SupportThreadsResponseAsRead.safeParse(page).success).toBe(true);
+  });
+
+  test("the reader's tolerates the member, hands it back verbatim, and leaves it markable", () => {
+    const parsed = SupportThreadsResponseAsRead.parse({ threads: [stranger()], nextCursor: null });
+    const thread = parsed.threads[0];
+    expect(thread?.channel).toBe("sms");
+    expect(thread?.accountLinkSource).toBe("oauth");
+    expect(thread?.priority).toBe("blocker");
+    // Marked, not mapped. The enum is still the authority on what a value means, and it says no — which
+    // is the whole licence a client needs to render the row and say it does not recognise this.
+    expect(SupportChannel.safeParse(thread?.channel).success).toBe(false);
+    expect(SupportAccountLinkSource.safeParse(thread?.accountLinkSource).success).toBe(false);
+    // A member the enum does declare still reads as itself, and the row is otherwise untouched.
+    expect(SupportThreadsResponseAsRead.parse({ threads: [listedThreadView(LISTED)], nextCursor: null })).toEqual({
+      threads: [listedThreadView(LISTED)],
+      nextCursor: null,
+    });
+  });
+
+  test("a malformed response still fails under the reader's contract", () => {
+    const malformed: unknown[] = [
+      "not an object",
+      null,
+      { threads: "nope", nextCursor: null },
+      { threads: [stranger()] },
+      { threads: [stranger()], nextCursor: 7 },
+      // A row missing the fields a record is made of.
+      { threads: [{ id: "t-9", channel: "sms" }], nextCursor: null },
+      // A channel that is not a member of anything — widened is still typed.
+      { threads: [{ ...stranger(), channel: 7 }], nextCursor: null },
+      { threads: [{ ...stranger(), channel: null }], nextCursor: null },
+      // A confidence outside 0..1, and a count that is not a whole number.
+      { threads: [{ ...stranger(), confidence: 5 }], nextCursor: null },
+      { threads: [{ ...stranger(), messageCount: 1.5 }], nextCursor: null },
+      // A date that is not one.
+      { threads: [{ ...stranger(), lastMessageAt: "yesterday" }], nextCursor: null },
+      // A boolean sent as the string a template would render it as.
+      { threads: [{ ...stranger(), senderAuthenticated: "true" }], nextCursor: null },
+    ];
+    for (const value of malformed) {
+      expect(SupportThreadsResponseAsRead.safeParse(value).success, JSON.stringify(value)).toBe(false);
+    }
+  });
+
+  test("every field with no enum under it is the producer's own schema instance, not a copy", () => {
+    // pithy-sh/pithy#113: a client holding its own mirror of a projection drifts the first time a field
+    // lands. A reader's contract that copied the untouched fields would be that mirror with a better
+    // excuse, so it shares them by identity and a field added upstream lands here with nothing to edit.
+    const reader: Record<string, unknown> = SupportListedThreadViewAsRead.shape;
+    const widened: string[] = [];
+    for (const [key, field] of Object.entries<unknown>(SupportListedThreadView.shape)) {
+      if (reader[key] === field) continue;
+      widened.push(key);
+    }
+    // The four fields an inbox row states as an enum, and no others. Written down rather than derived:
+    // a fifth enum landing upstream widens this row, and that is a fact worth reading in a diff.
+    expect(widened.sort()).toEqual(["accountLinkSource", "channel", "priority", "sentiment"]);
+    expect(SupportThreadsResponseAsRead.shape.nextCursor).toBe(SupportThreadsResponse.shape.nextCursor);
+  });
+
+  test("no reader's contract has an enum left anywhere in it, and its producer has one", () => {
+    for (const name of READERS_CONTRACTS) {
+      const reader = published[name];
+      const producer = published[name.replace(/AsRead$/, "")];
+      expect(reader, name).toBeInstanceOf(z.ZodType);
+      expect(producer, name).toBeInstanceOf(z.ZodType);
+      // The gate. A widening that missed a field, or a field that lands later carrying an enum, is a
+      // path in this list — and a reader that still refuses one member of it refuses the whole response.
+      expect(enumsIn(reader as z.ZodType, name), name).toEqual([]);
+      // Anti-vacuity: the producer it was derived from really does hold an enum, so an empty list is a
+      // rewrite that happened rather than a walk that found nothing to look at.
+      expect(enumsIn(producer as z.ZodType, name).length, name).toBeGreaterThan(0);
+    }
+  });
+
+  test("the published set of reader's contracts is the one that is written down", () => {
+    const exported = Object.keys(published)
+      .filter((name) => name.endsWith("AsRead"))
+      .sort();
+    expect(exported).toEqual([...READERS_CONTRACTS].sort());
   });
 });
