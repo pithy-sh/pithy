@@ -21,6 +21,38 @@ vi.mock("cloudflare", () => ({
 /** An SDK 404 throw — the shape `isNotFoundError` keys on. */
 const notFound = () => Object.assign(new Error("Not Found"), { status: 404 });
 
+/**
+ * A real instance-detail body for a step that raised `NonRetryableError` — captured verbatim from the
+ * Workflows engine in `wrangler dev` (4.123.0), 2026-08-14. The instance error is the platform's
+ * sentence and the step's is the kit's; that difference is the whole of pithy-sh/pithy#349.
+ */
+const TERMINAL_INSTANCE = {
+  status: "errored",
+  output: null,
+  error: {
+    name: "WorkflowFatalError",
+    message:
+      "The execution of the Workflow instance was terminated, as a step threw an NonRetryableError and it was not handled",
+  },
+  steps: [
+    {
+      name: "write-secret-1",
+      type: "step",
+      success: false,
+      attempts: [
+        {
+          success: false,
+          error: {
+            name: "WorkflowFatalError",
+            message:
+              "Step threw a NonRetryableError with message \"NonRetryableError: secrets/already_exists: Secret 'api-token' already exists.\"",
+          },
+        },
+      ],
+    },
+  ],
+};
+
 function client(): CloudflareWorkflowsClient {
   return new CloudflareWorkflowsClient({ accountId: "acc", apiToken: "tok", sleeper: async () => {} });
 }
@@ -94,6 +126,19 @@ describe("CloudflareWorkflowsClient", () => {
     expect(error).toBeInstanceOf(CloudflareRequestError);
     const payload = (error as CloudflareRequestError).payload;
     expect(payload.detail).toContain("decrypt failed");
+    expect(payload.detail).not.toContain("TOPSECRET");
+  });
+
+  test("dispatchAndPoll reports the sentence the step raised, not the platform's (pithy-sh/pithy#349)", async () => {
+    mockCreate.mockResolvedValue({ id: "wf-1", status: "queued" });
+    mockGet.mockResolvedValue(TERMINAL_INSTANCE);
+    const error = await client()
+      .dispatchAndPoll("secrets-write", { secret: "TOPSECRET" })
+      .catch((e: unknown) => e);
+    const payload = (error as CloudflareRequestError).payload;
+    expect(payload.message).toBe("Secret 'api-token' already exists.");
+    expect(payload.message).not.toContain("NonRetryableError");
+    expect(payload.detail).toContain("secrets/already_exists");
     expect(payload.detail).not.toContain("TOPSECRET");
   });
 
