@@ -4,7 +4,7 @@
 import type { PurchaseEnvironment } from "../../data/purchase";
 import { PaymentsRailNotConfiguredError, PaymentsVerificationFailedError } from "../../error/errors";
 import type { PaymentsPaddleCredentials } from "../../secret/registry";
-import type { UnboundProviderEvent, VerifiedNotification, WebhookDelivery } from "../contract";
+import type { NotificationNote, UnboundProviderEvent, VerifiedNotification, WebhookDelivery } from "../contract";
 import { RESTORING_ACTIONS, REVOKING_ACTIONS, tallyAdjustments } from "./adjustments";
 import type { PaddleEnvironment } from "./api";
 import {
@@ -147,7 +147,7 @@ export const PADDLE_SUBSCRIPTION_EVENTS: ReadonlySet<string> = new Set([
 export const PADDLE_ADJUSTMENT_EVENTS: ReadonlySet<string> = new Set(["adjustment.created", "adjustment.updated"]);
 
 /** Nothing at all was learned, but the delivery was authentic. */
-function nothing(event: PaddleEvent, note?: string): VerifiedNotification {
+function nothing(event: PaddleEvent, note?: NotificationNote): VerifiedNotification {
   return {
     providerEventId: event.event_id,
     payload: recordedPayload(event),
@@ -311,10 +311,15 @@ async function adjustmentNotification(
     // Either Paddle no longer knows the transaction, or it belongs to another deployment on this shared
     // sandbox. Authentic, unprojectable, and worth an operator's attention — so this is one of the two
     // places on this rail that sets a note.
-    return nothing(
-      event,
-      `Paddle adjustment ${adjustment.id} names transaction ${adjustment.transaction_id}, which this deployment cannot read.`,
-    );
+    //
+    // **`read` (#341).** This is the answer a call to Paddle gave, and the second reason above is the giveaway
+    // that it is not a fact about the event: "cannot read" depends on which key asked. A rotated key, a
+    // shared sandbox, an adjustment arriving ahead of its transaction — each answers `undefined` now and
+    // something else later. Finishing the row on it made the redelivery that would have projected the
+    // clawback a `duplicate`.
+    return nothing(event, {
+      read: `Paddle adjustment ${adjustment.id} names transaction ${adjustment.transaction_id}, which this deployment cannot read.`,
+    });
   }
   if (fencedOut(transaction.custom_data, options.deployment)) return nothing(event);
 
@@ -336,10 +341,14 @@ async function adjustmentNotification(
     // An unreadable figure lands here too, and deliberately: an amount this build could not read is not
     // evidence of a full refund, and revoking on it would take an entitlement away on a guess. The note
     // names both figures and how many adjustments were counted, which is what makes it repairable.
-    return nothing(
-      event,
-      `Paddle adjustment ${adjustment.id} (${adjustment.action}) brings transaction ${adjustment.transaction_id} to ${tally.revokedMinor ?? "an unreadable amount"} adjusted across ${tally.counted} adjustment(s), of a ${tally.totalMinor ?? "unreadable"} total. Recorded; the entitlement stands.`,
-    );
+    //
+    // **`stated`, and the difference from the branch above is the whole rule (#341).** That one is what a
+    // failed read answered; this one is a sum over a transaction the read *returned*. The figures are in
+    // hand, the arithmetic is this build's, and a redelivery re-runs it on the same numbers — so there is
+    // nothing here a second attempt could improve, and the row is finished.
+    return nothing(event, {
+      stated: `Paddle adjustment ${adjustment.id} (${adjustment.action}) brings transaction ${adjustment.transaction_id} to ${tally.revokedMinor ?? "an unreadable amount"} adjusted across ${tally.counted} adjustment(s), of a ${tally.totalMinor ?? "unreadable"} total. Recorded; the entitlement stands.`,
+    });
   }
 
   return projected(

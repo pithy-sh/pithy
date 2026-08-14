@@ -4,7 +4,7 @@
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import type { PaymentsPaddleCredentials } from "../../secret/registry";
-import type { VerifiedNotification } from "../contract";
+import { noteText, type VerifiedNotification } from "../contract";
 import { PADDLE_SWEPT_EVENT_TYPES } from "./events";
 import { accountReferenceProof, type PaddleEvent, type PaddleTransaction } from "./objects";
 import { PADDLE_RECORDED_EVENT_TYPES } from "./recorded";
@@ -257,8 +257,10 @@ describe("the adjustment map — refunds Paddle issued on its own", () => {
       { readTransaction: async () => await transaction() },
     );
     expect(notification.event).toBeNull();
-    expect(notification.note).toContain("300");
-    expect(notification.note).toContain("999");
+    // `stated`: the tally is arithmetic over a transaction the read *returned*. Nothing here a redelivery
+    // could improve, so this note does finish the row — the other half of the #341 split.
+    expect(notification.note).toEqual({ stated: expect.stringContaining("300") as unknown as string });
+    expect(noteText(notification.note)).toContain("999");
   });
 
   test("an unreadable original total is treated as partial, not as full", async () => {
@@ -268,7 +270,9 @@ describe("the adjustment map — refunds Paddle issued on its own", () => {
       readTransaction: async () => await transaction({ details: { totals: {} } }),
     });
     expect(notification.event).toBeNull();
-    expect(notification.note).toContain("unreadable");
+    // Still `stated`. The read succeeded; it is the *figures inside its answer* this build could not parse,
+    // and a second delivery parses the same figures the same way.
+    expect(notification.note).toEqual({ stated: expect.stringContaining("unreadable") as unknown as string });
   });
 
   test("a chargeback revokes and its reverse restores, on a later clock", async () => {
@@ -311,7 +315,12 @@ describe("the adjustment map — refunds Paddle issued on its own", () => {
       readTransaction: async () => undefined,
     });
     expect(notification.event).toBeNull();
-    expect(notification.note).toContain("cannot read");
+    // **A `read` note, not a `stated` one, and that is what keeps the row repairable (#341).** "This
+    // deployment cannot read it" is the answer one key got from Paddle at one instant, not a fact about the
+    // adjustment — so the delivery must not be finished on it.
+    expect(notification.note).toEqual({
+      read: expect.stringContaining("cannot read") as unknown as string,
+    });
   });
 
   test("an adjustment against another deployment's transaction is fenced out", async () => {

@@ -3,6 +3,7 @@
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
+import { noteText } from "../contract";
 import chargeRefunded from "./fixtures/event-charge-refunded.json" with { type: "json" };
 import invoicePaid from "./fixtures/event-invoice-paid.json" with { type: "json" };
 import sessionPayment from "./fixtures/event-session-completed-payment.json" with { type: "json" };
@@ -264,8 +265,8 @@ describe("mapStripeSession", () => {
     const bare = session(sessionPayment, { metadata: {} });
     const mapped = mapStripeSession(bare, { eventAt: EVENT_AT, now: EVENT_AT });
     expect(mapped.event).toBeNull();
-    expect(mapped.note).toContain("pi_1PithyCoins");
-    expect(mapped.note).toContain(STRIPE_METADATA_PRICE);
+    expect(mapped.note).toEqual({ stated: expect.stringContaining("pi_1PithyCoins") as unknown as string });
+    expect(noteText(mapped.note)).toContain(STRIPE_METADATA_PRICE);
     // The link fields still travel: the session named a customer and a reference, and both are worth binding.
     expect(mapped.providerAccountId).toBe("cus_PithyAda");
     expect(mapped.accountReference).toBe("ada");
@@ -446,7 +447,8 @@ describe("mapStripeCharge", () => {
     // Nothing identifies which purchase it refunds, so there is nothing to project and nothing to guess.
     const mapped = mapStripeCharge(charge({ payment_intent: null }), { eventAt: EVENT_AT });
     expect(mapped.event).toBeNull();
-    expect(mapped.note).toContain("ch_1PithyCoins");
+    // `stated`, like every note on this rail: the mapping reads the delivered object and calls nothing.
+    expect(mapped.note).toEqual({ stated: expect.stringContaining("ch_1PithyCoins") as unknown as string });
   });
 
   test("a charge with no price in its metadata is recorded with the id that repairs it", () => {
@@ -454,7 +456,7 @@ describe("mapStripeCharge", () => {
     // the note, finds the row, and projects the refund with one query.
     const mapped = mapStripeCharge(charge({ metadata: {} }), { eventAt: EVENT_AT });
     expect(mapped.event).toBeNull();
-    expect(mapped.note).toContain("pi_1PithyCoins");
+    expect(mapped.note).toEqual({ stated: expect.stringContaining("pi_1PithyCoins") as unknown as string });
   });
 });
 

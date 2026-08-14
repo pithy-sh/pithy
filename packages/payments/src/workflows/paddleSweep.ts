@@ -9,12 +9,22 @@ import { railEnabled } from "../config/config";
 import type { PurchaseEnvironment } from "../data/purchase";
 import { PADDLE_EVENTS_CURSOR, PaymentsSyncCursor } from "../data/syncCursor";
 import { PAYMENTS_SYNC_CURSORS_TABLE, PAYMENTS_WEBHOOK_EVENTS_TABLE, paymentsDatabase } from "../data/tables";
-import { isWebhookEventOutstanding, PaymentsWebhookEvent, webhookEventState } from "../data/webhookEvent";
+import {
+  isWebhookEventOutstanding,
+  PaymentsWebhookEvent,
+  WEBHOOK_EVENT_ORPHANED,
+  webhookEventState,
+} from "../data/webhookEvent";
 import { fulfillPurchase } from "../grants/apply";
+import { repairOrphanedEvents } from "../projection/orphans";
 import { linkProviderAccount, resolveNotificationOwner } from "../projection/owner";
 import { projectPurchase } from "../projection/writer";
-import type { PaddleEnvironment, PaddleHttpFetch } from "../rails/paddle/api";
+import { noteIsRepairable, noteText } from "../rails/contract";
+import { type PaddleEnvironment, type PaddleHttpFetch, paddleHttpFetch } from "../rails/paddle/api";
 import { PADDLE_EVENT_RETENTION_DAYS, sweepPaddleEvents } from "../rails/paddle/events";
+import { PaddleEvent } from "../rails/paddle/objects";
+import { PADDLE_ADJUSTMENTS_INCLUDE, readTransaction } from "../rails/paddle/read";
+import { readPaddleEvent } from "../rails/paddle/webhook";
 import type { PaymentsPaddleCredentials } from "../secret/registry";
 
 /**
@@ -329,8 +339,13 @@ async function fail(d1: D1Database, id: string, attempt: number, error: string):
 /** The word an operator greps `error` for. One string, so the writer and a runbook cannot drift apart. */
 const QUARANTINED = "quarantined";
 
-/** The word for the other reason this sweep walks away from an event, likewise greppable. */
-const ORPHANED = "orphaned";
+/**
+ * The word for the other reason this sweep walks away from an event, likewise greppable.
+ *
+ * Shared with the webhook handler through `data/webhookEvent.ts` rather than spelled here, because the relink
+ * repair queries on it: two writers with two sentences for one condition is a set that cannot be selected.
+ */
+const ORPHANED = WEBHOOK_EVENT_ORPHANED;
 
 /**
  * Stamp `abandonedAt` and say in the row why — the one writer for *this pass has walked away from this*.
@@ -380,7 +395,7 @@ async function orphan(d1: D1Database, id: string, now: Date): Promise<void> {
     d1,
     id,
     now,
-    `${ORPHANED}: no Pithy user could be resolved for this swept event, so the sweep has moved past it. It is not finished — once this customer is linked to a Pithy user, any delivery of this event id projects it, including a replay from Paddle.`,
+    `${ORPHANED} no Pithy user could be resolved for this swept event, so the sweep has moved past it. It is not finished — the account linking re-examines it (see \`projection/orphans.ts\`), and any later delivery of this event id projects it too, including a replay from Paddle.`,
   );
 }
 
@@ -403,7 +418,7 @@ async function quarantine(d1: D1Database, id: string, attempt: number, now: Date
     d1,
     id,
     now,
-    `${QUARANTINED} after ${attempt} attempts; the sweep has moved past it. Last failure: ${error}`,
+    `${QUARANTINED}: after ${attempt} attempts; the sweep has moved past it. Last failure: ${error}`,
     attempt,
   );
 }
@@ -428,6 +443,46 @@ async function attemptFailed(
   }
   await quarantine(d1, id, attempt, now, reason);
   return true;
+}
+
+/**
+ * Project the orphans this link just made resolvable, and never let that fail the sweep.
+ *
+ * The events are gone from this pass's point of view — the cursor moved past them the run they were
+ * abandoned — so an account linking is the only signal left that anything changed. The repair replays each
+ * row's own recorded payload through the same map this sweep already uses, resolves the owner against the
+ * table the link just landed in, and finishes only what it actually projected. See `projection/orphans.ts`.
+ *
+ * Swallowing here rather than in the repair: a sweep is a Workflow step, and a step that throws is retried
+ * from the top — re-reading a page of Paddle events to repair a row that was never this page's business.
+ */
+async function repairOrphans(deps: PaddleSweepDeps, at: Date): Promise<void> {
+  const base = {
+    credentials: deps.credentials,
+    environment: deps.paddleEnvironment,
+    transport: deps.transport ?? paddleHttpFetch,
+  };
+  await repairOrphanedEvents(deps.d1, "paddle", {
+    config: deps.config,
+    environment: deps.environment,
+    now: at,
+    replay: async (payload) => {
+      const parsed = PaddleEvent.safeParse(payload);
+      if (!parsed.success) return undefined;
+      return await readPaddleEvent(parsed.data, {
+        credentials: deps.credentials,
+        environment: deps.paddleEnvironment,
+        now: at,
+        deployment: deps.deployment,
+        readTransaction: (id) => readTransaction(id, base, PADDLE_ADJUSTMENTS_INCLUDE),
+      });
+    },
+    fulfill: async (projection) => {
+      const fulfill =
+        deps.fulfill ?? ((d1, value) => fulfillPurchase(d1, value, { config: deps.config, now: () => at.getTime() }));
+      await fulfill(deps.d1, projection);
+    },
+  });
 }
 
 /** What to write in `error` for a thrown cause. A `PithyError`'s `detail` is throw-site context, not client text. */
@@ -539,11 +594,30 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
         await linkProviderAccount(deps.d1, "paddle", notification.providerAccountId, notification.accountReference, {
           now: at,
         });
+        await repairOrphans(deps, at);
+        // The link is what an orphan was waiting for, and this sweep will not look at those events again —
+        // its cursor is past them. So the repair runs on the signal rather than on the next pass. #341.
       }
 
       if (notification.event === null) {
+        // **A note a provider read produced is not a completion, and that is #341 on this path.** The rail
+        // reads a transaction to tell a full refund from a partial one, and a read answering "no such
+        // transaction" is exactly as repairable as one that threw — a rotated key, a shared sandbox, an
+        // adjustment swept ahead of its own transaction. So it goes through the same bound the thrown case
+        // above uses, rather than stamping `processedAt` and making Paddle's redelivery a duplicate.
+        if (noteIsRepairable(notification.note)) {
+          report.failed += 1;
+          if (await attemptFailed(deps.d1, id, attempts, at, noteText(notification.note) ?? "unreadable")) {
+            report.quarantined.push(event.eventId);
+            cursor = event.eventId;
+            continue;
+          }
+          report.cursor = cursor;
+          if (cursor !== null) await writeCursor(deps.d1, cursor, at, newId);
+          return report;
+        }
         report.ignored += 1;
-        await complete(deps.d1, id, at, notification.note ?? undefined);
+        await complete(deps.d1, id, at, noteText(notification.note));
         cursor = event.eventId;
         continue;
       }

@@ -6,7 +6,7 @@ import { minorUnitDigits, minorUnitsFromScaled } from "../../data/money";
 import type { PurchaseEnvironment } from "../../data/purchase";
 import { ACCESS_GRANTING_STATUSES, type PurchaseStatus } from "../../data/status";
 import { PaymentsVerificationFailedError } from "../../error/errors";
-import type { UnboundProviderEvent } from "../contract";
+import type { NotificationNote, UnboundProviderEvent } from "../contract";
 
 /**
  * Stripe's objects, and the mapping from what Stripe calls a thing to what the projection stores.
@@ -321,8 +321,15 @@ export interface StripeMappedEvent {
   providerAccountId: string | null;
   /** The reference this deployment stamped when it created the purchase, or null. */
   accountReference: string | null;
-  /** Why there is no event, when that is worth recording on the webhook row. Null when nothing is missing. */
-  note: string | null;
+  /**
+   * Why there is no event, when that is worth recording on the webhook row. Null when nothing is missing.
+   *
+   * Always `stated` on this rail, and that is a property of where the mapping gets its facts: every note
+   * below is a sentence about the delivered event object, which Stripe expands into the webhook body. This
+   * rail makes no call to Stripe on the notification path, so it has no read that could have failed — see
+   * {@link NotificationNote}, and #341 for the three rails that do.
+   */
+  note: NotificationNote | null;
 }
 
 /** The event types this build acts on. Anything else is authentic and changes nothing. */
@@ -429,7 +436,9 @@ export function mapStripeSession(session: StripeCheckoutSession, options: Stripe
     return {
       event: null,
       ...link,
-      note: `stripe: Checkout Session ${session.id} (payment intent ${transactionId}) names no price — it carries no ${STRIPE_METADATA_PRICE} metadata and no expanded line items, so it was not created by this deployment.`,
+      note: {
+        stated: `stripe: Checkout Session ${session.id} (payment intent ${transactionId}) names no price — it carries no ${STRIPE_METADATA_PRICE} metadata and no expanded line items, so it was not created by this deployment.`,
+      },
     };
   }
 
@@ -497,7 +506,9 @@ export function mapStripeCharge(charge: StripeCharge, options: { eventAt: Date }
     return {
       event: null,
       ...link,
-      note: `stripe: charge ${charge.id} names no payment intent, so there is no purchase row it can be matched to.`,
+      note: {
+        stated: `stripe: charge ${charge.id} names no payment intent, so there is no purchase row it can be matched to.`,
+      },
     };
   }
 
@@ -508,7 +519,9 @@ export function mapStripeCharge(charge: StripeCharge, options: { eventAt: Date }
     return {
       event: null,
       ...link,
-      note: `stripe: charge ${charge.id} carries no ${STRIPE_METADATA_PRICE} metadata, so the refund of payment intent ${charge.payment_intent} could not be projected.`,
+      note: {
+        stated: `stripe: charge ${charge.id} carries no ${STRIPE_METADATA_PRICE} metadata, so the refund of payment intent ${charge.payment_intent} could not be projected.`,
+      },
     };
   }
 

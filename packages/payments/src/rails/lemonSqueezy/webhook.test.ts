@@ -207,7 +207,10 @@ describe("invoice-domain events — the money row", () => {
       transport: reads("", 404),
     });
     expect(notification.event).toBeNull();
-    expect(notification.note).toContain(SUBSCRIPTION_ID);
+    // **A `read` note (#341).** The 404 above is what `reads("", 404)` staged, and a 404 from this endpoint
+    // is not only "deleted": an invoice webhook can outrun the subscription's own visibility. So the note
+    // explains and does not finish — the row stays repairable for the store's redelivery.
+    expect(notification.note).toEqual({ read: expect.stringContaining(SUBSCRIPTION_ID) as unknown as string });
   });
 });
 

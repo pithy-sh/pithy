@@ -75,7 +75,7 @@ const webhookRows = () =>
 const cursors = () => db().selectFrom("pithyPaymentsSyncCursors").selectAll().execute();
 
 /** One `subscription.activated`, stamped with a proof this deployment could have written. */
-async function activated(eventId: string, subscriptionId = SUB) {
+async function activated(eventId: string, subscriptionId = SUB, customerId = CUSTOMER) {
   return {
     event_id: eventId,
     event_type: "subscription.activated",
@@ -83,7 +83,7 @@ async function activated(eventId: string, subscriptionId = SUB) {
     data: {
       id: subscriptionId,
       status: "active",
-      customer_id: CUSTOMER,
+      customer_id: customerId,
       items: [{ price: { id: PRICE } }],
       current_billing_period: { starts_at: "2026-08-12T09:00:00Z", ends_at: "2026-09-12T09:00:00Z" },
       custom_data: {
@@ -463,6 +463,55 @@ describe("sweepPaddle", () => {
     expect(recorded?.error).toContain("9900");
   });
 
+  /**
+   * **The read-derived note, on the sweep's own path.** (#341)
+   *
+   * The webhook handler is not the only place a note finished a row: this sweep called `complete` with
+   * whatever note the rail returned, and the Paddle rail derives one from a transaction read. A 404 there
+   * is not a fact about the adjustment — a rotated key, a shared sandbox, and an adjustment swept ahead of
+   * its own transaction all produce it — so it goes through the same bound a thrown read already used.
+   *
+   * The neighbouring partial-refund case is the anti-vacuity: its note comes from a transaction the read
+   * *returned*, and it still finishes the row with `ignored: 1`.
+   */
+  test("an adjustment whose transaction Paddle will not show is repairable, not finished", async () => {
+    await sweepPaddle(deps(stream([[await activated("evt_01")]])));
+
+    const absent = (async (url: string) => {
+      if (url.includes("/transactions/")) return { ok: false, status: 404, text: async () => "{}" };
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            data: [
+              {
+                event_id: "evt_unread",
+                event_type: "adjustment.created",
+                occurred_at: "2026-08-12T12:00:00Z",
+                data: refund("adj_01", "9900"),
+              },
+            ],
+            meta: { pagination: { has_more: false } },
+          }),
+      };
+    }) as PaddleHttpFetch;
+
+    const report = await sweepPaddle(deps(absent));
+    // Failed, not ignored: an event this build *was* going to act on and could not.
+    expect(report).toMatchObject({ read: 1, projected: 0, ignored: 0, failed: 1, quarantined: [] });
+
+    const row = (await webhookRows()).find((event) => event.providerEventId === "evt_unread");
+    expect(row?.error).toContain("cannot read");
+    expect(row?.processedAt, "a read can be wrong, so its note must not finish the row").toBeNull();
+    expect(row?.abandonedAt, "under the bound, so nothing has been given up on yet").toBeNull();
+    expect(row?.attempts).toBe(1);
+
+    // And the delivery Paddle is still retrying can repair it, which is the whole point: the guard is not
+    // holding a `duplicate` in front of it.
+    expect((await webhookRows()).find((event) => event.providerEventId === "evt_unread")?.processedAt).toBeNull();
+  });
+
   test("a credential-bearing event Paddle returned anyway never becomes a row", async () => {
     // The filter is a request. This is the control. `client_token.created` carries a `token` Paddle does
     // not redact, and `pithy_payments_webhook_events` is a table an operator greps and a backup keeps.
@@ -674,9 +723,14 @@ describe("sweepPaddle", () => {
    */
   test("an orphan is abandoned rather than finished, and the cursor still moves past it", async () => {
     // No `pithy_user` stamp, and no `provider_accounts` row: authentic, and nobody to project it against.
+    // A customer of its own: the stamped event behind it links *somebody else*, so this case stays about
+    // the cursor. An orphan whose customer the same page links is the next case, and it projects.
     const orphan = {
-      ...(await activated("evt_orphan")),
-      data: { ...(await activated("evt_orphan")).data, custom_data: {} },
+      ...(await activated("evt_orphan", "sub_stray", "ctm_01hv8wptq8987qeep44cystray")),
+      data: {
+        ...(await activated("evt_orphan", "sub_stray", "ctm_01hv8wptq8987qeep44cystray")).data,
+        custom_data: {},
+      },
     };
 
     const report = await sweepPaddle(deps(stream([[orphan, await activated("evt_behind", "sub_02")]])));
@@ -700,6 +754,43 @@ describe("sweepPaddle", () => {
     // And the next run does not pick it up again, so one unlinkable customer is not swept for ever.
     const second = await sweepPaddle(deps(stream([[orphan]])));
     expect(second).toMatchObject({ read: 1, duplicate: 1, orphaned: [] });
+  });
+
+  /**
+   * **What repairs an abandoned orphan when no delivery ever comes.** (#341)
+   *
+   * The case above is the sweep walking away and staying away — correct, and for an unlinkable customer it
+   * is the end of the story. For a customer who *does* link, it was also the end of the story, and that was
+   * the defect: the cursor is past the event, Paddle's three-day retry window closes, and nothing
+   * re-examined the row on the one signal that changed anything.
+   *
+   * The link here is written by the sweep itself, from a stamped event for the same customer — the shape a
+   * checkout this deployment initiated actually has. The orphan's own event is never read again.
+   */
+  test("an orphan is projected when a later event links its customer", async () => {
+    const orphan = {
+      ...(await activated("evt_orphan", "sub_orphan")),
+      data: { ...(await activated("evt_orphan", "sub_orphan")).data, custom_data: {} },
+    };
+
+    const first = await sweepPaddle(deps(stream([[orphan]])));
+    expect(first.orphaned).toEqual(["evt_orphan"]);
+    expect(await purchases()).toEqual([]);
+
+    // A stamped event for the same Paddle customer, in a later run. Its own purchase projects; the link it
+    // writes is what the abandoned row was waiting for.
+    const report = await sweepPaddle(deps(stream([[await activated("evt_linked", "sub_linked")]])));
+    expect(report).toMatchObject({ read: 1, projected: 1, orphaned: [] });
+
+    const rows = await purchases();
+    expect(rows.map((row) => row.providerTransactionId).sort()).toEqual(["sub_linked", "sub_orphan"]);
+    expect(rows.every((row) => row.userId === "ada")).toBe(true);
+
+    const repaired = (await webhookRows()).find((row) => row.providerEventId === "evt_orphan");
+    expect(repaired?.processedAt, "the purchase is projected, so the event is finished").not.toBeNull();
+    expect(repaired?.error).toBeNull();
+    // Kept: how close this sale came to being lost belongs on the record.
+    expect(repaired?.abandonedAt).not.toBeNull();
   });
 
   test("walks more than one page, and stops when Paddle says there is no more", async () => {

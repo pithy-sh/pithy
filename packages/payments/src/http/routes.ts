@@ -27,6 +27,7 @@ import type { PurchaseEnvironment } from "../data/purchase";
 import { PaymentsPurchase } from "../data/purchase";
 import { PAYMENTS_HOSTED_RAILS, type PaymentsRail } from "../data/rail";
 import { PAYMENTS_PURCHASES_TABLE, paymentsDatabase } from "../data/tables";
+import { WEBHOOK_EVENT_ORPHANED } from "../data/webhookEvent";
 import { grantEntitlement, revokeEntitlement } from "../entitlement/manual";
 import {
   PaymentsEntitlementNotInCatalogError,
@@ -35,6 +36,7 @@ import {
   PaymentsReceiptAlreadyOwnedError,
 } from "../error/errors";
 import { fulfillPurchase } from "../grants/apply";
+import { repairOrphanedEvents } from "../projection/orphans";
 import { linkProviderAccount, providerAccountForUser, resolveNotificationOwner } from "../projection/owner";
 import { resolveEntitlements } from "../projection/resolve";
 import { type PurchaseProjection, projectPurchase } from "../projection/writer";
@@ -43,6 +45,7 @@ import {
   isCheckoutRail,
   isDiscountRail,
   isPricingRail,
+  noteText,
   type PaymentsRailProvider,
 } from "../rails/contract";
 import { type RailTrustOptions, resolveRailProvider } from "../rails/providers";
@@ -520,6 +523,10 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       // That is legitimate often enough (a shared device, a reinstall against a new Pithy account) that
       // refusing would hand an attacker a way to lock the real owner out — so the first binding stands, this
       // caller keeps the purchase they just projected, and the collision is recorded for somebody to look at.
+      // The purchases that were waiting on exactly this link. On Apple and Google the client submission is
+      // the *only* link event there is — no webhook on those rails carries an account reference — so a rail
+      // that cannot replay its own recorded payload is answered by a no-op here rather than by an omission.
+      await repairOrphans(c, rail, now);
       if (bound !== userId) {
         await c.var.emit({
           action: PaymentsAuditActions.providerAccountContested,
@@ -546,6 +553,35 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
    * here is deliberately left to propagate: the credit's ref is stable, so a retry settles it, and swallowing
    * it would lose a purchase's currency with nothing anywhere to read.
    */
+  /**
+   * Project the orphans a link just made resolvable. Never throws: see {@link repairOrphanedEvents}.
+   *
+   * The rail provider is built here rather than passed, because `replay` is the one thing the repair needs
+   * from a rail and building one costs a secrets read the handler has already paid for on every path that
+   * reaches this.
+   */
+  async function repairOrphans(c: Context<PithyHonoEnv>, rail: PaymentsRail, now: Date): Promise<void> {
+    const provider = resolveRailProvider(rail, config, await credentials(c), trust);
+    const replay = provider.replay?.bind(provider);
+    if (replay === undefined) return;
+    const repaired = await repairOrphanedEvents(database(c), rail, {
+      config,
+      environment: deploymentEnvironment(c),
+      now,
+      replay: (payload) => replay(payload, { now, deployment: deploymentName(c) }),
+      fulfill: (projection) => fulfill(c, projection),
+    });
+    for (const providerEventId of repaired.projected) {
+      await c.var.emit({
+        action: PaymentsAuditActions.webhookReceived,
+        outcome: "success",
+        actorType: "service",
+        actorId: rail,
+        metadata: { rail, providerEventId, projected: true, repaired: "orphan" },
+      });
+    }
+  }
+
   async function fulfill(c: Context<PithyHonoEnv>, projection: PurchaseProjection): Promise<void> {
     await fulfillPurchase(database(c), projection, {
       config,
@@ -1421,6 +1457,10 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       // `linkProviderAccount` never rebinds, so the first pairing wins and a later session cannot steal it.
       if (notification.providerAccountId && notification.accountReference) {
         await linkProviderAccount(d1, rail, notification.providerAccountId, notification.accountReference, { now });
+        await repairOrphans(c, rail, now);
+        // And the pairing is worth acting on, not only keeping. An orphan is a purchase that arrived before
+        // its owner was knowable, and this link is the event that makes it knowable — the one signal no
+        // store redelivers on. See `projection/orphans.ts`; #341 is the ten sweeps that never projected.
       }
 
       /**
@@ -1478,7 +1518,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
           return c.json({ received: true, projected: true, outcome: projection.outcome }, 200);
         }
         return await acknowledge({
-          error: `${notification.note ?? "voided purchase"} — no purchase is stored under that order id.`,
+          error: `${noteText(notification.note) ?? "voided purchase"} — no purchase is stored under that order id.`,
           reason: "orphaned",
           severity: "warning",
         });
@@ -1493,9 +1533,16 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       // explanation as an error was #339 — it left the row outstanding, which is this table's drift signal
       // and the guard's short-circuit both, on the deliveries that had nothing to repair.
       if (!notification.event) {
-        return notification.note
-          ? await acknowledge({ note: notification.note, reason: "unresolvable", severity: "warning" })
-          : await acknowledge({});
+        const note = notification.note;
+        if (note === null || note === undefined) return await acknowledge({});
+        // **Which kind of note decides the state, and that is #341.** A note the delivered bytes state is
+        // terminal, because the same bytes get the same answer from this build for ever. A note a *read*
+        // produced is not: the read could have raced the purchase it asked about, or been made with a
+        // credential that has since rotated, and finishing the row on it answered the redelivery that would
+        // have carried the better answer with `duplicate`. See `NotificationNote`.
+        return "stated" in note
+          ? await acknowledge({ note: note.stated, reason: "unresolvable", severity: "warning" })
+          : await acknowledge({ error: note.read, reason: "unresolvable", severity: "warning" });
       }
 
       const userId = await resolveNotificationOwner(paymentsDatabase(d1), rail, {
@@ -1507,7 +1554,9 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         // Orphaned: the app set no account identifier and no purchase in this subscription's family has ever
         // been submitted. No number of retries will conjure a link, so the row is what makes it repairable.
         return await acknowledge({
-          error: "no Pithy user could be resolved for this notification",
+          // The marker, not prose. An account linking has to be able to find exactly the rows that were
+          // waiting on it, and this is the one condition it repairs — see `WEBHOOK_EVENT_ORPHANED`.
+          error: `${WEBHOOK_EVENT_ORPHANED} no Pithy user could be resolved for this notification`,
           reason: "orphaned",
           severity: "warning",
         });

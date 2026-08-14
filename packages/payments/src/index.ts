@@ -66,7 +66,7 @@ export {
   paymentsDatabase,
   paymentsTables,
 } from "./data/tables";
-export { PaymentsWebhookEvent } from "./data/webhookEvent";
+export { PaymentsWebhookEvent, WEBHOOK_EVENT_ORPHANED, webhookEventAwaitsOwner } from "./data/webhookEvent";
 export {
   grantEntitlement,
   type ManualEntitlementInput,
@@ -117,6 +117,12 @@ export {
 } from "./http/schemas";
 export { ProviderEvent, type ProviderEventInput } from "./projection/event";
 export {
+  ORPHAN_REPAIR_LIMIT,
+  type RepairedOrphans,
+  type RepairOrphansOptions,
+  repairOrphanedEvents,
+} from "./projection/orphans";
+export {
   type LinkProviderAccountOptions,
   linkProviderAccount,
   type OwnerHints,
@@ -144,6 +150,9 @@ export {
   type CheckoutRail,
   type CheckoutSessionInput,
   isCheckoutRail,
+  type NotificationNote,
+  noteIsRepairable,
+  noteText,
   type PaymentsRailProvider,
   type PortalHandoff,
   type PortalSessionInput,

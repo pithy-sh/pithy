@@ -6,6 +6,7 @@ import { ProviderEvent } from "../projection/event";
 import {
   type CheckoutRail,
   isCheckoutRail,
+  noteText,
   type PaymentsRailProvider,
   type UnboundProviderEvent,
   type VerifiedNotification,
@@ -86,9 +87,9 @@ describe("UnboundProviderEvent", () => {
       payload: { voidedPurchaseNotification: { orderId: "GPA.3311-8452-9910-77304" } },
       event: null,
       providerAccountId: null,
-      note: "google: purchase voided (order GPA.3311-8452-9910-77304).",
+      note: { stated: "google: purchase voided (order GPA.3311-8452-9910-77304)." },
     };
-    expect(notification.note).toContain("GPA.3311-8452-9910-77304");
+    expect(noteText(notification.note)).toContain("GPA.3311-8452-9910-77304");
   });
 
   test("an account reference travels beside the store's own identifier, never as a userId", () => {
