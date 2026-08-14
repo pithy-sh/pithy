@@ -2,13 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
+import { NonRetryableError } from "cloudflare:workflows";
 import type { D1Database } from "@cloudflare/workers-types";
+import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import { LeaderboardConfig } from "../config/config";
 import { leaderboardDatabase } from "../data/tables";
 import { pruneBoards } from "../retention/prune";
 import { windowKeyAt } from "../window/schedule";
 import { acquireRefreshLock, releaseRefreshLock } from "./lock";
 import { type Keyset, REFRESH_BATCH_CHUNKS, type RefreshResult, refreshWindowRanks } from "./materialize";
+import { leaderboardWorkflowRetry } from "./retryPolicy";
 import { materializedBoards } from "./worker";
 
 /**
@@ -51,6 +54,12 @@ interface RankWorkerEnv {
 
 export class RankRefreshWorkflow extends WorkflowEntrypoint<RankWorkerEnv, unknown> {
   override async run(_event: WorkflowEvent<unknown>, step: WorkflowStep): Promise<void> {
+    // Every step below runs under `leaderboardWorkflowRetry`. Its record is empty and that is the whole
+    // statement: this refresh talks to D1 and to nothing else, core answers for D1's transient
+    // vocabulary, and leaderboard retries none of its own codes. See `retryPolicy.ts` — and note that
+    // terminal is cheap here precisely because the lock is released in the `finally` below, so the next
+    // cron fire does the whole job rather than skipping on a lock a doomed run was still holding.
+    const steps = classifiedSteps(step, leaderboardWorkflowRetry, NonRetryableError);
     const config = LeaderboardConfig.parse(JSON.parse(this.env.LEADERBOARD_CONFIG));
     const db = leaderboardDatabase(this.env.DB);
     const staleMs = this.env.LEADERBOARD_LOCK_STALE_MS ? Number(this.env.LEADERBOARD_LOCK_STALE_MS) : undefined;
@@ -59,7 +68,7 @@ export class RankRefreshWorkflow extends WorkflowEntrypoint<RankWorkerEnv, unkno
     // return value. A replay does not re-run the step body, so it reuses the same holder token and the
     // same `now` — recomputing `now` could cross a window boundary mid-refresh, and a fresh token would
     // orphan the lock.
-    const ctx: { holder: string; nowMs: number } = await step.do("refresh-context", async () => ({
+    const ctx: { holder: string; nowMs: number } = await steps.do("refresh-context", async () => ({
       holder: crypto.randomUUID(),
       nowMs: Date.now(),
     }));
@@ -75,7 +84,7 @@ export class RankRefreshWorkflow extends WorkflowEntrypoint<RankWorkerEnv, unkno
 
     try {
       // Prune first, in its own durable step, so the refresh never ranks rows about to be deleted.
-      await step.do("prune", () => pruneBoards(db, config.boards, now));
+      await steps.do("prune", () => pruneBoards(db, config.boards, now));
 
       for (const board of materializedBoards(config)) {
         // Only the open window is refreshed; a closed window's ranks were finalized while it was open.
@@ -87,7 +96,7 @@ export class RankRefreshWorkflow extends WorkflowEntrypoint<RankWorkerEnv, unkno
         // however many steps it needs; each is independently retried by the Workflow runtime.
         for (;;) {
           const from: Keyset | undefined = cursor ?? undefined;
-          const result: RefreshResult = await step.do(`refresh:${board.key}:${batch}`, () =>
+          const result: RefreshResult = await steps.do(`refresh:${board.key}:${batch}`, () =>
             refreshWindowRanks(db, board, window, {
               maxChunks: REFRESH_BATCH_CHUNKS,
               resumeAfter: from,

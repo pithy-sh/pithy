@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, UpstreamError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import type { VectorIndexConfig } from "../config/config";
 import { VectorDimensionMismatchError } from "../error/errors";
@@ -51,7 +51,23 @@ export async function embedTexts(ai: VectorAi, texts: string[], model: string): 
     });
   }
 
-  const raw = await ai.run(model, { text: texts });
+  // A rejection out of the binding is the one fault in this function a second attempt can answer
+  // differently: every other refusal here is deterministic in the input or in the model's answer. It
+  // therefore carries `core/upstream_failed`, which `vectorWorkflowRetry` states — a raw throw would be
+  // `unclassified` to `classifyWorkflowFault`, and unclassified is terminal (pithy-sh/pithy#348). The
+  // binding's own words stay in `detail`, which the HTTP codec strips.
+  let raw: unknown;
+  try {
+    raw = await ai.run(model, { text: texts });
+  } catch (error) {
+    throw new UpstreamError(
+      {
+        message: "The embedding model could not be reached.",
+        detail: `Workers AI rejected an embedding call with model '${model}'`,
+      },
+      { cause: error },
+    );
+  }
   const parsed = EmbeddingResponse.safeParse(raw);
   if (!parsed.success) {
     throw new InternalError({

@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
+import { NonRetryableError } from "cloudflare:workflows";
 import type { D1Database, KVNamespace, R2Bucket } from "@cloudflare/workers-types";
 import { CloudflareStreamManager } from "@pithy-sh/cloudflare/src/media/streamManager";
+import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { configureSharedSecrets, sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { z } from "zod";
@@ -22,6 +24,7 @@ import {
   runVideoTranscription,
 } from "./enrich";
 import { fetchVideoAudio } from "./hls";
+import { mediaWorkflowRetry } from "./retryPolicy";
 
 /**
  * The prebuilt media worker. `pithy media provision` deploys one per environment; the adopter authors no
@@ -124,11 +127,21 @@ async function buildDeps(env: MediaWorkerEnv, transcribeKind: "audio" | "video" 
   };
 }
 
+/**
+ * The four enrichment Workflows all run their one step under {@link mediaWorkflowRetry}: an
+ * unreachable model, an unreachable Stream API, and a video whose asset is still encoding re-drive;
+ * a record that is gone, a type enrichment cannot read, and a model answer the schema refuses fail at
+ * once. See `retryPolicy.ts` — the asymmetry matters more here than anywhere else in the kit, because
+ * nothing restarts an enrichment and a missing caption looks exactly like a caption nobody wanted.
+ */
+
 /** Image → alt text and caption. Does not transcribe. */
 export class MediaImageToTextWorkflow extends WorkflowEntrypoint<MediaWorkerEnv, { id: string }> {
   override async run(event: WorkflowEvent<{ id: string }>, step: WorkflowStep): Promise<void> {
     const deps = await buildDeps(this.env);
-    await step.do(`image-to-text-${event.payload.id}`, () => runImageToText(deps, event.payload.id));
+    await classifiedSteps(step, mediaWorkflowRetry, NonRetryableError).do(`image-to-text-${event.payload.id}`, () =>
+      runImageToText(deps, event.payload.id),
+    );
   }
 }
 
@@ -136,7 +149,9 @@ export class MediaImageToTextWorkflow extends WorkflowEntrypoint<MediaWorkerEnv,
 export class MediaAudioTranscribeWorkflow extends WorkflowEntrypoint<MediaWorkerEnv, { id: string }> {
   override async run(event: WorkflowEvent<{ id: string }>, step: WorkflowStep): Promise<void> {
     const deps = await buildDeps(this.env, "audio");
-    await step.do(`transcribe-audio-${event.payload.id}`, () => runAudioTranscription(deps, event.payload.id));
+    await classifiedSteps(step, mediaWorkflowRetry, NonRetryableError).do(`transcribe-audio-${event.payload.id}`, () =>
+      runAudioTranscription(deps, event.payload.id),
+    );
   }
 }
 
@@ -144,7 +159,9 @@ export class MediaAudioTranscribeWorkflow extends WorkflowEntrypoint<MediaWorker
 export class MediaVideoTranscribeWorkflow extends WorkflowEntrypoint<MediaWorkerEnv, { id: string }> {
   override async run(event: WorkflowEvent<{ id: string }>, step: WorkflowStep): Promise<void> {
     const deps = await buildDeps(this.env, "video");
-    await step.do(`transcribe-video-${event.payload.id}`, () => runVideoTranscription(deps, event.payload.id));
+    await classifiedSteps(step, mediaWorkflowRetry, NonRetryableError).do(`transcribe-video-${event.payload.id}`, () =>
+      runVideoTranscription(deps, event.payload.id),
+    );
   }
 }
 
@@ -152,6 +169,8 @@ export class MediaVideoTranscribeWorkflow extends WorkflowEntrypoint<MediaWorker
 export class MediaDocExtractWorkflow extends WorkflowEntrypoint<MediaWorkerEnv, { id: string }> {
   override async run(event: WorkflowEvent<{ id: string }>, step: WorkflowStep): Promise<void> {
     const deps = await buildDeps(this.env);
-    await step.do(`extract-document-${event.payload.id}`, () => runDocumentExtraction(deps, event.payload.id));
+    await classifiedSteps(step, mediaWorkflowRetry, NonRetryableError).do(`extract-document-${event.payload.id}`, () =>
+      runDocumentExtraction(deps, event.payload.id),
+    );
   }
 }

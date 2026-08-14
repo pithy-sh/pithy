@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
+import { NonRetryableError } from "cloudflare:workflows";
 import type { D1Database } from "@cloudflare/workers-types";
+import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import type { SupportAi } from "../ai/classify";
 import { SupportConfig } from "../config/config";
 import { resolveCategories } from "../data/categories";
 import { supportDatabase } from "../data/tables";
 import { runClassification } from "./classify";
+import { supportWorkflowRetry } from "./retryPolicy";
 
 /**
  * The prebuilt support worker. `pithy support provision` deploys one per environment; the adopter
@@ -50,8 +53,14 @@ export class SupportClassifyWorkflow extends WorkflowEntrypoint<SupportWorkerEnv
     // One step. The unit of retry is the whole judgement, because a classification that half-ran —
     // a history row with no thread update — would leave the inbox disagreeing with its own audit
     // trail, and re-running the model is cheap enough that splitting it buys nothing.
-    await step.do(`classify-${event.payload.messageId}`, async () => {
-      await runClassification(deps, event.payload.messageId);
-    });
+    // Under `supportWorkflowRetry`: a model that could not be reached re-drives, and everything else
+    // fails at once. `classifyMessage` already refuses to throw on a bad *answer*, so the only fault
+    // that reaches this classifier as retryable is the binding not answering. See `retryPolicy.ts`.
+    await classifiedSteps(step, supportWorkflowRetry, NonRetryableError).do(
+      `classify-${event.payload.messageId}`,
+      async () => {
+        await runClassification(deps, event.payload.messageId);
+      },
+    );
   }
 }

@@ -29,36 +29,27 @@ declare global {
  *   1. **The check finds a violation when there is one.** Fixtures, through the same analyser the tree
  *      scan uses, with the raw step used and then handed over.
  *   2. **It ranges over every shipped Workflow.** The population is discovered from the filesystem and
- *      asserted exactly against two hand-written lists — the classified, and the ones still to be done.
- *      Neither list is derived from the code it polices; a new entrypoint is in neither, and fails.
+ *      asserted exactly against one hand-written list. The list is not derived from the code it
+ *      polices; a new entrypoint is not on it, and fails.
  *   3. **The tree obeys it.** Stated as an empty set of findings rather than a count.
  *
- * `UNCLASSIFIED` is a backlog with an issue against it, not an exemption: the list is asserted to be
- * *still* unclassified, so it can only ever shrink. Classifying one of those files and leaving it listed
- * fails this suite as loudly as adding a new Workflow does.
+ * There was a second list. `UNCLASSIFIED` held the seven Workflows #338 left on the platform default,
+ * asserted to be *still* unclassified so it could only ever shrink; pithy-sh/pithy#348 emptied it and
+ * removed it. There is now one list and one rule, and the only way onto the list is to be classified.
  */
 
 /**
- * The Workflows whose steps are classified, as repo-relative paths.
+ * Every Workflow the kit ships, as repo-relative paths. All of them classify their steps.
  *
  * A list, deliberately. Everything else here is derived from the tree on every run, but "derived" and
  * "unnoticed" are the same thing unless something says out loud what the derivation currently finds.
  */
-const CLASSIFIED = ["packages/payments/src/workflows/worker.ts", "packages/secrets/src/manager/worker.ts"];
-
-/**
- * The Workflows that still inherit the platform default. **pithy-sh/pithy#348 is the issue that empties
- * this list**, file by file, and removes the constant with the last of them.
- *
- * Each is one policy file naming what that capability retries, and one line at the entrypoint — work for
- * whoever knows that capability's faults, which is why #338 classified the two it owned rather than
- * guessing at seven. It is a backlog, not an exemption: the list is asserted against the tree in both
- * directions below, so it can only ever shrink, and nothing here can be quietly forgotten.
- */
-const UNCLASSIFIED = [
+const CLASSIFIED = [
   "packages/email/src/workflows/worker.ts",
   "packages/leaderboard/src/rank/worker.entry.ts",
   "packages/media/src/workflows/worker.ts",
+  "packages/payments/src/workflows/worker.ts",
+  "packages/secrets/src/manager/worker.ts",
   "packages/storage/src/workflows/worker.ts",
   "packages/support/src/workflows/worker.ts",
   "packages/testers/src/workflows/worker.ts",
@@ -217,19 +208,17 @@ describe("every Workflow the kit ships is accounted for", () => {
     expect(shipped.length).toBeGreaterThan(200);
   });
 
-  test("the entrypoints found are exactly the two lists", () => {
-    expect(entrypoints.map((file) => file.path).sort()).toEqual([...CLASSIFIED, ...UNCLASSIFIED].sort());
+  test("the entrypoints found are exactly the list", () => {
+    expect(entrypoints.map((file) => file.path).sort()).toEqual([...CLASSIFIED].sort());
   });
 
-  test("every classified Workflow hands its step to the classifier and uses it nowhere else", () => {
-    const findings = entrypoints
-      .filter((file) => CLASSIFIED.includes(file.path))
-      .flatMap((file) => rawStepUses(file.text).map((use) => `${file.path} — ${use}`));
+  test("every Workflow hands its step to the classifier and uses it nowhere else", () => {
+    const findings = entrypoints.flatMap((file) => rawStepUses(file.text).map((use) => `${file.path} — ${use}`));
     expect(findings).toEqual([]);
   });
 
-  test("the backlog is still a backlog — a file that has been classified must leave the list", () => {
-    const done = entrypoints.filter((file) => UNCLASSIFIED.includes(file.path) && isClassified(file.text));
-    expect(done.map((file) => file.path)).toEqual([]);
+  test("every Workflow on the list actually classifies — the import, not only the absence of a raw use", () => {
+    const unclassified = entrypoints.filter((file) => !isClassified(file.text));
+    expect(unclassified.map((file) => file.path)).toEqual([]);
   });
 });

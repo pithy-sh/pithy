@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { UpstreamError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { MediaEnrichmentError } from "../error/errors";
 
@@ -20,6 +21,34 @@ export interface MediaAi {
   run(model: string, input: Record<string, unknown>): Promise<unknown>;
   /** Convert documents to markdown. Present on the AI binding; optional here so a fake can omit it. */
   toMarkdown?: (files: MarkdownFile[], options?: Record<string, unknown>) => Promise<unknown>;
+}
+
+/**
+ * Run one call against the binding, turning a rejection into `core/upstream_failed`.
+ *
+ * **The split this enforces is between a wrong answer and no answer** (pithy-sh/pithy#348). Everything
+ * else in this module raises `media/enrichment_failed`, and every one of those is deterministic: a
+ * shape the schema does not recognise, a conversion the converter refused, a binding with no
+ * `toMarkdown`. A rejection out of the binding is the opposite — Workers AI unreachable, overloaded, or
+ * out of time — and it is the only fault here a second attempt can answer differently.
+ *
+ * The durable step can only act on that difference if it arrives as a code. A raw throw is
+ * `unclassified` to `classifyWorkflowFault`, and unclassified is terminal — so without this the one
+ * retryable fault in enrichment would have been the one that never got a retry, and an asset would
+ * silently keep no alt text because the model was busy for ten seconds.
+ *
+ * The binding's own words go in `detail`, which the HTTP codec strips: an account id or a quota
+ * message is not something a caller asking about their own file should be handed.
+ */
+async function callModel<T>(what: string, call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    throw new UpstreamError(
+      { message: "The enrichment model could not be reached.", detail: `Workers AI rejected ${what}` },
+      { cause: error },
+    );
+  }
 }
 
 /** A document handed to `toMarkdown`: a name and its bytes as a Blob. */
@@ -96,7 +125,9 @@ async function describeImage(
   prompt: string,
   maxTokens: number,
 ): Promise<string> {
-  const raw = await ai.run(model, { image: [...image], prompt, max_tokens: maxTokens });
+  const raw = await callModel(`image-to-text with model '${model}'`, () =>
+    ai.run(model, { image: [...image], prompt, max_tokens: maxTokens }),
+  );
   const parsed = ImageToText.safeParse(raw);
   if (!parsed.success) {
     throw new MediaEnrichmentError({ detail: `image-to-text model '${model}' returned an unexpected shape` });
@@ -119,7 +150,9 @@ export async function generateImageText(ai: MediaAi, image: Uint8Array, model: s
  * documented `audio` string input. Returns the trimmed transcription text.
  */
 export async function transcribeAudioBytes(ai: MediaAi, bytes: Uint8Array, model: string): Promise<string> {
-  const raw = await ai.run(model, { audio: bytesToBase64(bytes) });
+  const raw = await callModel(`transcription with model '${model}'`, () =>
+    ai.run(model, { audio: bytesToBase64(bytes) }),
+  );
   const parsed = Transcription.safeParse(raw);
   if (!parsed.success) {
     throw new MediaEnrichmentError({ detail: `transcription model '${model}' returned an unexpected shape` });
@@ -135,7 +168,8 @@ export async function extractMarkdown(ai: MediaAi, files: MarkdownFile[]): Promi
   if (!ai.toMarkdown) {
     throw new MediaEnrichmentError({ detail: "the AI binding does not support toMarkdown" });
   }
-  const raw = await ai.toMarkdown(files, { pdf: { metadata: false } });
+  const toMarkdown = ai.toMarkdown;
+  const raw = await callModel("a document conversion", () => toMarkdown(files, { pdf: { metadata: false } }));
   const parsed = MarkdownResults.safeParse(raw);
   if (!parsed.success) {
     throw new MediaEnrichmentError({ detail: "toMarkdown returned an unexpected shape" });
