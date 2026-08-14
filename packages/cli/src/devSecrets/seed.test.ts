@@ -5,8 +5,11 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "n
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
+import { masterKeyRegistryEntry } from "@pithy-sh/secrets/src/capability";
 import type { VersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
+import { DevSecretEnvelope } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import type { DevSecretsStore } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
+import { devSecretPayload } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import { defineSecretRegistry, type SecretValueType } from "@pithy-sh/secrets/src/registry";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
@@ -95,14 +98,127 @@ function seed(handle?: DevSecretsStoreHandle) {
   });
 }
 
+/**
+ * The upgrade off the old wrapped shape, run by the command every project runs (#323).
+ *
+ * A `bootstrap` secret needs a Worker that declares one, so this registry adds the master key beside the
+ * ordinary secrets above. Everything else is the same seed the rest of this file exercises: the point is
+ * that the migration is not a command anybody has to know about.
+ */
+const withMasterKey = defineSecretRegistry({ ...registry, SECRETS_ENCRYPTION_KEYS: masterKeyRegistryEntry });
+
+/** The `EncryptionConfig` these cases carry. Shape only; the value is not a key anything opens. */
+const CONFIG = {
+  currentVersion: "1",
+  versions: { "1": "a2V5LW1hdGVyaWFs" },
+  lastRotatedAt: "2026-08-06T16:21:53.830Z",
+};
+
+function seedWithMasterKey() {
+  return seedProjectDevSecrets({
+    projectDir: dir,
+    paths: paths(),
+    targets: [{ name: "board", dir: join(dir, "apps", "board"), registry: withMasterKey }],
+    openStore: async () => ({ ready: true, store, persistPath: localDevStorePath(dir), dispose: async () => {} }),
+  });
+}
+
+describe("seedProjectDevSecrets — an existing file is migrated in place", () => {
+  test("a wrapped bootstrap payload is restated as the payload, and the run says so", async () => {
+    // Written by a pithy older than #323. Nothing about the project changes but the bytes of this file.
+    await writeFile(
+      secretsPath,
+      JSON.stringify({ SECRETS_ENCRYPTION_KEYS: { currentVersion: "1", versions: { "1": CONFIG } } }),
+      { mode: 0o600 },
+    );
+
+    const report = await seedWithMasterKey();
+
+    expect(report.migrated).toEqual(["SECRETS_ENCRYPTION_KEYS"]);
+    expect((await readDevSecrets(secretsPath)).SECRETS_ENCRYPTION_KEYS).toEqual(CONFIG);
+    expect(renderDevSecretsNotes(report).join("\n")).toContain("SECRETS_ENCRYPTION_KEYS");
+  });
+
+  test("the Worker still gets the same binding across the upgrade — migrating is not a key rotation", async () => {
+    await writeFile(
+      secretsPath,
+      JSON.stringify({ SECRETS_ENCRYPTION_KEYS: { currentVersion: "1", versions: { "1": CONFIG } } }),
+      { mode: 0o600 },
+    );
+
+    await seedWithMasterKey();
+    const after = devSecretPayload(
+      masterKeyRegistryEntry,
+      "SECRETS_ENCRYPTION_KEYS",
+      (await readDevSecrets(secretsPath)).SECRETS_ENCRYPTION_KEYS,
+    );
+
+    // The string a `.dev.vars` line carries, before and after. A different one here would orphan every
+    // secret already encrypted under the old key, with no error naming the cause.
+    expect(after.text).toBe(JSON.stringify(CONFIG));
+    expect(after.wrapped).toBe(false);
+  });
+
+  test("a second run migrates nothing and rewrites no bytes", async () => {
+    await writeFile(
+      secretsPath,
+      JSON.stringify({ SECRETS_ENCRYPTION_KEYS: { currentVersion: "1", versions: { "1": CONFIG } } }),
+      { mode: 0o600 },
+    );
+
+    await seedWithMasterKey();
+    const settled = await readFile(secretsPath, "utf8");
+    const again = await seedWithMasterKey();
+
+    expect(again.migrated).toEqual([]);
+    expect(await readFile(secretsPath, "utf8")).toBe(settled);
+  });
+
+  test("a file already in the payload shape is left exactly as it is", async () => {
+    // Every mintable secret already stated, so a mint cannot account for a byte that changed.
+    const original = `// a note the adopter wrote\n${JSON.stringify(
+      { SECRETS_ENCRYPTION_KEYS: CONFIG, "auth-session-secret": { currentVersion: "1", versions: { "1": "s3ss10n" } } },
+      null,
+      2,
+    )}\n`;
+    await writeFile(secretsPath, original, { mode: 0o600 });
+
+    const report = await seedWithMasterKey();
+
+    expect(report.migrated).toEqual([]);
+    expect(await readFile(secretsPath, "utf8")).toBe(original);
+  });
+
+  test("every other secret in the file survives the migration, comments and all", async () => {
+    const original = `// where these came from\n${JSON.stringify(
+      {
+        SECRETS_ENCRYPTION_KEYS: { currentVersion: "1", versions: { "1": CONFIG } },
+        "auth-google-credentials": { currentVersion: "1", versions: { "1": { clientId: "id", clientSecret: "shh" } } },
+      },
+      null,
+      2,
+    )}\n`;
+    await writeFile(secretsPath, original, { mode: 0o600 });
+
+    await seedWithMasterKey();
+    const after = await readFile(secretsPath, "utf8");
+
+    expect(after).toContain("// where these came from");
+    expect((await readDevSecrets(secretsPath))["auth-google-credentials"]).toEqual({
+      currentVersion: "1",
+      versions: { "1": { clientId: "id", clientSecret: "shh" } },
+    });
+  });
+});
+
 describe("seedProjectDevSecrets", () => {
   test("mints the generatable secret into the file and seeds it — one path, not two", async () => {
     const report = await seed();
 
     expect(report.minted).toEqual(["auth-session-secret"]);
     expect(report.seeded).toEqual(["auth-session-secret"]);
-    const envelope = (await readDevSecrets(secretsPath))["auth-session-secret"];
-    expect(envelope?.currentVersion).toBe("1");
+    const envelope = DevSecretEnvelope.parse((await readDevSecrets(secretsPath))["auth-session-secret"]);
+    expect(envelope.currentVersion).toBe("1");
     expect(store.rows.get("auth-session-secret")?.value).toEqual(envelope);
   });
 
@@ -310,6 +426,7 @@ describe("seedProjectDevSecrets", () => {
     });
     expect(report).toEqual({
       path: secretsPath,
+      migrated: [],
       seeded: [],
       unchanged: [],
       minted: [],
@@ -360,8 +477,8 @@ describe("seedProjectDevSecrets", () => {
 
     await expect(seed(failing)).rejects.toThrow(/D1 is gone/);
 
-    const envelope = (await readDevSecrets(secretsPath))["auth-session-secret"];
-    expect(typeof envelope?.versions["1"]).toBe("string");
+    const envelope = DevSecretEnvelope.parse((await readDevSecrets(secretsPath))["auth-session-secret"]);
+    expect(typeof envelope.versions["1"]).toBe("string");
   });
 
   test("every store it opens is disposed — a leaked Miniflare holds the local D1 open", async () => {

@@ -6,7 +6,7 @@ import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { encodeVersionedValue, type VersionedValue } from "../crypto/versionedValue";
 import { defineSecretRegistry, type SecretValueType } from "../registry";
-import type { DevSecretsFile } from "./devSecretsFile";
+import { DevSecretEnvelope, type DevSecretsFile } from "./devSecretsFile";
 import { type DevSecretsStore, devVarsForRegistry, mintMissingDevSecrets, seedDevSecrets } from "./seedDevSecrets";
 
 /** An in-memory stand-in for the `SECRETS` D1 store, counting writes so idempotency is observable. */
@@ -123,9 +123,9 @@ describe("seedDevSecrets — minting", () => {
 
     const result = await seedDevSecrets({ file: {}, registry, store });
 
-    const minted = result.minted["auth-session-secret"];
-    expect(minted?.currentVersion).toBe("1");
-    expect(typeof minted?.versions["1"]).toBe("string");
+    const minted = DevSecretEnvelope.parse(result.minted["auth-session-secret"]);
+    expect(minted.currentVersion).toBe("1");
+    expect(typeof minted.versions["1"]).toBe("string");
     expect(result.seeded).toEqual(["auth-session-secret"]);
     expect(store.rows.get("auth-session-secret")?.value).toEqual(minted);
   });

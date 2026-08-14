@@ -3,11 +3,11 @@
 
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
-import { bindingValue } from "@pithy-sh/secrets/src/bindingValue";
 import type { SecretDispatcher, SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
 import { partialWriteReport } from "@pithy-sh/secrets/src/cli/partialWrite";
 import { secretWriteTargets } from "@pithy-sh/secrets/src/cli/writeTargets";
-import { initialVersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
+import { initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
+import { devSecretPayload } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import { mintSecretValue } from "@pithy-sh/secrets/src/mintValue";
 import { isMintableSecret, type SecretRegistry, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -68,12 +68,13 @@ export function storeSecretMinter(options: {
         detail: `mint called for ${secretName}, whose registry entry has no devValue.`,
       });
     }
-    // Through `bindingValue`, never restating what it says. A Secrets Store entry is read by the Worker
-    // straight off its binding, so what is written here is what the Worker gets — and a `bootstrap`
-    // secret's binding carries the current value, not the envelope, because it is what the envelope
-    // decoder needs in order to exist. This wrote an envelope unconditionally, which is the defect the
-    // whole of #323's wave was about, reappearing at a new producer.
-    await options.store.put(secretName, bindingValue(entry, initialVersionedValue(mintSecretValue(entry.devValue))));
+    // Through `devSecretPayload`, never restating what it says. A Secrets Store entry is read by the
+    // Worker straight off its binding, so what is written here is what the Worker gets — and what the
+    // dev secrets file states for the same secret, byte for byte. `initialDevSecret` composes the entry
+    // the file would hold; reading it back is the one materialisation every destination shares (#323).
+    // This wrote an envelope unconditionally, which is the defect that wave was about, at a new producer.
+    const stated = initialDevSecret(entry, mintSecretValue(entry.devValue));
+    await options.store.put(secretName, devSecretPayload(entry, secretName, stated).text);
     // The name, the entry, the environment. Never the value, and nothing derived from it.
     await audit({
       environment: options.environment,

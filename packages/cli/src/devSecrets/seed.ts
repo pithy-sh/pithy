@@ -4,7 +4,7 @@
 import { resolve } from "node:path";
 import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
-import { mintMissingDevSecrets, seedDevSecrets } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
+import { migrateDevSecrets, mintMissingDevSecrets, seedDevSecrets } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { StatePathOptions } from "../notifier/state";
 import { writeDevVars } from "./devVars";
@@ -16,7 +16,7 @@ import {
   type OpenDevSecretsStoreOptions,
   openDevSecretsStore,
 } from "./store";
-import { type DevSecretsTarget, resolveDevSecretsTargets } from "./targets";
+import { type DevSecretsTarget, mergedSecretRegistry, resolveDevSecretsTargets } from "./targets";
 
 /**
  * `pithy seed`'s dev-secrets half: take `<config>/<project>/secrets.jsonc`, mint what is missing and
@@ -74,6 +74,18 @@ export interface DevSecretsSeedReport {
   unchanged: string[];
   /** Values minted this run and written back into the secrets file. */
   minted: string[];
+  /**
+   * Secrets whose entry this run **restated as the payload its destination receives** (#323) — the
+   * upgrade off the old wrapped shape, performed in place so no operator hand-edits a master key.
+   *
+   * Empty on every run after the first, and on every project created since. Never silent while it is
+   * not: the bytes of the one file an adopter hand-maintains changed, and a rewrite nobody is told
+   * about is indistinguishable from corruption the next time they open it.
+   *
+   * Optional for the same reason {@link DevSecretsSeedReport.path} is: a report double that asserts
+   * only on `seeded` or `skipped` stays valid.
+   */
+  migrated?: string[];
   /**
    * Secrets written into `.dev.vars` this run — `cf-secrets-store` ones, and only those. There is no
    * local Secrets Store, so the binding is the only place a Worker can read one from. A `d1` secret is
@@ -159,6 +171,11 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
   // The file is read once and carried across Workers. Two Workers that declare one secret must mint it
   // once: the second sees the first's value in this object, and `seedDevSecrets` never mints over one.
   const file = await readDevSecrets(path);
+  // **Before a value is read, minted or seeded.** The reader accepts both shapes, so nothing depends on
+  // this having run — that is what makes it safe to do here rather than in a migration command nobody
+  // runs. What it buys is that the file stops holding a shape the writer no longer produces, which is
+  // the state two readers reported as corruption (#323).
+  const migrated = await restatePayloads(path, file, targets);
 
   const minted = new Set<string>();
 
@@ -237,6 +254,7 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
     // What the write actually landed, never what was minted into memory. A refused write minted values
     // that reached no file, and reporting them as minted is how a command claims a value it does not have.
     minted: sorted(minted),
+    migrated,
     // What the generated files actually carry, never what was handed to a writer — a value no quoting
     // survives is refused, and reporting it as written is how a command claims a binding the Worker does
     // not have. Narrowed to this project's `cf-secrets-store` secrets, which is what this field means.
@@ -297,6 +315,27 @@ function seedable(registry: SecretRegistry, file: DevSecretsFile): SecretRegistr
     ([name, entry]) => !entry.devValue || entry.keyed || Object.hasOwn(file, name),
   );
   return Object.fromEntries(entries) as SecretRegistry;
+}
+
+/**
+ * Rewrite every entry the file still states in the old wrapped shape, and answer which ones moved.
+ *
+ * **In place, and without an operator hand-editing anything (#323).** The one file an adopter maintains
+ * holds their master key; "open it and take a layer off" is an instruction with a way to get it wrong,
+ * on the value whose loss orphans every secret encrypted under it.
+ *
+ * `replace: true` because the name is already there — this is the one write that is meant to change a
+ * value already in the file, and it changes only its shape. An entry whose bytes would not change
+ * writes nothing, so a migrated project's `pithy dev` rewrites no file and reports no migration.
+ */
+async function restatePayloads(path: string, file: DevSecretsFile, targets: DevSecretsTarget[]): Promise<string[]> {
+  const restated = migrateDevSecrets(file, mergedSecretRegistry(targets));
+  if (Object.keys(restated).length === 0) return [];
+  const wrote = await writeDevSecrets(path, restated, { replace: true });
+  // Only what landed. The in-memory file is what the rest of this run seeds from, and carrying a value
+  // the write refused would seed a shape no file explains — the same rule the mint above follows.
+  for (const name of wrote) file[name] = restated[name];
+  return wrote.sort();
 }
 
 /** A set as a sorted array — every list in the report is ordered, so a run reads the same twice. */

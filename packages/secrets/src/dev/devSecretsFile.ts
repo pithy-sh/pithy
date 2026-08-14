@@ -27,6 +27,14 @@ import { VersionedValue } from "../crypto/versionedValue";
 export const DEV_SECRETS_FILE = "secrets.jsonc";
 
 /**
+ * The envelope, spelled out, so every error can show the shape rather than describe it.
+ *
+ * Here rather than in one reader, because two readers now say it — the loader and the payload reader —
+ * and a shape quoted twice is a shape that will be quoted two ways.
+ */
+export const ENVELOPE_SHAPE = '{ "currentVersion": "1", "versions": { "1": <value> } }';
+
+/**
  * The committed example — the one artefact about secrets that stays in an adopter's repository, and
  * documentation only. It is never copied to a working file: `pithy add` writes the real one, outside
  * the checkout, and there is nothing in the project for it to sit beside.
@@ -34,16 +42,43 @@ export const DEV_SECRETS_FILE = "secrets.jsonc";
 export const DEV_SECRETS_EXAMPLE_FILE = ".dev.secrets.example.jsonc";
 
 /**
- * One secret's value in the file: **always** a full `{ currentVersion, versions }` envelope, even for
- * a single-version text secret.
+ * ## The rule, stated once (#323)
+ *
+ * **A secret's entry in this file is the precise payload its destination receives. Nothing wraps it,
+ * nothing unwraps it, and no secret is an exception.**
+ *
+ * The registry says what that payload is, per secret, and `devSecretPayload` (`./seedDevSecrets`) is
+ * the one reading of it:
+ *
+ * | secret | destination | payload |
+ * |---|---|---|
+ * | any ordinary secret | a D1 row, a `.dev.vars` line, a Secrets Store entry | a {@link DevSecretEnvelope} |
+ * | a `bootstrap` secret | its binding, read before any decoder exists | the value itself |
+ *
+ * There is one widening, for the person hand-editing the file: a `json` value is written as its own
+ * structure rather than as an escaped string inside a string, and the reader serializes it on the way
+ * out. That is a JSON-in-JSON concession, not a wrapper — nothing is added and nothing is removed.
+ *
+ * **Why `bootstrap` is not an exception to the rule but an instance of it.** `SECRETS_ENCRYPTION_KEYS`
+ * is what the envelope decoder needs in order to exist, so its binding has always carried a bare
+ * `EncryptionConfig` and `resolveEncryptionConfig` has always parsed one. The file used to state an
+ * envelope around it and the seeder used to take that envelope off again — a `currentVersion` for one
+ * concept written twice, carrying no information, and reported as file corruption by two readers in a
+ * row. Now the file states what the binding gets.
+ */
+
+/**
+ * One secret's value in the file, for **every secret whose destination receives an envelope** — which
+ * is every secret that is not `bootstrap`. Always full, even for a single-version text secret.
  *
  * **This is the whole reason the format is unambiguous, not ceremony — do not "simplify" it away.**
  * With optional envelopes a JSON-valued secret's own object cannot be told apart from an envelope
  * without a marker or a heuristic: `{ "clientId": …, "clientSecret": … }` and
- * `{ "currentVersion": …, "versions": … }` are both just objects. Requiring the envelope everywhere
- * means the outer object is *always* the envelope, and a JSON secret's own object sits unambiguously
- * inside `versions`. It also matches what is actually stored, so dev stops being a shape production
- * never sees — and `pithy secrets rotate --env dev` exercises the real rotation path.
+ * `{ "currentVersion": …, "versions": … }` are both just objects. Requiring the envelope wherever the
+ * destination takes one means the outer object is *always* the envelope, and a JSON secret's own
+ * object sits unambiguously inside `versions`. It also matches what is actually stored, so dev stops
+ * being a shape production never sees — and `pithy secrets rotate --env dev` exercises the real
+ * rotation path. **The registry, not a heuristic, is what says which secrets those are.**
  *
  * The shape is {@link VersionedValue}'s, widened in exactly one place: a stored version is a string
  * (a `json` secret stores its serialized form), while a hand-written one is the value itself, so that
@@ -66,7 +101,7 @@ export const DevSecretEnvelope = VersionedValue.extend({
 })
   .strict()
   .describe(
-    "One secret's value in the dev secrets file: an explicit current-version pointer plus every still-valid version, and nothing else. Always a full envelope, never a bare value.",
+    "One secret's value in the dev secrets file, for every secret whose destination receives an envelope: an explicit current-version pointer plus every still-valid version, and nothing else. Always full, never partial.",
   );
 export type DevSecretEnvelope = z.output<typeof DevSecretEnvelope>;
 
@@ -98,21 +133,35 @@ function unrecognizedKeys(issue: z.core.$ZodIssue): string[] {
 }
 
 /**
- * The whole file: registry secret name → envelope. A record rather than a fixed object, because the
+ * The whole file: registry secret name → **payload**. A record rather than a fixed object, because the
  * declared set is whatever capabilities the project composes — the registry is the authority on that,
  * not this schema.
+ *
+ * **The value is `unknown` here, and that is the shape of the rule rather than a gap in it (#323).**
+ * Which payload a name takes is the registry's answer, not this schema's: an ordinary secret's is a
+ * {@link DevSecretEnvelope}, a `bootstrap` secret's is its own value. A schema that named one of them
+ * for every entry would be the wrapper this issue removed, written as a type. `devSecretPayload`
+ * (`./seedDevSecrets`) is where a name and a registry entry meet, and it is the kit's only payload reader.
  */
 export const DevSecretsFile = z
-  .record(z.string(), DevSecretEnvelope)
+  .record(z.string(), z.unknown())
   .describe(
-    "The parsed dev secrets file: registry secret name (`<capability>-<what>`) → its versioned envelope. The registry, not this file, decides where each value is seeded.",
+    "The parsed dev secrets file: registry secret name (`<capability>-<what>`) → the exact payload its destination receives. The registry decides which shape that is, and where the value is seeded.",
   );
 export type DevSecretsFile = z.output<typeof DevSecretsFile>;
 
 /**
- * The envelope a freshly-minted dev value is written back into the file as: version 1 is current and
- * holds the value. The counterpart of `initialVersionedValue`, over the file's wider version type.
+ * The entry a freshly-minted dev value is written into the file as — **the payload its destination
+ * receives**, and nothing around it.
+ *
+ * For an ordinary secret that is a one-version envelope, the counterpart of `initialVersionedValue`
+ * over the file's wider version type. For a `bootstrap` secret it is the value, because the value is
+ * what its binding carries.
+ *
+ * **Every writer goes through here.** `pithy add secrets`, `pithy adopt`, the provisioners and the
+ * seeder's own mint all call it, so there is one statement of what a fresh entry looks like. A second
+ * writer composing the envelope inline is how #323 got two shapes for one file.
  */
-export function initialDevSecret(value: unknown): DevSecretEnvelope {
-  return { currentVersion: "1", versions: { "1": value } };
+export function initialDevSecret(entry: { bootstrap?: boolean }, value: unknown): unknown {
+  return entry.bootstrap === true ? value : { currentVersion: "1", versions: { "1": value } };
 }

@@ -2,11 +2,23 @@
 // SPDX-License-Identifier: MIT
 
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { bindingValue } from "../bindingValue";
-import type { VersionedValue } from "../crypto/versionedValue";
+import { z } from "zod";
+import {
+  currentValue,
+  encodeVersionedValue,
+  initialVersionedValue,
+  type VersionedValue,
+} from "../crypto/versionedValue";
 import { mintSecretValue } from "../mintValue";
 import type { SecretRegistry, SecretRegistryEntry, SecretValueType } from "../registry";
-import { DEV_SECRETS_FILE, type DevSecretEnvelope, type DevSecretsFile, initialDevSecret } from "./devSecretsFile";
+import {
+  DEV_SECRETS_FILE,
+  DevSecretEnvelope,
+  type DevSecretsFile,
+  describeNotEnvelope,
+  ENVELOPE_SHAPE,
+  initialDevSecret,
+} from "./devSecretsFile";
 
 /**
  * Seed a project's local dev secrets from the dev secrets file, with the **registry** deciding each
@@ -102,19 +114,19 @@ export async function seedDevSecrets(input: SeedDevSecretsInput): Promise<DevSec
       continue;
     }
 
-    const value = storedSecretValue(entry, name, envelope, path);
+    const secret = devSecretPayload(entry, name, envelope, path);
 
     if (entry.backend === "cf-secrets-store") {
-      devVars[name] = bindingValue(entry, value);
+      devVars[name] = secret.text;
       continue;
     }
 
     const stored = await store.getValue(name);
-    if (stored && sameEnvelope(stored, value)) {
+    if (stored && sameEnvelope(stored, secret.stored)) {
       unchanged.push(name);
       continue;
     }
-    await store.put(name, value, entry.valueType);
+    await store.put(name, secret.stored, entry.valueType);
     seeded.push(name);
   }
 
@@ -165,9 +177,9 @@ export function devVarsForRegistry(
   for (const name of Object.keys(registry).sort()) {
     const entry = registry[name];
     if (!entry || entry.keyed || entry.backend !== "cf-secrets-store") continue;
-    const envelope = file[name];
-    if (!envelope) continue;
-    devVars[name] = bindingValue(entry, storedSecretValue(entry, name, envelope, path));
+    const stated = file[name];
+    if (!stated) continue;
+    devVars[name] = devSecretPayload(entry, name, stated, path).text;
   }
   return devVars;
 }
@@ -192,48 +204,215 @@ export function mintMissingDevSecrets(file: DevSecretsFile, registry: SecretRegi
     const entry = registry[name];
     if (!entry || entry.keyed || !entry.devValue) continue;
     if (Object.hasOwn(file, name)) continue;
-    minted[name] = initialDevSecret(mintSecretValue(entry.devValue));
+    minted[name] = initialDevSecret(entry, mintSecretValue(entry.devValue));
   }
   return minted;
 }
 
 /**
- * Convert one file envelope into the envelope the store holds: every version validated against the
+ * One secret as the file states it, in every form anything downstream needs. **The kit's only reading
+ * of a dev secrets payload** — see the rule at the top of `./devSecretsFile`.
+ *
+ * The registry entry says which payload the name takes, and every form below is derived from that one
+ * decision. Four callers used to answer it four times: the seeder, the `.dev.vars` generator, `pithy
+ * doctor` and the prepared-set reader, plus `bindingValue()` sitting between them switching on
+ * `bootstrap` — and #323 is what that cost.
+ *
+ * Named for what it is rather than for the file it came from: `DevSecret` is already a capability's
+ * *declaration* that a value may be minted (`core/src/capability/devSecret`), and two things called that
+ * is how a reader stops being able to search for either.
+ */
+export interface StatedSecret {
+  /**
+   * The payload the destination receives, before serialization — what the file states, with a `json`
+   * value's structure intact. An envelope for an ordinary secret; the value itself for a `bootstrap`
+   * one.
+   */
+  readonly payload: unknown;
+  /**
+   * That payload as the string a binding or a Secrets Store entry carries. **The one materialisation**
+   * — `.dev.vars` locally, `secrets_store_secrets` deployed, and a minted store entry all read it here.
+   */
+  readonly text: string;
+  /** The envelope the D1 store holds. A `bootstrap` secret never reaches D1; its envelope is synthetic. */
+  readonly stored: VersionedValue;
+  /** The current version's value, as the runtime resolves it — a `json` secret's canonical serialization. */
+  readonly value: string;
+  /**
+   * Whether the file stated the **old wrapped shape** and this reading unwrapped it (#323).
+   *
+   * True only for a `bootstrap` secret written by a pithy older than this one. It is what makes the
+   * upgrade automatic rather than a hand-edit: `migrateDevSecrets` collects these, and the CLI writes
+   * the payload back. Reading keeps working either way, which is the order this change had to ship in
+   * — a reader that demanded the new shape would stop every project that has not been rewritten yet.
+   */
+  readonly wrapped: boolean;
+}
+
+/**
+ * Read one secret's stated entry against its registry entry, and return every form of it.
+ *
+ * Throws `validation/invalid_input` naming the secret, the file, and the shape expected — never a
+ * value. Errors carry only the secret name, the version key, and Zod `path:code` pairs. Never
+ * `issue.message` or `received`, either of which can echo credential material into a terminal or a log.
+ */
+export function devSecretPayload(
+  entry: SecretRegistryEntry,
+  name: string,
+  stated: unknown,
+  path: string = DEV_SECRETS_FILE,
+): StatedSecret {
+  if (entry.bootstrap === true) {
+    // The old shape first, so an unmigrated project reads. `wrappedPayload` prefers the declared
+    // payload and only then considers an envelope, so a value that is legitimately its own envelope is
+    // never unwrapped out from under itself.
+    const unwrapped = wrappedPayload(entry, stated);
+    const wrapped = unwrapped !== undefined;
+    // `null`: this payload has no version. An unwrapped one never had; a wrapped one is being read past
+    // its envelope, and naming that envelope's version in an error is naming a shape being migrated off.
+    const value = storedVersion(entry, name, null, wrapped ? unwrapped : stated, path);
+    return {
+      payload: entry.valueType === "text" ? value : (JSON.parse(value) as unknown),
+      text: value,
+      stored: initialVersionedValue(value),
+      value,
+      wrapped,
+    };
+  }
+
+  const envelope = statedEnvelope(name, stated, path);
+  const versions: Record<string, string> = {};
+  for (const [version, value] of Object.entries(envelope.versions)) {
+    versions[version] = storedVersion(entry, name, version, value, path);
+  }
+  const stored: VersionedValue = { currentVersion: envelope.currentVersion, versions };
+  return { payload: stored, text: encodeVersionedValue(stored), stored, value: currentValue(stored), wrapped: false };
+}
+
+/**
+ * Convert one stated entry into the envelope the store holds: every version validated against the
  * registry entry and reduced to the string form a stored secret has. A `text` version must be a
  * string — a number or an object there is a hand-edit slip, not a value. A `json` version is parsed
  * by the entry's schema and re-serialized canonically, which is exactly what the read seam expects to
  * find and what `validateSecretValue` produces for a CLI write.
  *
- * Errors carry only the secret name, the version key, and Zod `path:code` pairs. Never `issue.message`
- * or `received`, either of which can echo credential material into a terminal or a log.
+ * A thin read of {@link devSecretPayload}, kept because a D1 caller wants exactly this and nothing else.
  */
 export function storedSecretValue(
   entry: SecretRegistryEntry,
   name: string,
-  envelope: DevSecretEnvelope,
+  stated: unknown,
   path: string = DEV_SECRETS_FILE,
 ): VersionedValue {
-  const versions: Record<string, string> = {};
-  for (const [version, value] of Object.entries(envelope.versions)) {
-    versions[version] = storedVersion(entry, name, version, value, path);
-  }
-  return { currentVersion: envelope.currentVersion, versions };
+  return devSecretPayload(entry, name, stated, path).stored;
 }
 
-/** One version's value, in the string form the store holds. */
+/**
+ * Every entry the file states in the **old wrapped shape**, restated as the payload — the whole of the
+ * upgrade, and nothing else touched (#323).
+ *
+ * Only a `bootstrap` secret can be wrapped, because it is the only one whose payload is not an
+ * envelope. Nothing here throws: a value that is neither the new shape nor the old one is a malformed
+ * value, and `pithy seed` and `pithy doctor` are what name it. Migrating is not the place to discover
+ * that, and a `catch` here would be the swallow this issue began with.
+ */
+export function migrateDevSecrets(file: DevSecretsFile, registry: SecretRegistry): DevSecretsFile {
+  const migrated: DevSecretsFile = {};
+  for (const name of Object.keys(registry).sort()) {
+    const entry = registry[name];
+    if (!entry || entry.keyed || entry.bootstrap !== true) continue;
+    if (!Object.hasOwn(file, name)) continue;
+    const unwrapped = wrappedPayload(entry, file[name]);
+    if (unwrapped !== undefined) migrated[name] = unwrapped;
+  }
+  return migrated;
+}
+
+/**
+ * The value inside the old envelope, when a `bootstrap` secret's entry is one — otherwise nothing.
+ *
+ * **The declared payload wins.** A secret whose own value is shaped like an envelope would otherwise be
+ * unwrapped into its own current version, which is a value nothing can put back. So the entry is asked
+ * against the registry's schema first, and only a value that fails *that* is considered for the old
+ * shape. `EncryptionConfig` carries `lastRotatedAt` and {@link DevSecretEnvelope} is strict, so for the
+ * one secret this is about the two never both parse.
+ */
+function wrappedPayload(entry: SecretRegistryEntry, stated: unknown): unknown {
+  const declared = entry.valueType === "text" ? z.string() : entry.schema;
+  if (declared.safeParse(stated).success) return undefined;
+  const envelope = DevSecretEnvelope.safeParse(stated);
+  if (!envelope.success) return undefined;
+  return envelope.data.versions[envelope.data.currentVersion];
+}
+
+/**
+ * One stated entry, checked as a full envelope. The three failures are separated because they have
+ * different fixes: a value that is not an envelope at all is the migration case (it was a `.dev.vars`
+ * line yesterday, or a `bootstrap` payload in the wrong slot); an empty `versions` and a dangling
+ * `currentVersion` are hand-edit slips, and saying which one it is saves a round of guessing.
+ *
+ * **Here rather than at the file boundary (#323).** The loader reads text and knows no registry, and
+ * whether an envelope belongs in a slot is the registry's answer. Checking it there meant the check
+ * was applied to the one secret it is wrong for.
+ */
+function statedEnvelope(name: string, stated: unknown, path: string): DevSecretEnvelope {
+  const result = DevSecretEnvelope.safeParse(stated);
+  if (!result.success) {
+    // What was found, not merely that it was wrong (#323). "Is not a versioned envelope" is true of a
+    // string, of a bare `EncryptionConfig`, and of a typo — three different edits, and the adopter is
+    // looking at the file. `describeNotEnvelope` names keys and types and never a value.
+    const found = describeNotEnvelope(stated, result.error);
+    throw new ValidationError({
+      message: `Secret '${name}' in ${path} is not a versioned envelope: ${found}.`,
+      action: `Write it as ${ENVELOPE_SHAPE}. Its destination receives an envelope, so the file states one.`,
+      detail: `dev secrets file '${path}': '${name}' is not a { currentVersion, versions } envelope: ${found}`,
+    });
+  }
+
+  const envelope = result.data;
+  if (Object.keys(envelope.versions).length === 0) {
+    throw new ValidationError({
+      message: `Secret '${name}' in ${path} has no versions.`,
+      action: `Give it at least one: ${ENVELOPE_SHAPE}.`,
+      detail: `dev secrets file '${path}': '${name}' has an empty versions map`,
+    });
+  }
+  // `Object.hasOwn`, never `in`: `in` walks the prototype chain, so a `currentVersion` of `toString`
+  // or `constructor` passed this check and failed much later inside the store, with an error naming
+  // neither the file nor the secret.
+  if (!Object.hasOwn(envelope.versions, envelope.currentVersion)) {
+    throw new ValidationError({
+      message: `Secret '${name}' in ${path} points at version '${envelope.currentVersion}', which it does not have.`,
+      action: "Set currentVersion to a key that is present in versions.",
+      detail: `dev secrets file '${path}': '${name}' currentVersion is absent from versions`,
+    });
+  }
+  return envelope;
+}
+
+/**
+ * One value, in the string form its destination holds — a version inside an envelope, or a `bootstrap`
+ * secret's whole payload.
+ *
+ * **`version` is `null` for a payload that has none, and the sentence changes with it (#323).** Saying
+ * *at version '1'* about an entry the adopter wrote with no versions in it sends them looking for a key
+ * that is not in their file, which is the class of message this issue exists to end.
+ */
 function storedVersion(
   entry: SecretRegistryEntry,
   name: string,
-  version: string,
+  version: string | null,
   value: unknown,
   path: string,
 ): string {
+  const at = version === null ? "" : ` at version '${version}'`;
+  const of = version === null ? "" : ` version '${version}'`;
   if (entry.valueType === "text") {
     if (typeof value !== "string") {
       throw new ValidationError({
-        message: `Secret '${name}' in ${path} has a version '${version}' that is not a string.`,
+        message: `Secret '${name}' in ${path}${at} is not a string.`,
         action: `'${name}' is a text secret. Quote the value.`,
-        detail: `dev secrets file '${path}': text secret '${name}' version '${version}' is ${typeof value}`,
+        detail: `dev secrets file '${path}': text secret '${name}'${of} is ${typeof value}`,
       });
     }
     return value;
@@ -243,9 +422,9 @@ function storedVersion(
   if (!result.success) {
     const summary = result.error.issues.map((i) => `${i.path.join(".") || "<root>"}:${i.code}`).join(", ");
     throw new ValidationError({
-      message: `Secret '${name}' in ${path} failed validation at version '${version}'.`,
+      message: `Secret '${name}' in ${path} failed validation${at}.`,
       action: `Match the shape ${name} declares. The capability that owns it defines the schema.`,
-      detail: `dev secrets file '${path}': json secret '${name}' version '${version}' failed registry validation: ${summary}`,
+      detail: `dev secrets file '${path}': json secret '${name}'${of} failed registry validation: ${summary}`,
     });
   }
   return JSON.stringify(result.data);

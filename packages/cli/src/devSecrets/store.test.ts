@@ -7,7 +7,6 @@ import { dirname, join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { secretsTables } from "@pithy-sh/secrets/src/data/tables";
-import { initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
 import { secrets_0001_init } from "@pithy-sh/secrets/src/migrations/0001_init";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
@@ -158,9 +157,10 @@ describe("openDevSecretsStore", () => {
  * read, and the assertion is the same for all of them, because the rule is about the answer.
  */
 const unreadableStatements: Record<string, unknown> = {
-  "the value written bare, without its envelope": {
+  // The bare shape is the *correct* one since #323 — the binding carries a bare `EncryptionConfig`, so
+  // the file states one. What is still a corruption is a bare payload that is not a valid config.
+  "the value written bare and missing its versions": {
     currentVersion: "1",
-    versions: { "1": "a2V5LW1hdGVyaWFs" },
     lastRotatedAt: "2026-08-06T16:21:53.830Z",
   },
   "an envelope whose version holds a string where a key config belongs": {
@@ -265,7 +265,24 @@ describe("a stated master key that will not read", () => {
     await namedProject();
     await withSecretsBinding();
     await migrateLocalSecrets();
-    await state(initialDevSecret(await initialMasterKeyConfig()));
+    // The payload its binding receives, stated verbatim (#323).
+    await state(await initialMasterKeyConfig());
+    const handle = await openDevSecretsStore({ projectDir: dir, workerDir, worker: "board", paths: paths() });
+    try {
+      expect(handle.ready).toBe(true);
+    } finally {
+      await handle.dispose();
+    }
+  });
+
+  test("a key still in the old wrapped shape opens the store too — the reader shipped first (#323)", async () => {
+    // The upgrade order this change had to have. A project that has not run a seed since the writer
+    // changed still holds `{ currentVersion, versions: { "1": <config> } }`, and every Worker it runs
+    // reads its master key through this path. A reader that demanded the new shape would stop them all.
+    await namedProject();
+    await withSecretsBinding();
+    await migrateLocalSecrets();
+    await state({ currentVersion: "1", versions: { "1": await initialMasterKeyConfig() } });
     const handle = await openDevSecretsStore({ projectDir: dir, workerDir, worker: "board", paths: paths() });
     try {
       expect(handle.ready).toBe(true);

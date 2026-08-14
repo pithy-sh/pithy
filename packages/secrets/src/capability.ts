@@ -52,7 +52,9 @@ export const secretsTokenProfile = {
  * Worker answering every request with `secrets/crypto_failed`.
  *
  * **`bootstrap`, because the Worker reads it without the decoder.** See the axis for why that is the one
- * secret whose binding carries its value rather than its envelope.
+ * secret whose binding carries its value rather than its envelope — and, since #323, the one secret whose
+ * entry in `secrets.jsonc` is that value rather than an envelope around it. Both statements are the same
+ * rule: the file states the payload the destination receives.
  *
  * **No `devValue`.** A random string is not an `EncryptionConfig`, and the registry refuses `devValue` on
  * a non-text entry for exactly that reason. `pithy add secrets` mints one properly, through

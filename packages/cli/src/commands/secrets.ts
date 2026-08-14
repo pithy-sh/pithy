@@ -33,6 +33,7 @@ import {
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { editDevSecrets } from "../devSecrets/edit";
 import { resolveDevSecretsFile } from "../devSecrets/location";
+import { mergedSecretRegistry, resolveDevSecretsTargets } from "../devSecrets/targets";
 import { loadProject, projectCloudflareAccount, projectEnvironments, requireProjectName } from "../project/config";
 import { requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
@@ -302,7 +303,13 @@ const edit = defineCommand({
       // The one resolution of where the file is (`devSecrets/location.ts`). It requires a project name
       // rather than guessing one: a guess would open one checkout's secrets from another's worktree.
       const path = await resolveDevSecretsFile(process.cwd());
-      const result = await editDevSecrets({ path });
+      // Best effort, and never a reason to refuse (#323). With a registry an edit is judged against the
+      // payload each secret's destination takes; without one the file is still checked as JSONC. A
+      // project whose config will not load is the state this command exists to get somebody out of.
+      const targets = await resolveDevSecretsTargets(process.cwd())
+        .then((resolved) => resolved.targets)
+        .catch(() => []);
+      const result = await editDevSecrets({ path, registry: mergedSecretRegistry(targets) });
 
       if (args.json) {
         process.stdout.write(

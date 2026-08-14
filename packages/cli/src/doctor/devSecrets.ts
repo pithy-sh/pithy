@@ -5,9 +5,9 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { sentenceOf } from "@pithy-sh/core/src/error/pithyError";
-import type { DevSecretEnvelope, DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
+import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
-import { keyedSecretRefusal, storedSecretValue } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
+import { devSecretPayload, keyedSecretRefusal } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { DEV_SECRETS_FILE_NAME, resolveDevSecretsFile } from "../devSecrets/location";
 import { type DevSecretsTarget, resolveDevSecretsTargets, type UnresolvableWorker } from "../devSecrets/targets";
@@ -288,18 +288,13 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
 /**
  * Why one stated value will not read, or `null` when it reads.
  *
- * **Through {@link storedSecretValue}, the seeder's own function.** Doctor's promise is that a green
+ * **Through {@link devSecretPayload}, the seeder's own function.** Doctor's promise is that a green
  * report means the next `pithy seed` works; a second implementation of "is this value sound" is exactly
  * how that promise stops being true without anybody noticing.
  */
-function whyUnreadable(
-  entry: SecretRegistryEntry,
-  name: string,
-  envelope: DevSecretEnvelope,
-  path: string,
-): string | null {
+function whyUnreadable(entry: SecretRegistryEntry, name: string, stated: unknown, path: string): string | null {
   try {
-    storedSecretValue(entry, name, envelope, path);
+    devSecretPayload(entry, name, stated, path);
     return null;
   } catch (error) {
     return sentenceOf(error);

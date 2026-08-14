@@ -7,6 +7,7 @@ import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import { isProvisionedBinding } from "@pithy-sh/core/src/capability/bindings";
 import type { DevSecret } from "@pithy-sh/core/src/capability/devSecret";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import { masterKeyRegistryEntry } from "@pithy-sh/secrets/src/capability";
 import { EncryptionConfig } from "@pithy-sh/secrets/src/crypto/envelope";
 import { type DevSecretsFile, initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
@@ -165,10 +166,11 @@ async function ensureDevMasterKey(projectDir: string): Promise<string[]> {
   const recorded = (await readBootstrapVars(projectDir))[MASTER_KEY_BINDING];
   const stranded = parseDevVars((await readDevVarsSource(join(projectDir, ".dev.vars"))) ?? "")[MASTER_KEY_BINDING];
   const adopted = firstValue(recorded, stranded);
-  // The file states the `EncryptionConfig` itself, inside the envelope every dev secret is written as —
-  // so a hand-edit that breaks it is caught by the registry's own schema, naming the secret, rather than
-  // by a Worker answering every request with `secrets/crypto_failed`. An adopted value arrives as the
-  // string a binding carried, so it is parsed back into the object the file holds.
+  // The file states the `EncryptionConfig` itself, and nothing around it (#323) — the binding carries the
+  // bare config, and the file states the payload its destination receives. A hand-edit that breaks it is
+  // caught by the registry's own schema, naming the secret, rather than by a Worker answering every
+  // request with `secrets/crypto_failed`. An adopted value arrives as the string a binding carried, so it
+  // is parsed back into the object the file holds — which is now the same object, unwrapped, either way.
   const config = adopted === undefined ? await initialMasterKeyConfig() : parseConfig(adopted);
   if (config === null) {
     return [
@@ -176,7 +178,7 @@ async function ensureDevMasterKey(projectDir: string): Promise<string[]> {
       `Put a valid one in ${path}, or delete it and run pithy add secrets again to mint a new one — a new key orphans every secret the old one encrypted.`,
     ];
   }
-  const wrote = await writeDevSecrets(path, { [MASTER_KEY_BINDING]: initialDevSecret(config) });
+  const wrote = await writeDevSecrets(path, { [MASTER_KEY_BINDING]: initialDevSecret(masterKeyRegistryEntry, config) });
   if (wrote.length === 0) return [];
   if (adopted !== undefined) {
     return [
@@ -254,7 +256,9 @@ async function ensureDevSecrets(projectDir: string, declared: readonly DevSecret
       );
       continue;
     }
-    minted[secret.name] = initialDevSecret(mintSecretValue(secret.devValue));
+    // Not a bootstrap secret, and that is a fact rather than an assumption: `defineSecretRegistry`
+    // refuses `bootstrap` beside `devValue`, and everything here is a manifest-declared mintable value.
+    minted[secret.name] = initialDevSecret({}, mintSecretValue(secret.devValue));
     notes.push(
       `Minted a dev ${secret.name} into ${path}. Local only.`,
       `Deployed environments need pithy secrets create ${secret.name}.`,
