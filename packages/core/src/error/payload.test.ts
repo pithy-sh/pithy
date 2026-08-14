@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
+import { z } from "zod";
 import { ErrorPayload, KitErrorPayload, KitPublicErrorPayload, PublicErrorPayload, ValidationIssue } from "./payload";
+import { PithyError } from "./pithyError";
 
 describe("ErrorPayload (the kit taxonomy)", () => {
   test("accepts a well-formed member and narrows on `code`", () => {
@@ -170,14 +172,77 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
   });
 });
 
+/**
+ * The population of the kit's closed taxonomy. Written down, deliberately, rather than read off
+ * either union — an expectation computed from its own subject passes whatever the subject says, and
+ * a parity check alone cannot see a *matched pair* of deletions, because the two lists stay equal
+ * all the way down to empty. Both unions are measured against this number and never against each
+ * other's length. Changing the taxonomy's size is a deliberate act; changing this line is part of it.
+ *
+ * Verified 2026-08-14: 115 members in each union, no duplicates, sorted lists identical.
+ */
+const KIT_ERROR_CODE_COUNT = 115;
+
+/** One member of either kit union — the public projection or its `action`/`detail` twin. */
+type KitUnionMember = (typeof KitErrorPayload | typeof KitPublicErrorPayload)["options"][number];
+
+/**
+ * The `code` literal of one union member, or a throw. A member whose discriminator cannot be read is
+ * the one case a gate must never wave through: skipping it drops that code out of both lists at once,
+ * which is precisely the drift the gate exists to catch, and the suite goes green on it.
+ */
+function codeOf(member: KitUnionMember): string {
+  const read = z.string().min(1).safeParse(member.shape.code.value);
+  if (!read.success) {
+    throw new PithyError({
+      code: "core/internal",
+      status: 500,
+      message: "A member of the kit error taxonomy has no readable `code` literal.",
+      detail: `Member: ${member.description ?? "(no description)"}`,
+    });
+  }
+  return read.data;
+}
+
+/** Every code in one union, sorted. Sorted rather than a set, so a duplicated member still shows. */
+function codesOf(union: typeof KitErrorPayload | typeof KitPublicErrorPayload): string[] {
+  return union.options.map(codeOf).sort();
+}
+
 describe("META: the kit's two unions", () => {
-  test("define exactly the same codes", () => {
-    // The reserved-domain set and the wire projection are both derived from these unions. A code
-    // added to one and not the other unreserves its domain *and* makes `HttpError.encode` throw
-    // from inside Hono's onError — a failure on the error path, which is the worst place for one.
-    const codesOf = (union: typeof KitErrorPayload | typeof KitPublicErrorPayload) =>
-      union.options.map((member) => member.shape.code.value).sort();
-    expect(codesOf(KitPublicErrorPayload)).toEqual(codesOf(KitErrorPayload));
+  // The reserved-domain set and the wire projection are both derived from these unions. A code
+  // added to one and not the other unreserves its domain *and* makes `HttpError.encode` throw
+  // from inside Hono's onError — a failure on the error path, which is the worst place for one.
+  // Worse than the throw: `KitPublicErrorPayload` is the security boundary, the shape with no
+  // `detail`. A code that reaches the wire without a member there is a field somebody assumed was
+  // stripped, no longer stripped. Two hand-maintained lists are the whole of what stands in the way.
+  const internalCodes = codesOf(KitErrorPayload);
+  const publicCodes = codesOf(KitPublicErrorPayload);
+
+  test("the internal union holds exactly the pinned population", () => {
+    expect(internalCodes.length).toBe(KIT_ERROR_CODE_COUNT);
+    expect(new Set(internalCodes).size).toBe(KIT_ERROR_CODE_COUNT);
+  });
+
+  test("the public union holds exactly the pinned population", () => {
+    expect(publicCodes.length).toBe(KIT_ERROR_CODE_COUNT);
+    expect(new Set(publicCodes).size).toBe(KIT_ERROR_CODE_COUNT);
+  });
+
+  test("every code in the full union has a public projection", () => {
+    // Direction one: a code added to `KitErrorPayload` alone. Its throw would be on the encode side
+    // of the HTTP codec, and its `detail` would have no shape declared to strip it.
+    expect(internalCodes.filter((code) => !publicCodes.includes(code))).toEqual([]);
+  });
+
+  test("every code in the public union has a full member", () => {
+    // Direction two: a code added to `KitPublicErrorPayload` alone. A gate that only ran the other
+    // way would be green here, and half a gate is the shape this repo keeps shipping.
+    expect(publicCodes.filter((code) => !internalCodes.includes(code))).toEqual([]);
+  });
+
+  test("define exactly the same codes, member for member", () => {
+    expect(publicCodes).toEqual(internalCodes);
   });
 });
 
