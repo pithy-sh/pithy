@@ -8,6 +8,7 @@ import type { EmailDatabase } from "../data/tables";
 import { EmailInvalidPayloadError } from "../error/errors";
 import { getTemplate, renderSubject } from "../templates/engine";
 import type { EmailTheme } from "../templates/theme";
+import { mintBatchId } from "./batchIdentity";
 import { resolveTimezoneSendAt } from "./sendAt";
 
 /**
@@ -21,9 +22,12 @@ import { resolveTimezoneSendAt } from "./sendAt";
  * The Workflow binding used to start a send (Cloudflare `Workflow.create`). At enqueue it sends a batch
  * of one; the scheduler's fan-out starts one instance per batch through the same binding.
  *
- * `id` names the instance being created. The scheduler passes the batch's id so the instance can be
- * looked up again by the rows that carry it (pithy-sh/pithy#342); an enqueue omits it and lets the
- * platform mint one.
+ * `id` names the instance being created, and **every dispatcher passes one** (pithy-sh/pithy#342): the
+ * scheduler passes its batch's, an enqueue passes the one it just stamped on the row, and a retry passes
+ * the one it minted to replace the failed batch's. It is optional here only because the platform allows
+ * omitting it, and omitting it is what made an immediate send unattributable to any instance — so the
+ * row could not say a Workflow was coming and the safety net sent a second one. See
+ * `send/batchIdentity.ts`.
  */
 export interface SendWorkflowBinding {
   create(options: { id?: string; params: { jobIds: string[] } }): Promise<unknown>;
@@ -82,6 +86,11 @@ export interface EnqueueDeps {
   now: Date;
   /** Generate a job id (a UUID in production). */
   newId: () => string;
+  /**
+   * Mint the id of the batch this enqueue dispatches — **the send Workflow instance's id**
+   * (pithy-sh/pithy#342). Defaults to {@link mintBatchId}; injected only so a test can name it.
+   */
+  newBatchId?: () => string;
 }
 
 /** The result of enqueuing: the new job id and its initial status. */
@@ -111,6 +120,27 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
   const subject = renderSubject(input.template, input.payload, deps.theme);
   const { mode, sendAt, status } = resolveSchedule(input, deps.now);
 
+  // Whether this call starts a send Workflow at all: only an immediate job does, and only where a
+  // binding exists to start one on. Everything else is left for the scheduler to claim.
+  const sender = mode === "immediate" ? deps.sender : undefined;
+  /**
+   * The batch this enqueue is about to start — named here, before the row exists, because the row has to
+   * carry it (pithy-sh/pithy#342).
+   *
+   * Without it the row is born naming nobody, and a row naming nobody is stranded by definition: the
+   * scheduler's safety net claims any `pending` job older than `graceMs` and starts a *second* send
+   * Workflow for it. That is not a hypothetical race with a slow enqueue — it is the ordinary shape of a
+   * transient send failure. `runSend` throws on a retryable error so the Workflow step backs off, and a
+   * backoff writes nothing at all, so the very first retry leaves the row looking exactly like a dispatch
+   * that died. `runSend` short-circuits only a job already `sent`, so both instances would render and
+   * both would call the Email Service. One person, two emails.
+   *
+   * Null for a `scheduled` or `timezone` job, and for an immediate one with no binding, because in those
+   * cases nothing is coming for the row and saying otherwise would hold it against a batch that does not
+   * exist.
+   */
+  const batchId = sender ? (deps.newBatchId ?? mintBatchId)() : null;
+
   const marketing = template.category === "marketing";
   const job: EmailJob = {
     id: deps.newId(),
@@ -125,6 +155,7 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
     status,
     mode,
     attempts: 0,
+    batchId,
     sendAt,
     timezone: input.timezone ?? null,
     localTime: input.localTime ?? null,
@@ -145,11 +176,17 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
 
   await deps.db.insertInto("pithyEmailJobs").values(EmailJobSchema.encode(job)).execute();
 
-  // Immediate sends start the Workflow now for lowest latency. If the dispatch fails, the row stays
-  // `pending` and the every-minute scheduler re-drives it — so a failed dispatch never loses an email.
-  if (mode === "immediate" && deps.sender) {
+  // Immediate sends start the Workflow now for lowest latency, under the id the row already carries —
+  // the row is written first so the instance can never be alive before the row can name it.
+  //
+  // If the dispatch fails, the row stays `pending` naming an instance the runtime has never heard of.
+  // `batchIsAlive` turns that into "not alive", so the scheduler re-drives it on the next tick exactly
+  // as it did before batch ids existed — a failed dispatch still never loses an email. And if the
+  // failure was only the *answer* going missing, the instance is there and alive, the row names it, and
+  // the tick holds off: the case that used to be a double-send is now the case the id was minted for.
+  if (sender && batchId) {
     try {
-      await deps.sender.create({ params: { jobIds: [job.id] } });
+      await sender.create({ id: batchId, params: { jobIds: [job.id] } });
     } catch {
       // Swallowed deliberately: the scheduler's safety net owns recovery.
     }

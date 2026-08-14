@@ -7,6 +7,7 @@ import { ConflictError, NotFoundError } from "@pithy-sh/core/src/error/pithyErro
 import type { EmailJob } from "../data/emailJob";
 import type { EmailDatabase, EmailSuppressionDatabase } from "../data/tables";
 import { EmailSuppressedError } from "../error/errors";
+import { mintBatchId } from "../send/batchIdentity";
 import type { SendWorkflowBinding } from "../send/enqueue";
 import { blockingSuppression } from "../send/suppression";
 import { templateKind } from "../templates/engine";
@@ -49,6 +50,25 @@ import { getJob } from "./read";
  * so a retry that left `attempts` alone would take one retryable error to fail terminally again — the
  * button would appear to work and change nothing. `attempts` returns to zero; `error` does not, because
  * it is the record of what went wrong last time and a successful send clears it anyway.
+ *
+ * ## The batch id is re-minted, and the old one must not survive
+ *
+ * A `failed` row still names the batch that failed it (pithy-sh/pithy#342), and that id is about to
+ * become wrong in both directions at once. `batchId` means *the instance coming for this row* — see
+ * `send/batchIdentity.ts` — and after a retry the instance coming for it is the one this function
+ * starts, not the one that gave up on it.
+ *
+ * Leaving the old id there is not a stale label. It hands the scheduler's veto the wrong Workflow to ask
+ * about, and a failure inside a batch is exactly the case where that Workflow is *still running*: a
+ * batch of fifty that failed job seven walks on to job fifty. So the tick that should re-drive the retry
+ * asks about the batch that abandoned it, is told "alive", and holds — the operator's click sends
+ * nothing for as long as the old batch runs. Then the old batch ends, the same row reads as stranded,
+ * and the tick starts a second Workflow behind the one this function already started. Held when it
+ * should send, then sent twice: one wrong id, both failures.
+ *
+ * So a retry mints its own, writes it in the same statement that makes the row queryable again, and
+ * creates the instance under it. Null when there is no binding to dispatch on, because then nothing is
+ * coming for the row and the scheduler should claim it on the next tick.
  */
 
 /** What a retry needs: both databases, the send Workflow binding, and the clock. */
@@ -63,6 +83,11 @@ export interface RetryDeps {
    */
   sender?: SendWorkflowBinding;
   now: Date;
+  /**
+   * Mint the id of the batch this retry dispatches — **the send Workflow instance's id**
+   * (pithy-sh/pithy#342). Defaults to {@link mintBatchId}; injected only so a test can name it.
+   */
+  newBatchId?: () => string;
 }
 
 /** What a retry did. */
@@ -115,9 +140,17 @@ export async function retryJob(deps: RetryDeps, jobId: string): Promise<RetryRes
     });
   }
 
+  // The batch this retry will start, named before the row is written so the same statement that makes
+  // the row queryable again also says who is coming for it. Null with no binding: nothing is.
+  const batchId = deps.sender ? (deps.newBatchId ?? mintBatchId)() : null;
+
   const updated = await deps.db
     .updateTable("pithyEmailJobs")
     .set({
+      // **The failed batch's id does not survive the retry** — see the note above. Whether it is
+      // re-minted or nulled, what must not happen is the row keeping the id of the batch that gave up on
+      // it, because that batch is usually still running and its liveness would be read as this row's.
+      batchId,
       // `pending`, whatever the original mode was. A retry is an operator asking for this to go now;
       // re-arming a `scheduled` job to a `sendAt` that is already in the past would say the same thing
       // less clearly, and re-deriving a `timezone` job's local slot would move the send to tomorrow.
@@ -156,12 +189,16 @@ export async function retryJob(deps: RetryDeps, jobId: string): Promise<RetryRes
   }
 
   let dispatched = false;
-  if (deps.sender) {
+  if (deps.sender && batchId) {
     try {
-      await deps.sender.create({ params: { jobIds: [jobId] } });
+      // Under the id the row now carries. The claim is written first, so the instance can never be alive
+      // before the row can name it; the reverse order would leave a window in which a tick re-drives a
+      // job whose Workflow has already started.
+      await deps.sender.create({ id: batchId, params: { jobIds: [jobId] } });
       dispatched = true;
     } catch {
-      // Swallowed deliberately: the row is `pending`, and the every-minute scheduler owns recovery.
+      // Swallowed deliberately: the row is `pending` naming an instance that is not there, the runtime
+      // disowns it, and the every-minute scheduler owns recovery.
     }
   }
 

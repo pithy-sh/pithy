@@ -7,6 +7,7 @@ import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { configureSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { emailSigningRegistry, resolveSigningKeys } from "../crypto/signingKey";
 import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
+import { mintBatchId } from "../send/batchIdentity";
 import type { SendWorkflowBinding } from "../send/enqueue";
 import type { EmailSender } from "../send/sender";
 import { defaultTheme, EmailTheme } from "../templates/theme";
@@ -105,7 +106,8 @@ function buildSchedulerDeps(env: EmailWorkerEnv): SchedulerDeps {
     stuckMs: Number(env.SCHEDULER_STUCK_MS ?? 15 * MINUTE_MS),
     batchSize: Number(env.SCHEDULER_BATCH_SIZE ?? 50),
     maxJobs: Number(env.SCHEDULER_MAX_JOBS ?? 500),
-    newBatchId: () => crypto.randomUUID(),
+    // The same mint as the other two dispatchers, so the three cannot drift into three id schemes.
+    newBatchId: mintBatchId,
     // The batch's id is the instance's id, so this is the whole of the lookup. A rejection means the
     // instance is not there to ask — a dispatch that never landed — and that is stranded, not alive: the
     // answer may only ever veto a re-drive, so the cautious reading is the one that keeps recovering.
