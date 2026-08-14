@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
+import { PAYMENTS_RAILS } from "../data/rail";
 import {
   entitlementsForProduct,
   grantableEntitlements,
@@ -22,6 +23,23 @@ const STRIPE_RETURN_URLS = {
   cancelUrl: "https://acme.example/pricing",
   portalReturnUrl: "https://acme.example/account",
 };
+
+/** The one URL Lemon Squeezy's hosted checkout returns to. Required whenever that rail is on. */
+const LEMON_SQUEEZY_SETTINGS = { successUrl: "https://acme.example/thanks" };
+
+/** The smallest Paddle block that parses: the account, the publishable token, and where a buyer lands. */
+const PADDLE_SETTINGS = {
+  clientToken: "test_abc",
+  environment: "sandbox",
+  successUrl: "https://acme.example/thanks",
+};
+
+/** The three rails that demand a settings block when they are on, and the block each demands. */
+const HOSTED_RAIL_SETTINGS = [
+  ["stripe", STRIPE_RETURN_URLS],
+  ["lemonSqueezy", LEMON_SQUEEZY_SETTINGS],
+  ["paddle", PADDLE_SETTINGS],
+] as const;
 
 /** The catalog from issue #79's example, trimmed to what a test needs. Parsed fresh per test. */
 function catalog(overrides: Partial<PaymentsConfigInput> = {}): PaymentsConfigInput {
@@ -254,8 +272,59 @@ describe("PaymentsConfig cross-field rules", () => {
       products: { ghost: { type: "non_consumable", name: "Ghost", apple: { productId: "com.acme.ghost" } } },
     });
     expect(result.success).toBe(false);
-    // The disabled rail, and the product granting nothing. Zod collects both rather than short-circuiting.
-    expect(result.error?.issues.length).toBeGreaterThanOrEqual(2);
+    // The disabled rail, and the product granting nothing. Zod collects both rather than short-circuiting —
+    // and exactly two, because a config that breaks two rules should not read as breaking more.
+    expect(result.error?.issues).toHaveLength(2);
+  });
+});
+
+describe("one fault, one issue", () => {
+  // Counting, not matching. Every other assertion in this file asks whether a bad config was refused and
+  // what the refusal said, and both stayed true while the Paddle pair was pasted a second time inside the
+  // per-rail loop — six identical issues on one missing block (#364). The number is the only assertion
+  // that catches a paste, so these tests count and nothing else.
+  test.each(HOSTED_RAIL_SETTINGS)(
+    "the %s rail reports one issue for a missing block, and one for a block with the rail off",
+    (rail, settings) => {
+      const missing = PaymentsConfig.safeParse({ rails: { [rail]: true }, products: {} });
+      expect(missing.success).toBe(false);
+      expect(missing.error?.issues.filter((issue) => issue.path.join(".") === rail)).toHaveLength(1);
+      expect(missing.error?.issues).toHaveLength(1);
+
+      const orphaned = PaymentsConfig.safeParse({ rails: { apple: true }, [rail]: settings, products: {} });
+      expect(orphaned.success).toBe(false);
+      expect(orphaned.error?.issues.filter((issue) => issue.path.join(".") === rail)).toHaveLength(1);
+      expect(orphaned.error?.issues).toHaveLength(1);
+    },
+  );
+
+  test("the rule holds however many rails and however many products there are", () => {
+    // The invariant, stated as what must be true rather than as what is forbidden: an issue whose path
+    // names one rail is emitted once, whatever `PAYMENTS_RAILS` and the catalog happen to contain. Both
+    // loops in the check body iterate one of those, so a rule pasted into either scales with it — which
+    // is what a sixth rail turning six issues into seven actually means. A repeated member lengthens the
+    // rail list without inventing an enum member the switch statements have never heard of.
+    const rails = PAYMENTS_RAILS as string[];
+    const original = [...rails];
+    rails.push(original[0] as string);
+    try {
+      const result = PaymentsConfig.safeParse({
+        rails: { paddle: true },
+        products: {
+          pro_monthly: { type: "subscription", name: "Pro", entitlements: ["pro"], paddle: { priceId: "pri_01a" } },
+          pro_annual: { type: "subscription", name: "Pro year", entitlements: ["pro"], paddle: { priceId: "pri_01b" } },
+          team: { type: "subscription", name: "Team", entitlements: ["team"], paddle: { priceId: "pri_01c" } },
+        },
+      });
+      expect(result.success).toBe(false);
+      expect(result.error?.issues.filter((issue) => issue.path.join(".") === "paddle")).toHaveLength(1);
+      // The missing block is the only thing wrong with that catalog. Six rails and three products do not
+      // make it six things, or three.
+      expect(result.error?.issues).toHaveLength(1);
+    } finally {
+      rails.length = 0;
+      rails.push(...original);
+    }
   });
 });
 
