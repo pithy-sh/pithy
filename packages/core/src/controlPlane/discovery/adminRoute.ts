@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import { ControlPlaneScope } from "../scope/scope";
+import { HealthSummary, HealthSummaryKey } from "./health";
 
 /**
  * What a capability tells a management client about its own admin surface.
@@ -52,8 +53,14 @@ export const AdminRoute = z
   );
 export type AdminRoute = z.infer<typeof AdminRoute>;
 
-/** One composed capability, as `GET /control-plane/manifest` reports it. */
-export const CapabilityDescriptor = z
+/**
+ * One composed capability's declaration — everything about it that is the same for every caller.
+ *
+ * Split from {@link CapabilityDescriptor} because the health *values* are the one part of a manifest
+ * entry that depends on who is asking, and the seam holds this half from assembly (`compose`) while the
+ * other half is resolved per request.
+ */
+export const CapabilityDeclaration = z
   .object({
     name: z
       .string()
@@ -70,8 +77,33 @@ export const CapabilityDescriptor = z
       .describe(
         "Every admin route this capability contributes, or empty when it contributes none. Most capabilities are empty: having no management surface is the normal case, and saying so explicitly is what lets a client render a capability it cannot act on.",
       ),
+    healthKeys: z
+      .array(HealthSummaryKey)
+      .describe(
+        "The closed vocabulary of scalars this capability may report about its own state, or empty when it reports none. Declared alongside the routes so a client can render a key it has never heard of from what the Worker says about it — and so a *withheld* number is visible as a key with no value, rather than as silence.",
+      ),
   })
-  .describe("One capability this Worker composes, the version it is at, and the admin surface it exposes.");
+  .describe(
+    "One capability this Worker composes, the version it is at, the admin surface it exposes, and the summary it may report.",
+  );
+export type CapabilityDeclaration = z.infer<typeof CapabilityDeclaration>;
+
+/**
+ * One composed capability, as `GET /control-plane/manifest` reports it to **this** caller.
+ *
+ * `health` is the only per-caller part of a manifest entry, and its null is load-bearing: it means *no
+ * number*, never zero. Read it with `healthKeys` beside it and three states are distinguishable — a
+ * capability that declares nothing, one that declares a number this connection was not granted, and one
+ * that reports zero. A management client that collapsed the first two would tell an adopter everything
+ * is fine when it has simply not been allowed to look.
+ */
+export const CapabilityDescriptor = CapabilityDeclaration.extend({
+  health: HealthSummary.nullable().describe(
+    "Every declared value this caller may see, or null when there is none to give — either nothing is declared, or this connection lacks the scope the value is behind. **Null is never zero.** A key declared in `healthKeys` and absent here was withheld.",
+  ),
+}).describe(
+  "One capability this Worker composes, as reported to one caller: its version, its admin surface, and the summary that caller is entitled to.",
+);
 export type CapabilityDescriptor = z.infer<typeof CapabilityDescriptor>;
 
 /**

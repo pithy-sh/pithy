@@ -1,21 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { D1Database } from "@cloudflare/workers-types";
 import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { pageLimit } from "@pithy-sh/core/src/data/cursor";
-import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { VerificationStrategy } from "@pithy-sh/core/src/http/verification";
 import type { Context, Hono } from "hono";
-import { readSecretRotations, readSecretStatus, type SecretsStatusDb } from "../admin/status";
+import { dueForRotation } from "../admin/health";
+import { readSecretRotations, readSecretStatus } from "../admin/status";
 import { type SecretsAuditAction, SecretsAuditActions } from "../audit/actions";
-import { secretsTables } from "../data/tables";
+import { secretsStatusDatabase } from "../data/statusDb";
 import { SecretNotFoundError } from "../error/errors";
 import type { SecretRegistry } from "../registry";
 import { SECRETS_STATUS_READ_SCOPE } from "./guards";
@@ -103,19 +102,6 @@ export interface SecretsRoutesOptions {
   basePath?: string;
 }
 
-/** The per-environment secrets D1, as a typed Kysely instance. */
-function db(c: Context<PithyHonoEnv>): SecretsStatusDb {
-  const binding = (c.env as Record<string, unknown>).SECRETS as D1Database | undefined;
-  if (!binding) {
-    throw new InternalError({
-      message: "The secrets store is not configured.",
-      action: "Bind a D1 database named SECRETS in wrangler.jsonc.",
-      detail: "The secrets management surface requires a `SECRETS` D1 binding; none was present on env.",
-    });
-  }
-  return createDatabase(binding, secretsTables);
-}
-
 /**
  * The verified management client behind a control-plane call.
  *
@@ -162,10 +148,10 @@ export function registerSecretsRoutes(options: SecretsRoutesOptions): (app: Hono
 
   return (app) => {
     app.get(`${base}/admin/status`, requireControlPlane(SECRETS_STATUS_READ_SCOPE), async (c) => {
-      const statuses = await readSecretStatus(db(c), options.registry());
+      const statuses = await readSecretStatus(secretsStatusDatabase(c), options.registry());
       await record(c, SecretsAuditActions.statusRead, null, {
         declared: statuses.length,
-        overdue: statuses.filter((status) => status.overdue === true).length,
+        overdue: dueForRotation(statuses),
       });
       return c.json({ secrets: statuses.map(secretStatusView) } satisfies SecretsStatusResponse, 200);
     });
@@ -188,7 +174,11 @@ export function registerSecretsRoutes(options: SecretsRoutesOptions): (app: Hono
             detail: `secret status: '${name}' is not a named entry of the composed registry`,
           });
         }
-        const rotations = await readSecretRotations(db(c), name, pageLimit(c.req.valid("query").limit));
+        const rotations = await readSecretRotations(
+          secretsStatusDatabase(c),
+          name,
+          pageLimit(c.req.valid("query").limit),
+        );
         await record(c, SecretsAuditActions.rotationsRead, name, { name, returned: rotations.length });
         return c.json({ name, rotations: rotations.map(secretRotationView) } satisfies SecretRotationsResponse, 200);
       },
