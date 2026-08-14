@@ -12,6 +12,26 @@ Links in a tracked email are HMAC-signed callbacks. A click goes through `/_pith
 
 `pithy add email` mints this project's **dev** signing key into the dev secrets file as `email-link-signing-key` — any random string signs a link this app also verifies, so there is nothing for you to invent. It is written only when absent: a new key breaks every link already in an inbox. Deployed environments need their own, with `pithy secrets create email-link-signing-key`.
 
+### Sending from your own Workflow
+
+A route reaches `enqueue` through the `compose` hook, and should keep doing that — it is typed and explicit. **A Workflow class has no such route:** the runtime constructs it with the worker `env` and nothing else, `enqueue` is a closure rather than a binding, and Workflow params are serialised so a closure cannot travel in one either. Rebuilding the send identity inside the step would put your sending address in a second place, free to drift from `pithy.config.ts`.
+
+So a durable job asks for it by env alone:
+
+```ts
+import { enqueueFromEnv } from "@pithy-sh/email/src/send/fromComposition";
+
+export class RotationWorkflow extends WorkflowEntrypoint<Env, RotationParams> {
+  override async run(event: WorkflowEvent<RotationParams>, step: WorkflowStep) {
+    await step.do("notify", async () => {
+      await enqueueFromEnv(this.env, { to, template: "operationalNotice", payload });
+    });
+  }
+}
+```
+
+It is the same bound `enqueue` a route holds — same from-identity, same theme, same automatic suppression — reached through the composed set `createBackend` records at assembly. Export the Workflow class from the same worker entrypoint that calls `createBackend`, which Cloudflare requires anyway; where it is not composed, this raises a wiring fault naming what to add rather than sending as an invented identity.
+
 ## Deployment architecture
 
 ```mermaid

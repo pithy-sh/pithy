@@ -24,6 +24,10 @@ export {
   EMAIL_SUPPRESSIONS_WRITE_SCOPE,
 } from "./http/guards";
 export { type EnqueueInput, type EnqueueResult, enqueueEmail } from "./send/enqueue";
+// How a Workflow sends mail (pithy-sh/pithy#356). A route holds the bound `enqueue` its `compose` hook
+// handed it; a durable step has no such hook, and this is the seam that gets it there without restating
+// the sending identity `pithy.config.ts` already resolved.
+export { composedEmail, enqueueFromEnv } from "./send/fromComposition";
 /**
  * The suppression list, for the adopter who wants to look (pithy-sh/pithy#355).
  *
