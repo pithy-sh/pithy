@@ -66,9 +66,10 @@ export function isErrorCode<const Code extends `${string}/${string}`>(
  * throwing `connect/device_code_expired` as a 410 from one site and a 500 from another passes every
  * layer. Declare each of your codes in one vehicle class, once, and that stays true by construction.
  *
- * It does not move the security boundary either. The payload it returns carries `detail` exactly
- * like a kit member, and the HTTP codec strips `detail` from every member alike. An adopter cannot
- * opt into leaking, because there is nothing to opt into.
+ * It does not move the security boundary either. The payload it returns carries `action` and
+ * `detail` exactly like a kit member, and the HTTP codec strips both from every member alike. An
+ * adopter cannot opt into leaking, because there is nothing to opt into — the wire shape has no such
+ * key to fill, whoever defined the code.
  *
  * ```ts
  * export class DeviceCodeExpiredError extends PithyError {
@@ -94,7 +95,7 @@ export function defineErrorPayload<const Code extends `${string}/${string}`>(
     status: number;
     /** Public, safe-to-expose summary. Sent to clients and shown in the terminal. */
     message: string;
-    /** Remediation hint. Becomes the CLI action line. */
+    /** Operator remediation hint. Becomes the CLI action line. Never sent to a client. */
     action?: string;
     /** Internal context for logs + audit. NEVER serialized to clients — the HTTP codec strips it. */
     detail?: string;

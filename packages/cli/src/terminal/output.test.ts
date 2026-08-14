@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { HttpError } from "@pithy-sh/core/src/error/http";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { formatDone, formatError, formatErrorJson, formatJsonLine, formatList, withErrorReporting } from "./output";
@@ -31,7 +32,7 @@ describe("formatError", () => {
 });
 
 describe("formatErrorJson", () => {
-  test("wraps the public payload under `error`, matching the HTTP surface", () => {
+  test("wraps the operator payload under `error` — the remedy the terminal prints, in JSON", () => {
     const error = new ConflictError({ message: "Taken.", action: "Pick another." });
     expect(JSON.parse(formatErrorJson(error.payload))).toEqual({
       error: { code: "core/conflict", status: 409, message: "Taken.", action: "Pick another." },
@@ -43,6 +44,19 @@ describe("formatErrorJson", () => {
     const parsed = JSON.parse(formatErrorJson(error.payload)) as { error: Record<string, unknown> };
     expect(parsed.error.detail).toBeUndefined();
     expect(JSON.stringify(parsed)).not.toContain("secret stack");
+  });
+
+  test("keeps the operator remedy the HTTP surface refuses — this line has a different reader", () => {
+    // Deliberately the opposite assertion to `audience.test.ts`, on the same payload. Whoever ran
+    // the command can act on a wrangler binding; a browser is handed a description of a deployment.
+    const error = new InternalError({
+      message: "Broke.",
+      action: "Bind a D1 database named DB in wrangler.jsonc.",
+      detail: "secret stack at db.ts:42",
+    });
+    const parsed = JSON.parse(formatErrorJson(error.payload)) as { error: Record<string, unknown> };
+    expect(parsed.error.action).toBe("Bind a D1 database named DB in wrangler.jsonc.");
+    expect(JSON.stringify(HttpError.encode(error.payload))).not.toContain("wrangler.jsonc");
   });
 });
 

@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CLOUDFLARE_CREDENTIAL_KEYS, CLOUDFLARE_ENV_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
+import { statesNoVanishingKey } from "@pithy-sh/core/src/capability/vanishingKey";
 import { ConflictError, fromZodError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { ensureOwnerOnlyDirFor, tightenMode } from "../devSecrets/mode";
@@ -482,7 +483,22 @@ export async function writeCloudflareConfig(
   return parseCloudflareConfig(JSON.stringify(merged));
 }
 
-/** The parsed document with every tenant's key intact, for a read-modify-write. `{}` only for an absent file. */
+/**
+ * The parsed document with every tenant's key intact, for a read-modify-write. `{}` only for an absent file.
+ *
+ * **One key could not be kept, and the `catchall` above promised it would be.** `JSON.parse` gives
+ * `__proto__` an own property; Zod skips that key while building the object it returns, for the reason
+ * {@link statesNoVanishingKey} sets out; the write then puts back what it was handed. The input stated the
+ * key, the output did not, and nothing was reported in between.
+ *
+ * Refused rather than preserved. `__proto__` is not a name a future tenant will be called, and this file
+ * holds a live API token — the one document where a key deleted in silence must not be answered with a
+ * shrug. Refusing is also what makes the refusal reachable: the guard runs *in front of* the parse,
+ * because by the time the parse has returned there is nothing left to notice.
+ *
+ * A malformed document keeps its existing answer — `{}`, and a write that starts from nothing — because
+ * that is a different failure with a different cost, and this is not the issue that settles it.
+ */
 async function readCloudflareDocument(path: string): Promise<Record<string, unknown>> {
   const source = await readOptionalFile(path, {
     unreadable: ({ code, cause }) =>
@@ -497,7 +513,15 @@ async function readCloudflareDocument(path: string): Promise<Record<string, unkn
       ),
   });
   if (source === null) return {};
-  const parsed = CloudflareConfig.safeParse(safeJson(source));
+  const document = safeJson(source);
+  if (!statesNoVanishingKey(document)) {
+    throw new ConflictError({
+      message: `Cannot update ${path}: it states a "__proto__" key, and reading it would lose that key without a word.`,
+      action: "Remove the key, or move the file aside, and run the command again.",
+      detail: `a "__proto__" key in ${path} does not survive being parsed, so a read-modify-write would delete it`,
+    });
+  }
+  const parsed = CloudflareConfig.safeParse(document);
   return parsed.success ? parsed.data : {};
 }
 

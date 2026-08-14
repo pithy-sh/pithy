@@ -151,7 +151,10 @@ test("says there is nothing seeded, and names the command that seeds one", async
   expect(response.status).toBe(404);
   const body = (await response.json()) as { error?: { message?: string; action?: string } };
   expect(body.error?.message).toContain("No dev login has been seeded");
-  expect(body.error?.action).toContain("pithy seed");
+  // In `message`. `action` is the operator's field and never crosses the wire (#344) — this route's
+  // caller happens to be the operator, so the command is said where the caller can read it.
+  expect(body.error?.message).toContain("pithy seed");
+  expect(body.error?.action).toBeUndefined();
   expect(response.headers.get("Set-Cookie")).toBeNull();
 });
 

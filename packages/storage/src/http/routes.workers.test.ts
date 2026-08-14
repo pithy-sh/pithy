@@ -514,10 +514,11 @@ describe("upload — multipart", () => {
       body: JSON.stringify({ parts: [first] }),
     });
     expect(response.status).toBe(500);
-    const error = ((await response.json()) as { error: { code: string; action: string } }).error;
+    const error = ((await response.json()) as { error: { code: string; message: string } }).error;
     expect(error.code).toBe("storage/multipart_failed");
-    // The action tells the client where to recover. It has to name a route that exists.
-    expect(error.action).toContain("/parts");
+    // The message tells the client where to recover, and it has to name a route that exists. In
+    // `message` and not in `action`, because `action` is the operator's and does not cross the wire (#344).
+    expect(error.message).toContain("/parts");
     await bucket.resumeMultipartUpload(row.key, payload.upload.uploadId).abort();
   });
 

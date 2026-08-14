@@ -442,6 +442,37 @@ describe("writeCloudflareConfig", () => {
     expect(written).toMatchObject({ CLOUDFLARE_API_TOKEN: "tok", futureTenant: { keep: true } });
   });
 
+  /**
+   * The `catchall` says another tenant's key is "read and written back untouched", and for one key that
+   * was not true. `JSON.parse` gives `__proto__` an own property; Zod skips it while building the object
+   * it returns; the write puts back what it was handed. Input has it, output does not, nothing was said.
+   *
+   * Refused rather than preserved, for {@link statesNoVanishingKey}'s reason: `__proto__` is not a name a
+   * future tenant will be called, and this file holds a live API token — the one place a silent deletion
+   * must not be answered with a shrug.
+   */
+  test("refuses to rewrite a file stating a key the read would lose", async () => {
+    const path = join(dir, CLOUDFLARE_CONFIG_FILE_NAME);
+    // Raw bytes, because an object literal with a `__proto__` key sets the prototype and writes no own
+    // property — `JSON.stringify` of one would produce a document without the key under test.
+    const document = '{"CLOUDFLARE_API_TOKEN":"tok","__proto__":{"other":"tenant"}}';
+    await writeFile(path, document, { mode: 0o600 });
+    const before = await readFile(path, "utf8");
+
+    await expect(writeCloudflareConfig({ SECRETS_STORE_ID: "store" }, paths())).rejects.toThrow(/__proto__/);
+    // The refusal has to leave the file alone: a write that refuses and truncates is the same loss.
+    expect(await readFile(path, "utf8")).toBe(before);
+  });
+
+  test("the promise it now keeps: a tenant key beside the refused one is what survives a write", async () => {
+    // The paired half. Refusing everything would also pass the test above, and would break the
+    // read-modify-write this file exists for.
+    await config({ CLOUDFLARE_API_TOKEN: "tok", futureTenant: { keep: true } });
+    await writeCloudflareConfig({ SECRETS_STORE_ID: "store" }, paths());
+    const written: unknown = JSON.parse(await readFile(join(dir, CLOUDFLARE_CONFIG_FILE_NAME), "utf8"));
+    expect(written).toMatchObject({ futureTenant: { keep: true }, SECRETS_STORE_ID: "store" });
+  });
+
   test("refuses to rewrite a file it could not read — only ENOENT is 'no file'", async () => {
     const path = join(dir, CLOUDFLARE_CONFIG_FILE_NAME);
     await config({ CLOUDFLARE_API_TOKEN: "tok" });

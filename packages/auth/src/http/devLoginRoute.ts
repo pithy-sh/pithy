@@ -96,11 +96,16 @@ function maxAgeSeconds(expiresAt: Date, now: Date): number {
  *
  * It names `pithy seed` because that is the command that mints one, and it carries no detail about what
  * was searched for: the search key is derived from the signing secret.
+ *
+ * **In `message`, not in `action` (#344).** `action` is the operator's field and the HTTP codec strips it,
+ * because on every other route the caller is somebody who must not be handed a `pithy` command. This route
+ * is the exception the gates above already make: it registers only in a `dev` composition outside CI, so
+ * the browser at the other end is the developer's own. That is a decision one route makes in the open,
+ * which is the opposite of a field nobody classified carrying it everywhere.
  */
 function noSeededSession(): NotFoundError {
   return new NotFoundError({
-    message: "No dev login has been seeded for this environment.",
-    action: "Run pithy seed, then open this URL again.",
+    message: "No dev login has been seeded for this environment. Run pithy seed, then open this URL again.",
   });
 }
 
@@ -132,8 +137,8 @@ async function serveDevLogin(c: Context<PithyHonoEnv>, wiring: AuthWiring): Prom
   const parsed = DevSessionRow.safeParse(found);
   if (!parsed.success) {
     throw fromZodError(parsed.error, {
-      message: "The seeded dev session is not readable.",
-      action: "Run pithy seed to mint a fresh one.",
+      // Same reason as `noSeededSession`: this route's caller is the developer who can run the command.
+      message: "The seeded dev session is not readable. Run pithy seed to mint a fresh one.",
     });
   }
   const row: DevSessionRow = parsed.data;
