@@ -1,21 +1,38 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import type { EmailJob } from "../data/emailJob";
 import { EmailJob as EmailJobSchema } from "../data/emailJob";
-import type { EmailJobStatus, SendMode } from "../data/enums";
-import type { EmailDatabase } from "../data/tables";
+import type { EmailJobStatus, SendMode, SuppressionReason } from "../data/enums";
+import type { EmailDatabase, EmailSuppressionDatabase } from "../data/tables";
 import { EmailInvalidPayloadError } from "../error/errors";
-import { getTemplate, renderSubject } from "../templates/engine";
+import { getTemplate, renderSubject, templateKind } from "../templates/engine";
 import type { EmailTheme } from "../templates/theme";
 import { mintBatchId } from "./batchIdentity";
+import { recordEvent } from "./events";
 import { resolveTimezoneSendAt } from "./sendAt";
+import { blockingSuppression } from "./suppression";
 
 /**
  * Enqueue an email. A request handler only ever does this — it never sends inline. Every email becomes
  * a `pithy_email_jobs` row; an `immediate` job also kicks the send Workflow now (lowest latency), while
  * `scheduled` and `timezone` jobs are left for the every-minute scheduler to pick up. The payload is
  * validated against the template schema here, so a bad call fails at enqueue, not mid-send.
+ *
+ * **Suppression is consulted here too, and no caller asks for it** (pithy-sh/pithy#355). A blocked
+ * recipient never becomes a queued send: the row is born `suppressed`, no Workflow is started, and the
+ * reason comes back on the result. The point is not a second gate — `runSend` is and stays the
+ * authority, because whether an address is blocked is a question about the instant of sending and a
+ * scheduled job is enqueued days before that. The point is that the caller **learns**, at the moment it
+ * asked, without holding the suppression database itself. A three-person account whose addresses have
+ * all hard-bounced is otherwise three ordinary skips in a send log nobody reads, rather than one notice
+ * that reached nobody, said at the moment it went out.
+ *
+ * **The kind comes from the template, never from a caller** — {@link templateKind}, the same accessor
+ * `runSend` uses. That is what keeps an unsubscribe from a newsletter from withholding an invitation:
+ * the four suppression reasons stopped being interchangeable, and a check that restated
+ * `"transactional"` at the call site would be making a claim about somebody else's template.
  */
 
 /**
@@ -83,6 +100,17 @@ export interface EnqueueDeps {
   theme: EmailTheme;
   /** The send Workflow binding. When present, an immediate job is dispatched now; absent, the scheduler takes it. */
   sender?: SendWorkflowBinding;
+  /**
+   * The global suppression list. When present, a blocked recipient is recorded here and never queued.
+   *
+   * Optional for the same reason {@link EnqueueDeps.sender} is, and it is worth being exact about which
+   * reason: absence does not mean "send to blocked addresses". The capability declares
+   * `EMAIL_SUPPRESSIONS` a required binding, so a composed app worker always has one; and where a caller
+   * genuinely has none, `runSend` still refuses the recipient before anything leaves. Making it fatal
+   * here would mean refusing to *queue* a message because a list that will be consulted again before it
+   * goes could not be consulted yet, which is strictly worse than queueing it.
+   */
+  suppressionDb?: EmailSuppressionDatabase;
   now: Date;
   /** Generate a job id (a UUID in production). */
   newId: () => string;
@@ -97,6 +125,15 @@ export interface EnqueueDeps {
 export interface EnqueueResult {
   jobId: string;
   status: EmailJobStatus;
+  /**
+   * Why nothing was queued, when the recipient is on the suppression list.
+   *
+   * The same field {@link import("./runSend").SendOutcome} carries and for the same reason: a caller
+   * that only saw a status other than `failed` would report a delivery that never happened. "Suppressed"
+   * alone is not enough either — whether the mailbox bounced, complained, or opted out is what an
+   * operator's next move depends on.
+   */
+  suppressionReason?: SuppressionReason;
 }
 
 /** Resolve the absolute send time and initial status from the requested mode. */
@@ -118,11 +155,27 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
   const template = getTemplate(input.template);
   // Validates the payload against the template schema and computes the stored subject.
   const subject = renderSubject(input.template, input.payload, deps.theme);
-  const { mode, sendAt, status } = resolveSchedule(input, deps.now);
+  const { mode, sendAt, status: scheduled } = resolveSchedule(input, deps.now);
 
-  // Whether this call starts a send Workflow at all: only an immediate job does, and only where a
-  // binding exists to start one on. Everything else is left for the scheduler to claim.
-  const sender = mode === "immediate" ? deps.sender : undefined;
+  /**
+   * Whether the suppression list withholds *this* message from *this* address.
+   *
+   * `templateKind(input.template)` and never a literal — `runSend` reads the same accessor, and the two
+   * agreeing is what makes a hard bounce withhold an invitation while an unsubscribe does not. A caller
+   * cannot influence this and is not asked to: it is the template's own declaration.
+   */
+  const blocked: SuppressionReason | null = deps.suppressionDb
+    ? await blockingSuppression(deps.suppressionDb, input.to, deps.now, templateKind(input.template))
+    : null;
+  const status = blocked ? "suppressed" : scheduled;
+  // The event key, on the same normalisation the list is written and read under. The row keeps the
+  // address as the caller typed it, exactly as it did before — only the event is keyed.
+  const recipient = normalizeAddress(input.to);
+
+  // Whether this call starts a send Workflow at all: only an immediate job does, only where a binding
+  // exists to start one on, and never for a recipient the list withholds this message from. Everything
+  // else is left for the scheduler to claim.
+  const sender = !blocked && mode === "immediate" ? deps.sender : undefined;
   /**
    * The batch this enqueue is about to start — named here, before the row exists, because the row has to
    * carry it (pithy-sh/pithy#342).
@@ -163,7 +216,9 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
     openTracking: input.openTracking ?? marketing,
     clickTracking: input.clickTracking ?? marketing,
     messageId: null,
-    error: null,
+    // The same sentence `runSend` writes when it skips one, so the send log reads the same whichever
+    // pass caught it.
+    error: blocked ? `recipient suppressed: ${blocked}` : null,
     bounceCode: null,
     bounceType: null,
     replyTo: input.replyTo ?? null,
@@ -175,6 +230,14 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
   };
 
   await deps.db.insertInto("pithyEmailJobs").values(EmailJobSchema.encode(job)).execute();
+
+  // A withheld message is on the record as an event, not merely as a status — the send log's history is
+  // what an operator reads to find out that an advisory reached nobody, and a row with no event in it
+  // looks exactly like a job still waiting its turn.
+  if (blocked) {
+    await recordEvent(deps.db, { jobId: job.id, recipient, type: "suppressed", detail: blocked }, deps.now);
+    return { jobId: job.id, status, suppressionReason: blocked };
+  }
 
   // Immediate sends start the Workflow now for lowest latency, under the id the row already carries —
   // the row is written first so the instance can never be alive before the row can name it.

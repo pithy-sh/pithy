@@ -12,6 +12,7 @@ import type {
   PithyHonoEnv,
   PithyVars,
 } from "./capability/capability";
+import { recordComposition } from "./capability/composition";
 import { validateBindings } from "./capability/validateBindings";
 import { buildDbRegistry, composeDatabases, type DbRegistry } from "./data/databases";
 import { noEntitlementProvider } from "./entitlement/entitlement";
@@ -138,6 +139,11 @@ export function createBackend<
   // aggregates every capability's secretRegistry into one combined registry). Runs once at assembly,
   // after dependsOn validation so a hook can rely on its peers being present.
   for (const cap of all) cap.compose?.({ capabilities: all });
+
+  // Recorded after the hooks, so a capability found later is one whose own wiring is complete. This is
+  // the only way back to a composed seam from a Workflow step, which the runtime constructs with `env`
+  // and nothing else — see `capability/composition.ts` (pithy-sh/pithy#356).
+  recordComposition(all);
 
   const databases = composeDatabases(all);
   const namespaces = composeKv(all);
