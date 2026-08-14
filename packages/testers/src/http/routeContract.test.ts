@@ -12,15 +12,15 @@ import { describe, expect, test } from "vitest";
 import { testers } from "../capability";
 import { TestersConfig } from "../config/config";
 import { generateOptInToken } from "../crypto/token";
+import { registerTestersRoutes, selectForNudge, TESTERS_ROUTES } from "./routes";
+import { OptInTokenParam } from "./schemas";
 import {
   TESTERS_CONTROL_PLANE_SCOPES,
   TESTERS_NUDGE_SEND_SCOPE,
   TESTERS_ROSTER_READ_SCOPE,
   TESTERS_ROSTER_WRITE_SCOPE,
   testersAdminRoutes,
-} from "./guards";
-import { registerTestersRoutes, selectForNudge, TESTERS_ROUTES } from "./routes";
-import { OptInTokenParam } from "./schemas";
+} from "./scopes";
 
 /**
  * Gate two of the request contract. The Biome GritQL plugin is gate one — it bans the raw accessors, so

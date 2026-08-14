@@ -11,13 +11,13 @@ import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { ledger } from "../capability";
 import { LedgerConfig } from "../config/config";
+import { LEDGER_ROUTES, registerLedgerRoutes } from "./routes";
 import {
   LEDGER_ACCOUNTS_READ_SCOPE,
   LEDGER_CONTROL_PLANE_SCOPES,
   LEDGER_TRANSACTIONS_READ_SCOPE,
   ledgerAdminRoutes,
-} from "./guards";
-import { LEDGER_ROUTES, registerLedgerRoutes } from "./routes";
+} from "./scopes";
 
 /**
  * The ledger's half of gate 2 of the route request contract (issue #74), plus the management surface's

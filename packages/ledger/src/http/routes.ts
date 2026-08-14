@@ -16,7 +16,7 @@ import { type LedgerAuditAction, LedgerAuditActions } from "../audit/actions";
 import { type LedgerConfig, resolveCurrency } from "../config/config";
 import { LedgerCurrencyNotFoundError } from "../error/errors";
 import { openLedger } from "../ledger";
-import { LEDGER_ACCOUNTS_READ_SCOPE, LEDGER_TRANSACTIONS_READ_SCOPE, requireAdmin, requireAuth } from "./guards";
+import { requireAdmin, requireAuth } from "./guards";
 import type { LedgerAccountsResponse, LedgerTransactionsResponse, LedgerUserAccountsResponse } from "./responses";
 import {
   AdminAccountParam,
@@ -26,6 +26,7 @@ import {
   AdminWrite,
   CurrencyParam,
 } from "./schemas";
+import { LEDGER_ACCOUNTS_READ_SCOPE, LEDGER_TRANSACTIONS_READ_SCOPE } from "./scopes";
 import { accountView, transactionView } from "./view";
 
 /**

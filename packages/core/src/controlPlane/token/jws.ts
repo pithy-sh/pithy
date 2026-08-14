@@ -86,6 +86,12 @@ function decodeSegment<T>(segment: string, schema: z.ZodType<T>, label: string):
  * key means the adopter's connection row holds something malformed — that is a denial, not a Worker
  * crash, and it must render as the same 401 a bad signature does. Turning a bad row into a 500 would
  * both leak that the row is bad and take the route down for everyone.
+ *
+ * **The signature is copied before it is verified**, for the reason `sha256Base64Url` copies a body
+ * (#315): `crypto.subtle.verify` takes a `BufferSource`, which excludes a view onto a
+ * `SharedArrayBuffer`, and a bare `Uint8Array` does not exclude one. Under the DOM lib that was a type
+ * error in our source that an adopter's browser program could not fix; under Workers types it was a
+ * signature verified against bytes another thread could still be writing. Sixty-four bytes.
  */
 export async function verifyEd25519(
   signingInput: string,
@@ -94,7 +100,12 @@ export async function verifyEd25519(
 ): Promise<boolean> {
   try {
     const key = await crypto.subtle.importKey("jwk", jwk, { name: "Ed25519" }, false, ["verify"]);
-    return await crypto.subtle.verify("Ed25519", key, signature, new TextEncoder().encode(signingInput));
+    return await crypto.subtle.verify(
+      "Ed25519",
+      key,
+      new Uint8Array(signature),
+      new TextEncoder().encode(signingInput),
+    );
   } catch {
     return false;
   }

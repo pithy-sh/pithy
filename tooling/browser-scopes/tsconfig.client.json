@@ -1,0 +1,14 @@
+{
+  "extends": "@pithy-sh/tsconfig/base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    // The whole point of this program. A browser build has the DOM and nothing of a Worker: no
+    // `ExecutionContext`, no `ForwardableEmailMessage`, no ambient `@cloudflare/workers-types`.
+    // `types: []` is the load-bearing line — without it TypeScript sweeps every `@types` package it
+    // can reach in `node_modules`, which in a monorepo means the Workers types a sibling installed,
+    // and the gate would pass by borrowing exactly what the adopter does not have.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "include": ["src/client.ts"]
+}

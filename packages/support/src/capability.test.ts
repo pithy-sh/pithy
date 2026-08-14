@@ -4,7 +4,7 @@
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { describe, expect, test } from "vitest";
 import { isSupportCapability, SUPPORT_MIGRATION_ORDER, support } from "./capability";
-import { SUPPORT_CONTROL_PLANE_SCOPES } from "./http/guards";
+import { SUPPORT_CONTROL_PLANE_SCOPES } from "./http/scopes";
 import { supportWorkflows } from "./workflows/specs";
 
 /** The address every build below claims — the one field with no default, on a subdomain as the config insists. */

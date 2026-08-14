@@ -47,18 +47,7 @@ import {
 } from "../rails/contract";
 import { type RailTrustOptions, resolveRailProvider } from "../rails/providers";
 import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "../secret/registry";
-import {
-  PAYMENTS_CATALOG_READ_SCOPE,
-  PAYMENTS_DISCOUNT_CREATE_SCOPE,
-  PAYMENTS_DISCOUNT_READ_SCOPE,
-  PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
-  PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
-  PAYMENTS_ENTITLEMENTS_READ_SCOPE,
-  PAYMENTS_PURCHASES_READ_SCOPE,
-  PAYMENTS_RECONCILE_READ_SCOPE,
-  PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
-  requireAuth,
-} from "./guards";
+import { requireAuth } from "./guards";
 import type {
   PaymentsAdminCatalogResponse,
   PaymentsAdminDiscountsResponse,
@@ -95,6 +84,17 @@ import {
   RestoreRequest,
   StripeWebhookNotification,
 } from "./schemas";
+import {
+  PAYMENTS_CATALOG_READ_SCOPE,
+  PAYMENTS_DISCOUNT_CREATE_SCOPE,
+  PAYMENTS_DISCOUNT_READ_SCOPE,
+  PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
+  PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
+  PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+  PAYMENTS_PURCHASES_READ_SCOPE,
+  PAYMENTS_RECONCILE_READ_SCOPE,
+  PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
+} from "./scopes";
 import {
   adminCatalogView,
   adminEntitlementView,

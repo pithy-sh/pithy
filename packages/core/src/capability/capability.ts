@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { ExecutionContext, ForwardableEmailMessage } from "@cloudflare/workers-types";
 import type { Hono } from "hono";
 import type { z } from "zod";
 import type { AuditEmit } from "../audit/recorder";
@@ -201,6 +202,16 @@ export interface CapabilityComposeContext {
  * used for bounce/complaint processing (`@pithy-sh/email`) and any other inbound-mail concern.
  * `env` is the Worker's per-invocation bindings; the handler must consume, forward, or reject the
  * message (an untouched message is dropped by the runtime).
+ *
+ * **`ForwardableEmailMessage` and `ExecutionContext` are imported rather than assumed ambient**, and
+ * that is the whole of #315's second half. This module is reachable from a client: a browser program
+ * that names a control-plane scope through a capability's guards lands here, and a browser program
+ * has no Workers globals. Read off the global scope, the two names resolved only for a consumer that
+ * had `@cloudflare/workers-types` in its `types` — so an adopter's DOM program failed on two errors
+ * in *our* source, with no way to fix them short of excluding the kit from typechecking. Imported by
+ * name they resolve from the package, which `@pithy-sh/core` now declares as a dependency rather than
+ * a devDependency for exactly this reason: a type this file names is a type its consumers must be
+ * able to get. `tooling/browser-scopes` compiles with `types: []` and keeps it that way.
  */
 export type CapabilityEmailHandler = (
   message: ForwardableEmailMessage,

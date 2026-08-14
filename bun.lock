@@ -131,6 +131,7 @@
       "name": "@pithy-sh/core",
       "version": "0.0.0",
       "dependencies": {
+        "@cloudflare/workers-types": "^5.20260729.1",
         "@hono/zod-validator": "^0.9.0",
         "hono": "^4.12.0",
         "kysely": "^0.29.0",
@@ -139,7 +140,6 @@
       },
       "devDependencies": {
         "@cloudflare/vitest-pool-workers": "^0.19.0",
-        "@cloudflare/workers-types": "^5.20260729.1",
         "@pithy-sh/tsconfig": "workspace:*",
         "@vitest/coverage-v8": "^4.1.0",
         "typescript": "^7.0.2",
@@ -565,6 +565,27 @@
         "vite": "^6.1.0 || ^7.0.0 || ^8.0.0",
       },
     },
+    "tooling/browser-scopes": {
+      "name": "@pithy-sh/browser-scopes",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@pithy-sh/audit": "workspace:*",
+        "@pithy-sh/auth": "workspace:*",
+        "@pithy-sh/cli": "workspace:*",
+        "@pithy-sh/core": "workspace:*",
+        "@pithy-sh/email": "workspace:*",
+        "@pithy-sh/ledger": "workspace:*",
+        "@pithy-sh/payments": "workspace:*",
+        "@pithy-sh/secrets": "workspace:*",
+        "@pithy-sh/support": "workspace:*",
+        "@pithy-sh/testers": "workspace:*",
+        "@pithy-sh/tsconfig": "workspace:*",
+        "@types/node": "^22.15.0",
+        "@vitest/coverage-v8": "^4.1.0",
+        "typescript": "^7.0.2",
+        "vitest": "^4.1.0",
+      },
+    },
     "tooling/license-headers": {
       "name": "@pithy-sh/license-headers",
       "version": "0.0.0",
@@ -935,6 +956,8 @@
     "@pithy-sh/audit": ["@pithy-sh/audit@workspace:packages/audit"],
 
     "@pithy-sh/auth": ["@pithy-sh/auth@workspace:packages/auth"],
+
+    "@pithy-sh/browser-scopes": ["@pithy-sh/browser-scopes@workspace:tooling/browser-scopes"],
 
     "@pithy-sh/cli": ["@pithy-sh/cli@workspace:packages/cli"],
 

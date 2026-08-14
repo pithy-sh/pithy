@@ -1,0 +1,13 @@
+{
+  "extends": "@pithy-sh/tsconfig/base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    // Same two lines as `tsconfig.client.json`, and for the same reason: the DOM's `BufferSource` is
+    // the strict one, and `types: []` is what stops TypeScript borrowing the Workers types a sibling
+    // package installed. See `src/probe.ts` for why this is a second program rather than one more
+    // import in `client.ts`.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "include": ["src/probe.ts"]
+}

@@ -19,17 +19,17 @@ import { payments } from "../capability";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
 import { projectPurchase } from "../projection/writer";
 import {
-  PAYMENTS_CATALOG_READ_SCOPE,
-  PAYMENTS_ENTITLEMENTS_READ_SCOPE,
-  PAYMENTS_PURCHASES_READ_SCOPE,
-  PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
-} from "./guards";
-import {
   PaymentsAdminCatalogResponse,
   PaymentsAdminEntitlementsResponse,
   PaymentsAdminPurchasesResponse,
   PaymentsAdminSubscriptionsResponse,
 } from "./responses";
+import {
+  PAYMENTS_CATALOG_READ_SCOPE,
+  PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+  PAYMENTS_PURCHASES_READ_SCOPE,
+  PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
+} from "./scopes";
 
 /**
  * Discovery, end to end, against a **composed backend** — the shape of #247 rather than its symptom.

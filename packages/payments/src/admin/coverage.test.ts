@@ -5,7 +5,7 @@ import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/admin
 import { describe, expect, test } from "vitest";
 import { payments } from "../capability";
 import { paymentsTables } from "../data/tables";
-import { PAYMENTS_CONTROL_PLANE_SCOPES } from "../http/guards";
+import { PAYMENTS_CONTROL_PLANE_SCOPES } from "../http/scopes";
 import { PAYMENTS_TABLE_DISCLOSURE } from "./coverage";
 
 /**

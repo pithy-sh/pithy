@@ -6,7 +6,7 @@ import { describe, expect, test } from "vitest";
 import { TestersAuditActions } from "./audit/actions";
 import { isTestersCapability, TESTERS_MIGRATION_ORDER, testers } from "./capability";
 import { testersTables } from "./data/tables";
-import { TESTERS_CONTROL_PLANE_SCOPES } from "./http/guards";
+import { TESTERS_CONTROL_PLANE_SCOPES } from "./http/scopes";
 import { testersWorkflows } from "./workflows/specs";
 
 const BASE = { baseUrl: "https://api.example.test" };

@@ -56,14 +56,14 @@ export {
   testersDatabase,
   testersTables,
 } from "./data/tables";
+export { DISCLAIMER, ESTIMATE_STATEMENT } from "./http/responses";
+export { TESTERS_ROUTES, type TestersRouteDeclaration } from "./http/routes";
 export {
   TESTERS_CONTROL_PLANE_SCOPES,
   TESTERS_NUDGE_SEND_SCOPE,
   TESTERS_ROSTER_READ_SCOPE,
   TESTERS_ROSTER_WRITE_SCOPE,
-} from "./http/guards";
-export { DISCLAIMER, ESTIMATE_STATEMENT } from "./http/responses";
-export { TESTERS_ROUTES, type TestersRouteDeclaration } from "./http/routes";
+} from "./http/scopes";
 export {
   deprovisionTesters,
   provisionTesters,

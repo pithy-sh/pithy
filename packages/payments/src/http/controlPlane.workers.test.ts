@@ -23,14 +23,6 @@ import { grantEntitlement } from "../entitlement/manual";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
 import { projectPurchase } from "../projection/writer";
 import {
-  PAYMENTS_CATALOG_READ_SCOPE,
-  PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
-  PAYMENTS_ENTITLEMENTS_READ_SCOPE,
-  PAYMENTS_PURCHASES_READ_SCOPE,
-  PAYMENTS_RECONCILE_READ_SCOPE,
-  PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
-} from "./guards";
-import {
   PaymentsAdminCatalogProduct,
   PaymentsAdminCatalogResponse,
   PaymentsAdminEntitlementsResponse,
@@ -43,6 +35,14 @@ import {
   PaymentsAdminUserEntitlementsResponse,
 } from "./responses";
 import { registerPaymentsRoutes } from "./routes";
+import {
+  PAYMENTS_CATALOG_READ_SCOPE,
+  PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
+  PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+  PAYMENTS_PURCHASES_READ_SCOPE,
+  PAYMENTS_RECONCILE_READ_SCOPE,
+  PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
+} from "./scopes";
 
 /**
  * The management reads, executed — against real D1, over the real control-plane seam, with a real

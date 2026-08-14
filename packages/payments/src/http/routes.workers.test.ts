@@ -94,13 +94,13 @@ import {
   paymentsSecretsRegistry,
 } from "../secret/registry";
 import { PADDLE_SWEEP_MAX_ATTEMPTS, sweepPaddle } from "../workflows/paddleSweep";
+import { PaymentsEntitlementResponse, PaymentsEntitlementsResponse } from "./responses";
+import { registerPaymentsRoutes } from "./routes";
 import {
   PAYMENTS_CONTROL_PLANE_SCOPES,
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
-} from "./guards";
-import { PaymentsEntitlementResponse, PaymentsEntitlementsResponse } from "./responses";
-import { registerPaymentsRoutes } from "./routes";
+} from "./scopes";
 
 const TABLES = [
   "pithy_payments_purchases",
