@@ -266,6 +266,20 @@ The screens are wired for you. `useCheckout().handoff` carries it, `usePaddleChe
 
 **One mount opens one checkout, including under `StrictMode`** — which is the mode `pithy ui add react` scaffolds: `client.tsx` wraps the router in it, so in development every effect runs, is cleaned up, and runs again. `usePaddleCheckout` remembers the transaction it opened rather than trusting that its effect runs once. It remembers the last id, not a flag: `start` mints a fresh transaction per attempt, so a buyer who closed the overlay and clicked Buy again arrives with a new one, and that one opens.
 
+**Theme, locale and variant are yours to pass.** `usePaddleCheckout(handoff, { theme: "dark", locale: "fr", variant: "one-page" })` — and `openPaddleCheckout` takes the same three. Paddle's defaults are `light`, the browser's language, and `multi-page`.
+
+| Option | |
+|---|---|
+| `theme` | `light` or `dark`. Pass the theme your app is currently in. |
+| `locale` | `"fr"`, `"pt-BR"`. Pass it when your app has a language choice of its own. |
+| `variant` | `one-page` or `multi-page`. |
+
+**Omitted stays omitted.** A setting you do not pass is not sent — an absent key, never a key holding `undefined` — so it cannot override what your Paddle account is configured with. `{ theme: user.theme }` where the user has not chosen one is an absence, and arrives as one.
+
+**Nothing infers your theme, deliberately.** Pithy does not read `prefers-color-scheme`, does not call `matchMedia`, and does not sample a computed style. The machine's preference is not your app's theme: an app with its own toggle, or one that is dark whatever the OS says, would get a card form contradicting the page it opened over — and a wrong guess is much harder to find than an option nobody passed. Your screen knows which theme it rendered. Tell it.
+
+**Colours, fonts, borders and focus states are not settable from code at all, and that is Paddle's decision rather than a missing endpoint.** They are configured in the Paddle dashboard: **Checkout → Branded inline checkout** carries over 50 options for the inline frame, and the overlay takes a logo and a brand colour. Paddle's pitch for it is "no engineering resource needed", which is the same sentence read from the other side. There is one API that writes `primary_checkout_color` — `PATCH /settings/account`, documented under **Partners → Embed Billing** — and it is for a platform configuring *another* seller's account with a seller API key. Not a route for an adopter, and not one for Pithy. So `theme` is the whole of the styling this kit can pass, and there is no other API to go looking for.
+
 The frame is styled `width: 100%; min-width: 312px; background-color: transparent; border: none;` at 450px by default. The `min-width` is Paddle's requirement rather than taste: below it the footer naming Paddle as merchant of record is cut off.
 
 **The success path is a navigation.** `paddle.successUrl` is passed as `settings.successUrl`, so a buyer who pays leaves for your page in every mode — the same page the redirect rails return to, so your return screen is one screen. It travels on the handoff from config and never from the request, for the reason every return URL in this capability does: a client that could name one could send a paying customer to a page it controls.

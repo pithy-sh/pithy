@@ -142,6 +142,23 @@ export interface PaddleJs {
 }
 
 /**
+ * Light or dark. Paddle's whole theme surface, and the only one there is.
+ *
+ * Not a palette. Colours, fonts, borders and focus states are configured in the Paddle dashboard and are
+ * not expressible from code at all — see {@link PaddleCheckoutSettings.theme} for where and why.
+ */
+export type PaddleCheckoutTheme = "light" | "dark";
+
+/**
+ * Whether the card form is one page or several.
+ *
+ * Paddle's own type carries a third value, `express`, which its checkout-settings documentation does not
+ * list. Absent here rather than passed through: this kit hands Paddle only what Paddle documents a seller
+ * may set, and a value nobody can point at a page for is one nobody can support.
+ */
+export type PaddleCheckoutVariant = "one-page" | "multi-page";
+
+/**
  * How one checkout is presented. Paddle takes the same settings at `Initialize` and here.
  *
  * **Here, deliberately.** The loader is one per page and these are per checkout: the display mode comes
@@ -150,10 +167,33 @@ export interface PaddleJs {
  * it cannot do, because `Initialize` runs once. Paddle's own documentation says `frameTarget` goes in
  * `Paddle.Initialize()`; its `Checkout.open` reference then passes exactly these fields per call, and the
  * live sandbox honours them on both forms. Where the two disagree, the measurement wins.
+ *
+ * **Every field here is optional and stays absent when nobody named one.** Paddle reads these over
+ * account-level settings a seller configured in the dashboard, so a key present and `undefined` is not
+ * the same message as no key — see `settingsFor` in `./checkout`, which is where that is enforced.
  */
 export interface PaddleCheckoutSettings {
   /** Over the page, or inside the element {@link PaddleCheckoutSettings.frameTarget} names. */
   displayMode?: PaymentsPaddleDisplayMode;
+  /**
+   * Light or dark. Paddle defaults to `light`, which is why an app in dark mode has to say so.
+   *
+   * **Never inferred, and that is a decision rather than an omission.** Nothing in this kit reads
+   * `prefers-color-scheme`, samples a computed style, or calls `matchMedia`: the OS preference is not the
+   * app's theme — an app with its own toggle, or one that is dark whatever the OS says, would get a card
+   * form contradicting the page it opened over. The adopter knows; guessing wrong is worse than
+   * defaulting, and a wrong guess is harder to find than a missing option.
+   *
+   * **This is the whole of the theming Paddle exposes to code.** Colours, fonts, borders, hover and focus
+   * states are set in the Paddle dashboard under *Checkout → Branded inline checkout* (and logo plus
+   * brand colour for the overlay). That is Paddle's deliberate product decision, not a missing endpoint,
+   * so there is no option to add here for it and nothing to go looking for.
+   */
+  theme?: PaddleCheckoutTheme;
+  /** The buyer's language — `"fr"`, `"pt-BR"`. Paddle defaults to the browser's. Pass it where the app has its own. */
+  locale?: string;
+  /** One page or several. Paddle defaults to `multi-page`. */
+  variant?: PaddleCheckoutVariant;
   /** The **class name** — not an id, not a selector — of the element an inline checkout renders into. */
   frameTarget?: string;
   /** Styles for that element. Paddle needs `min-width` at 312px or the merchant-of-record footer is cut off. */

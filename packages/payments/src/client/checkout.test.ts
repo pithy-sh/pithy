@@ -216,6 +216,114 @@ describe("inline", () => {
   });
 });
 
+describe("how it is presented", () => {
+  /** The settings object that reached `Paddle.Checkout.open`, or a failure if it never got there. */
+  async function settingsOpened(extra: Parameters<typeof openPaddleCheckout>[1] = {}) {
+    const { failure, opened } = await open(OVERLAY, extra);
+    expect(failure).toBeNull();
+    expect(opened).toHaveLength(1);
+    const settings = opened[0]?.settings;
+    if (!settings) throw new Error("unreachable");
+    return settings;
+  }
+
+  /** What every overlay checkout carries whatever the caller said. */
+  const SERVER_SETTINGS = { displayMode: "overlay", successUrl: OVERLAY.successUrl } as const;
+
+  test("nothing passed is nothing sent — no theme key at all, not a key holding undefined", async () => {
+    const settings = await settingsOpened();
+    // **`toEqual` is not the assertion here, and cannot be.** Vitest's `toEqual` ignores a property whose
+    // value is `undefined`, so `{ theme: undefined }` passes it against `{}`. `Object.keys` and `in` are
+    // what tell absence from presence, and that difference is the whole of this case: Paddle's per-checkout
+    // settings sit over an account's dashboard configuration, so a key nobody set must not be sent at all.
+    expect(Object.keys(settings).sort()).toEqual(["displayMode", "successUrl"]);
+    expect("theme" in settings).toBe(false);
+    expect("locale" in settings).toBe(false);
+    expect("variant" in settings).toBe(false);
+    // `toStrictEqual` does check undefined keys, unlike `toEqual`. Belt and braces, and it documents which.
+    expect(settings).toStrictEqual(SERVER_SETTINGS);
+  });
+
+  test("a theme alone reaches Paddle, and adds nothing else", async () => {
+    const settings = await settingsOpened({ theme: "dark" });
+    expect(settings).toStrictEqual({ ...SERVER_SETTINGS, theme: "dark" });
+    expect(Object.keys(settings).sort()).toEqual(["displayMode", "successUrl", "theme"]);
+  });
+
+  test("a locale alone reaches Paddle, and adds nothing else", async () => {
+    const settings = await settingsOpened({ locale: "pt-BR" });
+    expect(settings).toStrictEqual({ ...SERVER_SETTINGS, locale: "pt-BR" });
+    expect(Object.keys(settings).sort()).toEqual(["displayMode", "locale", "successUrl"]);
+  });
+
+  test("a variant alone reaches Paddle, and adds nothing else", async () => {
+    const settings = await settingsOpened({ variant: "one-page" });
+    expect(settings).toStrictEqual({ ...SERVER_SETTINGS, variant: "one-page" });
+    expect(Object.keys(settings).sort()).toEqual(["displayMode", "successUrl", "variant"]);
+  });
+
+  test("all three together", async () => {
+    const settings = await settingsOpened({ theme: "dark", locale: "fr", variant: "one-page" });
+    expect(settings).toStrictEqual({
+      ...SERVER_SETTINGS,
+      theme: "dark",
+      locale: "fr",
+      variant: "one-page",
+    });
+    expect(Object.keys(settings).sort()).toEqual(["displayMode", "locale", "successUrl", "theme", "variant"]);
+  });
+
+  test("passing undefined explicitly is the same as not passing it", async () => {
+    // A screen writes `{ theme: user.theme }` and the user has not chosen one. That is an absence, and it
+    // must arrive at Paddle as one — otherwise a dashboard default is overridden by a key nobody meant.
+    const settings = await settingsOpened({ theme: undefined, locale: undefined, variant: undefined });
+    expect(Object.keys(settings).sort()).toEqual(["displayMode", "successUrl"]);
+    expect(settings).toStrictEqual(SERVER_SETTINGS);
+  });
+
+  test("the theme is never inferred from the environment", async () => {
+    // The tempting shortcut, refused deliberately. The OS preference is not the app's theme: an app with
+    // its own toggle would open a light card form over a page the reader set to dark. So a `matchMedia`
+    // sitting right there on the global is left alone, and this asserts it rather than trusting the diff.
+    const consulted: string[] = [];
+    const global = globalThis as { matchMedia?: unknown; getComputedStyle?: unknown };
+    const hadMatchMedia = "matchMedia" in global;
+    const hadComputedStyle = "getComputedStyle" in global;
+    global.matchMedia = (query: string) => {
+      consulted.push(query);
+      return { matches: true, media: query };
+    };
+    global.getComputedStyle = () => {
+      consulted.push("getComputedStyle");
+      return {};
+    };
+    try {
+      const settings = await settingsOpened();
+      expect("theme" in settings).toBe(false);
+    } finally {
+      if (!hadMatchMedia) delete global.matchMedia;
+      if (!hadComputedStyle) delete global.getComputedStyle;
+    }
+    expect(consulted).toEqual([]);
+  });
+
+  test("an inline checkout carries them beside its frame settings", async () => {
+    const { opened } = await open(INLINE, {
+      frameTarget: "pithy-checkout",
+      theme: "dark",
+      document: documentWith("pithy-checkout"),
+    });
+    expect(opened[0]?.settings).toStrictEqual({
+      displayMode: "inline",
+      successUrl: OVERLAY.successUrl,
+      theme: "dark",
+      frameTarget: "pithy-checkout",
+      frameStyle: PADDLE_FRAME_STYLE,
+      frameInitialHeight: PADDLE_FRAME_HEIGHT,
+    });
+  });
+});
+
 describe("what it refuses", () => {
   test("a Paddle that never loaded is the failure, and nothing is opened", async () => {
     const failure = await openPaddleCheckout(OVERLAY, {
