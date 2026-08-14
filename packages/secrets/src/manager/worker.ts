@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
+import { NonRetryableError } from "cloudflare:workflows";
 import { CloudflareSecretsStoreManager } from "@pithy-sh/cloudflare/src/secrets/secretsStoreManager";
+import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import { resolveEncryptionConfig, type SecretBinding, type SecretsStoreEnv } from "../env/bindings";
 import { isRotationDue } from "../rotation/keyRotation";
 import type { ManagedEnvironment } from "../scope";
 import { configureSharedSecrets, sharedSecretsStore } from "../sharedSecretsStore";
 import { managerRegistry } from "./managerRegistry";
+import { secretsWorkflowRetry } from "./retryPolicy";
 import { runRotationWorkflow } from "./rotationWorkflow";
 import { rotationConfigWriter } from "./secretsConfigWriter";
 import { runWriteWorkflow, type WriteWorkflowPayload, type WriteWorkflowResult } from "./writeWorkflow";
@@ -64,10 +67,17 @@ export interface SecretsManagerEnv extends SecretsStoreEnv {
   ROTATION_INTERVAL_DAYS?: string;
 }
 
-/** The management write Workflow — the CLI dispatches create/update/remove here. */
+/**
+ * The management write Workflow — the CLI dispatches create/update/remove here.
+ *
+ * The step runs under {@link secretsWorkflowRetry}, so a refusal the store has already decided
+ * (`create` over a name that exists, `update` of a name that does not) fails the instance on its first
+ * attempt instead of backing off into the same answer. See `retryPolicy.ts` for the whole classification.
+ */
 export class SecretsWriteWorkflow extends WorkflowEntrypoint<SecretsManagerEnv, WriteWorkflowPayload> {
   override async run(event: WorkflowEvent<WriteWorkflowPayload>, step: WorkflowStep): Promise<WriteWorkflowResult> {
-    return await step.do("write-secret", () => runWriteWorkflow(this.env, event.payload));
+    const steps = classifiedSteps(step, secretsWorkflowRetry, NonRetryableError);
+    return await steps.do("write-secret", () => runWriteWorkflow(this.env, event.payload));
   }
 }
 
@@ -86,7 +96,14 @@ export class AtRestKeyRotationWorkflow extends WorkflowEntrypoint<SecretsManager
     // The writer targets the project- and env-scoped master-key entry this worker actually binds
     // (see rotationConfigWriter), so the rotation persists exactly where it is read — and never into
     // another project's key entry in the same account-wide Secrets Store.
-    await runRotationWorkflow(this.env, rotationConfigWriter(manager, this.env.PROJECT, this.env.ENVIRONMENT), step);
+    //
+    // Its steps run under the same classification the write does: the CF API being unreachable is worth
+    // another attempt, and ciphertext that will not decrypt under the bound key set is not.
+    await runRotationWorkflow(
+      this.env,
+      rotationConfigWriter(manager, this.env.PROJECT, this.env.ENVIRONMENT),
+      classifiedSteps(step, secretsWorkflowRetry, NonRetryableError),
+    );
   }
 }
 
