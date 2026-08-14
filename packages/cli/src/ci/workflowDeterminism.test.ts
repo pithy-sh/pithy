@@ -83,6 +83,10 @@ const SHIPPED_WORKFLOWS = [
  * re-executes from the top on every resume.
  */
 const SHIPPED_DELEGATES = [
+  // #338. Not a capability's driver but the classifier every driver's steps now pass through, which is
+  // exactly why it belongs in this population: a clock or a random source read here would be read by all
+  // of them at once.
+  "packages/core/src/workflow/faults.ts#classifiedSteps",
   "packages/email/src/workflows/sendBatch.ts#runSendBatch",
   "packages/payments/src/workflows/reconcile.ts#reconcilePayments",
   "packages/secrets/src/manager/rotationWorkflow.ts#runRotationWorkflow",

@@ -56,12 +56,14 @@ const SWEEP = `import.meta.${"glob("}`;
  * Sweeps that assert what they found. **A frozen literal**, and the shorter of the two lists.
  *
  * `core` and `testers` count the schemas they walked; `vite` counts the modules; `audit` and core's
- * Worker-safety scan pin both, near-exactly, as of #326.
+ * Worker-safety scan pin both, near-exactly, as of #326. #338's retry-classification gate was enrolled
+ * here when it landed — it pins its entrypoints in both directions, so it counts.
  */
 const GUARDED = [
   "audit/src/schema-descriptions.test.ts",
   "core/src/schema-descriptions.test.ts",
   "core/src/worker-safety.test.ts",
+  "core/src/workflow/retryClassification.test.ts",
   "testers/src/schema-descriptions.test.ts",
   "vite/src/schema-descriptions.test.ts",
 ];

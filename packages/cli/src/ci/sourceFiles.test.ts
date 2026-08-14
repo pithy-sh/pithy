@@ -348,6 +348,10 @@ describe("no module writes its own walk over a directory tree", () => {
       walk: "treeFiles",
       why: "`@pithy-sh/ui-react` cannot import `@pithy-sh/cli`: the CLI depends on it, so the edge would be a cycle in the workspace graph. It reads `packages/ui-react/templates`, a committed tree nothing scaffolds into or deletes mid-run, so the race the primitive was hardened against cannot reach it.",
     },
+    "packages/ui-react/src/priceHonesty.test.ts": {
+      walk: "templateSources",
+      why: "The same cycle as its sibling above, for the same reason and not a new one: `@pithy-sh/ui-react` cannot depend on `@pithy-sh/cli` without inverting the workspace graph. It sweeps the same committed `packages/ui-react/templates` tree, so it inherits that entry's argument entirely — nothing scaffolds into or deletes from it mid-run. Arrived with #340, which needed to assert that no template writes a price down.",
+    },
     "tooling/license-headers/src/workspace.ts": {
       walk: "walk",
       // #211 decided this one rather than leaving it implied. The edge is one line — `"@pithy-sh/cli":
