@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { PAYMENTS_NO_BROWSER, type PaddleCheckoutHandoff, type PaymentsFailure } from "./api";
-import { loadPaddle, type PaddleCheckoutSettings, type PaddleOptions } from "./paddle";
+import {
+  loadPaddle,
+  type PaddleCheckoutSettings,
+  type PaddleCheckoutTheme,
+  type PaddleCheckoutVariant,
+  type PaddleOptions,
+} from "./paddle";
 
 /**
  * Opening a Paddle checkout over the adopter's own page, or inside it.
@@ -40,6 +46,26 @@ import { loadPaddle, type PaddleCheckoutSettings, type PaddleOptions } from "./p
  * on either form of the call. See `../rails/paddle/objects.ts` for that half in full, and
  * {@link PaddleCheckoutOpen} in `./paddle` for the type that keeps this one unrepresentable rather than
  * merely conventional.
+ *
+ * ## How it looks is the caller's to say, and only what Paddle lets code say
+ *
+ * `theme`, `locale` and `variant` are passed through from the caller and are **never inferred**. No
+ * `prefers-color-scheme`, no `matchMedia`, no reading a computed style off the page. The OS preference is
+ * not the app's theme: an app with its own light/dark toggle, or one that is dark whatever the machine
+ * says, would get a card form contradicting the page it opened over — and a wrong guess is far harder to
+ * find than an option nobody passed. The adopter knows. So this takes it, and defaults to Paddle's default
+ * by saying nothing.
+ *
+ * **Saying nothing is a real message.** An omitted setting must reach `Checkout.open` as an absent key,
+ * not as a key holding `undefined`, because these overlay account-level settings a seller configured in
+ * the Paddle dashboard. {@link settingsFor} builds them one at a time for that reason, and the tests assert
+ * on `Object.keys` rather than on values.
+ *
+ * **Colours and fonts are not here because they are not anywhere in code.** Paddle configures them in its
+ * own dashboard — *Checkout → Branded inline checkout* for the 50-odd inline options, logo and brand
+ * colour for the overlay. That is Paddle's product decision rather than a missing endpoint, and the one
+ * API that writes `primary_checkout_color` is a Partners route for a platform configuring another
+ * seller's account. Nothing to add here, and nothing to go looking for.
  *
  * ## Nothing here throws
  *
@@ -89,6 +115,27 @@ export interface PaddleDocument {
 /** What {@link openPaddleCheckout} lets a caller replace or decide. */
 export interface PaddleCheckoutOptions extends PaddleOptions {
   /**
+   * Light or dark. Omit to take Paddle's default, which is light.
+   *
+   * **Pass the theme your app is in. This kit will not work it out.** Reading `prefers-color-scheme` here
+   * would answer a different question — the machine's preference, not the app's — and an app with its own
+   * toggle would open a light card form over a dark page for a reader who chose dark. The screen already
+   * knows which theme it rendered; that is the only source that is right every time.
+   *
+   * Theme is the whole of what code may set. Colours and fonts live in the Paddle dashboard, deliberately.
+   */
+  theme?: PaddleCheckoutTheme;
+  /**
+   * The buyer's language — `"fr"`, `"pt-BR"`. Omit to take the browser's.
+   *
+   * Worth passing exactly when the app has a language choice of its own, for the reason `theme` is worth
+   * passing: a reader who set the app to French should not meet a checkout in the language their browser
+   * was installed with.
+   */
+  locale?: string;
+  /** One page or several. Omit to take Paddle's default, which is `multi-page`. */
+  variant?: PaddleCheckoutVariant;
+  /**
    * The **class name** of the element an inline checkout renders into.
    *
    * The screen's to name, not the server's: the container is a thing in a layout, and a project switching
@@ -111,6 +158,26 @@ function documentOf(options: PaddleCheckoutOptions | undefined): PaddleDocument 
 }
 
 /**
+ * The presentation settings the caller actually named, and no key for the ones they did not.
+ *
+ * **Assigned one at a time rather than spread, and that is the whole point of the function.**
+ * `{ theme: options?.theme }` writes the key whatever the value is, and a key holding `undefined` is not
+ * the same object as no key: `"theme" in settings` is true for one and false for the other, and Paddle's
+ * settings sit over defaults a seller configured in its dashboard. A caller who passed nothing must not
+ * silently overrule an account that did.
+ *
+ * Nothing is inferred here. There is no branch that reads the environment, because the option not being
+ * set is an answer — take Paddle's default — rather than a question to go and resolve.
+ */
+function presentationOf(options: PaddleCheckoutOptions | undefined): PaddleCheckoutSettings {
+  const presentation: PaddleCheckoutSettings = {};
+  if (options?.theme !== undefined) presentation.theme = options.theme;
+  if (options?.locale !== undefined) presentation.locale = options.locale;
+  if (options?.variant !== undefined) presentation.variant = options.variant;
+  return presentation;
+}
+
+/**
  * How this checkout is presented, or the refusal that stops it being opened at all.
  *
  * Inline is checked here rather than left to Paddle because of what Paddle does instead. Measured against
@@ -123,7 +190,11 @@ function settingsFor(
   handoff: PaddleCheckoutHandoff,
   options: PaddleCheckoutOptions | undefined,
 ): { settings: PaddleCheckoutSettings } | { failure: PaymentsFailure } {
-  const base: PaddleCheckoutSettings = { displayMode: handoff.displayMode, successUrl: handoff.successUrl };
+  const base: PaddleCheckoutSettings = {
+    displayMode: handoff.displayMode,
+    successUrl: handoff.successUrl,
+    ...presentationOf(options),
+  };
   if (handoff.displayMode !== "inline") return { settings: base };
 
   const document = documentOf(options);
