@@ -12,7 +12,8 @@ import { ENVIRONMENT_VAR } from "../worker/identity";
 import { ControlPlaneConfig, type ControlPlaneConfigInput } from "./config/config";
 import { ControlPlaneConnection } from "./data/connection";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, type ControlPlaneDatabase, controlPlaneTables } from "./data/tables";
-import type { CapabilityDescriptor } from "./discovery/adminRoute";
+import type { CapabilityDeclaration } from "./discovery/adminRoute";
+import { type CapabilityHealthSource, capabilityHealthSources } from "./discovery/health";
 import { createControlPlaneVerifier } from "./http/guard";
 import { controlPlaneRouteDescriptors, registerControlPlaneRoutes } from "./http/routes";
 import { controlplane_0001_init } from "./migrations/0001_init";
@@ -122,7 +123,12 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
   // Assembly-time knowledge a capability has no other way to reach — `GET /control-plane/manifest`
   // reports it, which is what lets a management client discover this Worker's surface, and how to call
   // it, instead of being configured with both.
-  let composed: readonly CapabilityDescriptor[] = [];
+  let composed: readonly CapabilityDeclaration[] = [];
+
+  // The bounded summaries those capabilities contribute, by name (#317). Captured by the same hook and
+  // checked there: a value behind a scope no admin route of its own capability requires is refused at
+  // assembly, because an adopter is never offered such a scope and the number could never be granted.
+  let health: ReadonlyMap<string, CapabilityHealthSource> = new Map();
 
   const capability = defineCapability({
     name: "controlplane",
@@ -159,7 +165,11 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
         // version, and that must render as an explicit null rather than vanish from the JSON.
         version: cap.version ?? null,
         adminRoutes: [...(cap.adminRoutes ?? [])],
+        // The vocabulary, always — a capability declaring a number this connection cannot see must be
+        // visible as a withheld number rather than as silence.
+        healthKeys: [...(cap.health?.keys ?? [])],
       }));
+      health = capabilityHealthSources(capabilities);
     },
     middleware: [
       (app) => {
@@ -201,6 +211,7 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
         config,
         database,
         composedCapabilities: () => composed,
+        composedHealth: () => health,
         now,
       });
     },

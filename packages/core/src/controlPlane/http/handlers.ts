@@ -10,7 +10,8 @@ import type { ControlPlaneContext } from "../context";
 import { ControlPlaneConnection, type RegisteredKey } from "../data/connection";
 import { appendKey, expireKey, pruneKeys } from "../data/keyLifecycle";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, type ControlPlaneDatabase } from "../data/tables";
-import type { CapabilityDescriptor, ControlPlaneManifest } from "../discovery/adminRoute";
+import type { CapabilityDeclaration, ControlPlaneManifest } from "../discovery/adminRoute";
+import { type CapabilityHealthSource, readCapabilityHealth } from "../discovery/health";
 import { ControlPlaneInvalidCredentialError, ControlPlaneKeyConflictError } from "../error/errors";
 import type {
   ControlPlaneKeysResponse,
@@ -57,7 +58,15 @@ export interface ControlPlaneHandlerDeps {
    * from what a Worker declares, so a Worker without payments simply has no purchases pane, and
    * `pithy add support` produces a working support pane with nothing for either side to configure.
    */
-  composedCapabilities: () => readonly CapabilityDescriptor[];
+  composedCapabilities: () => readonly CapabilityDeclaration[];
+  /**
+   * The health summary each capability contributes, by capability name — captured by the same `compose`
+   * hook, and checked there against the scopes that capability's own routes require.
+   *
+   * Separate from {@link composedCapabilities} because a declaration is the same for every caller and a
+   * value is not: the numbers are resolved per request, behind the scope each one is declared under.
+   */
+  composedHealth: () => ReadonlyMap<string, CapabilityHealthSource>;
   /** The clock, injected so a test can stand at any instant. */
   now: () => Date;
 }
@@ -149,21 +158,39 @@ export function pingHandler(deps: ControlPlaneHandlerDeps) {
 }
 
 /**
- * `GET /control-plane/manifest` — what this Worker is and what it composes.
+ * `GET /control-plane/manifest` — what this Worker is, what it composes, and how each part is doing.
  *
  * Discovery over configuration. A client builds its navigation from this rather than from settings
  * someone maintains, so a Worker with no payments capability has no purchases pane as a matter of fact.
+ *
+ * **And the numbers a client would otherwise pay a second round trip for** (#317). Each capability's
+ * bounded summary is resolved here, behind the scope that capability's own read is behind: a connection
+ * without it gets null rather than a zero, and never costs the adopter's Worker the query. A producer
+ * that reports something its declaration cannot name throws — a manifest carrying a number nobody can
+ * name is exactly what this seam must never serve, and returning an empty summary instead would hide
+ * the fault behind a value that reads as an answer.
  */
 export function manifestHandler(deps: ControlPlaneHandlerDeps) {
-  return (c: Context<PithyHonoEnv>) => {
+  return async (c: Context<PithyHonoEnv>) => {
     const context = caller(c);
+    const sources = deps.composedHealth();
+    // In parallel: each producer is bounded by its own declaration, and a Worker composing several has
+    // no reason to serialize numbers that do not depend on each other.
+    const capabilities = await Promise.all(
+      deps.composedCapabilities().map(async (declaration) => ({
+        ...declaration,
+        health: await readCapabilityHealth(sources.get(declaration.name), context.grantedScopes, (source) =>
+          source.read(c),
+        ),
+      })),
+    );
     return c.json({
       environment: context.environment,
       connectionId: context.connectionId,
       // The build answering this call. Read per request rather than captured at assembly: it is the
       // same binding every log record and audit event reads, and there is one reader for it.
       version: workerVersion(c.env),
-      capabilities: [...deps.composedCapabilities()],
+      capabilities,
       grantedScopes: [...context.grantedScopes],
     } satisfies ControlPlaneManifest);
   };

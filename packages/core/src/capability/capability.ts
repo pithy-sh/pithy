@@ -7,6 +7,7 @@ import type { z } from "zod";
 import type { AuditEmit } from "../audit/recorder";
 import type { ControlPlaneContext } from "../controlPlane/context";
 import type { AdminRoute } from "../controlPlane/discovery/adminRoute";
+import type { CapabilityHealth } from "../controlPlane/discovery/health";
 import type { ControlPlaneVerifier } from "../controlPlane/http/guard";
 import type { DatabaseSpecMap } from "../data/databases";
 import type { EntitlementResolver } from "../entitlement/entitlement";
@@ -289,6 +290,22 @@ export interface Capability<
    * believes it.
    */
   adminRoutes?: readonly AdminRoute[];
+  /**
+   * The bounded health summary this capability contributes to its own manifest entry — a small, fixed
+   * set of scalars a management client can render beside a rail without a second round trip (#317).
+   * Omit it when a capability has nothing to say, which is the normal case.
+   *
+   * **Declared alongside the routes, and only through `defineCapabilityHealth`.** The type is branded,
+   * so an inline object literal does not compile: every declaration in the tree is parsed, which is what
+   * keeps the vocabulary closed, the values scalar, and each value's cost stated. See
+   * `controlPlane/discovery/health.ts` for why those three rules are in the type rather than in a
+   * comment.
+   *
+   * Each key is behind a scope this capability's own `adminRoutes` already require — never a new one,
+   * because the scopes an adopter is offered at connect are read off those routes, and a value behind
+   * anything else could never be granted. `capabilityHealthSources` refuses that at assembly.
+   */
+  health?: CapabilityHealth;
   /**
    * The npm version of the package that supplies this capability, or `null` where there is none.
    *

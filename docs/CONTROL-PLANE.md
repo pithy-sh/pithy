@@ -269,18 +269,29 @@ A management client composes its navigation **and its calls** from `GET /control
   "connectionId": "b6a1f0c2-3d4e-4f50-8a9b-0c1d2e3f4a5b",
   "version": "8f2a1c94-...",
   "capabilities": [
-    { "name": "controlplane", "version": "1.4.0", "adminRoutes": [
+    { "name": "controlplane", "version": "1.4.0", "healthKeys": [], "health": null, "adminRoutes": [
       { "method": "GET",  "path": "/control-plane/ping", "scope": null,
         "summary": "Prove connectivity and which key answered. Always available to a verified caller." }
     ]},
-    { "name": "payments", "version": "1.4.0", "adminRoutes": [
+    { "name": "payments", "version": "1.4.0", "healthKeys": [], "health": null, "adminRoutes": [
       { "method": "POST", "path": "/billing/entitlements/grant", "scope": "payments:entitlements:grant",
         "summary": "Comp an entitlement, or repair a purchase that verified but never projected." },
       { "method": "POST", "path": "/billing/entitlements/revoke", "scope": "payments:entitlements:revoke",
         "summary": "Take an entitlement back, effective immediately." }
     ]},
-    { "name": "leaderboard", "version": "1.2.1", "adminRoutes": [] },
-    { "name": "app", "version": null, "adminRoutes": [] }
+    { "name": "secrets", "version": "1.4.0",
+      "healthKeys": [
+        { "key": "secretsDueForRotation", "kind": "count", "states": null,
+          "scope": "secrets:status:read", "cost": "indexed",
+          "summary": "Secrets past the rotation cadence their registry entry declares." }
+      ],
+      "health": { "secretsDueForRotation": 3 },
+      "adminRoutes": [
+        { "method": "GET", "path": "/secrets/admin/status", "scope": "secrets:status:read",
+          "summary": "Every declared secret's status: when it was last rotated, how often, and whether it is overdue." }
+      ]},
+    { "name": "leaderboard", "version": "1.2.1", "healthKeys": [], "health": null, "adminRoutes": [] },
+    { "name": "app", "version": null, "healthKeys": [], "health": null, "adminRoutes": [] }
   ],
   "grantedScopes": ["manifest:read", "payments:entitlements:grant"]
 }
@@ -297,6 +308,22 @@ So a Worker that does not compose payments has no purchases pane, and that is a 
 **The declaration is checked, not trusted.** A hand-maintained list beside generated behaviour is a list that rots, and a manifest that has drifted is worse than none: a client believes it, calls a path nothing serves, and the adopter sees a management client broken for reasons inside somebody else's package. So `missingAdminRoutes` compares every declared route against the router that actually mounted, and each capability asserts it in its own `routeContract.test.ts`.
 
 There is deliberately **no manifest schema version**. With the routes described here, a client dispatches on what this Worker declares right now; a schema version would be a second source of truth to keep in sync with the first.
+
+### The numbers, so a rail costs one read
+
+A client that wants to say *"3 secrets need rotating"* beside a rail already read this. Making it call again — once per capability it wants a number from, against a production Worker, on every screen load — spends a credential per number nobody has asked for yet. **The count is not the expensive part. The round trip is.**
+
+So a capability may contribute a **bounded health summary** to its own entry, declared alongside its routes. `healthKeys` is the closed vocabulary; `health` is what this caller is entitled to see. Most capabilities contribute nothing, and say so with an empty list.
+
+Three rules keep it from becoming a data API, and each is in the type rather than in a comment:
+
+- **Scalars only.** A number, or a member of a closed list. No names, no ids, no rows, no nested objects — a projection does not compile.
+- **A closed vocabulary per capability.** A client renders a key it has never heard of from the declaration beside it, or renders nothing; a value the declaration does not name is refused before it reaches the wire.
+- **Nothing that costs a table scan.** `cost` is `memory` or `indexed`, and there is no third member — so a value that would need a scan cannot state its cost, and therefore cannot be declared. A count that scans on every manifest read has moved the cost, not removed it.
+
+**A withheld number and a zero are different facts.** Each key names a scope the capability's *own admin routes* already require — never a new one, or an adopter would never be offered it at connect — and a connection without that scope gets `null`, not `0`. Read `health` with `healthKeys` beside it and three states are distinguishable: nothing declared, declared and withheld, declared and zero. Collapse the first two and a client tells an adopter everything is fine when it has simply not been allowed to look. A caller with no grant is not merely filtered, either: the producer is never run, so the number costs the adopter's Worker nothing.
+
+**These numbers are as old as the manifest a client cached.** They are right for a rail. They are not live, and must not be rendered as if they were.
 
 What the manifest *does* carry is **identity**, which is a different thing, and it carries two because neither answers the other's question.
 

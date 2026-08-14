@@ -13,10 +13,12 @@ import { controlplane } from "../capability";
 import { ControlPlaneConnection, type Ed25519PublicJwk, type RegisteredKey } from "../data/connection";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, controlPlaneDatabase } from "../data/tables";
 import { ControlPlaneManifest } from "../discovery/adminRoute";
+import { defineCapabilityHealth, namedHealthValues } from "../discovery/health";
 import { controlplane_0001_init } from "../migrations/0001_init";
 import { KEYS_ROTATE_SCOPE, MANIFEST_READ_SCOPE } from "../scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "../token/mint";
 import { CONTROL_PLANE_HEADER, CONTROL_PLANE_VERSION_CREATED_HEADER, CONTROL_PLANE_VERSION_HEADER } from "../wire";
+import { requireControlPlane } from "./guard";
 import {
   ControlPlaneKeysResponse,
   ControlPlanePingResponse,
@@ -56,8 +58,54 @@ const BINDINGS = { ...env, ENVIRONMENT };
  */
 const quiet = defineCapability({ name: "quiet", requiredBindings: [] });
 
+/** The scope the health-contributing fixture gates its own read with, and therefore its number too. */
+const INVENTORY_READ_SCOPE = "inventory:things:read";
+
+/** What the fixture's producer reports next. Mutable so a case can stand at zero and at three. */
+let pending = 0;
+
+/** How many times the producer ran — a caller with no grant must cost the adopter's Worker nothing. */
+let produced = 0;
+
+/**
+ * A capability that contributes a bounded health summary (#317): one count, behind the scope its own
+ * admin route already requires, so a client can render "3 things pending" from the manifest read it
+ * already made instead of a second call per number.
+ */
+const inventory = defineCapability({
+  name: "inventory",
+  requiredBindings: [],
+  adminRoutes: [
+    {
+      method: "GET",
+      path: "/inventory/admin/things",
+      scope: INVENTORY_READ_SCOPE,
+      summary: "Every pending thing, in full.",
+    },
+  ],
+  health: defineCapabilityHealth({
+    keys: [
+      {
+        key: "thingsPending",
+        kind: "count",
+        states: null,
+        scope: INVENTORY_READ_SCOPE,
+        cost: "memory",
+        summary: "Things waiting to be dealt with.",
+      },
+    ],
+    read: async () => {
+      produced += 1;
+      return { thingsPending: pending };
+    },
+  }),
+  routes: (app) => {
+    app.get("/inventory/admin/things", requireControlPlane(INVENTORY_READ_SCOPE), (c) => c.json({ things: [] }));
+  },
+});
+
 /** One composed backend, exactly as a Worker assembles it. Stateless — every request re-reads D1. */
-const backend = createBackend({ capabilities: [controlplane(), quiet] });
+const backend = createBackend({ capabilities: [controlplane(), quiet, inventory] });
 
 /** A management client's key pair: the private half it signs with, the public half the adopter stores. */
 interface Signer {
@@ -397,6 +445,85 @@ describe("GET /control-plane/manifest", () => {
     const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
     expect(response.status).toBe(403);
     expect((await denial(response)).error.code).toBe("controlplane/insufficient_scope");
+  });
+});
+
+describe("the counts a client would otherwise pay a round trip for (#317)", () => {
+  /** Read the manifest, and pull out the capability that contributes a summary. */
+  async function inventoryEntry(): Promise<ControlPlaneManifest["capabilities"][number]> {
+    const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
+    expect(response.status).toBe(200);
+    const json = await body<ControlPlaneManifest>(response);
+    // The whole manifest still parses. A number added to it is worthless if it breaks the contract the
+    // client reads everything else through.
+    expect(() => ControlPlaneManifest.parse(json)).not.toThrow();
+    const entry = json.capabilities.find((capability) => capability.name === "inventory");
+    if (!entry) throw new Error("the fixture capability is missing from the manifest");
+    return entry;
+  }
+
+  test("a granted caller gets the number from the read it already made", async () => {
+    await connect([registered(alice)], [MANIFEST_READ_SCOPE, INVENTORY_READ_SCOPE]);
+    pending = 3;
+
+    const entry = await inventoryEntry();
+    expect(entry.health).toEqual({ thingsPending: 3 });
+    // The declaration travels with it, so a client renders the number with a label it did not ship.
+    expect(entry.healthKeys.map((key) => key.key)).toEqual(["thingsPending"]);
+    expect(entry.healthKeys[0]?.cost).toBe("memory");
+    expect(entry.healthKeys[0]?.scope).toBe(INVENTORY_READ_SCOPE);
+  });
+
+  test("zero is a number, and a withheld number is not zero", async () => {
+    await connect([registered(alice)], [MANIFEST_READ_SCOPE, INVENTORY_READ_SCOPE]);
+    pending = 0;
+    expect((await inventoryEntry()).health).toEqual({ thingsPending: 0 });
+  });
+
+  test("a caller without the capability's read scope gets no summary, and costs the Worker nothing", async () => {
+    // The distinction the whole design turns on: this connection is not told there is nothing to rotate.
+    // It is told nothing, and `healthKeys` says a number exists that it was not granted.
+    await connect([registered(alice)], [MANIFEST_READ_SCOPE]);
+    pending = 3;
+    produced = 0;
+
+    const entry = await inventoryEntry();
+    expect(entry.health).toBeNull();
+    expect(entry.healthKeys.map((key) => key.key)).toEqual(["thingsPending"]);
+    expect(produced).toBe(0);
+  });
+
+  test("a capability that contributes nothing declares nothing, which reads as neither", async () => {
+    await connect([registered(alice)], [MANIFEST_READ_SCOPE, INVENTORY_READ_SCOPE]);
+
+    const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
+    const plain = (await body<ControlPlaneManifest>(response)).capabilities.find(
+      (capability) => capability.name === "quiet",
+    );
+    expect(plain?.healthKeys).toEqual([]);
+    expect(plain?.health).toBeNull();
+  });
+
+  test("a value a client has never heard of renders as nothing rather than as an error", async () => {
+    await connect([registered(alice)], [MANIFEST_READ_SCOPE, INVENTORY_READ_SCOPE]);
+    pending = 3;
+
+    const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
+    const json = await body<ControlPlaneManifest>(response);
+    // What an older client meets when a Worker reports a key its own build predates. The manifest must
+    // still parse — a client that failed here would lose its navigation over a number it did not want.
+    const newer = json.capabilities.map((capability) =>
+      capability.name === "inventory"
+        ? { ...capability, health: { ...capability.health, somethingNewer: 9 } }
+        : capability,
+    );
+    const parsed = ControlPlaneManifest.parse({ ...json, capabilities: newer });
+    // And pairing values with their declarations drops the one nothing describes, so it renders as
+    // nothing rather than as a guess.
+    const entry = parsed.capabilities.find((capability) => capability.name === "inventory");
+    expect(namedHealthValues(entry ?? { healthKeys: [], health: null }).map((named) => named.key.key)).toEqual([
+      "thingsPending",
+    ]);
   });
 });
 

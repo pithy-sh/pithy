@@ -41,10 +41,30 @@ export {
 export {
   AdminRoute,
   type AdminRouteMethod,
+  CapabilityDeclaration,
   CapabilityDescriptor,
   ControlPlaneManifest,
 } from "./controlPlane/discovery/adminRoute";
 export { type AdminRouteDrift, missingAdminRoutes } from "./controlPlane/discovery/drift";
+// The health seam: a capability declares a bounded set of scalars about its own state, and the manifest
+// carries them — so a client renders "3 secrets need rotating" from the read it already made rather than
+// spending a round trip per number (#317). Exported whole, because a client renders the values through
+// the declarations that travel with them.
+export {
+  type CapabilityHealth,
+  type CapabilityHealthInput,
+  type CapabilityHealthSource,
+  capabilityHealthSources,
+  defineCapabilityHealth,
+  HealthSummary,
+  HealthSummaryKey,
+  HealthSummaryValue,
+  HealthValueCost,
+  HealthValueKind,
+  type NamedHealthValue,
+  namedHealthValues,
+  readCapabilityHealth,
+} from "./controlPlane/discovery/health";
 export { requireControlPlane } from "./controlPlane/http/guard";
 export {
   ANY_VERIFIED_CALLER,

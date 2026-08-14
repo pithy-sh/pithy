@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { secretsHealth } from "./admin/health";
 import { EncryptionConfig } from "./crypto/envelope";
 import { secretsTables } from "./data/tables";
 import { MASTER_KEY_BINDING } from "./env/bindings";
@@ -189,6 +190,11 @@ export function secrets(config: SecretsConfig): SecretsCapability {
     // Built from the resolved mount path, never the default: an adopter who mounts this at `/vault` gets
     // a manifest naming `/vault/admin/status`, which is what a management client composes its calls from.
     adminRoutes: secretsAdminRoutes(mountPath),
+    // One number on the manifest entry — how many secrets are past their declared cadence — so a client
+    // renders "3 need rotating" beside the rail from the read it already made, instead of spending a
+    // credential per screen load to ask (#317). Behind the same scope as the listing it summarises, and
+    // over the same combined registry, so a secret whose freshness can be seen is one this counts.
+    health: secretsHealth(() => reported.current),
     // At worker startup, merge every capability's secret-registry slice into one combined registry and
     // back the shared per-invocation accessor from it — so all secrets resolve in one batch, shared
     // across capabilities, with this capability's configured TTL.
