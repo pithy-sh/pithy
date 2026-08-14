@@ -25,6 +25,8 @@
     "stamp-versions": "bun scripts/stampVersions.ts",
     "worktree": "bun scripts/worktree.ts",
     "reset": "turbo run reset && rm -rf node_modules && bun install",
+    "file-modes": "bun scripts/fileModes.ts",
+    "postinstall": "bun scripts/fileModes.ts",
     "prepare": "husky",
     "changeset": "changeset",
     "version": "changeset version && bun scripts/stampVersions.ts",
