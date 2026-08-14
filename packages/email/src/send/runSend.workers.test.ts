@@ -311,6 +311,29 @@ describe("runSend", () => {
     expect(row).toEqual({ status: "failed", attempts: 2, error: "E_DELIVERY_FAILED" });
   });
 
+  test("a terminal send code is never thrown, so no step ever retries it", async () => {
+    // The half `send/retryPolicy.ts` leans on: a validation/sender/content code is terminal in
+    // `classifySendError`, and this branch is what keeps it away from the durable step at all. Both
+    // codes carry `email/send_failed`, so if this ever threw, the step would retry a rejected sender
+    // address until the budget ran out (pithy-sh/pithy#338).
+    const jobId = await enqueue({
+      to: "u@example.com",
+      template: "welcome",
+      payload: { name: "Sam", ctaUrl: "https://acme.test/go", ctaLabel: "Go" },
+    });
+    const { sender } = fakeSender(() => {
+      throw { code: "E_INVALID_SENDER", message: "sender not verified" };
+    });
+
+    const outcome = await runSend(sendDeps(sender, { maxAttempts: 3 }), jobId);
+
+    expect(outcome.status).toBe("failed");
+    const row = await env.DB.prepare("select status, attempts, error from pithy_email_jobs where id = ?")
+      .bind(jobId)
+      .first<{ status: string; attempts: number; error: string }>();
+    expect(row).toEqual({ status: "failed", attempts: 1, error: "E_INVALID_SENDER" });
+  });
+
   test("a synchronous permanent bounce on send suppresses that address", async () => {
     const jobId = await enqueue({
       to: "u@example.com",

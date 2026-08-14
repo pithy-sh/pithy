@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
+import { NonRetryableError } from "cloudflare:workflows";
 import type { D1Database } from "@cloudflare/workers-types";
 import { bindWorkflowContext, createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
+import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { configureSharedSecrets, sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { PaymentsConfig } from "../config/config";
@@ -14,6 +16,7 @@ import { sweepPaddle } from "./paddleSweep";
 import { batchedRailAccess } from "./railAccess";
 import { type ReconcileReport, reconcilePayments } from "./reconcile";
 import { auditLogEmit, logReconcileReport } from "./report";
+import { paymentsWorkflowRetry } from "./retryPolicy";
 import { PaymentsReconcileParams } from "./specs";
 
 /**
@@ -57,7 +60,13 @@ function deploymentEnvironment(env: PaymentsWorkerEnv): PurchaseEnvironment {
   return env.ENVIRONMENT === "prod" ? "production" : "sandbox";
 }
 
-/** The reconciliation pass, as a cron-triggered Workflow. One journalled step per page of purchases. */
+/**
+ * The reconciliation pass, as a cron-triggered Workflow. One journalled step per page of purchases.
+ *
+ * Every step runs under {@link paymentsWorkflowRetry}: a store that could not be reached re-drives the
+ * page, and anything else fails it at once rather than spending a run's retry budget on an answer that
+ * will not change. See `retryPolicy.ts`.
+ */
 export class PaymentsReconcileWorkflow extends WorkflowEntrypoint<PaymentsWorkerEnv, PaymentsReconcileParams> {
   override async run(event: WorkflowEvent<PaymentsReconcileParams>, step: WorkflowStep): Promise<ReconcileReport> {
     // Parse rather than trust: an instance can be started by the cron, by `triggerPaymentsReconcile`, or by an
@@ -117,7 +126,7 @@ export class PaymentsReconcileWorkflow extends WorkflowEntrypoint<PaymentsWorker
             }
           : {}),
       },
-      step,
+      classifiedSteps(step, paymentsWorkflowRetry, NonRetryableError),
       params,
     );
 

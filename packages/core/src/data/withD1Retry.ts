@@ -124,6 +124,21 @@ function matchTransient(error: unknown, retryOn: readonly D1RetryableError[]): D
 }
 
 /**
+ * The transient D1 fault class an error is, or `null` when D1 did not report one of them.
+ *
+ * The same matchers this wrapper retries on, exported because a second layer has to ask the same
+ * question: a Workflow step decides whether to re-drive a body that raised, and "is this D1 fault
+ * transient" must have exactly one answer in this kit (pithy-sh/pithy#338). A step that classified D1
+ * for itself would be a second vocabulary — and the one that drifted would be the one nobody read.
+ *
+ * `unique-constraint` is deliberately not reported: it is the idempotency guard's signal, never a
+ * transient fault, so a caller asking "should this be retried" is told no.
+ */
+export function d1TransientFault(error: unknown): D1RetryableError | null {
+  return matchTransient(error, D1_TRANSIENT_ERRORS);
+}
+
+/**
  * Run `fn`, retrying it through the configured transient D1 faults with exponential backoff.
  * Returns `fn`'s result; on the idempotency-guard path (a unique-constraint on a retry) returns
  * `undefined` cast to `T`, since the prior attempt already produced the effect. A non-retryable
