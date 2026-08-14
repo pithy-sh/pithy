@@ -81,6 +81,38 @@ So non-production environments get their full open/click/unsubscribe funnel (tho
 
 Without that last row, one unsubscribe from a weekly digest also withheld the same person's magic link — and passwordless has no password to fall back on, so the account became permanently unreachable with nothing reported at either end. A skipped send is now named, not swallowed: `SendOutcome.suppressionReason` says which reason blocked it, and the job row and event carry it too.
 
+### Suppression is automatic. The database is yours.
+
+**You declare nothing to get it.** Compose `email(...)` and every send is already checked. `enqueue` reads the suppression database off the env you forwarded — the same env it reads `DB` and `EMAIL_SENDER` off — so no config field, no route option, and no constant in your code names `EMAIL_SUPPRESSIONS`. A blocked recipient never becomes a queued send, and the result says why:
+
+```ts
+const { jobId, status, suppressionReason } = await emailCapability.enqueue(env, {
+  to: "someone@example.com",
+  template: "invite",
+  payload: { inviterName: "Sam", organizationName: "Acme", acceptUrl },
+});
+// status === "suppressed", suppressionReason === "hard_bounce" — nothing was sent, and you know now.
+```
+
+`runSend` remains the authority, because whether an address is blocked is a question about the instant of sending and a scheduled job is enqueued days before it. The enqueue-time check is not a second gate; it is the caller finding out at the moment it asked, which is the difference between one advisory that reached nobody and three ordinary skips in a log somebody reads next week.
+
+**And it is asked of the template's own kind**, never a restated `"transactional"`. That is the whole of the table above: an unsubscribe from a newsletter must not withhold an invitation, and a check that treated every send alike would start dropping those silently.
+
+**Reading and writing the list is ordinary — it is your database.** `pithy add email` provisions it in your account; the rows are yours. Ask the capability for it and it hands it back, still naming no binding:
+
+```ts
+const suppressions = emailCapability.suppressions(env);
+
+// An operator lifts a block on an address the customer has fixed.
+await unsuppress(suppressions, "fixed@example.com");
+// A support screen asks why a letter did not go.
+const reason = await blockingSuppression(suppressions, address, new Date(), "transactional");
+// A page of the list, keyset-paged.
+const { items, nextCursor } = await listSuppressions(suppressions, { reason: "hard_bounce" });
+```
+
+`blockingSuppression`, `suppress`, `unsuppress` and `listSuppressions` are exported from the package root, and `suppressions` is a plain Kysely handle over `pithyEmailSuppressions` for anything they do not cover. Nothing gates it, and nothing here treats the table as state you are not trusted with — the only thing the capability keeps for itself is the wiring.
+
 ## A delivered job stops holding its inputs
 
 `pithy_email_jobs.payload` is the caller's template variables, written verbatim so the send Workflow can render without the caller present. For a newsletter that is a send log. For a magic link it is **the sign-in link**, for an OTP it is the code, and for an invitation it is the token — a second, permanent copy of a live credential in a table nobody thinks of as holding secrets. An adopter storing invitation tokens as digests then mailed the plaintext into this table, and the digest bought nothing.

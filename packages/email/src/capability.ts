@@ -2,10 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { createBounceHandler } from "./bounce/handler";
 import { emailSigningRegistry } from "./crypto/signingKey";
-import { emailDatabase, emailSuppressionTables, emailTables } from "./data/tables";
+import {
+  type EmailSuppressionDatabase,
+  emailDatabase,
+  emailSuppressionDatabase,
+  emailSuppressionTables,
+  emailTables,
+} from "./data/tables";
 import { registerCallbacks } from "./http/callbacks";
 import { emailAdminRoutes } from "./http/guards";
 import { registerEmailAdminRoutes } from "./http/routes";
@@ -19,12 +26,28 @@ import { PACKAGE_VERSION } from "./version.generated";
 type SendWorkflowBinding = NonNullable<EnqueueDeps["sender"]>;
 
 /**
- * The bindings the enqueue seam reads from the request env: the shared `DB` and the send Workflow.
- * A consumer (e.g. `@pithy-sh/auth`) forwards its worker env; it never names these bindings itself.
+ * The bindings the enqueue seam reads from the request env: the shared `DB`, the send Workflow, and the
+ * global suppression database. A consumer (e.g. `@pithy-sh/auth`) forwards its worker env; it never
+ * names these bindings itself.
+ *
+ * **`EMAIL_SUPPRESSIONS` is on this list, and that is the whole of pithy-sh/pithy#355.** The wiring is
+ * not the adopter's problem: the capability declares the binding, `pithy add email` provisions it,
+ * `enqueue` reads it off the env, and no consumer config, route option, or constant names it. What an
+ * adopter *may* do — because it is their database — is ask for it back through
+ * {@link EmailCapability.suppressions} and read or write it like any other table.
  */
 export interface EmailEnqueueEnv {
   DB: D1Database;
   EMAIL_SENDER?: SendWorkflowBinding;
+  /**
+   * The global, durable suppression list.
+   *
+   * Optional in the type for the same reason `EMAIL_SENDER` is — a hand-built env in a test harness has
+   * neither — and required in practice: it is in `requiredBindings` below, so `validateBindings` refuses
+   * the first request of a composed worker that lacks it. Absent, `enqueue` queues the job and
+   * `runSend` still refuses a blocked recipient before anything leaves.
+   */
+  EMAIL_SUPPRESSIONS?: D1Database;
 }
 
 /**
@@ -98,6 +121,21 @@ export interface EmailCapability extends Capability {
    * `EnqueueDeps` or name the email bindings themselves.
    */
   enqueue: (env: EmailEnqueueEnv, input: EnqueueInput) => Promise<EnqueueResult>;
+  /**
+   * The suppression list, from a request env — **it is the adopter's database, and this is how they open
+   * it** (pithy-sh/pithy#355).
+   *
+   * Nobody has to call this to be protected: `enqueue` consults the list on its own and `runSend`
+   * refuses a blocked recipient regardless. This exists for the adopter who genuinely wants to look —
+   * an operator un-suppressing an address a customer has fixed, a support screen explaining why a letter
+   * did not go, a report of who a notice could not reach. Reading and writing it is ordinary Kysely over
+   * `pithyEmailSuppressions`; `send/suppression.ts` publishes `blockingSuppression`, `suppress`,
+   * `unsuppress` and `listSuppressions` for the four things anybody actually does with it.
+   *
+   * It takes the env and no binding name, which is the point: the capability owns which binding the list
+   * lives behind, exactly as it owns `DB` and `EMAIL_SENDER`.
+   */
+  suppressions: (env: EmailEnqueueEnv) => EmailSuppressionDatabase;
 }
 
 /**
@@ -199,6 +237,26 @@ export function email(config: EmailConfigInput): EmailCapability {
     adminRoutes: emailAdminRoutes(resolved.basePath),
     email: createBounceHandler(),
   });
+  /**
+   * The suppression list off an env, or a wiring fault naming the binding.
+   *
+   * **Fails closed, unlike the enqueue-time check.** The two are asked different questions. `enqueue`
+   * asks "is this address blocked", and where it cannot ask, the send path asks again before anything
+   * leaves — so queueing the job is right. A caller here has asked for the list itself, and the only
+   * alternatives to raising are handing back a fabricated database or an empty answer that reads as
+   * "nobody is suppressed". Both are worse than a message naming what to bind.
+   */
+  const suppressions = (env: EmailEnqueueEnv): EmailSuppressionDatabase => {
+    const binding = env.EMAIL_SUPPRESSIONS;
+    if (!binding) {
+      throw new InternalError({
+        message: "The suppression list is not available.",
+        action: "Run `pithy add email` to provision it, or bind the EMAIL_SUPPRESSIONS D1 database.",
+        detail: "email.suppressions() was called with an env carrying no `EMAIL_SUPPRESSIONS` D1 binding.",
+      });
+    }
+    return emailSuppressionDatabase(binding);
+  };
   const enqueue = (env: EmailEnqueueEnv, input: EnqueueInput): Promise<EnqueueResult> =>
     enqueueEmail(
       {
@@ -207,6 +265,9 @@ export function email(config: EmailConfigInput): EmailCapability {
         fromName: resolved.fromName,
         theme,
         sender: env.EMAIL_SENDER,
+        // Read straight off the env the consumer forwarded. This one line is what makes suppression
+        // automatic: a consumer names nothing, and a hard-bounced address is never queued for a send.
+        suppressionDb: env.EMAIL_SUPPRESSIONS ? emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS) : undefined,
         now: new Date(),
         newId: () => crypto.randomUUID(),
       },
@@ -221,6 +282,7 @@ export function email(config: EmailConfigInput): EmailCapability {
       theme,
     },
     enqueue,
+    suppressions,
   });
 }
 
