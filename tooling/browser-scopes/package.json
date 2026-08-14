@@ -1,0 +1,31 @@
+{
+  "name": "@pithy-sh/browser-scopes",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && tsc -p tsconfig.probe.json",
+    "test": "vitest run",
+    "test:node": "vitest run",
+    "clean": "rm -rf .turbo",
+    "reset": "bun run clean && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "@pithy-sh/audit": "workspace:*",
+    "@pithy-sh/auth": "workspace:*",
+    "@pithy-sh/cli": "workspace:*",
+    "@pithy-sh/core": "workspace:*",
+    "@pithy-sh/email": "workspace:*",
+    "@pithy-sh/ledger": "workspace:*",
+    "@pithy-sh/payments": "workspace:*",
+    "@pithy-sh/secrets": "workspace:*",
+    "@pithy-sh/support": "workspace:*",
+    "@pithy-sh/testers": "workspace:*",
+    "@pithy-sh/tsconfig": "workspace:*",
+    "@types/node": "^22.15.0",
+    "@vitest/coverage-v8": "^4.1.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.0"
+  }
+}

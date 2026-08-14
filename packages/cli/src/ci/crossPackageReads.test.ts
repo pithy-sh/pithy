@@ -70,7 +70,14 @@ describe("the cross-package reads CI plans from", () => {
   test("every package that asserts about another package's files is planned by name", async () => {
     // `--affected` maps a changed file to its owning package and that package's dependents, and
     // nothing else. A package appearing here is one whose suite that model cannot reach.
-    expect([...new Set((await reads()).map((read) => read.package))].sort()).toEqual(["@pithy-sh/cli"]);
+    //
+    // `@pithy-sh/browser-scopes` is the second, and it is here for the same reason the CLI is: its gate
+    // reads every capability's source to find every control-plane scope the kit declares, so a scope
+    // added in a package it does not depend on is a scope its suite must re-check (#315).
+    expect([...new Set((await reads()).map((read) => read.package))].sort()).toEqual([
+      "@pithy-sh/browser-scopes",
+      "@pithy-sh/cli",
+    ]);
   });
 
   test("only these paths are read across a package boundary", async () => {
@@ -110,5 +117,12 @@ describe("what CI plans for a change", () => {
 
   test("editing any package's source plans the CLI — the tripwires walk all of them", async () => {
     expect(await filtersFor(["packages/leaderboard/src/capability.ts"])).toContain("--filter=@pithy-sh/cli");
+  });
+
+  test("editing any package's source plans the browser-scope gate too (#315)", async () => {
+    // Asserted against a capability that declares no scope at all. The gate's expected set is derived
+    // from whatever the tree declares, so the package that could newly declare one is exactly the
+    // package `--affected` would not reach — planning only the scope-bearing ones would leave the hole.
+    expect(await filtersFor(["packages/leaderboard/src/capability.ts"])).toContain("--filter=@pithy-sh/browser-scopes");
   });
 });

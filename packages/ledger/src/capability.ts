@@ -6,8 +6,8 @@ import { type Capability, defineCapability } from "@pithy-sh/core/src/capability
 import type { Migration } from "kysely/migration";
 import { LedgerConfig, type LedgerConfigInput } from "./config/config";
 import { ledgerTables } from "./data/tables";
-import { ledgerAdminRoutes } from "./http/guards";
 import { LEDGER_DEFAULT_BASE_PATH, registerLedgerRoutes } from "./http/routes";
+import { ledgerAdminRoutes } from "./http/scopes";
 import { ledger_0001_accounts } from "./migrations/0001_accounts";
 import { ledgerExampleSeed } from "./seeds/example";
 import { PACKAGE_VERSION } from "./version.generated";

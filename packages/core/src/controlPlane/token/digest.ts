@@ -13,9 +13,25 @@ import { base64UrlEncode } from "./base64url";
  * `keys:rotate` body, including one registering the interceptor's key.
  */
 
-/** SHA-256 a request body, base64url-encoded — the exact form `bodySha256` is written in. */
+/**
+ * SHA-256 a request body, base64url-encoded — the exact form `bodySha256` is written in.
+ *
+ * **A view is copied before it is hashed, and that is a fix rather than a formality** (#315).
+ * `crypto.subtle.digest` takes a `BufferSource`, which is `ArrayBufferView<ArrayBuffer> | ArrayBuffer`
+ * — a plain `Uint8Array` is `Uint8Array<ArrayBufferLike>`, which also admits a view onto a
+ * `SharedArrayBuffer`, and so does not satisfy it. `@cloudflare/workers-types` spells `BufferSource`
+ * loosely enough that the mismatch never surfaced in a Worker program; an adopter compiling this
+ * module against the DOM lib got a type error inside our source, with nothing on their side to fix.
+ *
+ * The copy is what makes the narrowing true rather than asserted, and the reason it is worth its cost:
+ * a digest of memory another thread can write is a check that does not bind what it checked. Copying
+ * fixes the bytes at the instant they are hashed, so `bodySha256` commits to what the verifier
+ * actually compared. The bodies here are small signed control-plane requests, and the alternative was
+ * a cast that would have kept the hazard and hidden the argument.
+ */
 export async function sha256Base64Url(bytes: ArrayBuffer | Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const source = bytes instanceof Uint8Array ? new Uint8Array(bytes) : bytes;
+  const digest = await crypto.subtle.digest("SHA-256", source);
   return base64UrlEncode(new Uint8Array(digest));
 }
 

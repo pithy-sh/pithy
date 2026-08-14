@@ -8,7 +8,7 @@ import {
   PAYMENTS_PURCHASES_READ_SCOPE,
   PAYMENTS_RECONCILE_READ_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
-} from "../http/guards";
+} from "../http/scopes";
 
 /**
  * What a management client may learn from each table payments owns.

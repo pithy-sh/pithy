@@ -20,9 +20,9 @@ import type { z } from "zod";
 import { LedgerConfig } from "../config/config";
 import { openLedger } from "../ledger";
 import { ledger_0001_accounts } from "../migrations/0001_accounts";
-import { LEDGER_ACCOUNTS_READ_SCOPE, LEDGER_TRANSACTIONS_READ_SCOPE } from "./guards";
 import { LedgerAccountsResponse, LedgerTransactionsResponse, LedgerUserAccountsResponse } from "./responses";
 import { registerLedgerRoutes } from "./routes";
+import { LEDGER_ACCOUNTS_READ_SCOPE, LEDGER_TRANSACTIONS_READ_SCOPE } from "./scopes";
 
 /**
  * The management handlers, actually executed.

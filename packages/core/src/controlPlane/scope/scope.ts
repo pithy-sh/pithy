@@ -59,8 +59,15 @@ export const ANY_VERIFIED_CALLER: unique symbol = Symbol.for("pithy.controlPlane
  */
 export type ControlPlaneRequirement = ControlPlaneScope | typeof ANY_VERIFIED_CALLER;
 
-/** Read this Worker's composed capability manifest — the discovery-over-configuration call. */
-export const MANIFEST_READ_SCOPE = "manifest:read";
+/**
+ * Read this Worker's composed capability manifest — the discovery-over-configuration call.
+ *
+ * Annotated `: ControlPlaneScope` like every capability's scope, and not merely for symmetry: that
+ * annotation is how `tooling/browser-scopes` finds a control-plane scope at all. Matching the type
+ * rather than the `_SCOPE` suffix is what keeps `PLAY_SCOPE` (a Google OAuth URL) and `GLOBAL_SCOPE`
+ * (an environment name) out of a gate that has nothing to say about either.
+ */
+export const MANIFEST_READ_SCOPE: ControlPlaneScope = "manifest:read";
 
 /**
  * Register a new public key, expire a superseded one, and read the registration state. One scope for
@@ -68,7 +75,7 @@ export const MANIFEST_READ_SCOPE = "manifest:read";
  * client changing keys on a schedule simply does not grant it, and then it *cannot*, whatever the
  * client intends. Better than a toggle anyone has to be trusted to honour.
  */
-export const KEYS_ROTATE_SCOPE = "keys:rotate";
+export const KEYS_ROTATE_SCOPE: ControlPlaneScope = "keys:rotate";
 
 /**
  * Every grantable scope the seam's own routes use — what `pithy dashboard connect` offers by default.

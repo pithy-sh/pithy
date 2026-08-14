@@ -30,7 +30,6 @@ import {
   recordNudge,
   type WriteDeps,
 } from "../roster/write";
-import { TESTERS_NUDGE_SEND_SCOPE, TESTERS_ROSTER_READ_SCOPE, TESTERS_ROSTER_WRITE_SCOPE } from "./guards";
 import {
   CohortsResponse,
   InviteResponse,
@@ -40,6 +39,7 @@ import {
   ResendResponse,
 } from "./responses";
 import { registerTestersRoutes } from "./routes";
+import { TESTERS_NUDGE_SEND_SCOPE, TESTERS_ROSTER_READ_SCOPE, TESTERS_ROSTER_WRITE_SCOPE } from "./scopes";
 
 /**
  * The control-plane handlers, actually executed.

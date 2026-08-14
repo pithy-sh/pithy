@@ -42,7 +42,7 @@ import {
   resendInvite,
   type WriteDeps,
 } from "../roster/write";
-import { requireAuth, TESTERS_NUDGE_SEND_SCOPE, TESTERS_ROSTER_READ_SCOPE, TESTERS_ROSTER_WRITE_SCOPE } from "./guards";
+import { requireAuth } from "./guards";
 import { confirmOptOutPage, page, storePage } from "./pages";
 import {
   type CohortsResponse,
@@ -64,6 +64,7 @@ import {
   ResendRequest,
   StatusQuery,
 } from "./schemas";
+import { TESTERS_NUDGE_SEND_SCOPE, TESTERS_ROSTER_READ_SCOPE, TESTERS_ROSTER_WRITE_SCOPE } from "./scopes";
 import { toCohortView } from "./view";
 
 /**

@@ -54,7 +54,7 @@ export {
   SUPPORT_THREADS_READ_SCOPE,
   SUPPORT_THREADS_RECLASSIFY_SCOPE,
   SUPPORT_THREADS_REPLY_SCOPE,
-} from "./http/guards";
+} from "./http/scopes";
 export {
   DEFAULT_SUPPORT_REPLIES,
   defineSupportReplies,

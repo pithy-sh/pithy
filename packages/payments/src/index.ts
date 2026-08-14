@@ -97,13 +97,7 @@ export {
   type PaymentsLedgerLoader,
 } from "./grants/ledgerSeam";
 export { PAYMENTS_RECONCILE_KEY, triggerPaymentsReconcile } from "./http/dispatch";
-export {
-  PAYMENTS_CATALOG_READ_SCOPE,
-  PAYMENTS_CONTROL_PLANE_SCOPES,
-  PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
-  PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
-  requireAuth,
-} from "./http/guards";
+export { requireAuth } from "./http/guards";
 export { type PaymentsRoutesOptions, registerPaymentsRoutes } from "./http/routes";
 export {
   AppleWebhookNotification,
@@ -115,6 +109,12 @@ export {
   RestoreRequest,
   StripeWebhookNotification,
 } from "./http/schemas";
+export {
+  PAYMENTS_CATALOG_READ_SCOPE,
+  PAYMENTS_CONTROL_PLANE_SCOPES,
+  PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
+  PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
+} from "./http/scopes";
 export { ProviderEvent, type ProviderEventInput } from "./projection/event";
 export {
   ORPHAN_REPAIR_LIMIT,

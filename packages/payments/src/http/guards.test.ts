@@ -17,6 +17,7 @@ import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import type { MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
+import { requireAuth } from "./guards";
 import {
   PAYMENTS_CATALOG_READ_SCOPE,
   PAYMENTS_CONTROL_PLANE_SCOPES,
@@ -28,8 +29,7 @@ import {
   PAYMENTS_PURCHASES_READ_SCOPE,
   PAYMENTS_RECONCILE_READ_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
-  requireAuth,
-} from "./guards";
+} from "./scopes";
 
 /**
  * The gates on their own, before any route uses them.

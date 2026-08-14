@@ -9,6 +9,7 @@ import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { payments } from "../capability";
 import { PaymentsConfig } from "../config/config";
+import { registerPaymentsRoutes } from "./routes";
 import {
   PAYMENTS_CATALOG_READ_SCOPE,
   PAYMENTS_CONTROL_PLANE_SCOPES,
@@ -20,8 +21,7 @@ import {
   PAYMENTS_PURCHASES_READ_SCOPE,
   PAYMENTS_RECONCILE_READ_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
-} from "./guards";
-import { registerPaymentsRoutes } from "./routes";
+} from "./scopes";
 
 /**
  * Payments' half of gate 2 of the route request contract. A handler can reach a path param through a validator

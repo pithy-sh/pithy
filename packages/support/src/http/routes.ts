@@ -8,14 +8,7 @@ import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
 import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
-import {
-  requireAuth,
-  SUPPORT_THREADS_ARCHIVE_SCOPE,
-  SUPPORT_THREADS_FLAG_SCOPE,
-  SUPPORT_THREADS_READ_SCOPE,
-  SUPPORT_THREADS_RECLASSIFY_SCOPE,
-  SUPPORT_THREADS_REPLY_SCOPE,
-} from "./guards";
+import { requireAuth } from "./guards";
 import {
   archiveConversation,
   type HandlerDeps,
@@ -40,6 +33,13 @@ import {
   SubmitFeedbackInput,
   ThreadIdParam,
 } from "./schemas";
+import {
+  SUPPORT_THREADS_ARCHIVE_SCOPE,
+  SUPPORT_THREADS_FLAG_SCOPE,
+  SUPPORT_THREADS_READ_SCOPE,
+  SUPPORT_THREADS_RECLASSIFY_SCOPE,
+  SUPPORT_THREADS_REPLY_SCOPE,
+} from "./scopes";
 
 /**
  * The support routes, their verification strategies, and what each accepts:
