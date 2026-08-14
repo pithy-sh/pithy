@@ -123,9 +123,12 @@ interface SecretRegistryEntryBase {
    * environment — a data migration of the one value that, botched, makes every other secret unreadable
    * with no error naming the cause. Weigh that before treating this field as tidying.
    *
-   * The file still states a full envelope for it, like every other secret, and a future *value* rotation
-   * of the master key is a rotation of the `EncryptionConfig`'s own `versions` map — the axis that key
-   * has always rotated on, and the reason `rotatable` stays false.
+   * **The dev secrets file states the value, not an envelope around it (#323).** It used to state one,
+   * and the seeder took it off again on the way to the binding — so `currentVersion` appeared twice for
+   * one concept, carrying no information, and two readers in a row reported a correct file as corrupt.
+   * The file states the payload its destination receives, for this secret as for every other; a future
+   * *value* rotation of the master key is a rotation of the `EncryptionConfig`'s own `versions` map —
+   * the axis that key has always rotated on, and the reason `rotatable` stays false.
    *
    * Enforced at define time: a `bootstrap` entry must be `cf-secrets-store` (a D1 row cannot be read
    * before the store that decrypts it is open) and must not be `keyed` (a keyspace has no one value to
@@ -371,6 +374,16 @@ export function defineSecretRegistry<const R extends SecretRegistry>(registry: R
       if (entry.bootstrap && entry.keyed) {
         throw new InternalError({
           message: `secret registry: keyed entry "${name}" must not declare bootstrap — a keyspace has no one value to bind.`,
+        });
+      }
+      // A bootstrap secret is what the decoder needs in order to exist, so nothing may invent one: the
+      // master key is composed by `initialMasterKeyConfig`, and a random string in its place orphans
+      // every secret already encrypted under the real one. Refused here so that every writer of a fresh
+      // dev secret — `pithy add`, `adopt`, the provisioners — can state a mintable secret is not
+      // bootstrap as a fact rather than as an assumption. See `initialDevSecret`.
+      if (entry.bootstrap && entry.devValue !== undefined) {
+        throw new InternalError({
+          message: `secret registry: bootstrap entry "${name}" must not declare devValue — nothing may mint the value every other secret is read through.`,
         });
       }
     }

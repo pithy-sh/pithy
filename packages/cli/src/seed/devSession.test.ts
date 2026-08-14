@@ -34,7 +34,7 @@ const PROJECT = "acme";
 /** The dev value under test. Arbitrary, but it must be the one the minted cookie is signed with. */
 const SECRET = "session-secret-from-the-dev-secrets-file";
 
-/** Write one secret into `<config>/<project>/secrets.jsonc`, as the full envelope the format requires. */
+/** Write one ordinary secret into `<config>/<project>/secrets.jsonc`, as the envelope its destination takes. */
 async function writeDevSecret(name: string, value: string): Promise<string> {
   const path = devSecretsFile(PROJECT);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });

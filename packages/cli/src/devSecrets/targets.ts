@@ -164,6 +164,19 @@ export interface DevSecretsTargetsOptions {
 let reloadCount = 0;
 
 /**
+ * Every target's registry, merged by secret name — the same join `pithy secrets` does.
+ *
+ * One function rather than one per command, because a secret's registry entry is what says how its value
+ * is shaped, and two merges is two answers to that (#323). Later targets win on a repeated name, which is
+ * the state `pithy doctor` reports rather than one this has an opinion about.
+ */
+export function mergedSecretRegistry(targets: readonly DevSecretsTarget[]): SecretRegistry {
+  const merged: SecretRegistry = {};
+  for (const target of targets) for (const [name, entry] of Object.entries(target.registry)) merged[name] = entry;
+  return merged;
+}
+
+/**
  * One Worker's `pithy.config.ts`, imported past the ESM module cache with a query the resolver ignores
  * and the cache key does not.
  *

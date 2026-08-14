@@ -3,7 +3,9 @@
 
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
-import { DEV_SECRETS_FILE, DevSecretEnvelope, DevSecretsFile, describeNotEnvelope } from "./devSecretsFile";
+import type { SecretRegistry } from "../registry";
+import { DEV_SECRETS_FILE, DevSecretsFile, ENVELOPE_SHAPE } from "./devSecretsFile";
+import { devSecretPayload } from "./seedDevSecrets";
 
 /**
  * The dev secrets file boundary. Text in, a validated {@link DevSecretsFile} out — and every way
@@ -20,9 +22,13 @@ import { DEV_SECRETS_FILE, DevSecretEnvelope, DevSecretsFile, describeNotEnvelop
  * imports; the CLI reads the file (and owns its `0600` mode, and its absence meaning "no secrets
  * yet"). The same rule the seeder follows for `.dev.vars`: return what should be written, never write.
  *
- * The registry is deliberately absent here. Structure is checked at the boundary; a value's *meaning*
- * — its type, its schema, where it belongs — is the registry's, and `seedDevSecrets` is where the two
- * meet. That keeps one place where the file and the registry are compared.
+ * **The registry is optional here, and what it buys is exactly the shape check (#323).** Which payload
+ * a name takes — an envelope, or the value itself for a `bootstrap` secret — is the registry's answer,
+ * so a loader without one cannot judge a slot and does not pretend to: it establishes that the text is
+ * a JSONC object of secret names, and `devSecretPayload` judges each value where the registry is in
+ * hand. Given a registry, it asks that same function per declared name, so a bad shape is caught at
+ * the boundary and in one wording. A name the registry does not declare is left alone either way —
+ * a removed capability must not brick dev, and `seedDevSecrets` reports it as undeclared.
  */
 
 /** Options for {@link loadDevSecrets}. */
@@ -32,10 +38,15 @@ export interface LoadDevSecretsOptions {
    * multi-project checkout. Defaults to {@link DEV_SECRETS_FILE}.
    */
   path?: string;
+  /**
+   * The project's registry, when the caller has one. Every declared name's value is then checked
+   * against the payload its destination takes, which is the only way that question has an answer.
+   *
+   * Absent for a caller that has no project loaded — `pithy secrets edit` on a project whose config
+   * will not load is the case that matters, and it is the command an adopter reaches for to *fix* that.
+   */
+  registry?: SecretRegistry;
 }
-
-/** The envelope, spelled out, so every error can show the shape rather than describe it. */
-const ENVELOPE_SHAPE = '{ "currentVersion": "1", "versions": { "1": <value> } }';
 
 /**
  * Parse and validate the dev secrets file. Throws `validation/invalid_input` naming the offending
@@ -73,15 +84,32 @@ export function loadDevSecrets(source: string, options: LoadDevSecretsOptions = 
 
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new ValidationError({
-      message: `${path} must be an object of secret name to versioned envelope.`,
-      action: `Write each secret as "<capability>-<what>": ${ENVELOPE_SHAPE}.`,
+      message: `${path} must be an object of secret name to value.`,
+      action: `Write each secret as "<capability>-<what>": the payload its destination receives — ${ENVELOPE_SHAPE} for an ordinary secret.`,
       detail: `dev secrets file '${path}' top level is ${Array.isArray(parsed) ? "an array" : typeof parsed}`,
     });
   }
 
   const file: DevSecretsFile = {};
+  const registry = options.registry;
   for (const [name, value] of Object.entries(parsed as Record<string, unknown>)) {
-    file[name] = readEnvelope(path, name, value);
+    // The registry entry, or nothing. `Object.hasOwn`, never `in`: `in` walks the prototype chain, so a
+    // secret named `toString` would be judged against an `Object.prototype` member.
+    const entry = registry && Object.hasOwn(registry, name) ? registry[name] : undefined;
+    // A name with no value at all, which is knowable without a registry and is the one shape check left
+    // here. `comment-json` parses `{ "a-b": }` to `undefined` rather than refusing it, so a half-deleted
+    // line reached the seeder as a declared secret holding nothing.
+    if (value === undefined) {
+      throw new ValidationError({
+        message: `Secret '${name}' in ${path} has no value.`,
+        action: `Give it one, or delete the line. An ordinary secret's is ${ENVELOPE_SHAPE}.`,
+        detail: `dev secrets file '${path}': '${name}' has no value`,
+      });
+    }
+    // Judged, and then discarded: what this returns is the file's own values, not the converted ones.
+    // A keyspace is not judged at all — it has no single value, and `seedDevSecrets` owns that refusal.
+    if (entry && !entry.keyed) devSecretPayload(entry, name, value, path);
+    file[name] = value;
   }
   return DevSecretsFile.parse(file);
 }
@@ -97,45 +125,4 @@ function position(cause: unknown): string {
   const { line, column } = cause as { line?: unknown; column?: unknown };
   if (typeof line !== "number" || typeof column !== "number") return "";
   return ` at line ${line} column ${column}`;
-}
-
-/**
- * One secret's value, checked as a full envelope. The three failures are separated because they have
- * different fixes: a value that is not an envelope at all is the migration case (it was a `.dev.vars`
- * line yesterday); an empty `versions` and a dangling `currentVersion` are hand-edit slips, and saying
- * which one it is saves a round of guessing.
- */
-function readEnvelope(path: string, name: string, value: unknown): DevSecretEnvelope {
-  const result = DevSecretEnvelope.safeParse(value);
-  if (!result.success) {
-    // What was found, not merely that it was wrong (#323). "Is not a versioned envelope" is true of a
-    // string, of a bare `EncryptionConfig`, and of a typo — three different edits, and the adopter is
-    // looking at the file. {@link describeNotEnvelope} names keys and types and never a value.
-    const found = describeNotEnvelope(value, result.error);
-    throw new ValidationError({
-      message: `Secret '${name}' in ${path} is not a versioned envelope: ${found}.`,
-      action: `Write it as ${ENVELOPE_SHAPE}. Every value is a full envelope, so a JSON secret's own object is never mistaken for one.`,
-      detail: `dev secrets file '${path}': '${name}' is not a { currentVersion, versions } envelope: ${found}`,
-    });
-  }
-
-  const envelope = result.data;
-  if (Object.keys(envelope.versions).length === 0) {
-    throw new ValidationError({
-      message: `Secret '${name}' in ${path} has no versions.`,
-      action: `Give it at least one: ${ENVELOPE_SHAPE}.`,
-      detail: `dev secrets file '${path}': '${name}' has an empty versions map`,
-    });
-  }
-  // `Object.hasOwn`, never `in`: `in` walks the prototype chain, so a `currentVersion` of `toString`
-  // or `constructor` passed this check and failed much later inside the store, with an error naming
-  // neither the file nor the secret.
-  if (!Object.hasOwn(envelope.versions, envelope.currentVersion)) {
-    throw new ValidationError({
-      message: `Secret '${name}' in ${path} points at version '${envelope.currentVersion}', which it does not have.`,
-      action: "Set currentVersion to a key that is present in versions.",
-      detail: `dev secrets file '${path}': '${name}' currentVersion is absent from versions`,
-    });
-  }
-  return envelope;
 }

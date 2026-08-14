@@ -31,6 +31,13 @@ export function renderDevSecretsNotes(report: DevSecretsSeedReport): string[] {
   if (report.minted.length > 0) {
     lines.push(`Minted ${list(report.minted)} into ${report.path ?? "the dev secrets file"}. Local only.`);
   }
+  // Before the mints and the seeds, because it is about bytes that were already there. An adopter
+  // reading this block wants to know what changed in the file they maintain before what was added to it.
+  if ((report.migrated ?? []).length > 0) {
+    lines.push(
+      `Restated ${list(report.migrated ?? [])} in ${report.path ?? "the dev secrets file"}: the file states the value its destination receives.`,
+    );
+  }
   if (report.seeded.length > 0) {
     lines.push(`Seeded ${list(report.seeded)} into the local secrets store.`);
   }

@@ -5,6 +5,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "n
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { editDevSecrets, type OpenEditor } from "./edit";
 import { devSecretsFile } from "./location";
@@ -27,6 +28,14 @@ afterEach(async () => {
 const SECRET = "sk_live_51H8xQzKm9pWv3RtY";
 
 /** A file holding one real-looking secret, plus a comment saying where it came from. */
+/**
+ * The project's registry, as `pithy secrets edit` now resolves it — the only thing that can say which
+ * payload belongs in which slot (#323).
+ */
+const registry = defineSecretRegistry({
+  "payments-stripe-key": { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
+});
+
 const SEEDED = `// Local dev secret values.
 {
   // Minted by pithy add payments.
@@ -236,12 +245,29 @@ describe("editDevSecrets — an edit that does not parse", () => {
     await seed();
     // Valid JSONC, and not a secrets file: a bare value where an envelope belongs is the mistake
     // somebody makes migrating a line out of `.dev.vars`.
+    //
+    // **Judged against the registry, because nothing else can judge it (#323).** Which payload a slot
+    // takes is the registry's answer — for this secret an envelope, for `SECRETS_ENCRYPTION_KEYS` the
+    // value itself — so the command resolves the project's registry and hands it in.
     const { editor } = editorWriting([`{ "payments-stripe-key": "${SECRET}" }`, null]);
 
-    const error = await refusal(editDevSecrets({ path, editor, report: () => {} }));
+    const error = await refusal(editDevSecrets({ path, editor, registry, report: () => {} }));
 
     expect(error.payload.message).toContain("payments-stripe-key");
     expect(await readFile(path, "utf8")).toBe(SEEDED);
+  });
+
+  test("without a registry the same edit is accepted — nothing knows what belongs in that slot", async () => {
+    // The cost of the optional registry, stated rather than left to be discovered. `pithy secrets edit`
+    // on a project whose `pithy.config.ts` will not load still opens, still refuses broken JSONC, and
+    // cannot judge a shape. Refusing to open at all would make the tool for fixing a project unusable
+    // in the state that needs it.
+    await seed();
+    const { editor } = editorWriting([`{ "payments-stripe-key": "${SECRET}" }`, null]);
+
+    const result = await editDevSecrets({ path, editor, report: () => {} });
+
+    expect(result.changed).toBe(true);
   });
 
   test("the notice says the file has not been written", async () => {
@@ -342,11 +368,14 @@ describe("editDevSecrets — the edit is never the thing that is lost", () => {
 describe("editDevSecrets — nothing it says carries a value", () => {
   test("not the notice, not the error, not the detail — for either kind of failure", async () => {
     await seed();
-    for (const broken of [`{ "payments-stripe-key": { "versions": { "1": "${SECRET}" } }`, `{ "x": "${SECRET}" }`]) {
+    for (const broken of [
+      `{ "payments-stripe-key": { "versions": { "1": "${SECRET}" } }`,
+      `{ "payments-stripe-key": "${SECRET}" }`,
+    ]) {
       const said: string[] = [];
       const { editor } = editorWriting([broken, null]);
 
-      const error = await refusal(editDevSecrets({ path, editor, report: (text) => said.push(text) }));
+      const error = await refusal(editDevSecrets({ path, editor, registry, report: (text) => said.push(text) }));
 
       const everything = [...said, error.payload.message, error.payload.action ?? "", error.payload.detail ?? ""];
       for (const text of everything) expect(text).not.toContain(SECRET);

@@ -6,6 +6,7 @@ import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { dispatchSecretWrite, type SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
 import { initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
+import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
 import {
@@ -15,7 +16,7 @@ import {
   type TurnstileDeprovisioner,
   type TurnstileProvisioner,
 } from "@pithy-sh/turnstile/src/provision/provisionTurnstile";
-import { TURNSTILE_SECRET_NAME } from "@pithy-sh/turnstile/src/secret/registry";
+import { TURNSTILE_SECRET_NAME, turnstileSecretsRegistry } from "@pithy-sh/turnstile/src/secret/registry";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { removeBootstrapVars } from "../devSecrets/bootstrapVars";
 import { writeDevVars } from "../devSecrets/devVars";
@@ -151,7 +152,10 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
    * producers again, so it goes through the one renderer they share.
    */
   async writeDev(secret: string, sitekeys: Record<string, string>): Promise<void> {
-    const envelope = initialDevSecret(secret);
+    // Through the registry entry, like every other writer: the entry is what says whether this
+    // secret's destination takes an envelope or the value itself (#323).
+    const entry: SecretRegistryEntry | undefined = turnstileSecretsRegistry[TURNSTILE_SECRET_NAME];
+    const envelope = initialDevSecret(entry ?? {}, secret);
     const path = await resolveDevSecretsFile(this.#projectDir);
     await writeDevSecrets(path, { [TURNSTILE_SECRET_NAME]: envelope }, { replace: true });
     // The sitekeys alone, through `writeDevVars` — so each is quoted for dotenv and reaches the Worker's

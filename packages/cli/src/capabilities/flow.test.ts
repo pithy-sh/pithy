@@ -231,8 +231,10 @@ describe("runAdd", () => {
     // registry is what says the master key is one — and this fixture is scaffolded in the OS tmpdir,
     // where `pithy.config.ts`'s `@pithy-sh/*` imports resolve against nothing. `targets.test.ts` and
     // `generate.test.ts` scaffold inside the package for exactly that reason, and cover the rest.
+    // The entry itself, with nothing taken off it: its binding carries a bare `EncryptionConfig`, so
+    // that is what the file states (#323).
     const stated = (await readDevSecrets(await resolveDevSecretsFile(dir))).SECRETS_ENCRYPTION_KEYS;
-    expect(EncryptionConfig.parse(stated?.versions[stated.currentVersion]).currentVersion).toBe("1");
+    expect(EncryptionConfig.parse(stated).currentVersion).toBe("1");
     expect(result.notes.join(" ")).toMatch(/pithy secrets provision/);
   });
 

@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { EncryptionConfig } from "@pithy-sh/secrets/src/crypto/envelope";
+import { DevSecretEnvelope } from "@pithy-sh/secrets/src/dev/devSecretsFile";
+import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { readBootstrapVars } from "../devSecrets/bootstrapVars";
 import { readDevSecrets } from "../devSecrets/file";
@@ -39,10 +41,13 @@ async function devVar(dir: string, name: string): Promise<string | undefined> {
  *
  * **`secrets.jsonc`, not `dev.json` (#179).** The master key is a registry secret now, so it lives in the
  * one file that states dev secret values, and the generator materialises it into each Worker's
- * `.dev.vars` from there. Read through the same envelope every other secret uses.
+ * `.dev.vars` from there.
+ *
+ * **Read as the entry itself, with nothing taken off it (#323).** Its binding carries a bare
+ * `EncryptionConfig`, so the file states one — that is the rule this reads through rather than around.
  */
 async function devMasterKey(dir: string): Promise<EncryptionConfig | undefined> {
-  const stated = await devSecret(dir, "SECRETS_ENCRYPTION_KEYS");
+  const stated = (await readDevSecrets(await secretsPath(dir)))[MASTER_KEY_BINDING];
   return stated === undefined ? undefined : EncryptionConfig.parse(stated);
 }
 
@@ -77,8 +82,10 @@ function secretsPath(dir: string): Promise<string> {
 
 /** The current-version value the dev secrets file holds for `name`, or `undefined` when it has none. */
 async function devSecret(dir: string, name: string): Promise<unknown> {
-  const envelope = (await readDevSecrets(await secretsPath(dir)))[name];
-  return envelope?.versions[envelope.currentVersion];
+  const stated = (await readDevSecrets(await secretsPath(dir)))[name];
+  if (stated === undefined) return undefined;
+  const envelope = DevSecretEnvelope.parse(stated);
+  return envelope.versions[envelope.currentVersion];
 }
 
 /** A seeder that does nothing — these cases are about what `bootstrapAdd` itself writes and says. */
@@ -251,9 +258,9 @@ describe("bootstrapAdd", () => {
   test("a minted secret is a full version-1 envelope — the shape the store actually holds", async () => {
     await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("auth") });
 
-    const envelope = (await readDevSecrets(await secretsPath(dir)))["auth-session-secret"];
-    expect(envelope?.currentVersion).toBe("1");
-    expect(Object.keys(envelope?.versions ?? {})).toEqual(["1"]);
+    const envelope = DevSecretEnvelope.parse((await readDevSecrets(await secretsPath(dir)))["auth-session-secret"]);
+    expect(envelope.currentVersion).toBe("1");
+    expect(Object.keys(envelope.versions)).toEqual(["1"]);
   });
 
   test("the file it writes is 0600 — it will hold OAuth client secrets next to this one", async () => {

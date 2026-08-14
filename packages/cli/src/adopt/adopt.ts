@@ -4,7 +4,7 @@
 import { join, relative } from "node:path";
 import { CLOUDFLARE_ENV_KEYS, parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
-import { type DevSecretEnvelope, initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
+import { type DevSecretsFile, initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { cloudflareConfigPath, parseCloudflareConfig, writeCloudflareConfig } from "../cloudflare/config";
 import { BOOTSTRAP_VARS_KEY, DevJson, readBootstrapVars, writeBootstrapVars } from "../devSecrets/bootstrapVars";
 import { readDevSecrets, writeDevSecrets } from "../devSecrets/file";
@@ -197,7 +197,7 @@ export async function runAdopt(options: RunAdoptOptions): Promise<AdoptResult> {
   const { entries, pending } = plan(sources, destinations, registry, project, paths, unresolvable);
 
   options.onPlan?.(entries);
-  if (options.apply === true) await write(options.projectDir, project, entries, pending, paths);
+  if (options.apply === true) await write(options.projectDir, project, entries, pending, paths, registry);
 
   return { projectDir: options.projectDir, project, applied: options.apply === true, entries };
 }
@@ -214,7 +214,7 @@ interface Source {
 /** What is already at each destination, read once so the plan and the write agree about what was there. */
 interface Destinations {
   cloudflare: Record<string, string>;
-  secrets: Record<string, DevSecretEnvelope>;
+  secrets: DevSecretsFile;
   bootstrap: Record<string, string>;
   tokens: Record<string, Record<string, string>>;
 }
@@ -385,7 +385,7 @@ function unplannable(path: string): MergeBaseOptions {
 function plan(
   sources: Source[],
   destinations: Destinations,
-  registry: Record<string, { valueType: string }>,
+  registry: AdoptRegistry,
   project: string | null,
   paths: StatePathOptions,
   unresolvable: UnresolvableWorker[],
@@ -408,7 +408,7 @@ function plan(
 function planOne(
   source: Source,
   destinations: Destinations,
-  registry: Record<string, { valueType: string }>,
+  registry: AdoptRegistry,
   project: string | null,
   paths: StatePathOptions,
   pending: Map<string, unknown>,
@@ -448,10 +448,11 @@ function planOne(
     return settle(base, devPreferencesPath(project, paths), source.value, destinations.bootstrap[source.key], pending);
   }
 
-  // A registry secret. The file always holds a full envelope, so the comparison is against the envelope's
-  // current version — and a `json` secret's version is its own structure, which the `.dev.vars` line
-  // carries as serialized text. Parsing it is the registry's declaration applied, not a guess; text that
-  // is not JSON is refused by name rather than written as a string a seed would reject.
+  // A registry secret. The comparison is against the value the file states — the envelope's current
+  // version for an ordinary secret, and the entry itself for a `bootstrap` one, whose payload is its
+  // value (#323). A `json` secret's value is its own structure, which the `.dev.vars` line carries as
+  // serialized text. Parsing it is the registry's declaration applied, not a guess; text that is not
+  // JSON is refused by name rather than written as a string a seed would reject.
   const declared = Object.hasOwn(registry, source.key) ? registry[source.key] : undefined;
   let candidate: unknown = source.value;
   if (declared?.valueType === "json") {
@@ -467,9 +468,37 @@ function planOne(
       };
     }
   }
-  const envelope = destinations.secrets[source.key];
-  const current = envelope === undefined ? undefined : envelope.versions[envelope.currentVersion];
-  return settle(base, devSecretsFile(project, paths), candidate, current, pending);
+  return settle(
+    base,
+    devSecretsFile(project, paths),
+    candidate,
+    statedValue(declared, destinations.secrets[source.key]),
+    pending,
+  );
+}
+
+/**
+ * The **structural** slice of the registry this command reads — the two facts that decide what a value
+ * looks like at its destination, and nothing else.
+ *
+ * Structural rather than `SecretRegistry` because `adopt` joins registries from every Worker and never
+ * reads a schema; `bootstrap` joined it when the file stopped wrapping that one payload (#323).
+ */
+type AdoptRegistry = Record<string, { valueType: string; bootstrap?: boolean }>;
+
+/**
+ * What the file already states for one secret, as a value comparable with a `.dev.vars` line.
+ *
+ * Through the same axis the writer uses. Reading the envelope's current version unconditionally is what
+ * would make a migrated `SECRETS_ENCRYPTION_KEYS` compare as absent — and "absent" is the answer that
+ * copies over a live master key.
+ */
+function statedValue(declared: { bootstrap?: boolean } | undefined, stated: unknown): unknown {
+  if (stated === undefined) return undefined;
+  if (declared?.bootstrap === true) return stated;
+  const envelope = stated as { currentVersion?: string; versions?: Record<string, unknown> };
+  const current = envelope.currentVersion;
+  return current === undefined ? undefined : envelope.versions?.[current];
 }
 
 /** The verdict for a value with a real destination: already there, in the way, or ready to copy. */
@@ -527,9 +556,10 @@ async function write(
   entries: AdoptEntry[],
   planned: Map<string, unknown>,
   paths: StatePathOptions,
+  registry: AdoptRegistry,
 ): Promise<void> {
   const credentials: Partial<Record<(typeof CLOUDFLARE_ENV_KEYS)[number], string>> = {};
-  const secrets: Record<string, DevSecretEnvelope> = {};
+  const secrets: DevSecretsFile = {};
   const bootstrap: Record<string, string> = {};
 
   for (const entry of entries) {
@@ -541,7 +571,9 @@ async function write(
     // invocation, over a value nobody changed.
     const value = planned.get(slotKey(entry));
     if (entry.kind === "secret") {
-      if (value !== undefined) secrets[entry.key] = initialDevSecret(value);
+      // Through the registry entry, so a `bootstrap` secret is written as the payload its binding
+      // carries rather than wrapped in an envelope the reader would have to take off again (#323).
+      if (value !== undefined) secrets[entry.key] = initialDevSecret(registry[entry.key] ?? {}, value);
       continue;
     }
     // Every other destination is a flat string map; a non-string there could only come from a bug above.

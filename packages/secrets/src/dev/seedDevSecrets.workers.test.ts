@@ -12,6 +12,7 @@ import { secrets_0001_init } from "../migrations/0001_init";
 import { defineSecretRegistry } from "../registry";
 import { secretsStore } from "../secretsStore";
 import { SystemSecretsStore } from "../store/systemSecretsStore";
+import { DevSecretEnvelope } from "./devSecretsFile";
 import { loadDevSecrets } from "./loadDevSecrets";
 import { seedDevSecrets } from "./seedDevSecrets";
 
@@ -93,7 +94,9 @@ describe("seedDevSecrets against a real SECRETS D1", () => {
       clientId: "id.apps.googleusercontent.com",
       clientSecret: "shh",
     });
-    expect(secrets.get("auth-session-secret")).toBe(result.minted["auth-session-secret"]?.versions["1"]);
+    expect(secrets.get("auth-session-secret")).toBe(
+      DevSecretEnvelope.parse(result.minted["auth-session-secret"]).versions["1"],
+    );
   });
 
   test("re-seeding leaves the row alone — same value, same updatedAt", async () => {

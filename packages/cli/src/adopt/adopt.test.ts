@@ -243,12 +243,15 @@ describe("runAdopt", () => {
     expect(dev.vars).toEqual({ "auth-session-secret": "stale-copy" });
   });
 
-  test("a json secret is parsed into the envelope the file states, and a broken one is refused by name", async () => {
+  test("a json secret is parsed into the payload the file states, and a broken one is refused by name", async () => {
     await devVars({ SECRETS_ENCRYPTION_KEYS: `{"currentVersion":"1","versions":{"1":"k"}}` });
     await adopt({ apply: true });
     const secrets = await readFile(join(config, "replay", "secrets.jsonc"), "utf8");
+    // The `.dev.vars` line is what the binding carried, and the entry is that value — parsed out of its
+    // serialized form and written as structure, with nothing wrapped around it (#323). Wrapping it here
+    // would have made `pithy adopt` produce the shape this issue removed.
     expect(JSON.parse(secrets.replace(/^\/\/.*$/gm, ""))).toMatchObject({
-      SECRETS_ENCRYPTION_KEYS: { versions: { "1": { currentVersion: "1", versions: { "1": "k" } } } },
+      SECRETS_ENCRYPTION_KEYS: { currentVersion: "1", versions: { "1": "k" } },
     });
 
     await devVars({ SECRETS_ENCRYPTION_KEYS: "not-json-at-all" });

@@ -54,13 +54,15 @@ import { ownProperties } from "./records";
  */
 
 /**
- * The header a file this command creates leads with. Three lines, because three things are not obvious
- * from the contents: where the file is (nothing in the project points at it), that the outer object is
- * always the envelope, and that the keys are registry names rather than env bindings.
+ * The header a file this command creates leads with. Four lines, because four things are not obvious
+ * from the contents: where the file is (nothing in the project points at it), that each value is the
+ * payload its destination receives, which secret that is not an envelope for, and that the keys are
+ * registry names rather than env bindings.
  */
 const HEADER = `// Local dev secret values. Machine-local, outside every checkout — nothing in the project points here.
 // Keys are registry secret names — <capability>-<what>. The registry decides where each one is seeded.
-// Every value is a full envelope: { "currentVersion": "1", "versions": { "1": <value> } }.
+// Each value is the payload its destination receives — { "currentVersion": "1", "versions": { "1": <value> } }
+// for every secret but SECRETS_ENCRYPTION_KEYS, whose binding is read before any envelope decoder exists.
 `;
 
 /**

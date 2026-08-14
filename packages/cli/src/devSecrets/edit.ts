@@ -8,6 +8,7 @@ import type { ErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { ConflictError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
+import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { requireEditor, runEditor } from "../platform/editor";
 import { writeFileAtomic } from "../project/atomic";
 import { formatError } from "../terminal/output";
@@ -74,6 +75,16 @@ export interface EditDevSecretsOptions {
    * is the `--json` contract, and this is a message for the person at the terminal.
    */
   report?: (text: string) => void;
+  /**
+   * The project's merged secret registry, when the command could resolve one. It is what turns a bare
+   * value typed where an envelope belongs into a refusal naming the secret (#323) — a registry is the
+   * only thing that knows which payload a name takes.
+   *
+   * **Optional, and it must stay optional.** A project whose `pithy.config.ts` will not load is exactly
+   * when an adopter reaches for this command, and refusing to open their editor because the registry is
+   * unreadable would make the tool for fixing things unavailable to the state that needs fixing.
+   */
+  registry?: SecretRegistry;
 }
 
 /** What an edit did. Counts and flags — never a secret's name, and never a value. */
@@ -93,6 +104,7 @@ export async function editDevSecrets(options: EditDevSecretsOptions): Promise<Ed
   // Before the draft. A refusal here — no terminal, an editor that returns immediately, none installed —
   // must not have left a plaintext copy of the project's secrets sitting in the config directory.
   const open = (options.editor ?? (() => defaultEditor(path)))();
+  const registry = options.registry;
 
   const original = await readDevSecretsSource(path);
   const base = original === null || original.trim().length === 0 ? initialDevSecretsContent() : original;
@@ -112,10 +124,10 @@ export async function editDevSecrets(options: EditDevSecretsOptions): Promise<Ed
     const edited = await readDraft(draft);
 
     // The editor deleted it, or never wrote it: there is nothing to keep and nothing to write.
-    if (edited === null || edited === base) return await abandon(draft, path, original);
+    if (edited === null || edited === base) return await abandon(draft, path, original, registry);
     if (status !== 0) throw abandonedByEditor(status, path, draft);
 
-    const checked = validate(edited, draft);
+    const checked = validate(edited, draft, registry);
     if (checked.file !== undefined) {
       await commit(path, edited, original);
       await unlink(draft).catch(() => {});
@@ -162,9 +174,10 @@ async function readDraft(draft: string): Promise<string | null> {
 function validate(
   source: string,
   path: string,
+  registry?: SecretRegistry,
 ): { file: DevSecretsFile; problem?: never } | { file?: never; problem: PithyError } {
   try {
-    return { file: loadDevSecrets(source, { path }) };
+    return { file: loadDevSecrets(source, { path, ...(registry !== undefined ? { registry } : {}) }) };
   } catch (error) {
     if (error instanceof PithyError) return { problem: error };
     throw error;
@@ -172,12 +185,17 @@ function validate(
 }
 
 /** An edit that changed nothing: delete the draft — it holds every value the real file does. */
-async function abandon(draft: string, path: string, original: string | null): Promise<EditDevSecretsResult> {
+async function abandon(
+  draft: string,
+  path: string,
+  original: string | null,
+  registry?: SecretRegistry,
+): Promise<EditDevSecretsResult> {
   await unlink(draft).catch(() => {});
   // The count is of what is *there*, which for an abandoned edit is whatever the file already held. A
   // file that does not parse counts as none rather than failing: the adopter just declined to fix it,
   // and answering with a second error about the same fault would be the command arguing with them.
-  const held = original === null ? {} : (validate(original, path).file ?? {});
+  const held = original === null ? {} : (validate(original, path, registry).file ?? {});
   return { changed: false, secrets: Object.keys(held).length, reopened: 0 };
 }
 

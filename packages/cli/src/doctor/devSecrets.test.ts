@@ -307,15 +307,20 @@ describe("checkDevSecrets — a stated value is judged, not counted", () => {
     expect(describeDevSecrets(result as NonNullable<typeof result>).join("\n")).not.toContain("s3cr3t-material");
   });
 
-  test("a file that will not parse names the secret it choked on, not just the file", async () => {
+  test("a value in the wrong shape names the secret it belongs to, not just the file", async () => {
     // "will not parse. Run pithy seed to see which secret and why" sent the reader to a second command
-    // to learn something this run already knew. The loader names the secret; doctor was throwing it away.
+    // to learn something this run already knew. The reader names the secret; doctor was throwing it away.
+    //
+    // **And it is one secret's fault, not the file's (#323).** Which payload a slot takes is the
+    // registry's answer, so this is judged per secret, beside the registry entry that decides it — the
+    // rest of the file still reports. `unreadable` is for a file that states nothing readable at all.
     await writeFile(path, JSON.stringify({ "auth-session-secret": "bare-value-no-envelope" }));
     await chmod(path, 0o600);
 
     const result = await check();
 
-    expect(result?.unreadable).toContain("auth-session-secret");
+    expect(result?.unreadable).toBeNull();
+    expect(result?.malformed.map((entry) => entry.name)).toContain("auth-session-secret");
     expect(describeDevSecrets(result as NonNullable<typeof result>).join("\n")).toContain("auth-session-secret");
     expect(JSON.stringify(result)).not.toContain("bare-value-no-envelope");
   });
