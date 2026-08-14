@@ -64,8 +64,10 @@ import type {
   PaymentsEntitlementResponse,
   PaymentsEntitlementsResponse,
   PaymentsPortalHandoffResponse,
+  PaymentsPricingEnvelope,
   PaymentsPricingResponse,
   PaymentsPurchaseResponse,
+  PaymentsQuotedFrom,
   PaymentsRestoreResponse,
 } from "./responses";
 import {
@@ -1111,10 +1113,31 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * The caller's own, always: the subscription is found from the provider-account map keyed on the
      * authenticated user, and there is no request field naming one. Answers `null` when this caller has no
      * subscription a rail can price, which is a fact rather than a failure.
+     *
+     * **`quotedFrom` rides here because a browser cannot price a customer it cannot name.** Paddle quotes
+     * in the browser — `PricePreview` runs from the visitor's own page — and with no customer id it
+     * quotes from the visitor's IP, which is where a browser connected from and not where a card is
+     * registered. The charge settles on the billing address, so `POST /payments/checkout` hands the rail
+     * the customer id from the provider-account map; this publishes **the same read of the same row** so
+     * the quote and the charge cannot resolve location differently. A caller with no store customer yet
+     * gets null, quotes from their IP, and is told the figure is an estimate.
+     *
+     * Beside `pricing` rather than inside it, because the two are independent: somebody who has never
+     * bought anything has no pricing and may still have no customer, and somebody mid-subscription has
+     * both. Nesting one in the other would make the common case unreachable.
      */
     app.get(`${base}/pricing`, requireAuth(), async (c) => {
       const userId = callerId(c);
       const db = paymentsDatabase(database(c));
+
+      // The one read, shared with `/checkout`. `accountFor` is what that route calls to decide who is
+      // charged, so a screen quoting from this answer is quoting from the row that will be billed.
+      const paddleCustomer = await accountFor(c, "paddle", userId);
+      const quotedFrom: PaymentsQuotedFrom | null =
+        paddleCustomer === null ? null : { rail: "paddle", providerAccountId: paddleCustomer };
+      /** The envelope, so every exit below carries both facts rather than three of them carrying one. */
+      const answer = (pricing: PaymentsPricingResponse | null) =>
+        c.json({ pricing, quotedFrom } satisfies PaymentsPricingEnvelope, 200);
 
       // The newest subscription row this caller holds on a rail that can price one. `role` matters: a money
       // row records a closed period and has no "next".
@@ -1132,27 +1155,22 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       // every LS subscriber while looking like it had worked. Every other rail writes `charge` for
       // everything and has no `state` row, so the fallback is what serves them.
       const row = rows.find((candidate) => candidate.role === "state") ?? rows[0];
-      if (row === undefined) return c.json({ pricing: null }, 200);
+      if (row === undefined) return answer(null);
 
       const purchase = PaymentsPurchase.parse(row);
       const provider = resolveRailProvider(purchase.rail, config, await credentials(c), trust);
-      if (!isPricingRail(provider)) return c.json({ pricing: null }, 200);
+      if (!isPricingRail(provider)) return answer(null);
 
       const pricing = await provider.readPricing(purchase, { now: clock(), deployment: deploymentName(c) });
-      if (pricing === undefined) return c.json({ pricing: null }, 200);
+      if (pricing === undefined) return answer(null);
 
-      return c.json(
-        {
-          pricing: {
-            currency: pricing.currency,
-            currentAmountMinor: pricing.currentAmountMinor,
-            listAmountMinor: pricing.listAmountMinor,
-            discountCode: pricing.discountCode,
-            discountEndsAt: pricing.discountEndsAt === null ? null : pricing.discountEndsAt.toISOString(),
-          } satisfies PaymentsPricingResponse,
-        },
-        200,
-      );
+      return answer({
+        currency: pricing.currency,
+        currentAmountMinor: pricing.currentAmountMinor,
+        listAmountMinor: pricing.listAmountMinor,
+        discountCode: pricing.discountCode,
+        discountEndsAt: pricing.discountEndsAt === null ? null : pricing.discountEndsAt.toISOString(),
+      });
     });
 
     /**

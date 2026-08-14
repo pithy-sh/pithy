@@ -1,8 +1,14 @@
 import type { PaymentsClientOptions } from "@pithy-sh/payments/src/client/api";
 import { useCheckout, usePaddleCheckout, usePricePreview } from "@pithy-sh/payments/src/client/hooks";
 import { type PaddleOptions, type PaddleSetup, priceSummary } from "@pithy-sh/payments/src/client/paddle";
+import {
+  type PriceVisitor,
+  priceQueryFor,
+  quoteIsEstimated,
+  resolvePriceLocation,
+} from "@pithy-sh/payments/src/pricing/location";
 import type { ReactNode } from "react";
-import { paddleSetup, paymentsClient } from "../../payments";
+import { paddleSetup, paymentsClient, usePriceVisitor } from "../../payments";
 import { paymentsConfig } from "../../pithy-config";
 import { Link, useSignedIn } from "../../router";
 import "../../pithy-screens.css";
@@ -68,6 +74,15 @@ export interface PricingScreenProps {
    * while developing signed in.
    */
   readonly signedIn: boolean | null;
+  /**
+   * What is known about where this visitor is charged from, or null when nothing is.
+   *
+   * Null is a real answer and the common one: a stranger reading a marketing page has no billing address
+   * anywhere, and Paddle resolving the country from their IP is the best available. What null must never
+   * be is a *silent* answer — `resolvePriceLocation` turns it into a location that says it is provisional,
+   * and the figure is labelled from that.
+   */
+  readonly visitor: PriceVisitor | null;
   /** Where the payments routes are, and the fetch to reach them with. Injected so a test never navigates. */
   readonly client?: PaymentsClientOptions;
   /** How Paddle.js is loaded. Injected so a test never reaches Paddle's CDN. */
@@ -81,7 +96,7 @@ export interface PricingScreenProps {
  * not a file that reads its config: an estimated quote has to look estimated, and an anonymous visitor
  * has to be offered a way in rather than a button that fails.
  */
-export function PricingScreen({ products, setup, signedIn, client, paddle }: PricingScreenProps): ReactNode {
+export function PricingScreen({ products, setup, signedIn, visitor, client, paddle }: PricingScreenProps): ReactNode {
   /**
    * One quote per product, asked for in one round trip.
    *
@@ -89,12 +104,22 @@ export function PricingScreen({ products, setup, signedIn, client, paddle }: Pri
    * the request changing and never the array's identity.
    */
   const items = products.map((product) => ({ priceId: product.priceId, quantity: 1 }));
+  /**
+   * Where this visitor is priced from, chosen explicitly rather than defaulted into.
+   *
+   * The whole of the choice lives in the package — a screen scaffolded into an adopter's repo a year ago
+   * must not be the thing that decides which of three answers is authoritative. What this file does is
+   * hand over what it knows and render what comes back.
+   */
+  const location = resolvePriceLocation(visitor);
   // Null when there is nothing to quote. A preview for zero items is a request Paddle refuses, and
   // refusing it here costs a round trip and an error message on a screen whose honest state is empty.
   //
-  // The visitor's location is Paddle's to resolve, from their own IP. A signed-in app that knows better
-  // passes `address` or `customerId` here; a marketing page does not know better.
-  const quoted = usePricePreview(items.length > 0 ? setup : null, { items }, paddle);
+  // The query re-issues when the location does. A signed-in customer's `ctm_…` arrives one round trip
+  // after the page paints, so the first figure is the IP estimate and the second is the charge — a price
+  // that changes once the address is known, which is what every checkout on the web does and what the
+  // "Estimated." label is there to have promised in advance.
+  const quoted = usePricePreview(items.length > 0 ? setup : null, priceQueryFor(items, location), paddle);
   const checkout = useCheckout(client);
   // The checkout opens over this page or inside it — it never navigates away, which is the whole reason
   // this rail has a pricing screen with a buy button on it rather than a link to somebody else's page.
@@ -149,12 +174,14 @@ export function PricingScreen({ products, setup, signedIn, client, paddle }: Pri
                 <p>
                   <strong>{summary.headline}</strong>
                   {cycle && <span className="muted"> {cycle}</span>}
-                  {/* The honesty half of the quote, and the half that used to be dropped. A quote with no
-                      postal code resolved can be short of the tax the card is charged — US tax lives below
-                      the country — so it says so. Show what you know, label it, recalculate at the address:
-                      an estimate that resolves at checkout is correct behaviour, and an estimate rendered
-                      as though it were final is not. */}
-                  {summary.estimated && <span className="muted"> Estimated.</span>}
+                  {/* The honesty half of the quote, and the half that used to be dropped. Two things make
+                      a figure an estimate and either is enough: the tax is not fully resolved — US tax
+                      lives below the country and Paddle answers a country-only request with 0% — or the
+                      location itself is a guess from an IP rather than the address the card is charged
+                      from. Show what you know, label it, recalculate at the address: an estimate that
+                      resolves at checkout is correct behaviour, and an estimate rendered as though it
+                      were final is not. */}
+                  {quoteIsEstimated(location, summary.estimated) && <span className="muted"> Estimated.</span>}
                   {summary.note && <span className="muted"> {summary.note}</span>}
                 </p>
               ) : (
@@ -194,5 +221,17 @@ export function PricingScreen({ products, setup, signedIn, client, paddle }: Pri
 
 export default function Pricing(): ReactNode {
   const signedIn = useSignedIn();
-  return <PricingScreen products={PADDLE_PRODUCTS} setup={paddleSetup} signedIn={signedIn} client={paymentsClient} />;
+  // Asked only once there is a session to ask about. A stranger's page makes no round trip for this —
+  // there is nothing on file to fetch, and a marketing page should not wait on a request whose answer is
+  // known in advance to be "nobody".
+  const visitor = usePriceVisitor(signedIn === true, paymentsClient);
+  return (
+    <PricingScreen
+      products={PADDLE_PRODUCTS}
+      setup={paddleSetup}
+      signedIn={signedIn}
+      visitor={visitor}
+      client={paymentsClient}
+    />
+  );
 }
