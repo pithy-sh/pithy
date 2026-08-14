@@ -65,7 +65,7 @@ The scaffolded `wrangler.jsonc` sets `ENVIRONMENT` per environment (`dev` / `sta
 
 ## The security rule
 
-A log is an **internal** surface. The logger carries the full `ErrorPayload` — `detail` included — because a log lives on the same side of the boundary as audit detail. This is the inverse of the HTTP codec, which strips `detail` as the single client boundary.
+A log is an **internal** surface. The logger carries the full `ErrorPayload` — `detail` included — because a log lives on the same side of the boundary as audit detail. This is the inverse of the HTTP codec, which strips `action` and `detail` as the single client boundary — a log is read by the operator both were written for.
 
 The logger must never be wired to a client-facing surface. A meta-test pins it: the HTTP and terminal error surfaces do not import the logger.
 

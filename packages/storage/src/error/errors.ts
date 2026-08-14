@@ -85,8 +85,10 @@ export class StorageMultipartFailedError extends PithyError {
       {
         code: "storage/multipart_failed",
         status: 500,
-        message: args.message ?? "The upload could not be assembled.",
-        action: args.action ?? "GET /storage/<id>/parts, then re-send the parts it reports missing.",
+        // The recovery route is the caller's own answer, so it is in `message`: an `action` is the
+        // operator's sentence and the HTTP codec strips it (#344). A client that cannot see how to
+        // finish an upload it half-made has been told nothing useful.
+        message: args.message ?? "The upload could not be assembled. GET /storage/<id>/parts to see what is missing.",
         detail: args.detail,
       },
       options,

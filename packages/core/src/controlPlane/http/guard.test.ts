@@ -144,14 +144,23 @@ describe("requireControlPlane", () => {
     expect(await response.json()).toMatchObject({ error: { code: "controlplane/not_connected" } });
   });
 
-  test("tells an operator how to connect, and tells the wire nothing else", async () => {
-    // The one denial that is safe to explain: nothing is registered, so there is nothing to enumerate.
-    // The throw-site context still stays internal — the codec strips `detail` here as everywhere.
+  test("tells the wire nothing but the refusal — the remedy is the operator's (#344)", async () => {
+    // This test used to assert the opposite, and its own name said why that was wrong: the sentence it
+    // wanted on the wire names a `pithy` command and a line in the adopter's `pithy.config.ts`. An
+    // unauthenticated caller of a route that denies everything is exactly who must not be handed it.
+    // The operator reads it where it is written for them — the terminal, `--json`, the log.
     const response = await makeApp({ verifier: null }).request("/control-plane/manifest");
-    const body = (await response.json()) as { error: Record<string, unknown> };
+    const body = await response.text();
 
-    expect(body.error.action).toContain("pithy dashboard connect");
-    expect(body.error).not.toHaveProperty("detail");
+    expect(body).not.toContain("pithy dashboard connect");
+    expect(body).not.toContain("pithy.config.ts");
+    expect(JSON.parse(body)).toEqual({
+      error: {
+        code: "controlplane/not_connected",
+        status: 403,
+        message: "This deployment does not accept management-client calls.",
+      },
+    });
   });
 
   test("a verified call sets c.var.controlPlane and leaves c.var.auth null", async () => {

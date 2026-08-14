@@ -146,8 +146,7 @@ export function collectParts(reported: readonly ReportedPart[], expectedCount: n
 
   if (byNumber.size !== expectedCount) {
     throw new StorageMultipartFailedError({
-      message: "The upload is missing parts.",
-      action: "GET /storage/<id>/parts, then re-send the parts it reports missing.",
+      message: "The upload is missing parts. GET /storage/<id>/parts, then re-send the parts it reports missing.",
       detail: `expected ${expectedCount} distinct parts, got ${byNumber.size}`,
     });
   }
@@ -155,8 +154,7 @@ export function collectParts(reported: readonly ReportedPart[], expectedCount: n
   for (let partNumber = 1; partNumber <= expectedCount; partNumber += 1) {
     if (!byNumber.has(partNumber)) {
       throw new StorageMultipartFailedError({
-        message: "The upload is missing parts.",
-        action: "GET /storage/<id>/parts, then re-send the parts it reports missing.",
+        message: "The upload is missing parts. GET /storage/<id>/parts, then re-send the parts it reports missing.",
         detail: `part ${partNumber} was never reported`,
       });
     }

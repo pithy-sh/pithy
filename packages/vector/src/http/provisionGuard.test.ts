@@ -41,7 +41,11 @@ describe("the vector drift guard on the boot path", () => {
     const body = (await response.json()) as { error: { code: string; message: string; action?: string } };
     expect(body.error.code).toBe("vector/metadata_index_drift");
     expect(body.error.message).toContain("docs.tenantId");
-    expect(body.error.action).toContain("pithy vector provision");
+    // The remedy is `Run \`pithy vector provision\`` — a command, for somebody with the project checked
+    // out. It stays on the operator's surfaces and does not cross the wire (#344), so a caller who
+    // tripped the guard learns the field that drifted and nothing about how the deployment is run.
+    expect(body.error.action).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain("pithy vector provision");
   });
 
   it("refuses to serve when nothing has been provisioned at all", async () => {

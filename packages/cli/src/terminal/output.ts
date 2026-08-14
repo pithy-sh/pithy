@@ -1,10 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { HttpError } from "@pithy-sh/core/src/error/http";
 import type { ErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
-import { renderTerminal } from "@pithy-sh/core/src/error/terminal";
+import { operatorError, renderTerminal } from "@pithy-sh/core/src/error/terminal";
 import { red, saffron } from "./style";
 
 /** Completion, brand voice: `Done.` with the saffron period (docs/CLI.md §3.2). */
@@ -36,12 +35,17 @@ export function formatError(payload: ErrorPayload): string {
 }
 
 /**
- * The `--json` error line: `{ error: <public payload> }`, the same shape and
- * encoder the HTTP surface emits (`HttpError.encode`). The encode side strips
- * `detail`, so internal context never reaches a `--json` consumer either.
+ * The `--json` error line: `{ error: <operator payload> }` — the public fields plus
+ * the `action` line, which is what {@link formatError} prints two lines above.
+ *
+ * Not the HTTP encoder, and that is the point. Both surfaces drop `detail`, but they
+ * drop it for different people: a browser is a caller, and whoever ran the command is
+ * the operator the remedy was written for. Reusing `HttpError.encode` here would have
+ * classified `action` by the encoder that happened to be shared rather than by who reads
+ * the line — and taken the fix out of a scripted `pithy` run for no gain anywhere.
  */
 export function formatErrorJson(payload: ErrorPayload): string {
-  return JSON.stringify({ error: HttpError.encode(payload) });
+  return JSON.stringify({ error: operatorError(payload) });
 }
 
 /**

@@ -11,18 +11,19 @@ import { ErrorPayload, PublicErrorPayload } from "./payload";
 import { ForbiddenError, PithyError, UpstreamError, UpstreamTimeoutError } from "./pithyError";
 
 describe("HttpError codec", () => {
-  test("encode strips `detail` — internal context never reaches the wire", () => {
-    const err = new ForbiddenError({ detail: "user 5 lacks role:admin" });
+  test("encode strips the operator's fields — neither remedy nor context reaches the wire", () => {
+    const err = new ForbiddenError({ action: "Grant role:admin.", detail: "user 5 lacks role:admin" });
     const wire = HttpError.encode(err.payload);
     expect(wire).toEqual({ code: "auth/forbidden", status: 403, message: "Forbidden." });
     expect("detail" in wire).toBe(false);
+    expect("action" in wire).toBe(false);
   });
 
   test("round-trips: encode → wire → decode equals the public projection", () => {
     const err = new ForbiddenError({ message: "No.", action: "Ask an admin.", detail: "secret" });
     const wire = HttpError.encode(err.payload);
     const back = HttpError.parse(wire);
-    expect(back).toEqual({ code: "auth/forbidden", status: 403, message: "No.", action: "Ask an admin." });
+    expect(back).toEqual({ code: "auth/forbidden", status: 403, message: "No." });
   });
 });
 
@@ -38,22 +39,22 @@ describe("the boundary holds for an adopter-defined error", () => {
       detail: "code 9f2c bound to org 3, issued 11m ago",
     });
 
-  test("encode strips `detail` from an adopter payload", () => {
+  test("encode strips the operator's fields from an adopter payload", () => {
     const wire = HttpError.encode(expired());
     expect(wire).toEqual({
       code: "connect/device_code_expired",
       status: 410,
       message: "That device code has expired.",
-      action: "Run pithy dashboard connect again.",
     });
     expect("detail" in wire).toBe(false);
+    expect("action" in wire).toBe(false);
   });
 
-  test("the schema strips it even if the encode function stops doing so", () => {
-    // Belt and braces, tested honestly: `HttpError.encode` removes `detail` by destructure, so
-    // feeding it a detail-carrying payload proves nothing about the second pass. This codec is the
-    // same pair of schemas with an encode that deliberately leaks, and `detail` still does not
-    // survive — so an edit to `encode`, or a stray `detail` on the public open member, cannot
+  test("the schema strips both even if the encode function stops doing so", () => {
+    // Belt and braces, tested honestly: `HttpError.encode` removes `action` and `detail` by
+    // destructure, so feeding it a payload carrying them proves nothing about the second pass. This
+    // codec is the same pair of schemas with an encode that deliberately leaks, and neither field
+    // survives — so an edit to `encode`, or a stray operator field on the public open member, cannot
     // quietly open the boundary.
     const Leaky = z.codec(PublicErrorPayload, ErrorPayload, {
       decode: (wire): ErrorPayload => wire,
@@ -61,7 +62,9 @@ describe("the boundary holds for an adopter-defined error", () => {
     });
     const wire = Leaky.encode(expired());
     expect("detail" in wire).toBe(false);
+    expect("action" in wire).toBe(false);
     expect(JSON.stringify(wire)).not.toContain("org 3");
+    expect(JSON.stringify(wire)).not.toContain("pithy dashboard connect");
   });
 
   test("decode revives an adopter error from a wire body", () => {

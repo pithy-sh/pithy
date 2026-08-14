@@ -288,12 +288,13 @@ Zod also unlocks rich validation that maps cleanly to Pithy's domain — checkin
 `@pithy-sh/core/src/error`. It is a real `Error` that **carries** a Zod-validated
 `ErrorPayload` — a discriminated union keyed on a namespaced `code`
 (`auth/invalid_token`, `core/not_found`, …) with an HTTP `status`, a public `message`, an
-optional `action`, and an optional internal `detail`. Each surface is just an encoder over
-that one payload:
+optional operator `action`, and an optional internal `detail`. Three fields, three audiences:
+`message` is the caller's, `action` is the operator's, `detail` is the throw site's. Each
+surface is just an encoder over that one payload:
 
 - **HTTP:** `app.onError(pithyErrorHandler)` → `{ error: HttpError.encode(payload) }` at the
-  declared status. The codec's encode side strips `detail`, so internal context never reaches
-  a client.
+  declared status. The codec's encode side strips `action` and `detail`, so neither an
+  operator's remedy nor internal context reaches a client.
 - **CLI:** `renderTerminal(payload)` → `message` on line 1 (problem), `action` on line 2 — the
   shape `CLI.md` §3.3 specifies (ANSI red first line, no stack trace; the CLI adds the color via
   `style.ts`). Anything that is **not** a `PithyError` is an unexpected crash, reported with a

@@ -28,11 +28,29 @@ export type ValidationIssue = z.infer<typeof ValidationIssue>;
 /** Fields safe to expose to clients. Present on every member, public and wire alike. */
 const publicFields = {
   message: z.string().describe("Public, safe-to-expose summary. Sent to clients and shown in the terminal."),
-  action: z.string().optional().describe("Remediation hint. Becomes the CLI action line."),
 };
 
-/** The internal-only field. On `ErrorPayload`, never on the public/wire shape. */
-const detailField = {
+/**
+ * The operator-only fields. On `ErrorPayload`, never on the public/wire shape.
+ *
+ * **`action` is a remedy for somebody with the project checked out.** Read the ones the kit ships and
+ * that is unmistakable: they name `pithy` commands, files in the adopter's repository, wrangler
+ * bindings, D1 databases, provider consoles. Sent to a browser, that is a description of the
+ * deployment — so it travels with `detail`, on the surfaces an operator reads: the terminal, the CLI's
+ * `--json` line, a log, an audit row. A remedy the *caller* needs is not a third audience; it is
+ * `message`, the field whose whole definition is "safe to expose".
+ *
+ * Grouped with `detail` rather than checked at each throw site on purpose. A throw site is where this
+ * codebase has repeatedly fixed one instance and left its siblings; there is nothing here for a throw
+ * site to get right, because the wire shape has no such key to fill.
+ */
+const internalFields = {
+  action: z
+    .string()
+    .optional()
+    .describe(
+      "Operator remediation hint. Becomes the CLI action line. NEVER serialized to clients — the HTTP codec strips it.",
+    ),
   detail: z
     .string()
     .optional()
@@ -1439,312 +1457,322 @@ export const KitPublicErrorPayload = z
   ])
   .describe("The public shape of every error the kit defines — the closed set, safe for the wire.");
 
-// The full members: each public member plus the internal `detail`. Built as explicit consts
+// The full members: each public member plus the operator-only `action` and `detail`. Built as explicit consts
 // (not mapped) so the `code`-literal discriminated-union types survive for `Extract` narrowing.
-const InvalidInput = InvalidInputPublic.extend(detailField).describe(InvalidInputPublic.description ?? "");
-const InvalidToken = InvalidTokenPublic.extend(detailField).describe(InvalidTokenPublic.description ?? "");
-const Forbidden = ForbiddenPublic.extend(detailField).describe(ForbiddenPublic.description ?? "");
-const NotFound = NotFoundPublic.extend(detailField).describe(NotFoundPublic.description ?? "");
-const Conflict = ConflictPublic.extend(detailField).describe(ConflictPublic.description ?? "");
-const RateLimit = RateLimitPublic.extend(detailField).describe(RateLimitPublic.description ?? "");
-const Internal = InternalPublic.extend(detailField).describe(InternalPublic.description ?? "");
-const UpstreamFailed = UpstreamFailedPublic.extend(detailField).describe(UpstreamFailedPublic.description ?? "");
-const UpstreamTimeout = UpstreamTimeoutPublic.extend(detailField).describe(UpstreamTimeoutPublic.description ?? "");
-const InvalidWorkflowParams = InvalidWorkflowParamsPublic.extend(detailField).describe(
+const InvalidInput = InvalidInputPublic.extend(internalFields).describe(InvalidInputPublic.description ?? "");
+const InvalidToken = InvalidTokenPublic.extend(internalFields).describe(InvalidTokenPublic.description ?? "");
+const Forbidden = ForbiddenPublic.extend(internalFields).describe(ForbiddenPublic.description ?? "");
+const NotFound = NotFoundPublic.extend(internalFields).describe(NotFoundPublic.description ?? "");
+const Conflict = ConflictPublic.extend(internalFields).describe(ConflictPublic.description ?? "");
+const RateLimit = RateLimitPublic.extend(internalFields).describe(RateLimitPublic.description ?? "");
+const Internal = InternalPublic.extend(internalFields).describe(InternalPublic.description ?? "");
+const UpstreamFailed = UpstreamFailedPublic.extend(internalFields).describe(UpstreamFailedPublic.description ?? "");
+const UpstreamTimeout = UpstreamTimeoutPublic.extend(internalFields).describe(UpstreamTimeoutPublic.description ?? "");
+const InvalidWorkflowParams = InvalidWorkflowParamsPublic.extend(internalFields).describe(
   InvalidWorkflowParamsPublic.description ?? "",
 );
-const MissingWorkflowBinding = MissingWorkflowBindingPublic.extend(detailField).describe(
+const MissingWorkflowBinding = MissingWorkflowBindingPublic.extend(internalFields).describe(
   MissingWorkflowBindingPublic.description ?? "",
 );
-const UnknownWorkflow = UnknownWorkflowPublic.extend(detailField).describe(UnknownWorkflowPublic.description ?? "");
-const WebhookUnverified = WebhookUnverifiedPublic.extend(detailField).describe(
+const UnknownWorkflow = UnknownWorkflowPublic.extend(internalFields).describe(UnknownWorkflowPublic.description ?? "");
+const WebhookUnverified = WebhookUnverifiedPublic.extend(internalFields).describe(
   WebhookUnverifiedPublic.description ?? "",
 );
-const CloudflareNotConfigured = CloudflareNotConfiguredPublic.extend(detailField).describe(
+const CloudflareNotConfigured = CloudflareNotConfiguredPublic.extend(internalFields).describe(
   CloudflareNotConfiguredPublic.description ?? "",
 );
-const CloudflareRequestFailed = CloudflareRequestFailedPublic.extend(detailField).describe(
+const CloudflareRequestFailed = CloudflareRequestFailedPublic.extend(internalFields).describe(
   CloudflareRequestFailedPublic.description ?? "",
 );
-const CloudflareInvalidResponse = CloudflareInvalidResponsePublic.extend(detailField).describe(
+const CloudflareInvalidResponse = CloudflareInvalidResponsePublic.extend(internalFields).describe(
   CloudflareInvalidResponsePublic.description ?? "",
 );
-const SecretNotFound = SecretNotFoundPublic.extend(detailField).describe(SecretNotFoundPublic.description ?? "");
-const SecretAlreadyExists = SecretAlreadyExistsPublic.extend(detailField).describe(
+const SecretNotFound = SecretNotFoundPublic.extend(internalFields).describe(SecretNotFoundPublic.description ?? "");
+const SecretAlreadyExists = SecretAlreadyExistsPublic.extend(internalFields).describe(
   SecretAlreadyExistsPublic.description ?? "",
 );
-const SecretInvalidValue = SecretInvalidValuePublic.extend(detailField).describe(
+const SecretInvalidValue = SecretInvalidValuePublic.extend(internalFields).describe(
   SecretInvalidValuePublic.description ?? "",
 );
-const SecretCryptoFailed = SecretCryptoFailedPublic.extend(detailField).describe(
+const SecretCryptoFailed = SecretCryptoFailedPublic.extend(internalFields).describe(
   SecretCryptoFailedPublic.description ?? "",
 );
-const EmailTemplateNotFound = EmailTemplateNotFoundPublic.extend(detailField).describe(
+const EmailTemplateNotFound = EmailTemplateNotFoundPublic.extend(internalFields).describe(
   EmailTemplateNotFoundPublic.description ?? "",
 );
-const EmailInvalidPayload = EmailInvalidPayloadPublic.extend(detailField).describe(
+const EmailInvalidPayload = EmailInvalidPayloadPublic.extend(internalFields).describe(
   EmailInvalidPayloadPublic.description ?? "",
 );
-const EmailInvalidToken = EmailInvalidTokenPublic.extend(detailField).describe(
+const EmailInvalidToken = EmailInvalidTokenPublic.extend(internalFields).describe(
   EmailInvalidTokenPublic.description ?? "",
 );
-const EmailSuppressed = EmailSuppressedPublic.extend(detailField).describe(EmailSuppressedPublic.description ?? "");
-const EmailRateLimited = EmailRateLimitedPublic.extend(detailField).describe(EmailRateLimitedPublic.description ?? "");
-const EmailSendFailed = EmailSendFailedPublic.extend(detailField).describe(EmailSendFailedPublic.description ?? "");
-const TurnstileMissingToken = TurnstileMissingTokenPublic.extend(detailField).describe(
+const EmailSuppressed = EmailSuppressedPublic.extend(internalFields).describe(EmailSuppressedPublic.description ?? "");
+const EmailRateLimited = EmailRateLimitedPublic.extend(internalFields).describe(
+  EmailRateLimitedPublic.description ?? "",
+);
+const EmailSendFailed = EmailSendFailedPublic.extend(internalFields).describe(EmailSendFailedPublic.description ?? "");
+const TurnstileMissingToken = TurnstileMissingTokenPublic.extend(internalFields).describe(
   TurnstileMissingTokenPublic.description ?? "",
 );
-const TurnstileFailed = TurnstileFailedPublic.extend(detailField).describe(TurnstileFailedPublic.description ?? "");
-const TurnstileConfig = TurnstileConfigPublic.extend(detailField).describe(TurnstileConfigPublic.description ?? "");
-const AuditInvalidEvent = AuditInvalidEventPublic.extend(detailField).describe(
+const TurnstileFailed = TurnstileFailedPublic.extend(internalFields).describe(TurnstileFailedPublic.description ?? "");
+const TurnstileConfig = TurnstileConfigPublic.extend(internalFields).describe(TurnstileConfigPublic.description ?? "");
+const AuditInvalidEvent = AuditInvalidEventPublic.extend(internalFields).describe(
   AuditInvalidEventPublic.description ?? "",
 );
-const AuditWriteFailed = AuditWriteFailedPublic.extend(detailField).describe(AuditWriteFailedPublic.description ?? "");
-const MediaNotFound = MediaNotFoundPublic.extend(detailField).describe(MediaNotFoundPublic.description ?? "");
-const MediaUnsupported = MediaUnsupportedPublic.extend(detailField).describe(MediaUnsupportedPublic.description ?? "");
-const MediaStorageFailed = MediaStorageFailedPublic.extend(detailField).describe(
+const AuditWriteFailed = AuditWriteFailedPublic.extend(internalFields).describe(
+  AuditWriteFailedPublic.description ?? "",
+);
+const MediaNotFound = MediaNotFoundPublic.extend(internalFields).describe(MediaNotFoundPublic.description ?? "");
+const MediaUnsupported = MediaUnsupportedPublic.extend(internalFields).describe(
+  MediaUnsupportedPublic.description ?? "",
+);
+const MediaStorageFailed = MediaStorageFailedPublic.extend(internalFields).describe(
   MediaStorageFailedPublic.description ?? "",
 );
-const MediaEnrichmentFailed = MediaEnrichmentFailedPublic.extend(detailField).describe(
+const MediaEnrichmentFailed = MediaEnrichmentFailedPublic.extend(internalFields).describe(
   MediaEnrichmentFailedPublic.description ?? "",
 );
-const LeaderboardBoardNotFound = LeaderboardBoardNotFoundPublic.extend(detailField).describe(
+const LeaderboardBoardNotFound = LeaderboardBoardNotFoundPublic.extend(internalFields).describe(
   LeaderboardBoardNotFoundPublic.description ?? "",
 );
-const LeaderboardEntryNotFound = LeaderboardEntryNotFoundPublic.extend(detailField).describe(
+const LeaderboardEntryNotFound = LeaderboardEntryNotFoundPublic.extend(internalFields).describe(
   LeaderboardEntryNotFoundPublic.description ?? "",
 );
-const LeaderboardScoreRejected = LeaderboardScoreRejectedPublic.extend(detailField).describe(
+const LeaderboardScoreRejected = LeaderboardScoreRejectedPublic.extend(internalFields).describe(
   LeaderboardScoreRejectedPublic.description ?? "",
 );
-const LeaderboardSubmitForbidden = LeaderboardSubmitForbiddenPublic.extend(detailField).describe(
+const LeaderboardSubmitForbidden = LeaderboardSubmitForbiddenPublic.extend(internalFields).describe(
   LeaderboardSubmitForbiddenPublic.description ?? "",
 );
-const LeaderboardBoardImmutable = LeaderboardBoardImmutablePublic.extend(detailField).describe(
+const LeaderboardBoardImmutable = LeaderboardBoardImmutablePublic.extend(internalFields).describe(
   LeaderboardBoardImmutablePublic.description ?? "",
 );
-const LeaderboardInvalidSchedule = LeaderboardInvalidSchedulePublic.extend(detailField).describe(
+const LeaderboardInvalidSchedule = LeaderboardInvalidSchedulePublic.extend(internalFields).describe(
   LeaderboardInvalidSchedulePublic.description ?? "",
 );
-const MultiplayerGameNotFound = MultiplayerGameNotFoundPublic.extend(detailField).describe(
+const MultiplayerGameNotFound = MultiplayerGameNotFoundPublic.extend(internalFields).describe(
   MultiplayerGameNotFoundPublic.description ?? "",
 );
-const MultiplayerSessionNotFound = MultiplayerSessionNotFoundPublic.extend(detailField).describe(
+const MultiplayerSessionNotFound = MultiplayerSessionNotFoundPublic.extend(internalFields).describe(
   MultiplayerSessionNotFoundPublic.description ?? "",
 );
-const MultiplayerNotAMember = MultiplayerNotAMemberPublic.extend(detailField).describe(
+const MultiplayerNotAMember = MultiplayerNotAMemberPublic.extend(internalFields).describe(
   MultiplayerNotAMemberPublic.description ?? "",
 );
-const MultiplayerSessionFull = MultiplayerSessionFullPublic.extend(detailField).describe(
+const MultiplayerSessionFull = MultiplayerSessionFullPublic.extend(internalFields).describe(
   MultiplayerSessionFullPublic.description ?? "",
 );
-const MultiplayerInvalidTransition = MultiplayerInvalidTransitionPublic.extend(detailField).describe(
+const MultiplayerInvalidTransition = MultiplayerInvalidTransitionPublic.extend(internalFields).describe(
   MultiplayerInvalidTransitionPublic.description ?? "",
 );
-const MultiplayerInvalidMove = MultiplayerInvalidMovePublic.extend(detailField).describe(
+const MultiplayerInvalidMove = MultiplayerInvalidMovePublic.extend(internalFields).describe(
   MultiplayerInvalidMovePublic.description ?? "",
 );
-const LedgerCurrencyNotFound = LedgerCurrencyNotFoundPublic.extend(detailField).describe(
+const LedgerCurrencyNotFound = LedgerCurrencyNotFoundPublic.extend(internalFields).describe(
   LedgerCurrencyNotFoundPublic.description ?? "",
 );
-const LedgerAccountNotFound = LedgerAccountNotFoundPublic.extend(detailField).describe(
+const LedgerAccountNotFound = LedgerAccountNotFoundPublic.extend(internalFields).describe(
   LedgerAccountNotFoundPublic.description ?? "",
 );
-const LedgerHoldNotFound = LedgerHoldNotFoundPublic.extend(detailField).describe(
+const LedgerHoldNotFound = LedgerHoldNotFoundPublic.extend(internalFields).describe(
   LedgerHoldNotFoundPublic.description ?? "",
 );
-const LedgerInsufficientFunds = LedgerInsufficientFundsPublic.extend(detailField).describe(
+const LedgerInsufficientFunds = LedgerInsufficientFundsPublic.extend(internalFields).describe(
   LedgerInsufficientFundsPublic.description ?? "",
 );
-const LedgerHoldNotOpen = LedgerHoldNotOpenPublic.extend(detailField).describe(
+const LedgerHoldNotOpen = LedgerHoldNotOpenPublic.extend(internalFields).describe(
   LedgerHoldNotOpenPublic.description ?? "",
 );
-const LedgerInvalidAmount = LedgerInvalidAmountPublic.extend(detailField).describe(
+const LedgerInvalidAmount = LedgerInvalidAmountPublic.extend(internalFields).describe(
   LedgerInvalidAmountPublic.description ?? "",
 );
-const RatingUnknownAlgorithm = RatingUnknownAlgorithmPublic.extend(detailField).describe(
+const RatingUnknownAlgorithm = RatingUnknownAlgorithmPublic.extend(internalFields).describe(
   RatingUnknownAlgorithmPublic.description ?? "",
 );
-const RatingUnsupportedPlayerCount = RatingUnsupportedPlayerCountPublic.extend(detailField).describe(
+const RatingUnsupportedPlayerCount = RatingUnsupportedPlayerCountPublic.extend(internalFields).describe(
   RatingUnsupportedPlayerCountPublic.description ?? "",
 );
-const RatingInvalidParams = RatingInvalidParamsPublic.extend(detailField).describe(
+const RatingInvalidParams = RatingInvalidParamsPublic.extend(internalFields).describe(
   RatingInvalidParamsPublic.description ?? "",
 );
-const RatingGameNotFound = RatingGameNotFoundPublic.extend(detailField).describe(
+const RatingGameNotFound = RatingGameNotFoundPublic.extend(internalFields).describe(
   RatingGameNotFoundPublic.description ?? "",
 );
-const RatingPoolNotFound = RatingPoolNotFoundPublic.extend(detailField).describe(
+const RatingPoolNotFound = RatingPoolNotFoundPublic.extend(internalFields).describe(
   RatingPoolNotFoundPublic.description ?? "",
 );
-const RatingRecordForbidden = RatingRecordForbiddenPublic.extend(detailField).describe(
+const RatingRecordForbidden = RatingRecordForbiddenPublic.extend(internalFields).describe(
   RatingRecordForbiddenPublic.description ?? "",
 );
-const MatchmakingRoomNotFound = MatchmakingRoomNotFoundPublic.extend(detailField).describe(
+const MatchmakingRoomNotFound = MatchmakingRoomNotFoundPublic.extend(internalFields).describe(
   MatchmakingRoomNotFoundPublic.description ?? "",
 );
-const MatchmakingRoomFull = MatchmakingRoomFullPublic.extend(detailField).describe(
+const MatchmakingRoomFull = MatchmakingRoomFullPublic.extend(internalFields).describe(
   MatchmakingRoomFullPublic.description ?? "",
 );
-const MatchmakingInvalidCode = MatchmakingInvalidCodePublic.extend(detailField).describe(
+const MatchmakingInvalidCode = MatchmakingInvalidCodePublic.extend(internalFields).describe(
   MatchmakingInvalidCodePublic.description ?? "",
 );
-const MatchmakingInviteNotFound = MatchmakingInviteNotFoundPublic.extend(detailField).describe(
+const MatchmakingInviteNotFound = MatchmakingInviteNotFoundPublic.extend(internalFields).describe(
   MatchmakingInviteNotFoundPublic.description ?? "",
 );
-const MatchmakingInviteForbidden = MatchmakingInviteForbiddenPublic.extend(detailField).describe(
+const MatchmakingInviteForbidden = MatchmakingInviteForbiddenPublic.extend(internalFields).describe(
   MatchmakingInviteForbiddenPublic.description ?? "",
 );
-const MatchmakingUserNotFound = MatchmakingUserNotFoundPublic.extend(detailField).describe(
+const MatchmakingUserNotFound = MatchmakingUserNotFoundPublic.extend(internalFields).describe(
   MatchmakingUserNotFoundPublic.description ?? "",
 );
-const MatchmakingAlreadyFriends = MatchmakingAlreadyFriendsPublic.extend(detailField).describe(
+const MatchmakingAlreadyFriends = MatchmakingAlreadyFriendsPublic.extend(internalFields).describe(
   MatchmakingAlreadyFriendsPublic.description ?? "",
 );
-const MatchmakingFriendRequestNotFound = MatchmakingFriendRequestNotFoundPublic.extend(detailField).describe(
+const MatchmakingFriendRequestNotFound = MatchmakingFriendRequestNotFoundPublic.extend(internalFields).describe(
   MatchmakingFriendRequestNotFoundPublic.description ?? "",
 );
-const MatchmakingNotQueued = MatchmakingNotQueuedPublic.extend(detailField).describe(
+const MatchmakingNotQueued = MatchmakingNotQueuedPublic.extend(internalFields).describe(
   MatchmakingNotQueuedPublic.description ?? "",
 );
-const StorageNotFound = StorageNotFoundPublic.extend(detailField).describe(StorageNotFoundPublic.description ?? "");
-const StorageForbidden = StorageForbiddenPublic.extend(detailField).describe(StorageForbiddenPublic.description ?? "");
-const StorageQuotaExceeded = StorageQuotaExceededPublic.extend(detailField).describe(
+const StorageNotFound = StorageNotFoundPublic.extend(internalFields).describe(StorageNotFoundPublic.description ?? "");
+const StorageForbidden = StorageForbiddenPublic.extend(internalFields).describe(
+  StorageForbiddenPublic.description ?? "",
+);
+const StorageQuotaExceeded = StorageQuotaExceededPublic.extend(internalFields).describe(
   StorageQuotaExceededPublic.description ?? "",
 );
-const StorageUploadIncomplete = StorageUploadIncompletePublic.extend(detailField).describe(
+const StorageUploadIncomplete = StorageUploadIncompletePublic.extend(internalFields).describe(
   StorageUploadIncompletePublic.description ?? "",
 );
-const StorageMultipartFailed = StorageMultipartFailedPublic.extend(detailField).describe(
+const StorageMultipartFailed = StorageMultipartFailedPublic.extend(internalFields).describe(
   StorageMultipartFailedPublic.description ?? "",
 );
-const StorageShareExpired = StorageShareExpiredPublic.extend(detailField).describe(
+const StorageShareExpired = StorageShareExpiredPublic.extend(internalFields).describe(
   StorageShareExpiredPublic.description ?? "",
 );
-const StorageShareRevoked = StorageShareRevokedPublic.extend(detailField).describe(
+const StorageShareRevoked = StorageShareRevokedPublic.extend(internalFields).describe(
   StorageShareRevokedPublic.description ?? "",
 );
-const VectorMetadataIndexDrift = VectorMetadataIndexDriftPublic.extend(detailField).describe(
+const VectorMetadataIndexDrift = VectorMetadataIndexDriftPublic.extend(internalFields).describe(
   VectorMetadataIndexDriftPublic.description ?? "",
 );
-const VectorDimensionMismatch = VectorDimensionMismatchPublic.extend(detailField).describe(
+const VectorDimensionMismatch = VectorDimensionMismatchPublic.extend(internalFields).describe(
   VectorDimensionMismatchPublic.description ?? "",
 );
-const VectorTopKExceeded = VectorTopKExceededPublic.extend(detailField).describe(
+const VectorTopKExceeded = VectorTopKExceededPublic.extend(internalFields).describe(
   VectorTopKExceededPublic.description ?? "",
 );
-const VectorFilterTooLarge = VectorFilterTooLargePublic.extend(detailField).describe(
+const VectorFilterTooLarge = VectorFilterTooLargePublic.extend(internalFields).describe(
   VectorFilterTooLargePublic.description ?? "",
 );
-const VectorMetadataTooLarge = VectorMetadataTooLargePublic.extend(detailField).describe(
+const VectorMetadataTooLarge = VectorMetadataTooLargePublic.extend(internalFields).describe(
   VectorMetadataTooLargePublic.description ?? "",
 );
-const VectorIndexNotFound = VectorIndexNotFoundPublic.extend(detailField).describe(
+const VectorIndexNotFound = VectorIndexNotFoundPublic.extend(internalFields).describe(
   VectorIndexNotFoundPublic.description ?? "",
 );
-const VectorUnfilterableField = VectorUnfilterableFieldPublic.extend(detailField).describe(
+const VectorUnfilterableField = VectorUnfilterableFieldPublic.extend(internalFields).describe(
   VectorUnfilterableFieldPublic.description ?? "",
 );
-const PaymentsInvalidReceipt = PaymentsInvalidReceiptPublic.extend(detailField).describe(
+const PaymentsInvalidReceipt = PaymentsInvalidReceiptPublic.extend(internalFields).describe(
   PaymentsInvalidReceiptPublic.description ?? "",
 );
-const PaymentsVerificationFailed = PaymentsVerificationFailedPublic.extend(detailField).describe(
+const PaymentsVerificationFailed = PaymentsVerificationFailedPublic.extend(internalFields).describe(
   PaymentsVerificationFailedPublic.description ?? "",
 );
-const PaymentsWebhookUnverified = PaymentsWebhookUnverifiedPublic.extend(detailField).describe(
+const PaymentsWebhookUnverified = PaymentsWebhookUnverifiedPublic.extend(internalFields).describe(
   PaymentsWebhookUnverifiedPublic.description ?? "",
 );
-const PaymentsRailNotConfigured = PaymentsRailNotConfiguredPublic.extend(detailField).describe(
+const PaymentsRailNotConfigured = PaymentsRailNotConfiguredPublic.extend(internalFields).describe(
   PaymentsRailNotConfiguredPublic.description ?? "",
 );
-const PaymentsProductNotFound = PaymentsProductNotFoundPublic.extend(detailField).describe(
+const PaymentsProductNotFound = PaymentsProductNotFoundPublic.extend(internalFields).describe(
   PaymentsProductNotFoundPublic.description ?? "",
 );
-const PaymentsEnvironmentMismatch = PaymentsEnvironmentMismatchPublic.extend(detailField).describe(
+const PaymentsEnvironmentMismatch = PaymentsEnvironmentMismatchPublic.extend(internalFields).describe(
   PaymentsEnvironmentMismatchPublic.description ?? "",
 );
-const PaymentsReceiptAlreadyOwned = PaymentsReceiptAlreadyOwnedPublic.extend(detailField).describe(
+const PaymentsReceiptAlreadyOwned = PaymentsReceiptAlreadyOwnedPublic.extend(internalFields).describe(
   PaymentsReceiptAlreadyOwnedPublic.description ?? "",
 );
-const PaymentsProviderUnavailable = PaymentsProviderUnavailablePublic.extend(detailField).describe(
+const PaymentsProviderUnavailable = PaymentsProviderUnavailablePublic.extend(internalFields).describe(
   PaymentsProviderUnavailablePublic.description ?? "",
 );
-const PaymentsEntitlementRequired = PaymentsEntitlementRequiredPublic.extend(detailField).describe(
+const PaymentsEntitlementRequired = PaymentsEntitlementRequiredPublic.extend(internalFields).describe(
   PaymentsEntitlementRequiredPublic.description ?? "",
 );
-const PaymentsClawbackFailed = PaymentsClawbackFailedPublic.extend(detailField).describe(
+const PaymentsClawbackFailed = PaymentsClawbackFailedPublic.extend(internalFields).describe(
   PaymentsClawbackFailedPublic.description ?? "",
 );
-const PaymentsDiscountInvalid = PaymentsDiscountInvalidPublic.extend(detailField).describe(
+const PaymentsDiscountInvalid = PaymentsDiscountInvalidPublic.extend(internalFields).describe(
   PaymentsDiscountInvalidPublic.description ?? "",
 );
 
-const PaymentsEntitlementNotInCatalog = PaymentsEntitlementNotInCatalogPublic.extend(detailField).describe(
+const PaymentsEntitlementNotInCatalog = PaymentsEntitlementNotInCatalogPublic.extend(internalFields).describe(
   PaymentsEntitlementNotInCatalogPublic.description ?? "",
 );
-const ControlPlaneNotConnected = ControlPlaneNotConnectedPublic.extend(detailField).describe(
+const ControlPlaneNotConnected = ControlPlaneNotConnectedPublic.extend(internalFields).describe(
   ControlPlaneNotConnectedPublic.description ?? "",
 );
-const ControlPlaneInvalidCredential = ControlPlaneInvalidCredentialPublic.extend(detailField).describe(
+const ControlPlaneInvalidCredential = ControlPlaneInvalidCredentialPublic.extend(internalFields).describe(
   ControlPlaneInvalidCredentialPublic.description ?? "",
 );
-const ControlPlaneInsufficientScope = ControlPlaneInsufficientScopePublic.extend(detailField).describe(
+const ControlPlaneInsufficientScope = ControlPlaneInsufficientScopePublic.extend(internalFields).describe(
   ControlPlaneInsufficientScopePublic.description ?? "",
 );
-const ControlPlaneKeyNotFound = ControlPlaneKeyNotFoundPublic.extend(detailField).describe(
+const ControlPlaneKeyNotFound = ControlPlaneKeyNotFoundPublic.extend(internalFields).describe(
   ControlPlaneKeyNotFoundPublic.description ?? "",
 );
-const ControlPlaneKeyConflict = ControlPlaneKeyConflictPublic.extend(detailField).describe(
+const ControlPlaneKeyConflict = ControlPlaneKeyConflictPublic.extend(internalFields).describe(
   ControlPlaneKeyConflictPublic.description ?? "",
 );
-const TestersCohortNotFound = TestersCohortNotFoundPublic.extend(detailField).describe(
+const TestersCohortNotFound = TestersCohortNotFoundPublic.extend(internalFields).describe(
   TestersCohortNotFoundPublic.description ?? "",
 );
-const TestersMemberNotFound = TestersMemberNotFoundPublic.extend(detailField).describe(
+const TestersMemberNotFound = TestersMemberNotFoundPublic.extend(internalFields).describe(
   TestersMemberNotFoundPublic.description ?? "",
 );
-const TestersInvalidToken = TestersInvalidTokenPublic.extend(detailField).describe(
+const TestersInvalidToken = TestersInvalidTokenPublic.extend(internalFields).describe(
   TestersInvalidTokenPublic.description ?? "",
 );
-const TestersRosterFull = TestersRosterFullPublic.extend(detailField).describe(
+const TestersRosterFull = TestersRosterFullPublic.extend(internalFields).describe(
   TestersRosterFullPublic.description ?? "",
 );
-const TestersWithdrawn = TestersWithdrawnPublic.extend(detailField).describe(TestersWithdrawnPublic.description ?? "");
+const TestersWithdrawn = TestersWithdrawnPublic.extend(internalFields).describe(
+  TestersWithdrawnPublic.description ?? "",
+);
 
-const TestersCohortClosed = TestersCohortClosedPublic.extend(detailField).describe(
+const TestersCohortClosed = TestersCohortClosedPublic.extend(internalFields).describe(
   TestersCohortClosedPublic.description ?? "",
 );
 
-const TestersAlreadyOnRoster = TestersAlreadyOnRosterPublic.extend(detailField).describe(
+const TestersAlreadyOnRoster = TestersAlreadyOnRosterPublic.extend(internalFields).describe(
   TestersAlreadyOnRosterPublic.description ?? "",
 );
-const TestersNudgeCooldown = TestersNudgeCooldownPublic.extend(detailField).describe(
+const TestersNudgeCooldown = TestersNudgeCooldownPublic.extend(internalFields).describe(
   TestersNudgeCooldownPublic.description ?? "",
 );
-const TestersCopyNotAllowed = TestersCopyNotAllowedPublic.extend(detailField).describe(
+const TestersCopyNotAllowed = TestersCopyNotAllowedPublic.extend(internalFields).describe(
   TestersCopyNotAllowedPublic.description ?? "",
 );
-const TestersNotConfigured = TestersNotConfiguredPublic.extend(detailField).describe(
+const TestersNotConfigured = TestersNotConfiguredPublic.extend(internalFields).describe(
   TestersNotConfiguredPublic.description ?? "",
 );
 
-const SupportNotFound = SupportNotFoundPublic.extend(detailField).describe(SupportNotFoundPublic.description ?? "");
-const SupportInvalidCategory = SupportInvalidCategoryPublic.extend(detailField).describe(
+const SupportNotFound = SupportNotFoundPublic.extend(internalFields).describe(SupportNotFoundPublic.description ?? "");
+const SupportInvalidCategory = SupportInvalidCategoryPublic.extend(internalFields).describe(
   SupportInvalidCategoryPublic.description ?? "",
 );
-const SupportUnparseableMessage = SupportUnparseableMessagePublic.extend(detailField).describe(
+const SupportUnparseableMessage = SupportUnparseableMessagePublic.extend(internalFields).describe(
   SupportUnparseableMessagePublic.description ?? "",
 );
-const SupportRejected = SupportRejectedPublic.extend(detailField).describe(SupportRejectedPublic.description ?? "");
-const SupportClassificationFailed = SupportClassificationFailedPublic.extend(detailField).describe(
+const SupportRejected = SupportRejectedPublic.extend(internalFields).describe(SupportRejectedPublic.description ?? "");
+const SupportClassificationFailed = SupportClassificationFailedPublic.extend(internalFields).describe(
   SupportClassificationFailedPublic.description ?? "",
 );
-const SupportReplyFailed = SupportReplyFailedPublic.extend(detailField).describe(
+const SupportReplyFailed = SupportReplyFailedPublic.extend(internalFields).describe(
   SupportReplyFailedPublic.description ?? "",
 );
 
 /**
- * Every error **the kit itself defines**, in full: the public fields plus the internal `detail`.
+ * Every error **the kit itself defines**, in full: the public fields plus the operator-only `action` and `detail`.
  * The closed taxonomy, and the only union anything may switch over exhaustively. `ErrorPayload`
  * below is this plus the adopter seam, and that is what a `PithyError` carries.
  */
@@ -1866,7 +1894,7 @@ export const KitErrorPayload = z
     TestersCopyNotAllowed,
     TestersNotConfigured,
   ])
-  .describe("Every error the kit defines, with internal detail. The closed taxonomy.");
+  .describe("Every error the kit defines, with the operator's action and detail. The closed taxonomy.");
 export type KitErrorPayload = z.infer<typeof KitErrorPayload>;
 
 /**
@@ -1887,10 +1915,10 @@ export type KitErrorCode = KitErrorPayload["code"];
 // So `ErrorPayload` is the kit union **plus** one open member, and three properties keep the seam
 // from costing what the closed set bought:
 //
-//  1. **`detail` still never reaches a client.** An adopter member carries `detail` exactly like a
-//     kit member, and the public projection has no such field — so `PublicErrorPayload` strips it on
-//     parse and the HTTP codec drops it on encode, per code and without exception. That is the whole
-//     security boundary, and it is not per-member policy.
+//  1. **The operator's fields still never reach a client.** An adopter member carries `action` and
+//     `detail` exactly like a kit member, and the public projection has neither — so
+//     `PublicErrorPayload` strips them on parse and the HTTP codec drops them on encode, per code and
+//     without exception. That is the whole security boundary, and it is not per-member policy.
 //  2. **The kit's domains are reserved, exactly like the `pithy_` table prefix.** The open member
 //     refuses any code under a domain the closed union uses — not merely the codes it spells today.
 //     Refusing only the exact set would leave `auth/forbidden` with the wrong status failing, but
@@ -1962,31 +1990,33 @@ const ExtendedPublic = z
       ),
     ...publicFields,
   })
-  .describe("An error an adopter defined under their own domain, in the wire shape (no detail).");
+  .describe("An error an adopter defined under their own domain, in the wire shape (no action, no detail).");
 
 /**
- * Every error that can reach a client, from the kit or from the adopter. `detail` is absent from
- * both branches, so parsing a payload here strips it whatever defined the code.
+ * Every error that can reach a client, from the kit or from the adopter. `action` and `detail` are
+ * absent from both branches, so parsing a payload here strips them whatever defined the code.
  */
 export const PublicErrorPayload = z
   .union([KitPublicErrorPayload, ExtendedPublic])
   .describe("The public shape of every error Pithy emits — kit and adopter alike, safe for the wire.");
 export type PublicErrorPayload = z.infer<typeof PublicErrorPayload>;
 
-/** An adopter's own error, in full: their public fields plus the same internal `detail`. */
-export const ExtendedErrorPayload = ExtendedPublic.extend(detailField).describe(
-  "An error an adopter defined under their own domain, with internal detail.",
+/** An adopter's own error, in full: their public fields plus the same operator-only `action` and `detail`. */
+export const ExtendedErrorPayload = ExtendedPublic.extend(internalFields).describe(
+  "An error an adopter defined under their own domain, with the operator's action and detail.",
 );
 export type ExtendedErrorPayload = z.infer<typeof ExtendedErrorPayload>;
 
 /**
- * Every error Pithy can carry, in full: the public fields plus the internal `detail`. This is
+ * Every error Pithy can carry, in full: the public fields plus the operator-only `action` and `detail`. This is
  * what a `PithyError` carries in memory; the HTTP codec encodes it down to `PublicErrorPayload`.
  * The kit branch is tried first, so a kit code is always validated against its pinned status.
  */
 export const ErrorPayload = z
   .union([KitErrorPayload, ExtendedErrorPayload])
-  .describe("Every error Pithy can emit, with internal detail. The in-memory shape a PithyError carries.");
+  .describe(
+    "Every error Pithy can emit, with the operator's action and detail. The in-memory shape a PithyError carries.",
+  );
 export type ErrorPayload = z.infer<typeof ErrorPayload>;
 
 /** Every machine-readable error code: the kit's closed set, plus whatever an adopter registers. */
