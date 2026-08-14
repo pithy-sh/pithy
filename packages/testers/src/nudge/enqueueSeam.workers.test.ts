@@ -59,6 +59,11 @@ async function tick(): Promise<number> {
     stuckMs: STUCK_MS,
     batchSize: 50,
     maxJobs: 500,
+    // Both cases below hold `pending` rows, which carry no batch and so are never asked about
+    // (pithy-sh/pithy#342). `false` is therefore the answer that reproduces the behaviour this seam was
+    // written against: a liveness answer may only veto a re-drive, never cause one.
+    newBatchId: () => "batch-nudge",
+    batchIsAlive: async () => false,
     dispatch: async () => {},
   });
   return result.due;
