@@ -11,6 +11,34 @@ import { z } from "zod";
 export const DEFAULT_TOKEN_FIELD = "cf-turnstile-response";
 
 /**
+ * **The action label of the passwordless sign-in gate, stated once for the whole kit (#377).**
+ *
+ * Turnstile bakes an action into the token at widget render and echoes it back from siteverify, and the
+ * gate refuses a token whose action is not the one the route expects. So the string is a contract with
+ * two ends — the widget that solves for it and the route that asserts it — and it used to be written out
+ * at both: `createAuthRoutes` stacked `turnstile({ action: "login" })` and the scaffolded
+ * `turnstile.tsx` declared its own `const ACTION = "login"`.
+ *
+ * **Nothing before production can notice the two disagreeing**, which is what makes a second copy
+ * unaffordable here rather than merely untidy. Cloudflare's always-pass test secret — the one
+ * `pithy turnstile provision` wires into dev and staging — answers with **no `action` field at all**, and
+ * the gate accepts exactly that answer in exactly those two environments (#374, {@link
+ * ../http/middleware.testKeyCarriesNoAction}). A drifted pair is therefore invisible in dev, invisible in
+ * staging, and in prod refuses **every** sign-in with a 403 that says the challenge failed — pointing an
+ * operator at the user rather than at the mismatch.
+ *
+ * So there is one statement, and both ends read it: the client projection carries it to the browser
+ * (`capability.ts`'s `client`, reaching the widget as `turnstileConfig.action`), and `@pithy-sh/auth`
+ * imports it for the gate it stacks. It is also the `protect` key the login mode is configured under, so
+ * the config default below is built from it too — three readers, no second literal.
+ *
+ * The gates that keep it that way, and where the blindness above is restated for whoever is reading one:
+ * `@pithy-sh/auth`'s `src/http/turnstileActionBinding.test.ts` (the route asserts the projected action)
+ * and `@pithy-sh/ui-react`'s `src/turnstileAction.test.tsx` (the widget solves for the projected action).
+ */
+export const TURNSTILE_LOGIN_ACTION = "login";
+
+/**
  * The two widget modes Pithy provisions, in the app's own terms. `visible` is a Cloudflare *managed*
  * widget (CF decides whether to show an interaction) — for a surface where the challenge should be
  * seen, like a login page. `invisible` runs silently — for a form that should not interrupt, like a
@@ -95,7 +123,9 @@ export const TurnstileConfig = z
       .describe("Up to two widgets per domain: one `visible`, one `invisible`. Declare only the modes you need."),
     protect: z
       .record(z.string(), TurnstileMode)
-      .default({ login: "visible" })
+      // Built from the constant, not written out again: the key an action is configured under and the
+      // action label a token is solved for are the same string, and #377 is what a second copy costs.
+      .default({ [TURNSTILE_LOGIN_ACTION]: "visible" })
       .describe(
         "Protected action → widget mode. `login` (magic-link, OTP) defaults to the visible widget; add your own form actions. Social/OAuth is never gated.",
       ),

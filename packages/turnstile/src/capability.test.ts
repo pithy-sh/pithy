@@ -42,14 +42,17 @@ describe("turnstile capability", () => {
 
 // The client projection is a security boundary: the sitekey is public, the widget secret never is.
 describe("turnstile client projection", () => {
-  test("projects exactly the four keys that render the login widget", () => {
+  test("projects exactly the five keys that render the login widget", () => {
     const cap = turnstile({ widgets: { visible: { sitekeys } } });
     const projection = resolveClientProjection(cap, { environment: "prod" });
-    expect(Object.keys(projection).sort()).toEqual(["enabled", "mode", "sitekey", "token"]);
+    expect(Object.keys(projection).sort()).toEqual(["action", "enabled", "mode", "sitekey", "token"]);
     expect(projection).toEqual({
       enabled: true,
       mode: "visible",
       sitekey: "p",
+      // The action the widget is solved for and the route asserts, carried across the one boundary that
+      // was already being crossed rather than written out at both ends (#377).
+      action: "login",
       token: { field: "cf-turnstile-response", header: null },
     });
   });
@@ -71,6 +74,7 @@ describe("turnstile client projection", () => {
       enabled: true,
       mode: "invisible",
       sitekey: "d",
+      action: "login",
       token: { field: "captcha", header: "x-captcha" },
     });
   });

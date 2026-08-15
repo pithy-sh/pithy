@@ -56,6 +56,8 @@ The binding is not relaxed. One narrow exception is, and it needs all three of:
 
 The same flag runs the other way outside those two: a test key answering for a `prod` — or unstamped — Worker is a `turnstile/config`, because a secret that passes everybody on a production login page is a door, and it should be the loudest line in the log rather than a quiet 200.
 
+**And it is why the login action is stated exactly once, as `TURNSTILE_LOGIN_ACTION`** (`src/config/config.ts`). The label is a contract with two ends — the widget solves for it, the route asserts it — and with the answer above carrying no action, dev and staging are structurally incapable of noticing them disagree. The first environment that can is production, where a mismatch refuses **every** sign-in with a 403 that truthfully blames the challenge. So the constant is the `protect` key, the value `@pithy-sh/auth` stacks its gate with, and the `action` in the client projection the front end renders (`turnstileConfig.action` — never a literal of the widget's own). #377.
+
 ## Two widgets per domain, max
 
 An app may need both a **visible** widget (a login page should show the challenge — Cloudflare *managed* mode) and an **invisible** one (a lead form runs it silently). The logical maximum is one of each per domain; declare only what you use. The public **sitekey** for each lands in per-environment config so your front-end can render the widget.

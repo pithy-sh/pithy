@@ -6,6 +6,7 @@ import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { UnauthorizedError } from "@pithy-sh/core/src/error/pithyError";
 import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
 import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { TURNSTILE_LOGIN_ACTION } from "@pithy-sh/turnstile/src/config/config";
 import { turnstile } from "@pithy-sh/turnstile/src/http/middleware";
 import { isAPIError } from "better-auth/api";
 import type { Context, Hono } from "hono";
@@ -70,8 +71,11 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
     const csrf = requireSameOrigin();
 
     // Auto-gate the magic-link and OTP send routes with the humanity check, when turnstile is composed.
+    // The action is `@pithy-sh/turnstile`'s constant, never a literal: the widget is solved for the same
+    // string through the client projection, and a second copy of it could only be caught in production —
+    // where the two disagreeing refuses every sign-in. #377, and `TURNSTILE_LOGIN_ACTION`'s docblock.
     if (wiring.turnstile) {
-      const guard = turnstile({ mode: wiring.turnstile.mode, action: "login" });
+      const guard = turnstile({ mode: wiring.turnstile.mode, action: TURNSTILE_LOGIN_ACTION });
       app.use(`${base}/sign-in/magic-link`, guard);
       app.use(`${base}/email-otp/send-verification-otp`, guard);
     }

@@ -130,6 +130,13 @@ declare module "virtual:pithy/turnstile" {
         sitekey: string;
         /** The widget mode `protect.login` names. */
         mode: "visible" | "invisible";
+        /**
+         * The action label the widget must be solved for. Render it, never retype it: the sign-in route
+         * asserts this exact string against the token, and dev and staging cannot notice a copy that has
+         * drifted — Cloudflare's test keys answer with no action at all, so the first environment that
+         * can tell is the one where a mismatch refuses every sign-in. #377.
+         */
+        action: string;
         /** Where the response token goes: a body field, or a header when one is configured. */
         token: { field: string; header: string | null };
       };

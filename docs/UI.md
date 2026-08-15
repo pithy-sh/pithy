@@ -239,6 +239,8 @@ Two boundaries the stub respects:
 
 The public sitekey reaches the screen through `virtual:pithy/turnstile`, per environment. Sitekeys are public by design; the widget secret is never in config and never in the client — it lives in `@pithy-sh/secrets`.
 
+**The `action` reaches it the same way, and must not be retyped.** Turnstile bakes an action label into the token at render and echoes it from siteverify; the sign-in route asserts it. So `turnstile.tsx` renders `turnstileConfig.action` rather than a string of its own — the projection is the one statement, and `@pithy-sh/turnstile`'s `TURNSTILE_LOGIN_ACTION` is where it is made. Writing the label out again anywhere is a defect nothing short of production can find: dev and staging run Cloudflare's always-pass test key, whose answer carries **no action at all**, so a drifted copy is silent in both, and the first environment that can tell is the one where the mismatch refuses every sign-in. Two gates hold it — `@pithy-sh/ui-react`'s `turnstileAction.test.tsx` (the widget carries what it is handed) and `@pithy-sh/auth`'s `turnstileActionBinding.test.ts` (the route asserts what is handed).
+
 ## Paywalls, and where the purchase flow lives
 
 The payments screens are the one place the stub deliberately owns less than it looks like it does.

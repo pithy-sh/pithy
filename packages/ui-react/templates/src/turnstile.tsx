@@ -3,9 +3,6 @@ import { turnstileConfig } from "./pithy-config";
 
 const SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 
-/** The action the server asserts for a login challenge. It must be exactly this string. */
-const ACTION = "login";
-
 interface TurnstileApi {
   render: (
     element: HTMLElement,
@@ -79,7 +76,11 @@ export function Turnstile(props: { onToken: (value: string | null) => void }): R
         if (!live || !host.current || !window.turnstile) return;
         window.turnstile.render(host.current, {
           sitekey: turnstileConfig.sitekey,
-          action: ACTION,
+          // The action comes from the projection, and writing it out here again would be a bug nothing
+          // short of production could see: the server asserts this exact string against the token, and
+          // dev and staging run Cloudflare test keys, whose answer carries no action to compare. A
+          // drifted copy is silent everywhere until it refuses every sign-in in prod. #377.
+          action: turnstileConfig.action,
           appearance: turnstileConfig.mode === "invisible" ? "execute" : "always",
           // `auto` is Turnstile's own name for `prefers-color-scheme`, which is what `pithy-screens.css`
           // answers too. The widget is a cross-origin iframe, so this argument is the only lever — and

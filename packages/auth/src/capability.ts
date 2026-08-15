@@ -7,7 +7,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { EmailCapability } from "@pithy-sh/email/src/capability";
 import { isEmailCapability } from "@pithy-sh/email/src/capability";
 import { isTurnstileCapability } from "@pithy-sh/turnstile/src/capability";
-import type { TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
+import { TURNSTILE_LOGIN_ACTION, type TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
 import { z } from "zod";
 import { authTables } from "./data/tables";
 import { publishSameOrigin } from "./http/csrf";
@@ -227,7 +227,7 @@ export function auth(config: AuthConfigInput): AuthCapability {
       wiring.enqueueEmail = email.enqueue;
       // Auto-wire turnstile onto the login routes when it is composed (Jim's requirement: zero config).
       const turnstileCap = capabilities.find(isTurnstileCapability);
-      const loginMode = turnstileCap?.turnstileConfig.protect.login;
+      const loginMode = turnstileCap?.turnstileConfig.protect[TURNSTILE_LOGIN_ACTION];
       wiring.turnstile = loginMode ? { mode: loginMode } : undefined;
       // And the one collision `auth()` could not see. A plugin's tables carry the plugin's own names —
       // `organization`, `member`, `invitation` — with no `pithy_auth_` prefix to keep them out of an

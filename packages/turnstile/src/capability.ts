@@ -3,7 +3,7 @@
 
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { ClientProjection } from "@pithy-sh/core/src/capability/client";
-import { TurnstileConfig, type TurnstileConfigInput } from "./config/config";
+import { TURNSTILE_LOGIN_ACTION, TurnstileConfig, type TurnstileConfigInput } from "./config/config";
 import { turnstileSecretsRegistry } from "./secret/registry";
 import { PACKAGE_VERSION } from "./version.generated";
 
@@ -38,17 +38,22 @@ export function turnstile(config: TurnstileConfigInput = {}): TurnstileCapabilit
     secretRegistry: turnstileSecretsRegistry,
     /**
      * The client-safe projection — exactly what renders the login widget: the mode `protect.login`
-     * names, that widget's **public** sitekey for the environment being built, and where the front end
-     * must put the response token so the middleware finds it.
+     * names, that widget's **public** sitekey for the environment being built, the **action** the widget
+     * must solve for, and where the front end must put the response token so the middleware finds it.
      *
      * The widget *secret* is never here: it lives in the secrets store (`turnstileSecretsRegistry`) and
      * is read only inside the Worker, so a sitekey is the whole of what a browser sees — which is what
      * it is for. Every unrenderable shape projects `{ enabled: false }` (no `login` gate, the named
      * widget unconfigured, or no sitekey for this environment) so a screen branches instead of
      * mounting a widget that cannot solve.
+     *
+     * **`action` rides here because the boundary was already being crossed** (#377). The label is baked
+     * into the token at render and asserted by the route, so it is one contract with two ends, and it
+     * was written out at both — where nothing before production could catch them disagreeing. See
+     * {@link TURNSTILE_LOGIN_ACTION} for why that is worse than it sounds and which gates hold it.
      */
     client: ({ environment }): ClientProjection => {
-      const mode = resolved.protect.login;
+      const mode = resolved.protect[TURNSTILE_LOGIN_ACTION];
       if (!mode) return { enabled: false };
       const widget = resolved.widgets[mode];
       if (!widget) return { enabled: false };
@@ -60,6 +65,8 @@ export function turnstile(config: TurnstileConfigInput = {}): TurnstileCapabilit
         enabled: true,
         mode,
         sitekey,
+        // What the widget solves for, and what the route asserts. One statement, carried across.
+        action: TURNSTILE_LOGIN_ACTION,
         // Shaped like the config it comes from (`token.field` / `token.header`), so a screen reads the
         // same two names the middleware does. `header` is null rather than absent: `undefined` is not
         // JSON, and the projection is inlined into a bundle with JSON.stringify.

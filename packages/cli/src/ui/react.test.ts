@@ -358,7 +358,10 @@ describe("the React 19 stub", () => {
 
   test("turnstile gates the magic-link and OTP forms only, at action login", () => {
     const widget = AUTH["src/turnstile.tsx"] ?? "";
-    expect(widget).toContain('const ACTION = "login"');
+    // The action is read from the projection, never declared here — #377. `@pithy-sh/ui-react`'s
+    // `turnstileAction.test.tsx` is the gate that proves the rendered widget carries it.
+    expect(widget).toContain("action: turnstileConfig.action");
+    expect(widget).not.toMatch(/const ACTION\s*=/);
     expect(widget).toContain("turnstileConfig.token.header");
     expect(widget).toContain("turnstileConfig.token.field");
     // The widget renders inside the email form on both screens, and nowhere near a social button. On

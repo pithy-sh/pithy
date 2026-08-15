@@ -33,6 +33,10 @@ export const turnstileConfig = turnstileModule.enabled
   : {
       enabled: false as const,
       sitekey: "",
+      // Blank for the same reason the sitekey is: a widget that cannot render has no action to solve
+      // for, and a plausible-looking default here would be a second copy of a string the enabled branch
+      // is the only statement of (#377).
+      action: "",
       mode: "visible" as const,
       token: { field: "cf-turnstile-response", header: null },
     };
