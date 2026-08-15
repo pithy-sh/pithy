@@ -169,25 +169,30 @@ function journalledStep(journal: Map<string, unknown>): SendBatchStep {
   };
 }
 
-/** Drive the send batch for one job with a sender that keeps failing, leaving it `sending` in backoff. */
+/**
+ * Drive the send batch for one job with a sender that keeps failing, leaving it `sending` in backoff.
+ *
+ * The batch **completes** rather than rejecting: since #380 a step whose retries are spent is contained
+ * so the rest of the batch still sends, and that job is reported `unfinished`. What this helper is for
+ * is unchanged — the row is left `sending`, stamped with its batch, for the scheduler to find.
+ */
 async function backOff(jobId: string): Promise<void> {
-  await expect(
-    runSendBatch(
-      {
-        db: emailDatabase(env.DB),
-        suppressionDb: emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS),
-        sender: failingSender,
-        theme,
-        baseUrl: "https://api.acme.test",
-        signing,
-        linkTtlDays: 90,
-        maxAttempts: 5,
-        heartbeatAt: () => STARTED,
-      },
-      journalledStep(new Map<string, unknown>()),
-      [jobId],
-    ),
-  ).rejects.toBeDefined();
+  const report = await runSendBatch(
+    {
+      db: emailDatabase(env.DB),
+      suppressionDb: emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS),
+      sender: failingSender,
+      theme,
+      baseUrl: "https://api.acme.test",
+      signing,
+      linkTtlDays: 90,
+      maxAttempts: 5,
+      heartbeatAt: () => STARTED,
+    },
+    journalledStep(new Map<string, unknown>()),
+    [jobId],
+  );
+  expect(report.jobs.map((job) => job.state)).toEqual(["unfinished"]);
 }
 
 async function rowOf(jobId: string): Promise<{ status: string; batch_id: string | null }> {

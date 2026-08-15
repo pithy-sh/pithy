@@ -92,11 +92,17 @@ describe("auth admin response schemas", () => {
     accepts(AdminUsersResponse, { users: [], nextCursor: "eyJpZCI6MX0" });
     accepts(AdminUserResponse, {
       user: userView(USER),
-      providers: ["apple", "google"],
-      sessions: [sessionView(SESSION)],
-      sessionsTruncated: false,
-      devices: [deviceView(DEVICE)],
-      devicesTruncated: true,
+      providers: { state: "read", items: ["apple", "google"] },
+      sessions: { state: "read", items: [sessionView(SESSION)], truncated: false },
+      devices: { state: "read", items: [deviceView(DEVICE)], truncated: true },
+    });
+    // And the state each list takes when its read failed (#380): no rows, no truncation flag, no
+    // reason. A client that reached for `items` here would not compile.
+    accepts(AdminUserResponse, {
+      user: userView(USER),
+      providers: { state: "unavailable" },
+      sessions: { state: "unavailable" },
+      devices: { state: "unavailable" },
     });
     accepts(AdminDevicesResponse, { devices: [deviceView(DEVICE)], nextCursor: null });
     accepts(AdminRevokeResponse, { revoked: 3 });

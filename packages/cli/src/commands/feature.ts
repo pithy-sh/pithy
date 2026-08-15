@@ -10,7 +10,7 @@ import { defineCommand } from "citty";
 import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { createFeature } from "../feature/create";
-import { destroyFeature } from "../feature/destroy";
+import { type DestroyReport, destroyedBeforeFailure, destroyFeature } from "../feature/destroy";
 import { branchIdentity, deriveIdentityFromBranch } from "../feature/identity";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { mainRepoRoot } from "../feature/worktree";
@@ -264,15 +264,34 @@ const destroy = defineCommand({
       }
 
       const store = buildStore(account);
-      const report = await destroyFeature({
-        projectDir,
-        identity,
-        capabilities,
-        ...(store && !args["local-only"] ? { store } : {}),
-        env: requireEnvironment(args.env ?? DEFAULT_FEATURE_ENV),
-        ...(provisioners && !args["local-only"] ? { provisioners } : {}),
-        audit: await buildAudit(projectDir, capabilities, account),
-      });
+      let report: DestroyReport;
+      try {
+        report = await destroyFeature({
+          projectDir,
+          identity,
+          capabilities,
+          ...(store && !args["local-only"] ? { store } : {}),
+          env: requireEnvironment(args.env ?? DEFAULT_FEATURE_ENV),
+          ...(provisioners && !args["local-only"] ? { provisioners } : {}),
+          audit: await buildAudit(projectDir, capabilities, account),
+        });
+      } catch (error) {
+        // A teardown that failed on the fourth delete has already destroyed three, and until #380 the
+        // record of them died with the throw. What went is written to stdout here, then the same error
+        // is rethrown for `withErrorReporting` to render on stderr and exit 1 on — both streams and the
+        // exit code agreeing that it failed and naming what it destroyed on the way.
+        const partial = destroyedBeforeFailure(error);
+        if (partial) {
+          if (args.json) {
+            const { command, deleted: deletedResources, ...rest } = partial;
+            process.stdout.write(`${formatJsonLine({ command, deletedResources, ...rest, interrupted: true })}\n`);
+          } else {
+            for (const resource of partial.deleted) process.stdout.write(`Deleted ${resource.name}.\n`);
+            process.stdout.write("Teardown stopped there. The rest is still in the account, and in the manifest.\n");
+          }
+        }
+        throw error;
+      }
 
       if (args.json) {
         // **`deleted` is published as `deletedResources` (#235).** `pithy vector reset` emits a `deleted`

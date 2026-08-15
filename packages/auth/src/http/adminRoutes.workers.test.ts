@@ -417,7 +417,7 @@ describe("GET /auth/admin/users/:userId", () => {
     expect(text).toContain("ada@example.test");
     expect(text).toContain("s-1");
     expect(text).toContain("google");
-    expect(text).toContain('"sessionsTruncated":false');
+    expect(text).toContain('"truncated":false');
   });
 
   test("and never the session token, the push token, or an OAuth token", async () => {
@@ -713,9 +713,9 @@ describe("the exported response schemas against the live routes", () => {
     expect(users.nextCursor).not.toBeNull();
 
     const user = await contract(AdminUserResponse, "GET", "/auth/admin/users/u-1", AUTH_USERS_READ_SCOPE);
-    expect(user.providers).toEqual(["google"]);
-    expect(user.sessions).toHaveLength(1);
-    expect(user.devices).toHaveLength(1);
+    expect(user.providers).toEqual({ state: "read", items: ["google"] });
+    expect(user.sessions.state === "read" && user.sessions.items).toHaveLength(1);
+    expect(user.devices.state === "read" && user.devices.items).toHaveLength(1);
 
     await contract(AdminDevicesResponse, "GET", "/auth/admin/devices", AUTH_DEVICES_READ_SCOPE);
 
@@ -732,5 +732,59 @@ describe("the exported response schemas against the live routes", () => {
         deviceId: "d-1",
       },
     );
+  });
+});
+
+/**
+ * **A list that will not read costs its own pane, not the page (#380).**
+ *
+ * `GET /admin/users/:userId` fans out over three independent tables and used to `Promise.all` them.
+ * One D1 read failing threw out of the handler and 500'd the whole request — so a support agent looking
+ * at an account that is already in trouble saw nothing at all: not the user, not their sessions, not
+ * the devices that did read.
+ *
+ * The plant is a real one: the table is dropped, so the query against it genuinely fails. Nothing here
+ * stubs the handler.
+ */
+describe("GET /auth/admin/users/:userId — one sub-read that fails", () => {
+  test("the page still renders, and the list that failed says so rather than saying none", async () => {
+    await seedUser("u-1", "ada@example.test", 10);
+    await seedSession("s-1", "u-1", null);
+    await env.DB.prepare("drop table pithy_auth_devices").run();
+
+    const response = await call("GET", "/auth/admin/users/u-1", AUTH_USERS_READ_SCOPE);
+    expect(response.status).toBe(200);
+    const body = AdminUserResponse.parse(await response.json());
+
+    expect(body.user.email).toBe("ada@example.test");
+    expect(body.sessions).toEqual({ state: "read", items: [expect.objectContaining({ id: "s-1" })], truncated: false });
+    expect(body.providers.state).toBe("read");
+    // Not an empty array. "No registered devices" is a finding; this is nobody having looked.
+    expect(body.devices).toEqual({ state: "unavailable" });
+  });
+
+  test("the unavailable list carries no reason — the query and the table stay on this side", async () => {
+    await seedUser("u-1", "ada@example.test", 10);
+    await env.DB.prepare("drop table pithy_auth_devices").run();
+
+    const text = await (await call("GET", "/auth/admin/users/u-1", AUTH_USERS_READ_SCOPE)).text();
+    expect(text).not.toContain("pithy_auth_devices");
+    expect(text).not.toContain("no such table");
+  });
+
+  test("the audit trail records null for the list nobody read, never zero", async () => {
+    await seedUser("u-1", "ada@example.test", 10);
+    await env.DB.prepare("drop table pithy_auth_devices").run();
+
+    await call("GET", "/auth/admin/users/u-1", AUTH_USERS_READ_SCOPE);
+    const event = emitted.find((candidate) => candidate.action === "auth/admin_user_read");
+    expect(event?.metadata).toMatchObject({ sessions: 0, devices: null });
+  });
+
+  test("the user itself is the subject, not a contributor — a missing one is still a 404", async () => {
+    // The gate must not be derived from its own subject. `getUser` stays unguarded: there is no pane to
+    // degrade when the thing the pane is about does not exist.
+    const response = await call("GET", "/auth/admin/users/nobody", AUTH_USERS_READ_SCOPE);
+    expect(response.status).toBe(404);
   });
 });

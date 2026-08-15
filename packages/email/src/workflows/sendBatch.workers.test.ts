@@ -294,12 +294,15 @@ describe("runSendBatch — the heartbeat", () => {
     // planted journalled heartbeat before the journal was shared.
     const journal = new Map<string, unknown>();
 
-    await expect(runSendBatch(deps, journalledStep(journal), [jobId])).rejects.toBeDefined();
+    // The step fails and is contained, so the body completes with that job `unfinished` (#380). What
+    // matters here is unchanged: the attempt wrote the row, and the batch's own liveness is what the
+    // scheduler asks about. Before #380 this call rejected, which is the same fact one layer out.
+    expect((await runSendBatch(deps, journalledStep(journal), [jobId])).jobs[0]?.state).toBe("unfinished");
     expect((await jobRow(jobId)).status).toBe("sending");
 
     // The Workflow backs off and re-executes the body twenty minutes later — past `stuckMs`.
     clock = RESUMED;
-    await expect(runSendBatch(deps, journalledStep(journal), [jobId])).rejects.toBeDefined();
+    await runSendBatch(deps, journalledStep(journal), [jobId]);
     // The pass instant did come back from the journal — so the two clocks genuinely disagree here, and
     // the assertion below is about which one `updatedAt` took.
     expect(journal.get("pass-instant")).toBe(PASS_STARTED.getTime());
@@ -326,9 +329,11 @@ describe("runSendBatch — the heartbeat", () => {
     const deps = batchDeps(sender, () => clock);
     const journal = new Map<string, unknown>();
 
-    await expect(runSendBatch(deps, journalledStep(journal), [jobId])).rejects.toBeDefined();
+    // Contained per job since #380, so these complete rather than rejecting. The row is what is on
+    // trial here, and the attempts still write it.
+    await runSendBatch(deps, journalledStep(journal), [jobId]);
     clock = RESUMED;
-    await expect(runSendBatch(deps, journalledStep(journal), [jobId])).rejects.toBeDefined();
+    await runSendBatch(deps, journalledStep(journal), [jobId]);
 
     // The runtime spends the last retry: the instance is gone and vouches for nothing.
     workflows.gaveUp("batch-1");
@@ -418,7 +423,12 @@ describe("runSendBatch — the queue behind the batch", () => {
     const deps = batchDeps(sender, () => PASS_STARTED);
     const journal = new Map<string, unknown>();
 
-    await expect(runSendBatch(deps, journalledStep(journal), ids)).rejects.toBeDefined();
+    // The first send throws and its step is spent; the instance then unwinds before the second, which
+    // is the runner refusing to start a step rather than a job failing — so it is not contained (#380).
+    // That is the backoff this case is about: the jobs behind it are never reached.
+    await expect(runSendBatch(deps, journalledStep(journal, `send-${ids[1]}`), ids)).rejects.toBeInstanceOf(
+      Interrupted,
+    );
     expect(sent).toHaveLength(1);
     // Every row of the batch, at the claim instant, twenty minutes stale.
     for (const id of ids) expect((await jobRow(id)).updated_at).toBe(PASS_STARTED.getTime());
@@ -567,5 +577,95 @@ describe("runSendBatch — the cost of a batch", () => {
     // cost. Quadratic bookkeeping is twenty-five times, and no ceiling chosen today would hold at the
     // batch size an operator sets tomorrow.
     expect(large, `10 jobs wrote ${small} rows, 50 wrote ${large}`).toBeLessThanOrEqual(6 * small);
+  });
+});
+
+/**
+ * **A job whose step is spent costs its own send, not the batch's (#380).**
+ *
+ * `runSendBatch`'s own docblock has promised since the file was written that *a single bad recipient
+ * never blocks the rest of the batch*, and the loop did not do it: a step that exhausted its retries
+ * threw, the throw came out of the loop, and every job behind it went unsent — on that attempt and on
+ * every replay of the body, because a replay serves the journal and arrives at the same failing step.
+ *
+ * These tests exist to fail when the containment is removed. The failure is planted where a real one
+ * lands: the job row is deleted out from under the batch, which is one of the terminal step failures
+ * `worker.ts` names, and `runSend` throws `NotFoundError` on it.
+ */
+describe("runSendBatch — a job whose step will not finish", () => {
+  /** Delete a job row mid-batch — a real terminal failure, not a stubbed step runner. */
+  async function deleteJob(jobId: string): Promise<void> {
+    await env.DB.prepare("delete from pithy_email_jobs where id = ?").bind(jobId).run();
+  }
+
+  test("every job behind the spent one still sends", async () => {
+    const first = await enqueue("ada@example.com", "job-1");
+    const second = await enqueue("bob@example.com", "job-2");
+    const third = await enqueue("cy@example.com", "job-3");
+    await deleteJob(second);
+    const { sender, sent } = fakeSender(() => ({ messageId: "m" }));
+
+    const report = await runSendBatch(
+      batchDeps(sender, () => PASS_STARTED),
+      journalledStep(new Map<string, unknown>()),
+      [first, second, third],
+    );
+
+    expect(sent.map((message) => message.to)).toEqual(["ada@example.com", "cy@example.com"]);
+    expect(report.jobs.map((job) => [job.jobId, job.state])).toEqual([
+      [first, "attempted"],
+      [second, "unfinished"],
+      [third, "attempted"],
+    ]);
+  });
+
+  test("the unfinished job carries its id and no outcome — there is no status to read as sent", async () => {
+    const first = await enqueue("ada@example.com", "job-1");
+    await deleteJob(first);
+    const { sender } = fakeSender(() => ({ messageId: "m" }));
+
+    const report = await runSendBatch(
+      batchDeps(sender, () => PASS_STARTED),
+      journalledStep(new Map<string, unknown>()),
+      [first],
+    );
+
+    expect(report.jobs[0]).toEqual({ state: "unfinished", jobId: first });
+    // Nothing derived from the throw travels: a send failure's own words carry an address, a provider
+    // response, and sometimes the rendered link.
+    expect(JSON.stringify(report)).not.toContain("not found");
+  });
+
+  test("a clean batch reports every job attempted, with its outcome behind the state", async () => {
+    const first = await enqueue("ada@example.com", "job-1");
+    const second = await enqueue("bob@example.com", "job-2");
+    const { sender } = fakeSender(() => ({ messageId: "m" }));
+
+    const report = await runSendBatch(
+      batchDeps(sender, () => PASS_STARTED),
+      journalledStep(new Map<string, unknown>()),
+      [first, second],
+    );
+
+    expect(report.jobs.every((job) => job.state === "attempted")).toBe(true);
+    expect(report.jobs.map((job) => job.state === "attempted" && job.outcome.status)).toEqual(["sent", "sent"]);
+  });
+
+  test("a runner that will not start a step is not contained — that is the instance dying, not a job", async () => {
+    const first = await enqueue("ada@example.com", "job-1");
+    const second = await enqueue("bob@example.com", "job-2");
+    const { sender, sent } = fakeSender(() => ({ messageId: "m" }));
+
+    // `interruptBefore` throws without ever calling the step body — which is the durable mechanism
+    // refusing, not this job's send failing. Containing it would be a body carrying on inside an
+    // instance that is being torn down.
+    await expect(
+      runSendBatch(
+        batchDeps(sender, () => PASS_STARTED),
+        journalledStep(new Map<string, unknown>(), `send-${second}`),
+        [first, second],
+      ),
+    ).rejects.toBeInstanceOf(Interrupted);
+    expect(sent.map((message) => message.to)).toEqual(["ada@example.com"]);
   });
 });

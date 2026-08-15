@@ -66,11 +66,50 @@ export interface UpgradeRunOptions {
   readManifests?: (projectDir: string) => Promise<{ faults: ManifestFault[] }>;
 }
 
-/** One Worker's outcome: the plan built for it, and what applying it changed (absent on a dry run). */
-export interface UpgradeWorkerResult {
-  plan: ReconcilePlan;
-  applied: ReconcileApplied | null;
-}
+/**
+ * One Worker's outcome — **three states, and the plan lives behind the one that has it** (#380).
+ *
+ * A plan reads that Worker's own `pithy.config.ts` and `wrangler.jsonc` and, through the ledger, its
+ * databases; an apply *writes* those files and, with `--migrate`, runs that Worker's migrations. All of
+ * it can fail for reasons belonging to one Worker, and the throw used to propagate out of the fan-out —
+ * so a five-Worker project lost four Workers' reports to the fifth's broken config, and, worse than its
+ * twin in `buildProjectHealth`, lost them *after* some of those Workers' files had already been
+ * rewritten.
+ *
+ * `unplanned` and `unapplied` are kept apart because the difference is whether anything was written.
+ * Nothing was read about an `unplanned` Worker and nothing was changed. An `unapplied` Worker had a plan
+ * and the apply died inside it: its `wrangler.jsonc` may hold some of the bindings, its `pithy.config.ts`
+ * some of the keys, and under `--migrate` its schema may have moved. Collapsing the two would tell an
+ * operator to re-run a command against a Worker in an unknown state as though it were untouched.
+ *
+ * The state rides on the value, so `result.plan` does not compile without narrowing and an unreconciled
+ * Worker cannot be rendered as a reconciled one.
+ */
+export type UpgradeWorkerResult =
+  | {
+      /** The plan was built, and applied unless this was a dry run. */
+      state: "reconciled";
+      /** The Worker's name, as `pithy worker list` shows it. */
+      worker: string;
+      /** What this run found to do. */
+      plan: ReconcilePlan;
+      /** What applying it changed. `null` on a dry run, which wrote nothing by design. */
+      applied: ReconcileApplied | null;
+    }
+  | {
+      /** The plan could not be built. Nothing was read about this Worker, and nothing was written. */
+      state: "unplanned";
+      /** The Worker's name — the one actionable fact, and the only one this carries. */
+      worker: string;
+    }
+  | {
+      /** The plan was built and applying it failed partway. This Worker's files may already have changed. */
+      state: "unapplied";
+      /** The Worker's name. */
+      worker: string;
+      /** What the run set out to do. What of it landed is not established — that is the whole of this state. */
+      plan: ReconcilePlan;
+    };
 
 /**
  * What one `pithy upgrade` run produced: a result per Worker, and the manifests it could not read.
@@ -121,33 +160,77 @@ export async function runUpgrade(options: UpgradeRunOptions): Promise<UpgradeRun
 
   const results: UpgradeWorkerResult[] = [];
   for (const worker of workers) {
-    const plan = await buildReconcilePlan({
-      projectDir: options.projectDir,
-      workerDir: worker.dir,
-      worker: worker.name,
-      env: options.env,
-      account: options.account,
-      capabilities: worker.capabilities,
-      ...(options.readLedger ? { readLedger: options.readLedger } : {}),
-    });
-    if (options.dryRun) {
-      results.push({ plan, applied: null });
+    // Guarded per Worker, and `try`/`catch` rather than `.catch()`: a plan that throws before it returns
+    // a promise — a `pithy.config.ts` that will not import, a `wrangler.jsonc` the parser refuses — is
+    // not a rejected promise, and a `.catch()` would not see it (#371).
+    //
+    // The guards take no binding. The Worker's name is what an operator acts on, and what a config load
+    // or a D1 read throws names a path, an id, or a query.
+    let plan: ReconcilePlan;
+    try {
+      plan = await buildReconcilePlan({
+        projectDir: options.projectDir,
+        workerDir: worker.dir,
+        worker: worker.name,
+        env: options.env,
+        account: options.account,
+        capabilities: worker.capabilities,
+        ...(options.readLedger ? { readLedger: options.readLedger } : {}),
+      });
+    } catch {
+      results.push({ state: "unplanned", worker: worker.name });
       continue;
     }
-    const applied = await applyReconcilePlan({
-      projectDir: options.projectDir,
-      workerDir: worker.dir,
-      plan,
-      migrate: options.migrate,
-      env: options.env,
-      account: options.account,
-      ...(project === undefined ? {} : { project }),
-      capabilities: worker.capabilities,
-      ...(options.runMigrate ? { runMigrate: options.runMigrate } : {}),
-    });
-    results.push({ plan, applied });
+    if (options.dryRun) {
+      results.push({ state: "reconciled", worker: worker.name, plan, applied: null });
+      continue;
+    }
+    let applied: ReconcileApplied;
+    try {
+      applied = await applyReconcilePlan({
+        projectDir: options.projectDir,
+        workerDir: worker.dir,
+        plan,
+        migrate: options.migrate,
+        env: options.env,
+        account: options.account,
+        ...(project === undefined ? {} : { project }),
+        capabilities: worker.capabilities,
+        ...(options.runMigrate ? { runMigrate: options.runMigrate } : {}),
+      });
+    } catch {
+      // Its own entry, and a different one from `unplanned`: this Worker's files have been opened for
+      // writing. What landed of the plan is exactly what this run cannot say.
+      results.push({ state: "unapplied", worker: worker.name, plan });
+      continue;
+    }
+    results.push({ state: "reconciled", worker: worker.name, plan, applied });
   }
   return { workers: results, manifestFaults: faults };
+}
+
+/**
+ * Whether any Worker in the run went unreconciled — the run's exit gate (#380).
+ *
+ * A guard that let `pithy upgrade` exit 0 around a Worker it could not read would be a weaker gate than
+ * the throw it replaced, and this command runs headlessly in CI. So the failure still ends the run
+ * non-zero; it just stops taking every other Worker's report with it.
+ *
+ * **A degraded contributor counts, and that is what merging `#371` into `#380` turned up.** `#380` wrote
+ * this as `state !== "reconciled"`, which was complete on its own branch: a ledger that would not read
+ * threw, the per-Worker guard caught it, and the Worker came back `unplanned`. `#371` then made every
+ * contributor degrade instead of throw — the better design, and it left this reading `reconciled` for a
+ * Worker whose ledger nobody could read, so the run exited 0 on a check that never happened.
+ *
+ * Neither branch was wrong; the composition was. So the gate asks the question it always meant to ask —
+ * **was every Worker fully checked** — rather than the proxy for it that happened to be true before.
+ * `partial` counts alongside `unavailable`: a short sum is not a whole one.
+ */
+export function upgradeIncomplete(run: UpgradeRun): boolean {
+  return run.workers.some((result) => {
+    if (result.state !== "reconciled") return true;
+    return result.plan.ledger.state !== "read" || result.plan.entitlements.state !== "read";
+  });
 }
 
 /** `"2 bindings"` / `"1 binding"` — count with a singular/plural noun, omitted when zero. */
@@ -255,11 +338,34 @@ function appliedLines(applied: ReconcileApplied, plan: ReconcilePlan): string[] 
 function renderUpgrade(run: UpgradeRun): string[] {
   // Above the Workers, because it is not any Worker's fault and it explains a gap in all of them.
   const lines: string[] = faultLines(run.manifestFaults);
-  for (const { plan, applied } of run.workers) {
-    lines.push(`${plan.worker}:`);
-    for (const line of applied ? appliedLines(applied, plan) : planLines(plan)) lines.push(`  ${line}`);
+  for (const result of run.workers) {
+    lines.push(`${result.worker}:`);
+    for (const line of workerLines(result)) lines.push(`  ${line}`);
   }
   return lines;
+}
+
+/**
+ * One Worker's lines, in each of the three states it can be in (#380).
+ *
+ * Neither failure state prints "Nothing to upgrade." That sentence is a finding — the run looked and
+ * found nothing — and it is the one thing an unread Worker must never say.
+ */
+function workerLines(result: UpgradeWorkerResult): string[] {
+  if (result.state === "unplanned") {
+    return [
+      "Couldn't be planned. Its pithy.config.ts or wrangler.jsonc would not read.",
+      "Nothing was written for it.",
+    ];
+  }
+  if (result.state === "unapplied") {
+    return [
+      "Upgrade failed partway. Its wiring may hold part of the plan below.",
+      `Check it, then re-run: pithy upgrade --worker ${result.worker} --env ${result.plan.env}.`,
+      ...planLines(result.plan),
+    ];
+  }
+  return result.applied ? appliedLines(result.applied, result.plan) : planLines(result.plan);
 }
 
 export default defineCommand({
@@ -288,8 +394,20 @@ export default defineCommand({
         migrate: args.migrate,
       });
 
+      // A Worker that could not be read establishes nothing, so the run does not exit 0 around it. Set
+      // before either renderer, so the two paths cannot disagree about whether the run succeeded.
+      if (upgradeIncomplete(run)) process.exitCode = 1;
+
       if (args.json) {
-        const workers = run.workers.map(({ plan, applied }) => applied ?? plan);
+        // The state rides on every entry, so a consumer reads `state` before reaching for a plan — there
+        // is no entry here whose absent fields could be read as empty ones.
+        const workers = run.workers.map((result) =>
+          result.state === "reconciled"
+            ? { state: result.state, ...(result.applied ?? result.plan) }
+            : result.state === "unapplied"
+              ? { state: result.state, worker: result.worker, plan: result.plan }
+              : { state: result.state, worker: result.worker },
+        );
         process.stdout.write(
           `${formatJsonLine({ command: "upgrade", env, dryRun, workers, manifestFaults: run.manifestFaults })}\n`,
         );
@@ -302,4 +420,4 @@ export default defineCommand({
 });
 
 // Exposed for the command test to exercise the render helpers directly (run() stays thin and untested).
-export const __test = { planLines, appliedLines, renderUpgrade, parts, count };
+export const __test = { planLines, appliedLines, renderUpgrade, workerLines, parts, count };

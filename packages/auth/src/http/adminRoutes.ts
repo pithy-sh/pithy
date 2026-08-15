@@ -10,6 +10,7 @@ import { InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyErro
 import { validationHook } from "@pithy-sh/core/src/http/validation";
 import type { Context, Hono } from "hono";
 import {
+  type AdminSubList,
   findSessionById,
   getUser,
   listDeviceRegistry,
@@ -93,6 +94,42 @@ type Ctx = Context<PithyHonoEnv>;
 /** The auth Kysely for this request. */
 function db(c: Ctx, wiring: AuthWiring) {
   return authDatabase(resolveDb(c.env, wiring.config.database));
+}
+
+/**
+ * One of the user pane's sub-reads, guarded and projected in one step (#380).
+ *
+ * **`try`/`catch` inside an `async` function, never `.catch()`.** The read is *called* inside the `try`,
+ * so a seam that throws before it returns a promise is caught too — a rejected promise is not the only
+ * way a D1 read fails, and a `.catch()` guard has been escaped by exactly that before (#371).
+ *
+ * **The guard takes no binding.** The state is the whole of what travels; what the read threw names a
+ * query and a table, and this response goes to a management client across a trust boundary.
+ *
+ * It projects while it is here, because the alternative is a second helper mapping a union it just
+ * built, and a projection that runs outside the guard is a second place a row can throw.
+ */
+async function readBounded<T, V>(
+  read: () => Promise<AdminSubList<T>>,
+  project: (row: T) => V,
+): Promise<{ state: "read"; items: V[]; truncated: boolean } | { state: "unavailable" }> {
+  try {
+    const list = await read();
+    return { state: "read", items: list.items.map(project), truncated: list.truncated };
+  } catch {
+    return { state: "unavailable" };
+  }
+}
+
+/** The same guard for a read with no bound to exceed — the provider slugs, which carry no truncation. */
+async function readWhole<T>(
+  read: () => Promise<T[]>,
+): Promise<{ state: "read"; items: T[] } | { state: "unavailable" }> {
+  try {
+    return { state: "read", items: await read() };
+  } catch {
+    return { state: "unavailable" };
+  }
 }
 
 /**
@@ -180,10 +217,15 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
 
         // Bounded, because a device id is client-generated: a user can mint as many device rows as they
         // like, so an unbounded sub-list would let any end user decide how much work this pane does.
+        //
+        // Each read is guarded on its own (#380). They are three independent tables and this was a
+        // `Promise.all`, so one of them failing 500'd the whole page — the user, their sessions and
+        // their devices all lost to whichever list would not read, on the pane a support agent opens
+        // when an account is already in trouble. Still concurrent: the guard is inside each arm.
         const [sessions, devices, providers] = await Promise.all([
-          listUserSessions(database, userId, MAX_PAGE_SIZE),
-          listUserDevices(database, userId, MAX_PAGE_SIZE),
-          userProviders(database, userId),
+          readBounded(() => listUserSessions(database, userId, MAX_PAGE_SIZE), sessionView),
+          readBounded(() => listUserDevices(database, userId, MAX_PAGE_SIZE), deviceView),
+          readWhole(() => userProviders(database, userId)),
         ]);
 
         await emitControlPlaneAction(c.var.emit, {
@@ -193,16 +235,19 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
           resourceType: "user",
           resourceId: userId,
           ...context(c),
-          metadata: { sessions: sessions.items.length, devices: devices.items.length },
+          // `null` where a list did not read, never `0`. The trail is what answers "how much did this
+          // caller see", and a zero there is a claim that the user had none.
+          metadata: {
+            sessions: sessions.state === "read" ? sessions.items.length : null,
+            devices: devices.state === "read" ? devices.items.length : null,
+          },
         });
 
         return c.json({
           user: userView(user),
           providers,
-          sessions: sessions.items.map(sessionView),
-          sessionsTruncated: sessions.truncated,
-          devices: devices.items.map(deviceView),
-          devicesTruncated: devices.truncated,
+          sessions,
+          devices,
         } satisfies AdminUserResponse);
       },
     );
