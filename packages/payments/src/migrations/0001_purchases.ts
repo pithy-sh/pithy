@@ -48,6 +48,9 @@ export const payments_0001_purchases: Migration = {
       .addColumn("purchasedAt", "integer", (c) => c.notNull())
       .addColumn("expiresAt", "integer")
       .addColumn("revokedAt", "integer")
+      // When a paused subscription resumes, as the provider stated it. Nullable, because "paused
+      // indefinitely" is a real state on every rail that pauses at all — see `data/pause.ts`.
+      .addColumn("resumesAt", "integer")
       .addColumn("originalTransactionId", "text")
       .addColumn("amountMinor", "integer")
       .addColumn("currency", "text")
@@ -66,6 +69,11 @@ export const payments_0001_purchases: Migration = {
       // A `state` row never fulfills a `grants` clause, so a typo here would credit a ledger for a
       // subscription's standing. Constrained at the database for the same reason `environment` is.
       .addCheckConstraint("pithyPaymentsPurchasesRole", sql`role in ('charge', 'state')`)
+      // A resume date only means anything on a paused row. Constrained at the database because it is what
+      // makes the column's null readable: on a paused row null is the provider saying "indefinitely", and
+      // everywhere else it is "not paused" — two facts a consumer has to tell apart, and a rail that wrote
+      // a renewal date or a period end into it would silently collapse them.
+      .addCheckConstraint("pithyPaymentsPurchasesResumes", sql`resumes_at is null or status = 'paused'`)
       .execute();
 
     // The owner read: a user's purchases, newest first.

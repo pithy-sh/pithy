@@ -616,6 +616,7 @@ describe("POST /payments/purchases", () => {
         environment: "production",
         purchasedAt: new Date(didRenew.transaction.purchaseDate).toISOString(),
         expiresAt: new Date(didRenew.transaction.expiresDate).toISOString(),
+        resumesAt: null,
         outcome: "created",
       },
       entitlements: [

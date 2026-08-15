@@ -55,6 +55,13 @@ export const ProviderEvent = z
       .nullable()
       .default(null)
       .describe("When the purchase was refunded or revoked, or null while it stands."),
+    resumesAt: z
+      .date()
+      .nullable()
+      .default(null)
+      .describe(
+        "When a paused subscription resumes, as the provider stated it — never computed, and never set on a status other than `paused`. Null on a paused event is the provider reporting an indefinite pause. Produced only by `pauseResumesAt` in `data/pause.ts`, which is where each rail's source for it is declared.",
+      ),
     originalTransactionId: z
       .string()
       .nullable()

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
+import { pauseResumesAt } from "../../data/pause";
 import type { PurchaseEnvironment } from "../../data/purchase";
 import type { PurchaseStatus } from "../../data/status";
 import { PaymentsVerificationFailedError } from "../../error/errors";
@@ -132,6 +133,17 @@ export const LemonSqueezySubscription = z
     status: z.string().describe("Lemon Squeezy's own status vocabulary, normalized by `subscriptionStatus`."),
     renews_at: z.string().nullish().describe("When the current period renews, if it is going to."),
     ends_at: z.string().nullish().describe("When access ends for a cancelled subscription, if it is ending."),
+    pause: z
+      .object({
+        mode: z.string().nullish().describe("`void` or `free` — what the subscriber keeps while paused. Recorded."),
+        resumes_at: z
+          .string()
+          .nullish()
+          .describe("When the pause ends, as Lemon Squeezy states it. Null for an open-ended pause."),
+      })
+      .loose()
+      .nullish()
+      .describe("The pause in force, when one is. Null while the subscription is not paused."),
     created_at: z.string().describe("When the subscription began."),
     updated_at: z.string().describe("The subscription's own clock — the state row's `providerEventAt`."),
     test_mode: z.boolean().optional().describe("Whether this is a test-mode subscription."),
@@ -299,6 +311,9 @@ export function subscriptionEvent(id: string, subscription: LemonSqueezySubscrip
     purchasedAt: at(subscription.created_at, "a subscription's created_at"),
     expiresAt: ends === null ? null : at(ends, "a subscription's ends_at"),
     revokedAt: null,
+    // Lemon Squeezy's own answer to "when does this come back". Null on the pause object is an open-ended
+    // pause, which `pauseResumesAt` keeps distinct from a subscription that is not paused at all.
+    resumesAt: pauseResumesAt({ rail: "lemonSqueezy", status, reported: subscription.pause?.resumes_at }),
     amountMinor: null,
     currency: null,
     providerEventAt: at(subscription.updated_at, "a subscription's updated_at"),

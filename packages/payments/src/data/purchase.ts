@@ -89,6 +89,9 @@ export const PaymentsPurchase = z
       "When access lapses, or null for a purchase that never expires. Evaluated at read time as well as write time.",
     ),
     revokedAt: SQLiteDate.nullable().describe("When the purchase was refunded or revoked, or null."),
+    resumesAt: SQLiteDate.nullable().describe(
+      "When a paused subscription comes back, as the provider stated it — never computed. Null on a paused row means the provider said none, which is an indefinite pause; null everywhere else means the purchase is not paused, and the table's check constraint is what keeps those two apart. See `data/pause.ts`.",
+    ),
     originalTransactionId: z
       .string()
       .nullable()

@@ -70,6 +70,7 @@ export function purchaseView(projection: PurchaseProjection): PaymentsPurchaseVi
     environment: purchase.environment,
     purchasedAt: purchase.purchasedAt.toISOString(),
     expiresAt: purchase.expiresAt?.toISOString() ?? null,
+    resumesAt: purchase.resumesAt?.toISOString() ?? null,
     outcome: projection.outcome,
   };
 }
@@ -127,6 +128,7 @@ export function adminPurchaseView(purchase: PaymentsPurchaseRecord): PaymentsAdm
     purchasedAt: purchase.purchasedAt.toISOString(),
     expiresAt: purchase.expiresAt?.toISOString() ?? null,
     revokedAt: purchase.revokedAt?.toISOString() ?? null,
+    resumesAt: purchase.resumesAt?.toISOString() ?? null,
     updatedAt: purchase.updatedAt.toISOString(),
   };
 }

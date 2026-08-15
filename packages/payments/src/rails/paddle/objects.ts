@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
+import { pauseResumesAt } from "../../data/pause";
 import type { PurchaseEnvironment } from "../../data/purchase";
 import type { PurchaseStatus } from "../../data/status";
 import { PaymentsVerificationFailedError } from "../../error/errors";
@@ -248,7 +249,18 @@ export const PaddleSubscription = z
     scheduled_change: z
       .object({
         action: z.string().optional().describe("`cancel`, `pause`, or `resume`."),
-        effective_at: z.string().nullish().describe("When it takes effect."),
+        effective_at: z
+          .string()
+          .nullish()
+          .describe(
+            "When it takes effect. On a `resume` action against a paused subscription this is the resume date itself — verified live, see `subscriptionResumesAt`.",
+          ),
+        resume_at: z
+          .string()
+          .nullish()
+          .describe(
+            "When a paused subscription should resume. Paddle documents it as set only on a `pause` action, and a subscription carrying one is still `active` — so it is read for completeness rather than as the field a paused row is filled from.",
+          ),
       })
       .loose()
       .nullish()
@@ -435,6 +447,27 @@ export function transactionEvent(
 }
 
 /**
+ * What Paddle says a paused subscription resumes at, verbatim — or nothing, for an open-ended pause.
+ *
+ * **The date is not in the field named after it**, which is the trap this function exists to hold. Recorded
+ * against a live sandbox on 2026-08-15: pausing immediately with `resume_at: "2026-10-01T00:00:00Z"` leaves
+ * `scheduled_change: { action: "resume", effective_at: "2026-10-01T00:00:00Z", resume_at: null }`. Paddle
+ * turns the request's `resume_at` into a scheduled *resume* whose `effective_at` is the date, and blanks
+ * `resume_at` — that field is populated only while a `pause` is scheduled and the subscription is still
+ * `active`, which is not a paused subscription. Pausing with no resume date leaves `scheduled_change: null`.
+ *
+ * So both spellings are read and the one that means resumption wins. `effective_at` is taken only from a
+ * `resume` action: on a `cancel` it is when access ends, and on a `pause` it is when the pause begins —
+ * writing either into a resume date would be a wrong date in front of a paying customer.
+ */
+export function subscriptionResumesAt(subscription: PaddleSubscription): string | null {
+  const change = subscription.scheduled_change;
+  if (change === null || change === undefined) return null;
+  if (typeof change.resume_at === "string" && change.resume_at !== "") return change.resume_at;
+  return change.action === "resume" ? (change.effective_at ?? null) : null;
+}
+
+/**
  * The state row a subscription implies. Carries no amount — a subscription is not a charge.
  *
  * `expiresAt` is the end of what has been paid for, and which field that is depends on the standing: a
@@ -465,6 +498,7 @@ export function subscriptionEvent(
     purchasedAt: at(subscription.created_at, "a subscription's created_at"),
     expiresAt: maybeAt(ends, "a subscription's period end"),
     revokedAt: null,
+    resumesAt: pauseResumesAt({ rail: "paddle", status, reported: subscriptionResumesAt(subscription) }),
     amountMinor: null,
     currency: null,
     providerEventAt: occurredAt,

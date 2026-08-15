@@ -134,9 +134,11 @@ Every rail's vocabulary maps into nine normalized statuses. Each answers two que
 | `never_paid` | no | no | It terminated before any money cleared. |
 | `refunded` | no | no | Money went back. |
 | `revoked` | no | no | The store took it back. |
-| `paused` | no | yes | A subscription the user suspended. |
+| `paused` | no | yes | A subscription the user suspended. `resumesAt` says when it comes back. |
 
 **`expired` and `never_paid` are the pair to read twice.** They look alike — both are over, neither grants — and they differ on the only question a balance cares about. A bank debit that bounced (`checkout.session.async_payment_failed`), a Stripe subscription abandoned at `incomplete_expired`, a Play deferred purchase cancelled before payment: all three end with no charge, and reading them as `expired` credits a 100-coin pack for money that never arrived — with no clawback ever to follow, because there is nothing to reverse. Apple maps nothing to `never_paid`: StoreKit issues no transaction until the money moves.
+
+**`paused` is a status and a date too, and the date is the answer to the only question a pause raises.** A paused purchase carries `resumesAt`: the instant the *store* said it comes back, never one computed here. Null on a paused row means the store put no end on the pause — Play omits `autoResumeTime`, Paddle leaves `scheduled_change` null, Lemon Squeezy sends `pause.resumes_at: null` — so "paused until the 1st" and "paused indefinitely" stay different sentences, and a row that is not paused can never carry the field at all (a check constraint enforces it). Where each rail reads it, and why Apple and Stripe have nothing to read, is declared once in `PAYMENTS_PAUSE_RESUMPTION` (`data/pause.ts`).
 
 **`in_grace` is a status and a date, and the date is the half that is easy to get wrong.** Grace only grants if `expiresAt` covers the retry window, and the paid period's end is not that date — by the time a store says "grace", the period has already ended. Apple reports the window on the renewal info beside the transaction (`gracePeriodExpiresDate`), so the Apple rail carries the later of the two; reading the transaction alone records a grace period and revokes the subscriber in the same commit, which is the opposite of what grace is for. Stripe and Play each report one expiry that already covers it: Stripe advances `current_period_end` when it invoices the next period, whether or not the charge clears, and Play extends a subscription's `expiryTime` through the grace period.
 

@@ -80,6 +80,7 @@ export const paymentsExampleSeed: SeedSet = defineSeed({
         purchasedAt: CREATED_AT,
         expiresAt: RENEWS_AT,
         revokedAt: null,
+        resumesAt: null,
         // A renewal chains back to the transaction that started the subscription; this is that one.
         originalTransactionId: "2000000512345678",
         amountMinor: 999,
@@ -104,6 +105,7 @@ export const paymentsExampleSeed: SeedSet = defineSeed({
         // Owned forever. Null is what makes the read path stop checking a clock for this one.
         expiresAt: null,
         revokedAt: null,
+        resumesAt: null,
         originalTransactionId: null,
         amountMinor: 299,
         currency: "USD",
@@ -126,6 +128,7 @@ export const paymentsExampleSeed: SeedSet = defineSeed({
         purchasedAt: CREATED_AT,
         expiresAt: null,
         revokedAt: REFUNDED_AT,
+        resumesAt: null,
         originalTransactionId: null,
         amountMinor: 199,
         currency: "USD",

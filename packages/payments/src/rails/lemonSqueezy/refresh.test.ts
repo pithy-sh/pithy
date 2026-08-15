@@ -45,6 +45,7 @@ function stored(overrides: Partial<PaymentsPurchase> = {}): PaymentsPurchase {
     purchasedAt: new Date("2026-01-01T10:00:00.000Z"),
     expiresAt: new Date("2026-02-01T10:00:00.000Z"),
     revokedAt: null,
+    resumesAt: null,
     originalTransactionId: `subscription:${SUBSCRIPTION_ID}`,
     amountMinor: null,
     currency: null,

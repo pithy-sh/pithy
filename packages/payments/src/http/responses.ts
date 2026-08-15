@@ -49,6 +49,12 @@ export const PaymentsPurchaseView = z
     ),
     purchasedAt: z.iso.datetime().describe("When the store recorded the purchase, ISO-8601."),
     expiresAt: z.iso.datetime().nullable().describe("When the entitlement it bought lapses, ISO-8601; null when none."),
+    resumesAt: z.iso
+      .datetime()
+      .nullable()
+      .describe(
+        "When a paused subscription resumes, ISO-8601, as the store stated it. Null with `status` `paused` is a pause the store put no end on; null with any other status means it is not paused.",
+      ),
     outcome: z
       .enum(["created", "updated", "ignored"])
       .describe(
@@ -417,6 +423,12 @@ export const PaymentsAdminPurchaseView = z
     purchasedAt: z.iso.datetime().describe("When the store recorded the purchase, ISO-8601."),
     expiresAt: z.iso.datetime().nullable().describe("When access lapses, ISO-8601; null for one that never does."),
     revokedAt: z.iso.datetime().nullable().describe("When it was refunded or revoked, ISO-8601; null when it was not."),
+    resumesAt: z.iso
+      .datetime()
+      .nullable()
+      .describe(
+        "When a paused subscription resumes, ISO-8601, as the store stated it — never computed here. Null with `status` `paused` is an indefinite pause; null with any other status means it is not paused. A store that never dates a pause says so in the kit's `PAYMENTS_PAUSE_RESUMPTION` table rather than by leaving this ambiguous.",
+      ),
     updatedAt: z.iso
       .datetime()
       .describe("When this row was last projected, ISO-8601 — how an operator tells a live row from a stale one."),

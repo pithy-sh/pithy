@@ -304,6 +304,8 @@ describe("playSubscriptionEvent", () => {
         purchasedAt: new Date("2026-01-01T00:00:00Z"),
         expiresAt: new Date("2026-02-01T00:00:00Z"),
         revokedAt: null,
+        // Not paused, so nothing resumes. Play's pause context is read only on a paused subscription.
+        resumesAt: null,
         // The token is the family key, so a renewal's owner resolves from the purchase that started it.
         originalTransactionId: TOKEN,
         // Play's purchase API reports no price, which is what these columns are nullable for.
@@ -345,6 +347,47 @@ describe("playSubscriptionEvent", () => {
     const event = playSubscriptionEvent(purchase, context).event;
     expect(event.status).toBe("paused");
     expect(event.expiresAt).toBeNull();
+    // #369: Play states when it comes back, and until this landed the date was parsed and dropped — it
+    // survived only inside the opaque payload, so the one sentence a pause letter wants could not be
+    // written. The literal is Play's own string; nothing here adds a duration to anything.
+    expect(event.resumesAt).toEqual(new Date("2026-03-01T00:00:00.000Z"));
+  });
+
+  test("a pause Play put no end on is indefinite, and says so with a null rather than a guess", () => {
+    // Play omits `autoResumeTime` for an indefinite pause. "Paused until the 14th" and "paused
+    // indefinitely" are different sentences, and the difference has to survive the projection.
+    const purchase = {
+      ...playSubscription,
+      subscriptionState: "SUBSCRIPTION_STATE_PAUSED",
+      pausedStateContext: {},
+      lineItems: [{ productId: "pro_monthly" }],
+    };
+    const event = playSubscriptionEvent(purchase, context).event;
+    expect(event.status).toBe("paused");
+    expect(event.resumesAt).toBeNull();
+    // And not the period end standing in for it: that is a period end, not a resumption, and the whole
+    // reason the adopter's letter refused to name one.
+    expect(event.expiresAt).toBeNull();
+  });
+
+  test("a subscription that is not paused carries no resume date, whatever Play left in the context", () => {
+    // A stale `pausedStateContext` on an active subscription must not produce "active until it resumes".
+    const purchase = {
+      ...playSubscription,
+      subscriptionState: "SUBSCRIPTION_STATE_ACTIVE",
+      pausedStateContext: { autoResumeTime: "2026-03-01T00:00:00Z" },
+    };
+    expect(playSubscriptionEvent(purchase, context).event.resumesAt).toBeNull();
+  });
+
+  test("an unreadable resume date is refused rather than becoming an Invalid Date", () => {
+    const purchase = {
+      ...playSubscription,
+      subscriptionState: "SUBSCRIPTION_STATE_PAUSED",
+      pausedStateContext: { autoResumeTime: "soon" },
+      lineItems: [{ productId: "pro_monthly" }],
+    };
+    expect(() => playSubscriptionEvent(purchase, context)).toThrow(PaymentsVerificationFailedError);
   });
 
   test("a subscription with no order yet is keyed on its token", () => {
@@ -514,6 +557,7 @@ describe("refreshPlayPurchase", () => {
       purchasedAt: new Date("2026-01-01T00:00:00.000Z"),
       expiresAt: new Date("2026-02-01T00:00:00.000Z"),
       revokedAt: null,
+      resumesAt: null,
       // Play's family key is the purchase token, which is what makes a stored row addressable at all.
       originalTransactionId: TOKEN,
       amountMinor: null,

@@ -48,6 +48,9 @@ describe("UnboundProviderEvent", () => {
       userId: "user-1",
       expiresAt: new Date("2026-02-01T00:00:00.000Z"),
       revokedAt: null,
+      // Null because this event is not paused. A resume date beside a live subscription is the one thing
+      // the field may never carry — see `data/pause.ts`.
+      resumesAt: null,
       originalTransactionId: "2000000617339002",
       amountMinor: 499,
       currency: "USD",

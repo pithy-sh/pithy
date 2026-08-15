@@ -428,6 +428,56 @@ describe("projectPurchase — the derived read model", () => {
     expect(refunded.entitlements.map((e) => e.active)).toEqual([false]);
   });
 
+  test("a pause's resume date reaches the row, and the next event clears it (#369)", async () => {
+    // The whole point of the issue: the date a provider stated must be readable from the row rather than
+    // buried in `payload`. The literal is what a rail would have handed over; nothing derives it.
+    const RESUMES = new Date("2026-10-01T00:00:00.000Z");
+    const paused = await project(
+      event({ status: "paused", expiresAt: null, resumesAt: RESUMES, providerEventAt: new Date(T0 + SECOND) }),
+    );
+    expect(paused.purchase.status).toBe("paused");
+    expect(paused.purchase.resumesAt).toEqual(RESUMES);
+
+    // An indefinite pause on the same row: the provider stopped naming a date, and the column follows.
+    const indefinite = await project(
+      event({ status: "paused", expiresAt: null, resumesAt: null, providerEventAt: new Date(T0 + 2 * SECOND) }),
+    );
+    expect(indefinite.purchase.resumesAt).toBeNull();
+
+    // And when it resumes, the row says active with nothing pending. A stale date here would tell a
+    // subscriber their live subscription is coming back.
+    const resumed = await project(
+      event({ status: "active", expiresAt: new Date(T0 + 30 * DAY), providerEventAt: new Date(T0 + 3 * SECOND) }),
+    );
+    expect(resumed.purchase.status).toBe("active");
+    expect(resumed.purchase.resumesAt).toBeNull();
+  });
+
+  test("the database refuses a resume date on a row that is not paused", async () => {
+    // Written as raw SQL against the table rather than through the writer, because the writer cannot
+    // produce this row — `pauseResumesAt` withholds the date on every other status. The constraint is what
+    // makes the column's null readable: on a paused row it means indefinite, everywhere else not paused.
+    await expect(
+      env.DB.prepare(
+        "INSERT INTO pithy_payments_purchases (id, user_id, rail, provider_transaction_id, product_id, provider_product_id, type, status, role, environment, purchased_at, expires_at, revoked_at, resumes_at, original_transaction_id, amount_minor, currency, provider_event_at, payload, created_at, updated_at) VALUES ('p-planted', 'ada', 'apple', 'txn-planted', 'pro_monthly', 'com.acme.pro.monthly', 'subscription', 'active', 'charge', 'production', ?, null, null, ?, null, null, null, ?, '{}', ?, ?)",
+      )
+        .bind(T0, Date.UTC(2026, 9, 1), T0, T0, T0)
+        .run(),
+    ).rejects.toThrow(/CHECK constraint failed/i);
+
+    // The same row with the status the date belongs to is accepted, so the refusal is the constraint and
+    // not the statement being malformed.
+    await env.DB.prepare(
+      "INSERT INTO pithy_payments_purchases (id, user_id, rail, provider_transaction_id, product_id, provider_product_id, type, status, role, environment, purchased_at, expires_at, revoked_at, resumes_at, original_transaction_id, amount_minor, currency, provider_event_at, payload, created_at, updated_at) VALUES ('p-planted', 'ada', 'apple', 'txn-planted', 'pro_monthly', 'com.acme.pro.monthly', 'subscription', 'paused', 'charge', 'production', ?, null, null, ?, null, null, null, ?, '{}', ?, ?)",
+    )
+      .bind(T0, Date.UTC(2026, 9, 1), T0, T0, T0)
+      .run();
+    const { results } = await env.DB.prepare(
+      "SELECT resumes_at FROM pithy_payments_purchases WHERE id = 'p-planted'",
+    ).all<{ resumes_at: number }>();
+    expect(results[0]?.resumes_at).toBe(Date.UTC(2026, 9, 1));
+  });
+
   test("one lapsed purchase does not revoke an entitlement another purchase still grants", async () => {
     await project(event({ providerTransactionId: "txn-m", expiresAt: new Date(T0 + 30 * DAY) }));
     await project(
@@ -686,6 +736,7 @@ describe("upsertPurchaseStatement — the guards the database applies at commit"
       purchasedAt: new Date(T0),
       expiresAt: new Date(T0 + 30 * DAY),
       revokedAt: null,
+      resumesAt: null,
       originalTransactionId: null,
       amountMinor: null,
       currency: null,

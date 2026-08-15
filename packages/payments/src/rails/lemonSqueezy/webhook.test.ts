@@ -151,6 +151,43 @@ describe("subscription-domain events — the state row", () => {
       parse(await subscriptionDelivery("subscription_updated", { status: "hibernating" })),
     ).rejects.toBeInstanceOf(PithyError);
   });
+
+  test("a paused subscription carries the store's own resume date (#369)", async () => {
+    // The third rail with this field, found by the sweep the issue asked for: Lemon Squeezy states it on
+    // the pause object and this package never read it. The literal is the store's string, not a duration
+    // added to anything in the fixture.
+    const notification = await parse(
+      await subscriptionDelivery("subscription_paused", {
+        status: "paused",
+        pause: { mode: "void", resumes_at: "2026-10-01T00:00:00.000000Z" },
+      }),
+    );
+    expect(notification.event?.status).toBe("paused");
+    expect(notification.event?.resumesAt).toEqual(new Date("2026-10-01T00:00:00.000Z"));
+  });
+
+  test("a pause with no end date is indefinite rather than undated by us", async () => {
+    const notification = await parse(
+      await subscriptionDelivery("subscription_paused", {
+        status: "paused",
+        pause: { mode: "free", resumes_at: null },
+      }),
+    );
+    expect(notification.event?.status).toBe("paused");
+    expect(notification.event?.resumesAt).toBeNull();
+  });
+
+  test("a subscription that is not paused carries no resume date, whatever the pause object says", async () => {
+    // An unpaused subscription with a stale `pause` block must not read as "active until it resumes".
+    const notification = await parse(
+      await subscriptionDelivery("subscription_unpaused", {
+        status: "active",
+        pause: { mode: "void", resumes_at: "2026-10-01T00:00:00.000000Z" },
+      }),
+    );
+    expect(notification.event?.status).toBe("active");
+    expect(notification.event?.resumesAt).toBeNull();
+  });
 });
 
 describe("invoice-domain events — the money row", () => {

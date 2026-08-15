@@ -179,8 +179,9 @@ async function purchase(options: {
   sku: string;
   transaction: string;
   at: Date;
-  status?: "active" | "refunded" | "expired";
+  status?: "active" | "refunded" | "expired" | "paused";
   expires?: Date | null;
+  resumes?: Date | null;
   amount?: number;
 }): Promise<void> {
   await projectPurchase(
@@ -194,6 +195,7 @@ async function purchase(options: {
       environment: "production",
       purchasedAt: options.at,
       expiresAt: options.expires ?? null,
+      resumesAt: options.resumes ?? null,
       providerEventAt: options.at,
       amountMinor: options.amount ?? 999,
       currency: "USD",
@@ -477,6 +479,7 @@ const PUBLISHED_PURCHASE_KEYS = [
   "purchasedAt",
   "expiresAt",
   "revokedAt",
+  "resumesAt",
   "updatedAt",
 ];
 
@@ -745,6 +748,48 @@ describe("GET /payments/admin/subscriptions", () => {
     expect(body.subscriptions.map((s) => s.providerTransactionId)).toEqual(["sub-1"]);
     // The forward-looking fact a subscriptions pane is opened to find out.
     expect(body.subscriptions[0]?.expiresAt).toBe(new Date("2026-07-01").toISOString());
+  });
+
+  test("a paused subscription says when it comes back, and an indefinite one says it does not (#369)", async () => {
+    // The read the first adopter's letter is written from. Before this, a paused subscription reached a
+    // management client with `status: "paused"` and no date anywhere — the value was in the row's payload,
+    // which no management query selects, so the letter could only say we do not hold it.
+    //
+    // The rail here is this file's Apple fixture, and it is beside the point: the read is rail-agnostic,
+    // and which stores can produce a paused row at all is `data/pause.ts`'s question, asserted there.
+    const RESUMES = new Date("2026-10-01T00:00:00.000Z");
+    await purchase({
+      user: "ada",
+      sku: "com.acme.pro.monthly",
+      transaction: "sub-paused",
+      at: new Date("2026-06-01"),
+      status: "paused",
+      resumes: RESUMES,
+    });
+    await purchase({
+      user: "grace",
+      sku: "com.acme.pro.monthly",
+      transaction: "sub-indefinite",
+      at: new Date("2026-06-02"),
+      status: "paused",
+    });
+
+    const body = PaymentsAdminSubscriptionsResponse.parse(
+      await (
+        await call(
+          makeApp([PAYMENTS_SUBSCRIPTIONS_READ_SCOPE]),
+          "/payments/admin/subscriptions",
+          PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
+        )
+      ).json(),
+    );
+    const dated = body.subscriptions.find((s) => s.providerTransactionId === "sub-paused");
+    const indefinite = body.subscriptions.find((s) => s.providerTransactionId === "sub-indefinite");
+    expect(dated?.resumesAt).toBe(RESUMES.toISOString());
+    // Both are paused. The date is what separates "paused until the 1st" from "paused indefinitely", and
+    // an adopter writing either sentence needs both halves to survive the trip.
+    expect(indefinite?.status).toBe("paused");
+    expect(indefinite?.resumesAt).toBeNull();
   });
 
   test("the subscription scope does not open the purchase log", async () => {
