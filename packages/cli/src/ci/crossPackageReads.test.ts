@@ -116,7 +116,20 @@ describe("what CI plans for a change", () => {
       // `--affected` anyway; asserting them as a batch would hide the ones that are not.
       expect(await filtersFor([manifest])).toContain("--filter=@pithy-sh/cli");
     }
-  });
+    // **A hang ceiling, from the #361 population sweep — this was the next case due to go red.**
+    // Every `filtersFor` spawns `scripts/planShards.ts` afresh, so this case is one full bun start and
+    // one full tree walk *per manifest*, twenty-odd of them in a row. Measured: 8,692ms at load average
+    // 16, against the config's 30,000ms default — a 3.45x margin, already inside the band that
+    // `dashboard#63` measured for this machine. Under `bun run test --force` at load 66 this file went
+    // from 13,278ms to 40,165ms (3.0x), which puts this case around 26s. It passed by about 13%.
+    //
+    // 120_000 matches the other spawn-heavy cases in this package and is ~14x the measured cost, so it
+    // catches a hang and nothing else. **The real fix is upstream of the budget and is not done here:**
+    // the twenty-odd spawns ask the same script the same kind of question and re-walk the same
+    // unchanged tree every time, which is `dashboard#63`'s doubled work exactly. A `--filters` mode that
+    // answered many change-sets from one walk would take this case to a single spawn. That is a change
+    // to a CI script rather than to a test, so it belongs in its own issue with its own review.
+  }, 120_000);
 
   test("editing the starter template still plans the CLI (#148, kept)", async () => {
     expect(await filtersFor(["templates/starter/pithy.config.ts"])).toContain("--filter=@pithy-sh/cli");

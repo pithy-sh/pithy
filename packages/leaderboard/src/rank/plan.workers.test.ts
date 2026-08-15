@@ -9,7 +9,7 @@ import { beforeAll, describe, expect, test } from "vitest";
 import { LEADERBOARD_MIGRATION_ORDER } from "../capability";
 import type { LeaderboardBoard } from "../config/config";
 import { leaderboardDatabase } from "../data/tables";
-import { entryStore } from "../entry/store";
+import { submitQuery } from "../entry/store";
 import { leaderboard_0001_entries } from "../migrations/0001_entries";
 import { rankCountQuery } from "./query";
 
@@ -62,11 +62,34 @@ beforeAll(async () => {
   await runMigrations(env.DB, provider());
   // Enough rows, spread across boards and windows, that a full scan is measurably the wrong plan and
   // SQLite has a reason to reach for the index.
-  const store = entryStore(leaderboardDatabase(env.DB));
+  //
+  // **Batched, and that is the fix for #361, not a tidy-up.** This hook used to `await store.submit(...)`
+  // twice per iteration for two hundred iterations — **four hundred sequential D1 round trips** before a
+  // single assertion — and it answers to vitest's default `hookTimeout` of **10,000ms**, which no
+  // per-test budget governs. Measured: `bun run test --force` on this box under a real parallel load
+  // (load average 66) failed this file with `Hook timed out in 10000ms`, while the package's slowest
+  // *case* is 2,441ms, so nothing about a test body was ever near a limit. Four hundred round trips at a
+  // few milliseconds each sit just under 10s on a quiet machine and over it on a busy one; that is
+  // arithmetic, not flake.
+  //
+  // The same rows, written in batches, cost four round trips instead of four hundred. Measured on this
+  // box at the same load average, one statement per round trip against `PER_BATCH` of them:
+  // **3,070 / 3,060 / 3,690 ms** versus **269 / 275 / 273 ms** — an 11x cut, and the hook goes from a
+  // 3.1x margin under its 10s budget to a 36x one. `submitQuery` is already exported for compiling
+  // (`writeAmplification.workers.test.ts` reads `meta.rows_written` from it), so this is the real
+  // statement, not an approximation of it. Every `u${i}` is distinct, so no submission in a batch
+  // conflicts with another and the upsert resolution is identical either way.
+  const db = leaderboardDatabase(env.DB);
+  const statements = [];
   for (let i = 0; i < 200; i++) {
-    await store.submit(board, "all", `u${i}`, i, new Date(T0.getTime() + i), true);
-    await store.submit({ ...board, key: "b2" }, "all", `u${i}`, i, new Date(T0.getTime() + i), true);
+    for (const on of [board, { ...board, key: "b2" }]) {
+      const { sql, parameters } = submitQuery(db, on, "all", `u${i}`, i, new Date(T0.getTime() + i), true).compile();
+      statements.push(env.DB.prepare(sql).bind(...parameters));
+    }
   }
+  /** Statements per `batch`. Four round trips for the four hundred rows, rather than four hundred. */
+  const PER_BATCH = 100;
+  for (let i = 0; i < statements.length; i += PER_BATCH) await env.DB.batch(statements.slice(i, i + PER_BATCH));
   await env.DB.exec("ANALYZE");
 });
 
