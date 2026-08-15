@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import type { D1Database } from "@cloudflare/workers-types";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { MigrationProvider } from "kysely/migration";
@@ -41,6 +42,33 @@ function boardAt(c: LeaderboardConfig, index: number): LeaderboardBoard {
   return found;
 }
 
+/**
+ * A D1 that refuses every statement bound to one board's key — a table this board's query touches gone,
+ * a read the account stopped answering. Everything else goes to the real database.
+ *
+ * Wrapped rather than mocked so the sibling boards run against real D1 through Kysely exactly as they do
+ * in production; only the one board's round trip is poisoned.
+ */
+function d1RefusingBoard(base: D1Database, boardKey: string): D1Database {
+  const wrap = <T extends object>(target: T, key: string, replacement: (...args: never[]) => unknown): T =>
+    new Proxy(target, {
+      get(object, property, receiver) {
+        if (property === key) return replacement;
+        const value = Reflect.get(object, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(object) : value;
+      },
+    });
+  return wrap(base, "prepare", (sql: never) => {
+    const statement = base.prepare(sql);
+    return wrap(statement, "bind", (...values: never[]) => {
+      if (values.includes(boardKey as never)) {
+        throw new Error(`D1_ERROR: no such column: rank_of_${boardKey} at offset 42`);
+      }
+      return statement.bind(...values);
+    });
+  });
+}
+
 beforeEach(async () => {
   for (const t of [
     "pithy_leaderboard_entries",
@@ -65,7 +93,7 @@ describe("runRankPass", () => {
       await store.submit(b, windowKeyAt(DAILY, day), "u1", 10, day, true);
     }
     const result = await runRankPass(env.DB, c, NOW);
-    expect(result.pruned).toBe(3);
+    expect(result.pruned).toEqual({ state: "pruned", deleted: 3 });
     expect(result.refreshed).toEqual([]);
   });
 
@@ -75,7 +103,7 @@ describe("runRankPass", () => {
     for (let i = 0; i < 5; i++) await store.submit(boardAt(c, 0), "all", `u${i}`, 100 - i, NOW, true);
     const result = await runRankPass(env.DB, c, NOW);
     expect(result.refreshed).toEqual([
-      { board: "b1", window: "all", ranked: 5, chunks: 1, complete: true, cursor: null },
+      { state: "refreshed", board: "b1", window: "all", ranked: 5, chunks: 1, complete: true, cursor: null },
     ]);
     const { results } = await env.DB.prepare(
       "SELECT user_id, rank FROM pithy_leaderboard_entries WHERE user_id = 'u0'",
@@ -126,7 +154,11 @@ describe("runRankPass", () => {
       await store.submit(boardAt(c, 0), "all", `u${String(i).padStart(4, "0")}`, i, NOW, true);
     await store.submit(boardAt(c, 1), "all", "v1", 1, NOW, true);
     const result = await runRankPass(env.DB, c, NOW);
-    expect(result.refreshed.map((r) => [r.board, r.ranked, r.complete])).toEqual([
+    expect(
+      result.refreshed.map((r) =>
+        r.state === "refreshed" ? [r.board, r.ranked, r.complete] : [r.board, "unavailable"],
+      ),
+    ).toEqual([
       ["b1", big, true],
       ["b2", 1, true],
     ]);
@@ -139,9 +171,44 @@ describe("runRankPass", () => {
     expect(results[0]?.rank).toBe(big);
   });
 
+  /**
+   * The #371 gate. One board's refresh throws; the pass keeps every sibling and the sweep beside them.
+   *
+   * Asserted on the value in both directions the issue asks for: the sibling board's numbers are still
+   * there (it was not blanked), and the sick board does not read as a board that ranked nobody.
+   */
+  test("a board whose refresh throws costs its own entry, never its siblings", async () => {
+    const c = config({
+      boards: [
+        { key: "b1", direction: "desc" },
+        { key: "b2", direction: "desc" },
+      ],
+      rank: { materialize: "0 * * * *" },
+    });
+    const store = entryStore(leaderboardDatabase(env.DB));
+    await store.submit(boardAt(c, 0), "all", "u1", 10, NOW, true);
+    await store.submit(boardAt(c, 1), "all", "v1", 10, NOW, true);
+
+    const result = await runRankPass(d1RefusingBoard(env.DB, "b1"), c, NOW);
+
+    expect(result.refreshed).toEqual([
+      { state: "unavailable", board: "b1", window: "all" },
+      { state: "refreshed", board: "b2", window: "all", ranked: 1, chunks: 1, complete: true, cursor: null },
+    ]);
+    // The sick board is not a board that ranked nobody: `unavailable` carries no `ranked` at all, so no
+    // consumer can read a zero off it.
+    const sick = result.refreshed[0];
+    expect(sick?.state).toBe("unavailable");
+    expect(sick && "ranked" in sick).toBe(false);
+    // The sweep beside it still reported.
+    expect(result.pruned).toEqual({ state: "pruned", deleted: 0 });
+    // And nothing the D1 failure said travels.
+    expect(JSON.stringify(result)).not.toMatch(/rank_of_|offset 42|D1_ERROR/);
+  });
+
   test("does nothing on an all-time live board set — the case that needs no worker at all", async () => {
     const c = config({ boards: [{ key: "b1", direction: "desc" }] });
     await entryStore(leaderboardDatabase(env.DB)).submit(boardAt(c, 0), "all", "u1", 10, NOW, true);
-    expect(await runRankPass(env.DB, c, NOW)).toEqual({ pruned: 0, refreshed: [] });
+    expect(await runRankPass(env.DB, c, NOW)).toEqual({ pruned: { state: "pruned", deleted: 0 }, refreshed: [] });
   });
 });
