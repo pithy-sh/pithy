@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { reportFixtureEstate } from "./fixtures";
+import { fixtureValue, reportFixtureEstate, resolveFixture } from "./fixtures";
 import { loadIntegrationCreds } from "./harness";
 import { reapAllStaleTestResources } from "./reap";
 
@@ -31,8 +31,13 @@ export default async function setup(): Promise<void> {
   const creds = loadIntegrationCreds();
   if (!creds.hasCreds) return;
 
+  // The one zone-scoped kind. The fixture is the only thing that may name a zone this run is allowed to
+  // edit routing on; without it, that kind reports itself skipped rather than guessing.
+  const routing = resolveFixture("email-routing");
+  const emailRoutingZoneId = routing.ready ? fixtureValue("email-routing", "EMAIL_ROUTING_ZONE_ID") : undefined;
+
   try {
-    await reapAllStaleTestResources(creds);
+    await reapAllStaleTestResources(creds, { emailRoutingZoneId });
   } catch (error) {
     // Deliberately swallowed, and reported. The sweep is a courtesy to the next run; a run that cannot
     // sweep is still a run worth having.
