@@ -5,8 +5,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { operatorError, renderTerminal } from "@pithy-sh/core/src/error/terminal";
 import { classifiedSteps, type WorkflowRetryPolicy } from "@pithy-sh/core/src/workflow/faults";
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import type { CloudflareRequestError } from "../client/errors";
-import { kitSentence, stepFailure } from "./stepFailure";
+import { kitSentence, stepFailure, terminalWorkflowError } from "./stepFailure";
 import { CloudflareWorkflowsClient } from "./workflowsClient";
 
 const mockCreate = vi.fn();
@@ -312,6 +311,65 @@ const EXPECTED_ACTION: Readonly<Record<(typeof CAPTURE_NAMES)[number], string | 
 });
 
 /**
+ * **The code the operator must read, per capture** (pithy-sh/pithy#365).
+ *
+ * Literals, written by hand from what each step raised — never `kitErrorStatus`, never a value read
+ * back out of `terminalWorkflowError`. A gate that asks the boundary what code it produces agrees
+ * with the boundary, which is exactly how every one of these came to be `cloudflare/request_failed`
+ * without a test noticing.
+ *
+ * Two answers, and the reason for each is the whole of the fix:
+ *
+ * - A **kit code recovered from the step's text** — `secrets/already_exists`, `secrets/invalid_value`.
+ *   The raising error's own, so the operator is pointed at the secret, not at Cloudflare.
+ * - `core/workflow_failed` where nothing is attributable: `threeLines` (a shape the encoding never
+ *   writes, declined whole), `foreign` (no code in the text at all), and `retried` — a bare
+ *   `PithyError` throw, whose recorded text is `payload.message` and has never carried a code.
+ */
+const EXPECTED_CODE: Readonly<Record<(typeof CAPTURE_NAMES)[number], string>> = Object.freeze({
+  terminal: "secrets/already_exists",
+  twoSteps: "secrets/already_exists",
+  terminalWithAction: "secrets/already_exists",
+  quotedWithAction: "secrets/invalid_value",
+  threeLines: "core/workflow_failed",
+  quoted: "secrets/invalid_value",
+  retried: "core/workflow_failed",
+  foreign: "core/workflow_failed",
+});
+
+/**
+ * **The status the operator must read, per capture.** Hand-written literals, for the same reason.
+ *
+ * `409` is the number the bug was about: `secrets/already_exists` is a conflict, it arrived as a 502,
+ * and 502 tells every retry loop and every operator that the far side is broken and to try later. It
+ * is written here as `409` and not as anything computed from the code beside it.
+ */
+const EXPECTED_STATUS: Readonly<Record<(typeof CAPTURE_NAMES)[number], number>> = Object.freeze({
+  terminal: 409,
+  twoSteps: 409,
+  terminalWithAction: 409,
+  quotedWithAction: 400,
+  threeLines: 500,
+  quoted: 400,
+  retried: 500,
+  foreign: 500,
+});
+
+/**
+ * The codes a failure of the **transport** arrives under — the dispatch or a poll that could not be
+ * delivered, or was answered with a shape nobody expected — plus the one for a wait this client gave
+ * up on. Written down here, and asserted disjoint from every code above.
+ *
+ * That disjointness *is* the machine-readable half of the fix. A reader deciding whether to wait, to
+ * retry, or to go and change something must be able to decide on `code` alone; while a terminal
+ * Workflow fault and a dead REST call shared `cloudflare/request_failed`, no reader could.
+ */
+const TRANSPORT_CODES = Object.freeze(["cloudflare/request_failed", "cloudflare/invalid_response"] as const);
+
+/** The code for a poll budget this client exhausted. Not terminal: the instance may still finish. */
+const GAVE_UP_CODE = "core/upstream_timeout";
+
+/**
  * Name a sentence, or refuse to. **Throwing is the point**: a sentence this cannot place is neither
  * proved safe nor proved leaked, and returning "not platform" for it would let an unrecognised shape
  * ride through green. Every string it can name is a literal above.
@@ -326,12 +384,12 @@ function verdict(sentence: string): "kit" | "platform" {
 }
 
 /** The error a real `dispatchAndPoll` hands the operator for one captured instance. */
-async function operatorFailure(instance: unknown): Promise<CloudflareRequestError> {
+async function operatorFailure(instance: unknown): Promise<PithyError> {
   mockCreate.mockResolvedValue({ id: "wf-1", status: "queued" });
   mockGet.mockResolvedValue(instance);
   const client = new CloudflareWorkflowsClient({ accountId: "acc", apiToken: "tok", sleeper: async () => {} });
   const error = await client.dispatchAndPoll("secrets-write", { secret: "TOPSECRET" }).catch((e: unknown) => e);
-  return error as CloudflareRequestError;
+  return error as PithyError;
 }
 
 /** The message a real `dispatchAndPoll` hands the operator for one captured instance. */
@@ -378,16 +436,133 @@ describe("the operator reads the step's sentence, not the platform's", () => {
     });
   }
 
+  for (const name of CAPTURE_NAMES) {
+    test(`${name}: the operator reads the stated code and status, not the transport's (#365)`, async () => {
+      const payload = (await operatorFailure(CAPTURED[name])).payload;
+      expect(payload.code).toBe(EXPECTED_CODE[name]);
+      expect(payload.status).toBe(EXPECTED_STATUS[name]);
+      // And the `--json` line the CLI prints, which is where the wrong pair was read off a real run.
+      const json = operatorError(payload);
+      expect(json.code).toBe(EXPECTED_CODE[name]);
+      expect(json.status).toBe(EXPECTED_STATUS[name]);
+    });
+
+    test(`${name}: a terminal Workflow fault is not reported under a transport code`, async () => {
+      const payload = (await operatorFailure(CAPTURED[name])).payload;
+      expect(TRANSPORT_CODES).not.toContain(payload.code);
+      expect(payload.code).not.toBe(GAVE_UP_CODE);
+      // The status half of the same statement. 502 is the transport's, 504 is the give-up.
+      expect(payload.status).not.toBe(502);
+      expect(payload.status).not.toBe(504);
+    });
+  }
+
+  test("a dispatch that could not be delivered still reports as a transport failure (#365)", async () => {
+    // The far end never ran. Nothing was terminal here, and the code must say so.
+    mockCreate.mockRejectedValue(new Error("ECONNRESET"));
+    const client = new CloudflareWorkflowsClient({ accountId: "acc", apiToken: "tok", sleeper: async () => {} });
+    const error = await client.dispatchAndPoll("secrets-write", { secret: "TOPSECRET" }).catch((e: unknown) => e);
+    const payload = (error as PithyError).payload;
+    expect(payload.code).toBe("cloudflare/request_failed");
+    expect(payload.status).toBe(502);
+    expect(payload.detail).not.toContain("TOPSECRET");
+  });
+
+  test("a poll budget this client exhausted is not a terminal fault (#365)", async () => {
+    // The instance is still running. Reporting it terminally, or as a dead transport, are both lies.
+    mockCreate.mockResolvedValue({ id: "wf-1", status: "queued" });
+    mockGet.mockResolvedValue({ status: "running" });
+    const client = new CloudflareWorkflowsClient({ accountId: "acc", apiToken: "tok", sleeper: async () => {} });
+    const error = await client
+      .dispatchAndPoll("secrets-write", { secret: "TOPSECRET" }, { maxPolls: 2 })
+      .catch((e: unknown) => e);
+    const payload = (error as PithyError).payload;
+    expect(payload.code).toBe(GAVE_UP_CODE);
+    expect(payload.status).toBe(504);
+    expect(payload.detail).not.toContain("TOPSECRET");
+  });
+
+  test("the three outcomes are told apart on `code` alone, with no prose read", async () => {
+    // The whole acceptance, in one place: every code a terminal Workflow failure can arrive under,
+    // against every code the transport and the give-up can. Disjoint, or the distinction is prose.
+    const terminal = new Set(Object.values(EXPECTED_CODE));
+    const notTerminal = new Set<string>([...TRANSPORT_CODES, GAVE_UP_CODE]);
+    expect([...terminal].filter((code) => notTerminal.has(code))).toEqual([]);
+    // And the terminal set really does hold the raising errors' own codes, not one house code.
+    expect(terminal.has("secrets/already_exists")).toBe(true);
+    expect(terminal.has("secrets/invalid_value")).toBe(true);
+  });
+
   test("the raw platform text is still in detail, and the dispatched params never are", async () => {
     mockCreate.mockResolvedValue({ id: "wf-1", status: "queued" });
     mockGet.mockResolvedValue(CAPTURED.terminal);
     const client = new CloudflareWorkflowsClient({ accountId: "acc", apiToken: "tok", sleeper: async () => {} });
     const error = await client.dispatchAndPoll("secrets-write", { secret: "TOPSECRET" }).catch((e: unknown) => e);
-    const payload = (error as CloudflareRequestError).payload;
+    const payload = (error as PithyError).payload;
     expect(payload.detail).toContain("Step threw a NonRetryableError");
     expect(payload.detail).toContain("secrets/already_exists");
     expect(payload.detail).toContain("write-secret-1");
     expect(payload.detail).not.toContain("TOPSECRET");
+  });
+});
+
+/**
+ * **A code recovered from a far Worker is a string, and the boundary must survive every string**
+ * (pithy-sh/pithy#365).
+ *
+ * `terminalWorkflowError` builds a payload out of a code it read from text somebody else's Worker
+ * wrote. Two of those codes would throw if the payload were trusted rather than parsed — and this is
+ * the error path, where a throw replaces a diagnosis with a stack trace about the diagnosis.
+ */
+describe("a recovered code that cannot become a payload does not take the error path down", () => {
+  test("a kit code needing a field this boundary cannot supply falls back, keeping the sentence", () => {
+    // `validation/invalid_input` requires `issues`, which no step encoding carries and which must not
+    // be fabricated. So the code falls back and the step's own sentence and remedy still travel.
+    const error = terminalWorkflowError({
+      failure: {
+        raw: 'Step threw a NonRetryableError with message "NonRetryableError: validation/invalid_input: Bad."',
+        code: "validation/invalid_input",
+        sentence: "Bad.",
+        action: "Fix the field.",
+      },
+      fallbackMessage: "Workflow w did not complete (errored).",
+      detail: "instance i ended errored",
+    });
+    expect(error.payload.code).toBe("core/workflow_failed");
+    expect(error.payload.status).toBe(500);
+    expect(error.payload.message).toBe("Bad.");
+    expect(error.payload.action).toBe("Fix the field.");
+  });
+
+  test("an adopter's own code has no status the kit can pin, so it does not become one", () => {
+    // Guessing here is exactly the move that attached 502 to a 409. The sentence still travels.
+    const error = terminalWorkflowError({
+      failure: {
+        raw: 'Step threw a NonRetryableError with message "NonRetryableError: connect/device_code_expired: Gone."',
+        code: "connect/device_code_expired",
+        sentence: "Gone.",
+      },
+      fallbackMessage: "Workflow w did not complete (errored).",
+      detail: "instance i ended errored",
+    });
+    expect(error.payload.code).toBe("core/workflow_failed");
+    expect(error.payload.status).toBe(500);
+    expect(error.payload.message).toBe("Gone.");
+  });
+
+  test("a kit code that does parse arrives whole — the guard is not refusing everything", () => {
+    // The negative cases above are only meaningful if the positive one still gets through.
+    const error = terminalWorkflowError({
+      failure: {
+        raw: 'Step threw a NonRetryableError with message "NonRetryableError: secrets/already_exists: Exists."',
+        code: "secrets/already_exists",
+        sentence: "Exists.",
+      },
+      fallbackMessage: "Workflow w did not complete (errored).",
+      detail: "instance i ended errored",
+    });
+    expect(error.payload.code).toBe("secrets/already_exists");
+    expect(error.payload.status).toBe(409);
   });
 });
 

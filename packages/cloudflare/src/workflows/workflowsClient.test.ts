@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { CloudflareNotConfiguredError, CloudflareRequestError } from "../client/errors";
 import { CloudflareWorkflowsClient } from "./workflowsClient";
@@ -123,8 +124,11 @@ describe("CloudflareWorkflowsClient", () => {
     const error = await client()
       .dispatchAndPoll("secrets-write", { secret: "TOPSECRET" })
       .catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(CloudflareRequestError);
-    const payload = (error as CloudflareRequestError).payload;
+    // An instance with no steps at all: the run ended, and nothing about why is attributable. Terminal,
+    // and reported as such — not as the transport failure it used to be (pithy-sh/pithy#365).
+    const payload = (error as PithyError).payload;
+    expect(payload.code).toBe("core/workflow_failed");
+    expect(payload.status).toBe(500);
     expect(payload.detail).toContain("decrypt failed");
     expect(payload.detail).not.toContain("TOPSECRET");
   });
@@ -135,9 +139,12 @@ describe("CloudflareWorkflowsClient", () => {
     const error = await client()
       .dispatchAndPoll("secrets-write", { secret: "TOPSECRET" })
       .catch((e: unknown) => e);
-    const payload = (error as CloudflareRequestError).payload;
+    const payload = (error as PithyError).payload;
     expect(payload.message).toBe("Secret 'api-token' already exists.");
     expect(payload.message).not.toContain("NonRetryableError");
+    // The raising error's own pair, not the transport's 502 (pithy-sh/pithy#365).
+    expect(payload.code).toBe("secrets/already_exists");
+    expect(payload.status).toBe(409);
     expect(payload.detail).toContain("secrets/already_exists");
     expect(payload.detail).not.toContain("TOPSECRET");
   });
@@ -145,8 +152,9 @@ describe("CloudflareWorkflowsClient", () => {
   test("dispatchAndPoll gives up once the poll budget is exhausted", async () => {
     mockCreate.mockResolvedValue({ id: "wf-1", status: "queued" });
     mockGet.mockResolvedValue({ status: "running" });
+    // The instance is still running on the far side; this is our deadline, not its failure.
     await expect(client().dispatchAndPoll("secrets-write", {}, { maxPolls: 3 })).rejects.toThrowError(
-      expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/request_failed" }) }),
+      expect.objectContaining({ payload: expect.objectContaining({ code: "core/upstream_timeout", status: 504 }) }),
     );
     expect(mockGet).toHaveBeenCalledTimes(3);
   });

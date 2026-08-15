@@ -180,6 +180,22 @@ const UnknownWorkflowPublic = z
   })
   .describe("No registered workflow answers to the dispatch key (500).");
 
+const WorkflowFailedPublic = z
+  .object({
+    code: z
+      .literal("core/workflow_failed")
+      .describe(
+        "A dispatched Workflow instance reached a terminal state without completing, and the fault that ended it could not be attributed to a code of its own. **Terminal, and that is the whole reason it is not `cloudflare/request_failed`**: the dispatch was delivered, the instance ran, and the run is over — re-driving the same request reaches the same end. A step that raised a code the kit pins a status for does not arrive here at all; it arrives under that code (pithy-sh/pithy#365).",
+      ),
+    status: z
+      .literal(500)
+      .describe(
+        "Internal Server Error — the durable job is the kit's own code in the operator's Worker, and its step journal is where the answer is. Deliberately not 502: that says the hop to Cloudflare failed and invites a retry of a request that was delivered and answered.",
+      ),
+    ...publicFields,
+  })
+  .describe("A dispatched Workflow ran and ended without completing, with no attributable code (500).");
+
 // --- @pithy-sh/core: the `signed-webhook` verification strategy ---
 
 const WebhookUnverifiedPublic = z
@@ -1381,6 +1397,7 @@ export const KitPublicErrorPayload = z
     InvalidWorkflowParamsPublic,
     MissingWorkflowBindingPublic,
     UnknownWorkflowPublic,
+    WorkflowFailedPublic,
     WebhookUnverifiedPublic,
     CloudflareNotConfiguredPublic,
     CloudflareRequestFailedPublic,
@@ -1507,6 +1524,7 @@ const MissingWorkflowBinding = MissingWorkflowBindingPublic.extend(internalField
   MissingWorkflowBindingPublic.description ?? "",
 );
 const UnknownWorkflow = UnknownWorkflowPublic.extend(internalFields).describe(UnknownWorkflowPublic.description ?? "");
+const WorkflowFailed = WorkflowFailedPublic.extend(internalFields).describe(WorkflowFailedPublic.description ?? "");
 const WebhookUnverified = WebhookUnverifiedPublic.extend(internalFields).describe(
   WebhookUnverifiedPublic.description ?? "",
 );
@@ -1828,6 +1846,7 @@ export const KitErrorPayload = z
     InvalidWorkflowParams,
     MissingWorkflowBinding,
     UnknownWorkflow,
+    WorkflowFailed,
     WebhookUnverified,
     CloudflareNotConfigured,
     CloudflareRequestFailed,
@@ -1943,6 +1962,30 @@ export type KitErrorPayload = z.infer<typeof KitErrorPayload>;
  * construction and would make such a switch a lie the moment an adopter registers a code.
  */
 export type KitErrorCode = KitErrorPayload["code"];
+
+/**
+ * The HTTP status the kit pins to a code, or `undefined` for a code it does not define.
+ *
+ * **Every kit member pins `status` to one literal, so a code recovered on its own carries its status
+ * with it** — that is what this reads. It exists for the one place a code arrives without the payload
+ * it came from: a `PithyError` raised inside a durable Workflow step, whose only channel out is the
+ * text the engine records (`../workflow/stepMessage`). Nothing but `code`, `message` and `action`
+ * survives that boundary, and reporting the fault under `cloudflare/request_failed` 502 told an
+ * operator to retry a request that was delivered and terminally answered (pithy-sh/pithy#365).
+ *
+ * **The status is recovered, never invented.** A code this does not know — an adopter's own, a
+ * `d1/*` fault class, a typo — answers `undefined`, and the caller says so with a code of its own
+ * rather than guessing a number. Derived from the union rather than listed for the same reason
+ * {@link KIT_ERROR_DOMAINS} is: a second table is a second thing to forget.
+ */
+const KIT_ERROR_STATUSES: ReadonlyMap<string, number> = new Map(
+  KitErrorPayload.options.map((member) => [member.shape.code.value, member.shape.status.value] as const),
+);
+
+/** The status pinned to a kit `code`, or `undefined` when the kit does not define it. */
+export function kitErrorStatus(code: string): number | undefined {
+  return KIT_ERROR_STATUSES.get(code);
+}
 
 // --- The adopter seam: codes the kit does not (and should not) define ---
 //

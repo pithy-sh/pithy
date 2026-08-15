@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { ErrorPayload, kitErrorStatus } from "@pithy-sh/core/src/error/payload";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import {
   decodeWorkflowStepMessage,
   MAX_WORKFLOW_STEP_TEXT,
@@ -196,4 +198,83 @@ export function stepFailure(steps: readonly unknown[] | undefined): WorkflowStep
     };
   }
   return null;
+}
+
+/**
+ * The code a terminal Workflow failure falls back to when the fault that ended the run cannot be
+ * attributed. Stated here because two things must agree on it: the thrower below, and the gate that
+ * proves this code is not one a transport failure can arrive under.
+ */
+export const WORKFLOW_FAILED_CODE = "core/workflow_failed" as const;
+
+/** The status pinned to {@link WORKFLOW_FAILED_CODE}, restated so the throw cannot drift off it. */
+export const WORKFLOW_FAILED_STATUS = 500 as const;
+
+/**
+ * **The error an operator is handed for a Workflow that ran and did not complete** (pithy-sh/pithy#365).
+ *
+ * `#353` fixed the sentence and the remedy. The `code` and the `status` were still the *transport's*:
+ * `dispatchAndPoll` threw `CloudflareRequestError`, which fixes `cloudflare/request_failed` and 502 by
+ * construction, so a step that raised `secrets/already_exists` with 409 reached the CLI as a 502 —
+ * "the far side is broken, try later" for a request that was delivered, ran, and was permanently
+ * refused. Anything branching on the pair rather than reading the prose was told the opposite of what
+ * happened.
+ *
+ * ## The distinction that has to survive, and where it lives
+ *
+ * A Workflow whose *step raised* is not the same event as a dispatch that could not be delivered, and
+ * the difference is now in the two machine-readable fields rather than in the message:
+ *
+ * - **The step raised, and the kit pins a status for its code** → that code, that status. Terminal by
+ *   the code's own definition; `secrets/already_exists` is a 409 wherever it is raised.
+ * - **The run ended and nothing is attributable** — a foreign throw, the platform's own prose, an
+ *   `unclassified` fault, an adopter code the kit pins no status for → {@link WORKFLOW_FAILED_CODE},
+ *   500. Terminal, and deliberately not 502.
+ * - **The dispatch itself failed** — the REST call was refused, timed out, or answered with a shape
+ *   nobody expected → `cloudflare/request_failed` / `cloudflare/invalid_response`, 502, thrown by
+ *   `cloudflareRequest` exactly as before. This function is never reached for one.
+ *
+ * So the reader tells them apart on `code` alone, and the three sets are disjoint.
+ *
+ * ## Why the status is recovered from the code rather than carried on the wire
+ *
+ * Nothing but `code`, `message` and `action` crosses a durable step boundary — the engine records the
+ * throw's text and discards the throw. A fourth field could have been encoded, at the cost of
+ * reopening a format `#353` froze against a measurement. It is not needed: **every kit member pins
+ * `status` to one literal**, so the code *is* the status (`kitErrorStatus`). A code the kit does not
+ * define has no pinned status, and rather than invent one this says so with its own code.
+ *
+ * ## `detail` still does not cross
+ *
+ * `detail` is composed here from the platform's raw text and the instance id — the operator's side of
+ * the boundary — and nothing derived from the step's own `detail` is in it, because the step's
+ * `detail` never left the step. The only fields promoted from the far side are `message` and `action`,
+ * both already public, both already proved kit-authored by `kitSentence`.
+ */
+export function terminalWorkflowError(args: {
+  /** What the instance's steps said, or `null` when no step reported a failure. */
+  failure: WorkflowStepFailure | null;
+  /** The sentence to use when the step authored none — the caller's own, about the instance. */
+  fallbackMessage: string;
+  /** The operator's context line. Raw platform text and the instance id; never the dispatched params. */
+  detail: string;
+}): PithyError {
+  const { failure, fallbackMessage, detail } = args;
+  // A remedy travels only alongside the sentence it is a remedy for. An action line under a general
+  // fallback about durable execution is a fix for a problem nobody was told about.
+  const message = failure?.sentence ?? fallbackMessage;
+  const action = failure?.sentence === undefined ? undefined : failure.action;
+
+  const status = failure?.code === undefined ? undefined : kitErrorStatus(failure.code);
+  if (failure?.sentence !== undefined && failure.code !== undefined && status !== undefined) {
+    const candidate = { code: failure.code, status, message, action, detail };
+    // Parsed rather than trusted. A recovered code is a string from a Worker we did not write, and one
+    // kit member (`validation/invalid_input`) requires a field this boundary has no way to supply — so
+    // a payload that would not validate must not be thrown from the error path. It falls through to
+    // the general terminal code below, keeping the step's own sentence.
+    const parsed = ErrorPayload.safeParse(candidate);
+    if (parsed.success) return new PithyError(parsed.data);
+  }
+
+  return new PithyError({ code: WORKFLOW_FAILED_CODE, status: WORKFLOW_FAILED_STATUS, message, action, detail });
 }

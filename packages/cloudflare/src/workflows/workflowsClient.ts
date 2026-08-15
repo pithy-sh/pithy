@@ -1,15 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { UpstreamTimeoutError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
-import {
-  CloudflareInvalidResponseError,
-  CloudflareRequestError,
-  cloudflareRequest,
-  isNotFoundError,
-} from "../client/errors";
+import { CloudflareInvalidResponseError, cloudflareRequest, isNotFoundError } from "../client/errors";
 import { CloudflareManager, type CloudflareManagerConfig } from "../client/manager";
-import { stepFailure, type WorkflowStepFailure } from "./stepFailure";
+import { stepFailure, terminalWorkflowError, type WorkflowStepFailure } from "./stepFailure";
 
 /** Pause `ms` milliseconds between status polls. Injectable so tests run with no real delay. */
 export type Sleeper = (ms: number) => Promise<void>;
@@ -137,8 +133,21 @@ export class CloudflareWorkflowsClient extends CloudflareManager {
 
   /**
    * Trigger a Workflow and poll until it reaches a terminal state. Resolves with the instance
-   * `output` on `complete`; throws `cloudflare/request_failed` on `errored`/`terminated` or if the
-   * poll budget is exhausted. The error never carries the dispatched params (which may be secret).
+   * `output` on `complete`. The error never carries the dispatched params (which may be secret).
+   *
+   * **Three failures, three codes, and a caller can tell them apart without reading a word of prose**
+   * (pithy-sh/pithy#365):
+   *
+   * | What happened | Code | Status |
+   * |---|---|---|
+   * | A step raised, and the kit pins a status for its code | that code | that status |
+   * | The run ended terminally, nothing attributable | `core/workflow_failed` | 500 |
+   * | The dispatch or a poll could not be delivered | `cloudflare/request_failed` | 502 |
+   * | We stopped waiting; the instance may still finish | `core/upstream_timeout` | 504 |
+   *
+   * The first two are terminal — the run is over and re-driving it reaches the same end. The last two
+   * are not. Reporting all of them as 502 told an operator to wait for a recovery that would never
+   * come; see `terminalWorkflowError` for the argument in full.
    */
   async dispatchAndPoll(
     workflowName: string,
@@ -159,18 +168,24 @@ export class CloudflareWorkflowsClient extends CloudflareManager {
       // error, so the instance says "a step threw an NonRetryableError" where the step says what was
       // actually wrong (pithy-sh/pithy#349). Only a sentence the kit demonstrably authored is promoted
       // into `message`; everything else stays in `detail`, which the HTTP codec strips.
+      // …and under the step's own code and status, not the transport's (pithy-sh/pithy#365). The
+      // sentence, the remedy, the code and the status are all the raising error's; the fallbacks and
+      // `detail` are this client's. `terminalWorkflowError` owns which of the two answers, so there is
+      // one statement of it rather than a rule this call site remembers.
       const failure = stepFailure(instance.steps);
-      throw new CloudflareRequestError({
-        message: failure?.sentence ?? `Workflow ${workflowName} did not complete (${instance.status}).`,
-        // The remedy the step stated, and only ever alongside the step's own sentence — an action line
-        // under a general fallback about durable execution would be a remedy for a problem nobody was
-        // told about. `undefined` prints nothing at all, which is the whole of the no-action case.
-        action: failure?.sentence === undefined ? undefined : failure.action,
+      throw terminalWorkflowError({
+        failure,
+        fallbackMessage: `Workflow ${workflowName} did not complete (${instance.status}).`,
         detail: `instance ${id} ended ${instance.status}: ${describeFailure(failure, instance.error)}`,
       });
     }
-    throw new CloudflareRequestError({
+    // Not terminal, and it must not read as one: the budget is *ours*, and the instance is still
+    // running on the far side. `core/upstream_timeout` (504) is the kit's stated code for a dependency
+    // that did not answer inside a deadline and may yet apply the work — which is exactly this — and it
+    // is neither the transport's 502 nor a terminal Workflow's code.
+    throw new UpstreamTimeoutError({
       message: `Workflow ${workflowName} did not finish in time.`,
+      action: `Check the instance in the Cloudflare dashboard; it may still complete.`,
       detail: `instance ${id} still running after ${maxPolls} polls`,
     });
   }
