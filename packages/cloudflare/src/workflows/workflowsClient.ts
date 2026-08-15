@@ -40,7 +40,13 @@ export const WorkflowInstance = z
     status: WorkflowInstanceStatus.describe("The instance's current lifecycle state."),
     output: z.unknown().optional().describe("The Workflow's return value, present once `status` is `complete`."),
     error: z
-      .union([z.string(), z.object({ message: z.string().optional().describe("Failure message.") }), z.null()])
+      .union([
+        z.string(),
+        z
+          .object({ message: z.string().optional().describe("Failure message.") })
+          .describe("The structured form of the failure, when the API sends an object rather than a string."),
+        z.null(),
+      ])
       .optional()
       .describe("The instance-level failure, present when `status` is `errored` or `terminated`."),
     steps: z

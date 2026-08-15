@@ -17,7 +17,7 @@ import { z } from "zod";
 export const ValidationIssue = z
   .object({
     path: z
-      .array(z.union([z.string(), z.number()]))
+      .array(z.union([z.string(), z.number()]).describe("One step of the path: an object key, or an array index."))
       .describe("Path to the offending field, e.g. ['user', 0, 'email']."),
     message: z.string().describe("Human-readable reason this field failed."),
     code: z.string().describe("Zod issue code, e.g. 'invalid_type', 'too_small'."),

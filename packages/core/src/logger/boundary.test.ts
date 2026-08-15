@@ -26,6 +26,20 @@ const errorSources = import.meta.glob(["../error/http.ts", "../error/terminal.ts
   import: "default",
 });
 
+/**
+ * A module that **does** import the logger, read the same way.
+ *
+ * The scan below is a `not.toMatch`, and a `not.toMatch` over nothing is the most comfortable green in
+ * the repository: an empty glob generates no tests, `passWithNoTests` is on, and a renamed `error/`
+ * directory would have retired this gate in silence. So the population is asserted, and the needle is
+ * proven findable against a source that really carries it — a negative assertion nobody has watched
+ * match is not a gate, it is a sentence about one.
+ */
+const loggerConsumer = import.meta.glob(["../kv/kv.ts"], { eager: true, query: "?raw", import: "default" });
+
+/** The one pattern both halves below are written against. Named once, so the control tests the gate. */
+const IMPORTS_LOGGER = /["'](?:\.\.?\/)*logger\//;
+
 describe("logger boundary — carries detail (internal surface)", () => {
   test("a logged PithyError keeps its detail on the record", () => {
     const records: LogRecord[] = [];
@@ -49,9 +63,28 @@ describe("logger boundary — carries detail (internal surface)", () => {
  * the internal side by construction; if someone wires it into a response surface, this fails.
  */
 describe("logger boundary — never wired to a client surface", () => {
+  test("the sweep read all three surfaces, and read them as source", () => {
+    // Exact, because the glob names three files: the population cannot legitimately be any other
+    // number, so a floor would be slack for nothing. The keys are pinned as well as counted — a glob
+    // that quietly matched two of three would otherwise pass here and generate two tests below.
+    expect(Object.keys(errorSources)).toHaveLength(3);
+    expect(Object.keys(errorSources).sort()).toEqual([
+      "../error/http.ts",
+      "../error/payload.ts",
+      "../error/terminal.ts",
+    ]);
+    for (const source of Object.values(errorSources)) expect(source.length).toBeGreaterThan(200);
+  });
+
+  test("the pattern really matches a module that imports the logger", () => {
+    // The control. Without it, every assertion below passes on an empty string.
+    expect(Object.keys(loggerConsumer)).toHaveLength(1);
+    for (const source of Object.values(loggerConsumer)) expect(source).toMatch(IMPORTS_LOGGER);
+  });
+
   for (const [path, source] of Object.entries(errorSources)) {
     test(`${path} does not import the logger`, () => {
-      expect(source).not.toMatch(/["'](?:\.\.?\/)*logger\//);
+      expect(source).not.toMatch(IMPORTS_LOGGER);
     });
   }
 });

@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { undescribedExports } from "@pithy-sh/core/src/schema/describedness";
 import { describe, expect, test } from "vitest";
-import { z } from "zod";
 
 // `import.meta.glob` is a vite/vitest feature; declare it so plain `tsc` typecheck accepts it.
 declare global {
@@ -15,58 +15,26 @@ declare global {
 // automatically — there is no manual list to keep in sync.
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"], { eager: true });
 
-/**
- * Record any object/enum/union missing a `.describe()` — on the schema itself or on any of
- * its fields — recursing into nested object fields. Codec-helper primitives are exempt
- * (CLAUDE.md §Zod) and aren't objects/enums/unions, so they're skipped.
- */
-function collectMissing(schema: z.ZodType, path: string, missing: string[]): void {
-  if (schema instanceof z.ZodObject) {
-    if (!schema.description) missing.push(`${path} — object has no .describe()`);
-    for (const [key, field] of Object.entries(schema.shape)) {
-      const fieldSchema = field as z.ZodType;
-      if (!fieldSchema.description) missing.push(`${path}.${key} — field has no .describe()`);
-      collectMissing(fieldSchema, `${path}.${key}`, missing);
-    }
-  } else if (schema instanceof z.ZodUnion || schema instanceof z.ZodEnum) {
-    if (!schema.description) missing.push(`${path} — enum/union has no .describe()`);
-  }
-}
-
-/** Every exported Zod schema in this package, as `file:name`. */
-function exportedSchemas(): string[] {
-  const found: string[] = [];
-  for (const [file, mod] of Object.entries(modules)) {
-    for (const [name, value] of Object.entries(mod)) {
-      if (value instanceof z.ZodType) found.push(`${file}:${name}`);
-    }
-  }
-  return found;
-}
-
 describe("schema descriptions (CLAUDE.md §Zod: schemas are the docs)", () => {
-  test("the glob sees this package's modules — a broken pattern must not pass vacuously", () => {
-    expect(Object.keys(modules).length).toBeGreaterThan(0);
+  test("the sweep is looking at the package, not at nothing", () => {
+    // The glob is the only thing this package's sweep can pin, and it must still be pinned: a package
+    // that exports no schema and a glob that matched no module are the same green run otherwise.
+    // Exact rather than near-exact, because four is small enough that 95% of it is noise.
+    expect(undescribedExports(modules).modules).toBeGreaterThanOrEqual(4);
   });
 
   /**
    * This package exports no schema: it validates through `@pithy-sh/core`'s `ClientProjection` rather
-   * than declaring shapes of its own. So rather than a describe-check that policices nothing, this
+   * than declaring shapes of its own. So rather than a describe-check that polices nothing, this
    * asserts the *reason* it polices nothing — and fails the moment that stops being true, pointing at
-   * what to do. A weakened assertion (`schemasChecked >= 0`) would read as coverage while asserting
-   * nothing at all.
+   * what to do. A weakened assertion (`schemas >= 0`) would read as coverage while asserting nothing.
    */
-  test("exports no Zod schema — when one lands, copy core's describe-check here", () => {
-    expect(exportedSchemas()).toEqual([]);
+  test("exports no Zod schema — the sweep below is correct, and vacuous until one lands", () => {
+    expect(undescribedExports(modules).schemas).toBe(0);
   });
 
-  test("no exported schema is missing a .describe() (vacuous today, correct when it is not)", () => {
-    const missing: string[] = [];
-    for (const [file, mod] of Object.entries(modules)) {
-      for (const [name, value] of Object.entries(mod)) {
-        if (value instanceof z.ZodType) collectMissing(value, `${file}:${name}`, missing);
-      }
-    }
-    expect(missing).toEqual([]);
+  test("every exported object/enum/union — and every field — carries a .describe()", () => {
+    const walk = undescribedExports(modules);
+    expect(walk.missing, walk.missing.join("\n")).toEqual([]);
   });
 });
