@@ -249,10 +249,13 @@ filled in with a test key fails loudly rather than certifying a gate that never 
 
 **What a widget still would not prove.** The gate is stacked as `turnstile({ action: "login" })` and
 fails closed when the action siteverify returns does not match. A test key's answer carries no action at
-all, so even the always-pass secret is refused — correctly, and for a reason that is not the humanity
-check. A token that satisfies both has to come from a real widget rendered with `action: "login"` and
-solved in a browser, which is a harness (#107) rather than a fixture. Until then the **pass-then-forward
-path is uncovered live**, and the suite's last case asserts that ceiling rather than describing it.
+all — which used to mean even the always-pass secret was refused, and no live suite could watch the gate
+let anything through. Since #374 the middleware relaxes that binding for exactly that answer, in exactly
+the two environments a test key is provisioned into, so the **pass-then-forward path is covered live**
+without a widget. What a widget would still add is the binding *biting*: a token minted for one action
+and replayed against another. No key available here returns an action at all, so producing a mismatch
+needs a real widget rendered with `action: "login"` and solved in a browser — a harness (#107) rather
+than a fixture. Until then that case lives in `@pithy-sh/turnstile`'s own suites.
 
 **No custom domain, and no zone.** The widget goes on the hostname of a deployed Worker. On the
 maintainer account the `workers.dev` subdomain is `jim-02d`, so a Worker deployed as `pithy-int-test-ui`

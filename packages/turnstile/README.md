@@ -38,9 +38,23 @@ Every failure throws a `PithyError` subclass — importantly, **a request that f
 |-------|------|--------|------|
 | `TurnstileMissingTokenError` | `turnstile/missing_token` | 400 | No token in the request where one was required. |
 | `TurnstileFailedError` | `turnstile/failed` | 403 | The token did not pass siteverify, **or** the check could not complete (fail closed). |
-| `TurnstileConfigError` | `turnstile/config` | 500 | The secret is missing, malformed, or has no entry for the route's widget (a `secretsStore` read error is rewrapped to this). |
+| `TurnstileConfigError` | `turnstile/config` | 500 | The deployment is at fault: the secret is missing, malformed, has no entry for the route's widget, is one **Cloudflare does not recognise**, or is a **test key outside dev and staging** (a `secretsStore` read error is rewrapped to this). |
 
 Register `pithyErrorHandler` on your Hono app (`app.onError(pithyErrorHandler)`) to map these to their HTTP responses; the `detail` is stripped from the wire body.
+
+**A wrong secret is not a failed challenge.** siteverify answers HTTP 400 `invalid-input-secret` for a secret it has never issued, and every request is refused for as long as it is wired. That is `turnstile/config`, whose `action` line names `pithy turnstile provision` — a 403 would send whoever is debugging it to look at the user, which is the wrong person and an hour gone.
+
+### Test keys and the `action` binding
+
+Cloudflare's documented test secrets answer with **no `action` field at all**. `pithy turnstile provision` wires one into dev and staging, `@pithy-sh/auth` stacks its gate as `turnstile({ action: "login" })`, and so the binding compared `login` against nothing and refused every dev and staging sign-in (#374).
+
+The binding is not relaxed. One narrow exception is, and it needs all three of:
+
+1. Cloudflare's own `metadata.result_with_testing_key` flag on the answer — never a comparison against a list of key strings, so no real widget can reach it;
+2. **no** action returned, so a token minted for a *different* action is refused exactly as before;
+3. the Worker's stamped `ENVIRONMENT` being `dev` or `staging`.
+
+The same flag runs the other way outside those two: a test key answering for a `prod` — or unstamped — Worker is a `turnstile/config`, because a secret that passes everybody on a production login page is a door, and it should be the loudest line in the log rather than a quiet 200.
 
 ## Two widgets per domain, max
 
@@ -62,7 +76,7 @@ turnstile({
 
 `pithy add turnstile` installs the package and wires its config; the secrets capability must be present (`pithy add secrets` → `pithy secrets provision`) since the widget secret is stored and read through `@pithy-sh/secrets`. `pithy turnstile provision` then wires everything per environment:
 
-- **dev and staging never create a real widget.** They wire Cloudflare's [documented test secret](https://developers.cloudflare.com/turnstile/troubleshooting/testing/) (always-pass) — dev into the local secrets store, staging into the **staging secrets store** (via the manager) — so both environments need zero CF round-trip and the positive/negative paths are trivially testable.
+- **dev and staging never create a real widget.** They wire Cloudflare's [documented test secret](https://developers.cloudflare.com/turnstile/troubleshooting/testing/) (always-pass) — dev into the local secrets store, staging into the **staging secrets store** (via the manager) — so both environments need zero CF round-trip and the positive/negative paths are trivially testable. Those two environments are also the only ones the gate will accept a test key from; see [Test keys and the `action` binding](#test-keys-and-the-action-binding).
 - **Only `prod` provisions a real widget**, bound to the production domain in the configured mode. Its secret is written to the **`prod` secrets store**; the public sitekeys are written to the worker vars.
 
 The widget is named `<project>-prod-turnstile-<mode>` — the one naming rule, see [docs/NAMING.md](../../docs/NAMING.md). `prod` sits in the environment slot because that is the only environment with a real widget; dev and staging wire the test keys and create nothing. The project segment is not decoration: a Turnstile widget is account-scoped and provisioning is reuse-or-create **by name**, so without it a second Pithy project in the same account adopts the first's widget and `deprovision` deletes it.

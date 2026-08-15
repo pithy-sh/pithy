@@ -11,7 +11,7 @@ import {
   type TurnstileDeprovisioner,
   type TurnstileProvisioner,
 } from "./provisionTurnstile";
-import { TEST_SECRET, TURNSTILE_TEST_KEYS } from "./testKeys";
+import { TEST_KEY_ENVIRONMENTS, TEST_SECRET, TURNSTILE_TEST_KEYS } from "./testKeys";
 
 describe("naming helpers", () => {
   test("sitekey vars and production widget names are stable per mode", () => {
@@ -118,6 +118,32 @@ describe("provisionTurnstile", () => {
     });
     expect(p.assertDomainAvailable).not.toHaveBeenCalled();
     expect(p.ensureProductionWidget).toHaveBeenCalledWith("visible", "app.example.com");
+  });
+
+  test("wires a test key into exactly the environments the gate relaxes for", async () => {
+    // The join between this file and `http/middleware.ts` (#374). The gate accepts a test key's
+    // action-less answer in `TEST_KEY_ENVIRONMENTS` and refuses it everywhere else, and that is only
+    // sound while this function writes one into those same environments and no others.
+    //
+    // The left side is read back off the recorded calls rather than off the constant: `provisionTurnstile`
+    // names `dev`, `staging` and `prod` itself, in its own body, so the two sides are independent
+    // statements about the same fact and a change to either one is a red build.
+    const written = new Map<string, string>();
+    await provisionTurnstile(
+      {
+        assertDomainAvailable: async () => {},
+        writeDev: async (secret) => void written.set("dev", secret),
+        writeManagedSecret: async (environment, secret) => void written.set(environment, secret),
+        writeManagedSitekeys: async () => {},
+        ensureProductionWidget: async (mode) => ({ sitekey: `real-${mode}`, secret: `secret-${mode}` }),
+      },
+      { modes: ["visible", "invisible"], productionDomain: "app.example.com" },
+    );
+
+    const wired = [...written].filter(([, secret]) => secret.includes(TEST_SECRET)).map(([environment]) => environment);
+    expect(wired.sort()).toEqual([...TEST_KEY_ENVIRONMENTS].sort());
+    // And the production secret it did write is a real widget's, not the test key under another name.
+    expect(written.get("prod")).not.toContain(TEST_SECRET);
   });
 
   test("errors on a mixed production state rather than writing a half-secret", async () => {
