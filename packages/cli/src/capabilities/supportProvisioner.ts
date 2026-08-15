@@ -12,6 +12,7 @@ import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { runWrangler } from "../project/wrangler";
 import { capabilityLoadError } from "./loadFailure";
 import { deleteR2BucketWithContents } from "./r2Bucket";
@@ -130,7 +131,15 @@ export interface SupportRouting {
 
 export interface CloudflareSupportProvisionerOptions {
   cf: CloudflareClients;
-  accountId: string;
+  /**
+   * The account this provisions into, and what vouches for it (#378).
+   *
+   * Replaces a bare `accountId`, and the replacement is the point: an id on its own is what six sites
+   * already held while a find-or-create read an empty listing as "this account has none" and minted a
+   * real resource in whichever account the shell had named. The id is still here — `account.accountId` —
+   * and it now travels with the answer to "who says so".
+   */
+  account: ConfirmedAccount;
   /**
    * The project name, from `requireProjectName(await loadProject(projectDir))` — never
    * `resolveProjectName`. The bucket, every environment's worker, and the inbound routing rule all lead
@@ -160,7 +169,7 @@ export interface CloudflareSupportProvisionerOptions {
 /** The live {@link SupportProvisioner}. Every step is idempotent, so provisioning is safe to re-run. */
 export class CloudflareSupportProvisioner implements SupportProvisioner {
   readonly #cf: CloudflareClients;
-  readonly #accountId: string;
+  readonly #account: ConfirmedAccount;
   readonly #project: string;
   readonly #apiToken: string;
   readonly #supportConfig: SupportConfig;
@@ -170,7 +179,7 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
 
   constructor(options: CloudflareSupportProvisionerOptions) {
     this.#cf = options.cf;
-    this.#accountId = options.accountId;
+    this.#account = options.account;
     this.#project = options.project;
     this.#apiToken = options.apiToken;
     this.#supportConfig = options.supportConfig;
@@ -237,7 +246,7 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
     try {
       await runWrangler(["deploy", "--config", configPath], {
         cwd: dir,
-        env: { CLOUDFLARE_API_TOKEN: this.#apiToken, CLOUDFLARE_ACCOUNT_ID: this.#accountId },
+        env: { CLOUDFLARE_API_TOKEN: this.#apiToken, CLOUDFLARE_ACCOUNT_ID: this.#account.accountId },
       });
       await this.#audit({
         environment: env,
@@ -378,6 +387,14 @@ export interface CloudflareSupportDeprovisionerOptions {
    * alone. Omitted when `deleteStorage` is off and no bucket is touched.
    */
   r2Credentials?: R2Credentials;
+  /**
+   * The account this teardown deletes from, and what vouches for it (#378).
+   *
+   * Required, and required for the reason `CloudflareConfigOptions.account` is: the guard below reads a
+   * miss as "already gone", so against an account nothing claims it deletes nothing, audits nothing, and
+   * exits 0. A caller that has not decided which account it is tearing down cannot compile.
+   */
+  account: ConfirmedAccount;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
 }
@@ -392,6 +409,7 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
   readonly #project: string;
   readonly #routingZoneId: string | undefined;
   readonly #r2Credentials: R2Credentials | undefined;
+  readonly #account: ConfirmedAccount;
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareSupportDeprovisionerOptions) {
@@ -399,6 +417,7 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
     this.#project = options.project;
     this.#routingZoneId = options.routingZoneId;
     this.#r2Credentials = options.r2Credentials;
+    this.#account = options.account;
     this.#audit = options.audit ?? (async () => {});
   }
 
@@ -406,7 +425,13 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
     const { supportWorkerName } = await loadSupport();
     const name = supportWorkerName(this.#project, env);
-    if (await this.#cf.workers().getWorker(name)) {
+    if (
+      await findOnConfirmedAccount({
+        ...this.#account,
+        what: `the ${name} Worker`,
+        find: () => this.#cf.workers().getWorker(name),
+      })
+    ) {
       await this.#cf.workers().deleteWorker(name);
       await this.#audit({
         environment: env,

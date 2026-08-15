@@ -65,7 +65,7 @@ function provisioner(cf: CloudflareClients, config: MediaConfig, events: CliAudi
   return new CloudflareMediaProvisioner({
     project: PROJECT,
     cf,
-    accountId: "acct-1",
+    account: { accountId: "acct-1", confirmation: "pinned" },
     apiToken: "tok",
     storeId: "store-1",
     mediaApiToken: "media-tok",
@@ -152,7 +152,7 @@ describe("CloudflareMediaProvisioner", () => {
     const media = new CloudflareMediaProvisioner({
       project: PROJECT,
       cf,
-      accountId: "acct-1",
+      account: { accountId: "acct-1", confirmation: "pinned" },
       apiToken: "tok",
       storeId: "store-1",
       mediaApiToken: "media-tok",
@@ -188,7 +188,7 @@ describe("CloudflareMediaProvisioner", () => {
     const media = new CloudflareMediaProvisioner({
       project: PROJECT,
       cf,
-      accountId: "acct-1",
+      account: { accountId: "acct-1", confirmation: "pinned" },
       apiToken: "tok",
       storeId: "store-1",
       mediaApiToken: "media-tok",
@@ -228,6 +228,7 @@ describe("CloudflareMediaDeprovisioner", () => {
     } = fakeCf();
     const events: CliAuditEvent[] = [];
     const media = new CloudflareMediaDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       project: PROJECT,
       cf,
       r2Credentials: R2,
@@ -268,7 +269,11 @@ describe("CloudflareMediaDeprovisioner", () => {
 
   test("refuses a bucket teardown with no key pair, before anything is deleted", async () => {
     const { cf, calls, findBucketByName } = fakeCf();
-    const media = new CloudflareMediaDeprovisioner({ cf, project: PROJECT });
+    const media = new CloudflareMediaDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+    });
 
     findBucketByName.mockResolvedValue({ name: STAGING_BUCKET });
     await expect(media.deleteBucket("staging")).rejects.toThrowError(/R2 access-key pair is needed/);
@@ -319,5 +324,46 @@ describe("the committed media worker template", () => {
 
     expect(resolved.kv_namespaces).toEqual([{ binding: "MEDIA", id: "kv-1" }]);
     expect(JSON.stringify(resolved)).not.toContain("<filled-at-provision>");
+  });
+});
+
+/**
+ * The account a teardown deletes from must be one something claims (#378).
+ *
+ * `getWorker` answers "this account has no such script" and "you asked an account that is not yours"
+ * with the same `null`, so a teardown pointed at a stranger's account used to delete nothing, audit
+ * nothing, and exit 0 — a success message printed over a production Worker that is still running.
+ *
+ * The account id below is a literal, written here and nowhere else, and the plant that proves this gate
+ * can fail is one word: turn `confirmation` back into something the guard ignores.
+ */
+describe("teardown refuses an unconfirmed account", () => {
+  test("refuses instead of reading a miss as `already gone`", async () => {
+    const { cf, getWorker, deleteWorker } = fakeCf();
+    getWorker.mockResolvedValue(null);
+    const stranger = new CloudflareMediaDeprovisioner({
+      cf,
+      project: PROJECT,
+      account: { accountId: "acct-stranger", confirmation: "ambient" },
+    });
+
+    await expect(stranger.deleteWorker("prod")).rejects.toThrow(
+      "Nothing states that Cloudflare account acct-stranger is this project's. Nothing was changed.",
+    );
+    expect(deleteWorker).not.toHaveBeenCalled();
+    expect(getWorker).not.toHaveBeenCalled();
+  });
+
+  test("a confirmed account still tears down", async () => {
+    const { cf, getWorker, deleteWorker } = fakeCf();
+    getWorker.mockResolvedValue({ id: "acme-prod-media" });
+    const ours = new CloudflareMediaDeprovisioner({
+      cf,
+      project: PROJECT,
+      account: { accountId: "acct-ours", confirmation: "recorded" },
+    });
+
+    await ours.deleteWorker("prod");
+    expect(deleteWorker).toHaveBeenCalledTimes(1);
   });
 });

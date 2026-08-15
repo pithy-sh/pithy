@@ -68,7 +68,12 @@ describe.skipIf(!hasCreds || !optedIn)("secrets — LIVE provision, write/rotate
     const storeId = vars.SECRETS_STORE_ID ?? "";
     const cf = new CloudflareClients({ accountId, apiToken });
     const workflows = new CloudflareWorkflowsClient({ accountId, apiToken });
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, project, storeId });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project,
+      storeId,
+    });
 
     const env: ManagedEnvironment = "staging";
     const secretName = "pithy-itest-secret";
@@ -87,7 +92,9 @@ describe.skipIf(!hasCreds || !optedIn)("secrets — LIVE provision, write/rotate
       // 1. Provision every environment's manager.
       const provisioner = new CloudflareSecretsProvisioner({
         cf,
-        accountId,
+        // The live account, and the pin that vouches for it: this suite runs against a real account named
+        // by the environment, and a listing it reads as empty must be one it was entitled to ask (#378).
+        account: { accountId, confirmation: "pinned" },
         project,
         storeId,
         deploy: buildManagerDeploy({ accountId, apiToken, project }),

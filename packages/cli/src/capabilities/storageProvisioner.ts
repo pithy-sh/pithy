@@ -13,6 +13,7 @@ import { dispatchSecretWrite, type SecretDispatcher } from "@pithy-sh/secrets/sr
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { runWrangler } from "../project/wrangler";
 import { capabilityLoadError } from "./loadFailure";
 import { deleteR2BucketWithContents } from "./r2Bucket";
@@ -103,7 +104,15 @@ export type ResolveStorageEnv = (env: ManagedEnvironment) => Promise<StorageEnvR
 
 export interface CloudflareStorageProvisionerOptions {
   cf: CloudflareClients;
-  accountId: string;
+  /**
+   * The account this provisions into, and what vouches for it (#378).
+   *
+   * Replaces a bare `accountId`, and the replacement is the point: an id on its own is what six sites
+   * already held while a find-or-create read an empty listing as "this account has none" and minted a
+   * real resource in whichever account the shell had named. The id is still here — `account.accountId` —
+   * and it now travels with the answer to "who says so".
+   */
+  account: ConfirmedAccount;
   /**
    * The project name, from `requireProjectName(await loadProject(projectDir))` — never
    * `resolveProjectName`. Every name this provisioner creates, finds, and deletes leads with it, so a
@@ -139,7 +148,7 @@ export interface CloudflareStorageProvisionerOptions {
 /** The live {@link StorageProvisioner}. Every step is idempotent, so provisioning is safe to re-run. */
 export class CloudflareStorageProvisioner implements StorageProvisioner {
   readonly #cf: CloudflareClients;
-  readonly #accountId: string;
+  readonly #account: ConfirmedAccount;
   readonly #project: string;
   readonly #apiToken: string;
   readonly #storeId: string;
@@ -157,7 +166,7 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
 
   constructor(options: CloudflareStorageProvisionerOptions) {
     this.#cf = options.cf;
-    this.#accountId = options.accountId;
+    this.#account = options.account;
     this.#project = options.project;
     this.#apiToken = options.apiToken;
     this.#storeId = options.storeId;
@@ -215,7 +224,7 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
     const value = R2StorageCredentials.parse({
       accessKeyId: this.#r2Credentials.accessKeyId,
       secretAccessKey: this.#r2Credentials.secretAccessKey,
-      accountId: this.#accountId,
+      accountId: this.#account.accountId,
       bucket: resources.bucketName,
       apiToken: this.#storageApiToken,
     });
@@ -274,7 +283,7 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
     try {
       await runWrangler(["deploy", "--config", configPath], {
         cwd: dir,
-        env: { CLOUDFLARE_API_TOKEN: this.#apiToken, CLOUDFLARE_ACCOUNT_ID: this.#accountId },
+        env: { CLOUDFLARE_API_TOKEN: this.#apiToken, CLOUDFLARE_ACCOUNT_ID: this.#account.accountId },
       });
       await this.#audit({
         environment: env,
@@ -319,6 +328,14 @@ export interface CloudflareStorageDeprovisionerOptions {
    * alone. Omitted when `deleteStorage` is off and no bucket is touched.
    */
   r2Credentials?: R2Credentials;
+  /**
+   * The account this teardown deletes from, and what vouches for it (#378).
+   *
+   * Required, and required for the reason `CloudflareConfigOptions.account` is: the guard below reads a
+   * miss as "already gone", so against an account nothing claims it deletes nothing, audits nothing, and
+   * exits 0. A caller that has not decided which account it is tearing down cannot compile.
+   */
+  account: ConfirmedAccount;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
 }
@@ -332,12 +349,14 @@ export class CloudflareStorageDeprovisioner implements StorageDeprovisioner {
   readonly #cf: CloudflareClients;
   readonly #project: string;
   readonly #r2Credentials: R2Credentials | undefined;
+  readonly #account: ConfirmedAccount;
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareStorageDeprovisionerOptions) {
     this.#cf = options.cf;
     this.#project = options.project;
     this.#r2Credentials = options.r2Credentials;
+    this.#account = options.account;
     this.#audit = options.audit ?? (async () => {});
   }
 
@@ -345,7 +364,13 @@ export class CloudflareStorageDeprovisioner implements StorageDeprovisioner {
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
     const { storageWorkerName } = await loadStorage();
     const name = storageWorkerName(this.#project, env);
-    if (await this.#cf.workers().getWorker(name)) {
+    if (
+      await findOnConfirmedAccount({
+        ...this.#account,
+        what: `the ${name} Worker`,
+        find: () => this.#cf.workers().getWorker(name),
+      })
+    ) {
       await this.#cf.workers().deleteWorker(name);
       await this.#audit({
         environment: env,

@@ -3,6 +3,7 @@
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { FeatureResourceKind } from "@pithy-sh/core/src/naming/feature";
+import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 
 /**
  * The control-plane operations provisioning needs for one resource kind, and the Cloudflare-backed
@@ -30,20 +31,32 @@ export type ResourceProvisioners = Record<FeatureResourceKind, ResourceProvision
  * The default provisioners, backed by the `@pithy-sh/cloudflare` control-plane clients. For D1 and KV the
  * id is the CF-assigned uuid/namespace id; for R2, which has no separate id, the bucket name is the id.
  *
+ * **`find` is where a not-found becomes a creation, so it is where the account has to be settled (#378).**
+ * Both callers are find-or-create: `provisionEnvironment` creates whatever `find` did not return, and
+ * `destroyFeature` reconciles by expected name. An empty listing from an account nothing claims is not
+ * an absence, and reading it as one stands a real D1, KV namespace or R2 bucket up in somebody else's
+ * account — a creation no re-run can walk back, since the second run finds what the first made. So the
+ * account travels with the clients, `find` refuses instead of returning `null`, and the lookup is not
+ * even attempted: the round trip's answer could not be believed either way.
+ *
  * **Known limitation, R2 only:** the delete here is the plain control-plane one, and R2 refuses to delete
  * a bucket that still holds an object or a dangling multipart upload — so a feature bucket that was
  * written to fails teardown. Emptying it first needs the S3 key pair, which the control-plane clients do
  * not carry (`pithy storage deprovision --storage` takes it as a flag for exactly this reason). Wiring
  * that through the feature lifecycle is the fix; until then, empty the bucket by hand.
  */
-export function cloudflareProvisioners(clients: CloudflareClients): ResourceProvisioners {
+export function cloudflareProvisioners(clients: CloudflareClients, account: ConfirmedAccount): ResourceProvisioners {
   const d1 = clients.d1Provisioner();
   const kv = clients.kvProvisioner();
   const r2 = clients.r2Provisioner();
   return {
     d1: {
       find: async (name) => {
-        const found = await d1.findDatabaseByName(name);
+        const found = await findOnConfirmedAccount({
+          ...account,
+          what: `the ${name} database`,
+          find: () => d1.findDatabaseByName(name),
+        });
         return found ? { id: found.uuid } : null;
       },
       create: async (name) => ({ id: (await d1.createDatabase(name)).uuid }),
@@ -51,7 +64,11 @@ export function cloudflareProvisioners(clients: CloudflareClients): ResourceProv
     },
     kv: {
       find: async (name) => {
-        const found = await kv.findNamespaceByTitle(name);
+        const found = await findOnConfirmedAccount({
+          ...account,
+          what: `the ${name} KV namespace`,
+          find: () => kv.findNamespaceByTitle(name),
+        });
         return found ? { id: found.id } : null;
       },
       create: async (name) => ({ id: (await kv.createNamespace(name)).id }),
@@ -59,7 +76,11 @@ export function cloudflareProvisioners(clients: CloudflareClients): ResourceProv
     },
     r2: {
       find: async (name) => {
-        const found = await r2.findBucketByName(name);
+        const found = await findOnConfirmedAccount({
+          ...account,
+          what: `the ${name} bucket`,
+          find: () => r2.findBucketByName(name),
+        });
         return found ? { id: found.name } : null;
       },
       create: async (name) => ({ id: (await r2.createBucket(name)).name }),

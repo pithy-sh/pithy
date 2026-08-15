@@ -16,7 +16,8 @@ import { createCliAudit } from "../audit/cliAudit";
 import { classifyCapabilityLoadFailure } from "../capabilities/loadFailure";
 import { loadTesters } from "../capabilities/testersLoader";
 import { CloudflareTestersProvisioner, loadTestersProvisioning } from "../capabilities/testersProvisioner";
-import { cloudflareEnv } from "../cloudflare/config";
+import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment, requireManagedEnvironment } from "../project/environment";
@@ -298,9 +299,13 @@ async function buildProvisioner(projectDir: string) {
   const project = requireProjectName(config);
   // The project's own environment set (#241), carried rather than assumed.
   const environments = loadProjectEnvironments(config);
-  const vars = cloudflareEnv({ account: await projectCloudflareAccount(projectDir) });
+  const selection = await projectCloudflareAccount(projectDir);
+  const vars = cloudflareEnv({ account: selection });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
+  // What vouches for that id (#378). The host teardown reads a missing Worker as "already gone", and an
+  // account nothing claims answers exactly that way about a host that is still running.
+  const account: ConfirmedAccount = { accountId, confirmation: cloudflareAccountConfirmation({ account: selection }) };
   if (!accountId || !apiToken) {
     throw new ValidationError({
       message: "Cloudflare credentials are missing.",
@@ -342,11 +347,11 @@ async function buildProvisioner(projectDir: string) {
     provisioner: new CloudflareTestersProvisioner({
       cf,
       project,
-      accountId,
+      account,
       apiToken,
       testersConfig: testers.testersConfig,
       email,
-      resolveEnv: buildResolveEnv(projectDir, project, cf),
+      resolveEnv: buildResolveEnv(projectDir, project, cf, account),
       audit: await buildAudit(projectDir, accountId, apiToken),
     }),
   };
@@ -377,7 +382,7 @@ interface WranglerStanza {
 }
 
 /** Resolve the per-environment database ids the host binds, from the project's `wrangler.jsonc`. */
-function buildResolveEnv(projectDir: string, project: string, cf: CloudflareClients) {
+function buildResolveEnv(projectDir: string, project: string, cf: CloudflareClients, account: ConfirmedAccount) {
   return async (env: ManagedEnvironment) => {
     const config = parse(await readFile(join(projectDir, "wrangler.jsonc"), "utf8")) as unknown as WranglerStanza;
     const stanza = config.env?.[env];
@@ -399,7 +404,11 @@ function buildResolveEnv(projectDir: string, project: string, cf: CloudflareClie
     // `@pithy-sh/email` provisions it: an unsubscribe in production has to stop staging too. So it is
     // looked up by name rather than read from the env stanza.
     const suppressionName = suppressionDatabaseName(project);
-    const suppression = await cf.d1Provisioner().findDatabaseByName(suppressionName);
+    const suppression = await findOnConfirmedAccount({
+      ...account,
+      what: `the ${suppressionName} database`,
+      find: () => cf.d1Provisioner().findDatabaseByName(suppressionName),
+    });
     if (!suppression) {
       throw new ValidationError({
         message: `This project's email-suppression database (${suppressionName}) does not exist.`,

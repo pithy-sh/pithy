@@ -18,7 +18,8 @@ import {
   loadStorage,
   type StorageEnvResources,
 } from "../capabilities/storageProvisioner";
-import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
@@ -77,14 +78,20 @@ async function loadStorageConfig(projectDir: string) {
  *
  * The account is a parameter rather than an ambient, so this cannot resolve before something has
  * established which account the project is for (#206).
+ *
+ * It also carries **what vouches for the account** (#378). A bare id is what every destructive and
+ * creative site here used to hold, and an id alone cannot tell "this account has no such Worker" from
+ * "I asked an account nothing claims" — the two arrive as one empty listing.
  */
 function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
+  account: ConfirmedAccount;
   accountId: string;
   apiToken: string;
   storeId: string;
   r2Raw: string | undefined;
 } {
   const vars = cloudflareEnv({ account });
+  const confirmation = cloudflareAccountConfirmation({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const storeId = vars.SECRETS_STORE_ID ?? "";
@@ -100,7 +107,7 @@ function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
       action: "Run pithy add secrets to record SECRETS_STORE_ID (the sweep worker decrypts its credentials from it).",
     });
   }
-  return { accountId, apiToken, storeId, r2Raw: vars.R2_CREDENTIALS };
+  return { account: { accountId, confirmation }, accountId, apiToken, storeId, r2Raw: vars.R2_CREDENTIALS };
 }
 
 /** A wrangler env stanza — only the fields the sweep worker deploy reads from the project's config. */
@@ -123,6 +130,14 @@ function buildResolveEnv(
    * a database that "does not exist" or binds another project's secrets store.
    */
   project: string,
+  /**
+   * The account the secrets database is looked for on, and what vouches for it (#378).
+   *
+   * The refusal below reads a missing database as "provision it first". Against an account nothing
+   * claims, that database is missing because this run asked the wrong account — and the sentence sends
+   * an operator to run a provisioning command they have already run.
+   */
+  account: ConfirmedAccount,
 ): (env: ManagedEnvironment) => Promise<StorageEnvResources> {
   return async (env) => {
     const config = parse(await readFile(join(projectDir, "wrangler.jsonc"), "utf8")) as unknown as WranglerStanza;
@@ -140,7 +155,11 @@ function buildResolveEnv(
         action: `Provision the ${env} app database and set its id on the DB binding.`,
       });
     }
-    const secretsDb = await cf.d1Provisioner().findDatabaseByName(managerWorkerName(project, env));
+    const secretsDb = await findOnConfirmedAccount({
+      ...account,
+      what: `the ${managerWorkerName(project, env)} database`,
+      find: () => cf.d1Provisioner().findDatabaseByName(managerWorkerName(project, env)),
+    });
     if (!secretsDb) {
       throw new ValidationError({
         message: `The ${env} secrets database (${managerWorkerName(project, env)}) does not exist.`,
@@ -186,7 +205,9 @@ const provision = defineCommand({
       // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
       const environments = loadProjectEnvironments(config);
       const { provisionStorage } = await loadStorage();
-      const { accountId, apiToken, storeId, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+      const { account, accountId, apiToken, storeId, r2Raw } = loadCloudflareCreds(
+        await projectCloudflareAccount(projectDir),
+      );
       const storageConfig = await loadStorageConfig(projectDir);
       const r2Credentials = resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw);
       const cf = new CloudflareClients({ accountId, apiToken });
@@ -194,14 +215,14 @@ const provision = defineCommand({
         cf,
         project,
         environments,
-        accountId,
+        account,
         apiToken,
         storeId,
         storageApiToken: args["api-token"] ?? apiToken,
         r2Credentials,
         storageConfig,
         dispatcher: buildSecretDispatcher(accountId, apiToken, project),
-        resolveEnv: buildResolveEnv(projectDir, cf, project),
+        resolveEnv: buildResolveEnv(projectDir, cf, project, account),
         audit: await buildAudit(projectDir, accountId, apiToken),
       });
 
@@ -264,7 +285,7 @@ const deprovision = defineCommand({
       // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
       const environments = loadProjectEnvironments(config);
       const { deprovisionStorage } = await loadStorage();
-      const { accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+      const { account, accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
       // without it, so discovering it is missing at the bucket step would leave the sweep workers gone
       // and the buckets standing — a half-torn-down environment for a mistake we can catch here.
@@ -273,6 +294,7 @@ const deprovision = defineCommand({
         : undefined;
       const cf = new CloudflareClients({ accountId, apiToken });
       const deprovisioner = new CloudflareStorageDeprovisioner({
+        account,
         cf,
         project,
         r2Credentials,

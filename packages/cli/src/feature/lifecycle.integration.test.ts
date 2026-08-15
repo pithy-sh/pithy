@@ -143,7 +143,7 @@ async function readEnvStanza(workerDir: string): Promise<EnvStanza> {
 let projectDir: string | null = null;
 
 const clients = hasCreds ? new CloudflareClients({ accountId, apiToken }) : null;
-const provisioners = clients ? cloudflareProvisioners(clients) : null;
+const provisioners = clients ? cloudflareProvisioners(clients, { accountId, confirmation: "pinned" }) : null;
 const capabilities = [shared, collabOnly];
 
 afterAll(async () => {

@@ -18,6 +18,7 @@ import {
 } from "@pithy-sh/turnstile/src/provision/provisionTurnstile";
 import { TURNSTILE_SECRET_NAME, turnstileSecretsRegistry } from "@pithy-sh/turnstile/src/secret/registry";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import { answerOnConfirmedAccount, type ConfirmedAccount, unconfirmedAccount } from "../cloudflare/accountAnswer";
 import { removeBootstrapVars } from "../devSecrets/bootstrapVars";
 import { writeDevVars } from "../devSecrets/devVars";
 import { removeDevSecrets, writeDevSecrets } from "../devSecrets/file";
@@ -52,6 +53,15 @@ const SECRET_FACTS = { backend: "d1", scope: "environment", rotatable: true, val
 
 export interface CloudflareTurnstileProvisionerOptions {
   cf: CloudflareClients;
+  /**
+   * The account the production widget is created in, and what vouches for it (#378).
+   *
+   * `assertDomainAvailable` reads an empty listing as "the domain is free" and provisioning then mints a
+   * real widget. Against an account nothing claims, that listing is empty because the widgets it would
+   * have named are somewhere else — so the guard passes for the wrong reason and a live widget lands in a
+   * stranger's account.
+   */
+  account: ConfirmedAccount;
   /**
    * The project name from the root `pithy.config.ts`, resolved by `requireProjectName` and never
    * guessed. It is the leading segment of every widget name, so a wrong value here reuses — and on
@@ -96,6 +106,7 @@ export interface CloudflareTurnstileProvisionerOptions {
  */
 export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
   readonly #cf: CloudflareClients;
+  readonly #account: ConfirmedAccount;
   readonly #project: string;
   readonly #projectDir: string;
   readonly #workerDir: string;
@@ -110,6 +121,7 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
 
   constructor(options: CloudflareTurnstileProvisionerOptions) {
     this.#cf = options.cf;
+    this.#account = options.account;
     this.#project = options.project;
     this.#projectDir = options.projectDir;
     this.#workerDir = options.workerDir;
@@ -119,9 +131,25 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
     this.#notes = options.notes ?? ((line: string) => void process.stderr.write(`${line}\n`));
   }
 
+  /**
+   * Refuse the domain if a widget that is not ours already covers it — and refuse the *question* if the
+   * account that would answer it is one nothing claims (#378).
+   *
+   * The two failures are opposite in shape and identical on the wire. A foreign widget is a listing with
+   * an entry in it; an unconfirmed account is a listing with nothing in it, which is the same thing "the
+   * domain is free" looks like. Only one of those two empties is a fact, and the other one ends with a
+   * live production widget in an account this project never named.
+   */
   async assertDomainAvailable(domain: string): Promise<void> {
     const ours = ourWidgetNames(this.#project);
-    const claimants = await this.#cf.turnstile().listTurnstilesByDomain(domain);
+    const answer = await answerOnConfirmedAccount({
+      ...this.#account,
+      what: `Turnstile widgets covering ${domain}`,
+      find: () => this.#cf.turnstile().listTurnstilesByDomain(domain),
+    });
+    if (answer.state === "unconfirmed")
+      throw unconfirmedAccount(answer.accountId, `Turnstile widgets covering ${domain}`);
+    const claimants = answer.state === "found" ? answer.value : [];
     const foreign = claimants.find((widget) => !ours.has(widget.name));
     if (!foreign) return;
     throw new ValidationError({

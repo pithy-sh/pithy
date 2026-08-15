@@ -8,7 +8,7 @@ import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
 import { storeSecretMinter } from "../capabilities/mintSecrets";
-import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { branchIdentity } from "../feature/identity";
 import { provisionFeature } from "../feature/provision";
 import {
@@ -67,7 +67,10 @@ function buildProvisioners(account: CloudflareAccountSelection | null): Resource
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return null;
-  return cloudflareProvisioners(new CloudflareClients({ accountId, apiToken }));
+  // What vouches for that id travels with it (#378). `find` is find-or-create's first half, and an empty
+  // listing from an account nothing claims is not the absence the second half reads it as.
+  const confirmation = cloudflareAccountConfirmation({ account });
+  return cloudflareProvisioners(new CloudflareClients({ accountId, apiToken }), { accountId, confirmation });
 }
 
 /**

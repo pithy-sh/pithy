@@ -16,7 +16,8 @@ import {
   loadPayments,
   type PaymentsEnvResources,
 } from "../capabilities/paymentsProvisioner";
-import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { envArg, requireManagedEnvironment } from "../project/environment";
@@ -81,13 +82,19 @@ async function loadPaymentsConfig(projectDir: string) {
  *
  * The account is a parameter rather than an ambient, so this cannot resolve before something has
  * established which account the project is for (#206).
+ *
+ * It also carries **what vouches for the account** (#378). A bare id is what every destructive and
+ * creative site here used to hold, and an id alone cannot tell "this account has no such Worker" from
+ * "I asked an account nothing claims" — the two arrive as one empty listing.
  */
 function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
+  account: ConfirmedAccount;
   accountId: string;
   apiToken: string;
   storeId: string;
 } {
   const vars = cloudflareEnv({ account });
+  const confirmation = cloudflareAccountConfirmation({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const storeId = vars.SECRETS_STORE_ID ?? "";
@@ -104,7 +111,7 @@ function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
         "Run pithy add secrets to record SECRETS_STORE_ID (the reconcile worker decrypts the rails' credentials from it).",
     });
   }
-  return { accountId, apiToken, storeId };
+  return { account: { accountId, confirmation }, accountId, apiToken, storeId };
 }
 
 /** A wrangler env stanza — only the fields the reconcile worker deploy reads from the project's config. */
@@ -127,6 +134,14 @@ function buildResolveEnv(
    * a database that "does not exist" or binds another project's secrets store.
    */
   project: string,
+  /**
+   * The account the secrets database is looked for on, and what vouches for it (#378).
+   *
+   * The refusal below reads a missing database as "provision it first". Against an account nothing
+   * claims, that database is missing because this run asked the wrong account — and the sentence sends
+   * an operator to run a provisioning command they have already run.
+   */
+  account: ConfirmedAccount,
 ): (env: ManagedEnvironment) => Promise<PaymentsEnvResources> {
   return async (env) => {
     const config = parse(await readFile(join(projectDir, "wrangler.jsonc"), "utf8")) as unknown as WranglerStanza;
@@ -144,7 +159,11 @@ function buildResolveEnv(
         action: `Provision the ${env} app database and set its id on the DB binding — the purchase rows live there.`,
       });
     }
-    const secretsDb = await cf.d1Provisioner().findDatabaseByName(managerWorkerName(project, env));
+    const secretsDb = await findOnConfirmedAccount({
+      ...account,
+      what: `the ${managerWorkerName(project, env)} database`,
+      find: () => cf.d1Provisioner().findDatabaseByName(managerWorkerName(project, env)),
+    });
     if (!secretsDb) {
       throw new ValidationError({
         message: `The ${env} secrets database (${managerWorkerName(project, env)}) does not exist.`,
@@ -167,7 +186,7 @@ async function buildProvisioner(projectDir: string) {
   const project = requireProjectName(config);
   // The project's own environment set, read once here and carried, so provisioning and `--env` agree.
   const environments = loadProjectEnvironments(config);
-  const { accountId, apiToken, storeId } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+  const { account, accountId, apiToken, storeId } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
   const paymentsConfig = await loadPaymentsConfig(projectDir);
   const cf = new CloudflareClients({ accountId, apiToken });
   return {
@@ -181,7 +200,7 @@ async function buildProvisioner(projectDir: string) {
       apiToken,
       storeId,
       paymentsConfig,
-      resolveEnv: buildResolveEnv(projectDir, cf, project),
+      resolveEnv: buildResolveEnv(projectDir, cf, project, account),
       workflows: new CloudflareWorkflowsClient({ accountId, apiToken }),
       audit: await buildAudit(projectDir, accountId, apiToken),
     }),

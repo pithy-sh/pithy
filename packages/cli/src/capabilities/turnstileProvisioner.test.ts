@@ -76,6 +76,7 @@ describe("CloudflareTurnstileProvisioner", () => {
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project();
     const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       projectDir,
@@ -106,6 +107,7 @@ describe("CloudflareTurnstileProvisioner", () => {
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project();
     const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       projectDir,
@@ -127,6 +129,7 @@ describe("CloudflareTurnstileProvisioner", () => {
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project();
     const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       projectDir,
@@ -152,6 +155,7 @@ describe("CloudflareTurnstileProvisioner", () => {
     await writeFile(join(workerDir, ".dev.vars"), "MINE=1\n");
     const notes: string[] = [];
     const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       projectDir,
@@ -175,6 +179,7 @@ describe("CloudflareTurnstileProvisioner", () => {
     const { projectDir, workerDir } = await project();
     const notes: string[] = [];
     const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       projectDir,
@@ -197,6 +202,7 @@ describe("CloudflareTurnstileProvisioner", () => {
     const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     try {
       const p = new CloudflareTurnstileProvisioner({
+        account: { accountId: "acct-1", confirmation: "pinned" },
         cf,
         project: PROJECT,
         projectDir,
@@ -217,6 +223,7 @@ describe("CloudflareTurnstileProvisioner", () => {
     const { cf } = fakeCf();
     const { dispatcher, calls } = fakeDispatcher();
     const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       ...(await project()),
@@ -240,6 +247,7 @@ describe("CloudflareTurnstileProvisioner", () => {
     const { cf } = fakeCf();
     const dispatch = vi.fn().mockRejectedValueOnce(new Error("already exists")).mockResolvedValueOnce(undefined);
     const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       ...(await project()),
@@ -261,6 +269,7 @@ describe("CloudflareTurnstileProvisioner", () => {
       .mockRejectedValueOnce(new Error("create boom: bad token"))
       .mockRejectedValueOnce(new Error("update boom: not found"));
     const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       ...(await project()),
@@ -278,6 +287,7 @@ describe("CloudflareTurnstileProvisioner", () => {
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project('{\n  // staging\n  "env": { "staging": { "vars": {} } }\n}');
     const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       projectDir,
@@ -298,6 +308,7 @@ describe("CloudflareTurnstileProvisioner", () => {
     const { cf, getTurnstile, addTurnstile } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       ...(await project()),
@@ -325,6 +336,7 @@ describe("CloudflareTurnstileProvisioner", () => {
     const { dispatcher } = fakeDispatcher();
     const events: CliAuditEvent[] = [];
     const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       ...(await project()),
@@ -359,6 +371,7 @@ describe("CloudflareTurnstileProvisioner", () => {
     const { cf, getTurnstile, addTurnstile } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const acme = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: "acme",
       ...(await project()),
@@ -366,6 +379,7 @@ describe("CloudflareTurnstileProvisioner", () => {
       environments: DEFAULT_ENVIRONMENTS,
     });
     const globex = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: "globex",
       ...(await project()),
@@ -390,6 +404,7 @@ describe("CloudflareTurnstileProvisioner.assertDomainAvailable", () => {
     const { cf, listTurnstilesByDomain } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       ...(await project()),
@@ -416,6 +431,7 @@ describe("CloudflareTurnstileProvisioner.assertDomainAvailable", () => {
     const { cf, listTurnstilesByDomain } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       ...(await project()),
@@ -431,6 +447,7 @@ describe("CloudflareTurnstileProvisioner.assertDomainAvailable", () => {
     const { cf, listTurnstilesByDomain } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       ...(await project()),
@@ -450,6 +467,7 @@ describe("CloudflareTurnstileProvisioner.assertDomainAvailable", () => {
     const { cf, listTurnstilesByDomain } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       ...(await project()),
@@ -472,6 +490,7 @@ describe("CloudflareTurnstileDeprovisioner", () => {
     const { cf, getTurnstile, deleteTurnstile } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const d = new CloudflareTurnstileDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       ...(await project()),
@@ -495,6 +514,7 @@ describe("CloudflareTurnstileDeprovisioner", () => {
     const { dispatcher } = fakeDispatcher();
     const events: CliAuditEvent[] = [];
     const d = new CloudflareTurnstileDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       ...(await project()),
@@ -525,6 +545,7 @@ describe("CloudflareTurnstileDeprovisioner", () => {
     const { cf } = fakeCf();
     const { dispatcher, calls } = fakeDispatcher();
     const d = new CloudflareTurnstileDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       ...(await project()),
@@ -545,6 +566,7 @@ describe("CloudflareTurnstileDeprovisioner", () => {
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project();
     const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       projectDir,
@@ -554,6 +576,7 @@ describe("CloudflareTurnstileDeprovisioner", () => {
     });
     await p.writeDev('{"visible":{"key":"1x"}}', { TURNSTILE_SITEKEY_VISIBLE: "1x00", KEEP: "1" });
     const d = new CloudflareTurnstileDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       projectDir,
@@ -575,6 +598,7 @@ describe("CloudflareTurnstileDeprovisioner", () => {
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project();
     const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       projectDir,
@@ -584,6 +608,7 @@ describe("CloudflareTurnstileDeprovisioner", () => {
     });
     await p.writeDev('{"visible":{"key":"1x"}}', { TURNSTILE_SITEKEY_VISIBLE: "1x00" });
     const d = new CloudflareTurnstileDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       projectDir,
@@ -596,5 +621,50 @@ describe("CloudflareTurnstileDeprovisioner", () => {
 
     expect(await devSecrets(projectDir)).toEqual({});
     expect(parseDevVars(await readFile(join(workerDir, ".dev.vars"), "utf8"))).toEqual({});
+  });
+});
+
+/**
+ * "The domain is free" and "I asked an account nobody claims" are the same empty listing (#378).
+ *
+ * This one is the worst of the creative sites: the guard's *passing* is what mints a live production
+ * widget, so an unconfirmed account turns a safety check into the thing that authorises the mistake.
+ * The account id below is a literal, and the plant is one word.
+ */
+describe("CloudflareTurnstileProvisioner.assertDomainAvailable on an unconfirmed account", () => {
+  test("refuses rather than reading an empty listing as a free domain", async () => {
+    const { cf, listTurnstilesByDomain } = fakeCf();
+    const { dispatcher } = fakeDispatcher();
+    const stranger = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-stranger", confirmation: "ambient" },
+      cf,
+      project: PROJECT,
+      ...(await project()),
+      dispatcher,
+      environments: DEFAULT_ENVIRONMENTS,
+    });
+
+    listTurnstilesByDomain.mockResolvedValue([]);
+
+    await expect(stranger.assertDomainAvailable("app.example.com")).rejects.toThrow(
+      "Nothing states that Cloudflare account acct-stranger is this project's. Nothing was changed.",
+    );
+    expect(listTurnstilesByDomain).not.toHaveBeenCalled();
+  });
+
+  test("a confirmed account still allows a domain nothing claims", async () => {
+    const { cf, listTurnstilesByDomain } = fakeCf();
+    const { dispatcher } = fakeDispatcher();
+    const ours = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-ours", confirmation: "recorded" },
+      cf,
+      project: PROJECT,
+      ...(await project()),
+      dispatcher,
+      environments: DEFAULT_ENVIRONMENTS,
+    });
+
+    listTurnstilesByDomain.mockResolvedValue([]);
+    await expect(ours.assertDomainAvailable("app.example.com")).resolves.toBeUndefined();
   });
 });

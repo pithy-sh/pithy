@@ -49,7 +49,7 @@ function provisioner(cf: CloudflareClients, events: CliAuditEvent[], overrides?:
   return new CloudflareSupportProvisioner({
     cf,
     project: PROJECT,
-    accountId: "acct-1",
+    account: { accountId: "acct-1", confirmation: "pinned" },
     apiToken: "tok",
     supportConfig: SupportConfig.parse({}),
     resolveEnv: async () => ({ appDatabaseId: "app-db" }),
@@ -138,7 +138,12 @@ describe("the inbound routing rule", () => {
   test("teardown removes only this project's rule", async () => {
     const { cf, removeWorkerRoute } = fakeCf();
     removeWorkerRoute.mockResolvedValue({ removed: true });
-    const deprovisioner = new CloudflareSupportDeprovisioner({ cf, project: PROJECT, routingZoneId: "zone-1" });
+    const deprovisioner = new CloudflareSupportDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+      routingZoneId: "zone-1",
+    });
 
     expect(await deprovisioner.removeRoutingRule()).toEqual({ removed: true });
     expect(removeWorkerRoute).toHaveBeenCalledWith({ zoneId: "zone-1", ruleName: supportRoutingRuleName(PROJECT) });
@@ -181,5 +186,48 @@ describe("the committed classification worker template", () => {
     expect(resolved.workflows?.[0]?.name).toBe("globex-prod-support-classify");
     // Resolution is pure: the committed template it was handed is untouched.
     expect(template.name).toBe("pithy-support");
+  });
+});
+
+/**
+ * The account a teardown deletes from must be one something claims (#378).
+ *
+ * `getWorker` answers "this account has no such script" and "you asked an account that is not yours"
+ * with the same `null`, so a teardown pointed at a stranger's account used to delete nothing, audit
+ * nothing, and exit 0 — a success message printed over a production Worker that is still running.
+ *
+ * The account id below is a literal, written here and nowhere else, and the plant that proves this gate
+ * can fail is one word: turn `confirmation` back into something the guard ignores.
+ */
+describe("teardown refuses an unconfirmed account", () => {
+  test("refuses instead of reading a miss as `already gone`", async () => {
+    const getWorker = vi.fn().mockResolvedValue(null);
+    const deleteWorker = vi.fn();
+    const cf = { workers: () => ({ getWorker, deleteWorker }) } as unknown as CloudflareClients;
+    const stranger = new CloudflareSupportDeprovisioner({
+      cf,
+      project: PROJECT,
+      account: { accountId: "acct-stranger", confirmation: "ambient" },
+    });
+
+    await expect(stranger.deleteWorker("prod")).rejects.toThrow(
+      "Nothing states that Cloudflare account acct-stranger is this project's. Nothing was changed.",
+    );
+    expect(deleteWorker).not.toHaveBeenCalled();
+    expect(getWorker).not.toHaveBeenCalled();
+  });
+
+  test("a confirmed account still tears down", async () => {
+    const getWorker = vi.fn().mockResolvedValue({ id: "acme-prod-support" });
+    const deleteWorker = vi.fn();
+    const cf = { workers: () => ({ getWorker, deleteWorker }) } as unknown as CloudflareClients;
+    const ours = new CloudflareSupportDeprovisioner({
+      cf,
+      project: PROJECT,
+      account: { accountId: "acct-ours", confirmation: "pinned" },
+    });
+
+    await ours.deleteWorker("prod");
+    expect(deleteWorker).toHaveBeenCalledTimes(1);
   });
 });

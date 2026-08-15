@@ -36,7 +36,8 @@ import {
   CloudflareSecretsDeprovisioner,
   CloudflareSecretsProvisioner,
 } from "../capabilities/secretsProvisioner";
-import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import type { ConfirmedAccount } from "../cloudflare/accountAnswer";
+import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { editDevSecrets } from "../devSecrets/edit";
 import { resolveDevSecretsFile } from "../devSecrets/location";
 import { mergedSecretRegistry, resolveDevSecretsTargets } from "../devSecrets/targets";
@@ -122,11 +123,13 @@ function loadCloudflareCreds(
   account: CloudflareAccountSelection | null,
   options: { requireStore?: boolean } = {},
 ): {
+  account: ConfirmedAccount;
   accountId: string;
   apiToken: string;
   storeId: string;
 } {
   const vars = cloudflareEnv({ account });
+  const confirmation = cloudflareAccountConfirmation({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const storeId = vars.SECRETS_STORE_ID ?? "";
@@ -142,7 +145,7 @@ function loadCloudflareCreds(
       action: "Run pithy add secrets to record SECRETS_STORE_ID (create a Secrets Store in the Cloudflare dashboard).",
     });
   }
-  return { accountId, apiToken, storeId };
+  return { account: { accountId, confirmation }, accountId, apiToken, storeId };
 }
 
 /**
@@ -459,9 +462,12 @@ const provision = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const { accountId, apiToken, storeId } = loadCloudflareCreds(await projectCloudflareAccount(projectDir), {
-        requireStore: true,
-      });
+      const { account, accountId, apiToken, storeId } = loadCloudflareCreds(
+        await projectCloudflareAccount(projectDir),
+        {
+          requireStore: true,
+        },
+      );
       // Never `resolveProjectName`: every Secrets Store entry and the manager's token name derive from
       // this, and deprovision has to recompute them exactly. A guessed name would name resources
       // teardown can never find again.
@@ -471,7 +477,7 @@ const provision = defineCommand({
       // database resolves against when a command has no single target env (mirrors `pithy feature`).
       const provisioner = new CloudflareSecretsProvisioner({
         cf,
-        accountId,
+        account,
         project,
         storeId,
         deploy: buildManagerDeploy({ accountId, apiToken, project }),
@@ -601,11 +607,15 @@ const deprovision = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const { accountId, apiToken, storeId } = loadCloudflareCreds(await projectCloudflareAccount(projectDir), {
-        requireStore: true,
-      });
+      const { account, accountId, apiToken, storeId } = loadCloudflareCreds(
+        await projectCloudflareAccount(projectDir),
+        {
+          requireStore: true,
+        },
+      );
       const cf = new CloudflareClients({ accountId, apiToken });
       const deprovisioner = new CloudflareSecretsDeprovisioner({
+        account,
         cf,
         project: requireProjectName(await loadProject(projectDir)),
         storeId,

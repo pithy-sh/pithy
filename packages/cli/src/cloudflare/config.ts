@@ -269,6 +269,34 @@ export interface CloudflareAccountMismatch {
  */
 export type CloudflareCredentialSource = CloudflareAccountSource | "mixed";
 
+/**
+ * What vouches for the account a run is about to act on — the answer that does not need a pin (#378).
+ *
+ * **A mismatch is only detectable when the project pins `cloudflare.accountId`.** A project that pins
+ * none has no disagreement to find, so {@link CloudflareAccountMismatch} stays `null` and every listing
+ * downstream answers confidently about whatever `CLOUDFLARE_ACCOUNT_ID` the shell happened to export.
+ * That is the gap: the guard was real and it was narrow, and the sites outside it can delete nothing
+ * while reporting success, or create a resource in a stranger's account.
+ *
+ * So confirmation is a *level*, always present, and it is a statement about **who decided the account**:
+ *
+ * - `pinned` — the repository pins the id and the credentials agree. The strong form, and the only one
+ *   that means the same thing on two developers' machines.
+ * - `named` — the repository names `cloudflare.accountName`, and **that file** supplied the id. The
+ *   repository chose the file; the operator wrote the file for that nickname. Weaker than a pin, and not
+ *   ambient: an exported variable cannot produce it, because the overlay only fills keys the file left unset.
+ * - `recorded` — the repository says nothing, and the default `<config>/cloudflare.json` supplied the id.
+ *   This is the single-account machine `pithy init` wrote, untouched since #206, and refusing it would
+ *   break every project that never needed a second account.
+ * - `ambient` — nothing in the repository and nothing on disk decided. The id came from `process.env`.
+ *   **This is the one value that refuses**, and it is exactly the incident: on 2026-08-15 a lane read
+ *   three databases belonging to a different account out of a shell that had exported one variable.
+ *
+ * The escape from `ambient` is one line of config, and the refusal names it. That is deliberate — a
+ * command that creates or destroys infrastructure should be told which account it is for.
+ */
+export type CloudflareAccountConfirmation = "pinned" | "named" | "recorded" | "ambient";
+
 /** One credential resolution, with everything a caller may need to refuse or to report it. */
 export interface CloudflareResolution {
   /** The file this resolution read, named whether or not it exists. */
@@ -281,6 +309,14 @@ export interface CloudflareResolution {
   pinnedAccountId: string | null;
   /** Set when the pin and the resolved account id disagree. */
   mismatch: CloudflareAccountMismatch | null;
+  /**
+   * What vouches for the resolved account, whether or not the project pins one (#378).
+   *
+   * Always present, and `ambient` where {@link mismatch} could say nothing at all. A caller that is
+   * about to create or delete infrastructure reads this; a caller that is only reporting reads it too,
+   * and says so rather than refusing.
+   */
+  confirmation: CloudflareAccountConfirmation;
   /** Whether this resolution refused the environment overlay — see {@link PITHY_OFFLINE_ENV}. */
   offline: boolean;
   /**
@@ -334,7 +370,39 @@ export function resolveCloudflare(options: CloudflareConfigOptions): CloudflareR
         }
       : null;
 
-  return { path, accountName, vars, pinnedAccountId, mismatch, offline, credentialSource };
+  const confirmation = confirmationOf({
+    pinnedAccountId,
+    accountName,
+    resolved,
+    fromFileAccountId: fromFile.CLOUDFLARE_ACCOUNT_ID ?? "",
+  });
+
+  return { path, accountName, vars, pinnedAccountId, mismatch, offline, credentialSource, confirmation };
+}
+
+/**
+ * Who decided the account, from the three places that could have.
+ *
+ * Derived from this one resolution rather than asked again, for the reason {@link sourceOf} gives. Order
+ * matters and it is the order of authority: the repository's pin, then the repository's file selection,
+ * then the machine's default file, then nothing.
+ */
+function confirmationOf(facts: {
+  pinnedAccountId: string | null;
+  accountName: string | null;
+  resolved: string;
+  fromFileAccountId: string;
+}): CloudflareAccountConfirmation {
+  // A pin that survived the mismatch check above vouches for whatever resolved, from either source: the
+  // repository named the id and the credentials agree with it.
+  if (facts.pinnedAccountId && facts.resolved === facts.pinnedAccountId) return "pinned";
+  // Nothing resolved is not confirmation of anything. Callers that need credentials refuse for the
+  // missing pair first; this is the honest value for the state where there is no account to vouch for.
+  if (!facts.resolved) return "ambient";
+  // The file has to be the one that supplied the id. A named file holding only a token leaves the
+  // account to the overlay, which is the ambient case wearing the project's nickname.
+  if (facts.fromFileAccountId !== facts.resolved) return "ambient";
+  return facts.accountName === null ? "recorded" : "named";
 }
 
 /**
@@ -364,6 +432,32 @@ function sourceOf(fromFile: Record<string, string>, vars: Record<string, string>
 export function describeCloudflareAccountMismatch(mismatch: CloudflareAccountMismatch): string {
   const where = mismatch.source === "file" ? mismatch.path : "the environment";
   return `This project pins Cloudflare account ${mismatch.pinned}, and ${where} supplies credentials for ${mismatch.resolved}.`;
+}
+
+/**
+ * The one sentence an unconfirmed account gets — {@link describeCloudflareAccountMismatch}'s sibling, for
+ * the case that has no disagreement to report because nothing was ever claimed (#378).
+ *
+ * The account id is named because it is the whole point: an operator reading this is being shown the
+ * account their command was about to change, and it is very likely not the one they had in mind.
+ */
+export function describeUnconfirmedCloudflareAccount(accountId: string): string {
+  return `Nothing states that Cloudflare account ${accountId} is this project's.`;
+}
+
+/** What a project may do about {@link describeUnconfirmedCloudflareAccount}. One line of config, either way. */
+export const UNCONFIRMED_CLOUDFLARE_ACCOUNT_ACTION =
+  "Set `cloudflare.accountId` in pithy.config.ts to the account this project belongs to, or `cloudflare.accountName` to the file holding its credentials. An account id from the environment is not a claim the repository makes.";
+
+/**
+ * What vouches for the account these options resolve to.
+ *
+ * A thin read of {@link resolveCloudflare}, so a caller that already refuses through {@link cloudflareEnv}
+ * adds one line rather than a second resolution path. It never throws: an unconfirmed account is not a
+ * fault everywhere, and each site decides for itself — a teardown refuses, `pithy doctor` reports.
+ */
+export function cloudflareAccountConfirmation(options: CloudflareConfigOptions): CloudflareAccountConfirmation {
+  return resolveCloudflare(options).confirmation;
 }
 
 /**
