@@ -9,6 +9,7 @@ import {
   environmentsWrittenBeforeFailure,
   type SecretDispatcher,
   type SecretProbe,
+  type SecretRotationRecorder,
 } from "@pithy-sh/secrets/src/cli/dispatch";
 import { secretWriteTargets } from "@pithy-sh/secrets/src/cli/writeTargets";
 import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
@@ -105,13 +106,32 @@ async function buildAudit(projectDir: string, env: string) {
 }
 
 /**
+ * The dispatcher a `--dry-run` gets: every seam present, none of them reachable, and none of them called.
+ *
+ * A dry run answers what *would* happen and must reach no account at all — which is what makes it usable
+ * before the credentials exist. `rotateSecretValue` returns `unchanged` before it opens a rotation row, so
+ * `openRotation` here is unreachable rather than merely unused; it throws instead of returning a plausible
+ * id, because a dry run that quietly recorded a rotation would be the one thing it promises never to do.
+ */
+const DRY_RUN_DISPATCHER: SecretDispatcher & SecretRotationRecorder = {
+  dispatch: async () => {},
+  openRotation: async () => {
+    throw new ValidationError({
+      message: "A dry run does not record a rotation.",
+      detail: "DRY_RUN_DISPATCHER.openRotation was reached, which means a dry run passed the ledger open",
+    });
+  },
+  closeRotation: async () => {},
+};
+
+/**
  * Build the live dispatcher from CF creds (`.dev.vars`, then `process.env`) and the project name.
  *
  * `requireProjectName`, never `resolveProjectName`: the target Workflow is `<project>-<env>-secrets-write`
  * and Workflow names are account-scoped, so a fallback-derived name would either dispatch nowhere or
  * dispatch this project's values into another project's manager.
  */
-async function buildDispatcher(projectDir: string): Promise<SecretDispatcher & SecretProbe> {
+async function buildDispatcher(projectDir: string): Promise<SecretDispatcher & SecretProbe & SecretRotationRecorder> {
   const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
   const project = requireProjectName(await loadProject(projectDir));
   return buildSecretDispatcher(accountId, apiToken, project);
@@ -321,7 +341,7 @@ const rotate = defineCommand({
       // than tidy. Missing credentials raise here, with the previous value untouched; built after the
       // roll, the same missing credentials would strand a live one behind a message about `pithy init`.
       // A dry run reaches no account at all, which is what makes it usable before the credentials exist.
-      const dispatcher = dryRun ? { dispatch: async () => {} } : await buildDispatcher(projectDir);
+      const dispatcher = dryRun ? DRY_RUN_DISPATCHER : await buildDispatcher(projectDir);
       const audit = dryRun ? async () => {} : await buildAudit(projectDir, auditOrigin(env, environments));
 
       const outcome = await runSecretRotation(

@@ -6,7 +6,8 @@ import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { defineSecretRegistry, type SecretRegistryEntry } from "../registry";
 import type { ManagedEnvironment } from "../scope";
-import { rotateSecretValue, type SecretValueStore } from "./rotateValue";
+import { rotateSecretValue, type SecretRotationOutcome, type SecretValueStore } from "./rotateValue";
+import { type RotationClosure, type RotationLedger, rotationClosure } from "./rotationLedger";
 import type { ValueRotator } from "./valueRotator";
 
 /**
@@ -44,12 +45,18 @@ const manual: SecretRegistryEntry = {
   rotation: { kind: "manual", issuer: "github", documentation: "https://github.com/settings/developers" },
 };
 
-/** A rotator that counts its calls. The count is the assertion in every irreversibility test below. */
-function countingRotator(value: string | (() => string)): ValueRotator & { calls: number } {
+/**
+ * A rotator that counts its calls. The count is the assertion in every irreversibility test below.
+ *
+ * `log` is the shared event list a ledger writes into, so a test can assert that the row was opened
+ * *before* the issuer was ever contacted rather than merely that both happened.
+ */
+function countingRotator(value: string | (() => string), log: string[] = []): ValueRotator & { calls: number } {
   const rotator = {
     calls: 0,
     async roll() {
       rotator.calls += 1;
+      log.push("roll");
       return { newValue: typeof value === "function" ? value() : value };
     },
   };
@@ -87,12 +94,55 @@ function recordingStore(options: { refuse?: (env: ManagedEnvironment) => boolean
   return state;
 }
 
+/**
+ * A ledger that records what it was asked to do, and when relative to the roll.
+ *
+ * `events` is the order, not just the set: `open` must appear before the rotator is called, because a
+ * rotator that never returns has to leave a trace behind it. The `roll` entries are appended by
+ * {@link countingRotator} into the same array for exactly that comparison.
+ */
+function recordingLedger(options: { refuseOpen?: boolean; refuseClose?: boolean } = {}): {
+  ledger: RotationLedger;
+  events: string[];
+  closures: RotationClosure[];
+  opened: string[];
+} {
+  const state = {
+    events: [] as string[],
+    closures: [] as RotationClosure[],
+    opened: [] as string[],
+    ledger: {
+      async open(name: string) {
+        if (options.refuseOpen) {
+          state.events.push("open-refused");
+          throw new Error("the manager would not open a rotation row");
+        }
+        state.events.push("open");
+        state.opened.push(name);
+        return {
+          async close(outcome: SecretRotationOutcome) {
+            if (options.refuseClose) {
+              state.events.push("close-refused");
+              throw new Error("the manager would not close the rotation row");
+            }
+            state.events.push("close");
+            state.closures.push(rotationClosure(outcome, "prod"));
+          },
+        };
+      },
+    },
+  };
+  return state;
+}
+
 const noSleep = async () => {};
 
 describe("a manual secret", () => {
   test("gets an instruction and calls nothing", async () => {
     const store = recordingStore();
+    const ledger = recordingLedger();
     const outcome = await rotateSecretValue({
+      ledger: ledger.ledger,
       name: "AUTH_GITHUB_CREDENTIALS",
       entry: manual,
       targets: ["staging"],
@@ -101,6 +151,8 @@ describe("a manual secret", () => {
     expect(outcome).toMatchObject({ status: "unchanged", reason: "manual", kind: "manual", rolled: false });
     expect(outcome.recorded).toEqual([]);
     expect(store.attempts).toBe(0);
+    // A history of attempts that logs the ones that were never attempted is a history nobody can read.
+    expect(ledger.events).toEqual([]);
   });
 });
 
@@ -108,7 +160,9 @@ describe("a dry run", () => {
   test("names what would happen and reaches neither the rotator nor the store", async () => {
     const rotator = countingRotator("never-issued");
     const store = recordingStore();
+    const ledger = recordingLedger();
     const outcome = await rotateSecretValue({
+      ledger: ledger.ledger,
       name: "CF_TOKEN",
       entry: provider(rotator),
       targets: ["prod"],
@@ -120,13 +174,17 @@ describe("a dry run", () => {
     // The whole value of a dry run at 2am: it proves nothing was rolled, rather than promising it.
     expect(rotator.calls).toBe(0);
     expect(store.attempts).toBe(0);
+    // And no row either: a dry run that recorded a rotation would be lying in the one place it must not.
+    expect(ledger.events).toEqual([]);
   });
 });
 
 describe("a local rotation", () => {
   test("mints a value, stores it, and reports the environments it reached", async () => {
     const store = recordingStore();
+    const ledger = recordingLedger();
     const outcome = await rotateSecretValue({
+      ledger: ledger.ledger,
       name: "EMAIL_LINK_SIGNING_KEY",
       entry: local,
       targets: DECLARED,
@@ -142,7 +200,9 @@ describe("a local rotation", () => {
 
   test("a store that will not take it is `failed`, not `unrecorded` — nothing was rolled anywhere", async () => {
     const store = recordingStore({ refuse: () => true });
+    const ledger = recordingLedger();
     const outcome = await rotateSecretValue({
+      ledger: ledger.ledger,
       name: "EMAIL_LINK_SIGNING_KEY",
       entry: local,
       targets: ["staging"],
@@ -162,7 +222,9 @@ describe("a provider rotation", () => {
   test("rolls once and records it", async () => {
     const rotator = countingRotator("issued-1");
     const store = recordingStore();
+    const ledger = recordingLedger();
     const outcome = await rotateSecretValue({
+      ledger: ledger.ledger,
       name: "CF_TOKEN",
       entry: provider(rotator),
       targets: ["prod"],
@@ -185,7 +247,9 @@ describe("a provider rotation", () => {
     let issued = 0;
     const rotator = countingRotator(() => `issued-${++issued}`);
     const store = recordingStore({ refuse: () => true });
+    const ledger = recordingLedger();
     const outcome = await rotateSecretValue({
+      ledger: ledger.ledger,
       name: "CF_TOKEN",
       entry: provider(rotator),
       targets: ["prod"],
@@ -209,7 +273,9 @@ describe("a provider rotation", () => {
   test("a partial fan-out names the environments still holding the retired credential", async () => {
     const rotator = countingRotator("issued-1");
     const store = recordingStore({ refuse: (env) => env === "prod" });
+    const ledger = recordingLedger();
     const outcome = await rotateSecretValue({
+      ledger: ledger.ledger,
       name: "CF_TOKEN",
       entry: { ...provider(rotator), scope: "global" },
       targets: DECLARED,
@@ -227,12 +293,14 @@ describe("a provider rotation", () => {
 
   test("a rotator that throws is `unrecorded` — it may have rolled, and `may have` needs a human", async () => {
     const store = recordingStore();
+    const ledger = recordingLedger();
     const entry = provider({
       async roll() {
         throw new Error("the account rolled, then the connection dropped");
       },
     });
     const outcome = await rotateSecretValue({
+      ledger: ledger.ledger,
       name: "CF_TOKEN",
       entry,
       targets: ["prod"],
@@ -248,15 +316,155 @@ describe("a provider rotation", () => {
 
   test("a rotator that answers with nothing usable is `unrecorded`, and nothing is stored", async () => {
     const store = recordingStore();
+    const ledger = recordingLedger();
     const entry = provider({
       async roll() {
         return { newValue: "" };
       },
     });
-    const outcome = await rotateSecretValue({ name: "CF_TOKEN", entry, targets: ["prod"], store: store.store });
+    const outcome = await rotateSecretValue({
+      ledger: ledger.ledger,
+      name: "CF_TOKEN",
+      entry,
+      targets: ["prod"],
+      store: store.store,
+    });
     expect(outcome.status).toBe("unrecorded");
     // An empty string is not a credential, and writing one would replace a live value with nothing.
     expect(store.attempts).toBe(0);
+  });
+});
+
+/**
+ * **`#379`: a rotation that succeeds must record a rotation, and the recording belongs to the act.**
+ *
+ * The defect was not that one call site forgot. It was that forgetting was possible: `pithy secrets rotate`
+ * dispatched an ordinary `update`, nothing on that path was a rotation as far as the ledger was concerned,
+ * and the secret reported overdue forever. So the ledger is a required argument to the function that
+ * performs a rotation, and these are the properties that argument has to hold.
+ */
+describe("the rotation ledger", () => {
+  test("the row is opened before the issuer is contacted", async () => {
+    const ledger = recordingLedger();
+    // One list, written by both, so the assertion is about order and not about two facts side by side.
+    const rotator = countingRotator("issued-1", ledger.events);
+    const store = recordingStore();
+
+    await rotateSecretValue({
+      ledger: ledger.ledger,
+      name: "CF_TOKEN",
+      entry: provider(rotator),
+      targets: ["prod"],
+      store: store.store,
+    });
+
+    // A rotator that never returns is the case this ordering exists for: the run would stop at `roll`, and
+    // an incident review would still find an `in_progress` row naming the secret.
+    expect(ledger.events).toEqual(["open", "roll", "close"]);
+    expect(ledger.opened).toEqual(["CF_TOKEN"]);
+  });
+
+  test("a rotation that landed closes success", async () => {
+    const ledger = recordingLedger();
+    const store = recordingStore();
+
+    await rotateSecretValue({
+      ledger: ledger.ledger,
+      name: "EMAIL_LINK_SIGNING_KEY",
+      entry: local,
+      targets: ["prod"],
+      store: store.store,
+    });
+
+    expect(ledger.closures).toEqual([{ status: "success" }]);
+  });
+
+  test("rolled at the issuer and never stored closes failed, and says which failure", async () => {
+    const ledger = recordingLedger();
+    const store = recordingStore({ refuse: () => true });
+
+    await rotateSecretValue({
+      ledger: ledger.ledger,
+      name: "CF_TOKEN",
+      entry: provider(countingRotator("issued-1")),
+      targets: ["prod"],
+      store: store.store,
+      attempts: 2,
+      sleep: noSleep,
+    });
+
+    // The incident, and it is a different one from "nothing happened" — the row has to be able to say so.
+    expect(ledger.closures).toEqual([{ status: "failed", reason: "not-recorded" }]);
+  });
+
+  test("a rotator that never answered closes failed as `roll-failed`, not as a store failure", async () => {
+    const ledger = recordingLedger();
+    const store = recordingStore();
+
+    await rotateSecretValue({
+      ledger: ledger.ledger,
+      name: "CF_TOKEN",
+      entry: provider({
+        async roll() {
+          throw new Error("the account rolled, then the connection dropped");
+        },
+      }),
+      targets: ["prod"],
+      store: store.store,
+    });
+
+    // *Was rolled* and *may have been rolled* need different reactions, and the ledger keeps them apart.
+    expect(ledger.closures).toEqual([{ status: "failed", reason: "roll-failed" }]);
+  });
+
+  test("a partial fan-out closes per environment, not once for all of them", async () => {
+    const ledger = recordingLedger();
+    const store = recordingStore({ refuse: (env) => env === "prod" });
+    const outcome = await rotateSecretValue({
+      ledger: ledger.ledger,
+      name: "CF_TOKEN",
+      entry: { ...provider(countingRotator("issued-1")), scope: "global" },
+      targets: DECLARED,
+      store: store.store,
+      attempts: 2,
+      sleep: noSleep,
+    });
+
+    // The core hands the whole outcome to the ledger, and each environment's row is closed against its own
+    // name. Staging holds the new value; prod holds a credential the issuer retired. One verdict written to
+    // both would be wrong about one of them, whichever way it went.
+    expect(rotationClosure(outcome, "staging")).toEqual({ status: "success" });
+    expect(rotationClosure(outcome, "prod")).toEqual({ status: "failed", reason: "not-recorded" });
+  });
+
+  test("a ledger that cannot be reached costs the row, never the rotation", async () => {
+    const refusingOpen = recordingLedger({ refuseOpen: true });
+    const store = recordingStore();
+
+    const outcome = await rotateSecretValue({
+      ledger: refusingOpen.ledger,
+      name: "EMAIL_LINK_SIGNING_KEY",
+      entry: local,
+      targets: ["prod"],
+      store: store.store,
+    });
+
+    // Refusing to replace a credential because the bookkeeping was unavailable is the worse failure, and
+    // during the incident that prompted the rotation it is much the worse failure.
+    expect(outcome.status).toBe("rotated");
+    expect(store.writes).toHaveLength(1);
+
+    const refusingClose = recordingLedger({ refuseClose: true });
+    const second = await rotateSecretValue({
+      ledger: refusingClose.ledger,
+      name: "EMAIL_LINK_SIGNING_KEY",
+      entry: local,
+      targets: ["prod"],
+      store: recordingStore().store,
+    });
+    // And a close that throws must not take `recorded` with it — that record is what makes a remedy safe.
+    expect(second.status).toBe("rotated");
+    expect(second.recorded).toEqual(["prod"]);
   });
 });
 
@@ -264,11 +472,14 @@ describe("what it refuses before anything is called", () => {
   /** Every refusal below must leave the store untouched — that is the property, not the message. */
   async function refusal(name: string, entry: SecretRegistryEntry, targets: ManagedEnvironment[] = ["staging"]) {
     const store = recordingStore();
-    const error = await rotateSecretValue({ name, entry, targets, store: store.store }).then(
+    const ledger = recordingLedger();
+    const error = await rotateSecretValue({ ledger: ledger.ledger, name, entry, targets, store: store.store }).then(
       () => undefined,
       (thrown: unknown) => thrown,
     );
     expect(store.attempts).toBe(0);
+    // A refusal lands before the row is opened, so a rotation that never started writes no history.
+    expect(ledger.events).toEqual([]);
     expect(error).toBeInstanceOf(PithyError);
     return error as PithyError;
   }

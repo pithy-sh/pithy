@@ -76,6 +76,14 @@ So the ordering is the design:
 2. **The value is produced once**, and never again for any reason.
 3. **The store is retried against that value** — three attempts, the same string every time. There is no path from a failed store back to a fresh roll.
 
+#### The rotation is recorded, whichever path ran it
+
+A rotation opens a row in that environment's rotation history **before** anything is rolled, and closes it after — so a rotator that never returns still leaves a trace naming the secret and the attempt, and a rotation that succeeded advances `lastRotatedAt`. Until #379 the command line did not do this: it dispatched an ordinary update, nothing recorded a rotation, and the secret went on reporting **overdue** forever while the same act performed from a control-plane client recorded correctly. One act with two paths is not allowed to disagree about whether it happened.
+
+A `global` secret opens one row per environment, and each closes against what that environment actually got: a fan-out that reached staging and stranded prod is a success in one history and an incident in the other. A row records *what caused it* — a rotation is `manual`, the marker written when a secret is first stored is `baseline` — so a first write and a replacement stay legible as different events. `pithy secrets update` is a write, not a rotation, and does not advance the clock.
+
+**Bookkeeping never decides whether a credential is replaced.** A manager that cannot be reached costs the row and not the rotation; the gap is visible as a missing entry and a `lastRotatedAt` that did not move. A `--dry-run` and a `manual` secret record nothing, because nothing was attempted.
+
 The report is per secret and never in aggregate. The word *rotated* is printed only where a value landed:
 
 ```

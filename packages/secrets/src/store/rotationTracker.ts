@@ -7,6 +7,13 @@ import { createDatabase, type DatabaseSchema } from "@pithy-sh/core/src/data/db"
 import type { Kysely } from "kysely";
 import type { RotationStatus, RotationTrigger } from "../data/secretRotations";
 import { type SecretsTables, secretsTables } from "../data/tables";
+import {
+  type OpenRotation,
+  type RotationLedger,
+  rotationClosure,
+  rotationFailureText,
+} from "../rotation/rotationLedger";
+import type { ManagedEnvironment } from "../scope";
 
 type SecretsDb = Kysely<DatabaseSchema<SecretsTables>>;
 
@@ -74,7 +81,14 @@ export class RotationTracker {
       .execute();
   }
 
-  /** Seed a `success`/`baseline` row so a brand-new rotatable secret is not flagged overdue. */
+  /**
+   * Seed a `success`/`baseline` row so a brand-new rotatable secret is not flagged overdue.
+   *
+   * **A first write, and it stays that.** `trigger: "baseline"` is what distinguishes establishing a value
+   * from replacing one — a rotation writes `manual` or `cron` through {@link trackerRotationLedger} and
+   * carries an actor. Widening this to cover updates would let a typo fix advance a freshness clock
+   * nobody rotated; see `../rotation/rotationLedger.ts`.
+   */
   async recordBaseline(name: string): Promise<void> {
     const now = SQLiteDate.encode(new Date());
     await this.#db
@@ -117,4 +131,38 @@ export class RotationTracker {
     await this.#db.deleteFrom("pithySecretsRotations").where("name", "=", name).execute();
     return Number(before?.count ?? 0);
   }
+}
+
+/** What {@link trackerRotationLedger} needs beyond the tracker: which environment it is, and who is asking. */
+export interface TrackerRotationLedgerOptions {
+  /** The environment this D1 belongs to. Decides how the row closes — see `rotationClosure`. */
+  environment: ManagedEnvironment;
+  /** What caused the rotation: an operator (`manual`) or the manager's own schedule (`cron`). Never `baseline`. */
+  trigger: Exclude<RotationTrigger, "baseline">;
+  /** Who asked. A verified control-plane subject in a Worker, a workflow instance id for a scheduled run. */
+  rotatedBy: string;
+}
+
+/**
+ * The in-Worker {@link RotationLedger}: the rotation table this process already holds a handle to.
+ *
+ * The direct half of the seam. Anything running *inside* an environment — a control-plane rotate route, the
+ * manager's own cron — records through this; a process outside one records the identical rows through
+ * `../cli/rotationLedger.ts`, over a dispatch. Both compose the closing verdict with `rotationClosure` and
+ * the failure sentence with `rotationFailureText`, which is what stops the two paths from disagreeing about
+ * whether a rotation happened (`#379`).
+ */
+export function trackerRotationLedger(tracker: RotationTracker, options: TrackerRotationLedgerOptions): RotationLedger {
+  return {
+    async open(name: string): Promise<OpenRotation> {
+      const rotationId = await tracker.startRotation(name, options.trigger, options.rotatedBy);
+      return {
+        async close(outcome): Promise<void> {
+          const closure = rotationClosure(outcome, options.environment);
+          if (closure.status === "success") await tracker.markSuccess(rotationId);
+          else await tracker.markFailure(rotationId, rotationFailureText(closure.reason));
+        },
+      };
+    },
+  };
 }

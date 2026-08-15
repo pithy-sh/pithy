@@ -99,6 +99,67 @@ describe("WorkflowSecretDispatcher", () => {
     },
   );
 
+  /**
+   * **The rotation ledger over the same wire (`#379`).** A row addressed by an id, so the id is the thing
+   * that must not be guessed at: a `rotation-open` whose answer cannot be read leaves the close pointing at
+   * nothing, and a row that never closes reads as a rotation still running long after it ended.
+   */
+  test("opens a rotation row and returns the id its manager assigned", async () => {
+    const { client, dispatchAndPoll } = stubClient();
+    dispatchAndPoll.mockResolvedValue({ outcome: "opened", rotationId: 7 });
+
+    const id = await new WorkflowSecretDispatcher(client, "acme").openRotation({
+      env: "prod",
+      name: "CF_TOKEN",
+      trigger: "manual",
+      rotatedBy: "pithy secrets rotate",
+    });
+
+    expect(id).toBe(7);
+    // No value and no valueType — opening a row touches nothing a secret could be in.
+    expect(dispatchAndPoll).toHaveBeenCalledWith("acme-prod-secrets-write", {
+      mode: "rotation-open",
+      name: "CF_TOKEN",
+      trigger: "manual",
+      rotatedBy: "pithy secrets rotate",
+    });
+  });
+
+  test.each([undefined, {}, { outcome: "opened" }, { outcome: "written", rotationId: 7 }, { rotationId: 7 }])(
+    "refuses an open it cannot read rather than closing an id it invented: %s",
+    async (output) => {
+      const { client, dispatchAndPoll } = stubClient();
+      dispatchAndPoll.mockResolvedValue(output);
+
+      await expect(
+        new WorkflowSecretDispatcher(client, "acme").openRotation({
+          env: "prod",
+          name: "CF_TOKEN",
+          trigger: "manual",
+          rotatedBy: "pithy secrets rotate",
+        }),
+      ).rejects.toThrow(/did not record a rotation/);
+    },
+  );
+
+  test("closes a row with a reason code, never with a sentence", async () => {
+    const { client, dispatchAndPoll } = stubClient();
+
+    await new WorkflowSecretDispatcher(client, "acme").closeRotation({
+      env: "prod",
+      rotationId: 7,
+      closure: { status: "failed", reason: "not-recorded" },
+    });
+
+    // The failure sentence is composed inside the Worker. Free text is what a value gets pasted into, and
+    // nothing crossing this wire has a field one could go in.
+    expect(dispatchAndPoll).toHaveBeenCalledWith("acme-prod-secrets-write", {
+      mode: "rotation-close",
+      rotationId: 7,
+      closure: { status: "failed", reason: "not-recorded" },
+    });
+  });
+
   test("two projects' dispatchers never reach the same Workflow", async () => {
     const acme = stubClient();
     const globex = stubClient();

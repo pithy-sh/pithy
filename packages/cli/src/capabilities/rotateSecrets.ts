@@ -3,7 +3,8 @@
 
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
-import type { SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
+import type { SecretDispatcher, SecretRotationRecorder } from "@pithy-sh/secrets/src/cli/dispatch";
+import { dispatchedRotationLedger } from "@pithy-sh/secrets/src/cli/rotationLedger";
 import { secretWriteTargets } from "@pithy-sh/secrets/src/cli/writeTargets";
 import { SecretRotationUnrecordedError } from "@pithy-sh/secrets/src/error/errors";
 import type { SecretRegistry, SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
@@ -54,6 +55,15 @@ import type { CliAuditEmit } from "../audit/cliAudit";
  */
 export const EXIT_ROLLED_NOT_RECORDED = 3;
 
+/**
+ * What a rotation needs from the manager: the write, and the ledger row around it.
+ *
+ * One object rather than two arguments because a rotation is one act and the two calls must land on the
+ * same project's managers. `WorkflowSecretDispatcher` implements both, so this is a description of what is
+ * already true rather than a constraint anything has to satisfy separately.
+ */
+export type SecretRotationDispatcher = SecretDispatcher & SecretRotationRecorder;
+
 /** What the command asks for: one secret, in one environment (or none, for a `global` secret). */
 export interface SecretRotateCommand {
   /** The registry name. */
@@ -93,10 +103,18 @@ function requireEntry(registry: SecretRegistry, name: string): SecretRegistryEnt
  * The audit line is `secrets/rotated`, matching what `pithy secrets update` already emits for the same
  * act, and it carries the name and the environments and nothing else. `unchanged` records nothing: a
  * trail that logs a rotation for a secret nothing touched is a trail that cannot be read.
+ *
+ * **The rotation ledger is a second record, and not a duplicate of that one.** The audit trail answers
+ * *who did what, across the project*; `pithy_secrets_rotations` answers *when was this secret last
+ * replaced*, in the environment holding it, and it is what `lastRotatedAt` and every overdue report are
+ * read from. `#379` is what it looks like when only the first is written: the command succeeds, the trail
+ * records a rotation, and the product goes on telling the operator the secret is overdue. The ledger is
+ * built here and handed to the core, which opens the row before the roll — see
+ * `@pithy-sh/secrets`' `cli/rotationLedger.ts`.
  */
 export async function runSecretRotation(
   registry: SecretRegistry,
-  dispatcher: SecretDispatcher,
+  dispatcher: SecretRotationDispatcher,
   command: SecretRotateCommand,
   audit: CliAuditEmit = async () => {},
 ): Promise<SecretRotationOutcome> {
@@ -118,6 +136,7 @@ export async function runSecretRotation(
     name: command.name,
     entry,
     targets,
+    ledger: dispatchedRotationLedger(dispatcher, { targets }),
     store: ({ env, value }) =>
       dispatcher.dispatch({
         env,

@@ -106,25 +106,55 @@ const LINKED = ["core", "auth", "email", "secrets", "turnstile", "audit", "cloud
  * `refused` names the environments whose write Workflow ends `errored` — the manager ran and could not
  * write. That is the genuine store failure, arriving through the genuine client, at the one moment that
  * matters: after the rotator has already rolled.
+ *
+ * It also answers the **rotation ledger** modes (`#379`), because a rotation opens a row in the manager
+ * before it rolls and closes it after — and `dispatched` records every payload it was sent, in order,
+ * which is what lets a test read the CLI's behaviour off the wire rather than off the CLI's own report.
  */
-function fakeCloudflare(refused: Set<string>): Promise<{ server: Server; baseUrl: string }> {
+function fakeCloudflare(refused: Set<string>): Promise<{
+  server: Server;
+  baseUrl: string;
+  dispatched: { workflow: string; mode: string }[];
+}> {
+  const dispatched: { workflow: string; mode: string }[] = [];
+  /** Which mode each dispatched instance carried. The poll URL does not say, so the POST has to be kept. */
+  const modes = new Map<string, { workflow: string; mode: string }>();
+  let next = 0;
   const server = createServer((req, res) => {
     const url = req.url ?? "";
     const reply = (payload: unknown) => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ result: payload, success: true, errors: [], messages: [] }));
     };
-    req.resume();
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
-      if (req.method === "POST" && /\/workflows\/[^/]+\/instances$/.test(url)) {
-        reply({ id: "instance-1", status: "queued" });
+      const create = /\/workflows\/([^/]+)\/instances$/.exec(url);
+      if (req.method === "POST" && create) {
+        const workflow = create[1] ?? "";
+        const body = JSON.parse(Buffer.concat(chunks).toString() || "{}") as { params?: { mode?: string } };
+        const mode = body.params?.mode ?? "unknown";
+        const id = `instance-${++next}`;
+        modes.set(id, { workflow, mode });
+        dispatched.push({ workflow, mode });
+        reply({ id, status: "queued" });
         return;
       }
-      const status = /\/workflows\/([^/]+)\/instances\/[^/?]+/.exec(url);
+      const status = /\/workflows\/([^/]+)\/instances\/([^/?]+)/.exec(url);
       if (status) {
         const workflow = status[1] ?? "";
+        const instance = modes.get(status[2] ?? "");
         if ([...refused].some((env) => workflow.includes(`-${env}-`))) {
           reply({ status: "errored", error: { message: "the manager could not reach its database" }, steps: [] });
+          return;
+        }
+        // A `rotation-open` answers with the row id; everything else answers as a write.
+        if (instance?.mode === "rotation-open") {
+          reply({ status: "complete", output: { outcome: "opened", rotationId: 1 } });
+          return;
+        }
+        if (instance?.mode === "rotation-close") {
+          reply({ status: "complete", output: { outcome: "closed" } });
           return;
         }
         reply({ status: "complete", output: { outcome: "written" } });
@@ -137,7 +167,7 @@ function fakeCloudflare(refused: Set<string>): Promise<{ server: Server; baseUrl
   return new Promise((done) => {
     server.listen(0, "127.0.0.1", () => {
       const address = server.address() as AddressInfo;
-      done({ server, baseUrl: `http://127.0.0.1:${address.port}/client/v4` });
+      done({ server, baseUrl: `http://127.0.0.1:${address.port}/client/v4`, dispatched });
     });
   });
 }
@@ -145,8 +175,8 @@ function fakeCloudflare(refused: Set<string>): Promise<{ server: Server; baseUrl
 let dir: string;
 let app: string;
 let config: string;
-let staging: { server: Server; baseUrl: string };
-let refusing: { server: Server; baseUrl: string };
+let staging: Awaited<ReturnType<typeof fakeCloudflare>>;
+let refusing: Awaited<ReturnType<typeof fakeCloudflare>>;
 
 /** Run the real CLI in the scaffolded project, and give back both streams and the exit code. */
 async function cli(
@@ -237,6 +267,30 @@ describe("pithy secrets rotate, with the real binary", () => {
     expect(await rolls()).toBe(before + 1);
   }, 60_000);
 
+  /**
+   * **`#379`, read off the wire rather than off the report.**
+   *
+   * A successful rotation used to dispatch one thing — an ordinary `update`, indistinguishable from a typo
+   * fix — so nothing recorded a rotation and the secret reported overdue forever. The fix is the two calls
+   * either side of it, and the order is the whole property: the row is opened *before* the value is written,
+   * so a rotator that never returns still leaves a trace.
+   *
+   * This asserts what the CLI sent to the Workflows API, which is a fact about the command that the
+   * command's own stdout could not establish.
+   */
+  test("a rotation opens a ledger row, writes, then closes it — in that order", async () => {
+    const before = staging.dispatched.length;
+
+    const result = await cli(["secrets", "rotate", "REPLAY_SESSION_KEY", "--env", "staging"], staging);
+    expect(result.code).toBe(0);
+
+    const sent = staging.dispatched.slice(before);
+    expect(sent.map((instance) => instance.mode)).toEqual(["rotation-open", "update", "rotation-close"]);
+    // All three to the same environment's manager. A row opened in staging and closed in prod would record
+    // a rotation that did not happen in either.
+    expect(new Set(sent.map((instance) => instance.workflow))).toEqual(new Set(["replay-staging-secrets-write"]));
+  }, 60_000);
+
   test("a manual secret gets an instruction, calls nothing, and never says Done", async () => {
     const before = await rolls();
     const result = await cli(["secrets", "rotate", "REPLAY_OAUTH_SECRET", "--env", "prod"], refusing);
@@ -256,12 +310,15 @@ describe("pithy secrets rotate, with the real binary", () => {
 
   test("a dry run names what would happen and reaches nothing", async () => {
     const before = await rolls();
+    const dispatches = refusing.dispatched.length;
     const result = await cli(["secrets", "rotate", "REPLAY_PROVIDER_TOKEN", "--env", "prod", "--dry-run"], refusing);
     expect(result.stdout).toBe(
       "REPLAY_PROVIDER_TOKEN would be rolled at cloudflare, then written to prod.\nDry run. Nothing rolled, nothing written.\n",
     );
     expect(result.code).toBe(0);
     expect(await rolls()).toBe(before);
+    // Not the rotation row either. A dry run that recorded one would be lying in the one place it must not.
+    expect(refusing.dispatched.length).toBe(dispatches);
   }, 60_000);
 
   /**
@@ -293,6 +350,9 @@ describe("pithy secrets rotate, with the real binary", () => {
     // **One roll against three store attempts.** A second here is the defect the retry was meant to
     // prevent, arriving by way of the retry: a third credential issued and the second one lost.
     expect(await rolls()).toBe(before + 1);
+    // And the manager that cannot write is also the manager that cannot record, so the ledger open failed
+    // here too. It cost the row and not the rotation — the report above is byte-identical either way, which
+    // is the property: bookkeeping never decides whether a credential gets replaced.
   }, 120_000);
 
   test("under --json it is one line, its own error code, and the same exit", async () => {

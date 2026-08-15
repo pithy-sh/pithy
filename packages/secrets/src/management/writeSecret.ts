@@ -106,6 +106,13 @@ export async function runWriteSecret(deps: WriteSecretDeps, params: WriteSecretP
 
   // Seed a rotation baseline for a brand-new rotatable secret so the cadence check never reports
   // it immediately overdue purely for lacking history.
+  //
+  // **And nothing else here records anything, which is the point rather than the omission (`#379`).** A
+  // first write establishes a value; a rotation replaces one; they are different events and the ledger
+  // keeps them apart by `trigger`. This is a writer, and a writer cannot tell which it is being used for:
+  // an `update` is a rotation, a value pasted from a console, or a typo fix, and inferring a rotation from
+  // it would advance a freshness clock nobody rotated. The act declares itself — `rotateSecretValue` opens
+  // and closes the row around the roll, for every caller. See `../rotation/rotationLedger.ts`.
   if (params.rotatable && !exists && (await deps.tracker.getLatestSuccess(params.name)) === null) {
     await deps.tracker.recordBaseline(params.name);
   }

@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
+import type { RotationTrigger } from "../data/secretRotations";
 import type { SecretBackend, SecretScope, SecretValueType } from "../registry";
+import type { RotationClosure } from "../rotation/rotationLedger";
 import type { ManagedEnvironment } from "../scope";
 import { partialWriteReport } from "./partialWrite";
 import { secretWriteTargets } from "./writeTargets";
@@ -53,6 +55,46 @@ export interface SecretProbeRequest {
  */
 export interface SecretProbe {
   probe(request: SecretProbeRequest): Promise<boolean>;
+}
+
+/** Open one rotation row, in one environment's manager, before anything is rolled. */
+export interface SecretRotationOpenRequest {
+  /** Which environment's ledger. The rotation table is per-environment, like the store it describes. */
+  env: ManagedEnvironment;
+  /** The secret being rotated, by registry name. */
+  name: string;
+  /** What caused it. `manual` from a command, `cron` from a schedule — never `baseline`, which is a first write. */
+  trigger: RotationTrigger;
+  /** Who asked. See `./rotationLedger.ts` for what the CLI can honestly put here. */
+  rotatedBy: string;
+}
+
+/** Close a row opened by {@link SecretRotationRecorder.openRotation}, with what the run did in that environment. */
+export interface SecretRotationCloseRequest {
+  /** The environment whose row this is. */
+  env: ManagedEnvironment;
+  /** The row id that environment's manager handed back when it opened. */
+  rotationId: number;
+  /** How it closes there. A code and never free text — a value cannot be pasted into an enum. */
+  closure: RotationClosure;
+}
+
+/**
+ * **The rotation-ledger seam, and it is deliberately its own.**
+ *
+ * `pithy_secrets_rotations` lives in the per-environment secrets D1, which the CLI cannot reach — the same
+ * reason {@link SecretProbe} exists. So a rotation records the way it writes: one dispatch to that
+ * environment's manager Workflow, which holds the database.
+ *
+ * Separate from {@link SecretDispatcher} because the contracts differ in the way that matters: a write
+ * returns nothing, and opening a row returns the id the close needs. Folding an id-returning call into a
+ * `Promise<void>` writer is how the id gets dropped and the row never closes.
+ */
+export interface SecretRotationRecorder {
+  /** Open an `in_progress` row and return its id. */
+  openRotation(request: SecretRotationOpenRequest): Promise<number>;
+  /** Close a row previously opened in the same environment. */
+  closeRotation(request: SecretRotationCloseRequest): Promise<void>;
 }
 
 /** A value-touching command before routing — the CLI resolves backend/scope from the registry. */

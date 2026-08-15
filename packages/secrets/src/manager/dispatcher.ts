@@ -4,7 +4,15 @@
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { UpstreamError } from "@pithy-sh/core/src/error/pithyError";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
-import type { SecretDispatcher, SecretProbe, SecretProbeRequest, SecretWriteRequest } from "../cli/dispatch";
+import type {
+  SecretDispatcher,
+  SecretProbe,
+  SecretProbeRequest,
+  SecretRotationCloseRequest,
+  SecretRotationOpenRequest,
+  SecretRotationRecorder,
+  SecretWriteRequest,
+} from "../cli/dispatch";
 import type { ManagedEnvironment } from "../scope";
 import { WriteWorkflowResult } from "./writeWorkflow";
 
@@ -53,7 +61,7 @@ export function secretsRotateWorkflowName(project: string, env: ManagedEnvironme
  * the environment quietly invited a caller to supply an unscoped name that resolves to whichever
  * project provisioned the account last.
  */
-export class WorkflowSecretDispatcher implements SecretDispatcher, SecretProbe {
+export class WorkflowSecretDispatcher implements SecretDispatcher, SecretProbe, SecretRotationRecorder {
   readonly #client: CloudflareWorkflowsClient;
   readonly #project: string;
 
@@ -95,5 +103,40 @@ export class WorkflowSecretDispatcher implements SecretDispatcher, SecretProbe {
       });
     }
     return parsed.data.outcome === "present";
+  }
+
+  /**
+   * Open a rotation row in one environment's ledger and return its id.
+   *
+   * The same Workflow again, for the same reason the probe uses it: the rotation table sits in the manager's
+   * own D1, so the process that can write it is the one that can write the value. The output is decoded and
+   * the id demanded — a `rotation-open` that answered with no id would leave the close addressing nothing,
+   * and a row that never closes reads as a rotation still running long after it finished.
+   */
+  async openRotation(request: SecretRotationOpenRequest): Promise<number> {
+    const output = await this.#client.dispatchAndPoll(secretsWriteWorkflowName(this.#project, request.env), {
+      mode: "rotation-open",
+      name: request.name,
+      trigger: request.trigger,
+      rotatedBy: request.rotatedBy,
+    });
+    const parsed = WriteWorkflowResult.safeParse(output);
+    if (!parsed.success || parsed.data.outcome !== "opened" || parsed.data.rotationId === undefined) {
+      throw new UpstreamError({
+        message: `The ${request.env} secrets manager did not record a rotation of '${request.name}'.`,
+        action: "Redeploy the manager with pithy secrets provision so its rotation history is written again.",
+        detail: `rotation-open ${request.name} in ${request.env}: unexpected write-workflow output`,
+      });
+    }
+    return parsed.data.rotationId;
+  }
+
+  /** Close a row this dispatcher opened in the same environment. */
+  async closeRotation(request: SecretRotationCloseRequest): Promise<void> {
+    await this.#client.dispatchAndPoll(secretsWriteWorkflowName(this.#project, request.env), {
+      mode: "rotation-close",
+      rotationId: request.rotationId,
+      closure: request.closure,
+    });
   }
 }
