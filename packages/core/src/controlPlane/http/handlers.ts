@@ -10,8 +10,8 @@ import type { ControlPlaneContext } from "../context";
 import { ControlPlaneConnection, type RegisteredKey } from "../data/connection";
 import { appendKey, expireKey, pruneKeys } from "../data/keyLifecycle";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, type ControlPlaneDatabase } from "../data/tables";
-import type { CapabilityDeclaration, ControlPlaneManifest } from "../discovery/adminRoute";
-import { type CapabilityHealthSource, readCapabilityHealth } from "../discovery/health";
+import type { CapabilityDeclaration, ControlPlaneManifestWire } from "../discovery/adminRoute";
+import { type CapabilityHealthSource, healthWire, readCapabilityHealth } from "../discovery/health";
 import { ControlPlaneInvalidCredentialError, ControlPlaneKeyConflictError } from "../error/errors";
 import type {
   ControlPlaneKeysResponse,
@@ -165,10 +165,14 @@ export function pingHandler(deps: ControlPlaneHandlerDeps) {
  *
  * **And the numbers a client would otherwise pay a second round trip for** (#317). Each capability's
  * bounded summary is resolved here, behind the scope that capability's own read is behind: a connection
- * without it gets null rather than a zero, and never costs the adopter's Worker the query. A producer
- * that reports something its declaration cannot name throws — a manifest carrying a number nobody can
- * name is exactly what this seam must never serve, and returning an empty summary instead would hide
- * the fault behind a value that reads as an answer.
+ * without it gets no number rather than a zero, and never costs the adopter's Worker the query.
+ *
+ * **One capability's failure costs one capability's number** (#350). A producer that throws, or that
+ * reports something its declaration cannot name, lands on `unavailable` for that entry alone —
+ * `readCapabilityHealth` catches it, so nothing rejects, so `Promise.all` still resolves and every
+ * sibling still reports. This route is what the whole management surface is built from; a manifest that
+ * 500s takes every pane with it, and the capability at fault is the one thing the screen could not then
+ * name.
  */
 export function manifestHandler(deps: ControlPlaneHandlerDeps) {
   return async (c: Context<PithyHonoEnv>) => {
@@ -179,8 +183,10 @@ export function manifestHandler(deps: ControlPlaneHandlerDeps) {
     const capabilities = await Promise.all(
       deps.composedCapabilities().map(async (declaration) => ({
         ...declaration,
-        health: await readCapabilityHealth(sources.get(declaration.name), context.grantedScopes, (source) =>
-          source.read(c),
+        // Spread, so the values and the failure flag are written together or not at all. A handler that
+        // set one and forgot the other is the shape of defect the four-state value exists to prevent.
+        ...healthWire(
+          await readCapabilityHealth(sources.get(declaration.name), context.grantedScopes, (source) => source.read(c)),
         ),
       })),
     );
@@ -192,7 +198,7 @@ export function manifestHandler(deps: ControlPlaneHandlerDeps) {
       version: workerVersion(c.env),
       capabilities,
       grantedScopes: [...context.grantedScopes],
-    } satisfies ControlPlaneManifest);
+    } satisfies ControlPlaneManifestWire);
   };
 }
 

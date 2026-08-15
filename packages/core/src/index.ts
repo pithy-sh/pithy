@@ -44,6 +44,7 @@ export {
   CapabilityDeclaration,
   CapabilityDescriptor,
   ControlPlaneManifest,
+  type ControlPlaneManifestWire,
 } from "./controlPlane/discovery/adminRoute";
 export { type AdminRouteDrift, missingAdminRoutes } from "./controlPlane/discovery/drift";
 // The health seam: a capability declares a bounded set of scalars about its own state, and the manifest
@@ -53,7 +54,9 @@ export { type AdminRouteDrift, missingAdminRoutes } from "./controlPlane/discove
 export {
   type CapabilityHealth,
   type CapabilityHealthInput,
+  CapabilityHealthReport,
   type CapabilityHealthSource,
+  type CapabilityHealthWire,
   capabilityHealthSources,
   defineCapabilityHealth,
   HealthSummary,
@@ -61,6 +64,8 @@ export {
   HealthSummaryValue,
   HealthValueCost,
   HealthValueKind,
+  healthReport,
+  healthWire,
   type NamedHealthValue,
   namedHealthValues,
   readCapabilityHealth,
