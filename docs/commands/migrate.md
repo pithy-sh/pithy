@@ -67,7 +67,7 @@ One line on stdout, whose `workers` array groups the run exactly as the human ou
 - **Two databases on one binding, within a Worker.** A wiring mistake — they would migrate against a single physical store. Give each its own binding.
 - **Two Workers migrating one binding under one namespace with different migrations.** Two capabilities wearing one name; their composed keys would collide in the ledger. Rename one, or bind the Workers to different databases.
 - **`<binding> records <migration>. This project no longer declares it.`** The ledger holds a migration this project has since dropped, so the migrator refuses the whole chain. The action line says which remedy applies to *this* database: wipe the local dev store, or reconcile the row on a database with real rows in it.
-- **A migration itself failing.** The refusal names the migration, the binding it was running against, and what the runtime actually said. D1 applies migrations non-transactionally, so `detail` also carries what was applied before it.
+- **A migration itself failing.** The refusal names the migration, the binding it was running against, and what the runtime actually said. The chain is applied one migration at a time, so `detail` also carries the migrations applied before it, which stay applied. The failed migration is not among them: each migration's statements go to D1 as one `batch`, which is one transaction, so a migration that fails partway applies none of itself and records nothing. Nothing is ever batched across a migration boundary — a partial chain has to stay representable in the ledger.
 - **`--env` is validated at the flag.** `production` is answered with `prod` before any config loads or any database opens.
 
 ## Examples
