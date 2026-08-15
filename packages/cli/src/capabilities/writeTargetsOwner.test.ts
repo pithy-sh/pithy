@@ -67,9 +67,16 @@ describe("the write-target rule has one owner", () => {
       .map((file) => relative(PACKAGES, file.path))
       .sort();
 
-    // Two today: the shared dispatch path, and the minting path that owns its own delivery loop.
+    // Three today: the shared dispatch path, the minting path that owns its own delivery loop, and — since
+    // #367 — the rotation path, which owns its own for the same reason and one further one. A rotation
+    // decides where the value goes *before* it produces one, because a `global` secret narrowed with
+    // `--env` must be refused while a credential at somebody else's issuer is still the live one.
     expect(dispatchers).toEqual(
-      [join("cli", "src", "capabilities", "mintSecrets.ts"), join("secrets", "src", "cli", "dispatch.ts")].sort(),
+      [
+        join("cli", "src", "capabilities", "mintSecrets.ts"),
+        join("cli", "src", "capabilities", "rotateSecrets.ts"),
+        join("secrets", "src", "cli", "dispatch.ts"),
+      ].sort(),
     );
 
     for (const caller of dispatchers) {
