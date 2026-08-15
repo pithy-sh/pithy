@@ -11,7 +11,7 @@ import {
   type ReconcilePlan,
 } from "../capabilities/reconcile";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
-import type { UndeclaredMigration } from "../migrations/ledger";
+import type { ProjectLedger, readProjectLedger } from "../migrations/run";
 
 /**
  * The read-only project-health engine behind `pithy doctor`'s `Project health` block — the *same*
@@ -47,10 +47,15 @@ export interface BindingHealth {
  */
 export interface MigrationHealth {
   ok: boolean;
-  /** Declared migrations not yet applied. */
-  pending: number;
-  /** Applied migrations this Worker's capabilities no longer declare. Non-empty means migrate refuses. */
-  undeclared: UndeclaredMigration[];
+  /**
+   * The environment's ledger, exactly as {@link readProjectLedger} answered it — the counts behind their
+   * discriminant rather than flattened onto this object (#371).
+   *
+   * Flattening was the fault. A database that could not be read contributed nothing to `pending`, so a
+   * project whose D1 was unreachable read as `0 pending` — the same two fields a healthy project has, and
+   * a green line about a schema nobody had compared.
+   */
+  ledger: ProjectLedger;
   env: string;
 }
 
@@ -179,10 +184,14 @@ function healthFromPlan(worker: string, plan: ReconcilePlan): WorkerHealth {
   const missing = groupMissingBindings(plan);
   const bindings: BindingHealth = { ok: missing.length === 0, missing };
 
+  // `ok` only on a whole read with nothing on either side of it. A `partial` ledger is a database this
+  // check did not compare, and a check that did not run is not a check that passed — the same standard
+  // `pithy doctor` already applies to a manifest it could not parse (#184). It is also what today's
+  // behaviour was: an unreadable ledger threw, and the exit was non-zero.
+  const ledger = plan.ledger;
   const migrations: MigrationHealth = {
-    ok: plan.pendingMigrations === 0 && plan.undeclaredMigrations.length === 0,
-    pending: plan.pendingMigrations,
-    undeclared: plan.undeclaredMigrations,
+    ok: ledger.state === "read" && ledger.pending === 0 && ledger.undeclared.length === 0,
+    ledger,
     env: plan.env,
   };
 

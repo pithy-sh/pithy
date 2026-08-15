@@ -50,7 +50,7 @@ One line, one object. The `workers` array carries a **plan** on a dry run and an
 
 ```
 $ pithy upgrade --dry-run --json
-{"command":"upgrade","env":"dev","dryRun":true,"workers":[{"worker":"board","deployedAs":"replay-board","env":"dev","perCapability":[{"name":"audit","missingBindings":[],"missingConfigKeys":[]},{"name":"auth","missingBindings":[],"missingConfigKeys":[]},{"name":"secrets","missingBindings":[],"missingConfigKeys":[]}],"ejectedSkipped":[],"pendingMigrations":1,"entitlementGap":[],"missingVersionMetadata":false}],"manifestFaults":[]}
+{"command":"upgrade","env":"dev","dryRun":true,"workers":[{"worker":"board","deployedAs":"replay-board","env":"dev","perCapability":[{"name":"audit","missingBindings":[],"missingConfigKeys":[]},{"name":"auth","missingBindings":[],"missingConfigKeys":[]},{"name":"secrets","missingBindings":[],"missingConfigKeys":[]}],"ejectedSkipped":[],"ledger":{"state":"read","pending":1,"undeclared":[]},"entitlementGap":[],"missingVersionMetadata":false}],"manifestFaults":[]}
 ```
 
 ```
@@ -88,7 +88,12 @@ $ pithy upgrade --json
 | `perCapability[].missingConfigKeys[].default` | JSON value | The manifest default rendered as the option's value — a scalar, or a worked example you replace |
 | `perCapability[].missingConfigKeys[].describe` | string | The option's rationale, rendered as the comment above it |
 | `ejectedSkipped` | string[] | Ejected capabilities, by name. Never reconciled — ejected code no longer tracks its package |
-| `pendingMigrations` | integer | Unapplied migrations for `env` across this Worker's databases. Applied only with `--migrate` |
+| `ledger` | object | What `env`'s databases have applied against what this Worker declares. **The counts sit behind `state`**, so a sum taken over some of the databases cannot be read as a sum over all of them |
+| `ledger.state` | `"read"` \| `"partial"` \| `"unavailable"` | Whether every database in scope answered, some did, or none did |
+| `ledger.pending` | integer | Unapplied migrations for `env` across this Worker's databases. Applied only with `--migrate`. Present on `read` alone |
+| `ledger.undeclared` | array | Migrations `env`'s databases have applied that this Worker no longer declares — the direction a pending count is blind to. Report-only. Present on `read` alone |
+| `ledger.counted` | object | The same two fields, over the databases that answered. Present on `partial` alone, and spelled differently there on purpose: it is a sum with a known hole in it |
+| `ledger.unreadable` | array | Every database whose ledger could not be read, each with its `database` and `binding`. Present and non-empty on `partial` alone. It carries no reason — what a D1 read throws names an id or a query |
 | `entitlementGap` | string[] | This Worker's own source files that gate a route on an entitlement while nothing it composes provides one. Empty means no gap. Report-only |
 | `missingVersionMetadata` | boolean | Whether this Worker's `wrangler.jsonc` lacks the `version_metadata` binding named `CF_VERSION_METADATA` |
 

@@ -23,7 +23,7 @@ import {
 import { checkDevVars, type DevVarsCheck, describeDevVars, devVarsHealthy } from "../doctor/devVars";
 import { checkDevVarsLocal, type DevVarsLocalCheck, describeDevVarsLocal } from "../doctor/devVarsLocal";
 import { checkEnvironments, describeEnvironmentDrift, type EnvironmentsCheck } from "../doctor/environments";
-import { buildProjectHealth, type ProjectHealth, type WorkerHealth } from "../doctor/health";
+import { buildProjectHealth, type MigrationHealth, type ProjectHealth, type WorkerHealth } from "../doctor/health";
 import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
 import { checkSecretBindings, describeSecretBindings, type SecretBindingsCheck } from "../doctor/secretBindings";
 import { checkWorkerNames, describeWorkerName, type WorkerNameCheck } from "../doctor/workerName";
@@ -754,6 +754,42 @@ function healthLine(label: string, content: string): string {
   return `${HEALTH_INDENT}${label.padEnd(HEALTH_LABEL)}${content}`;
 }
 
+/**
+ * The `migrations` check's lines, in every state its ledger can be in (#371).
+ *
+ * **A database that could not be read gets its own sentence, and it is not "0 pending".** That was the
+ * fault: an unreachable D1 contributed nothing to the sum, so the line said the schema was level with the
+ * project when nothing had compared them. The unread databases are named — the only actionable fact — and
+ * nothing derived from what the read threw appears, because a D1 failure's own words name an id or a query.
+ */
+function migrationLines(health: MigrationHealth): string[] {
+  const lines: string[] = [];
+  const ledger = health.ledger;
+  if (ledger.state === "unavailable") {
+    lines.push(healthLine("migrations", "couldn't be checked — no database in scope answered"));
+    lines.push(`${HEALTH_CONT}The schema may be behind or ahead; this run established neither.`);
+    return lines;
+  }
+  const counted = ledger.state === "read" ? ledger : ledger.counted;
+  if (counted.pending > 0) {
+    lines.push(healthLine("migrations", `${counted.pending} pending — run: pithy migrate --env ${health.env}`));
+  }
+  // The other direction, and the one nothing reported until #282. It is not "N pending" with a
+  // different number: nothing is pending, migrate refuses outright, and the remedy is neither `pithy
+  // migrate` nor `pithy upgrade`. So it gets its own sentence, written once in `migrations/ledger.ts`
+  // and printed here exactly as `pithy migrate` refuses with it — two commands, one wording.
+  if (counted.undeclared.length > 0) {
+    lines.push(healthLine(lines.length === 0 ? "migrations" : "", describeUndeclared(counted.undeclared)));
+    lines.push(`${HEALTH_CONT}${undeclaredRemedy(health.env)}`);
+  }
+  if (ledger.state === "partial") {
+    const named = ledger.unreadable.map((entry) => `${entry.binding} (${entry.database})`).join(", ");
+    lines.push(healthLine(lines.length === 0 ? "migrations" : "", `couldn't read ${named}`));
+    lines.push(`${HEALTH_CONT}Every number above counts the databases that answered, and not those.`);
+  }
+  return lines;
+}
+
 /** One Worker's five check lines. Every check is shown, so a passing one still reads as checked. */
 function workerHealthLines(health: WorkerHealth): string[] {
   const lines: string[] = [];
@@ -797,23 +833,7 @@ function workerHealthLines(health: WorkerHealth): string[] {
   if (health.migrations.ok) {
     lines.push(healthLine("migrations", "none pending, none undeclared ✓"));
   } else {
-    if (health.migrations.pending > 0) {
-      lines.push(
-        healthLine(
-          "migrations",
-          `${health.migrations.pending} pending — run: pithy migrate --env ${health.migrations.env}`,
-        ),
-      );
-    }
-    // The other direction, and the one nothing reported until #282. It is not "N pending" with a
-    // different number: nothing is pending, migrate refuses outright, and the remedy is neither `pithy
-    // migrate` nor `pithy upgrade`. So it gets its own sentence, written once in `migrations/ledger.ts`
-    // and printed here exactly as `pithy migrate` refuses with it — two commands, one wording.
-    if (health.migrations.undeclared.length > 0) {
-      const label = health.migrations.pending > 0 ? "" : "migrations";
-      lines.push(healthLine(label, describeUndeclared(health.migrations.undeclared)));
-      lines.push(`${HEALTH_CONT}${undeclaredRemedy(health.migrations.env)}`);
-    }
+    lines.push(...migrationLines(health.migrations));
   }
 
   if (health.entitlements.ok) {

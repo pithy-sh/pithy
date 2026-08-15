@@ -7,6 +7,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { buildReconcilePlan } from "../capabilities/reconcile";
+import type { ProjectLedger } from "../migrations/run";
 import type { FetchLike } from "../notifier/check";
 import { readState, writeState } from "../notifier/state";
 import { scaffoldProject } from "../project/scaffold";
@@ -156,8 +157,7 @@ describe("renderDoctorText", () => {
               ],
             },
           ],
-          pendingMigrations: 2,
-          undeclaredMigrations: [],
+          ledger: { state: "read", pending: 2, undeclared: [] },
           entitlementGap: [],
           missingPrerequisites: [],
           missingVersionMetadata: false,
@@ -212,7 +212,7 @@ describe("renderDoctorText", () => {
         resolveWorkers: async () => workerSet("api", "collab"),
         buildPlan: planStubPer({
           api: cleanPlanFor("api"),
-          collab: { ...cleanPlanFor("collab"), pendingMigrations: 2 },
+          collab: { ...cleanPlanFor("collab"), ledger: { state: "read", pending: 2, undeclared: [] } },
         }),
       }),
     );
@@ -244,7 +244,11 @@ describe("renderDoctorText", () => {
         installedCapabilities: async () => [{ name: "@pithy-sh/core", version: "1.2.0" }],
         buildPlan: planStub({
           ...cleanPlan,
-          undeclaredMigrations: [{ database: "app", binding: "DB", name: "0250_audit_0002_tenant" }],
+          ledger: {
+            state: "read",
+            pending: 0,
+            undeclared: [{ database: "app", binding: "DB", name: "0250_audit_0002_tenant" }],
+          },
         }),
       }),
     );
@@ -384,7 +388,9 @@ describe("doctorExitCode", () => {
     const report = await buildDoctorReport(
       baseOptions({
         resolveWorkers: async () => workerSet("api", "collab", "web"),
-        buildPlan: planStubPer({ collab: { ...cleanPlanFor("collab"), pendingMigrations: 1 } }),
+        buildPlan: planStubPer({
+          collab: { ...cleanPlanFor("collab"), ledger: { state: "read", pending: 1, undeclared: [] } },
+        }),
       }),
     );
     expect(report.project?.health.workers.map((worker) => worker.ok)).toEqual([true, false, true]);
@@ -423,12 +429,11 @@ describe("doctorExitCode", () => {
 
   test("non-zero when migrations are pending", async () => {
     const report = await buildDoctorReport(
-      baseOptions({ buildPlan: planStub({ ...cleanPlan, pendingMigrations: 3 }) }),
+      baseOptions({ buildPlan: planStub({ ...cleanPlan, ledger: { state: "read", pending: 3, undeclared: [] } }) }),
     );
     expect(report.project?.health.workers[0]?.migrations).toEqual({
       ok: false,
-      pending: 3,
-      undeclared: [],
+      ledger: { state: "read", pending: 3, undeclared: [] },
       env: "dev",
     });
     expect(doctorExitCode(report)).toBe(1);
@@ -646,7 +651,9 @@ describe("--worker", () => {
     const all = workerSet("api", "collab");
     const resolveWorkers = async ({ worker }: { projectDir: string; worker?: string }) =>
       worker === undefined ? all : all.filter((candidate) => candidate.name === worker);
-    const buildPlan = planStubPer({ collab: { ...cleanPlanFor("collab"), pendingMigrations: 2 } });
+    const buildPlan = planStubPer({
+      collab: { ...cleanPlanFor("collab"), ledger: { state: "read", pending: 2, undeclared: [] } },
+    });
 
     const whole = await buildDoctorReport(baseOptions({ resolveWorkers, buildPlan }));
     expect(whole.project?.health.workers.map((worker) => worker.worker)).toEqual(["api", "collab"]);
@@ -680,7 +687,7 @@ describe("project health — installed is not composed (regression)", () => {
       projectDir,
       resolveWorkers: async () => workers,
       buildPlan: undefined,
-      readLedger: async () => ({ pending: 0, undeclared: [] }),
+      readLedger: async (): Promise<ProjectLedger> => ({ state: "read", pending: 0, undeclared: [] }),
     });
   }
 

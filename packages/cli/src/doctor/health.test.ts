@@ -3,6 +3,7 @@
 
 import { describe, expect, test, vi } from "vitest";
 import { type BuildReconcilePlanOptions, buildReconcilePlan, type ReconcilePlan } from "../capabilities/reconcile";
+import type { ProjectLedger } from "../migrations/run";
 import { type BuildPlan, buildProjectHealth, defaultBuildPlan } from "./health";
 
 /** A plan builder keyed by Worker, so health is tested without touching a project on disk. */
@@ -23,8 +24,7 @@ function clean(worker: string): ReconcilePlan {
     env: "dev",
     perCapability: [],
     ejectedSkipped: [],
-    pendingMigrations: 0,
-    undeclaredMigrations: [],
+    ledger: { state: "read", pending: 0, undeclared: [] },
     entitlementGap: [],
     missingPrerequisites: [],
     missingVersionMetadata: false,
@@ -48,7 +48,11 @@ describe("buildProjectHealth", () => {
     expect(health.workers[0]?.worker).toBe("api");
     expect(health.workers[0]?.config.ok).toBe(true);
     expect(health.workers[0]?.bindings.ok).toBe(true);
-    expect(health.workers[0]?.migrations).toEqual({ ok: true, pending: 0, undeclared: [], env: "dev" });
+    expect(health.workers[0]?.migrations).toEqual({
+      ok: true,
+      ledger: { state: "read", pending: 0, undeclared: [] },
+      env: "dev",
+    });
   });
 
   test("config check fails on missing config keys, listing them per capability", async () => {
@@ -110,10 +114,14 @@ describe("buildProjectHealth", () => {
       projectDir: "/p",
       env: "dev",
       workers: [api],
-      buildPlan: planStub({ api: { ...clean("api"), pendingMigrations: 2 } }),
+      buildPlan: planStub({ api: { ...clean("api"), ledger: { state: "read", pending: 2, undeclared: [] } } }),
     });
     expect(health.ok).toBe(false);
-    expect(health.workers[0]?.migrations).toEqual({ ok: false, pending: 2, undeclared: [], env: "dev" });
+    expect(health.workers[0]?.migrations).toEqual({
+      ok: false,
+      ledger: { state: "read", pending: 2, undeclared: [] },
+      env: "dev",
+    });
   });
 
   test("migrations check fails on an applied migration nothing declares, with nothing pending", async () => {
@@ -124,10 +132,14 @@ describe("buildProjectHealth", () => {
       projectDir: "/p",
       env: "dev",
       workers: [api],
-      buildPlan: planStub({ api: { ...clean("api"), undeclaredMigrations: undeclared } }),
+      buildPlan: planStub({ api: { ...clean("api"), ledger: { state: "read", pending: 0, undeclared } } }),
     });
     expect(health.ok).toBe(false);
-    expect(health.workers[0]?.migrations).toEqual({ ok: false, pending: 0, undeclared, env: "dev" });
+    expect(health.workers[0]?.migrations).toEqual({
+      ok: false,
+      ledger: { state: "read", pending: 0, undeclared },
+      env: "dev",
+    });
   });
 
   test("entitlements check surfaces the gating files of a Worker with no provider composed", async () => {
@@ -162,7 +174,7 @@ describe("buildProjectHealth", () => {
 
   test("forwards each worker's directory, name, capabilities, and the shared readLedger seam", async () => {
     const build = planStub({ api: clean("api"), collab: clean("collab") });
-    const readLedger = vi.fn(async () => ({ pending: 0, undeclared: [] }));
+    const readLedger = vi.fn(async (): Promise<ProjectLedger> => ({ state: "read", pending: 0, undeclared: [] }));
     await buildProjectHealth({
       account: null,
       projectDir: "/p",

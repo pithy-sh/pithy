@@ -84,6 +84,7 @@ describe("a ledger row the project no longer declares", () => {
 
     expect(await readProjectLedger({ account: null, projectDir: h.projectDir, workers: [worker], env: "dev" })).toEqual(
       {
+        state: "read",
         // The subtraction that used to be the whole check. It is right, and it is not the answer.
         pending: 0,
         undeclared: [{ database: "app", binding: "DB", name: "1000_app_0002_tenant" }],
@@ -104,8 +105,11 @@ describe("a ledger row the project no longer declares", () => {
     expect(health.ok).toBe(false);
     expect(health.workers[0]?.migrations).toEqual({
       ok: false,
-      pending: 0,
-      undeclared: [{ database: "app", binding: "DB", name: "1000_app_0002_tenant" }],
+      ledger: {
+        state: "read",
+        pending: 0,
+        undeclared: [{ database: "app", binding: "DB", name: "1000_app_0002_tenant" }],
+      },
       env: "dev",
     });
   });
@@ -142,6 +146,7 @@ describe("a ledger row the project no longer declares", () => {
 
     expect(again[0]?.databases[0]?.results).toEqual([]);
     expect(await readProjectLedger({ account: null, projectDir: h.projectDir, workers, env: "dev" })).toEqual({
+      state: "read",
       pending: 0,
       undeclared: [],
     });

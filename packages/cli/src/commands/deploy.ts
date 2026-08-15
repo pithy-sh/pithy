@@ -38,7 +38,13 @@ async function pendingFor(
     // Only the pending half here. A drifted ledger is a fault `pithy doctor` names and `pithy migrate`
     // refuses on, and deploy never migrates — it reports how far the schema is behind, which stays a
     // truthful number either way.
-    return (await readProjectLedger({ projectDir, env, account })).pending;
+    const ledger = await readProjectLedger({ projectDir, env, account });
+    // A partial read still warns, and the number it warns with is the one it established (#371). A sum
+    // over the databases that answered can only understate how far behind the project is, so it never
+    // raises a false alarm — and this line is warn-only. Which database went unread is `pithy doctor`'s
+    // sentence to say, in the report whose job is naming faults.
+    if (ledger.state === "partial") return ledger.counted.pending;
+    return ledger.state === "read" ? ledger.pending : undefined;
   } catch {
     return undefined;
   }

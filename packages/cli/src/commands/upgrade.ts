@@ -180,6 +180,29 @@ function faultLines(faults: readonly ManifestFault[]): string[] {
   ]);
 }
 
+/**
+ * What the plan's ledger says, in every state it can be in (#371).
+ *
+ * A database that could not be read gets its own line rather than being absorbed into a pending count of
+ * zero. `upgrade --migrate` would run against exactly that database, so "nothing pending" about one
+ * nobody could read is the sentence that sends an adopter to deploy.
+ */
+function ledgerLines(plan: ReconcilePlan): string[] {
+  const ledger = plan.ledger;
+  if (ledger.state === "unavailable") return [`Migrations: not checked for ${plan.env}. No database answered.`];
+  const counted = ledger.state === "read" ? ledger : ledger.counted;
+  const lines: string[] = [];
+  if (counted.pending > 0) {
+    const pending = count(counted.pending, "migration");
+    lines.push(`${pending} pending. Run pithy upgrade --migrate, or pithy migrate --env ${plan.env}.`);
+  }
+  if (ledger.state === "partial") {
+    const named = ledger.unreadable.map((entry) => `${entry.binding} (${entry.database})`).join(", ");
+    lines.push(`Migrations: couldn't read ${named}. Any count above excludes them.`);
+  }
+  return lines;
+}
+
 /** The human-readable lines for one Worker's dry-run plan. */
 function planLines(plan: ReconcilePlan): string[] {
   const lines: string[] = [];
@@ -189,10 +212,7 @@ function planLines(plan: ReconcilePlan): string[] {
   }
   for (const name of plan.ejectedSkipped) lines.push(`${name}: ejected. Skipped.`);
   if (plan.missingVersionMetadata) lines.push("version_metadata: add CF_VERSION_METADATA.");
-  if (plan.pendingMigrations > 0) {
-    const pending = count(plan.pendingMigrations, "migration");
-    lines.push(`${pending} pending. Run pithy upgrade --migrate, or pithy migrate --env ${plan.env}.`);
-  }
+  lines.push(...ledgerLines(plan));
   if (lines.length === 0) lines.push("Nothing to upgrade.");
   return lines;
 }
@@ -220,9 +240,8 @@ function appliedLines(applied: ReconcileApplied, plan: ReconcilePlan): string[] 
   if (applied.migrated) {
     const total = applied.migrations.reduce((sum, run) => sum + run.results.length, 0);
     lines.push(total === 0 ? "Migrations up to date." : `Migrated ${count(total, "migration")}.`);
-  } else if (plan.pendingMigrations > 0) {
-    const pending = count(plan.pendingMigrations, "migration");
-    lines.push(`${pending} pending. Run pithy upgrade --migrate, or pithy migrate --env ${plan.env}.`);
+  } else {
+    lines.push(...ledgerLines(plan));
   }
   if (lines.length === 0) lines.push("Nothing to upgrade.");
   return lines;

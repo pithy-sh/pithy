@@ -283,7 +283,7 @@ describe("buildReconcilePlan — per Worker", () => {
       capabilities: AUTH,
       readLedger: async ({ projectDir, workerDir: wd, env }) => {
         seen.push({ projectDir, workerDir: wd, env });
-        return { pending: 0, undeclared: [] };
+        return { state: "read", pending: 0, undeclared: [] };
       },
     });
     expect(seen).toEqual([{ projectDir: dir, workerDir, env: "staging" }]);
@@ -430,10 +430,10 @@ describe("buildReconcilePlan — migrations and purity", () => {
       workerDir,
       env: "staging",
       capabilities: AUTH,
-      readLedger: async ({ env }) => ({ pending: env === "staging" ? 4 : 0, undeclared: [] }),
+      readLedger: async ({ env }) => ({ state: "read", pending: env === "staging" ? 4 : 0, undeclared: [] }),
     });
     expect(plan.env).toBe("staging");
-    expect(plan.pendingMigrations).toBe(4);
+    expect(plan.ledger).toEqual({ state: "read", pending: 4, undeclared: [] });
   });
 
   test("reports the entitlement gap for a Worker whose routes gate with no provider composed", async () => {

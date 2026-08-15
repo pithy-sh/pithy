@@ -16,8 +16,7 @@ import {
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
-import { UndeclaredMigration } from "../migrations/ledger";
-import { type DatabaseRun, migrateProject, type ProjectLedger, readProjectLedger } from "../migrations/run";
+import { type DatabaseRun, migrateProject, ProjectLedger, readProjectLedger } from "../migrations/run";
 import {
   appendBinding,
   appendDurableObjectMigrations,
@@ -135,18 +134,9 @@ export const ReconcilePlan = z
     ejectedSkipped: z
       .array(z.string())
       .describe("Ejected capabilities, by name — never reconciled, since ejected code no longer tracks its package."),
-    pendingMigrations: z
-      .number()
-      .int()
-      .nonnegative()
-      .describe(
-        "Unapplied migrations for `env` across this Worker's databases — applied only when upgrade runs with --migrate.",
-      ),
-    undeclaredMigrations: z
-      .array(UndeclaredMigration)
-      .describe(
-        "Migrations `env`'s databases have applied that this Worker's capabilities no longer declare. The other direction of the same comparison, and the one a pending count is blind to: nothing is missing, so nothing is pending, while Kysely reads the ledger as a corrupted chain and `pithy migrate` refuses to run at all. Empty is the healthy state. Report-only — an upgrade cannot fix it, because whether to restore the migration or drop its ledger row depends on what the database holds.",
-      ),
+    ledger: ProjectLedger.describe(
+      "What `env`'s databases have applied against what this Worker declares, in both directions — unapplied migrations (which an upgrade applies with --migrate) and migrations the ledger records that nothing declares any more (which it cannot: whether to restore the migration or drop its ledger row depends on what the database holds, so it is report-only). It is the ledger's own four-way value rather than two flat fields, because a database that could not be read is neither of those things and a count alone cannot say so (#282, #371).",
+    ),
     entitlementGap: z
       .array(z.string())
       .describe(
@@ -535,8 +525,7 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
     env,
     perCapability,
     ejectedSkipped,
-    pendingMigrations: ledger.pending,
-    undeclaredMigrations: ledger.undeclared,
+    ledger,
     entitlementGap,
     // Across every composed capability, ejected ones included: eject copies the source, it does not
     // change what that source composes against, and `createBackend` asks the same question of both.
