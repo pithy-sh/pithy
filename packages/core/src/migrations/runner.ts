@@ -6,6 +6,7 @@ import { type Kysely, sql } from "kysely";
 import { type MigrationProvider, type MigrationResult, Migrator, NO_MIGRATIONS } from "kysely/migration";
 import { causeMessage } from "../error/cause";
 import { InternalError } from "../error/pithyError";
+import { batchedProvider } from "./batch";
 import { MIGRATION_LOCK_TABLE, MIGRATION_TABLE, migrationKysely } from "./bookkeeping";
 
 /**
@@ -19,13 +20,18 @@ import { MIGRATION_LOCK_TABLE, MIGRATION_TABLE, migrationKysely } from "./bookke
  * there (`owner.ts` builds the same one to stamp the owning project). Migration `up`/`down`
  * functions receive that instance — write camelCase, store snake_case, like every Pithy database.
  *
- * One runner at a time per database. D1 has no transactional DDL and its adapter's migration lock
- * is a no-op, so concurrent runs can interleave. That fits the deployment model — migrations run
- * from `pithy migrate` (CLI/CI), not inside request handlers — but it is an assumption, not a
- * guard. On failure the thrown `InternalError` names the failed key, the database it was running
- * against, and **what the runtime actually said**, all in `message`; `detail` keeps the throw-site
- * half — the database name behind the binding, and the migrations applied before the failure, since
- * those stay applied.
+ * One runner at a time per database. Kysely's SQLite adapter reports no transactional DDL and its
+ * migration lock is a no-op, so concurrent runs can interleave. That fits the deployment model —
+ * migrations run from `pithy migrate` (CLI/CI), not inside request handlers — but it is an
+ * assumption, not a guard. On failure the thrown `InternalError` names the failed key, the database
+ * it was running against, and **what the runtime actually said**, all in `message`; `detail` keeps
+ * the throw-site half — the database name behind the binding, and the migrations applied before the
+ * failure, since those stay applied.
+ *
+ * **Each migration body is one `d1.batch()` — see `./batch`, which is where the failure semantics
+ * are argued.** The short version: a migration is now all-or-nothing where it used to be able to
+ * half-apply, and nothing across a migration boundary changed, because the ledger names migrations
+ * and a partial chain has to stay representable in it.
  */
 
 /**
@@ -46,7 +52,9 @@ import { MIGRATION_LOCK_TABLE, MIGRATION_TABLE, migrationKysely } from "./bookke
 function migrator(database: D1Database, provider: MigrationProvider): Migrator {
   return new Migrator({
     db: migrationKysely(database),
-    provider,
+    // Each migration body applies in one `d1.batch()`; the ledger row stays on the ordinary path,
+    // so nothing batches across a migration boundary. See `./batch`.
+    provider: batchedProvider(provider, database),
     migrationTableName: MIGRATION_TABLE,
     migrationLockTableName: MIGRATION_LOCK_TABLE,
     allowUnorderedMigrations: true,
@@ -174,7 +182,8 @@ export async function dropMigrations(
   target?: MigrationTarget,
 ): Promise<MigrationResult[]> {
   const db = migrationKysely(database);
-  const migrations = await provider.getMigrations();
+  // Batched here too: `down` pays the same per-statement cost `up` does, and a drop is all DDL.
+  const migrations = await batchedProvider(provider, database).getMigrations();
   const applied = await appliedMigrationNames(db);
 
   const results: MigrationResult[] = [];
@@ -268,7 +277,8 @@ function settle(
     const failed = results?.find((result) => result.status === "Error");
     const applied = results?.filter((result) => result.status === "Success").map((result) => result.migrationName);
     const problem = failed ? voice.failed(failed.migrationName) : voice.fallback;
-    // D1 applies migrations non-transactionally, so name what stuck before the failure.
+    // The chain is applied one migration at a time, so name what stuck before the failure. The
+    // failed migration itself is not among them: its body was one batch, and the batch rolled back.
     const stuck = applied?.length
       ? `Applied before the failure: ${applied.map((name) => `"${name}"`).join(", ")}.`
       : "";
