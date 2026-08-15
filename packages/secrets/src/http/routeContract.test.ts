@@ -11,7 +11,12 @@ import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { secrets } from "../capability";
 import { defineSecretRegistry } from "../registry";
-import { SECRETS_CONTROL_PLANE_SCOPES, SECRETS_STATUS_READ_SCOPE, secretsAdminRoutes } from "./guards";
+import {
+  SECRETS_CONTROL_PLANE_SCOPES,
+  SECRETS_ROTATE_SCOPE,
+  SECRETS_STATUS_READ_SCOPE,
+  secretsAdminRoutes,
+} from "./guards";
 import { registerSecretsRoutes, SECRETS_ROUTES } from "./routes";
 
 /**
@@ -81,7 +86,10 @@ describe("secrets route contract", () => {
   test("the gate is inspecting the real secrets routes, not an empty app", () => {
     // The anti-vacuous check. A gate that silently starts inspecting an empty route table passes
     // forever; adding or removing a route fails here first and says so.
-    expect(paramPaths(makeApp())).toEqual(["/secrets/admin/status/:name/rotations"]);
+    expect(paramPaths(makeApp())).toEqual([
+      "/secrets/admin/status/:name/rotate",
+      "/secrets/admin/status/:name/rotations",
+    ]);
   });
 
   test("the declared route set matches what Hono actually mounted, in both directions", () => {
@@ -135,6 +143,17 @@ describe("secrets route contract", () => {
       const response = await makeApp().request(path, { method: "GET" });
       expect(response.status, path).toBe(403);
     }
+    // The write, and the case where the ordering matters most: an unverified caller must not be able to
+    // learn which secret names this project declares by watching a 404 come back instead of a 403, nor
+    // reach the registry lookup at all. Sent with a body, because a body is the other thing a validator
+    // ahead of a gate would parse for a caller with no credential.
+    const posted = await makeApp().request(`/secrets/admin/status/${"a".repeat(400)}/rotate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pretend: "this is read" }),
+    });
+    expect(posted.status).toBe(403);
+    expect(((await posted.json()) as { error?: { code?: string } }).error?.code).toBe("controlplane/not_connected");
   });
 
   test("a management route never carries the player auth gate", async () => {
@@ -184,14 +203,44 @@ describe("the advertised admin surface", () => {
     for (const route of moved.adminRoutes ?? []) expect(route.path.startsWith("/vault/")).toBe(true);
   });
 
-  test("secret status is its own scope, and it is a read", () => {
+  test("secret status is its own scope, and every route behind it is a read", () => {
     // Its own, because the list of which credentials a project holds and which are stale is a map of
-    // where to push — an adopter must be able to grant a users pane without also granting that. A read,
-    // because `defaultGrant` classifies a scope by the methods of the routes requiring it, and a write
-    // appearing here would silently widen what `pithy dashboard connect` hands out by default.
-    expect(SECRETS_CONTROL_PLANE_SCOPES).toEqual([SECRETS_STATUS_READ_SCOPE]);
+    // where to push — an adopter must be able to grant a users pane without also granting that. Still a
+    // read after #372 landed a write beside it, and this is the assertion that keeps it one:
+    // `defaultGrant` classifies a scope by the methods of *every* route requiring it, so a rotation
+    // sharing this scope would silently put a credential replacement into what `pithy dashboard connect`
+    // hands out by default, to every adopter who ever granted a status pane.
     expect(SECRETS_STATUS_READ_SCOPE).toBe("secrets:status:read");
-    for (const route of capability.adminRoutes ?? []) expect(route.method).toBe("GET");
+    const read = (capability.adminRoutes ?? []).filter((route) => route.scope === SECRETS_STATUS_READ_SCOPE);
+    expect(read.length).toBeGreaterThan(0);
+    for (const route of read) expect(route.method, route.path).toBe("GET");
+  });
+
+  test("rotating is a second scope, and every route behind it is a write", () => {
+    // The other half, and the one that makes the default-grant derivation answer correctly without being
+    // told. `defaultGrant` adds a scope only when every route requiring it is a GET — so this test is the
+    // local proof that `secrets:rotate` can never enter a default grant, stated where the routes are
+    // rather than in the CLI that reads them.
+    expect(SECRETS_ROTATE_SCOPE).toBe("secrets:rotate");
+    expect(SECRETS_CONTROL_PLANE_SCOPES).toEqual([SECRETS_STATUS_READ_SCOPE, SECRETS_ROTATE_SCOPE]);
+    const write = (capability.adminRoutes ?? []).filter((route) => route.scope === SECRETS_ROTATE_SCOPE);
+    expect(write.length).toBeGreaterThan(0);
+    for (const route of write) expect(route.method, route.path).not.toBe("GET");
+  });
+
+  test("no scope on this surface gates both a read and a write", () => {
+    // The property the two tests above are each half of, stated over whatever is declared rather than
+    // over the two scopes that exist today. A capability that later hangs a write off a read scope fails
+    // here even if nobody remembers to extend the pair.
+    const methods = new Map<string, Set<string>>();
+    for (const route of capability.adminRoutes ?? []) {
+      if (route.scope === null) continue;
+      methods.set(route.scope, (methods.get(route.scope) ?? new Set()).add(route.method));
+    }
+    expect(methods.size).toBeGreaterThan(1);
+    for (const [scope, seen] of methods) {
+      expect([...seen].sort(), `${scope} gates both a read and a write`).not.toEqual(["GET", "POST"]);
+    }
   });
 
   test("nothing advertised reads a value", () => {
@@ -199,6 +248,10 @@ describe("the advertised admin surface", () => {
     // no scope that could grant one: the whole reason a value is encrypted under a key only the
     // customer's Worker holds is that no third party has a path to the plaintext. A route added here
     // that reads one would be that path, in every deployment, whether or not anybody granted it.
+    //
+    // The rotation route is inside this, not an exception to it. It *writes* a value it produced itself
+    // and never returns one — `SecretRotationOutcomeView` has no field one could sit in — so it is held
+    // to the same sentence as the reads.
     for (const route of capability.adminRoutes ?? []) {
       expect(route.path.startsWith("/secrets/admin/status"), route.path).toBe(true);
       expect(route.summary.toLowerCase()).not.toContain("value");

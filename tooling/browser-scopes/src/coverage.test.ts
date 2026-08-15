@@ -94,7 +94,7 @@ describe("every control-plane scope is reachable from a browser program", () => 
     // — a rename of `ControlPlaneScope`, a formatter that broke the line — would otherwise turn both
     // assertions below into a comparison of two empty sets, which passes.
     expect(homes.size).toBeGreaterThanOrEqual(9);
-    expect(declared.length).toBeGreaterThanOrEqual(34);
+    expect(declared.length).toBeGreaterThanOrEqual(35);
     expect(new Set(declared).size).toBe(declared.length);
   });
 

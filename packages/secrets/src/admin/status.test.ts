@@ -1,8 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { SecretRotation } from "@pithy-sh/core/src/capability/secretOrigin";
 import { describe, expect, test } from "vitest";
 import {
+  SecretRotateResponse,
+  SecretRotationOutcomeView,
   SecretRotationsResponse,
   SecretRotationView,
   SecretStatusView,
@@ -33,10 +36,27 @@ const STATUS_FIELDS = [
   "overdue",
   "rotatable",
   "rotateEveryDays",
+  // Added by #372, and this is the argument the list demands. **No value fits in it.** `rotation` is
+  // core's `SecretRotation` — a kind, an issuer from a closed vocabulary, and an `https:` documentation
+  // URL — copied verbatim from a registry entry `defineSecretRegistry` already validated. It is the field
+  // a client branches on to decide whether a rotation control exists at all, and without it every client's
+  // only conservative reading is to offer none: `rotatable` answers a different question (whether the
+  // stored envelope may accumulate versions) and two secrets in this repository prove they disagree.
+  "rotation",
   "rotationCount",
   "updatedAt",
   "valueType",
 ];
+
+/**
+ * Every field of the rotation **outcome** a client receives from `POST {base}/admin/status/:name/rotate`.
+ *
+ * Asserted exactly for the same reason the two above are, and with one field of the core's own
+ * `SecretRotationOutcome` deliberately missing: `cause`. It is typed `unknown`, it holds whatever the store
+ * threw, and an exception raised where a value was in scope is the classic way a value reaches a place
+ * nobody meant it to. It has no key here, so no projection can forward it.
+ */
+const ROTATE_FIELDS = ["attempts", "kind", "name", "reason", "recorded", "rollFailed", "rolled", "status", "stranded"];
 
 const ROTATION_FIELDS = ["completedAt", "rotatedBy", "startedAt", "status", "trigger"];
 
@@ -65,6 +85,55 @@ describe("the status shape", () => {
     expect(Object.keys(SecretRotationView.shape).sort()).toEqual(ROTATION_FIELDS);
   });
 
+  test("one rotation outcome carries exactly these fields, and `cause` is not among them", () => {
+    expect(Object.keys(SecretRotationOutcomeView.shape).sort()).toEqual(ROTATE_FIELDS);
+    expect(Object.keys(SecretRotationOutcomeView.shape)).not.toContain("cause");
+  });
+
+  test("the rotation declaration a status read publishes is a kind, an issuer and a page — and nothing else", () => {
+    // The one field #372 added, and the only reason it is safe to add: **every member** of the union it
+    // carries is metadata by construction, so there is no shape of declaration that could put a value on
+    // this surface. Asserted over each member rather than over the union, because a union passes a
+    // property check on the strength of its narrowest member, and `local` is a single literal.
+    const allowed = ["documentation", "issuer", "kind"];
+    for (const member of SecretRotation.options) {
+      const keys = Object.keys(member.shape).sort();
+      expect(
+        keys.filter((key) => !allowed.includes(key)),
+        String(member.shape.kind.value),
+      ).toEqual([]);
+    }
+    // Not vacuous — the member that carries the most is found, so a union emptied of its issuer would fail
+    // rather than pass for holding less.
+    expect(SecretRotation.options.map((member) => Object.keys(member.shape).length).sort()).toEqual([1, 3, 3]);
+  });
+
+  test("a status read reports the declaration, and reports null when there is none", () => {
+    // Null is a third answer, not a missing one: `manual` means somebody said a human replaces this, and
+    // null means nobody has said anything. A client that renders the two identically tells an operator a
+    // secret needs a console visit on the strength of an empty registry entry.
+    const row = {
+      name: "gitlab-token",
+      backend: "d1",
+      valueType: "text",
+      rotatable: true,
+      rotation: { kind: "manual", issuer: "gitlab", documentation: "https://gitlab.example/settings/tokens" },
+      keyVersion: 1,
+      createdAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_000_000,
+      lastRotatedAt: null,
+      rotationCount: 0,
+      rotateEveryDays: null,
+      overdue: null,
+    };
+    expect(SecretStatus.parse(row).rotation).toEqual({
+      kind: "manual",
+      issuer: "gitlab",
+      documentation: "https://gitlab.example/settings/tokens",
+    });
+    expect(SecretStatus.parse({ ...row, rotation: null }).rotation).toBeNull();
+  });
+
   test("no shape on this surface names a value, a ciphertext, a snapshot, or a failure message", () => {
     // The runtime half of the compile-time tripwire, stated over the wire objects a client actually
     // receives — including the envelopes, so a field cannot be smuggled in beside the array.
@@ -75,6 +144,8 @@ describe("the status shape", () => {
       SecretRotationView: SecretRotationView.shape,
       SecretsStatusResponse: SecretsStatusResponse.shape,
       SecretRotationsResponse: SecretRotationsResponse.shape,
+      SecretRotationOutcomeView: SecretRotationOutcomeView.shape,
+      SecretRotateResponse: SecretRotateResponse.shape,
     };
     for (const [name, shape] of Object.entries(shapes)) {
       for (const banned of NEVER) expect(Object.keys(shape), `${name}.${banned}`).not.toContain(banned);

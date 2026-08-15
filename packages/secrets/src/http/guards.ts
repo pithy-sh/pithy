@@ -5,9 +5,9 @@ import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/admin
 import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/scope";
 
 /**
- * The scope the secrets capability's management surface demands, and the surface it advertises.
+ * The scopes the secrets capability's management surface demands, and the surface it advertises.
  *
- * ## One scope, and it is its own
+ * ## Two scopes, and each is its own
  *
  * `secrets:status:read` is granted separately from everything else an adopter grants at connect. That
  * separation is the point: the read is harmless in the sense that matters — it cannot disclose a value —
@@ -44,10 +44,31 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
 export const SECRETS_STATUS_READ_SCOPE: ControlPlaneScope = "secrets:status:read";
 
 /**
+ * **Replace one declared secret's value.** The capability's first write scope, and it is separate from the
+ * read for a stronger reason than symmetry.
+ *
+ * `scopeCovers` matches exactly, so a scope confers every route that requires it and nothing else. Folding
+ * a rotation behind `secrets:status:read` would mean every adopter who ever granted a dashboard the ability
+ * to see that a key is stale had also, retroactively and without being asked, granted it the ability to
+ * replace their production credentials. That is the escalation the whole scope model exists to make
+ * impossible, and a name ending in `:read` gating a write is how it would have happened quietly.
+ *
+ * **It is deliberately not in the default grant, and nothing here has to arrange that.** `defaultGrant`
+ * classifies a scope by the methods of the routes requiring it — every route requiring this one is a
+ * `POST`, so a fresh `pithy dashboard connect` does not hand it out and an adopter has to name it. That is
+ * the correct default for a credential that reaches other people's live systems: an adopter who wants a
+ * dashboard to rotate for them says so once, out loud, and can stop saying it at any time by revoking.
+ */
+export const SECRETS_ROTATE_SCOPE: ControlPlaneScope = "secrets:rotate";
+
+/**
  * Every control-plane scope this capability defines — what `pithy dashboard connect` offers for it, and
  * the list a manifest or a doc quotes rather than re-typing.
  */
-export const SECRETS_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [SECRETS_STATUS_READ_SCOPE];
+export const SECRETS_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
+  SECRETS_STATUS_READ_SCOPE,
+  SECRETS_ROTATE_SCOPE,
+];
 
 /**
  * The secrets capability's management surface, as `GET /control-plane/manifest` reports it.
@@ -74,6 +95,13 @@ export function secretsAdminRoutes(basePath: string): AdminRoute[] {
       path: `${basePath}/admin/status/:name/rotations`,
       scope: SECRETS_STATUS_READ_SCOPE,
       summary: "One secret's rotation history, newest first — when, how it ended, what caused it, and who.",
+    },
+    {
+      method: "POST",
+      path: `${basePath}/admin/status/:name/rotate`,
+      scope: SECRETS_ROTATE_SCOPE,
+      summary:
+        "Replace one declared secret in this environment, against its declared rotator. Reports per environment, never in aggregate.",
     },
   ];
 }

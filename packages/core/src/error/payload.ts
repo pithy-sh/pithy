@@ -276,6 +276,22 @@ const SecretRotationUnrecordedPublic = z
   })
   .describe("A credential was rolled at its issuer and its successor was not stored (500).");
 
+const SecretRotationUnsupportedPublic = z
+  .object({
+    code: z
+      .literal("secrets/rotation_unsupported")
+      .describe(
+        "This secret cannot be rotated through the surface that was asked. Not a refusal of the caller and not a fault: a Worker holds one environment's store and its own master key, so a secret whose value lives in Cloudflare's account-level Secrets Store, or whose value must be identical across every environment, is outside what any single Worker can replace. The `pithy secrets rotate` command holds the whole project and can. Its own code so a client can tell 'ask somewhere else' from 'you may not' and from 'it broke'.",
+      ),
+    status: z
+      .literal(409)
+      .describe(
+        "Conflict — the request is well-formed and authorized, and this secret's own declaration is what puts it out of reach here.",
+      ),
+    ...publicFields,
+  })
+  .describe("This secret cannot be rotated through the surface that was asked (409).");
+
 // --- @pithy-sh/email: job-table email platform codes ---
 
 const EmailTemplateNotFoundPublic = z
@@ -1374,6 +1390,7 @@ export const KitPublicErrorPayload = z
     SecretInvalidValuePublic,
     SecretCryptoFailedPublic,
     SecretRotationUnrecordedPublic,
+    SecretRotationUnsupportedPublic,
     EmailTemplateNotFoundPublic,
     EmailInvalidPayloadPublic,
     EmailInvalidTokenPublic,
@@ -1514,6 +1531,9 @@ const SecretCryptoFailed = SecretCryptoFailedPublic.extend(internalFields).descr
 );
 const SecretRotationUnrecorded = SecretRotationUnrecordedPublic.extend(internalFields).describe(
   SecretRotationUnrecordedPublic.description ?? "",
+);
+const SecretRotationUnsupported = SecretRotationUnsupportedPublic.extend(internalFields).describe(
+  SecretRotationUnsupportedPublic.description ?? "",
 );
 const EmailTemplateNotFound = EmailTemplateNotFoundPublic.extend(internalFields).describe(
   EmailTemplateNotFoundPublic.description ?? "",
@@ -1817,6 +1837,7 @@ export const KitErrorPayload = z
     SecretInvalidValue,
     SecretCryptoFailed,
     SecretRotationUnrecorded,
+    SecretRotationUnsupported,
     EmailTemplateNotFound,
     EmailInvalidPayload,
     EmailInvalidToken,

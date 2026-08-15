@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { SecretRotation } from "@pithy-sh/core/src/capability/secretOrigin";
 import { chunkByBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import type { DatabaseSchema } from "@pithy-sh/core/src/data/db";
@@ -120,6 +121,9 @@ export const SecretStatus = z
       .describe(
         "Whether a value-rotator may manage this secret. It changes what automation may do and never what an owner may see — a `false` secret reports exactly like a `true` one.",
       ),
+    rotation: SecretRotation.nullable().describe(
+      "How this secret is replaced, from its registry entry: `local` (the kit mints another), `provider` (its issuer is called and returns one), or `manual` (a human in a console, with the issuer and the page named). Null when the entry declares none, which is a different fact from `manual` — nobody has said, rather than somebody has said it takes a human. **Not derivable from `rotatable`, and not a duplicate of it**: `SECRETS_ENCRYPTION_KEYS` is `local` and `rotatable: false`, while a payments credential is `rotatable: true` and rotates only by hand. Metadata by construction — a kind, an issuer and a documentation URL, none of which a value fits in.",
+    ),
     keyVersion: z
       .number()
       .int()
@@ -298,6 +302,11 @@ export async function readSecretStatus(
       backend: entry.backend,
       valueType: entry.valueType,
       rotatable: entry.rotatable,
+      // Null rather than absent, and the declaration verbatim. `defineSecretRegistry` has already refused
+      // a malformed one, so this is a copy of something checked at define time rather than a second
+      // judgement about it — and a secret that declares nothing says so, instead of being reported as the
+      // kind a client would guess.
+      rotation: entry.rotation ?? null,
       keyVersion: row?.keyVersion ?? null,
       createdAt: row?.createdAt ?? null,
       updatedAt: row?.updatedAt ?? null,

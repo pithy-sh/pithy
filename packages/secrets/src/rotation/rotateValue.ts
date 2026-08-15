@@ -148,8 +148,14 @@ export interface RotateSecretValueOptions {
  * every one of them is answered here rather than by a rotator failing in its own words halfway through.
  * A refusal reaching an operator after a roll would leave a dead credential behind a message about
  * configuration.
+ *
+ * **Exported so a caller can ask the same question earlier, and it is still asked here.** `rotateSecretValue`
+ * calls it first thing regardless, so this is a cheap pre-flight rather than a second authority — the HTTP
+ * route uses it to decide whether to open a rotation row before it starts one, since a row opened for a
+ * rotation that was refused before anything was called is a `failed` attempt in a history that records
+ * attempts. It is pure and reads only the declaration, so asking twice costs nothing and cannot disagree.
  */
-function refuseUnrotatable(name: string, entry: SecretRegistryEntry): void {
+export function refuseUnrotatable(name: string, entry: SecretRegistryEntry): void {
   if (entry.keyed) {
     throw new ValidationError({
       message: `Secret '${name}' is a keyspace, not a secret.`,

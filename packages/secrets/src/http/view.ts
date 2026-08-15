@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import type { SecretRotationRecord, SecretStatus } from "../admin/status";
-import type { SecretRotationView, SecretStatusView } from "./responses";
+import type { SecretRotationOutcome } from "../rotation/rotateValue";
+import type { SecretRotationOutcomeView, SecretRotationView, SecretStatusView } from "./responses";
 
 /**
  * What a client is shown. Nothing in this capability's management surface ever returns a raw row.
@@ -24,6 +25,7 @@ export function secretStatusView(status: SecretStatus): SecretStatusView {
     backend: status.backend,
     valueType: status.valueType,
     rotatable: status.rotatable,
+    rotation: status.rotation,
     keyVersion: status.keyVersion,
     createdAt: status.createdAt?.toISOString() ?? null,
     updatedAt: status.updatedAt?.toISOString() ?? null,
@@ -31,6 +33,32 @@ export function secretStatusView(status: SecretStatus): SecretStatusView {
     rotationCount: status.rotationCount,
     rotateEveryDays: status.rotateEveryDays,
     overdue: status.overdue,
+  };
+}
+
+/**
+ * One rotation outcome, rendered for the wire.
+ *
+ * **Two fields of the core's outcome are not named here, and that is the whole of what this function is
+ * for.** `cause` is an `unknown` thrown by a store — an exception raised where a value was in scope — and
+ * it does not cross. Optionality is flattened rather than forwarded: `rollFailed` becomes a plain boolean
+ * because absent and false mean the same thing beside `rolled`, while `reason` and `attempts` become null,
+ * because for those two the absence *is* the fact — nothing was skipped, nothing was stored.
+ *
+ * Naming every field rather than spreading, for the reason `secretStatusView` states: a spread would carry
+ * a field the core's outcome later gained straight to a client, silently.
+ */
+export function secretRotationOutcomeView(outcome: SecretRotationOutcome): SecretRotationOutcomeView {
+  return {
+    name: outcome.name,
+    status: outcome.status,
+    kind: outcome.kind,
+    rolled: outcome.rolled,
+    rollFailed: outcome.rollFailed ?? false,
+    recorded: [...outcome.recorded],
+    stranded: [...outcome.stranded],
+    reason: outcome.reason ?? null,
+    attempts: outcome.attempts ?? null,
   };
 }
 

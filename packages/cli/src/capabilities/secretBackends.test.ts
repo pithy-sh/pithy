@@ -53,7 +53,17 @@ function isWranglerTemplate(name: string): boolean {
   return name === "wrangler.jsonc";
 }
 
-/** The declaration this whole file hunts for. Counted as text, so nothing can be skipped silently. */
+/**
+ * The declaration this whole file hunts for. Counted as text, so nothing can be skipped silently.
+ *
+ * **Raw text, comments included, and that is deliberate rather than an oversight.** Stripping comments
+ * before the scan would be one heuristic away from losing a real declaration, and this file's whole
+ * design is that a declaration it cannot read is *loud* rather than absent. The cost is a rule for
+ * anyone writing prose in `packages/*​/src`: **do not quote this exact string in a comment.** Name the
+ * backend on its own (`a cf-secrets-store secret`) instead. A comment that quotes it is reported as an
+ * unnameable declaration, with the surrounding text in the message, which is a confusing failure but a
+ * safe one — the unsafe direction is the one this refuses to take.
+ */
 const STORE_BACKED = 'backend: "cf-secrets-store"';
 
 /** Every shipped source, with its text. Read once — three of the four helpers below need all of it. */
