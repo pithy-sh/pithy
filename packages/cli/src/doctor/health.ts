@@ -7,6 +7,7 @@ import type { MissingPrerequisite } from "../capabilities/prerequisites";
 import {
   type BuildReconcilePlanOptions,
   buildReconcilePlan,
+  type EntitlementGap,
   type ReadLedger,
   type ReconcilePlan,
 } from "../capabilities/reconcile";
@@ -67,8 +68,13 @@ export interface MigrationHealth {
  */
 export interface EntitlementHealth {
   ok: boolean;
-  /** The Worker's own source files carrying a gate, relative to its directory. */
-  gates: string[];
+  /**
+   * The scan's answer, exactly as the plan carried it (#371) — the file list behind its discriminant.
+   *
+   * A flat `gates: []` said "no gap" and "no scan" in the same two characters, and only one of those is
+   * good news.
+   */
+  gap: EntitlementGap;
 }
 
 /**
@@ -195,7 +201,10 @@ function healthFromPlan(worker: string, plan: ReconcilePlan): WorkerHealth {
     env: plan.env,
   };
 
-  const entitlements: EntitlementHealth = { ok: plan.entitlementGap.length === 0, gates: plan.entitlementGap };
+  // `ok` only on a scan that ran and found nothing, on the same standard the migrations check applies: a
+  // check that did not run is not a check that passed.
+  const gap = plan.entitlements;
+  const entitlements: EntitlementHealth = { ok: gap.state === "read" && gap.gates.length === 0, gap };
 
   const prerequisites: PrerequisiteHealth = {
     ok: plan.missingPrerequisites.length === 0,

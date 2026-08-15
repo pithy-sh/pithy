@@ -42,7 +42,7 @@ const plan: ReconcilePlan = {
   ],
   ejectedSkipped: ["billing"],
   ledger: { state: "read", pending: 3, undeclared: [] },
-  entitlementGap: [],
+  entitlements: { state: "read", gates: [] },
   missingPrerequisites: [],
   missingVersionMetadata: false,
 };
@@ -65,7 +65,7 @@ describe("plan rendering", () => {
       perCapability: [],
       ejectedSkipped: [],
       ledger: { state: "read", pending: 0, undeclared: [] },
-      entitlementGap: [],
+      entitlements: { state: "read", gates: [] },
       missingPrerequisites: [],
       missingVersionMetadata: false,
     };
@@ -128,7 +128,7 @@ describe("worker grouping", () => {
       perCapability: [],
       ejectedSkipped: [],
       ledger: { state: "read", pending: 0, undeclared: [] },
-      entitlementGap: [],
+      entitlements: { state: "read", gates: [] },
       missingPrerequisites: [],
       missingVersionMetadata: false,
     };
@@ -172,7 +172,7 @@ describe("worker grouping", () => {
       perCapability: [],
       ejectedSkipped: [],
       ledger: { state: "read", pending: 0, undeclared: [] },
-      entitlementGap: [],
+      entitlements: { state: "read", gates: [] },
       missingPrerequisites: [],
       missingVersionMetadata: false,
     };
@@ -409,7 +409,7 @@ describe("manifest faults", () => {
       perCapability: [],
       ejectedSkipped: [],
       ledger: { state: "read", pending: 0, undeclared: [] },
-      entitlementGap: [],
+      entitlements: { state: "read", gates: [] },
       missingPrerequisites: [],
       missingVersionMetadata: false,
     };
@@ -429,7 +429,7 @@ describe("manifest faults", () => {
       perCapability: [],
       ejectedSkipped: [],
       ledger: { state: "read", pending: 0, undeclared: [] },
-      entitlementGap: [],
+      entitlements: { state: "read", gates: [] },
       missingPrerequisites: [],
       missingVersionMetadata: false,
     };

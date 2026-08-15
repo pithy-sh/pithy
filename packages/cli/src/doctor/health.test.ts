@@ -25,7 +25,7 @@ function clean(worker: string): ReconcilePlan {
     perCapability: [],
     ejectedSkipped: [],
     ledger: { state: "read", pending: 0, undeclared: [] },
-    entitlementGap: [],
+    entitlements: { state: "read", gates: [] },
     missingPrerequisites: [],
     missingVersionMetadata: false,
   };
@@ -148,12 +148,17 @@ describe("buildProjectHealth", () => {
       projectDir: "/p",
       env: "dev",
       workers: [api],
-      buildPlan: planStub({ api: { ...clean("api"), entitlementGap: ["src/routes/reports.ts"] } }),
+      buildPlan: planStub({
+        api: { ...clean("api"), entitlements: { state: "read", gates: ["src/routes/reports.ts"] } },
+      }),
     });
     // The seam fails closed, so this Worker would deny every gated route — an unhealthy project, not a
     // cosmetic warning. That is what makes `pithy doctor` exit non-zero and lets CI gate on it.
     expect(health.ok).toBe(false);
-    expect(health.workers[0]?.entitlements).toEqual({ ok: false, gates: ["src/routes/reports.ts"] });
+    expect(health.workers[0]?.entitlements).toEqual({
+      ok: false,
+      gap: { state: "read", gates: ["src/routes/reports.ts"] },
+    });
   });
 
   test("no entitlement gap is a passing check, not an absent one", async () => {
@@ -165,7 +170,7 @@ describe("buildProjectHealth", () => {
       buildPlan: planStub({ api: clean("api") }),
     });
     expect(health.ok).toBe(true);
-    expect(health.workers[0]?.entitlements).toEqual({ ok: true, gates: [] });
+    expect(health.workers[0]?.entitlements).toEqual({ ok: true, gap: { state: "read", gates: [] } });
   });
 
   test("shares one engine with upgrade: the default plan builder is buildReconcilePlan", () => {

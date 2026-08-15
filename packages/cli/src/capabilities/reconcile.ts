@@ -120,6 +120,40 @@ export const CapabilityReconcile = z
   .describe("The reconcile drift for a single installed, non-ejected capability.");
 export type CapabilityReconcile = z.infer<typeof CapabilityReconcile>;
 
+/**
+ * Whether this Worker's routes gate on an entitlement nothing composed provides — or that the scan could
+ * not run (#371).
+ *
+ * The scan reads the Worker's own source tree, so it fails the way a directory fails: a permission, a
+ * symlink loop, a tree that moved mid-read. An empty `gates` array was the answer for both "no gate" and
+ * "no scan", and only one of those is good news — so the list lives behind `read` and a caller reaches it
+ * by narrowing.
+ */
+export const EntitlementGap = z
+  .discriminatedUnion("state", [
+    z
+      .object({
+        state: z.literal("read").describe("The Worker's source tree was scanned."),
+        gates: z
+          .array(z.string())
+          .describe(
+            "This Worker's own source files that gate a route on an entitlement while nothing it composes provides one, relative to its directory. Empty means no gap — the healthy state.",
+          ),
+      })
+      .describe("The scan's answer. An empty list here is a real answer and means there is no gap."),
+    z
+      .object({
+        state: z.literal("unavailable").describe("The Worker's source tree could not be scanned."),
+      })
+      .describe(
+        "No scan was made, so nothing is known about this Worker's gates. Deliberately empty: nothing derived from the failure travels, and there is no empty list here to mistake for no gap.",
+      ),
+  ])
+  .describe(
+    "The entitlement-composition gap for one Worker, or that it could not be looked for. The file list sits behind the discriminant, so `no gap` and `no scan` cannot be confused.",
+  );
+export type EntitlementGap = z.infer<typeof EntitlementGap>;
+
 /** The read-only reconcile plan: what an upgrade would add, what it would skip, and how far the schema is behind. */
 export const ReconcilePlan = z
   .object({
@@ -137,11 +171,9 @@ export const ReconcilePlan = z
     ledger: ProjectLedger.describe(
       "What `env`'s databases have applied against what this Worker declares, in both directions — unapplied migrations (which an upgrade applies with --migrate) and migrations the ledger records that nothing declares any more (which it cannot: whether to restore the migration or drop its ledger row depends on what the database holds, so it is report-only). It is the ledger's own four-way value rather than two flat fields, because a database that could not be read is neither of those things and a count alone cannot say so (#282, #371).",
     ),
-    entitlementGap: z
-      .array(z.string())
-      .describe(
-        "This Worker's own source files that gate a route on an entitlement while nothing it composes provides one. Empty means no gap. Report-only: an upgrade cannot fix it, because which capability to compose is the adopter's decision.",
-      ),
+    entitlements: EntitlementGap.describe(
+      "Whether this Worker gates a route on an entitlement while nothing it composes provides one — and whether the question could be asked at all. Report-only: an upgrade cannot fix it, because which capability to compose is the adopter's decision.",
+    ),
     missingPrerequisites: z
       .array(MissingPrerequisite)
       .describe(
@@ -241,6 +273,15 @@ export interface BuildReconcilePlanOptions {
   account: CloudflareAccountSelection | null;
   /** Test seam: read the migration ledger without a real Miniflare/D1 run. */
   readLedger?: ReadLedger;
+  /**
+   * Test seam: find the entitlement gap without a source tree that refuses to read.
+   *
+   * It exists for the same reason `readLedger` does. The walk behind {@link findEntitlementGap} is
+   * deliberately hard to make throw — `ci/sourceFiles.ts` treats a directory it cannot list as skipped —
+   * and a guard nobody can drive is a guard nobody can prove. #371's gate on this contributor plants the
+   * throw through here.
+   */
+  findGap?: (workerDir: string, capabilities: readonly Capability[]) => Promise<string[]>;
 }
 
 /** Escape a capability name for use inside a `RegExp`. */
@@ -499,17 +540,39 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   perCapability.sort((a, b) => a.name.localeCompare(b.name));
   const ejectedSkipped = [...ejected].sort((a, b) => a.localeCompare(b));
 
-  const ledger = await readLedger({
-    projectDir,
-    workerDir,
-    worker: deployedAs,
-    env,
-    capabilities,
-    account: options.account,
-  });
+  // **Every contributor to this plan is guarded, and none of them is load-bearing (#371).** A plan is a
+  // report, and a report is read by an adopter trying to find out why something is wrong — so one
+  // contributor failing must cost its own line and leave the other four standing. The two below were the
+  // unguarded ones; the config source, the wrangler stanzas and the version-metadata read beside them
+  // have degraded per contributor since they were written.
+  //
+  // Neither guard takes a binding. `readLedger` reaches a customer's D1 and `findEntitlementGap` walks
+  // their source tree, so both throw with paths, ids and queries in them — nothing derived from either
+  // reaches this plan, which `pithy upgrade --json` prints.
+  //
+  // `try`/`catch` rather than `.catch()`, because `readLedger` is an injectable seam: a `.catch()` guards
+  // a rejected promise and not a function that threw before returning one.
+  let ledger: ProjectLedger;
+  try {
+    ledger = await readLedger({
+      projectDir,
+      workerDir,
+      worker: deployedAs,
+      env,
+      capabilities,
+      account: options.account,
+    });
+  } catch {
+    ledger = { state: "unavailable" };
+  }
   // Report-only, and scoped to this Worker's own source: the gates are on its routes, and the provider is
   // in its composed set, so the question is per Worker exactly as the rest of the plan is.
-  const entitlementGap = await findEntitlementGap(workerDir, capabilities);
+  let entitlements: EntitlementGap;
+  try {
+    entitlements = { state: "read", gates: await (options.findGap ?? findEntitlementGap)(workerDir, capabilities) };
+  } catch {
+    entitlements = { state: "unavailable" };
+  }
   // Not a capability binding, so it does not travel through the manifest path above: no capability
   // requires it, every Worker wants it, and the platform populates it. It is a property of the scaffold,
   // and the reason it is reconciled at all is that it shipped missing from both templates once already.
@@ -526,7 +589,7 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
     perCapability,
     ejectedSkipped,
     ledger,
-    entitlementGap,
+    entitlements,
     // Across every composed capability, ejected ones included: eject copies the source, it does not
     // change what that source composes against, and `createBackend` asks the same question of both.
     missingPrerequisites: missingPrerequisites(manifests, composed),

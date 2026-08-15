@@ -224,7 +224,7 @@ describe("docs/commands/doctor.md", () => {
                 },
               ],
               ledger: { state: "read", pending: 2, undeclared: [] },
-              entitlementGap: [],
+              entitlements: { state: "read", gates: [] },
               missingPrerequisites: [],
               missingVersionMetadata: false,
             },

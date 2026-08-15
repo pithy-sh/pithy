@@ -838,10 +838,13 @@ function workerHealthLines(health: WorkerHealth): string[] {
 
   if (health.entitlements.ok) {
     lines.push(healthLine("entitlements", "no gated route without a provider ✓"));
+  } else if (health.entitlements.gap.state === "unavailable") {
+    // Not "no gated route" — nothing was read, so nothing is known. #371's rule, said out loud.
+    lines.push(healthLine("entitlements", "couldn't be checked — this worker's source would not scan"));
   } else {
     // Report-only: `pithy upgrade` cannot pick a capability for the adopter, so the line names the fix.
     lines.push(healthLine("entitlements", "gated routes, no provider — run: pithy add payments"));
-    for (const gate of health.entitlements.gates) lines.push(`${HEALTH_CONT}${gate}`);
+    for (const gate of health.entitlements.gap.gates) lines.push(`${HEALTH_CONT}${gate}`);
   }
 
   return lines;

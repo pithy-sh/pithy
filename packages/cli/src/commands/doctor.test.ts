@@ -158,7 +158,7 @@ describe("renderDoctorText", () => {
             },
           ],
           ledger: { state: "read", pending: 2, undeclared: [] },
-          entitlementGap: [],
+          entitlements: { state: "read", gates: [] },
           missingPrerequisites: [],
           missingVersionMetadata: false,
         }),
@@ -268,7 +268,10 @@ describe("renderDoctorText", () => {
         installedVersion: "1.3.0",
         fetch: registryFetch({ cli: "1.3.0", core: "1.2.0" }),
         installedCapabilities: async () => [{ name: "@pithy-sh/core", version: "1.2.0" }],
-        buildPlan: planStub({ ...cleanPlan, entitlementGap: ["src/routes/reports.ts", "src/routes/team.ts"] }),
+        buildPlan: planStub({
+          ...cleanPlan,
+          entitlements: { state: "read", gates: ["src/routes/reports.ts", "src/routes/team.ts"] },
+        }),
       }),
     );
     expect(renderDoctorText(report, "/home/u")).toContain(

@@ -34,7 +34,7 @@ Per Worker, a plan reports four things.
 
 **Pending migrations**, counted for `--env`. Reported by default; applied only with `--migrate`.
 
-Two things sit outside that list. `entitlementGap` names this Worker's own source files that gate a route on an entitlement while nothing the Worker composes provides one — report-only, because which capability to compose is your decision, not the CLI's. And `missingVersionMetadata` covers the `version_metadata` binding named `CF_VERSION_METADATA`: without it a Worker cannot report which build is running, so log records carry no `version`, audit events carry no build id, and `pithy deploy` cannot verify the deploy it just made. An upgrade adds it. A config naming a *different* binding is reported and left alone.
+Two things sit outside that list. `entitlements` names this Worker's own source files that gate a route on an entitlement while nothing the Worker composes provides one — report-only, because which capability to compose is your decision, not the CLI's. And `missingVersionMetadata` covers the `version_metadata` binding named `CF_VERSION_METADATA`: without it a Worker cannot report which build is running, so log records carry no `version`, audit events carry no build id, and `pithy deploy` cannot verify the deploy it just made. An upgrade adds it. A config naming a *different* binding is reported and left alone.
 
 **Installed is not composed.** The manifests are installed once at the project root and shared by every Worker, so they describe every capability installed anywhere in the project — not what this Worker is made of. A plan is scoped to the Worker's own composed set. A capability another Worker added contributes nothing here; anything else would put a foreign capability's bindings, and its Durable Object class migrations, on a script that never declared them.
 
@@ -50,7 +50,7 @@ One line, one object. The `workers` array carries a **plan** on a dry run and an
 
 ```
 $ pithy upgrade --dry-run --json
-{"command":"upgrade","env":"dev","dryRun":true,"workers":[{"worker":"board","deployedAs":"replay-board","env":"dev","perCapability":[{"name":"audit","missingBindings":[],"missingConfigKeys":[]},{"name":"auth","missingBindings":[],"missingConfigKeys":[]},{"name":"secrets","missingBindings":[],"missingConfigKeys":[]}],"ejectedSkipped":[],"ledger":{"state":"read","pending":1,"undeclared":[]},"entitlementGap":[],"missingVersionMetadata":false}],"manifestFaults":[]}
+{"command":"upgrade","env":"dev","dryRun":true,"workers":[{"worker":"board","deployedAs":"replay-board","env":"dev","perCapability":[{"name":"audit","missingBindings":[],"missingConfigKeys":[]},{"name":"auth","missingBindings":[],"missingConfigKeys":[]},{"name":"secrets","missingBindings":[],"missingConfigKeys":[]}],"ejectedSkipped":[],"ledger":{"state":"read","pending":1,"undeclared":[]},"entitlements":{"state":"read","gates":[]},"missingVersionMetadata":false}],"manifestFaults":[]}
 ```
 
 ```
@@ -94,7 +94,9 @@ $ pithy upgrade --json
 | `ledger.undeclared` | array | Migrations `env`'s databases have applied that this Worker no longer declares — the direction a pending count is blind to. Report-only. Present on `read` alone |
 | `ledger.counted` | object | The same two fields, over the databases that answered. Present on `partial` alone, and spelled differently there on purpose: it is a sum with a known hole in it |
 | `ledger.unreadable` | array | Every database whose ledger could not be read, each with its `database` and `binding`. Present and non-empty on `partial` alone. It carries no reason — what a D1 read throws names an id or a query |
-| `entitlementGap` | string[] | This Worker's own source files that gate a route on an entitlement while nothing it composes provides one. Empty means no gap. Report-only |
+| `entitlements` | object | Whether this Worker gates a route on an entitlement while nothing it composes provides one — and whether the scan ran at all. Report-only |
+| `entitlements.state` | `"read"` \| `"unavailable"` | Whether the Worker's source tree was scanned |
+| `entitlements.gates` | string[] | The gating source files, relative to the Worker's directory. Empty means no gap. Present on `read` alone, so an all-clear and an unread tree cannot be confused |
 | `missingVersionMetadata` | boolean | Whether this Worker's `wrangler.jsonc` lacks the `version_metadata` binding named `CF_VERSION_METADATA` |
 
 ### `workers[]` when `dryRun` is `false`
