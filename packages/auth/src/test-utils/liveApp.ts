@@ -102,6 +102,15 @@ export interface LiveAppOptions {
   google?: { clientId: string; clientSecret: string } | undefined;
   /** When set, the turnstile gate is composed at this widget mode, exactly as `auth.compose` stacks it. */
   turnstile?: { mode: "visible" | "invisible"; secretKey: string } | undefined;
+  /**
+   * The `ENVIRONMENT` var this Worker is stamped with, as `pithy init` writes into every wrangler
+   * stanza. `dev` by default, because that is what these suites are: a developer's machine, running the
+   * stack the way `pithy dev` does.
+   *
+   * It is an option because one thing now reads it — the turnstile gate refuses a Cloudflare test key
+   * outside dev and staging (#374) — so a suite has to be able to say it is prod to prove that.
+   */
+  environment?: string;
 }
 
 /** A booted app: where it listens, what it was pinned to, and what it recorded. */
@@ -139,6 +148,8 @@ export async function startLiveApp(options: LiveAppOptions): Promise<LiveApp> {
     DB: db,
     SECRETS: secretsDb,
     SECRETS_ENCRYPTION_KEYS: devEncryptionKeys(),
+    // What a Worker knows about itself (`core/src/worker/identity`), stamped as the scaffold stamps it.
+    ENVIRONMENT: options.environment ?? "dev",
     // The tier-1 edge limiter's binding. Always allows: these suites are about the gate below it, and a
     // limiter that denied would make a failure read as a bug in the thing under test.
     AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) } satisfies RateLimit,

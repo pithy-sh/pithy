@@ -20,14 +20,24 @@ const ONE_WIDGET: TurnstileSecrets = { visible: { key: SECRET } };
  * seeded as a row — `@pithy-sh/secrets`' `test-utils/secretFixtures` explains which idiom belongs to
  * which runtime. A case may pass `{}` to provision nothing, which is how "declared but never
  * provisioned" is expressed.
+ *
+ * `environment` is the Worker's stamped `ENVIRONMENT` var, and it is left **unstamped** by default so
+ * every case that predates #374 runs against the env it always did. The literals the test-key cases
+ * pass are written out here rather than imported from `provision/testKeys`: the list they are checking
+ * is the one the gate reads, and a case that took its expectation from it could only agree with itself.
  */
-function app(options?: TurnstileOptions, secrets: SecretFixture<typeof turnstileSecretsRegistry> = one(ONE_WIDGET)) {
+function app(
+  options?: TurnstileOptions,
+  secrets: SecretFixture<typeof turnstileSecretsRegistry> = one(ONE_WIDGET),
+  environment?: string,
+) {
   stubSecrets(turnstileSecretsRegistry, secrets);
   const hono = new Hono();
   hono.onError(pithyErrorHandler);
   hono.use("/protected", turnstile(options));
   hono.post("/protected", (c) => c.json({ ok: true }));
-  return (init: RequestInit) => hono.request("/protected", { method: "POST", ...init }, {});
+  const env = environment === undefined ? {} : { ENVIRONMENT: environment };
+  return (init: RequestInit) => hono.request("/protected", { method: "POST", ...init }, env);
 }
 
 /** The fixture for turnstile's one secret — named so a case reads as the widgets it configures. */
@@ -236,10 +246,121 @@ describe("turnstile() middleware", () => {
   });
 });
 
+/**
+ * The test-key exception (#374), and the three conditions it needs — one case per condition removed.
+ *
+ * The bodies here are the ones Cloudflare actually answers with, measured against real siteverify:
+ * the always-pass test secret returns `success: true`, `metadata.result_with_testing_key: true`, and
+ * **no `action` field at all**. `packages/auth/src/http/turnstileGate.integration.test.ts` is where the
+ * same thing is asserted live; these cases are here for the combinations no key can produce on demand.
+ */
+describe("the action binding and Cloudflare's test keys", () => {
+  /** Exactly what the always-pass test secret answers — the whole reason sign-in was blocked. */
+  const TEST_KEY_PASS = { success: true, "error-codes": [], metadata: { result_with_testing_key: true } };
+
+  const post = (send: ReturnType<typeof app>) =>
+    send({
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ "cf-turnstile-response": "tok" }),
+    });
+
+  test("a test key answering with no action passes the login gate in dev", async () => {
+    stubSiteverify(TEST_KEY_PASS);
+    const res = await post(app({ action: "login" }, one(ONE_WIDGET), "dev"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+
+  test("and in staging", async () => {
+    stubSiteverify(TEST_KEY_PASS);
+    const res = await post(app({ action: "login" }, one(ONE_WIDGET), "staging"));
+    expect(res.status).toBe(200);
+  });
+
+  test("but a test key in prod is refused as a misconfiguration, not as a failed challenge", async () => {
+    stubSiteverify(TEST_KEY_PASS);
+    const res = await post(app({ action: "login" }, one(ONE_WIDGET), "prod"));
+    expect(res.status).toBe(500);
+    expect(await errCode(res)).toBe("turnstile/config");
+  });
+
+  test("an unstamped Worker gets prod's answer — it cannot say it is dev, so it is not treated as one", async () => {
+    stubSiteverify(TEST_KEY_PASS);
+    const res = await post(app({ action: "login" }));
+    expect(res.status).toBe(500);
+    expect(await errCode(res)).toBe("turnstile/config");
+  });
+
+  test("a test key that DOES return a different action is still refused in dev", async () => {
+    // The condition that keeps this an exception rather than a hole: the binding is relaxed for an
+    // action that is *absent*, never for one that disagrees. A token minted for another action is the
+    // replay this check exists to stop, and dev is not a place it becomes acceptable.
+    stubSiteverify({ ...TEST_KEY_PASS, action: "signup" });
+    const res = await post(app({ action: "login" }, one(ONE_WIDGET), "dev"));
+    expect(res.status).toBe(403);
+    expect(await errCode(res)).toBe("turnstile/failed");
+  });
+
+  test("a real widget answering with no action is still refused in dev", async () => {
+    // And the condition that keeps the exception off every real widget: the flag is Cloudflare's, on
+    // Cloudflare's answer. Without this case, "dev relaxes the action binding" would satisfy the two
+    // passing cases above — which is a different, much larger rule than the one that was written.
+    stubSiteverify({ success: true, "error-codes": [] });
+    const res = await post(app({ action: "login" }, one(ONE_WIDGET), "dev"));
+    expect(res.status).toBe(403);
+    expect(await errCode(res)).toBe("turnstile/failed");
+  });
+
+  test("a route with no configured action is unaffected by any of it", async () => {
+    stubSiteverify(TEST_KEY_PASS);
+    const res = await post(app({}, one(ONE_WIDGET), "dev"));
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("a secret Cloudflare does not recognise", () => {
+  test("is 500 turnstile/config — the deployment is at fault, not the caller", async () => {
+    stubSiteverify({ success: false, "error-codes": ["invalid-input-secret"] }, false, 400);
+    const res = await app()({
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ "cf-turnstile-response": "tok" }),
+    });
+    expect(res.status).toBe(500);
+    expect(await errCode(res)).toBe("turnstile/config");
+  });
+
+  test("while a 400 about the token stays 403 turnstile/failed", async () => {
+    // The refutation. Without it, "the status was 400" would be indistinguishable from "the secret was
+    // refused", and every malformed token would start reading as a misconfiguration.
+    stubSiteverify({ success: false, "error-codes": ["invalid-input-response"] }, false, 400);
+    const res = await app()({
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ "cf-turnstile-response": "tok" }),
+    });
+    expect(res.status).toBe(403);
+    expect(await errCode(res)).toBe("turnstile/failed");
+  });
+});
+
 describe("siteverify", () => {
   test("fails closed on a non-OK status", async () => {
     stubSiteverify({}, false, 500);
     await expect(siteverify("s", "t")).rejects.toMatchObject({ payload: { code: "turnstile/failed" } });
+  });
+
+  test("raises turnstile/config when the secret is the thing Cloudflare refused", async () => {
+    stubSiteverify({ success: false, "error-codes": ["missing-input-secret"] }, false, 400);
+    await expect(siteverify("", "t")).rejects.toMatchObject({ payload: { code: "turnstile/config" } });
+  });
+
+  test("keeps the operator's remedy out of the client's reach", async () => {
+    // `action` names a `pithy` command and a wrangler var. It belongs to the operator, and the HTTP
+    // codec is what keeps it there (CLAUDE.md §Errors) — asserted on the payload, so the throw site is
+    // pinned to filling `action` rather than folding the remedy into `message`.
+    stubSiteverify({ success: false, "error-codes": ["invalid-input-secret"] }, false, 400);
+    await expect(siteverify("s", "t")).rejects.toMatchObject({
+      payload: { action: expect.stringContaining("pithy turnstile provision") },
+    });
   });
 
   test("fails closed on an unexpected body shape", async () => {

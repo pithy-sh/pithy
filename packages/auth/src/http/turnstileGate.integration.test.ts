@@ -30,18 +30,20 @@ import { type LiveApp, resetLiveSecrets, startLiveApp } from "../test-utils/live
  * fixture is **not** a test key, live, and a fixture wrongly filled in with `1x0000…AA` fails loudly
  * instead of certifying a gate that never ran.
  *
- * ## What a widget would prove that nothing here does
+ * ## The pass-then-forward path, and what is still out of reach
  *
- * **The pass-then-forward path is not covered, and it cannot be covered without a browser.** Not for
- * want of a fixture — for a reason worth writing down. `createAuthRoutes` stacks the gate as
- * `turnstile({ action: "login" })`, and the middleware fails closed when the action siteverify returns
- * does not match. A documented test key's answer carries **no action at all**, so the always-pass secret
- * is refused here too, by the action binding rather than by the humanity check. A token that satisfies
- * both has to come from a real widget rendered with `action: "login"` and solved in a browser.
+ * It used to be uncovered, and the reason was #374: `createAuthRoutes` stacks the gate as
+ * `turnstile({ action: "login" })`, a documented test key's answer carries **no action at all**, and the
+ * binding therefore denied the always-pass secret too — so dev and staging could not sign in and no live
+ * suite could watch the gate let anything through. The middleware now relaxes that binding for exactly
+ * that answer, in exactly the two environments a test key is provisioned into, and the dev case below
+ * signs in end to end: through the gate, into Better Auth, out as an enqueued magic link. That is also
+ * the first live cover #74's `c.req.raw.clone()` fix has had.
  *
- * The last case below asserts exactly that, so the ceiling is a test rather than a comment. And it is
- * why #74's `c.req.raw.clone()` fix — the one that made the gate work when it *passed*, not only when
- * it denied — still has no live end-to-end coverage. Its unit tests are `middleware.workers.test.ts`.
+ * What a real widget would still add is the **action binding biting**: a token minted for one action and
+ * replayed against another. No key available here returns an action at all, so a mismatch cannot be
+ * produced from this side; it is asserted in `@pithy-sh/turnstile`'s own suites, including against a
+ * test-key answer that *does* carry a differing action.
  *
  * ## Gate
  *
@@ -128,21 +130,60 @@ describe("turnstile gate, Cloudflare's documented test keys — LIVE", () => {
     await expectBogusTokenRefused(TURNSTILE_TEST_KEYS.secret.fail);
   });
 
-  test("the always-pass test secret is refused too — by the action binding, so the forward path stays uncovered", async () => {
-    // Cloudflare's always-pass secret answers `success: true` with no `action` field. The gate is
-    // stacked as `action: "login"` and fails closed on a mismatch, so the request is still denied —
-    // correctly, and for a reason that is not the humanity check.
+  test("a dev sign-in completes: the always-pass test secret passes the gate, and the mail is enqueued", async () => {
+    // #374, and the case this file used to state as a ceiling. Cloudflare's always-pass secret answers
+    // `success: true` with **no `action` field**, the gate is stacked as `action: "login"`, and the
+    // binding therefore compared "login" against nothing and denied every dev and staging sign-in.
     //
-    // This is the ceiling stated as a test. Nothing available in this session can produce a token that
-    // passes both checks, so the pass-then-forward path is **unverified live**, here and everywhere.
+    // The enqueued row is the half that makes this a sign-in rather than a status code: the gate let the
+    // request reach Better Auth, which enqueued a magic link. A 200 alone would also be answered by a
+    // gate that ran the handler and then denied.
     const app = await startLiveApp({
       basePath: BASE_PATH,
+      environment: "dev",
       turnstile: { mode: "visible", secretKey: TURNSTILE_TEST_KEYS.secret.pass },
     });
     try {
       const response = await magicLink(app, NOT_A_TOKEN);
-      expect(response.status).toBe(403);
-      expect(await codeOf(response)).toBe("turnstile/failed");
+      expect(response.status).toBe(200);
+      expect(await app.enqueued()).toEqual([{ template: "magicLink", to: "someone@example.test" }]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("the same secret in prod is refused, and named as a misconfiguration", async () => {
+    // The exception is scoped to the two environments provisioning wires a test key into, and this is
+    // the other side of it. Same secret, same route, same live siteverify — one var apart. Without this
+    // case, "the always-pass key signs in" would be indistinguishable from a gate that stopped
+    // enforcing the action binding everywhere.
+    const app = await startLiveApp({
+      basePath: BASE_PATH,
+      environment: "prod",
+      turnstile: { mode: "visible", secretKey: TURNSTILE_TEST_KEYS.secret.pass },
+    });
+    try {
+      const response = await magicLink(app, NOT_A_TOKEN);
+      expect(response.status).toBe(500);
+      expect(await codeOf(response)).toBe("turnstile/config");
+      expect(await app.enqueued()).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("a secret Cloudflare does not know is a misconfiguration, not a failed challenge", async () => {
+    // The gate's answer to the 400 asserted two cases above. It is the operator-facing half of #374:
+    // a wrong secret refused every caller under `turnstile/failed`, which sends whoever is debugging it
+    // to look at the user.
+    const app = await startLiveApp({
+      basePath: BASE_PATH,
+      turnstile: { mode: "visible", secretKey: "0x0000000000000000000000000000000ZZ" },
+    });
+    try {
+      const response = await magicLink(app, NOT_A_TOKEN);
+      expect(response.status).toBe(500);
+      expect(await codeOf(response)).toBe("turnstile/config");
       expect(await app.enqueued()).toHaveLength(0);
     } finally {
       await app.close();
