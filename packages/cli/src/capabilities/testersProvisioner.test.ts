@@ -38,7 +38,7 @@ function provisioner(cf: CloudflareClients, events: CliAuditEvent[] = []) {
   return new CloudflareTestersProvisioner({
     project: PROJECT,
     cf,
-    accountId: "acct-1",
+    account: { accountId: "acct-1", confirmation: "pinned" },
     apiToken: "token",
     testersConfig: TestersConfig.parse({ baseUrl: "https://api.example.test" }),
     email: undefined,
@@ -124,7 +124,7 @@ describe("the audit is optional", () => {
     const bare = new CloudflareTestersProvisioner({
       project: PROJECT,
       cf,
-      accountId: "acct-1",
+      account: { accountId: "acct-1", confirmation: "pinned" },
       apiToken: "token",
       testersConfig: TestersConfig.parse({ baseUrl: "https://api.example.test" }),
       email: undefined,
@@ -133,5 +133,78 @@ describe("the audit is optional", () => {
 
     await expect(bare.deleteWorker("staging")).resolves.toBeUndefined();
     expect(deleteWorker).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The account a teardown deletes from must be one something claims (#378).
+ *
+ * `getWorker` answers "this account has no such script" and "you asked an account that is not yours"
+ * with the same `null`, so a teardown pointed at a stranger's account used to delete nothing, audit
+ * nothing, and exit 0 — a success message printed over a production Worker that is still running.
+ *
+ * The account id below is a literal, written here and nowhere else, and the plant that proves this gate
+ * can fail is one word: turn `confirmation` back into something the guard ignores.
+ */
+describe("teardown refuses an unconfirmed account", () => {
+  test("refuses instead of reading a miss as `already gone`", async () => {
+    const { cf, getWorker, deleteWorker } = fakeCf();
+    getWorker.mockResolvedValue(null);
+    const stranger = new CloudflareTestersProvisioner({
+      project: PROJECT,
+      cf,
+      account: { accountId: "acct-stranger", confirmation: "ambient" },
+      apiToken: "token",
+      testersConfig: TestersConfig.parse({ baseUrl: "https://api.example.test" }),
+      email: undefined,
+      resolveEnv: async () => ({ appDatabaseId: "app-db", suppressionDatabaseId: "sup-db" }),
+    });
+
+    await expect(stranger.deleteWorker("prod")).rejects.toThrow(
+      "Nothing states that Cloudflare account acct-stranger is this project's. Nothing was changed.",
+    );
+    expect(deleteWorker).not.toHaveBeenCalled();
+  });
+
+  test("does not even ask — an answer it could not believe is not worth the round trip", async () => {
+    const { cf, getWorker } = fakeCf();
+    const stranger = new CloudflareTestersProvisioner({
+      project: PROJECT,
+      cf,
+      account: { accountId: "acct-stranger", confirmation: "ambient" },
+      apiToken: "token",
+      testersConfig: TestersConfig.parse({ baseUrl: "https://api.example.test" }),
+      email: undefined,
+      resolveEnv: async () => ({ appDatabaseId: "app-db", suppressionDatabaseId: "sup-db" }),
+    });
+
+    await stranger.deleteWorker("prod").catch(() => {});
+    expect(getWorker).not.toHaveBeenCalled();
+  });
+
+  test("audits nothing, because a refusal is not a deletion", async () => {
+    const { cf, getWorker } = fakeCf();
+    getWorker.mockResolvedValue(null);
+    const events: CliAuditEvent[] = [];
+    const stranger = new CloudflareTestersProvisioner({
+      project: PROJECT,
+      cf,
+      account: { accountId: "acct-stranger", confirmation: "ambient" },
+      apiToken: "token",
+      testersConfig: TestersConfig.parse({ baseUrl: "https://api.example.test" }),
+      email: undefined,
+      resolveEnv: async () => ({ appDatabaseId: "app-db", suppressionDatabaseId: "sup-db" }),
+      audit: async (event) => void events.push(event),
+    });
+
+    await stranger.deleteWorker("prod").catch(() => {});
+    expect(events).toEqual([]);
+  });
+
+  test("a confirmed account still tears down — the guard refuses one thing and not everything", async () => {
+    const { cf, getWorker, deleteWorker } = fakeCf();
+    getWorker.mockResolvedValue({ id: testersWorkerName(PROJECT, "prod") });
+    await provisioner(cf).deleteWorker("prod");
+    expect(deleteWorker).toHaveBeenCalledWith(testersWorkerName(PROJECT, "prod"));
   });
 });

@@ -10,10 +10,12 @@ import {
   CLOUDFLARE_CONFIG_FILE_NAME,
   CloudflareAccountName,
   type CloudflareConfigOptions,
+  cloudflareAccountConfirmation,
   cloudflareAccountFile,
   cloudflareConfigPath,
   cloudflareCredentialSplit,
   cloudflareEnv,
+  describeUnconfirmedCloudflareAccount,
   parseCloudflareConfig,
   pithyOffline,
   resolveCloudflare,
@@ -531,5 +533,93 @@ describe("cloudflareCredentialSplit", () => {
     await config({ CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "tok" });
     const env = { SECRETS_STORE_ID: "store", R2_CREDENTIALS: '{"accessKeyId":"ak"}' };
     expect(cloudflareCredentialSplit(paths(env))).toBeNull();
+  });
+});
+
+/**
+ * What vouches for the account, when the project pins nothing to compare against (#378).
+ *
+ * The mismatch check above is real and it is narrow: it needs a pin. Everything below is the case it
+ * cannot see — and the one this suite cares most about is `ambient`, where the id came out of a shell
+ * variable and nothing in the repository or on disk agrees with it.
+ */
+describe("resolveCloudflare confirmation", () => {
+  test("a pin the credentials agree with is the strong form", async () => {
+    await config({ CLOUDFLARE_ACCOUNT_ID: "acct-ours", CLOUDFLARE_API_TOKEN: "tok" });
+    const resolved = resolveCloudflare({ ...paths(), account: { accountId: "acct-ours" } });
+    expect(resolved.confirmation).toBe("pinned");
+    expect(resolved.mismatch).toBeNull();
+  });
+
+  test("a pin vouches for an id the environment supplied too — the repository named it either way", async () => {
+    const resolved = resolveCloudflare({
+      env: { PITHY_CONFIG_DIR: dir, CLOUDFLARE_ACCOUNT_ID: "acct-ours", CLOUDFLARE_API_TOKEN: "tok" },
+      account: { accountId: "acct-ours" },
+    });
+    expect(resolved.confirmation).toBe("pinned");
+  });
+
+  test("the project's named file supplying the id is `named`", async () => {
+    await writeFile(
+      join(dir, "cloudflare.leed.json"),
+      JSON.stringify({ CLOUDFLARE_ACCOUNT_ID: "acct-leed", CLOUDFLARE_API_TOKEN: "tok" }),
+      { mode: 0o600 },
+    );
+    const resolved = resolveCloudflare({ ...paths(), account: { accountName: "leed" } });
+    expect(resolved.confirmation).toBe("named");
+    expect(resolved.vars.CLOUDFLARE_ACCOUNT_ID).toBe("acct-leed");
+  });
+
+  test("a named file that supplies only a token leaves the account to the shell — that is `ambient`", async () => {
+    await writeFile(join(dir, "cloudflare.leed.json"), JSON.stringify({ CLOUDFLARE_API_TOKEN: "tok" }), {
+      mode: 0o600,
+    });
+    const resolved = resolveCloudflare({
+      env: { PITHY_CONFIG_DIR: dir, CLOUDFLARE_ACCOUNT_ID: "acct-stranger" },
+      account: { accountName: "leed" },
+    });
+    expect(resolved.confirmation).toBe("ambient");
+    expect(resolved.vars.CLOUDFLARE_ACCOUNT_ID).toBe("acct-stranger");
+  });
+
+  test("the default file on a single-account machine is `recorded` — nothing here needed a second account", async () => {
+    await config({ CLOUDFLARE_ACCOUNT_ID: "acct-only", CLOUDFLARE_API_TOKEN: "tok" });
+    expect(resolveCloudflare(paths()).confirmation).toBe("recorded");
+  });
+
+  test("an id from the environment with no pin and no file is `ambient` — the 2026-08-15 shape", async () => {
+    const resolved = resolveCloudflare({
+      env: { PITHY_CONFIG_DIR: dir, CLOUDFLARE_ACCOUNT_ID: "acct-stranger", CLOUDFLARE_API_TOKEN: "tok" },
+      account: null,
+    });
+    expect(resolved.confirmation).toBe("ambient");
+    // And nothing else could have said so: with no pin there is no disagreement to find.
+    expect(resolved.mismatch).toBeNull();
+  });
+
+  test("an environment id overlaid on a file that set none is `ambient`, whatever else the file holds", async () => {
+    await config({ SECRETS_STORE_ID: "store-1" });
+    const resolved = resolveCloudflare({
+      env: { PITHY_CONFIG_DIR: dir, CLOUDFLARE_ACCOUNT_ID: "acct-stranger", CLOUDFLARE_API_TOKEN: "tok" },
+      account: null,
+    });
+    expect(resolved.confirmation).toBe("ambient");
+  });
+
+  test("nothing resolved at all is `ambient` — an absent account vouches for nothing", () => {
+    expect(resolveCloudflare(paths()).confirmation).toBe("ambient");
+  });
+
+  test("`cloudflareAccountConfirmation` reads the same answer without a second resolution path", async () => {
+    await config({ CLOUDFLARE_ACCOUNT_ID: "acct-only", CLOUDFLARE_API_TOKEN: "tok" });
+    expect(cloudflareAccountConfirmation(paths())).toBe("recorded");
+  });
+});
+
+describe("describeUnconfirmedCloudflareAccount", () => {
+  test("names the account the operator is about to change, and nothing else", () => {
+    expect(describeUnconfirmedCloudflareAccount("acct-stranger")).toBe(
+      "Nothing states that Cloudflare account acct-stranger is this project's.",
+    );
   });
 });

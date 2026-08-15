@@ -37,7 +37,7 @@ describe("CloudflareEmailProvisioner", () => {
     const provisioner = new CloudflareEmailProvisioner({
       project: PROJECT,
       cf,
-      accountId: "acct-1",
+      account: { accountId: "acct-1", confirmation: "pinned" },
       apiToken: "tok",
       storeId: "store-1",
       theme: fakeTheme,
@@ -78,7 +78,7 @@ describe("CloudflareEmailProvisioner", () => {
     const provisioner = new CloudflareEmailProvisioner({
       project: PROJECT,
       cf,
-      accountId: "acct-1",
+      account: { accountId: "acct-1", confirmation: "pinned" },
       apiToken: "tok",
       storeId: "store-1",
       theme: fakeTheme,
@@ -113,7 +113,7 @@ describe("CloudflareEmailProvisioner", () => {
     const provisioner = new CloudflareEmailProvisioner({
       project: PROJECT,
       cf,
-      accountId: "acct-1",
+      account: { accountId: "acct-1", confirmation: "pinned" },
       apiToken: "tok",
       storeId: "store-1",
       theme: fakeTheme,
@@ -134,6 +134,7 @@ describe("CloudflareEmailDeprovisioner", () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     const events: CliAuditEvent[] = [];
     const deprovisioner = new CloudflareEmailDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       audit: async (event) => void events.push(event),
@@ -162,6 +163,7 @@ describe("CloudflareEmailDeprovisioner", () => {
     const { cf, findDatabaseByName, deleteDatabase } = fakeCf();
     const events: CliAuditEvent[] = [];
     const deprovisioner = new CloudflareEmailDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       audit: async (event) => void events.push(event),
@@ -184,5 +186,52 @@ describe("CloudflareEmailDeprovisioner", () => {
     findDatabaseByName.mockResolvedValue(null);
     await deprovisioner.deleteSuppressionDatabase();
     expect(events).toEqual([]);
+  });
+});
+
+/**
+ * The account a teardown deletes from must be one something claims (#378).
+ *
+ * `getWorker` answers "this account has no such script" and "you asked an account that is not yours"
+ * with the same `null`, so a teardown pointed at a stranger's account used to delete nothing, audit
+ * nothing, and exit 0 — a success message printed over a production Worker that is still running.
+ *
+ * The account id below is a literal, written here and nowhere else, and the plant that proves this gate
+ * can fail is one word: turn `confirmation` back into something the guard ignores.
+ */
+describe("teardown refuses an unconfirmed account", () => {
+  test("refuses instead of reading a miss as `already gone`", async () => {
+    const { cf, getWorker, deleteWorker } = fakeCf();
+    getWorker.mockResolvedValue(null);
+    const stranger = new CloudflareEmailDeprovisioner({
+      cf,
+      project: PROJECT,
+      account: { accountId: "acct-stranger", confirmation: "ambient" },
+    });
+
+    await expect(stranger.deleteWorker("prod")).rejects.toThrow(
+      "Nothing states that Cloudflare account acct-stranger is this project's. Nothing was changed.",
+    );
+    expect(deleteWorker).not.toHaveBeenCalled();
+    expect(getWorker).not.toHaveBeenCalled();
+  });
+
+  test("and the find-or-create refuses too — an empty listing would mint a real suppression D1", async () => {
+    const { cf, findDatabaseByName, createDatabase } = fakeCf();
+    findDatabaseByName.mockResolvedValue(null);
+    const stranger = new CloudflareEmailProvisioner({
+      cf,
+      account: { accountId: "acct-stranger", confirmation: "ambient" },
+      project: PROJECT,
+      apiToken: "tok",
+      storeId: "store-1",
+      theme: fakeTheme,
+      resolveEnv: async () => ({ appDatabaseId: "app-db", secretsDatabaseId: "sec-db", baseUrl: "https://x.test" }),
+    });
+
+    await expect(stranger.ensureSuppressionDatabase()).rejects.toThrow(
+      "Nothing states that Cloudflare account acct-stranger is this project's. Nothing was changed.",
+    );
+    expect(createDatabase).not.toHaveBeenCalled();
   });
 });

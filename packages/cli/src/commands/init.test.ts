@@ -405,3 +405,58 @@ describe("askEnvironments", () => {
     expect(answer.environments).toEqual(["staging", "prod"]);
   });
 });
+
+/**
+ * The origin point: a listing that could not happen is not a listing that came back empty (#378).
+ *
+ * Both used to reach `askAccountIdOnly` as `[]`, and the id typed under either became the
+ * `CLOUDFLARE_ACCOUNT_ID` every later command asks about — so every confidently-empty listing downstream
+ * inherits its confidence from here. The two lines below are written out literally; neither is composed
+ * from the module under test.
+ */
+describe("a listing that could not be made is not an empty listing", () => {
+  /** Capture stdout for one call, so the sentence the operator reads can be asserted. */
+  async function saying(run: () => Promise<unknown>): Promise<string> {
+    const written: string[] = [];
+    const original = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      await run();
+    } finally {
+      process.stdout.write = original;
+    }
+    return written.join("");
+  }
+
+  test("a token that reached Cloudflare and saw nothing is told to widen the token", async () => {
+    const said = await saying(() =>
+      askCloudflareAccount({
+        interactive: true,
+        paths: paths(),
+        listAccounts: async () => [],
+        prompt: prompts({ password: async () => "cfat_token", text: async () => "typed-id" }),
+      }),
+    );
+    expect(said).toContain("This token sees no Cloudflare account");
+    expect(said).not.toContain("could not be reached");
+  });
+
+  test("a call that never landed says the account list is unknown, and that nothing verified the id", async () => {
+    const said = await saying(() =>
+      askCloudflareAccount({
+        interactive: true,
+        paths: paths(),
+        listAccounts: async () => {
+          throw new Error("ECONNREFUSED");
+        },
+        prompt: prompts({ password: async () => "cfat_token", text: async () => "typed-id" }),
+      }),
+    );
+    expect(said).toContain("Cloudflare could not be reached, so the account list is unknown.");
+    expect(said).toContain("verified by nothing");
+    expect(said).not.toContain("This token sees no Cloudflare account");
+  });
+});

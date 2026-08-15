@@ -250,15 +250,19 @@ export async function askCloudflareAccount(options: AskCloudflareAccountOptions)
   // account exists is an ordinary thing to do, and `pithy doctor` names the missing keys until they are set.
   if (!apiToken) return nothing;
 
-  // Never fatal. A narrowly scoped token, an unreachable network, and an account list of zero all mean
-  // the same thing here: there is no picker, so ask.
-  const accounts = await listAccounts(apiToken).catch(() => []);
+  // Never fatal, and no longer one fact (#378). `null` is "could not ask" — an unreachable network, a
+  // token without `account:read`, a revoked token; `[]` is "this token sees no account". Collapsing them
+  // into `[]` is the origin of every confidently-empty listing downstream: the operator then types an id
+  // nothing verified, and it becomes the `CLOUDFLARE_ACCOUNT_ID` every later command asks about.
+  const accounts = await listAccounts(apiToken).catch(() => null);
 
   // A configured machine whose token sees one account is the single-account case #182 was written for.
   // It has nothing to choose, so it is not asked — this is the run that must stay exactly as it was.
-  if (configured && accounts.length <= 1) return nothing;
+  if (configured && accounts !== null && accounts.length <= 1) return nothing;
 
-  if (accounts.length === 0) return await askAccountIdOnly({ apiToken, existing, paths, prompt });
+  if (accounts === null || accounts.length === 0) {
+    return await askAccountIdOnly({ apiToken, existing, paths, prompt, reachable: accounts !== null });
+  }
 
   const chosen = await chooseAccount(accounts, prompt);
   if (chosen === null) return nothing;
@@ -287,14 +291,31 @@ export async function askCloudflareAccount(options: AskCloudflareAccountOptions)
   };
 }
 
-/** The fallback: a token that cannot list accounts, asked for an id exactly as `init` always asked. */
+/**
+ * The fallback: no picker, so ask for an id exactly as `init` always asked — and say why there was none.
+ *
+ * **The two reasons are not one reason (#378).** A token that reached Cloudflare and was shown no account
+ * is a scoping problem the operator can fix; a call that never landed says nothing about the account at
+ * all. Both used to print the same bare prompt, and the id typed under either of them became the pin
+ * every later listing is compared against. Naming which one happened is the difference between "widen the
+ * token" and "check the network", and it is the last moment anyone is looking.
+ */
 async function askAccountIdOnly(context: {
   apiToken: string;
   existing: Record<string, string>;
   paths: CloudflareConfigOptions;
   prompt: InitPrompt;
+  /** Whether the account listing was actually answered. `false` is "could not ask", never "sees none". */
+  reachable: boolean;
 }): Promise<CloudflareAccountAnswer> {
-  const { apiToken, existing, paths, prompt } = context;
+  const { apiToken, existing, paths, prompt, reachable } = context;
+  process.stdout.write(
+    `${dim(
+      reachable
+        ? "This token sees no Cloudflare account, so there is nothing to pick from. Widen it to account:read, or paste the id."
+        : "Cloudflare could not be reached, so the account list is unknown. The id below is recorded as typed and verified by nothing.",
+    )}\n`,
+  );
   const accountId =
     existing.CLOUDFLARE_ACCOUNT_ID ??
     asString(await prompt.text({ message: "Cloudflare account id:", defaultValue: "" }), prompt);

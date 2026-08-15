@@ -22,6 +22,7 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { MigrationProvider } from "kysely/migration";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { runWrangler } from "../project/wrangler";
 
 /** The suppression migration set, as provisioning runs it against the shared suppression D1. */
@@ -54,7 +55,15 @@ export type ResolveEmailEnv = (env: ManagedEnvironment) => Promise<EmailEnvResou
 
 export interface CloudflareEmailProvisionerOptions {
   cf: CloudflareClients;
-  accountId: string;
+  /**
+   * The account this provisions into, and what vouches for it (#378).
+   *
+   * Replaces a bare `accountId`, and the replacement is the point: an id on its own is what six sites
+   * already held while a find-or-create read an empty listing as "this account has none" and minted a
+   * real resource in whichever account the shell had named. The id is still here — `account.accountId` —
+   * and it now travels with the answer to "who says so".
+   */
+  account: ConfirmedAccount;
   /**
    * The project name, from `requireProjectName(await loadProject(projectDir))` — never
    * `resolveProjectName`. The worker, both Workflows, the suppression database, and the inbound routing
@@ -89,7 +98,7 @@ export interface CloudflareEmailProvisionerOptions {
  */
 export class CloudflareEmailProvisioner implements EmailProvisioner {
   readonly #cf: CloudflareClients;
-  readonly #accountId: string;
+  readonly #account: ConfirmedAccount;
   readonly #project: string;
   readonly #apiToken: string;
   readonly #storeId: string;
@@ -100,7 +109,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
 
   constructor(options: CloudflareEmailProvisionerOptions) {
     this.#cf = options.cf;
-    this.#accountId = options.accountId;
+    this.#account = options.account;
     this.#project = options.project;
     this.#apiToken = options.apiToken;
     this.#storeId = options.storeId;
@@ -128,10 +137,18 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
    * same account silently inherited the first's opt-out list — one product's unsubscribe suppressing
    * another's transactional mail. D1 exposes no tags through the API, so the name is the whole
    * ownership record, and the audit event writes the project down beside it.
+   *
+   * Which is also why the miss refuses on an unconfirmed account (#378): "no database of that name" and
+   * "I asked an account nobody claims" arrive as the same empty listing, and creating on the second one
+   * puts this project's opt-out list in somebody else's account.
    */
   async ensureSuppressionDatabase(): Promise<{ databaseId: string }> {
     const name = suppressionDatabaseName(this.#project);
-    const existing = await this.#cf.d1Provisioner().findDatabaseByName(name);
+    const existing = await findOnConfirmedAccount({
+      ...this.#account,
+      what: `the ${name} database`,
+      find: () => this.#cf.d1Provisioner().findDatabaseByName(name),
+    });
     if (existing) return { databaseId: existing.uuid };
     const db = await this.#cf.d1Provisioner().createDatabase(name);
     await this.#audit({
@@ -173,7 +190,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
     try {
       await runWrangler(["deploy", "--config", configPath], {
         cwd: dir,
-        env: { CLOUDFLARE_API_TOKEN: this.#apiToken, CLOUDFLARE_ACCOUNT_ID: this.#accountId },
+        env: { CLOUDFLARE_API_TOKEN: this.#apiToken, CLOUDFLARE_ACCOUNT_ID: this.#account.accountId },
       });
       await this.#audit({
         environment: env,
@@ -244,6 +261,14 @@ export interface CloudflareEmailDeprovisionerOptions {
   cf: CloudflareClients;
   /** The project name, from `requireProjectName` — teardown finds resources by no other key. */
   project: string;
+  /**
+   * The account this teardown deletes from, and what vouches for it (#378).
+   *
+   * Required, and required for the reason `CloudflareConfigOptions.account` is: the guard below reads a
+   * miss as "already gone", so against an account nothing claims it deletes nothing, audits nothing, and
+   * exits 0. A caller that has not decided which account it is tearing down cannot compile.
+   */
+  account: ConfirmedAccount;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
 }
@@ -256,18 +281,26 @@ export interface CloudflareEmailDeprovisionerOptions {
 export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
   readonly #cf: CloudflareClients;
   readonly #project: string;
+  readonly #account: ConfirmedAccount;
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareEmailDeprovisionerOptions) {
     this.#cf = options.cf;
     this.#project = options.project;
+    this.#account = options.account;
     this.#audit = options.audit ?? (async () => {});
   }
 
-  /** Delete the env's email worker if it is deployed. */
+  /** Delete the env's email worker if it is deployed — and refuse if "deployed" cannot be settled (#378). */
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
     const name = emailWorkerName(this.#project, env);
-    if (await this.#cf.workers().getWorker(name)) {
+    if (
+      await findOnConfirmedAccount({
+        ...this.#account,
+        what: `the ${name} Worker`,
+        find: () => this.#cf.workers().getWorker(name),
+      })
+    ) {
       await this.#cf.workers().deleteWorker(name);
       await this.#audit({
         environment: env,

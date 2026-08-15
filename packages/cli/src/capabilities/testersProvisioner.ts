@@ -10,6 +10,7 @@ import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { runWrangler } from "../project/wrangler";
 import { capabilityLoadError } from "./loadFailure";
 
@@ -85,7 +86,15 @@ export type ResolveTestersEnv = (env: ManagedEnvironment) => Promise<TestersEnvR
 
 export interface CloudflareTestersProvisionerOptions {
   readonly cf: CloudflareClients;
-  readonly accountId: string;
+  /**
+   * The account this provisions into, and what vouches for it (#378).
+   *
+   * Replaces a bare `accountId`, and the replacement is the point: an id on its own is what six sites
+   * already held while a find-or-create read an empty listing as "this account has none" and minted a
+   * real resource in whichever account the shell had named. The id is still here — `account.accountId` —
+   * and it now travels with the answer to "who says so".
+   */
+  account: ConfirmedAccount;
   /**
    * The project name, from `requireProjectName(await loadProject(projectDir))` — never
    * `resolveProjectName`. The deployed host, its daily Workflow, and the suppression database name all
@@ -107,7 +116,7 @@ export interface CloudflareTestersProvisionerOptions {
 /** The live provisioner. Every step is idempotent, so provisioning is safe to re-run. */
 export class CloudflareTestersProvisioner implements TestersProvisioner, TestersDeprovisioner {
   readonly #cf: CloudflareClients;
-  readonly #accountId: string;
+  readonly #account: ConfirmedAccount;
   readonly #project: string;
   readonly #apiToken: string;
   readonly #testersConfig: TestersConfig;
@@ -117,7 +126,7 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
 
   constructor(options: CloudflareTestersProvisionerOptions) {
     this.#cf = options.cf;
-    this.#accountId = options.accountId;
+    this.#account = options.account;
     this.#project = options.project;
     this.#apiToken = options.apiToken;
     this.#testersConfig = options.testersConfig;
@@ -160,7 +169,7 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
     try {
       await runWrangler(["deploy", "--config", configPath], {
         cwd: dir,
-        env: { CLOUDFLARE_API_TOKEN: this.#apiToken, CLOUDFLARE_ACCOUNT_ID: this.#accountId },
+        env: { CLOUDFLARE_API_TOKEN: this.#apiToken, CLOUDFLARE_ACCOUNT_ID: this.#account.accountId },
       });
       await this.#audit({
         environment: env,
@@ -197,11 +206,22 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
    *
    * The audit sits inside the guard too. A `worker_deleted` event for a worker that never existed is a
    * false entry in the one log that is supposed to be the record of what actually happened.
+   *
+   * **And the guard now refuses what it cannot settle (#378).** "This account has no such worker" and "I
+   * asked an account nothing claims" arrived here as the same `null`, so a teardown pointed at the wrong
+   * account deleted nothing, audited nothing, and exited 0 — a success message over an untouched
+   * production Worker. The lookup does not even happen unless something vouches for the account.
    */
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
     const { testersWorkerName } = await loadTestersProvisioning();
     const name = testersWorkerName(this.#project, env);
-    if (await this.#cf.workers().getWorker(name)) {
+    if (
+      await findOnConfirmedAccount({
+        ...this.#account,
+        what: `the ${name} Worker`,
+        find: () => this.#cf.workers().getWorker(name),
+      })
+    ) {
       await this.#cf.workers().deleteWorker(name);
       await this.#audit({
         environment: env,

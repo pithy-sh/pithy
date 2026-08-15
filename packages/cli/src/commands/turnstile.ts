@@ -15,7 +15,8 @@ import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import { CloudflareTurnstileDeprovisioner, CloudflareTurnstileProvisioner } from "../capabilities/turnstileProvisioner";
-import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import type { ConfirmedAccount } from "../cloudflare/accountAnswer";
+import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import {
   loadProject,
   loadProjectEnvironments,
@@ -84,9 +85,18 @@ function resolveModes(config: TurnstileConfig): TurnstileMode[] {
  *
  * The account is a parameter rather than an ambient, so this cannot resolve before something has
  * established which account the project is for (#206).
+ *
+ * It also carries **what vouches for the account** (#378). A bare id is what every destructive and
+ * creative site here used to hold, and an id alone cannot tell "this account has no such Worker" from
+ * "I asked an account nothing claims" — the two arrive as one empty listing.
  */
-function loadCloudflareCreds(account: CloudflareAccountSelection | null): { accountId: string; apiToken: string } {
+function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
+  account: ConfirmedAccount;
+  accountId: string;
+  apiToken: string;
+} {
   const vars = cloudflareEnv({ account });
+  const confirmation = cloudflareAccountConfirmation({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) {
@@ -95,7 +105,7 @@ function loadCloudflareCreds(account: CloudflareAccountSelection | null): { acco
       action: "Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.",
     });
   }
-  return { accountId, apiToken };
+  return { account: { accountId, confirmation }, accountId, apiToken };
 }
 
 /**
@@ -162,7 +172,7 @@ const provision = defineCommand({
       const projectDir = process.cwd();
       const config = await loadTurnstileConfig(projectDir);
       const modes = resolveModes(config);
-      const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+      const { account, accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       const worker = await resolveSingleWorker({
         projectDir,
         ...(args.worker !== undefined ? { worker: args.worker } : {}),
@@ -181,6 +191,7 @@ const provision = defineCommand({
       const audit = await buildAudit(projectDir, accountId, apiToken);
       const provisioner = new CloudflareTurnstileProvisioner({
         cf,
+        account,
         project,
         projectDir,
         workerDir: worker.dir,
@@ -225,7 +236,7 @@ const deprovision = defineCommand({
       const projectDir = process.cwd();
       const config = await loadTurnstileConfig(projectDir);
       const modes = resolveModes(config);
-      const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+      const { account, accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       const worker = await resolveSingleWorker({
         projectDir,
         ...(args.worker !== undefined ? { worker: args.worker } : {}),
@@ -243,6 +254,7 @@ const deprovision = defineCommand({
       const audit = await buildAudit(projectDir, accountId, apiToken);
       const deprovisioner = new CloudflareTurnstileDeprovisioner({
         cf,
+        account,
         project,
         projectDir,
         workerDir: worker.dir,

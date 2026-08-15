@@ -62,7 +62,7 @@ function provisioner(
   return new CloudflareStorageProvisioner({
     project: PROJECT,
     cf,
-    accountId: "acct-1",
+    account: { accountId: "acct-1", confirmation: "pinned" },
     apiToken: "tok",
     storeId: "store-1",
     storageApiToken: "storage-tok",
@@ -173,6 +173,7 @@ describe("CloudflareStorageDeprovisioner", () => {
     const { cf, calls, getWorker, deleteWorker, findBucketByName, deleteBucket } = fakeCf();
     const events: CliAuditEvent[] = [];
     const storage = new CloudflareStorageDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       project: PROJECT,
       cf,
       r2Credentials: R2,
@@ -203,7 +204,11 @@ describe("CloudflareStorageDeprovisioner", () => {
 
   test("refuses a bucket teardown with no key pair, before anything is deleted", async () => {
     const { cf, calls, findBucketByName } = fakeCf();
-    const storage = new CloudflareStorageDeprovisioner({ cf, project: PROJECT });
+    const storage = new CloudflareStorageDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+    });
 
     findBucketByName.mockResolvedValue({ name: STAGING_BUCKET });
     await expect(storage.deleteBucket("staging")).rejects.toThrowError(/R2 access-key pair is needed/);
@@ -248,5 +253,46 @@ describe("the committed sweep worker template", () => {
       { binding: "STORAGE_SWEEP", name: "acme-prod-storage-sweep", class_name: "StorageSweepWorkflow" },
     ]);
     expect(resolved.triggers).toEqual({ crons: ["0 3 * * *"] });
+  });
+});
+
+/**
+ * The account a teardown deletes from must be one something claims (#378).
+ *
+ * `getWorker` answers "this account has no such script" and "you asked an account that is not yours"
+ * with the same `null`, so a teardown pointed at a stranger's account used to delete nothing, audit
+ * nothing, and exit 0 — a success message printed over a production Worker that is still running.
+ *
+ * The account id below is a literal, written here and nowhere else, and the plant that proves this gate
+ * can fail is one word: turn `confirmation` back into something the guard ignores.
+ */
+describe("teardown refuses an unconfirmed account", () => {
+  test("refuses instead of reading a miss as `already gone`", async () => {
+    const { cf, getWorker, deleteWorker } = fakeCf();
+    getWorker.mockResolvedValue(null);
+    const stranger = new CloudflareStorageDeprovisioner({
+      cf,
+      project: PROJECT,
+      account: { accountId: "acct-stranger", confirmation: "ambient" },
+    });
+
+    await expect(stranger.deleteWorker("prod")).rejects.toThrow(
+      "Nothing states that Cloudflare account acct-stranger is this project's. Nothing was changed.",
+    );
+    expect(deleteWorker).not.toHaveBeenCalled();
+    expect(getWorker).not.toHaveBeenCalled();
+  });
+
+  test("a confirmed account still tears down", async () => {
+    const { cf, getWorker, deleteWorker } = fakeCf();
+    getWorker.mockResolvedValue({ id: "acme-prod-storage-sweep" });
+    const ours = new CloudflareStorageDeprovisioner({
+      cf,
+      project: PROJECT,
+      account: { accountId: "acct-ours", confirmation: "named" },
+    });
+
+    await ours.deleteWorker("prod");
+    expect(deleteWorker).toHaveBeenCalledTimes(1);
   });
 });

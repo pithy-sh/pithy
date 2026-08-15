@@ -31,6 +31,7 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { MigrationProvider } from "kysely/migration";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { runWrangler } from "../project/wrangler";
 
 /** The secrets migration set, as provisioning runs it against each environment's D1. */
@@ -52,7 +53,15 @@ export type DeployManager = (
 export interface CloudflareSecretsProvisionerOptions {
   cf: CloudflareClients;
   /** The CF account id, used to scope the minted manager token to this account's resources. */
-  accountId: string;
+  /**
+   * The account this provisions into, and what vouches for it (#378).
+   *
+   * Replaces a bare `accountId`, and the replacement is the point: an id on its own is what six sites
+   * already held while a find-or-create read an empty listing as "this account has none" and minted a
+   * real resource in whichever account the shell had named. The id is still here — `account.accountId` —
+   * and it now travels with the answer to "who says so".
+   */
+  account: ConfirmedAccount;
   /**
    * The project name (root `pithy.config.ts` `name`, via `requireProjectName`). **Every** name this
    * provisioner creates leads with it: the manager Worker, its D1, both of its Workflows, each Secrets
@@ -88,7 +97,7 @@ export function managerTokenPermissions(accountId: string): TokenPermission[] {
  */
 export class CloudflareSecretsProvisioner implements SecretsProvisioner {
   readonly #cf: CloudflareClients;
-  readonly #accountId: string;
+  readonly #account: ConfirmedAccount;
   readonly #project: string;
   readonly #storeId: string;
   readonly #deploy: DeployManager;
@@ -96,7 +105,7 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
 
   constructor(options: CloudflareSecretsProvisionerOptions) {
     this.#cf = options.cf;
-    this.#accountId = options.accountId;
+    this.#account = options.account;
     this.#project = options.project;
     this.#storeId = options.storeId;
     this.#deploy = options.deploy;
@@ -126,7 +135,7 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
     if (await store.exists(entry)) return;
     const minted = await this.#cf
       .accountTokens()
-      .rollToken(managerCfApiTokenName(this.#project), managerTokenPermissions(this.#accountId));
+      .rollToken(managerCfApiTokenName(this.#project), managerTokenPermissions(this.#account.accountId));
     await writeManagerCfApiToken(this.#cf, { storeId: this.#storeId, project: this.#project }, minted.value);
     // Never the minted value — just that the manager's own runtime credential was (re)written.
     await this.#audit({
@@ -146,10 +155,18 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
    * "Exists" means *this project's* database: the name is `<project>-<env>-secrets`. Unscoped, the
    * second project in an account would find the first's database by name and adopt it — two projects
    * sharing one secrets store, each able to read and overwrite the other's rows.
+   *
+   * And "exists" also means *an account this project claims* (#378). An empty listing from an account
+   * nothing vouches for is not the absence this reads it as, and creating on it stands a live secrets
+   * database up in somebody else's account.
    */
   async ensureDatabase(env: ManagedEnvironment): Promise<{ databaseId: string }> {
     const name = managerWorkerName(this.#project, env);
-    const existing = await this.#cf.d1Provisioner().findDatabaseByName(name);
+    const existing = await findOnConfirmedAccount({
+      ...this.#account,
+      what: `the ${name} database`,
+      find: () => this.#cf.d1Provisioner().findDatabaseByName(name),
+    });
     const db = existing ?? (await this.#cf.d1Provisioner().createDatabase(name));
     return { databaseId: db.uuid };
   }
@@ -256,6 +273,14 @@ export interface CloudflareSecretsDeprovisionerOptions {
   project: string;
   /** The CF Secrets Store id holding the per-env master keys. */
   storeId: string;
+  /**
+   * The account this teardown deletes from, and what vouches for it (#378).
+   *
+   * Required, and required for the reason `CloudflareConfigOptions.account` is: the guard below reads a
+   * miss as "already gone", so against an account nothing claims it deletes nothing, audits nothing, and
+   * exits 0. A caller that has not decided which account it is tearing down cannot compile.
+   */
+  account: ConfirmedAccount;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
 }
@@ -270,12 +295,14 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
   readonly #cf: CloudflareClients;
   readonly #project: string;
   readonly #storeId: string;
+  readonly #account: ConfirmedAccount;
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareSecretsDeprovisionerOptions) {
     this.#cf = options.cf;
     this.#project = options.project;
     this.#storeId = options.storeId;
+    this.#account = options.account;
     this.#audit = options.audit ?? (async () => {});
   }
 
@@ -283,10 +310,20 @@ export class CloudflareSecretsDeprovisioner implements SecretsDeprovisioner {
    * Delete the env's manager worker if it is deployed. Guarded, so teardown is idempotent — which is
    * also why `project` must be the value provisioning used: a mismatch finds nothing, deletes nothing,
    * and exits 0 while the real manager keeps running.
+   *
+   * A wrong *account* has the same three consequences and had no guard at all, so the lookup goes
+   * through `findOnConfirmedAccount` (#378): an empty listing is only an absence once something says
+   * whose account answered.
    */
   async deleteManager(env: ManagedEnvironment): Promise<void> {
     const name = managerWorkerName(this.#project, env);
-    if (await this.#cf.workers().getWorker(name)) {
+    if (
+      await findOnConfirmedAccount({
+        ...this.#account,
+        what: `the ${name} Worker`,
+        find: () => this.#cf.workers().getWorker(name),
+      })
+    ) {
       await this.#cf.workers().deleteWorker(name);
     }
   }

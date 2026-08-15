@@ -16,7 +16,8 @@ import {
   loadSupport,
   type SupportEnvResources,
 } from "../capabilities/supportProvisioner";
-import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import type { ConfirmedAccount } from "../cloudflare/accountAnswer";
+import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -80,13 +81,19 @@ async function loadSupportConfig(projectDir: string) {
  *
  * The account is a parameter rather than an ambient, so this cannot resolve before something has
  * established which account the project is for (#206).
+ *
+ * It also carries **what vouches for the account** (#378). A bare id is what every destructive and
+ * creative site here used to hold, and an id alone cannot tell "this account has no such Worker" from
+ * "I asked an account nothing claims" — the two arrive as one empty listing.
  */
 function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
+  account: ConfirmedAccount;
   accountId: string;
   apiToken: string;
   r2Raw: string | undefined;
 } {
   const vars = cloudflareEnv({ account });
+  const confirmation = cloudflareAccountConfirmation({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) {
@@ -97,7 +104,7 @@ function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
   }
   // No Secrets Store id, unlike email and media: the classification worker binds `DB` and `AI` and holds
   // no credential to decrypt.
-  return { accountId, apiToken, r2Raw: vars.R2_CREDENTIALS };
+  return { account: { accountId, confirmation }, accountId, apiToken, r2Raw: vars.R2_CREDENTIALS };
 }
 
 /** A wrangler env stanza — only the field the support worker deploy reads from a Worker's config. */
@@ -197,7 +204,7 @@ const provision = defineCommand({
       // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
       const environments = loadProjectEnvironments(config);
       const { provisionSupport } = await loadSupport();
-      const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+      const { account, accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       const supportConfig = await loadSupportConfig(projectDir);
       const appWorker = await resolveSingleWorker({
         projectDir,
@@ -207,7 +214,7 @@ const provision = defineCommand({
       const provisioner = new CloudflareSupportProvisioner({
         cf: new CloudflareClients({ accountId, apiToken }),
         project,
-        accountId,
+        account,
         apiToken,
         supportConfig,
         resolveEnv: buildResolveEnv(appWorker),
@@ -290,7 +297,7 @@ const deprovision = defineCommand({
       // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
       const environments = loadProjectEnvironments(config);
       const { deprovisionSupport } = await loadSupport();
-      const { accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
+      const { account, accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
       // without it, so discovering it is missing at the bucket step would leave the workers gone and the
       // bucket standing — a half-torn-down inbox for a mistake we can catch here.
@@ -298,6 +305,7 @@ const deprovision = defineCommand({
         ? resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw)
         : undefined;
       const deprovisioner = new CloudflareSupportDeprovisioner({
+        account,
         cf: new CloudflareClients({ accountId, apiToken }),
         project,
         ...(args["routing-zone"] !== undefined ? { routingZoneId: args["routing-zone"] } : {}),

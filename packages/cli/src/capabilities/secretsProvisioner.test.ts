@@ -65,7 +65,7 @@ function provisionerOptions(
   deploy: CloudflareSecretsProvisionerOptions["deploy"] = async () => {},
   project: string = PROJECT,
 ): CloudflareSecretsProvisionerOptions {
-  return { cf, accountId: "acct-1", project, storeId: "store-1", deploy };
+  return { cf, account: { accountId: "acct-1", confirmation: "pinned" }, project, storeId: "store-1", deploy };
 }
 
 describe("masterKeySecretName", () => {
@@ -313,7 +313,12 @@ describe("two projects sharing one Cloudflare account", () => {
 
     // Every delete is `if exists`-guarded, so the name is the whole containment: acme's teardown must
     // recompute acme's names and no others, or it silently exits 0 having deleted globex's manager.
-    const teardown = new CloudflareSecretsDeprovisioner({ cf, project: "acme", storeId: "store-1" });
+    const teardown = new CloudflareSecretsDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: "acme",
+      storeId: "store-1",
+    });
     await teardown.deleteManager("prod");
     await teardown.deleteDatabase("prod");
 
@@ -345,7 +350,12 @@ describe("two projects sharing one Cloudflare account", () => {
     }
     const globexKey = store.get(masterKeySecretName("globex", "prod"));
 
-    const teardown = new CloudflareSecretsDeprovisioner({ cf, project: "acme", storeId: "store-1" });
+    const teardown = new CloudflareSecretsDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: "acme",
+      storeId: "store-1",
+    });
     await teardown.deleteMasterKey("prod");
     await teardown.deleteManagerToken();
 
@@ -387,7 +397,12 @@ describe("CloudflareSecretsDeprovisioner", () => {
   test("deleteManager removes the worker only when it is deployed", async () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     getWorker.mockResolvedValue({ id: "acme-staging-secrets" });
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, project: PROJECT, storeId: "store-1" });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+      storeId: "store-1",
+    });
 
     await deprovisioner.deleteManager("staging");
     expect(deleteWorker).toHaveBeenCalledWith("acme-staging-secrets");
@@ -396,7 +411,12 @@ describe("CloudflareSecretsDeprovisioner", () => {
   test("deleteManager is a no-op when the worker is absent (idempotent)", async () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     getWorker.mockResolvedValue(null);
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, project: PROJECT, storeId: "store-1" });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+      storeId: "store-1",
+    });
 
     await deprovisioner.deleteManager("prod");
     expect(deleteWorker).not.toHaveBeenCalled();
@@ -405,7 +425,12 @@ describe("CloudflareSecretsDeprovisioner", () => {
   test("deleteMasterKey removes the env-prefixed entry only when present", async () => {
     const { cf, exists, deleteSecret } = fakeCf();
     exists.mockResolvedValue(true);
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, project: PROJECT, storeId: "store-1" });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+      storeId: "store-1",
+    });
 
     await deprovisioner.deleteMasterKey("prod");
     expect(deleteSecret).toHaveBeenCalledWith(masterKeySecretName(PROJECT, "prod"));
@@ -414,7 +439,12 @@ describe("CloudflareSecretsDeprovisioner", () => {
   test("deleteMasterKey is a no-op when the key is absent", async () => {
     const { cf, exists, deleteSecret } = fakeCf();
     exists.mockResolvedValue(false);
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, project: PROJECT, storeId: "store-1" });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+      storeId: "store-1",
+    });
 
     await deprovisioner.deleteMasterKey("staging");
     expect(deleteSecret).not.toHaveBeenCalled();
@@ -425,6 +455,7 @@ describe("CloudflareSecretsDeprovisioner", () => {
     exists.mockResolvedValue(true);
     const events: CliAuditEvent[] = [];
     const deprovisioner = new CloudflareSecretsDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       storeId: "store-1",
@@ -451,7 +482,12 @@ describe("CloudflareSecretsDeprovisioner", () => {
   test("deleteDatabase deletes the env's database by id when found", async () => {
     const { cf, findDatabaseByName, deleteDatabase } = fakeCf();
     findDatabaseByName.mockResolvedValue({ uuid: "db-7", name: "acme-staging-secrets" });
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, project: PROJECT, storeId: "store-1" });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+      storeId: "store-1",
+    });
 
     await deprovisioner.deleteDatabase("staging");
     expect(findDatabaseByName).toHaveBeenCalledWith("acme-staging-secrets");
@@ -461,7 +497,12 @@ describe("CloudflareSecretsDeprovisioner", () => {
   test("deleteDatabase is a no-op when no database matches", async () => {
     const { cf, findDatabaseByName, deleteDatabase } = fakeCf();
     findDatabaseByName.mockResolvedValue(null);
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, project: PROJECT, storeId: "store-1" });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+      storeId: "store-1",
+    });
 
     await deprovisioner.deleteDatabase("prod");
     expect(deleteDatabase).not.toHaveBeenCalled();
@@ -470,7 +511,12 @@ describe("CloudflareSecretsDeprovisioner", () => {
   test("deleteManagerToken deletes the minted CF token and the store entry when present", async () => {
     const { cf, exists, deleteSecret, deleteTokensByName } = fakeCf();
     exists.mockResolvedValue(true);
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, project: PROJECT, storeId: "store-1" });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+      storeId: "store-1",
+    });
 
     await deprovisioner.deleteManagerToken();
     expect(deleteTokensByName).toHaveBeenCalledWith(managerCfApiTokenName(PROJECT));
@@ -480,7 +526,12 @@ describe("CloudflareSecretsDeprovisioner", () => {
   test("deleteManagerToken still sweeps the CF token but skips the entry when absent (idempotent)", async () => {
     const { cf, exists, deleteSecret, deleteTokensByName } = fakeCf();
     exists.mockResolvedValue(false);
-    const deprovisioner = new CloudflareSecretsDeprovisioner({ cf, project: PROJECT, storeId: "store-1" });
+    const deprovisioner = new CloudflareSecretsDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+      storeId: "store-1",
+    });
 
     await deprovisioner.deleteManagerToken();
     expect(deleteTokensByName).toHaveBeenCalledWith(managerCfApiTokenName(PROJECT));
@@ -492,6 +543,7 @@ describe("CloudflareSecretsDeprovisioner", () => {
     exists.mockResolvedValue(true);
     const events: CliAuditEvent[] = [];
     const deprovisioner = new CloudflareSecretsDeprovisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
       storeId: "store-1",
@@ -510,5 +562,51 @@ describe("CloudflareSecretsDeprovisioner", () => {
     exists.mockResolvedValue(false);
     await deprovisioner.deleteManagerToken();
     expect(events).toEqual([]);
+  });
+});
+
+/**
+ * The account a teardown deletes from must be one something claims (#378).
+ *
+ * `getWorker` answers "this account has no such script" and "you asked an account that is not yours"
+ * with the same `null`, so a teardown pointed at a stranger's account used to delete nothing, audit
+ * nothing, and exit 0 — a success message printed over a production Worker that is still running.
+ *
+ * The account id below is a literal, written here and nowhere else, and the plant that proves this gate
+ * can fail is one word: turn `confirmation` back into something the guard ignores.
+ */
+describe("teardown refuses an unconfirmed account", () => {
+  test("refuses instead of reading a miss as `already gone`", async () => {
+    const { cf, getWorker, deleteWorker } = fakeCf();
+    getWorker.mockResolvedValue(null);
+    const stranger = new CloudflareSecretsDeprovisioner({
+      cf,
+      project: PROJECT,
+      storeId: "store-1",
+      account: { accountId: "acct-stranger", confirmation: "ambient" },
+    });
+
+    await expect(stranger.deleteManager("prod")).rejects.toThrow(
+      "Nothing states that Cloudflare account acct-stranger is this project's. Nothing was changed.",
+    );
+    expect(deleteWorker).not.toHaveBeenCalled();
+    expect(getWorker).not.toHaveBeenCalled();
+  });
+
+  test("and the find-or-create refuses too — an empty listing would mint a real secrets D1", async () => {
+    const { cf, findDatabaseByName, createDatabase } = fakeCf();
+    findDatabaseByName.mockResolvedValue(null);
+    const stranger = new CloudflareSecretsProvisioner({
+      cf,
+      account: { accountId: "acct-stranger", confirmation: "ambient" },
+      project: PROJECT,
+      storeId: "store-1",
+      deploy: async () => {},
+    });
+
+    await expect(stranger.ensureDatabase("prod")).rejects.toThrow(
+      "Nothing states that Cloudflare account acct-stranger is this project's. Nothing was changed.",
+    );
+    expect(createDatabase).not.toHaveBeenCalled();
   });
 });
