@@ -111,6 +111,13 @@ export default defineCommand({
       if (env) await assertWorkflowsBound(projectDir, env);
 
       const account = await projectCloudflareAccount(projectDir);
+      // **The account is settled here, before anything best-effort runs (#236).** `pendingFor` swallows
+      // every failure on purpose — a database it cannot reach costs a warning line, not the deploy — and
+      // a pin the credentials contradict is not a reachability failure. Swallowed, it becomes
+      // `pendingMigrations: null`: an absence that reads as a fact. `cloudflareEnv` refuses it in the one
+      // sentence `pithy doctor` already reads out. A *missing* pair still passes, because `wrangler
+      // deploy` authenticates on its own OAuth login and always could.
+      cloudflareEnv({ account });
       const pending = env ? await pendingFor(projectDir, env, account) : undefined;
       const audit = await buildAudit(projectDir, env ?? "dev", account);
       const deploys = await deployProject({ projectDir, account, env, audit });

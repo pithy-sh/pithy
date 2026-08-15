@@ -567,6 +567,114 @@ describe("openConnectionRegistry", () => {
     await registry.dispose();
   });
 
+  /**
+   * #236's two whole-project failures, each proven to arrive as one.
+   *
+   * A per-item collector will swallow a whole-run refusal, because the whole-run failure arrives wearing a
+   * per-item costume: the account is settled before any Worker is considered, but it was only *consulted*
+   * inside the loop, so the mismatch landed in `refusals` and the adopter read "No worker resolves the DB
+   * binding for this environment" — a sentence about their `wrangler.jsonc`, which was fine.
+   *
+   * The credentials are supplied from the environment rather than a file, which is both the CI shape and
+   * the shape that produced the report: `PITHY_CONFIG_DIR` at a scratch directory, `CLOUDFLARE_*` exported
+   * in the shell hours earlier.
+   */
+  describe("a whole-project failure is reported as one, not as a per-worker skip (#236)", () => {
+    let configDir: string;
+    const restore = new Map<string, string | undefined>();
+
+    /** Set the process-wide credential resolution this suite needs, remembering what to put back. */
+    function setEnvironment(values: Record<string, string | undefined>): void {
+      for (const [key, value] of Object.entries(values)) {
+        if (!restore.has(key)) restore.set(key, process.env[key]);
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+
+    beforeEach(async () => {
+      configDir = await mkdtemp(join(tmpdir(), "pithy-dashboard-config-"));
+      // A `database_id` for the target environment, so nothing per-Worker is wrong. Without it the
+      // Worker's own refusal fires first and the whole-project one is never reached.
+      await writeFile(
+        join(projectDir, "apps", "api", "wrangler.jsonc"),
+        JSON.stringify({
+          name: "api",
+          d1_databases: [{ binding: "DB", database_id: "local-dev" }],
+          env: { staging: { d1_databases: [{ binding: "DB", database_id: "staging-db" }] } },
+        }),
+      );
+    });
+
+    afterEach(async () => {
+      for (const [key, value] of restore) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      restore.clear();
+      await rm(configDir, { recursive: true, force: true });
+    });
+
+    test("an account mismatch names both accounts, in doctor's own sentence", async () => {
+      setEnvironment({
+        PITHY_CONFIG_DIR: configDir,
+        PITHY_OFFLINE: undefined,
+        CLOUDFLARE_ACCOUNT_ID: "e7526284f9ee484875c61723e78af4ae",
+        CLOUDFLARE_API_TOKEN: "token-for-the-other-account",
+      });
+
+      const error = await openConnectionRegistry({
+        account: { accountId: "602df2e6ce74e98b4c7ac5e90a3af5c8" },
+        projectDir,
+        env: "staging",
+      }).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(PithyError);
+      const { message } = (error as PithyError).payload;
+      // Both ids, because the whole failure is that two of them exist. And not a word about bindings.
+      expect(message).toContain("602df2e6ce74e98b4c7ac5e90a3af5c8");
+      expect(message).toContain("e7526284f9ee484875c61723e78af4ae");
+      expect(message).not.toContain("DB binding");
+    });
+
+    test("no credentials at all is refused as one fact, not as every worker's fault", async () => {
+      setEnvironment({
+        PITHY_CONFIG_DIR: configDir,
+        PITHY_OFFLINE: undefined,
+        CLOUDFLARE_ACCOUNT_ID: undefined,
+        CLOUDFLARE_API_TOKEN: undefined,
+      });
+
+      const error = await openConnectionRegistry({ account: null, projectDir, env: "staging" }).catch(
+        (caught: unknown) => caught,
+      );
+
+      expect(error).toBeInstanceOf(PithyError);
+      expect((error as PithyError).payload.message).toContain("Cloudflare credentials are missing.");
+      expect((error as PithyError).payload.message).not.toContain("DB binding");
+    });
+
+    test("dev consults no account at all — a mismatch there stops nothing", async () => {
+      // Local Miniflare, no credentials read, so a pin disagreeing with the shell is not this run's
+      // problem. Refusing here would make the mismatch block work that never leaves the machine.
+      setEnvironment({
+        PITHY_CONFIG_DIR: configDir,
+        PITHY_OFFLINE: undefined,
+        CLOUDFLARE_ACCOUNT_ID: "e7526284f9ee484875c61723e78af4ae",
+        CLOUDFLARE_API_TOKEN: "token-for-the-other-account",
+      });
+
+      const registry = await openConnectionRegistry({
+        account: { accountId: "602df2e6ce74e98b4c7ac5e90a3af5c8" },
+        projectDir,
+        env: "dev",
+        openDriver: async () => ({ d1: () => d1, dispose: async () => {} }) as unknown as SeedDriver,
+      });
+      expect(await registry.read()).toBeNull();
+      await registry.dispose();
+    });
+  });
+
   test("no worker declares DB — an actionable error, not a crash", async () => {
     await writeFile(join(projectDir, "apps", "api", "wrangler.jsonc"), JSON.stringify({ name: "api" }));
     const error = await openConnectionRegistry({ account: null, projectDir, env: "dev" }).catch(

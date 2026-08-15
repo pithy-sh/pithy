@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CLOUDFLARE_CREDENTIAL_KEYS, CLOUDFLARE_ENV_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
 import { statesNoVanishingKey } from "@pithy-sh/core/src/capability/vanishingKey";
-import { ConflictError, fromZodError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { ensureOwnerOnlyDirFor, tightenMode } from "../devSecrets/mode";
 import { type StatePathOptions, stateDir } from "../notifier/state";
@@ -389,6 +389,45 @@ export function cloudflareEnv(options: CloudflareConfigOptions): Record<string, 
     });
   }
   return resolved.vars;
+}
+
+/** The pair that authenticates a Cloudflare call, once both halves are known to be there. */
+export interface CloudflareCredentials {
+  /** `CLOUDFLARE_ACCOUNT_ID` — the account every resolved resource is asked for. Never blank. */
+  accountId: string;
+  /** `CLOUDFLARE_API_TOKEN` — the token that asks. Never blank, never logged. */
+  apiToken: string;
+}
+
+/**
+ * The credentials a live call needs, or a refusal that says which of the two things is wrong (#236).
+ *
+ * **Two failures, in the order they are settled.** A pin the credentials contradict is
+ * {@link cloudflareEnv}'s throw, in the one sentence {@link describeCloudflareAccountMismatch} spells and
+ * `pithy doctor` already reads out — reused rather than restated, because two spellings of one diagnosis
+ * is how they drift. Nothing resolving at all is this function's, and it is the *second* question:
+ * "unconfigured" is a fair thing to say about a machine with no file, and a lie about one whose file names
+ * another company's account.
+ *
+ * **It exists so a caller can settle the account before it starts fanning out.** Both facts are
+ * whole-project — true before any Worker, binding, or resource is considered — and a caller that consults
+ * them per item collects them per item. #236 was exactly that: an account mismatch reached
+ * `openConnectionRegistry`'s per-Worker refusal list and was summarised as "No worker resolves the DB
+ * binding for this environment", a sentence about a `wrangler.jsonc` that was fine.
+ */
+export function cloudflareCredentials(options: CloudflareConfigOptions): CloudflareCredentials {
+  const vars = cloudflareEnv(options);
+  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
+  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
+  if (!accountId || !apiToken) {
+    throw new ValidationError({
+      message: "Cloudflare credentials are missing.",
+      action:
+        "Run pithy init to store this account's credentials, or set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in the environment.",
+      detail: `resolved from ${cloudflareConfigPath(options)}; missing ${CLOUDFLARE_CREDENTIAL_KEYS.filter((key) => !vars[key]).join(", ")}`,
+    });
+  }
+  return { accountId, apiToken };
 }
 
 /** One credential group assembled from two places: what the file supplied, and what the environment filled in. */

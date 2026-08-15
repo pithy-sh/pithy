@@ -13,7 +13,7 @@ import type { CloudflareR2Manager } from "@pithy-sh/cloudflare/src/r2/r2Manager"
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { Miniflare } from "miniflare";
-import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { type CloudflareAccountSelection, cloudflareCredentials, cloudflareEnv } from "../cloudflare/config";
 import { wranglerConfigPath } from "../provision/featureConfig";
 
 /**
@@ -370,15 +370,9 @@ function lazyClients(config: WranglerSeedConfig, account: CloudflareAccountSelec
     config,
     get() {
       if (clients) return clients;
-      const accountId = env().CLOUDFLARE_ACCOUNT_ID ?? "";
-      const apiToken = env().CLOUDFLARE_API_TOKEN ?? "";
-      if (!accountId || !apiToken) {
-        throw new ValidationError({
-          message: "Cloudflare credentials are missing.",
-          action: "Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to seed a live environment.",
-        });
-      }
-      clients = new CloudflareClients({ accountId, apiToken });
+      // Both refusals — the account mismatch and the empty pair — belong to `cloudflareCredentials`, so
+      // this driver and anything that settles the account ahead of a fan-out say them the same way (#236).
+      clients = new CloudflareClients(cloudflareCredentials({ account }));
       return clients;
     },
     r2Credentials() {

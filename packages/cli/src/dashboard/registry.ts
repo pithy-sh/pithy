@@ -17,7 +17,7 @@ import {
 } from "@pithy-sh/core/src/controlPlane/error/errors";
 import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { CliAuditEmit, CliAuditEvent } from "../audit/cliAudit";
-import type { CloudflareAccountSelection } from "../cloudflare/config";
+import { type CloudflareAccountSelection, cloudflareCredentials } from "../cloudflare/config";
 import { discoverWorkers } from "../project/workers";
 import { openSeedDriver, type SeedDriver } from "../seed/drivers";
 import { createCliLogger } from "../terminal/logger";
@@ -433,6 +433,30 @@ export interface OpenConnectionRegistryOptions {
 }
 
 /**
+ * Settle the account before a single Worker is considered (#236).
+ *
+ * **A per-item refusal collector will swallow a whole-run refusal**, because the whole-run failure arrives
+ * wearing a per-item costume. The loop below gathers "why each Worker was skipped" so one unresolvable
+ * Worker does not stop the rest — a summary that is exactly the wrong shape for a fact settled before the
+ * loop began. An account mismatch went in as a per-Worker reason and came out as "No worker resolves the
+ * DB binding for this environment", pointing an adopter at a `wrangler.jsonc` that was fine. #199 was the
+ * same shape: a config that would not import, reported as "this Worker declares no secrets".
+ *
+ * So the two whole-project facts are asked here, once, and thrown rather than collected — the way
+ * `migrate`, `deploy`, `env`, `seed` and `upgrade` already refuse. {@link cloudflareCredentials} owns both
+ * sentences, so the mismatch reads exactly as `pithy doctor` reads it out.
+ *
+ * **`dev` is exempt because it consults no account.** The local driver resolves D1 from the project root's
+ * Miniflare stores and never builds a client, so no credential decides anything; refusing there would
+ * block work that never leaves the machine over a disagreement it cannot reach. Every other environment
+ * resolves the database over REST, which means credentials, which means exactly one account.
+ */
+function requireAccountSettled(env: string, account: CloudflareAccountSelection | null): void {
+  if (env === "dev") return;
+  cloudflareCredentials({ account });
+}
+
+/**
  * Open the registry for a project and environment.
  *
  * The database comes from a Worker's `wrangler.jsonc`, because that is where bindings are declared —
@@ -447,6 +471,7 @@ export interface OpenConnectionRegistryOptions {
  */
 export async function openConnectionRegistry(options: OpenConnectionRegistryOptions): Promise<ConnectionRegistry> {
   const open = options.openDriver ?? openSeedDriver;
+  requireAccountSettled(options.env, options.account);
   const workers = await discoverWorkers(options.projectDir);
   const candidates =
     options.worker === undefined
@@ -481,9 +506,14 @@ export async function openConnectionRegistry(options: OpenConnectionRegistryOpti
     }
   }
 
+  // Every reason is per-Worker by now — the whole-project ones were refused before the loop — so the
+  // summary is honest, and the reasons themselves belong on the `action` line rather than only in
+  // `detail`. `detail` is stripped at the display boundary and always will be; an operator staring at
+  // "add the DB binding" on a project that has one needs to be told which Worker said what.
+  const why = refusals.length === 0 ? "No workers under apps/." : `Skipped: ${refusals.join("; ")}.`;
   throw new ValidationError({
     message: "No worker resolves the DB binding for this environment.",
-    action: "Add the DB d1_databases binding to a worker's wrangler.jsonc, or pass --worker to name one.",
+    action: `${why} Add the DB d1_databases binding to a worker's wrangler.jsonc, or pass --worker to name one.`,
     detail: `env ${options.env}; ${refusals.length === 0 ? "no workers under apps/" : refusals.join("; ")}`,
   });
 }
