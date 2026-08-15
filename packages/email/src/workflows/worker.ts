@@ -16,7 +16,7 @@ import type { EmailSender } from "../send/sender";
 import { defaultTheme, EmailTheme } from "../templates/theme";
 import { isLiveInstanceStatus } from "./instanceLiveness";
 import { runScheduler, type SchedulerDeps } from "./scheduler";
-import { runSendBatch, type SendBatchDeps } from "./sendBatch";
+import { type BatchSendReport, runSendBatch, type SendBatchDeps } from "./sendBatch";
 
 /**
  * The prebuilt email worker. `pithy add email` deploys one per environment (`pithy-email-staging`,
@@ -138,8 +138,11 @@ function buildSchedulerDeps(env: EmailWorkerEnv): SchedulerDeps {
  * `send/retryPolicy.ts`.
  */
 export class EmailSendWorkflow extends WorkflowEntrypoint<EmailWorkerEnv, { jobIds: string[] }> {
-  override async run(event: WorkflowEvent<{ jobIds: string[] }>, step: WorkflowStep): Promise<void> {
-    await runSendBatch(
+  // The batch report is the instance's output (#380). A job whose step spent its retries is contained
+  // so the rest of the batch still sends, and this is where an operator reads which ones those were —
+  // beside the failed step in the same instance. It carries job ids and outcomes, never a recipient.
+  override async run(event: WorkflowEvent<{ jobIds: string[] }>, step: WorkflowStep): Promise<BatchSendReport> {
+    return await runSendBatch(
       await buildSendDeps(this.env),
       classifiedSteps(step, emailWorkflowRetry, NonRetryableError),
       event.payload.jobIds,
