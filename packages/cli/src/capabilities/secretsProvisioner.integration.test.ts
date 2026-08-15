@@ -4,6 +4,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { fixtureReady } from "@pithy-sh/cloudflare/src/test-utils/fixtures";
 import { RESERVED_TEST_PROJECT } from "@pithy-sh/cloudflare/src/test-utils/harness";
 import { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
@@ -33,14 +34,17 @@ import { buildManagerDeploy, CloudflareSecretsDeprovisioner, CloudflareSecretsPr
  * and lands inside the `pithy-int-` reservation rather than a real project's namespace. Teardown
  * recomputes exactly those names, so it can only ever delete its own.
  *
- * It is still gated on `PITHY_LIVE_DEPLOY=1` as well as CF creds in `<config>/cloudflare.json`: it really does deploy
- * Workers, run Workflows, and write to the account's one Secrets Store. Run it deliberately.
+ * It is still gated on the `live-deploy` fixture as well as CF creds in `<config>/cloudflare.json`: it
+ * really does deploy Workers, run Workflows, and write to the account's one Secrets Store. Run it
+ * deliberately. `docs/FIXTURES.md#live-deploy` says how, and the run's `globalSetup` says so out loud
+ * when the switch is off — a suite that prints "skipped" and nothing else is how a release gate comes to
+ * certify a round trip that never ran.
  */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const vars = cloudflareEnv({ account: null });
 const hasCreds = Boolean(vars.CLOUDFLARE_API_TOKEN && vars.CLOUDFLARE_ACCOUNT_ID && vars.SECRETS_STORE_ID);
-const optedIn = process.env.PITHY_LIVE_DEPLOY === "1";
+const optedIn = fixtureReady("live-deploy");
 
 /**
  * The reserved project every name in this run derives from. Not a hand-written literal: the names are

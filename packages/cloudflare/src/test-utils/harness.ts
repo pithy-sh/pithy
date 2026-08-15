@@ -44,8 +44,11 @@ const PACKAGE_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..
  * did not set. The `.dev.vars` half is why this is here rather than in `../env/devVars` — nothing outside
  * a live test reads a `.dev.vars` for credentials now, and a shared function that still did would be an
  * invitation to point a command back at the checkout.
+ *
+ * Exported for `fixtures.ts`, which resolves the whole fixture estate against the same pair. Two readers
+ * of two files is how a suite and its own report come to disagree about what this run has.
  */
-function loadIntegrationEnv(): Record<string, string> {
+export function loadIntegrationEnv(): Record<string, string> {
   let vars: Record<string, string> = {};
   try {
     vars = parseDevVars(readFileSync(path.join(PACKAGE_ROOT, ".dev.vars"), "utf8"));
