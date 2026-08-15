@@ -1,10 +1,11 @@
 import { defineConfig } from "vitest/config";
-import { CONFIG_DIR_SETUP, NO_ACCOUNT } from "../../vitest.shared";
+import { CONFIG_DIR_SETUP, NO_ACCOUNT, UNIT_BUDGETS } from "../../vitest.shared";
 
 // Node-only. This tool reads the repo from disk and never touches a Worker runtime,
 // so there is no `workers` project here — `test:node` and `test` are the same run.
 export default defineConfig({
   test: {
+    ...UNIT_BUDGETS,
     environment: "node",
     include: ["src/**/*.test.ts"],
     exclude: ["node_modules/**"],

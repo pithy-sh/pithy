@@ -1,10 +1,16 @@
 import { defineConfig } from "vitest/config";
-import { CONFIG_DIR_SETUP, NO_ACCOUNT } from "../../vitest.shared";
+import { CONFIG_DIR_SETUP, NO_ACCOUNT, UNIT_BUDGETS } from "../../vitest.shared";
 
-// Node-only tests: the CLI runs outside the Worker. The migrate tests spawn
-// real D1 through Miniflare, so they get a longer timeout than pure logic needs.
+// Node-only tests: the CLI runs outside the Worker. The migrate tests spawn real D1 through Miniflare,
+// so they need a good deal longer than pure logic does.
+//
+// This package's own `testTimeout: 30_000` is gone, folded into `UNIT_BUDGETS` (#361). It was the only
+// budget any unit config in the repository had ever stated, which is why it read as this package's
+// special need rather than as the thing every package was missing — and the packages without it were
+// running on vitest's 5,000ms default, spawning workerd and talking to D1 inside it.
 export default defineConfig({
   test: {
+    ...UNIT_BUDGETS,
     environment: "node",
     include: ["src/**/*.test.ts"],
     // Every test gets a throwaway Pithy config directory — see the repo-root `vitest.setup.ts`. Dev
@@ -14,7 +20,6 @@ export default defineConfig({
     setupFiles: [CONFIG_DIR_SETUP],
     // `*.integration.test.ts` need a LIVE Cloudflare environment; run via `bun run test:integration`.
     exclude: ["src/**/*.integration.test.ts", "node_modules/**"],
-    testTimeout: 30_000,
     // Color off, always. `terminal/style.ts` latches `enabled` at import from NO_COLOR/FORCE_COLOR/isTTY,
     // so every test asserting exact output — `formatDone()` is `"Done."`, a deploy failure line, the real
     // bin spawned through `execFile` — passes or fails on the *developer's shell*, not on the code. A

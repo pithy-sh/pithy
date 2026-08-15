@@ -1,5 +1,5 @@
 import { defineConfig } from "vitest/config";
-import { CONFIG_DIR_SETUP, NO_ACCOUNT } from "../../vitest.shared";
+import { CONFIG_DIR_SETUP, NO_ACCOUNT, UNIT_BUDGETS } from "../../vitest.shared";
 
 // One `vitest run`, two projects (mirrors core).
 //   node    — pure logic in `*.test.ts`, default node environment.
@@ -7,10 +7,12 @@ import { CONFIG_DIR_SETUP, NO_ACCOUNT } from "../../vitest.shared";
 //             (see `vitest.workers.config.ts`).
 export default defineConfig({
   test: {
+    ...UNIT_BUDGETS,
     passWithNoTests: true,
     projects: [
       {
         test: {
+          ...UNIT_BUDGETS,
           name: "node",
           environment: "node",
           include: ["src/**/*.test.ts"],

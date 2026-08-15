@@ -71,6 +71,8 @@ interface TestBlock {
   readonly setupFiles?: unknown;
   readonly projects?: readonly unknown[];
   readonly name?: unknown;
+  readonly testTimeout?: unknown;
+  readonly hookTimeout?: unknown;
 }
 
 /** A loaded config module's default export, narrowed to what is read here. */
@@ -93,6 +95,10 @@ interface Project {
   readonly workers: boolean;
   /** Whether it is an integration suite, which needs the real account and says so in its file name. */
   readonly integration: boolean;
+  /** What it states as its per-case budget, or `undefined` where it states none and takes vitest's. */
+  readonly testTimeout: unknown;
+  /** What it states as its hook budget. A per-case budget does not cover a hook — that is the trap. */
+  readonly hookTimeout: unknown;
 }
 
 /** `path` under the repository root, in posix separators — how a failure names a file. */
@@ -162,6 +168,8 @@ async function projectsOf(path: string): Promise<Project[]> {
         setupFiles: setupFilesOf(root, dir),
         workers: usesWorkersPool(config),
         integration,
+        testTimeout: root.testTimeout,
+        hookTimeout: root.hookTimeout,
       },
     ];
   }
@@ -179,6 +187,8 @@ async function projectsOf(path: string): Promise<Project[]> {
         setupFiles: setupFilesOf(block, dirname(file)),
         workers: usesWorkersPool(referenced),
         integration,
+        testTimeout: block.testTimeout,
+        hookTimeout: block.hookTimeout,
       });
       continue;
     }
@@ -192,6 +202,8 @@ async function projectsOf(path: string): Promise<Project[]> {
       setupFiles: setupFilesOf(block, dir),
       workers: usesWorkersPool(inline as ConfigShape),
       integration,
+      testTimeout: block.testTimeout,
+      hookTimeout: block.hookTimeout,
     });
   }
   return projects;
@@ -292,5 +304,72 @@ describe("no unit suite can resolve a Cloudflare credential", () => {
       .filter((project) => CLOUDFLARE_ENV_KEYS.some((key) => project.env[key] === ""))
       .map((project) => project.label);
     expect(blanked).toEqual([]);
+  });
+});
+
+/**
+ * **Every unit and workers project states both budgets, and none of them takes vitest's (#361).**
+ *
+ * The defect this refuses is the one that produced #361: twenty-two of twenty-three packages had never
+ * written a `testTimeout` or a `hookTimeout`, so they ran on vitest's 5,000ms and 10,000ms — numbers
+ * nobody chose, applied to workers suites that spawn workerd and talk to real D1, on a machine whose
+ * own `bun run test` starts twenty-three packages at `--concurrency=50%`. Three packages went red on
+ * three consecutive full runs, each passing alone straight afterwards.
+ *
+ * It is gated here rather than left to review for the reason the rest of this file exists: a config is
+ * a place to forget, and the packages that forgot were not the ones anybody was looking at. A new
+ * capability is scaffolded by copying a sibling's config, so the *next* package to be added inherits
+ * whichever one it was copied from — which is exactly how one package came to have a budget and the
+ * other twenty-two did not.
+ *
+ * **Equality, not a floor.** A config free to state any number it liked would drift back to whatever
+ * made a red run go away, one package at a time, and that is the re-run habit written into a config.
+ * A project that genuinely needs longer states it on the case, where its reader can see it and ask why.
+ */
+/**
+ * The two numbers `UNIT_BUDGETS` states, **spelled here rather than imported, and that is deliberate.**
+ *
+ * It is not a choice about elegance. `packages/cli/tsconfig.json` sets `rootDir` to this package's
+ * `src`, so a relative import of the repository-root `vitest.shared.ts` pulls a file outside that root
+ * into the program and `bun run typecheck` fails on TS6059 — for this file and, transitively, for every
+ * file reached through it. The same wall is why `vitest.shared.ts` spells `PITHY_OFFLINE_ENV` instead
+ * of importing it from the CLI.
+ *
+ * The copy earns its keep here. A gate that imported the constant would follow it anywhere it went,
+ * including down: an edit dropping `testTimeout` back to 5,000 would move both sides at once and stay
+ * green, which is the shape of gate #326 was written about. Written out, changing the policy takes two
+ * edits, and the second one is a test going red in front of whoever made the first.
+ */
+const EXPECTED_BUDGETS = { testTimeout: 60_000, hookTimeout: 120_000 } as const;
+
+describe("every unit project states its budgets rather than inheriting vitest's", () => {
+  test("both numbers, on every project that is not an integration suite", () => {
+    const wrong: string[] = [];
+    for (const project of projects) {
+      if (project.integration) continue;
+      if (project.testTimeout !== EXPECTED_BUDGETS.testTimeout) {
+        wrong.push(`${project.label}: testTimeout is ${String(project.testTimeout)}`);
+      }
+      if (project.hookTimeout !== EXPECTED_BUDGETS.hookTimeout) {
+        wrong.push(`${project.label}: hookTimeout is ${String(project.hookTimeout)}`);
+      }
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  test("and there are projects to have checked, so a walk that found none cannot pass", () => {
+    // The vacuity guard #326 exists for. Every assertion above is over a filtered list, and a filter
+    // that matched nothing would satisfy all of them in silence.
+    expect(projects.filter((project) => !project.integration).length).toBeGreaterThan(20);
+  });
+
+  test("an integration project is left to its own, which answer to the network", () => {
+    // The inverse, for the same reason the credential gate asserts it: a rule applied everywhere would
+    // quietly cap suites that wait on live Cloudflare, and those budgets are not about this machine.
+    const capped = projects
+      .filter((project) => project.integration)
+      .filter((project) => project.testTimeout === EXPECTED_BUDGETS.testTimeout)
+      .map((project) => project.label);
+    expect(capped).toEqual([]);
   });
 });

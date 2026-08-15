@@ -1,5 +1,6 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
+import { UNIT_BUDGETS } from "../../vitest.shared";
 
 // Workers-runtime project: tests run inside workerd via Miniflare, with real
 // D1 (`DB`, plus `ANALYTICS` to exercise multiple databases) and KV (`SESSIONS`,
@@ -22,6 +23,7 @@ export default defineConfig({
     }),
   ],
   test: {
+    ...UNIT_BUDGETS,
     name: "workers",
     include: ["src/**/*.workers.test.ts"],
   },

@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
-import { CONFIG_DIR_SETUP, NO_ACCOUNT } from "../../vitest.shared";
+import { CONFIG_DIR_SETUP, NO_ACCOUNT, UNIT_BUDGETS } from "../../vitest.shared";
 
 /**
  * Two projects, because the templates are two kinds of artifact.
@@ -25,10 +25,12 @@ const virtualStub = (name: string): string => fileURLToPath(new URL(`./src/testi
 
 export default defineConfig({
   test: {
+    ...UNIT_BUDGETS,
     passWithNoTests: true,
     projects: [
       {
         test: {
+          ...UNIT_BUDGETS,
           name: "node",
           environment: "node",
           include: ["src/**/*.test.ts"],
@@ -50,6 +52,7 @@ export default defineConfig({
           },
         },
         test: {
+          ...UNIT_BUDGETS,
           name: "dom",
           environment: "happy-dom",
           include: ["src/**/*.test.tsx"],

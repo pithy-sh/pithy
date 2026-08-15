@@ -58,19 +58,42 @@ const GROUPS = 14;
  * on it. The rule is stated here in its own words instead: a group is a command that declares
  * subcommands and has no way to act on its own, which is what a reader of `main.ts` and the group files
  * sees. Nothing below consults the walk to decide what the walk should have done.
+ *
+ * **The twenty-seven loads are overlapped, and that is the fix for #361, not a tidy-up.** This function
+ * is the whole body of the first case in this file — the sum of its `load()` calls and that case's
+ * reported duration agree to within 3ms — and each `load()` is a dynamic import that pulls a command
+ * module and its transitive half of the CLI through vite. Awaited one at a time, the case paid twenty-
+ * seven independent trips through the scheduler, so machine contention did not add to its cost, it
+ * *multiplied* into it: measured on this box under a real parallel load (load average 12–17), the serial
+ * loop ran **4,039 / 4,701 / 12,215 / 15,622 ms** — a **3.9x spread on identical code**, against the
+ * config's 30,000ms default. A case whose tail is 15.6s under a 30s budget is not flaky; it is
+ * arithmetic, and `bun run test` runs twenty-three packages at `--concurrency=50%`, which is a heavier
+ * load than any of those four samples.
+ *
+ * Overlapped into one `Promise.all`, the same work waits once instead of twenty-seven times: **3,235 /
+ * 3,521 / 3,690 / 3,735 ms** under the same load — a **1.15x spread**, and an 8x margin. Nothing about
+ * what is asserted changed. The loads are independent, each command is classified from its own module
+ * alone, and `Promise.all` preserves declaration order, so `groups` and `acting` come back in the order
+ * `main.ts` writes them exactly as before.
+ *
+ * **Overlapping was necessary and was not sufficient**, which is why the case also carries an explicit
+ * ceiling now — see the `120_000` on it below, and the reason written there.
  */
 async function classify(): Promise<{ declared: string[]; groups: string[]; acting: string[] }> {
   const subCommands = (await main.subCommands) as Record<string, () => Promise<CommandDef>>;
   const declared = Object.keys(subCommands);
   const groups: string[] = [];
   const acting: string[] = [];
-  for (const [name, load] of Object.entries(subCommands)) {
-    const cmd = await load();
-    const nested = typeof cmd.subCommands === "function" ? await cmd.subCommands() : await cmd.subCommands;
-    const dispatches = nested !== undefined && Object.keys(nested).length > 0;
-    const actsOnItsOwn = typeof cmd.run === "function" || cmd.default !== undefined;
-    (dispatches && !actsOnItsOwn ? groups : acting).push(name);
-  }
+  const verdicts = await Promise.all(
+    Object.entries(subCommands).map(async ([name, load]) => {
+      const cmd = await load();
+      const nested = typeof cmd.subCommands === "function" ? await cmd.subCommands() : await cmd.subCommands;
+      const dispatches = nested !== undefined && Object.keys(nested).length > 0;
+      const actsOnItsOwn = typeof cmd.run === "function" || cmd.default !== undefined;
+      return { name, isGroup: dispatches && !actsOnItsOwn };
+    }),
+  );
+  for (const { name, isGroup } of verdicts) (isGroup ? groups : acting).push(name);
   return { declared, groups, acting };
 }
 
@@ -83,7 +106,26 @@ describe("the command tree these rules are checked over", () => {
     expect(declared).toHaveLength(DECLARED);
     expect(groups).toHaveLength(GROUPS);
     expect(acting).toHaveLength(DECLARED - GROUPS);
-  });
+    // **120s is a hang ceiling, not the margin this case lives in, and it is the second half of #361.**
+    // The case is expected to take about 3.5s: that is what `classify()` costs with its loads overlapped,
+    // measured four times standalone under a real parallel load. What it was running against was the
+    // config's 30,000ms *default* — a number nobody chose for this case, applied to it by omission, while
+    // the two cases below it in this same file, which do strictly more work, were each given 120_000
+    // explicitly. That asymmetry was the whole defect.
+    //
+    // The measurement that settles the size. `bun run test --force` — twenty-three packages at
+    // `--concurrency=50%`, which is the command the issue is about — was run on this box at load average
+    // 66. This file took **182,914ms**, against ~24,000ms for the same file standalone at load 14: a
+    // **7.5x** whole-file contention factor, far past the 2.8x that `dashboard#63` measured. 3.5s through
+    // that factor is ~26s, and the run recorded this case at **30,103ms**, killed by the 30s default. So
+    // the default sits *inside* the case's real operating range, which is what makes it a trap rather
+    // than a limit.
+    //
+    // 120_000 is ~34x the expected cost and ~4x the worst the heaviest load on this machine produced.
+    // Nothing is expected to approach it; a case that does has hung, which is the only thing a timeout
+    // should ever be asked to catch. It is also simply what its siblings in this file already declare —
+    // this brings the odd one out into line rather than inventing a number.
+  }, 120_000);
 });
 
 describe("a command that names no action", () => {
