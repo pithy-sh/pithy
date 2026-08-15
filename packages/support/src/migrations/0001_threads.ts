@@ -43,6 +43,10 @@ export const support_0001_threads: Migration = {
       .addColumn("senderAuthenticated", "integer", (c) => c.notNull().defaultTo(0))
       .addColumn("userId", "text")
       .addColumn("accountLinkSource", "text")
+      // Nullable and with no default, unlike `category` beside it, because "nobody said" is a real and
+      // common state — every mail thread, and every app thread whose client offered no chooser — and
+      // `uncategorized` here would be indistinguishable from a submitter who chose it deliberately.
+      .addColumn("declaredCategory", "text")
       .addColumn("category", "text", (c) => c.notNull().defaultTo("uncategorized"))
       .addColumn("priority", "text", (c) => c.notNull().defaultTo("normal"))
       .addColumn("sentiment", "text", (c) => c.notNull().defaultTo("neutral"))
@@ -72,6 +76,16 @@ export const support_0001_threads: Migration = {
       .createIndex("pithySupportThreadsCategoryIdx")
       .on("pithySupportThreads")
       .columns(["category", "lastMessageAt", "id"])
+      .execute();
+    // The other filtered inbox: threads by what the *submitter* said they were about. It carries the
+    // same `(lastMessageAt, id)` tail as the category composite because it serves the same query in
+    // the same order, and it is a second index rather than a second use of the first — an operator
+    // triaging a project with `ai.enabled: false` filters on this one exclusively, since nothing ever
+    // writes `category` there.
+    await db.schema
+      .createIndex("pithySupportThreadsDeclaredCategoryIdx")
+      .on("pithySupportThreads")
+      .columns(["declaredCategory", "lastMessageAt", "id"])
       .execute();
     // The sender's history — what the volume guard counts and what a thread view shows beside the
     // current conversation.
@@ -274,6 +288,7 @@ export const support_0001_threads: Migration = {
     await db.schema.dropIndex("pithySupportThreadsChannelIdx").execute();
     await db.schema.dropIndex("pithySupportThreadsUserIdx").execute();
     await db.schema.dropIndex("pithySupportThreadsFromIdx").execute();
+    await db.schema.dropIndex("pithySupportThreadsDeclaredCategoryIdx").execute();
     await db.schema.dropIndex("pithySupportThreadsCategoryIdx").execute();
     await db.schema.dropIndex("pithySupportThreadsArchivedIdx").execute();
     await db.schema.dropTable("pithySupportThreads").execute();

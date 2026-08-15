@@ -59,6 +59,7 @@ function threadRow(seed: {
   id: string;
   lastMessageAt: number;
   category?: string;
+  declaredCategory?: string;
   priority?: SupportPriority;
   sentiment?: SupportSentiment;
   inbox?: string;
@@ -75,6 +76,7 @@ function threadRow(seed: {
     fromName: null,
     senderAuthenticated: true,
     userId: null,
+    declaredCategory: seed.declaredCategory ?? null,
     category: seed.category ?? UNCATEGORIZED,
     priority: seed.priority ?? "normal",
     sentiment: seed.sentiment ?? "neutral",
@@ -232,6 +234,42 @@ describe("listThreads", () => {
         ),
       ),
     ).toEqual(["security"]);
+  });
+
+  test("what the submitter said and what the classifier decided are two filters, not one", async () => {
+    // The row that makes the case: the person filed it as a billing problem and the model called it a
+    // bug. Both facts are true, they disagree, and an operator triaging the inbox needs to reach the
+    // thread by either — so one filter answering for both would make this row findable under a
+    // question nobody asked and unfindable under one somebody did.
+    await seedThread({ id: "disagrees", lastMessageAt: T0 + 400, declaredCategory: "billing", category: "bug_report" });
+    await seedThread({ id: "agrees", lastMessageAt: T0 + 300, declaredCategory: "billing", category: "billing" });
+    // A project with `ai.enabled: false`: nothing ever writes `category`, so the claim is the only
+    // category this thread has, and filtering on the classifier's column finds it under a value it
+    // never chose.
+    await seedThread({ id: "unclassified", lastMessageAt: T0 + 200, declaredCategory: "billing" });
+    // Mail. Nobody was asked, so nobody said — and null is not `uncategorized`.
+    await seedThread({ id: "by-mail", lastMessageAt: T0 + 100, category: "billing" });
+
+    const now = new Date(T0 + 10_000_000);
+    expect(ids(await listThreads(db, { declaredCategory: "billing" }, { fts: false, viewer: VIEWER, now }))).toEqual([
+      "disagrees",
+      "agrees",
+      "unclassified",
+    ]);
+    expect(ids(await listThreads(db, { category: "billing" }, { fts: false, viewer: VIEWER, now }))).toEqual([
+      "agrees",
+      "by-mail",
+    ]);
+    // Asking both is asking for agreement, which is the one shape a conflated filter could not express.
+    expect(
+      ids(
+        await listThreads(
+          db,
+          { declaredCategory: "billing", category: "billing" },
+          { fts: false, viewer: VIEWER, now },
+        ),
+      ),
+    ).toEqual(["agrees"]);
   });
 
   test("the filters compose, rather than the last one winning", async () => {

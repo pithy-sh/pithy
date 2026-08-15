@@ -82,6 +82,50 @@ A console must render those differently. The same operator action — a refund, 
 
 The app supplies what the user should not have to type — screen, build, platform, environment, locale — and that set is **closed**. An undeclared key is refused rather than stored, because the risk of an open bag is an adopter passing their whole client state through it and quietly landing a customer's data in an inbox a console renders.
 
+### What the submitter said, beside what the classifier decided
+
+A submission may carry `declaredCategory` — the answer to your screen's own chooser. It lands in its own column, next to `category`, and **the two are never folded into one**.
+
+| Column | Whose | Written |
+|---|---|---|
+| `declaredCategory` | The person writing. A claim. | Once, when the thread opens. Never again, and never by the classifier. |
+| `category` | The model. A judgement. | On every classification — a first run, a retry, a manual reclassify, a post-upgrade backfill. |
+
+**One column with a precedence rule loses a fact, whichever rule you pick.** A classification is idempotent by construction and overwrites `category` unconditionally, so a claim sharing that column is gone the first time a model looks at the thread; refusing the model's write instead loses the judgement. And a `categorySource` beside a single column only names which of the two is currently there — it cannot hold both. What an operator triaging an inbox actually needs is the pair, and specifically the pair when it disagrees: *they filed it as billing, the model calls it a bug report* is the most useful row on the screen, and no single column can say it.
+
+`GET /support/threads` filters on either, independently. Filtering on both is asking for the threads where they agree. On a project with `ai: { enabled: false }` — no Workers AI binding, nothing provisioned — `category` is `uncategorized` forever and the declared one is the only category anybody stated, which is exactly the deployment that made this necessary.
+
+**A key outside your effective taxonomy is refused, not stored and not downgraded.** Stored, the column becomes a client-writable vocabulary and your filters grow a long tail of `Billing`, `billng`, and one-offs nobody declared. Downgraded to `uncategorized`, a broken chooser becomes indistinguishable from somebody who genuinely chose nothing. The model gets the fallback because a model cannot be told it was wrong; a client can, and a 400 is how it is told — your chooser was built from the taxonomy you declared, so a value outside it is your client's bug.
+
+Sent alongside `threadId`, it is refused too. A conversation carries what it was filed under; ignoring a second claim is a chooser that does nothing, and honouring it lets a follow-up rewrite the premise the thread was opened on — the way `subject` deliberately cannot.
+
+### Your own authorisation on the submission route
+
+`POST {base}/feedback` takes a session and same-origin, and **nothing else, permanently**. Writing to support must not be role-gated or it stops being a general intake: the person who most needs to reach you is often the one whose access is broken.
+
+If your own account model makes some submissions act-on-behalf-of — an application made for an organisation, which a member may not make — put that check in your `app` capability's middleware, over your own path:
+
+```ts
+defineCapability({
+  name: "app",
+  middleware: [
+    (app) => {
+      app.use("/support/feedback", async (c, next) => {
+        // Signed out? Pass it through — the route's own gate answers 401. A 403 here would tell
+        // somebody who was never signed in that they are forbidden.
+        if (c.var.auth && !(await mayActForTheOrganisation(c))) {
+          throw new ForbiddenError({ message: "An owner or an admin applies on the organisation's behalf." });
+        }
+        await next();
+      });
+    },
+  ],
+  …
+});
+```
+
+Every capability's middleware mounts before any capability's routes, and your `app` composes last — so yours runs **after** `@pithy-sh/auth` has resolved the session and **before** this capability's `requireAuth()`. Write the path from the `basePath` you configured: a mount point you moved and a middleware path you did not is a gate that silently stops covering anything.
+
 ```ts
 support({
   submission: {

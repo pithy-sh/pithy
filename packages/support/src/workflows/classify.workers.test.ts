@@ -83,7 +83,7 @@ function deps(options: {
 }
 
 /** Insert the thread every test classifies against. */
-async function seedThread(): Promise<void> {
+async function seedThread(seed: { declaredCategory?: string } = {}): Promise<void> {
   const at = new Date(T0);
   await db
     .insertInto(SUPPORT_THREADS_TABLE)
@@ -97,6 +97,7 @@ async function seedThread(): Promise<void> {
         fromName: null,
         senderAuthenticated: true,
         userId: null,
+        declaredCategory: seed.declaredCategory ?? null,
         category: "uncategorized",
         priority: "normal",
         sentiment: "neutral",
@@ -237,6 +238,34 @@ describe("runClassification", () => {
     const row = await thread();
     expect(row.category).toBe("bug_report");
     expect(row.model).toBe("@cf/test/classifier-v2");
+  });
+
+  test("the classifier never touches what the submitter said, however often it runs", async () => {
+    // **The reason these are two columns rather than one with a precedence rule.** A classification is
+    // idempotent by construction — a Workflow retry, a manual reclassify and a post-upgrade backfill
+    // are the same operation, and each one overwrites `category` unconditionally. A submitter's claim
+    // sharing that column would be gone on the first of them, and a `categorySource` beside a single
+    // column loses whichever of the two facts it does not currently name. What an operator needs is
+    // precisely the pair: they said billing, the model says bug_report.
+    await db.updateTable(SUPPORT_THREADS_TABLE).set({ declaredCategory: "billing" }).where("id", "=", "t1").execute();
+    await seedMessage({ id: "m1" });
+
+    await runClassification(
+      deps({ ai: fakeAi({ category: "bug_report", priority: "normal", sentiment: "neutral", confidence: 0.9 }) }),
+      "m1",
+    );
+    await runClassification(
+      deps({
+        ai: fakeAi({ category: "feature_request", priority: "low", sentiment: "positive", confidence: 0.4 }),
+        now: T0 + 2_000,
+        idPrefix: "c2",
+      }),
+      "m1",
+    );
+
+    const row = await thread();
+    expect(row.category).toBe("feature_request");
+    expect(row.declaredCategory).toBe("billing");
   });
 
   test("a message that is gone returns null, and the model is never asked", async () => {

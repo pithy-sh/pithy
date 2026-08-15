@@ -25,11 +25,19 @@ import { SupportThread } from "../data/thread";
  * mail thread is linked to her account by an address in a header nobody proved, and her app thread is
  * linked by a session, and a console that renders the two identically has a bug this seed will show
  * you. It is also the only row carrying submission context, which is what a bug report knows and a
- * piece of mail cannot.
+ * piece of mail cannot — and the only row carrying a `declaredCategory`, because it is the only sender
+ * who was offered a chooser.
+ *
+ * **And it deliberately disagrees with itself.** Grace filed it under "something is missing" and the
+ * model read the text and called it a bug, so `declaredCategory` is `feature_request` while `category`
+ * is `bug_report`. That is the ordinary case rather than a contrived one — people file "X does not
+ * work for me" under a missing feature constantly — and it is the row that makes the rendering mistake
+ * visible before it ships: a console that shows one word, or shows the wrong one, has a bug this seed
+ * will hand you. Every mail thread's is null, because nobody asked its sender anything.
  *
  * That is one row per priority, all four sentiments, four categories, both channels, both link
- * provenances, and both sides of `archived` — the states anything reading these tables has to handle,
- * without anybody authoring a fixture first.
+ * provenances, both a stated and an unstated category, and both sides of `archived` — the states
+ * anything reading these tables has to handle, without anybody authoring a fixture first.
  *
  * **Everything is fixed — the ids and the clock.** `pithy seed` is `INSERT OR IGNORE`, so a generated
  * UUID would give Ada a second complaint on every run.
@@ -178,6 +186,10 @@ export const supportExampleSeed: SeedSet = defineSeed({
         senderAuthenticated: true,
         userId: EXAMPLE_GRACE.id,
         accountLinkSource: "session",
+        // What she said, beside what the model made of it. She reached for "something is missing"; the
+        // classifier read the text and called it a bug. Both are true, they disagree, and neither may
+        // overwrite the other — which is the entire reason these are two columns.
+        declaredCategory: "feature_request",
         category: "bug_report",
         priority: "normal",
         sentiment: "neutral",

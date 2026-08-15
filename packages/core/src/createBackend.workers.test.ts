@@ -83,6 +83,55 @@ describe("createBackend", () => {
     expect(await res.json()).toEqual(["cap", "app"]);
   });
 
+  test("the app's middleware runs before a library capability's route, so an adopter can gate one", async () => {
+    // **The ordering an adopter's own authorisation depends on.** A capability's write route carries the
+    // gates that capability owns and no others — `@pithy-sh/support`'s `POST /support/feedback` takes a
+    // session and same-origin, and must never take a role the kit invented, because a general intake
+    // that is role-gated stops being one. An adopter whose account model makes some submissions
+    // act-on-behalf-of therefore has exactly one honest place to put their check, and this is it:
+    // middleware on their own `app` capability, over the library's path.
+    //
+    // It works only because *every* capability's middleware mounts before *any* capability's routes —
+    // the app composes last, so a rule of "in composition order" alone would put its middleware after
+    // the library's route and the gate would never run. `pithy-sh/pithy#375` documents the seam on
+    // `support/src/http/routes.ts`; this is the assertion that makes the paragraph true.
+    const reached: string[] = [];
+    const library = defineCapability({
+      name: "library",
+      requiredBindings: [],
+      routes: (a) => {
+        a.post("/library/write", (c) => {
+          reached.push("handler");
+          return c.json({ ok: true });
+        });
+      },
+    });
+    const app = defineCapability({
+      name: "app",
+      requiredBindings: [],
+      middleware: [
+        (a) => {
+          a.use("/library/write", async (c, next) => {
+            reached.push("adopter");
+            // The adopter's own model, refusing on their own terms. The library knows nothing about it.
+            if (c.req.header("x-role") !== "owner") return c.json({ refused: true }, 403);
+            await next();
+          });
+        },
+      ],
+    });
+
+    const backend = createBackend({ capabilities: [library], app });
+    const refused = await backend.request("/library/write", { method: "POST" }, env);
+    expect(refused.status).toBe(403);
+    // The whole claim: the adopter's gate ran, and the library's handler never did.
+    expect(reached).toEqual(["adopter"]);
+
+    const allowed = await backend.request("/library/write", { method: "POST", headers: { "x-role": "owner" } }, env);
+    expect(allowed.status).toBe(200);
+    expect(reached).toEqual(["adopter", "adopter", "handler"]);
+  });
+
   test("fails fast: a missing required binding yields 500 naming the binding", async () => {
     const needsMissing = defineCapability({
       name: "needsMissing",

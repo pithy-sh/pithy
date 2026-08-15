@@ -11,6 +11,7 @@ import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { SUPPORT_MIGRATION_ORDER } from "../capability";
 import { SupportConfig } from "../config/config";
+import { resolveCategories } from "../data/categories";
 import { SupportMessage } from "../data/message";
 import {
   SUPPORT_ATTACHMENTS_TABLE,
@@ -70,6 +71,11 @@ function deps(overrides: Partial<SubmitDeps> = {}): SubmitDeps {
   return {
     db,
     config: SupportConfig.parse({ inboundAddresses: [INBOX] }),
+    // The effective taxonomy the capability would hand over: the eight Pithy ships, plus one an adopter
+    // declared, so a test can tell "the kit knows this key" from "this project knows this key".
+    categories: resolveCategories({
+      tournament_dispute: "The sender is contesting a tournament result, a disqualification, or a prize.",
+    }),
     fts: false,
     resolveAccount: async (userId) =>
       userId === ADA ? { email: "ada@example.com", name: "Ada Lovelace" } : { email: "grace@example.com" },
@@ -87,9 +93,18 @@ function deps(overrides: Partial<SubmitDeps> = {}): SubmitDeps {
   };
 }
 
-/** File one submission with sensible defaults. */
+/**
+ * File one submission with sensible defaults.
+ *
+ * **`return await`, not `return`, and it is not redundant here.** The declared-category refusal is the
+ * one check in `submitFeedback` that fires before its first `await`, so the promise is already rejected
+ * the moment it is created. Returning it bare makes this wrapper's promise *adopt* it a microtask
+ * later, and workerd reports the gap as an unhandled rejection — four of them, in a suite that
+ * otherwise passes. Awaiting attaches the handler in the same turn. The production caller
+ * (`submitFeedbackRequest`) already awaits, so this closes a hole in the harness and not in the code.
+ */
 async function submit(overrides: Partial<Parameters<typeof submitFeedback>[1]> = {}, depsOverrides = {}) {
-  return submitFeedback(deps(depsOverrides), {
+  return await submitFeedback(deps(depsOverrides), {
     userId: ADA,
     subject: "Export button does nothing",
     body: "I press Export and nothing happens.",
@@ -216,6 +231,101 @@ describe("opening a thread from inside the app", () => {
     const code = await codeOf(() => submit({}, { resolveAccount: async () => null }));
     expect(code).toBe("core/internal");
     expect(await db.selectFrom(SUPPORT_THREADS_TABLE).selectAll().execute()).toEqual([]);
+  });
+});
+
+describe("what the submitter said it was about", () => {
+  /** The thread a submission produced, decoded. */
+  async function threadOf(threadId: string): Promise<SupportThread> {
+    return SupportThread.parse(
+      await db.selectFrom(SUPPORT_THREADS_TABLE).selectAll().where("id", "=", threadId).executeTakeFirstOrThrow(),
+    );
+  }
+
+  test("a declared category lands on the thread beside the classifier's, not on top of it", async () => {
+    const outcome = await submit({ declaredCategory: "billing" });
+    const thread = await threadOf(outcome.threadId);
+
+    // Two columns, two facts. `category` is still what a brand-new thread carries, because no model
+    // has looked at this yet — and that is exactly the state a single conflated column cannot describe.
+    expect(thread.declaredCategory).toBe("billing");
+    expect(thread.category).toBe("uncategorized");
+  });
+
+  test("an adopter's own category is accepted, because the taxonomy is theirs and not the kit's", async () => {
+    const outcome = await submit({ declaredCategory: "tournament_dispute" });
+    expect((await threadOf(outcome.threadId)).declaredCategory).toBe("tournament_dispute");
+  });
+
+  test("saying nothing is a state of its own, and it is not `uncategorized`", async () => {
+    // Mail always, and any client with no chooser. Null is what makes "nobody was asked" legible
+    // against a submitter who deliberately picked the catch-all.
+    const outcome = await submit();
+    expect((await threadOf(outcome.threadId)).declaredCategory).toBeNull();
+
+    const chosen = await submit({ declaredCategory: "uncategorized" });
+    expect((await threadOf(chosen.threadId)).declaredCategory).toBe("uncategorized");
+  });
+
+  test("a category outside the taxonomy is refused, never stored and never downgraded", async () => {
+    // Stored, it would make this column a client-writable vocabulary and every filter on it a long
+    // tail of one-off keys. Downgraded to `uncategorized`, a broken chooser would be indistinguishable
+    // from somebody who chose nothing — which is the collapse the column exists to prevent.
+    expect(await codeOf(() => submit({ declaredCategory: "refund_dispute" }))).toBe("support/invalid_category");
+    expect(await db.selectFrom(SUPPORT_THREADS_TABLE).selectAll().execute()).toEqual([]);
+    expect(await db.selectFrom(SUPPORT_MESSAGES_TABLE).selectAll().execute()).toEqual([]);
+  });
+
+  test("the refusal names nothing the submitter wrote in the part a client can read", async () => {
+    // This capability's whole input is text somebody else chose. An error echoing it back would turn
+    // the error channel into a reflection surface; the value belongs in `detail`, which the HTTP codec
+    // strips.
+    try {
+      await submit({ declaredCategory: "totally_made_up" });
+      throw new Error("expected a refusal");
+    } catch (error) {
+      if (!(error instanceof PithyError)) throw error;
+      expect(error.payload.message).not.toContain("totally_made_up");
+      expect(error.payload.detail).toContain("totally_made_up");
+    }
+  });
+
+  test("a category on a follow-up is refused rather than ignored or honoured", async () => {
+    const first = await submit({ declaredCategory: "billing" });
+    clock = T0 + 60_000;
+
+    // Ignoring it is a chooser that does nothing, which is the whole defect this closes. Honouring it
+    // would let a later message rewrite the premise the conversation was opened on, the way `subject`
+    // deliberately cannot. So it is refused, and the claim the thread was filed under stands.
+    expect(await codeOf(() => submit({ threadId: first.threadId, declaredCategory: "bug_report" }))).toBe(
+      "validation/invalid_input",
+    );
+    expect((await threadOf(first.threadId)).declaredCategory).toBe("billing");
+    expect((await threadOf(first.threadId)).messageCount).toBe(1);
+  });
+
+  test("a follow-up with no category leaves the claim exactly where it was", async () => {
+    const first = await submit({ declaredCategory: "billing" });
+    clock = T0 + 60_000;
+    await submit({ threadId: first.threadId, body: "Still broken." });
+    expect((await threadOf(first.threadId)).declaredCategory).toBe("billing");
+  });
+
+  test("the refusal is the cheapest one, so nothing is decoded or counted before it", async () => {
+    // Order of operations, asserted rather than assumed: a bad category costs no query. The account
+    // resolver is the first thing `submitFeedback` reaches for, so a resolver that throws proves the
+    // refusal happened ahead of it.
+    const code = await codeOf(() =>
+      submit(
+        { declaredCategory: "not_a_category" },
+        {
+          resolveAccount: async () => {
+            throw new Error("the account was read before the category was checked");
+          },
+        },
+      ),
+    );
+    expect(code).toBe("support/invalid_category");
   });
 });
 

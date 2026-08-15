@@ -50,6 +50,7 @@ export function threadView(thread: SupportThread): SupportThreadView {
     senderAuthenticated: thread.senderAuthenticated,
     userId: thread.userId ?? null,
     accountLinkSource: thread.accountLinkSource ?? null,
+    declaredCategory: thread.declaredCategory ?? null,
     category: thread.category,
     priority: thread.priority,
     sentiment: thread.sentiment,

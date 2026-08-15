@@ -48,7 +48,10 @@ export const ListThreadsQuery = z
       .enum(["true", "false"])
       .optional()
       .describe("`true` for the done pile, `false` or absent for the open inbox — which is the default on purpose."),
-    category: CategoryFilter.optional().describe("Filter to one category."),
+    category: CategoryFilter.optional().describe("Filter to one category — what the classifier made of it."),
+    declaredCategory: CategoryFilter.optional().describe(
+      "Filter to one category **the submitter chose**, which is a different question from `category` and answers it about different threads. Combining the two is how an operator finds the disagreements; asking for this one alone is how they triage a project with `ai.enabled: false`, where nothing ever writes the other.",
+    ),
     priority: SupportPriority.optional().describe("Filter to one priority."),
     sentiment: SupportSentiment.optional().describe("Filter to one sentiment."),
     channel: SupportChannel.optional().describe(
@@ -192,6 +195,9 @@ export const SubmitFeedbackInput = z
       .min(1)
       .max(MAX_SUBMISSION_BODY_CHARS)
       .describe("The report itself, as the person wrote it. Plain text — it is prose, never markup."),
+    declaredCategory: CategoryFilter.optional().describe(
+      "What the person writing says this is about, from your app's own chooser. **Named for what it is, on the wire as well as in the row**: a field called `category` here would land in a column of that name that this never touches, which is the exact confusion the two columns exist to prevent. Bounded to a key's shape here and checked against your effective taxonomy in the handler — a key you do not declare is **refused**, because a chooser was built from that taxonomy and a value outside it is the client's bug. Accepted only when opening a request: sent alongside `threadId` it is refused rather than ignored.",
+    ),
     threadId: z
       .string()
       .uuid()

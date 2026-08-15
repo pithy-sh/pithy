@@ -65,10 +65,16 @@ export const SupportThread = z
     accountLinkSource: SupportAccountLinkSource.nullish().describe(
       "How `userId` was established, or null when there is no link. **The column that keeps a session-proven link from reading like a header-inferred one** — `senderAuthenticated` says whether to believe it, this says what was believed. A console rendering the two identically is the failure this exists to prevent, because the same operator action follows from very different evidence.",
     ),
+    declaredCategory: z
+      .string()
+      .nullish()
+      .describe(
+        "**What the submitter said this is about** — a claim, made once, by the person writing. Null when nobody said: every `email` thread, and every `app` thread whose client offered no chooser. Written when the thread opens and **never afterwards**: not by a later message, and not by the classifier, which owns `category` and does not know this column exists. That separation is the whole point. A classification is recomputed on every retry, every manual reclassify, and every post-upgrade backfill — so a single column holding both facts loses whichever was written first, and the one an operator most needs is the *disagreement* between them: `declaredCategory: billing` beside `category: bug_report` says the customer thinks they were overcharged and the model thinks the app is broken, and no one column can say that. Validated against the effective taxonomy before it is stored, so this is never a client-writable vocabulary.",
+      ),
     category: z
       .string()
       .describe(
-        "The current category key, from this project's effective taxonomy. A plain string rather than an enum because the taxonomy is federated — the valid set is not known until an adopter composes the capability, so it is validated at the classification boundary instead of by the column.",
+        "**What the classifier made of it** — the current answer, from this project's effective taxonomy, recomputed and never repaired. A plain string rather than an enum because the taxonomy is federated — the valid set is not known until an adopter composes the capability, so it is validated at the classification boundary instead of by the column. Distinct from `declaredCategory` above, which nothing here ever reads or writes.",
       ),
     priority: SupportPriority.describe("The current priority — how fast this thread needs a human."),
     sentiment: SupportSentiment.describe("The current sentiment — the churn signal."),
@@ -110,7 +116,15 @@ export const SupportThread = z
   .describe("One support conversation in `pithy_support_threads` — derived entirely from the mail below it.");
 export type SupportThread = z.output<typeof SupportThread>;
 
-/** What a brand-new thread's classification columns hold before the Workflow has run. */
+/**
+ * What a brand-new thread's classification columns hold before the Workflow has run.
+ *
+ * **`declaredCategory` is deliberately not in here**, and the omission is load-bearing rather than an
+ * oversight. This object is the set of columns the classifier owns — `runClassification` overwrites
+ * every one of them on each run — so a submitter's claim listed among them would be erased by the
+ * first classification and by every retry after it. It is set beside this spread, from the submission,
+ * and nothing on the classification path names it.
+ */
 export const UNCLASSIFIED = {
   category: UNCATEGORIZED,
   priority: "normal",
