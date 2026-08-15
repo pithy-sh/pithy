@@ -8,7 +8,32 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { ReconcileApplied, ReconcilePlan } from "../capabilities/reconcile";
 import { scaffoldProject } from "../project/scaffold";
-import upgrade, { __test, runUpgrade, type UpgradeWorker } from "./upgrade";
+import upgrade, {
+  __test,
+  runUpgrade,
+  type UpgradeWorker,
+  type UpgradeWorkerResult,
+  upgradeIncomplete,
+} from "./upgrade";
+
+/**
+ * Narrow a fan-out entry to the state that carries a plan, failing the test when the run lost it.
+ *
+ * Every assertion below reaching through this is one the #380 union makes unreachable without narrowing —
+ * which is the point of putting the plan behind the discriminant rather than beside an `ok` flag.
+ */
+function reconciled(result: UpgradeWorkerResult | undefined): Extract<UpgradeWorkerResult, { state: "reconciled" }> {
+  if (result?.state !== "reconciled") throw new Error(`expected a reconciled worker, got ${result?.state ?? "none"}`);
+  return result;
+}
+
+/** The three-state entry a render test hands to `renderUpgrade`, for a Worker whose plan was built. */
+const entry = (built: ReconcilePlan, applied: ReconcileApplied | null = null): UpgradeWorkerResult => ({
+  state: "reconciled",
+  worker: built.worker,
+  plan: built,
+  applied,
+});
 
 interface ArgSpec {
   type: string;
@@ -136,10 +161,7 @@ describe("worker grouping", () => {
       missingVersionMetadata: false,
     };
     const out = __test.renderUpgrade({
-      workers: [
-        { plan, applied: null },
-        { plan: collab, applied: null },
-      ],
+      workers: [entry(plan), entry(collab)],
       manifestFaults: [],
     });
     expect(out).toEqual([
@@ -162,7 +184,7 @@ describe("worker grouping", () => {
       migrations: [],
       addedVersionMetadata: false,
     };
-    expect(__test.renderUpgrade({ workers: [{ plan, applied }], manifestFaults: [] })).toContain(
+    expect(__test.renderUpgrade({ workers: [entry(plan, applied)], manifestFaults: [] })).toContain(
       "  auth: added 1 config key.",
     );
   });
@@ -180,7 +202,7 @@ describe("worker grouping", () => {
       missingPrerequisites: [],
       missingVersionMetadata: false,
     };
-    expect(__test.renderUpgrade({ workers: [{ plan: clean, applied: null }], manifestFaults: [] })).toEqual([
+    expect(__test.renderUpgrade({ workers: [entry(clean)], manifestFaults: [] })).toEqual([
       "web:",
       "  Nothing to upgrade.",
     ]);
@@ -248,8 +270,9 @@ describe("runUpgrade — fan-out over apps/", () => {
 
   test("plans every worker, one entry each, in discovery order", async () => {
     const { workers: results } = await runUpgrade({ account: null, ...base, projectDir: dir, resolveWorkers: resolve });
-    expect(results.map((result) => result.plan.worker)).toEqual(["api", "collab"]);
-    for (const { plan, applied } of results) {
+    expect(results.map((result) => result.worker)).toEqual(["api", "collab"]);
+    for (const result of results) {
+      const { plan, applied } = reconciled(result);
       expect(applied).toBeNull(); // dry run writes nothing
       expect(plan.perCapability.find((cap) => cap.name === "auth")?.missingBindings).toHaveLength(3);
     }
@@ -264,7 +287,7 @@ describe("runUpgrade — fan-out over apps/", () => {
       resolveWorkers: resolve,
     });
     expect(results).toHaveLength(1);
-    expect(results[0]?.plan.worker).toBe("collab");
+    expect(reconciled(results[0]).plan.worker).toBe("collab");
   });
 
   test("drift in one worker only is reported against that worker alone", async () => {
@@ -276,7 +299,7 @@ describe("runUpgrade — fan-out over apps/", () => {
     );
 
     const { workers: results } = await runUpgrade({ account: null, ...base, projectDir: dir, resolveWorkers: resolve });
-    const byWorker = new Map(results.map((result) => [result.plan.worker, result.plan]));
+    const byWorker = new Map(results.map((result) => [result.worker, reconciled(result).plan]));
     expect(byWorker.get("api")?.perCapability.find((cap) => cap.name === "auth")?.missingBindings).toEqual([]);
     expect(byWorker.get("collab")?.perCapability.find((cap) => cap.name === "auth")?.missingBindings).toHaveLength(3);
   });
@@ -284,7 +307,7 @@ describe("runUpgrade — fan-out over apps/", () => {
   test("applying writes each worker's own wiring, and re-running finds nothing left", async () => {
     const applyOptions = { ...base, account: null, dryRun: false, projectDir: dir, resolveWorkers: resolve };
     const applied = await runUpgrade(applyOptions);
-    expect(applied.workers.map((result) => result.applied?.worker)).toEqual(["api", "collab"]);
+    expect(applied.workers.map((result) => reconciled(result).applied?.worker)).toEqual(["api", "collab"]);
 
     for (const workerDir of [apiDir, collabDir]) {
       const wrangler = await readFile(join(workerDir, "wrangler.jsonc"), "utf8");
@@ -292,7 +315,7 @@ describe("runUpgrade — fan-out over apps/", () => {
     }
 
     const second = await runUpgrade(applyOptions);
-    for (const { applied: result } of second.workers) expect(result?.perCapability).toEqual([]);
+    for (const result of second.workers) expect(reconciled(result).applied?.perCapability).toEqual([]);
   });
 
   test("the applied entry carries the identity the plan does — a dry run and a real one are one array", async () => {
@@ -308,7 +331,8 @@ describe("runUpgrade — fan-out over apps/", () => {
     });
 
     expect(results).toHaveLength(2);
-    for (const { plan, applied } of results) {
+    for (const result of results) {
+      const { plan, applied } = reconciled(result);
       expect(plan.deployedAs).not.toBe("");
       expect({ worker: applied?.worker, deployedAs: applied?.deployedAs }).toEqual({
         worker: plan.worker,
@@ -331,7 +355,7 @@ describe("runUpgrade — fan-out over apps/", () => {
       resolveWorkers: resolveApiOnlyComposesAuth,
     });
 
-    const byWorker = new Map(results.map((result) => [result.plan.worker, result]));
+    const byWorker = new Map(results.map((result) => [result.worker, reconciled(result)]));
     expect(byWorker.get("collab")?.plan.perCapability).toEqual([]);
     expect(byWorker.get("collab")?.applied?.perCapability).toEqual([]);
     expect(await readFile(join(collabDir, "wrangler.jsonc"), "utf8")).toBe(before);
@@ -418,7 +442,7 @@ describe("manifest faults", () => {
       missingPrerequisites: [],
       missingVersionMetadata: false,
     };
-    expect(__test.renderUpgrade({ workers: [{ plan: clean, applied: null }], manifestFaults: [fault] })).toEqual([
+    expect(__test.renderUpgrade({ workers: [entry(clean)], manifestFaults: [fault] })).toEqual([
       "@pithy-sh/audit: malformed pithy.manifest.json. Not reconciled.",
       "  configOptions[0].key — not a bare identifier",
       "api:",
@@ -439,9 +463,133 @@ describe("manifest faults", () => {
       missingPrerequisites: [],
       missingVersionMetadata: false,
     };
-    expect(__test.renderUpgrade({ workers: [{ plan: clean, applied: null }], manifestFaults: [] })).toEqual([
+    expect(__test.renderUpgrade({ workers: [entry(clean)], manifestFaults: [] })).toEqual([
       "api:",
       "  Nothing to upgrade.",
     ]);
+  });
+});
+
+/**
+ * **A Worker that could not be reconciled costs its own entry, not the run (#380).**
+ *
+ * `runUpgrade` fans out over `apps/*` building and applying one plan per Worker. A plan reads that
+ * Worker's own config and wrangler stanzas; an apply *writes* them. Either can fail for reasons
+ * belonging to one Worker, and the throw used to propagate — so a project lost every other Worker's
+ * report to one broken config, after some of those Workers' files had already been rewritten.
+ *
+ * These tests exist to fail when either guard is removed. The failure is planted in the seams the run
+ * already takes (`resolveWorkers` decides the set; `readLedger` and `runMigrate` are what a plan and an
+ * apply reach through), so nothing here mocks the function under test.
+ */
+describe("runUpgrade — a worker that will not reconcile", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-upgrade-fail-"));
+    await scaffoldProject({ targetDir: dir, appName: "upgrade-test" });
+    await cp(join(dir, "apps", "api"), join(dir, "apps", "collab"), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** Both Workers; `broken` is the one whose wiring the plant destroys. */
+  const both = async (): Promise<UpgradeWorker[]> => [
+    { name: "api", dir: join(dir, "apps", "api"), capabilities: [] },
+    { name: "collab", dir: join(dir, "apps", "collab"), capabilities: [] },
+  ];
+
+  const base = { account: null, env: "dev", migrate: false, resolveWorkers: both } as const;
+
+  test("a plan that throws leaves the other worker's plan intact", async () => {
+    const run = await runUpgrade({
+      ...base,
+      dryRun: true,
+      projectDir: dir,
+      // The ledger is what a plan reads through, and a revoked token or a deleted D1 throws here. It
+      // throws *synchronously* on purpose: a `.catch()` guard would not see this, and #371's plant
+      // escaped exactly such a guard.
+      readLedger: ({ workerDir }) => {
+        if (workerDir.endsWith("collab")) throw new Error("planted: this worker's ledger will not read");
+        return Promise.resolve({ pending: 0, undeclared: [] });
+      },
+    });
+
+    expect(run.workers.map((result) => [result.worker, result.state])).toEqual([
+      ["api", "reconciled"],
+      ["collab", "unplanned"],
+    ]);
+    expect(reconciled(run.workers[0]).plan.worker).toBe("api");
+  });
+
+  test("an unplanned worker carries its name and nothing else — no plan to read as an empty one", async () => {
+    const run = await runUpgrade({
+      ...base,
+      dryRun: true,
+      projectDir: dir,
+      readLedger: ({ workerDir }) => {
+        if (workerDir.endsWith("collab")) throw new Error("planted: this worker's ledger will not read");
+        return Promise.resolve({ pending: 0, undeclared: [] });
+      },
+    });
+
+    expect(run.workers[1]).toEqual({ state: "unplanned", worker: "collab" });
+    expect(JSON.stringify(run.workers[1])).not.toContain("planted");
+  });
+
+  test("an apply that throws is its own state, because that worker's files have been opened", async () => {
+    const run = await runUpgrade({
+      ...base,
+      dryRun: false,
+      migrate: true,
+      projectDir: dir,
+      // The migration run an apply performs after writing the wiring. By the time this throws, that
+      // Worker's `wrangler.jsonc` has already been rewritten — which is why it is not `unplanned`.
+      runMigrate: async ({ worker }) => {
+        if (worker === "collab") throw new Error("planted: this worker's migrations will not run");
+        return [];
+      },
+    });
+
+    expect(run.workers.map((result) => [result.worker, result.state])).toEqual([
+      ["api", "reconciled"],
+      ["collab", "unapplied"],
+    ]);
+    // The plan survives on this state and the applied record does not: what landed is precisely what
+    // the run cannot say.
+    const failed = run.workers[1];
+    expect(failed?.state === "unapplied" && failed.plan.worker).toBe("collab");
+    expect(failed && "applied" in failed).toBe(false);
+  });
+
+  test("either failure still fails the run — the gate does not weaken, it stops taking the report with it", async () => {
+    const clean = await runUpgrade({ ...base, dryRun: true, projectDir: dir });
+    expect(upgradeIncomplete(clean)).toBe(false);
+
+    const broken = await runUpgrade({
+      ...base,
+      dryRun: true,
+      projectDir: dir,
+      readLedger: ({ workerDir }) => {
+        if (workerDir.endsWith("collab")) throw new Error("planted: this worker's ledger will not read");
+        return Promise.resolve({ pending: 0, undeclared: [] });
+      },
+    });
+    expect(upgradeIncomplete(broken)).toBe(true);
+  });
+
+  test("neither failure state says nothing to upgrade — that is a finding, and nobody looked", () => {
+    const plans = __test.workerLines({ state: "unplanned", worker: "collab" });
+    expect(plans).toEqual([
+      "Couldn't be planned. Its pithy.config.ts or wrangler.jsonc would not read.",
+      "Nothing was written for it.",
+    ]);
+    expect(plans).not.toContain("Nothing to upgrade.");
+
+    const partial = __test.workerLines({ state: "unapplied", worker: "collab", plan: { ...plan, worker: "collab" } });
+    expect(partial[0]).toBe("Upgrade failed partway. Its wiring may hold part of the plan below.");
+    expect(partial[1]).toBe("Check it, then re-run: pithy upgrade --worker collab --env dev.");
   });
 });

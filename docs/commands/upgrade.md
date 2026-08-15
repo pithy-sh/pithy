@@ -46,16 +46,16 @@ A dry run resolves no project name and proposes none, so nothing can be written.
 
 ## `--json`
 
-One line, one object. The `workers` array carries a **plan** on a dry run and an **applied** result otherwise, and the two shapes differ.
+One line, one object. The `workers` array carries a **plan** on a dry run and an **applied** result otherwise, and the two shapes differ. **Every entry leads with `state`**, and only `"reconciled"` carries either of those shapes — a Worker that could not be read has no plan to report, and no empty one to be mistaken for a clean bill.
 
 ```
 $ pithy upgrade --dry-run --json
-{"command":"upgrade","env":"dev","dryRun":true,"workers":[{"worker":"board","deployedAs":"replay-board","env":"dev","perCapability":[{"name":"audit","missingBindings":[],"missingConfigKeys":[]},{"name":"auth","missingBindings":[],"missingConfigKeys":[]},{"name":"secrets","missingBindings":[],"missingConfigKeys":[]}],"ejectedSkipped":[],"pendingMigrations":1,"entitlementGap":[],"missingVersionMetadata":false}],"manifestFaults":[]}
+{"command":"upgrade","env":"dev","dryRun":true,"workers":[{"state":"reconciled","worker":"board","deployedAs":"replay-board","env":"dev","perCapability":[{"name":"audit","missingBindings":[],"missingConfigKeys":[]},{"name":"auth","missingBindings":[],"missingConfigKeys":[]},{"name":"secrets","missingBindings":[],"missingConfigKeys":[]}],"ejectedSkipped":[],"pendingMigrations":1,"entitlementGap":[],"missingVersionMetadata":false}],"manifestFaults":[]}
 ```
 
 ```
 $ pithy upgrade --json
-{"command":"upgrade","env":"dev","dryRun":false,"workers":[{"worker":"board","deployedAs":"replay-board","perCapability":[],"ejectedSkipped":[],"migrated":false,"migrations":[],"addedVersionMetadata":false}],"manifestFaults":[]}
+{"command":"upgrade","env":"dev","dryRun":false,"workers":[{"state":"reconciled","worker":"board","deployedAs":"replay-board","perCapability":[],"ejectedSkipped":[],"migrated":false,"migrations":[],"addedVersionMetadata":false}],"manifestFaults":[]}
 ```
 
 ### The envelope
@@ -66,9 +66,27 @@ $ pithy upgrade --json
 | `env` | string | The environment the run targeted — the validated `--env` |
 | `dryRun` | boolean | Whether `--dry-run` was passed. **This is what says which shape `workers` carries** |
 | `workers` | array | One entry per Worker in scope, in discovery order. A plan when `dryRun` is true, an applied result otherwise |
+| `workers[].state` | `"reconciled"` \| `"unplanned"` \| `"unapplied"` | Whether this Worker was reconciled, could not be planned at all, or was planned and failed partway through the apply. The fields below appear on `reconciled` alone |
 | `manifestFaults` | array | Installed packages shipping a `pithy.manifest.json` that is present and unusable. Project-wide, not per Worker. Empty on a healthy install |
 | `manifestFaults[].package` | string | The package the manifest was read from, as an adopter names it: `@pithy-sh/audit` |
 | `manifestFaults[].reason` | string | Why it could not be used — the schema's refusal text, or the errno where the file would not open |
+
+### `workers[]` when a Worker could not be reconciled
+
+A Worker whose plan could not be built carries `{"state":"unplanned","worker":"api"}` and nothing else. Its
+`pithy.config.ts` or its `wrangler.jsonc` would not read, so nothing was established about it and nothing was
+written for it — and the fields a reconciled entry has would each be a claim nobody checked. It carries no
+reason: what a config load or a database read throws names a path, an id, or a query.
+
+A Worker whose **apply** failed partway carries `{"state":"unapplied","worker":"api","plan":{…}}`. That is a
+different state on purpose, and the difference is that this Worker's files have been opened for writing: its
+`wrangler.jsonc` may hold part of the plan, and under `--migrate` its schema may have moved. The `plan` is
+what the run set out to do, not what landed — what landed is exactly what an interrupted apply cannot say.
+
+Every *other* Worker still reports in full. A run that loses four Workers' reports to a fifth one's broken
+config is the report you cannot use on the day you need it. **Either state exits 1**, on the same standard
+`pithy doctor` holds: a Worker that was not reconciled establishes nothing, and exiting 0 around it would be
+a weaker gate than the failure it replaced.
 
 ### `workers[]` when `dryRun` is `true`
 
@@ -139,7 +157,7 @@ No worker named "nope".
 Run pithy worker list to see this project's workers. Known: replay-board.
 ```
 
-**A Worker config that will not load.** A `pithy.config.ts` that cannot be imported fails the whole run, naming the file and the import that did not resolve.
+**A Worker config that will not load.** A `pithy.config.ts` that cannot be imported fails the whole run, naming the file and the import that did not resolve. That is the Worker *set* failing to resolve — the fan-out's input, not one of its contributors, so there is nothing left to report per Worker. A failure while a Worker is being **planned or applied** is the other thing entirely: it costs that Worker its entry (`state` above) and every other Worker still reports.
 
 ```
 $ pithy upgrade
