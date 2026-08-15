@@ -19,10 +19,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 const reportFixtureEstate = vi.hoisted(() => vi.fn());
+const resolveFixture = vi.hoisted(() => vi.fn());
+const fixtureValue = vi.hoisted(() => vi.fn());
 const loadIntegrationCreds = vi.hoisted(() => vi.fn());
 const reapAllStaleTestResources = vi.hoisted(() => vi.fn());
 
-vi.mock("./fixtures", () => ({ reportFixtureEstate }));
+vi.mock("./fixtures", () => ({ reportFixtureEstate, resolveFixture, fixtureValue }));
 vi.mock("./harness", () => ({ loadIntegrationCreds }));
 vi.mock("./reap", () => ({ reapAllStaleTestResources }));
 
@@ -34,6 +36,7 @@ const CREDS = { accountId: "acct", apiToken: "tok", secretsStoreId: "", r2: null
 beforeEach(() => {
   vi.clearAllMocks();
   reapAllStaleTestResources.mockResolvedValue([]);
+  resolveFixture.mockReturnValue({ ready: false });
 });
 
 describe("the run's globalSetup", () => {
@@ -62,7 +65,17 @@ describe("the run's globalSetup", () => {
     loadIntegrationCreds.mockReturnValue(CREDS);
     await setup();
     expect(reapAllStaleTestResources).toHaveBeenCalledOnce();
-    expect(reapAllStaleTestResources).toHaveBeenCalledWith(CREDS);
+    expect(reapAllStaleTestResources).toHaveBeenCalledWith(CREDS, { emailRoutingZoneId: undefined });
+  });
+
+  it("hands the sweep a zone only when the fixture named one", async () => {
+    // The one zone-scoped kind. A sweep that guessed would be editing mail delivery on a domain nobody
+    // pointed it at, so an absent fixture must reach the plan as `undefined` rather than as a default.
+    loadIntegrationCreds.mockReturnValue(CREDS);
+    resolveFixture.mockReturnValue({ ready: true });
+    fixtureValue.mockReturnValue("zone-id");
+    await setup();
+    expect(reapAllStaleTestResources).toHaveBeenCalledWith(CREDS, { emailRoutingZoneId: "zone-id" });
   });
 
   it("does not fail the run when the sweep fails", async () => {

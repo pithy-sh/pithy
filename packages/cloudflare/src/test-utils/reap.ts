@@ -3,6 +3,7 @@
 
 import { Cloudflare } from "cloudflare";
 import { CloudflareClients } from "../client/clients";
+import { listEmailRoutingRules, namedRules } from "./emailRoutingRules";
 import {
   emptyTestBucket,
   type IntegrationCreds,
@@ -50,6 +51,19 @@ import {
  * suites tear down in an unconditional `afterAll`; an interrupted run leaves debris that must be removed
  * by hand. `CONTRIBUTING.md` says so out loud rather than implying the sweep covers everything.
  */
+
+/**
+ * What this run is allowed to sweep beyond the account itself.
+ *
+ * Every other kind is account-scoped: the credentials name the account, and the account holds the
+ * debris. An Email Routing rule is not — it lives on a **zone**, and a sweep that guessed which zone
+ * would be editing mail delivery on a domain nobody pointed it at. So the zone is passed in, from the
+ * fixture that declared it, and a run that was told nothing sweeps nothing.
+ */
+export interface ReapScope {
+  /** The zone whose `pithy-int-` routing rules may be reclaimed. Absent means the kind reports itself skipped. */
+  emailRoutingZoneId?: string;
+}
 
 /** A kind that cannot be reaped this run, and the credential it is waiting on. */
 export interface SkippedReapKind {
@@ -138,7 +152,7 @@ export async function reapKinds(
  * R2 is the one kind an API token cannot reclaim: Cloudflare refuses to delete a non-empty bucket, and
  * emptying one is an S3-protocol operation. So it needs the key pair, and says so when it lacks it.
  */
-export function testResourceReapPlan(creds: IntegrationCreds): ReapPlanEntry[] {
+export function testResourceReapPlan(creds: IntegrationCreds, options: ReapScope = {}): ReapPlanEntry[] {
   const clients = new CloudflareClients({ accountId: creds.accountId, apiToken: creds.apiToken });
   const sdk = new Cloudflare({ apiToken: creds.apiToken });
   const workers = clients.workers();
@@ -166,6 +180,26 @@ export function testResourceReapPlan(creds: IntegrationCreds): ReapPlanEntry[] {
         if (found) await d1.deleteDatabase(found.uuid);
       },
     },
+    options.emailRoutingZoneId
+      ? {
+          // The one kind whose debris changes what happens to somebody's mail rather than costing a few
+          // cents: a rule left behind keeps delivering to a Worker script the same run already deleted.
+          // Zone-scoped, so it reaps only where a run was told which zone it was allowed to touch.
+          label: "Email Routing rule",
+          list: async () =>
+            namedRules(await listEmailRoutingRules(creds, options.emailRoutingZoneId ?? "")).map((rule) => rule.name),
+          // `removeWorkerRoute` is already name-keyed and idempotent, which is `remove`'s contract —
+          // another runner's sweep reaching the rule first must not read as a failure.
+          remove: async (name) => {
+            await clients
+              .emailRouting()
+              .removeWorkerRoute({ zoneId: options.emailRoutingZoneId ?? "", ruleName: name });
+          },
+        }
+      : {
+          label: "Email Routing rule",
+          skipped: "no EMAIL_ROUTING_ZONE_ID: the zone to sweep is unknown.",
+        },
     {
       label: "KV namespace",
       list: async () => (await kv.listNamespaces()).map((namespace) => namespace.title),
@@ -242,9 +276,9 @@ export function testResourceReapPlan(creds: IntegrationCreds): ReapPlanEntry[] {
  */
 export async function reapAllStaleTestResources(
   creds: IntegrationCreds,
-  options: { now?: number; staleAfterMs?: number } = {},
+  options: ReapScope & { now?: number; staleAfterMs?: number } = {},
 ): Promise<ReapKindResult[]> {
-  const results = await reapKinds(testResourceReapPlan(creds), options);
+  const results = await reapKinds(testResourceReapPlan(creds, options), options);
 
   for (const result of results) {
     if (result.skipped) console.warn(`stale ${result.label}(s) were not swept: ${result.skipped}`);

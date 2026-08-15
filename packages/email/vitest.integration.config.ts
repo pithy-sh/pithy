@@ -9,14 +9,16 @@ import { CONFIG_DIR_SETUP } from "../../vitest.shared";
 // `*.integration.test.ts` files load `.dev.vars` themselves and hit the Email Sending REST API
 // (the binding can only run inside a Worker), so they run in the node pool — no Miniflare.
 //
-// No debris sweep here, deliberately: this suite sends mail and provisions no Cloudflare resource, so it
-// has nothing to reclaim. A live test in this package that ever mints one must add
-// `globalSetup: ["../cloudflare/src/test-utils/integrationSetup.ts"]` (and the devDependency) with it.
+// The debris sweep is here now, and the note that used to stand in its place said exactly why it would
+// have to be: `inboundRouting.integration.test.ts` mints Worker scripts, a KV namespace, and — the one
+// kind whose debris changes what happens to somebody's mail — Email Routing rules. `globalSetup` also
+// prints the fixture estate, so a run that skips every live suite says which fixture it wanted.
 export default defineConfig({
   test: {
     name: "integration",
     environment: "node",
     include: ["src/**/*.integration.test.ts"],
+    globalSetup: ["../cloudflare/src/test-utils/integrationSetup.ts"],
     // A throwaway `PITHY_CONFIG_DIR`, exactly as the unit run has. A live suite needs the real
     // account; it has never needed the operator's real config directory (#200).
     setupFiles: [CONFIG_DIR_SETUP],

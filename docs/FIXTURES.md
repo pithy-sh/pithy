@@ -24,6 +24,13 @@ It runs there rather than in a suite hook for the reason the debris sweep does: 
 inside a `describe.skipIf(true)`, so anything living in one is gated on exactly the condition it exists to
 report.
 
+**Two entry points, chosen by what the package's suites create.** `integrationSetup.ts` reports *and*
+sweeps stale Cloudflare resources — the right one for a package that mints a Worker, a database or a
+bucket. `fixtureReportSetup.ts` only reports, for a package whose live suites merely read a third party
+and so have nothing to reclaim; sweeping the whole account on their way past would be somebody else's
+housekeeping, done at a surprising moment. Switch a config from the second to the first the moment one
+of its suites creates a resource.
+
 **Three outcomes skip, and only one of them is fine.**
 
 | Outcome | What it means |
@@ -124,23 +131,61 @@ that is not configured for routing, it is known, and it is not a bug to file.
 **Make it elsewhere.** **Email → Email Routing → Get started** on a zone whose MX you are willing to move,
 then **Destination addresses** for anything you want actually delivered.
 
+**The address is read for its domain, not claimed.** The live suite mints its own
+`pithy-int-…@<that domain>` address per run and provisions a rule for that, so two runs cannot collide
+and the fixture's own address is never touched. Point it at anything on the routed hostname.
+
+**The token needs more than the account scopes.** Email Routing Rules: Read and Edit on the zone, plus
+Workers Scripts: Edit and Workers KV Storage: Edit — the suite deploys a throwaway Worker to route mail
+to, because Cloudflare refuses a rule whose target script does not exist (`2016 Workers Script Info not
+found`).
+
+## email-sending
+
+`EMAIL_SENDING_FROM`
+
+An address on a domain onboarded to Cloudflare Email Sending, which the live inbound suite posts its
+test message from. Unlocks the delivery half of #47 — the half that proves an inbound message reaches a
+Worker's `email()` handler, rather than only that the rule was created.
+
+**It already exists on the maintainer account.** `pithy.sh` is onboarded and DKIM-signed
+(`cf2024-1._domainkey`), so `noreply@pithy.sh` is the value.
+
+**The token needs Email Sending: Edit**, which a general account token does not carry — the endpoint
+answers `10000` without it.
+
+**Cloudflare refuses to set some headers on a send.** `Authentication-Results` and `Received` are
+rejected with `10202 email.sending.error.email.invalid`, and a CRLF smuggled into a custom header's
+value is rejected the same way. That is why the forged-`Authentication-Results` question in #47 cannot
+be answered from this fixture: the only sender available refuses to forge. Arbitrary `X-` headers *are*
+accepted, which is what the suite addresses its record with.
+
 ## google-oauth
 
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
 
-An OAuth 2.0 client for the Google provider suite (#84).
+An OAuth 2.0 client for the Google provider suite —
+`packages/auth/src/instance/googleProvider.integration.test.ts` (#84).
 
 **No live origin is needed.** Google accepts `http://localhost` redirect URIs, so this suite runs locally
 against a port it picked itself and never against a deployed Worker. There is no `e2e.` subdomain to
 register and no fixed origin to hold.
 
-**Make it.** Google Cloud console → **APIs & Services → Credentials → Create credentials → OAuth client
-ID → Web application**. Add an authorised redirect URI of `http://localhost:<port>/auth/callback/google`
-for whatever port the suite runs on.
+**And no redirect URI needs registering, either.** The suite never completes a Google round trip —
+driving a consent screen needs a human, a browser and whatever 2FA the account carries, and a nightly
+built on that fails for Google's reasons rather than for Pithy's. It asserts the two things only the
+real provider can answer: the `redirect_uri` this app hands the browser, composed from the port the OS
+assigned this run, and whether Google recognises the credential — posted to the token endpoint with a
+code that is not one, Google answers `invalid_grant` for a client it knows and `invalid_client` for one
+it does not. Register a URI only if you want to drive the flow by hand.
 
-**Pin `basePath` explicitly in the test's config.** It defaults to `/auth` and is configurable, so a
-silent change to it invalidates every registered URI at once and the failure surfaces as a Google error
-page rather than as a config diff.
+**Make it.** Google Cloud console → **APIs & Services → Credentials → Create credentials → OAuth client
+ID → Web application**. Nothing else.
+
+**`basePath` is pinned in the suite, and the pin is itself tested.** It defaults to `/auth` and is
+configurable, so a silent change invalidates every registered redirect URI at once and surfaces as a
+Google error page rather than as a config diff. Every app the suite boots states its base path, and one
+case boots a second app at `/identity` to show the assertion follows the pin rather than the default.
 
 ## live-deploy
 
@@ -192,11 +237,22 @@ needs Secrets Store Read and Write.
 
 `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY`
 
-A real Turnstile widget. Unlocks the sign-in gating suite (#84).
+A real Turnstile widget. Unlocks the real-widget half of the sign-in gating suite —
+`packages/auth/src/http/turnstileGate.integration.test.ts` (#84).
 
 **A test key cannot do this job.** A scaffolded dev config uses Cloudflare's documented test sitekey
 (`1x00000000000000000000AA`), which always passes — so it cannot tell "the widget worked" from "the gate
-never ran", which is the one thing the suite exists to establish.
+never ran", which is the one thing the suite exists to establish. The suite refuses one on sight, and
+not by string-matching a list kept here: siteverify sets `metadata.result_with_testing_key` on every
+answer produced by a documented test key and on none produced by a real widget, so a fixture wrongly
+filled in with a test key fails loudly rather than certifying a gate that never ran.
+
+**What a widget still would not prove.** The gate is stacked as `turnstile({ action: "login" })` and
+fails closed when the action siteverify returns does not match. A test key's answer carries no action at
+all, so even the always-pass secret is refused — correctly, and for a reason that is not the humanity
+check. A token that satisfies both has to come from a real widget rendered with `action: "login"` and
+solved in a browser, which is a harness (#107) rather than a fixture. Until then the **pass-then-forward
+path is uncovered live**, and the suite's last case asserts that ceiling rather than describing it.
 
 **No custom domain, and no zone.** The widget goes on the hostname of a deployed Worker. On the
 maintainer account the `workers.dev` subdomain is `jim-02d`, so a Worker deployed as `pithy-int-test-ui`
