@@ -75,6 +75,7 @@ const ChatCompletionText = z
 
 export const TextGeneration = z
   .union([FlatTextGeneration, ChatCompletionText])
+  .describe("Either envelope, before normalization: the flat legacy one, or the OpenAI-compatible one.")
   .transform((value, ctx) => {
     if ("response" in value) return { response: value.response };
     const first = value.choices[0];

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { z } from "zod";
+import { undescribedExports } from "./schema/describedness";
 
 // `import.meta.glob` is a vite/vitest feature; declare it so plain `tsc` typecheck accepts it.
 declare global {
@@ -14,51 +14,23 @@ declare global {
 // Eagerly import every source module except tests, so any newly exported schema is covered
 // automatically — there is no manual list to keep in sync.
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"], { eager: true });
-
-/**
- * Record any object/enum/union missing a `.describe()` — on the schema itself or on any of
- * its fields — recursing into nested object fields. Codec-helper primitives are exempt
- * (CLAUDE.md §Zod) and aren't objects/enums/unions, so they're skipped.
- *
- * A pipe is stepped through rather than stopped at. This gate reads `instanceof`, so wrapping an object
- * in a guard — `refusesVanishingKey`, and anything else that pipes into a schema — turned an export it
- * checked into an export it silently skipped. Losing coverage as a side effect of adding a guard is the
- * wrong direction, and it would be invisible: the test still passes, on less.
- *
- * A codec is a pipe and is **not** stepped through, which is the §Zod exemption above spelled as a type
- * rather than as an accident. `z.codec` builds a `ZodCodec`, so the exemption is exact: it names codecs
- * and nothing else. Measured — stepping through codecs too reports seven fields whose union sides carry
- * no description, every one of them a `SQLiteDate` or a `sqliteJson`.
- */
-function collectMissing(schema: z.ZodType, path: string, missing: string[]): void {
-  if (schema instanceof z.ZodPipe && !(schema instanceof z.ZodCodec)) {
-    collectMissing(schema.in as z.ZodType, path, missing);
-    collectMissing(schema.out as z.ZodType, path, missing);
-  } else if (schema instanceof z.ZodObject) {
-    if (!schema.description) missing.push(`${path} — object has no .describe()`);
-    for (const [key, field] of Object.entries(schema.shape)) {
-      const fieldSchema = field as z.ZodType;
-      if (!fieldSchema.description) missing.push(`${path}.${key} — field has no .describe()`);
-      collectMissing(fieldSchema, `${path}.${key}`, missing);
-    }
-  } else if (schema instanceof z.ZodUnion || schema instanceof z.ZodEnum) {
-    if (!schema.description) missing.push(`${path} — enum/union has no .describe()`);
-  }
-}
-
 describe("schema descriptions (CLAUDE.md §Zod: schemas are the docs)", () => {
+  test("the sweep is looking at the package, not at nothing", () => {
+    // **The guard sixteen of nineteen of these files did without** (#326, #351). A glob that matches
+    // nothing produces no findings, and no findings is what passing looks like — so the population is
+    // pinned in three places, and a collapse in any one of them is loud.
+    //
+    // Near-exact, not a comfortable floor: measured at 112 modules, 95 schemas and 1144 fields on
+    // 2026-08-15, and each floor is 95% of that. The slack is there so deleting a module is not a red
+    // build; it is nowhere near enough for a glob that lost the package.
+    const walk = undescribedExports(modules);
+    expect(walk.modules).toBeGreaterThanOrEqual(106);
+    expect(walk.schemas).toBeGreaterThanOrEqual(90);
+    expect(walk.fields).toBeGreaterThanOrEqual(1086);
+  });
+
   test("every exported object/enum/union — and every field — carries a .describe()", () => {
-    const missing: string[] = [];
-    let schemasChecked = 0;
-    for (const [file, mod] of Object.entries(modules)) {
-      for (const [name, value] of Object.entries(mod)) {
-        if (value instanceof z.ZodType) {
-          schemasChecked++;
-          collectMissing(value, `${file}:${name}`, missing);
-        }
-      }
-    }
-    expect(schemasChecked).toBeGreaterThan(0); // the glob actually found schemas
-    expect(missing).toEqual([]);
+    const walk = undescribedExports(modules);
+    expect(walk.missing, walk.missing.join("\n")).toEqual([]);
   });
 });

@@ -33,9 +33,11 @@ import { isTestFile, readSource, sourcePaths } from "./sourceFiles";
  * it is about the invariant it protects the longer nobody re-reads it.
  *
  * So every sweep is partitioned here, exactly. A new one lands in neither list and this fails, which is
- * the moment its author is asked the question. The unguarded ones are **listed rather than excused** —
- * seventeen of them today — so closing one fails this file until the list shrinks with it, and the debt
- * is visible instead of being a sentence in an issue nobody reopens.
+ * the moment its author is asked the question. The unguarded ones are **listed rather than excused**, so
+ * closing one fails this file until the list shrinks with it, and the debt is visible instead of being a
+ * sentence in an issue nobody reopens. **The list is empty as of #351** — twenty-three sweeps, twenty-three
+ * populations asserted — and it is kept, not deleted, because the next unguarded sweep needs a place to
+ * be named.
  *
  * The guard itself is *near-exact*, not a comfortable floor: `toBeGreaterThan(5)` against twenty-seven
  * real subcommands is not a guard, it is the shape of one.
@@ -53,34 +55,26 @@ const PACKAGES = join(import.meta.dirname, "..", "..", "..", "..", "packages");
 const SWEEP = `import.meta.${"glob("}`;
 
 /**
- * Sweeps that assert what they found. **A frozen literal**, and the shorter of the two lists.
+ * Sweeps that assert what they found. **A frozen literal**, and — since #351 — the whole list.
  *
- * `core` and `testers` count the schemas they walked; `vite` counts the modules; `audit` and core's
- * Worker-safety scan pin both, near-exactly, as of #326. #338's retry-classification gate was enrolled
- * here when it landed — it pins its entrypoints in both directions, so it counts.
+ * Nineteen are the per-package `schema-descriptions` sweep. Each pins the modules its glob returned,
+ * the exports that resolved to a Zod schema, and the fields the walk actually visited, near-exactly
+ * against numbers measured on 2026-08-15. `vite` pins only the first two, and says why: it exports no
+ * schema, and asserting that fact is stronger than a floor of zero.
+ *
+ * The rest are core's own. `worker-safety` pins its module count; `retryClassification` (#338) pins its
+ * entrypoints in both directions; `wire` pins the closure walk's map; `boundary` pins its three
+ * surfaces exactly and proves its pattern can match.
  */
 const GUARDED = [
   "audit/src/schema-descriptions.test.ts",
-  "core/src/schema-descriptions.test.ts",
-  "core/src/worker-safety.test.ts",
-  "core/src/workflow/retryClassification.test.ts",
-  "testers/src/schema-descriptions.test.ts",
-  "vite/src/schema-descriptions.test.ts",
-];
-
-/**
- * Sweeps that do not — every one of them green over an empty glob. **Open, tracked, and not a licence.**
- *
- * Fifteen are the per-package `schema-descriptions` sweep, which is the same file copied across the
- * kit; two are core's own. They are debt rather than a decision: the fix is one assertion each, and it
- * belongs to whoever is next in the file. Removing a name here without adding it to {@link GUARDED}
- * fails this test, which is the point.
- */
-const UNGUARDED = [
   "auth/src/schema-descriptions.test.ts",
   "cloudflare/src/schema-descriptions.test.ts",
   "core/src/controlPlane/wire.test.ts",
   "core/src/logger/boundary.test.ts",
+  "core/src/schema-descriptions.test.ts",
+  "core/src/worker-safety.test.ts",
+  "core/src/workflow/retryClassification.test.ts",
   "email/src/schema-descriptions.test.ts",
   "leaderboard/src/schema-descriptions.test.ts",
   "ledger/src/schema-descriptions.test.ts",
@@ -92,9 +86,21 @@ const UNGUARDED = [
   "secrets/src/schema-descriptions.test.ts",
   "storage/src/schema-descriptions.test.ts",
   "support/src/schema-descriptions.test.ts",
+  "testers/src/schema-descriptions.test.ts",
   "turnstile/src/schema-descriptions.test.ts",
   "vector/src/schema-descriptions.test.ts",
+  "vite/src/schema-descriptions.test.ts",
 ];
+
+/**
+ * Sweeps that do not — every one of them green over an empty glob. **Open, tracked, and not a licence.**
+ *
+ * **Empty as of #351**, and it stays a list rather than becoming a comment because the next unguarded
+ * sweep needs somewhere to be named. A new sweep lands in neither list and fails the partition below,
+ * which is the moment its author is asked the question; naming it here is the only answer other than
+ * counting. Removing a name from here without adding it to {@link GUARDED} fails this test too.
+ */
+const UNGUARDED: string[] = [];
 
 /**
  * Whether a file asserts the size of something.
@@ -135,10 +141,11 @@ function sweeps(): { path: string; guarded: boolean }[] {
 
 describe("every package-wide sweep says what it swept", () => {
   test("the walk finds the sweeps, so this gate is not itself vacuous", () => {
-    // The gate over the gate over the gates. Twenty-two sweeps as this is written; a walk returning two
-    // would make the partition below trivially satisfiable by shrinking both lists.
+    // The gate over the gate over the gates. Twenty-three sweeps as this is written; a walk returning
+    // two would make the partition below trivially satisfiable by shrinking both lists. The literal is
+    // deliberately not `GUARDED.length` — a bound read off the list it bounds agrees with itself.
     expect(sweeps().length).toBe(GUARDED.length + UNGUARDED.length);
-    expect(sweeps().length).toBeGreaterThanOrEqual(22);
+    expect(sweeps().length).toBeGreaterThanOrEqual(23);
   });
 
   test("each one is either counted, or named here as debt", () => {

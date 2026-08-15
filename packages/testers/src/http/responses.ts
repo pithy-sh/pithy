@@ -590,7 +590,11 @@ export const NudgeDryRunResponse = z
   .object({
     dryRun: z.literal(true).describe("Always true. The discriminator that keeps a preview from being read as a send."),
     wouldSend: z
-      .array(z.object({ id: z.string().describe("A member who would be mailed. An id, never the address.") }))
+      .array(
+        z
+          .object({ id: z.string().describe("A member who would be mailed. An id, never the address.") })
+          .describe("One recipient of the send this preview describes."),
+      )
       .describe("Who this send would reach, capped at the batch limit."),
     cooling: z.number().int().describe("Inside the cooldown window."),
     unreachable: z.number().int().describe("Bounced or suppressed."),

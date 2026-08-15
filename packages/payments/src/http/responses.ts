@@ -139,11 +139,13 @@ export const PaymentsPortalHandoffResponse = z
     url: z.string().describe("The portal's overview page for this customer."),
     subscriptions: z
       .array(
-        z.object({
-          subscriptionId: z.string().describe("The store's own subscription id."),
-          cancel: z.string().describe("Where this subscription is cancelled."),
-          updatePaymentMethod: z.string().describe("Where this subscription's payment method is changed."),
-        }),
+        z
+          .object({
+            subscriptionId: z.string().describe("The store's own subscription id."),
+            cancel: z.string().describe("Where this subscription is cancelled."),
+            updatePaymentMethod: z.string().describe("Where this subscription's payment method is changed."),
+          })
+          .describe("One subscription's deep links. Every URL here is a bearer credential for that billing."),
       )
       .optional()
       .describe("Per-subscription deep links, for the store that offers them. Absent on the rails that do not."),
@@ -238,12 +240,18 @@ export const PaymentsAdminDiscountsResponse = z
   .object({
     discounts: z
       .array(
-        z.object({
-          code: z.string().min(1).describe("The code a customer enters."),
-          providerDiscountId: z.string().min(1).describe("The store's own id, for finding it in the dashboard."),
-          amount: z.string().describe("How much comes off, rendered for a person — the store's own figures."),
-          redemptions: z.number().int().nullable().describe("How many times it has been claimed, when the store says."),
-        }),
+        z
+          .object({
+            code: z.string().min(1).describe("The code a customer enters."),
+            providerDiscountId: z.string().min(1).describe("The store's own id, for finding it in the dashboard."),
+            amount: z.string().describe("How much comes off, rendered for a person — the store's own figures."),
+            redemptions: z
+              .number()
+              .int()
+              .nullable()
+              .describe("How many times it has been claimed, when the store says."),
+          })
+          .describe("One discount code, as the store holds it."),
       )
       .describe("The codes, as the store lists them."),
   })

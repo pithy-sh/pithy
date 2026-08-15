@@ -86,6 +86,17 @@ function moduleGraph(entry: string): { files: string[]; bare: string[]; source: 
 }
 
 describe("control-plane wire constants", () => {
+  test("the sweep read the package, so the closure walk is not walking an empty map", () => {
+    // `moduleGraph` throws on a file the glob did not read, which catches an *empty* glob — but not a
+    // glob that shrank. A pattern matching only `controlPlane/` would still resolve `wire.ts`, still
+    // report no bare specifiers, and still pass, while the contrast test below quietly stopped being a
+    // contrast. So the population is pinned: core held 112 non-test modules on 2026-08-15, and the
+    // floor is 95% of that.
+    expect(Object.keys(sources).length).toBeGreaterThanOrEqual(106);
+    expect(byPath.size).toBe(Object.keys(sources).length);
+    expect(byPath.has("src/controlPlane/wire.ts")).toBe(true);
+  });
+
   test("name the headers both sides of the seam agree on", () => {
     expect(CONTROL_PLANE_HEADER).toBe("pithy-control-plane");
     expect(CONTROL_PLANE_VERSION_HEADER).toBe("pithy-worker-version");

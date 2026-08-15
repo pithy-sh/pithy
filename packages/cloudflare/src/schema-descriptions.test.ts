@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { undescribedExports } from "@pithy-sh/core/src/schema/describedness";
 import { describe, expect, test } from "vitest";
-import { z } from "zod";
 
 // `import.meta.glob` is a vite/vitest feature; declare it so plain `tsc` typecheck accepts it.
 declare global {
@@ -14,33 +14,23 @@ declare global {
 // Eagerly import every source module except tests, so any newly exported schema is covered
 // automatically — there is no manual list to keep in sync. Mirrors core's meta-test.
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"], { eager: true });
-
-/**
- * Record any object/enum/union missing a `.describe()` — on the schema itself or on any of its
- * fields — recursing into nested object fields. Codec-helper primitives are exempt (CLAUDE.md §Zod)
- * and aren't objects/enums/unions, so they're skipped.
- */
-function collectMissing(schema: z.ZodType, path: string, missing: string[]): void {
-  if (schema instanceof z.ZodObject) {
-    if (!schema.description) missing.push(`${path} — object has no .describe()`);
-    for (const [key, field] of Object.entries(schema.shape)) {
-      const fieldSchema = field as z.ZodType;
-      if (!fieldSchema.description) missing.push(`${path}.${key} — field has no .describe()`);
-      collectMissing(fieldSchema, `${path}.${key}`, missing);
-    }
-  } else if (schema instanceof z.ZodUnion || schema instanceof z.ZodEnum) {
-    if (!schema.description) missing.push(`${path} — enum/union has no .describe()`);
-  }
-}
-
 describe("schema descriptions (CLAUDE.md §Zod: schemas are the docs)", () => {
+  test("the sweep is looking at the package, not at nothing", () => {
+    // **The guard sixteen of nineteen of these files did without** (#326, #351). A glob that matches
+    // nothing produces no findings, and no findings is what passing looks like — so the population is
+    // pinned in three places, and a collapse in any one of them is loud.
+    //
+    // Near-exact, not a comfortable floor: measured at 46 modules, 50 schemas and 168 fields on
+    // 2026-08-15, and each floor is 95% of that. The slack is there so deleting a module is not a red
+    // build; it is nowhere near enough for a glob that lost the package.
+    const walk = undescribedExports(modules);
+    expect(walk.modules).toBeGreaterThanOrEqual(43);
+    expect(walk.schemas).toBeGreaterThanOrEqual(47);
+    expect(walk.fields).toBeGreaterThanOrEqual(159);
+  });
+
   test("every exported object/enum/union — and every field — carries a .describe()", () => {
-    const missing: string[] = [];
-    for (const [file, mod] of Object.entries(modules)) {
-      for (const [name, value] of Object.entries(mod)) {
-        if (value instanceof z.ZodType) collectMissing(value, `${file}:${name}`, missing);
-      }
-    }
-    expect(missing).toEqual([]);
+    const walk = undescribedExports(modules);
+    expect(walk.missing, walk.missing.join("\n")).toEqual([]);
   });
 });

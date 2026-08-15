@@ -187,7 +187,8 @@ export const PaddleTransaction = z
             currency_code: z.string().optional().describe("The currency, uppercase ISO 4217."),
           })
           .loose()
-          .optional(),
+          .optional()
+          .describe("The money, as Paddle computed it."),
       })
       .loose()
       .optional()
@@ -230,10 +231,15 @@ export const PaddleSubscription = z
       .array(
         z
           .object({
-            price: z.object({ id: z.string().optional() }).loose().optional(),
-            status: z.string().optional(),
+            price: z
+              .object({ id: z.string().optional().describe("The price — `pri_…`. This rail's SKU.") })
+              .loose()
+              .optional()
+              .describe("The price this item is billed at."),
+            status: z.string().optional().describe("The item's own status, which can differ from the subscription's."),
           })
-          .loose(),
+          .loose()
+          .describe("One priced item on the subscription."),
       )
       .optional()
       .describe("The priced items. The first carries this rail's SKU."),
@@ -257,7 +263,7 @@ export const PaddleSubscription = z
       ),
     trial_dates: z
       .object({
-        starts_at: z.string().nullish(),
+        starts_at: z.string().nullish().describe("When the trial began."),
         ends_at: z.string().nullish().describe("When the trial ends — a trialing subscription's `expiresAt`."),
       })
       .loose()
@@ -269,7 +275,7 @@ export const PaddleSubscription = z
     discount: z
       .object({
         id: z.string().optional().describe("The discount in force."),
-        starts_at: z.string().nullish(),
+        starts_at: z.string().nullish().describe("When the discount started applying."),
         ends_at: z.string().nullish().describe("When the discount stops applying, or null for one that runs forever."),
       })
       .loose()

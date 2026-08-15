@@ -113,29 +113,37 @@ function documentedAt(description: string) {
 
 export const SecretRecipe = z
   .discriminatedUnion("kind", [
-    z.object({
-      kind: z
-        .literal("random")
-        .describe("Random bytes rendered as a string. Any value works, because nothing outside the project reads it."),
-      bytes: z
-        .int()
-        .positive()
-        .describe(
-          "Entropy before encoding. Stated because 32 and 16 are not interchangeable — a value sized for AES-256 that arrives half that long fails at decrypt, not at write, and by then it is stored.",
-        ),
-      encoding: z
-        .enum(["base64url", "base64", "hex"])
-        .describe(
-          "How the bytes are rendered. The kit mints `base64url`, unpadded, so a value survives a `.dev.vars` line, a shell export and a URL without quoting.",
-        ),
-    }),
-    z.object({
-      kind: z
-        .literal("encryptionConfig")
-        .describe(
-          "An `EncryptionConfig` — `currentVersion`, a `versions` map, `lastRotatedAt` — minted by `initialMasterKeyConfig`. `SECRETS_ENCRYPTION_KEYS` is the one, and the reason this is a union rather than an enum: it is minted, and a random string is not one of these. It states no `bytes` or `encoding` because the structure states its own.",
-        ),
-    }),
+    z
+      .object({
+        kind: z
+          .literal("random")
+          .describe(
+            "Random bytes rendered as a string. Any value works, because nothing outside the project reads it.",
+          ),
+        bytes: z
+          .int()
+          .positive()
+          .describe(
+            "Entropy before encoding. Stated because 32 and 16 are not interchangeable — a value sized for AES-256 that arrives half that long fails at decrypt, not at write, and by then it is stored.",
+          ),
+        encoding: z
+          .enum(["base64url", "base64", "hex"])
+          .describe(
+            "How the bytes are rendered. The kit mints `base64url`, unpadded, so a value survives a `.dev.vars` line, a shell export and a URL without quoting.",
+          ),
+      })
+      .describe("A minted value the kit makes from entropy: how many bytes, and how they are rendered."),
+    z
+      .object({
+        kind: z
+          .literal("encryptionConfig")
+          .describe(
+            "An `EncryptionConfig` — `currentVersion`, a `versions` map, `lastRotatedAt` — minted by `initialMasterKeyConfig`. `SECRETS_ENCRYPTION_KEYS` is the one, and the reason this is a union rather than an enum: it is minted, and a random string is not one of these. It states no `bytes` or `encoding` because the structure states its own.",
+          ),
+      })
+      .describe(
+        "A minted structure rather than a string. The tag is the whole recipe; nothing about it is configurable.",
+      ),
   ])
   .describe(
     "What produces a minted value. A tag the CLI resolves to code, never the code itself, because this crosses into the manifest.",
@@ -144,37 +152,43 @@ export type SecretRecipe = z.output<typeof SecretRecipe>;
 
 export const SecretOrigin = z
   .discriminatedUnion("kind", [
-    z.object({
-      kind: z
-        .literal("minted")
-        .describe("The kit produces this value. Nothing outside the project has to agree with it."),
-      recipe: SecretRecipe.describe("What produces it."),
-    }),
-    z.object({
-      kind: z
-        .literal("helped")
-        .describe(
-          "The kit cannot produce it, but knows enough to compose the command that does — a Cloudflare API token, whose permission groups an operator should not have to look up.",
+    z
+      .object({
+        kind: z
+          .literal("minted")
+          .describe("The kit produces this value. Nothing outside the project has to agree with it."),
+        recipe: SecretRecipe.describe("What produces it."),
+      })
+      .describe("Minted by the kit. The recipe says how, and no third party has to agree with the result."),
+    z
+      .object({
+        kind: z
+          .literal("helped")
+          .describe(
+            "The kit cannot produce it, but knows enough to compose the command that does — a Cloudflare API token, whose permission groups an operator should not have to look up.",
+          ),
+        issuer: issuedBy("Whose console or API issues it."),
+        needs: manifestRecord(z.partialRecord(IssuerKey, z.array(z.string().regex(HELPER_NEED)))).describe(
+          "What a helper must supply, keyed by issuer. Cloudflare's key is its permission groups. Keyed rather than flat so a second issuer does not widen a shape every consumer must handle. An unrecognised key is kept verbatim rather than degraded — see `IssuerKey`: rewriting two of them onto `other` loses one issuer's requirements silently. Wrapped in `manifestRecord` so the key rule is given every key the manifest wrote, including the one a parse would otherwise drop before the rule ran.",
         ),
-      issuer: issuedBy("Whose console or API issues it."),
-      needs: manifestRecord(z.partialRecord(IssuerKey, z.array(z.string().regex(HELPER_NEED)))).describe(
-        "What a helper must supply, keyed by issuer. Cloudflare's key is its permission groups. Keyed rather than flat so a second issuer does not widen a shape every consumer must handle. An unrecognised key is kept verbatim rather than degraded — see `IssuerKey`: rewriting two of them onto `other` loses one issuer's requirements silently. Wrapped in `manifestRecord` so the key rule is given every key the manifest wrote, including the one a parse would otherwise drop before the rule ran.",
-      ),
-      documentation: documentedAt(
-        "Where the command's arguments come from, for an operator who would rather check them by hand.",
-      ).optional(),
-    }),
-    z.object({
-      kind: z
-        .literal("obtained")
-        .describe(
-          "A human gets it from a third party and there is no command. An OAuth client secret is the case, and always will be.",
+        documentation: documentedAt(
+          "Where the command's arguments come from, for an operator who would rather check them by hand.",
+        ).optional(),
+      })
+      .describe("Issued elsewhere, but the kit knows enough to compose the command that asks for it."),
+    z
+      .object({
+        kind: z
+          .literal("obtained")
+          .describe(
+            "A human gets it from a third party and there is no command. An OAuth client secret is the case, and always will be.",
+          ),
+        issuer: issuedBy("Whose console issues it."),
+        documentation: documentedAt(
+          "Where a human goes. The specific settings page, not a product homepage — the point is to end a search, not to start one.",
         ),
-      issuer: issuedBy("Whose console issues it."),
-      documentation: documentedAt(
-        "Where a human goes. The specific settings page, not a product homepage — the point is to end a search, not to start one.",
-      ),
-    }),
+      })
+      .describe("Fetched by a human from a third party. There is no command, and the link is the whole help."),
   ])
   .describe(
     "How this secret's value first comes to exist. Closed, so a consumer branches rather than parses, and so an unhandled member is a type error rather than a blank screen.",
@@ -183,33 +197,39 @@ export type SecretOrigin = z.output<typeof SecretOrigin>;
 
 export const SecretRotation = z
   .discriminatedUnion("kind", [
-    z.object({
-      kind: z
-        .literal("local")
-        .describe(
-          'Replaced by producing a new value the same way it was minted. Every `origin.kind: "minted"` secret, and nothing else — if the kit can make one it can make another.',
-        ),
-    }),
-    z.object({
-      kind: z
-        .literal("provider")
-        .describe(
-          "Replaced by calling the issuer, which returns the new value. The kit cannot invent this call; the capability or the adopter supplies it, and it changes state in somebody else's system.",
-        ),
-      issuer: issuedBy("Who is called."),
-      documentation: documentedAt(
-        "What the call does, for an operator deciding whether to trust it with a live credential.",
-      ).optional(),
-    }),
-    z.object({
-      kind: z
-        .literal("manual")
-        .describe(
-          "A human, in a console. No API returns the new value — a GitHub or Google OAuth client secret. This is a real answer, not a missing one.",
-        ),
-      issuer: issuedBy("Whose console."),
-      documentation: documentedAt("The page where it is done."),
-    }),
+    z
+      .object({
+        kind: z
+          .literal("local")
+          .describe(
+            'Replaced by producing a new value the same way it was minted. Every `origin.kind: "minted"` secret, and nothing else — if the kit can make one it can make another.',
+          ),
+      })
+      .describe("Rotated by the kit, on its own. The tag carries everything; there is nobody to call."),
+    z
+      .object({
+        kind: z
+          .literal("provider")
+          .describe(
+            "Replaced by calling the issuer, which returns the new value. The kit cannot invent this call; the capability or the adopter supplies it, and it changes state in somebody else's system.",
+          ),
+        issuer: issuedBy("Who is called."),
+        documentation: documentedAt(
+          "What the call does, for an operator deciding whether to trust it with a live credential.",
+        ).optional(),
+      })
+      .describe("Rotated by calling the issuer. The new value comes back from somebody else's system."),
+    z
+      .object({
+        kind: z
+          .literal("manual")
+          .describe(
+            "A human, in a console. No API returns the new value — a GitHub or Google OAuth client secret. This is a real answer, not a missing one.",
+          ),
+        issuer: issuedBy("Whose console."),
+        documentation: documentedAt("The page where it is done."),
+      })
+      .describe("Rotated by a human, in a console. A real answer, and the page is the whole help."),
   ])
   .describe(
     "How this secret is replaced, declared separately from `origin` because neither follows from the other: a GitLab token is `obtained` and rotates by `provider`, while an OAuth client secret is `obtained` and rotates only by `manual`. Declared per secret, never per issuer — some Cloudflare secrets roll and some do not.",
