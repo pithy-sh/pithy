@@ -238,8 +238,14 @@ describe("the React 19 stub", () => {
       expect(contents, path).not.toMatch(/\bBearer\b/);
       expect(contents, path).not.toContain("refreshToken");
     }
-    expect(BOTH["src/session.tsx"]).toContain('credentials: "include"');
-    expect(BOTH["src/session.tsx"]).toContain("/get-session");
+    // **The cookie mode is no longer written here, and that is the fix rather than a regression
+    // (#370).** A scaffolded file is copied into the adopter's repository and Pithy may never rewrite
+    // it, so a transport spelled out in one is frozen at the moment they scaffolded. It lives in
+    // `@pithy-sh/auth/src/client/api` now, whose `sameOrigin.test.ts` holds it to one producer; what
+    // this scaffold has to get right is that the session module reaches the route through it.
+    expect(BOTH["src/session.tsx"]).toContain('from "@pithy-sh/auth/src/client/api"');
+    expect(BOTH["src/session.tsx"]).toContain("getSession as readSession");
+    expect(BOTH["src/session.tsx"]).not.toContain('credentials: "include"');
   });
 
   test("the client calls its API same-origin — no CORS config and no origin variable", () => {
@@ -301,8 +307,11 @@ describe("the React 19 stub", () => {
     // and two inboxes' worth of mail for one intent. The OTP screen stays in the tree; nothing on the
     // sign-in screen sends anybody to it.
     const signIn = AUTH["src/routes/pithy/sign-in.tsx"] ?? "";
-    expect(signIn).toContain("/sign-in/magic-link");
+    // The route path moved into `@pithy-sh/auth` with the request (#370), so the screen names the
+    // intent. One intent is still the assertion, and it is the same one.
+    expect(signIn).toContain("sendMagicLink(");
     expect(signIn).not.toContain("email-otp");
+    expect(signIn).not.toContain("sendOtp");
     expect(signIn).not.toContain("/otp?");
     // The one submit is the form's. A second `type="submit"` is a second intent on one screen.
     expect(signIn.match(/type="submit"/g) ?? []).toHaveLength(1);
@@ -318,18 +327,23 @@ describe("the React 19 stub", () => {
     expect(signIn).toContain('data-brand={props.brand ? "set" : "none"}');
   });
 
-  test("the social redirect refuses a URL it cannot follow, before navigating to it", () => {
+  test("the social redirect is followed only from the branch the package vetted", () => {
     const signIn = AUTH["src/routes/pithy/sign-in.tsx"] ?? "";
-    // The check has to sit in the type guard the navigation is gated on, not merely somewhere nearby.
-    const guard = signIn.slice(signIn.indexOf("function followable"), signIn.indexOf("type Refusal"));
-    // `window.location.href = url` with a javascript: URL executes in this page, so the response body
-    // is scheme-checked first — the same guard @pithy-sh/email makes on a tracked link.
-    expect(guard).toContain('parsed.protocol !== "https:" && parsed.protocol !== "http:"');
-    // #257: an authorization URL naming no client is a provider switched on with a blank credential.
-    // The client projection carries booleans, so refusing the response is the only place to catch it.
-    expect(guard).toContain('parsed.searchParams.get("client_id")');
+    // **Both checks moved into `@pithy-sh/auth` with the request itself (#370)**, where they upgrade
+    // with a minor release rather than being frozen into an adopter's copy of this file: the scheme
+    // check, because `window.location.href = url` with a `javascript:` URL executes in this page, and
+    // #257's `client_id` check, because an authorization URL naming no client is a provider switched
+    // on with a blank credential behind it. `startSocialSignIn` answers with a discriminated outcome
+    // and `packages/auth/src/client/api.test.ts` holds both halves.
+    //
+    // What has to be true in the scaffolded file is the other half: the navigator is reached from the
+    // vetted branch and from nowhere else. An unvetted URL reaching `redirect` is the whole defect.
+    expect(signIn).toContain("startSocialSignIn(");
+    expect(signIn).toContain('if (started.kind === "authorize") {');
+    expect(signIn).toContain("redirect(started.url);");
     expect(signIn).toContain("window.location.href = url;");
-    expect(signIn).toContain("if (followable(body)) {");
+    // Exactly one call to the navigator, and it is that one. A second is a second thing to vet.
+    expect(signIn.match(/\bredirect\(/g) ?? []).toEqual(["redirect("]);
   });
 
   test("the callback URL a provider is handed is always this app's own origin", () => {

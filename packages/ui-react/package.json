@@ -18,6 +18,7 @@
     "reset": "bun run clean && rm -rf node_modules"
   },
   "devDependencies": {
+    "@pithy-sh/auth": "workspace:*",
     "@pithy-sh/payments": "workspace:*",
     "@pithy-sh/tsconfig": "workspace:*",
     "@types/node": "^22.15.0",

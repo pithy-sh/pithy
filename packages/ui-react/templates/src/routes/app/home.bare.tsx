@@ -20,7 +20,14 @@ export default function Home() {
     let live = true;
     // Same origin. The SPA and the worker are one deploy on one origin, so paths are relative and
     // there is no CORS config and no API origin variable — in dev or in production.
-    fetch("/health", { credentials: "include" })
+    //
+    // **No cookie mode, and that is the whole of the request's security story.** `/health` is a public
+    // liveness route: it reads nothing about you, so there is no session to send it, and this is the
+    // one screen a project with no auth composed still gets. Every request that *does* carry a session
+    // goes through `@pithy-sh/auth/src/client/api` instead — which is not importable from here, and
+    // does not need to be, because a request with no ambient credential on it is not the rule that
+    // primitive exists to own (#370).
+    fetch("/health")
       .then((response) => response.json())
       .then((body: unknown) => {
         if (live) setStatus(isHealth(body) ? body.status : "unknown");

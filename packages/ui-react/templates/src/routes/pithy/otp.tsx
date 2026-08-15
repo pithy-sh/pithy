@@ -1,3 +1,4 @@
+import { sendOtp, signInWithOtp } from "@pithy-sh/auth/src/client/api";
 import { useCallback, useRef, useState } from "react";
 import { authConfig } from "../../pithy-config";
 import { navigate } from "../../router";
@@ -39,28 +40,24 @@ export default function Otp() {
     if (digit && index + 1 < authConfig.otpLength) inputs.current[index + 1]?.focus();
   }
 
+  // Where the auth routes are. Both calls below name an intent and nothing about transport: the
+  // base-path join, the cookie mode and the failure directions belong to `@pithy-sh/auth`, which can
+  // still fix them after this file is yours.
+  const client = { basePath: authConfig.basePath };
+
   async function verify(): Promise<void> {
     setBusy(true);
     setError(false);
-    const response = await fetch(`${authConfig.basePath}/sign-in/email-otp`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email, otp: code }),
-    }).catch(() => undefined);
+    const result = await signInWithOtp({ email, otp: code }, client);
     setBusy(false);
-    if (response?.ok) navigate("/");
+    if (result.ok) navigate("/");
     else setError(true);
   }
 
   async function resend(): Promise<void> {
-    const request = turnstileRequest({ email, type: "sign-in" }, captcha);
-    await fetch(`${authConfig.basePath}/email-otp/send-verification-otp`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "content-type": "application/json", ...request.headers },
-      body: JSON.stringify(request.body),
-    }).catch(() => undefined);
+    // The gate goes on the send route and not on the verify one, which is where `@pithy-sh/auth`
+    // stacks the humanity check: a code that was already mailed is not a surface worth challenging.
+    await sendOtp({ email, type: "sign-in" }, { ...client, gate: (body) => turnstileRequest(body, captcha) });
   }
 
   return (
