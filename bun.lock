@@ -165,6 +165,7 @@
       "devDependencies": {
         "@cloudflare/vitest-pool-workers": "^0.19.0",
         "@cloudflare/workers-types": "^5.20260729.1",
+        "@pithy-sh/cloudflare": "workspace:*",
         "@pithy-sh/tsconfig": "workspace:*",
         "@types/node": "^22.15.0",
         "@vitest/coverage-v8": "^4.1.0",

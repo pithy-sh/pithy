@@ -160,6 +160,13 @@ export const LIVE_FIXTURES = {
     consequence: "The inbound Email Routing rule (#47) skips.",
     doc: "docs/FIXTURES.md#email-routing",
   },
+  "email-sending": {
+    name: "email-sending",
+    keys: ["EMAIL_SENDING_FROM"],
+    shape: "credential",
+    consequence: "The inbound delivery round trip (#47) skips: nothing can post a message to the routed address.",
+    doc: "docs/FIXTURES.md#email-sending",
+  },
   "google-oauth": {
     name: "google-oauth",
     keys: ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],

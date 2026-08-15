@@ -33,11 +33,12 @@ function fakeKind(label: string, names: string[], removed: string[]): ReapPlanEn
 
 describe("testResourceReapPlan", () => {
   test("enumerates every reapable kind, so a new suite inherits cleanup rather than arranging it", () => {
-    const labels = reapPlanLabels(testResourceReapPlan(CREDS));
+    const labels = reapPlanLabels(testResourceReapPlan(CREDS, { emailRoutingZoneId: "zone" }));
     // The kinds any `uniqueName` call can mint. A kind absent here is a kind that leaks forever.
     expect(labels).toEqual([
       "API token",
       "D1 database",
+      "Email Routing rule",
       "KV namespace",
       "Queue",
       "R2 bucket",
@@ -52,14 +53,21 @@ describe("testResourceReapPlan", () => {
     const skipped = plan.filter((entry) => "skipped" in entry).map((entry) => entry.label);
     // Both kinds still appear — a missing credential must read as "not reaped, and here is why",
     // never as "nothing to reap". Silence is how the eight orphaned secrets went unnoticed.
-    expect(skipped).toEqual(["R2 bucket", "Secrets Store entry"]);
-    expect(reapPlanLabels(plan)).toHaveLength(8);
+    expect(skipped).toEqual(["Email Routing rule", "R2 bucket", "Secrets Store entry"]);
+    expect(reapPlanLabels(plan)).toHaveLength(9);
   });
 
   test("names the credential a skipped kind is waiting on", () => {
     const plan = testResourceReapPlan({ ...CREDS, secretsStoreId: "" });
     const entry = plan.find((candidate) => candidate.label === "Secrets Store entry");
     expect(entry && "skipped" in entry ? entry.skipped : null).toContain("SECRETS_STORE_ID");
+  });
+
+  test("a run told no zone sweeps no routing rule, rather than guessing which zone it may edit", () => {
+    // Every other kind is account-scoped, so the credentials decide what may be touched. This one edits
+    // mail delivery on a domain, and the only thing allowed to name that domain is the fixture.
+    const entry = testResourceReapPlan(CREDS).find((candidate) => candidate.label === "Email Routing rule");
+    expect(entry && "skipped" in entry ? entry.skipped : null).toContain("EMAIL_ROUTING_ZONE_ID");
   });
 });
 
