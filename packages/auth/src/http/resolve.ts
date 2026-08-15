@@ -10,6 +10,7 @@ import type { AuthWiring } from "../capability";
 import { authDatabase } from "../data/tables";
 import { makeSendAuthEmail } from "../email/send";
 import { type AuthInstance, makeAuth } from "../instance/auth";
+import { resolveProvider } from "../instance/providers";
 import {
   resolveAppleCredentials,
   resolveFacebookCredentials,
@@ -59,17 +60,30 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     });
   }
   const env = c.env as unknown as AuthEnv;
-  // Secret resolutions hit the same per-invocation cache; run them concurrently. A disabled provider
-  // skips its own `.get()` here (resolves to `undefined`) — but every declared auth secret, provider
-  // credentials included, is still materialized once by the shared store's batch resolution (the
-  // session-secret read below triggers it). So a provider's secret must be provisioned per environment
-  // whether or not it is enabled — the pre-existing contract for `google`/`apple` too.
+  // Secret resolutions hit the same per-invocation cache; run them concurrently. Five reads, and they
+  // are not alike — which is the whole of #381.
+  //
+  // `resolveSessionSecret` is what an auth instance *is*: nothing signs a session without it, so its
+  // failure stays a precondition and still fails this call. `resolveDb` below is the same. A provider
+  // credential is one sign-in method among several, and it used to sit in this list as an equal — so a
+  // single unreadable `auth-github-credentials` rejected the whole `Promise.all` and every magic-link
+  // and OTP caller in the deployment got the secrets reader's own refusal instead of a sign-in:
+  // measured, `404 secrets/not_found`, message `Secret 'auth-github-credentials' is declared but not
+  // provisioned.` So the old behaviour named the secret loudly and named it to *the browser*, on a
+  // route that has nothing to do with GitHub. Both halves of that are fixed here.
+  //
+  // `resolveProvider` catches per provider and hands back a state rather than a rejection, so this
+  // `Promise.all` settles whenever the session secret does. What the instance then lacks is one
+  // provider, and `makeAuth`'s `before` hook answers a caller who asks for it — see `instance/providers.ts`.
+  //
+  // A held failure belongs to its own secret (#170), so an unreadable provider credential does not
+  // disturb the session secret's own read, and a *disabled* provider never calls `.get()` at all.
   const [secret, google, apple, facebook, github] = await Promise.all([
     resolveSessionSecret(env),
-    cfg.google.enabled ? resolveGoogleCredentials(env) : Promise.resolve(undefined),
-    cfg.apple.enabled ? resolveAppleCredentials(env) : Promise.resolve(undefined),
-    cfg.facebook.enabled ? resolveFacebookCredentials(env) : Promise.resolve(undefined),
-    cfg.github.enabled ? resolveGithubCredentials(env) : Promise.resolve(undefined),
+    resolveProvider(cfg.google.enabled, () => resolveGoogleCredentials(env)),
+    resolveProvider(cfg.apple.enabled, () => resolveAppleCredentials(env)),
+    resolveProvider(cfg.facebook.enabled, () => resolveFacebookCredentials(env)),
+    resolveProvider(cfg.github.enabled, () => resolveGithubCredentials(env)),
   ]);
   const expiresMinutes = Math.max(1, Math.round(cfg.verificationExpiresIn / 60));
   return makeAuth({

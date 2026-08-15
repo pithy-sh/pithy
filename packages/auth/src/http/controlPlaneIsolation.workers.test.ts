@@ -28,6 +28,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { auth } from "../capability";
 import { authDatabase } from "../data/tables";
 import { makeAuth } from "../instance/auth";
+import { NO_SOCIAL_PROVIDERS } from "../instance/providers";
 import { authSecretsRegistry } from "../instance/secrets";
 import { AUTH_MIGRATION_ORDER, auth_0001_init } from "../migrations/0001_init";
 import { requireAuth } from "./middleware";
@@ -229,8 +230,7 @@ async function signIn(): Promise<{ token: string; userId: string }> {
     baseURL: "http://localhost",
     basePath: "/auth",
     trustedOrigins: ["http://localhost"],
-    google: undefined,
-    apple: undefined,
+    ...NO_SOCIAL_PROVIDERS,
     sendEmail: async (m) => {
       mailbox.push(m.template === "otp" ? { template: "otp", code: m.code } : { template: m.template });
     },

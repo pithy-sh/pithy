@@ -4,40 +4,41 @@
 import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { type BetterAuthPlugin, betterAuth } from "better-auth";
 import { APIError, createAuthMiddleware } from "better-auth/api";
-import { emitAfterRequest } from "../audit/emit";
+import { emitAfterRequest, emitProviderUnavailable } from "../audit/emit";
 import type { AuthDatabase } from "../data/tables";
 import { parseDeviceMeta, registerDevice } from "../device/registry";
 import { kitPlugins } from "./plugins";
-import type {
-  AppleOAuthCredentials,
-  FacebookOAuthCredentials,
-  GithubOAuthCredentials,
-  GoogleOAuthCredentials,
-} from "./secrets";
+import { providerUnavailable, type ResolvedProviders, unavailableProviderFor } from "./providers";
 
 /**
  * Build the `socialProviders` block from whichever provider credentials were resolved. Exported so the
  * per-provider branch matrix is unit-testable without constructing a Better Auth instance — it reads
  * only the resolved credentials on `deps`, never the database.
+ *
+ * **Only a `ready` provider is registered.** A `disabled` one never was; an `unresolvable` one is the
+ * change #381 made, and it is what keeps magic link and OTP working while one credential is unreadable.
+ * The narrowing is the type's doing rather than this function's discipline — `deps.google.credentials`
+ * does not exist until `state === "ready"` has been established.
  */
 export function socialProviders(deps: AuthInstanceDeps): Record<string, unknown> | undefined {
   const providers: Record<string, unknown> = {};
-  if (deps.google) {
+  if (deps.google.state === "ready") {
     providers.google = {
-      clientId: deps.google.clientId,
-      clientSecret: deps.google.clientSecret,
+      clientId: deps.google.credentials.clientId,
+      clientSecret: deps.google.credentials.clientSecret,
       accessType: "offline",
       prompt: "select_account consent",
     };
   }
-  if (deps.apple) {
+  if (deps.apple.state === "ready") {
+    const apple = deps.apple.credentials;
     providers.apple = {
-      clientId: deps.apple.clientId,
-      clientSecret: deps.apple.clientSecret,
-      ...(deps.apple.appBundleIdentifier ? { appBundleIdentifier: deps.apple.appBundleIdentifier } : {}),
+      clientId: apple.clientId,
+      clientSecret: apple.clientSecret,
+      ...(apple.appBundleIdentifier ? { appBundleIdentifier: apple.appBundleIdentifier } : {}),
     };
   }
-  if (deps.facebook) {
+  if (deps.facebook.state === "ready") {
     // Assert Facebook's email as verified. Facebook confirms a user's email before it will return it,
     // and Better Auth validates the access token against this app before trusting the `/me` profile —
     // so the email is genuinely the authenticated user's, verified by Facebook (the same trust Google
@@ -46,19 +47,19 @@ export function socialProviders(deps: AuthInstanceDeps): Record<string, unknown>
     // wrongly route every Facebook sign-in through verify-to-link. `mapProfileToUser` overrides only
     // Facebook's own email; Facebook stays out of `trustedProviders`.
     providers.facebook = {
-      clientId: deps.facebook.clientId,
-      clientSecret: deps.facebook.clientSecret,
+      clientId: deps.facebook.credentials.clientId,
+      clientSecret: deps.facebook.credentials.clientSecret,
       scope: ["email"],
       mapProfileToUser: () => ({ emailVerified: true }),
     };
   }
-  if (deps.github) {
+  if (deps.github.state === "ready") {
     // `user:email` (Better Auth's default GitHub scope, requested explicitly here) lets the provider
     // read the primary email's verified flag from the GitHub emails API — the signal account-linking
     // gates on. GitHub is not a trusted provider, so an unverified GitHub email never auto-links.
     providers.github = {
-      clientId: deps.github.clientId,
-      clientSecret: deps.github.clientSecret,
+      clientId: deps.github.credentials.clientId,
+      clientSecret: deps.github.credentials.clientSecret,
       scope: ["user:email"],
     };
   }
@@ -96,7 +97,8 @@ export type SendAuthEmail = (message: AuthEmailMessage) => Promise<void>;
  * Generic in the adopter's plugin tuple so the composed instance's type — and therefore its `$Infer`
  * surface — reflects what was actually composed rather than only the kit's four.
  */
-export interface AuthInstanceDeps<Plugins extends readonly BetterAuthPlugin[] = readonly BetterAuthPlugin[]> {
+export interface AuthInstanceDeps<Plugins extends readonly BetterAuthPlugin[] = readonly BetterAuthPlugin[]>
+  extends ResolvedProviders {
   /** The shared Kysely over the `pithy_auth_*` tables (carries `CamelCasePlugin`). */
   db: AuthDatabase;
   /** The Better-Auth signing/encryption secret, sourced from `@pithy-sh/secrets`. */
@@ -107,14 +109,9 @@ export interface AuthInstanceDeps<Plugins extends readonly BetterAuthPlugin[] = 
   basePath: string;
   /** Web origins and mobile deep-link schemes allowed as OAuth/redirect targets and for CSRF origin checks. */
   trustedOrigins: string[];
-  /** Google OAuth credentials, when the provider is enabled. Resolved as one typed JSON secret. */
-  google?: GoogleOAuthCredentials | undefined;
-  /** Apple Sign-In credentials, when the provider is enabled. Resolved as one typed JSON secret. */
-  apple?: AppleOAuthCredentials | undefined;
-  /** Facebook Login credentials, when the provider is enabled. Resolved as one typed JSON secret. */
-  facebook?: FacebookOAuthCredentials | undefined;
-  /** GitHub OAuth credentials, when the provider is enabled. Resolved as one typed JSON secret. */
-  github?: GithubOAuthCredentials | undefined;
+  // The four social providers arrive from `ResolvedProviders` — each one `disabled`, `ready` with its
+  // credentials, or `unresolvable`. They are the one part of this interface that is deliberately not a
+  // precondition: `db` and `secret` above fail the whole instance, and a provider does not (#381).
   /** Deliver a magic link or OTP. Enqueues an email job; never sends inline. */
   sendEmail: SendAuthEmail;
   /** Session lifetime in seconds. */
@@ -210,6 +207,30 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
       },
     },
     hooks: {
+      /**
+       * Refuse a provider this deployment enables and could not resolve, before Better Auth answers it
+       * with the 404 it gives a provider nobody configured (#381).
+       *
+       * **This is what makes degrading not the same as degrading quietly.** The instance was built
+       * without the provider, so `socialProviders` does not hold it, so `sign-in/social` would throw
+       * `PROVIDER_NOT_FOUND` — a 404 that tells somebody who signs in with GitHub every day that
+       * GitHub was never set up. It is the same answer for a fault and for a choice, and the two are
+       * not the same fact. This hook answers 503 with its own code instead, and records the attempt.
+       *
+       * **A `before` hook rather than a Hono route, and that is forced rather than preferred.** The
+       * provider is in the request *body*, and the body is Better Auth's to read: a Hono handler ahead
+       * of the catch-all would have to consume the stream that the catch-all then hands to
+       * `instance.handler(c.req.raw)`. Here the body is already parsed against the endpoint's own
+       * schema, and this reads one field out of it.
+       */
+      before: createAuthMiddleware(async (ctx) => {
+        const provider = unavailableProviderFor(ctx.path ?? "", ctx.body, deps);
+        if (!provider) return;
+        // Recorded before the throw, so the trail holds the attempt whether or not anything logs the
+        // refusal. `emitProviderUnavailable` swallows its own failure by contract.
+        await emitProviderUnavailable(deps.emit, { provider, headers: ctx.headers });
+        throw providerUnavailable(provider);
+      }),
       // Emit audit events for every completed auth request: sign-in (+device) from the new session,
       // plus the send/sign-out/token/OAuth events by path. Endpoint-scoped, so a rotation never emits.
       after: createAuthMiddleware(async (ctx) => {

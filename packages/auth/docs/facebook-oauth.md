@@ -70,6 +70,17 @@ Pithy trusts Facebook's email as verified. Facebook confirms a user's email befo
 
 Facebook is **not** in `trustedProviders`. Trusting the returned email is not the same as trusting Facebook to link an *unverified* address — the assertion applies to the authenticated user's own Facebook email, which Facebook has verified.
 
+## When the credential will not read
+
+An enabled provider whose secret is missing, or whose stored value no longer matches its schema, costs
+**that provider and nothing else**. Magic link, OTP, and every other provider keep signing people in.
+
+A sign-in attempt with Facebook then answers `503` with the code `auth/provider_unavailable` and a
+message naming facebook, rather than the `404 PROVIDER_NOT_FOUND` a provider nobody enabled gets — the two
+are different facts and never share an answer. The attempt is recorded in the audit trail as
+`auth/provider_unavailable`, which is where an operator learns a sign-in method is down. Fix it by
+provisioning `auth-facebook-credentials` for that environment, or turn the provider off in config.
+
 ## Checklist
 
 - [ ] Meta app created with the Facebook Login product.

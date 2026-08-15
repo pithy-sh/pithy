@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { authDatabase } from "../data/tables";
 import { AUTH_MIGRATION_ORDER, auth_0001_init } from "../migrations/0001_init";
 import { type AuthEmailMessage, type AuthInstanceDeps, makeAuth } from "./auth";
+import { NO_SOCIAL_PROVIDERS, type ResolvedProviders } from "./providers";
 
 const TABLES = [
   "pithy_auth_accounts",
@@ -38,7 +39,7 @@ function instanceWithMailbox() {
     baseURL: "http://localhost:8787",
     basePath: "/api/auth",
     trustedOrigins: ["http://localhost:8787"],
-    google: undefined,
+    ...NO_SOCIAL_PROVIDERS,
     sendEmail: async (message) => {
       mailbox.push(message);
     },
@@ -156,7 +157,7 @@ describe("Better Auth ⇄ CamelCasePlugin on snake_case D1 tables", () => {
  * round-trip — so this pins exactly what Pithy hands Better Auth, per provider.
  */
 describe("social providers and account linking, via instance.options", () => {
-  function instanceWith(providers: Partial<AuthInstanceDeps>) {
+  function instanceWith(providers: Partial<ResolvedProviders>) {
     const deps: AuthInstanceDeps = {
       db: authDatabase(env.DB),
       secret: "test-secret-please-rotate-0000000000",
@@ -171,6 +172,7 @@ describe("social providers and account linking, via instance.options", () => {
       disableSignUp: false,
       emit: async () => {},
       plugins: [],
+      ...NO_SOCIAL_PROVIDERS,
       ...providers,
     };
     return makeAuth(deps);
@@ -182,10 +184,10 @@ describe("social providers and account linking, via instance.options", () => {
 
   test("enabled providers appear in the options Better Auth receives, with the right scopes", () => {
     const options = instanceWith({
-      google: { clientId: "g", clientSecret: "gs" },
-      apple: { clientId: "a", clientSecret: "as" },
-      facebook: { clientId: "f", clientSecret: "fs" },
-      github: { clientId: "h", clientSecret: "hs" },
+      google: { state: "ready", credentials: { clientId: "g", clientSecret: "gs" } },
+      apple: { state: "ready", credentials: { clientId: "a", clientSecret: "as" } },
+      facebook: { state: "ready", credentials: { clientId: "f", clientSecret: "fs" } },
+      github: { state: "ready", credentials: { clientId: "h", clientSecret: "hs" } },
     }).options;
     const social = options.socialProviders as Record<
       string,
@@ -200,13 +202,38 @@ describe("social providers and account linking, via instance.options", () => {
 
   test("trustedProviders stays Google and Apple only — Facebook and GitHub are never trusted", () => {
     const linking = instanceWith({
-      facebook: { clientId: "f", clientSecret: "fs" },
-      github: { clientId: "h", clientSecret: "hs" },
+      facebook: { state: "ready", credentials: { clientId: "f", clientSecret: "fs" } },
+      github: { state: "ready", credentials: { clientId: "h", clientSecret: "hs" } },
     }).options.account?.accountLinking;
     expect(linking?.enabled).toBe(true);
     expect(linking?.trustedProviders).toEqual(["google", "apple"]);
     expect(linking?.trustedProviders).not.toContain("facebook");
     expect(linking?.trustedProviders).not.toContain("github");
+  });
+
+  /**
+   * #381, at the layer where the instance is assembled. An unresolvable provider is built *out* — the
+   * whole point, since a `Promise.all` rejection used to build nothing at all — while the ready one
+   * beside it is untouched. What the two absences then look like from outside is not the same, and
+   * that half is `providers.test.ts`'s and `http/providerResolution.workers.test.ts`'s.
+   */
+  test("an unresolvable provider is left out, and its ready sibling is not", () => {
+    const social = instanceWith({
+      google: { state: "ready", credentials: { clientId: "g", clientSecret: "gs" } },
+      github: { state: "unresolvable" },
+    }).options.socialProviders as Record<string, unknown>;
+    expect(Object.keys(social)).toEqual(["google"]);
+  });
+
+  test("every provider unresolvable → socialProviders is omitted, as when every provider is off", () => {
+    expect(
+      instanceWith({
+        google: { state: "unresolvable" },
+        apple: { state: "unresolvable" },
+        facebook: { state: "unresolvable" },
+        github: { state: "unresolvable" },
+      }).options.socialProviders,
+    ).toBeUndefined();
   });
 
   test("the seeding guard is wired as a user create.before hook", () => {

@@ -76,6 +76,17 @@ One account per verified email. GitHub is **not** a trusted provider, so it link
 - **Unverified email → verify first.** If your GitHub primary email is not verified on GitHub, Pithy will not silently link it and will not create a second account. Verify the email on GitHub, or sign in with a magic link to that address first, then connect GitHub. This closes the takeover hole where an unverified address could be linked to an account you do not own.
 - **No seeding.** A GitHub sign-in whose email is unverified is refused rather than used to create a fresh account — so no one can seed a row at an address they have not proven they own.
 
+## When the credential will not read
+
+An enabled provider whose secret is missing, or whose stored value no longer matches its schema, costs
+**that provider and nothing else**. Magic link, OTP, and every other provider keep signing people in.
+
+A sign-in attempt with GitHub then answers `503` with the code `auth/provider_unavailable` and a
+message naming github, rather than the `404 PROVIDER_NOT_FOUND` a provider nobody enabled gets — the two
+are different facts and never share an answer. The attempt is recorded in the audit trail as
+`auth/provider_unavailable`, which is where an operator learns a sign-in method is down. Fix it by
+provisioning `auth-github-credentials` for that environment, or turn the provider off in config.
+
 ## Checklist
 
 - [ ] GitHub OAuth app registered (one per environment).

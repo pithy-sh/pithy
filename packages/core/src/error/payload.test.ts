@@ -188,10 +188,18 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * all the way down to empty. Both unions are measured against this number and never against each
  * other's length. Changing the taxonomy's size is a deliberate act; changing this line is part of it.
  *
- * Verified 2026-08-15: 118 members in each union, no duplicates, sorted lists identical. **Two were added
- * that day, on separate branches, and each moved this line to 117 on its own** — so the merge is 118 and
- * not a repeat. Which is the case this comment exists for: the number is maintained by hand precisely so
- * that two people cannot each be right and the taxonomy still be miscounted.
+ * Verified 2026-08-15: 119 members in each union, no duplicates, sorted lists identical.
+ *
+ * `auth/provider_unavailable` (#381) — a social sign-in provider the deployment enables whose credential
+ * would not resolve. It needs its own code because the instance now builds *without* that provider, and
+ * Better Auth answers a provider it does not hold with `PROVIDER_NOT_FOUND` 404 — the same answer it
+ * gives for one nobody ever enabled. Sharing that code would have made a broken provider and an absent
+ * one indistinguishable from outside the Worker, which is precisely the distinction the fix turns on.
+ *
+ * The three before it took it to 118, and **two of those were added the same day on separate branches**,
+ * each moving this line to 117 on its own — so that merge was 118 and not a repeat. Which is the case
+ * this comment exists for: the number is maintained by hand precisely so that two people cannot each be
+ * right and the taxonomy still be miscounted.
  *
  * `secrets/rotation_unsupported` (#372) — a rotation asked of a Worker-side route for a secret no single
  * Worker can replace. It needs its own code because a client must tell it from a denial and from a fault:
@@ -205,7 +213,7 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * rolled at its issuer whose successor the store never took, the one secrets failure a retry cannot
  * repair.
  */
-const KIT_ERROR_CODE_COUNT = 118;
+const KIT_ERROR_CODE_COUNT = 119;
 
 /** One member of either kit union — the public projection or its `action`/`detail` twin. */
 type KitUnionMember = (typeof KitErrorPayload | typeof KitPublicErrorPayload)["options"][number];

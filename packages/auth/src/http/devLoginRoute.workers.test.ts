@@ -17,6 +17,7 @@ import { AuthConfig, type AuthWiring } from "../capability";
 import { Session, User } from "../data/betterAuth";
 import { authDatabase, authTables } from "../data/tables";
 import { type AuthEmailMessage, makeAuth } from "../instance/auth";
+import { NO_SOCIAL_PROVIDERS } from "../instance/providers";
 import { authSecretsRegistry } from "../instance/secrets";
 import { AUTH_MIGRATION_ORDER, auth_0001_init } from "../migrations/0001_init";
 import { mintDevSession } from "../seeds/devSession";
@@ -67,6 +68,7 @@ function instance(secret = SECRET) {
     baseURL: "http://localhost",
     basePath: "/auth",
     trustedOrigins: ["http://localhost"],
+    ...NO_SOCIAL_PROVIDERS,
     sendEmail: async (message) => void mailbox.push(message),
     sessionExpiresIn: 604800,
     sessionUpdateAge: 86400,

@@ -10,6 +10,7 @@ import { authDatabase } from "../data/tables";
 import { AUTH_MIGRATION_ORDER, auth_0001_init } from "../migrations/0001_init";
 import { authPluginPlan } from "../migrations/pluginTables";
 import { type AuthEmailMessage, makeAuth } from "./auth";
+import { NO_SOCIAL_PROVIDERS } from "./providers";
 
 /**
  * The whole claim of #271, end to end inside the Workers runtime: an adopter composes a plugin the kit
@@ -60,6 +61,7 @@ function instanceWithMailbox() {
       baseURL: "http://localhost:8787",
       basePath: "/api/auth",
       trustedOrigins: ["http://localhost:8787"],
+      ...NO_SOCIAL_PROVIDERS,
       sendEmail: async (message) => {
         mailbox.push(message);
       },

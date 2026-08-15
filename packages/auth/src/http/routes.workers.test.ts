@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { AuthConfig, type AuthWiring } from "../capability";
 import { authDatabase } from "../data/tables";
 import { makeAuth } from "../instance/auth";
+import { NO_SOCIAL_PROVIDERS } from "../instance/providers";
 import { authSecretsRegistry } from "../instance/secrets";
 import { AUTH_MIGRATION_ORDER, auth_0001_init } from "../migrations/0001_init";
 import { publishSameOrigin } from "./csrf";
@@ -48,9 +49,11 @@ const REGISTRY = { ...authSecretsRegistry, ...turnstileSecretsRegistry };
 /**
  * Every secret the suite provisions, seeded as encrypted rows before each case.
  *
- * All five auth entries are seeded even though most cases read one: `secretsStore` resolves the whole
- * registry in a batch, so an unprovisioned entry fails the read for every capability sharing the
- * accessor, not just the one that declared it.
+ * All five auth entries are seeded even though most cases read one — as a fixture that keeps every case
+ * on the healthy path, not because it is required. A held failure belongs to its own secret (#170) and
+ * an enabled provider that will not resolve costs that provider alone (#381), so an omission here would
+ * be a case's own plant rather than a suite-wide break. `http/providerResolution.workers.test.ts` is
+ * where the omissions live.
  */
 const SECRETS: SecretFixture<typeof REGISTRY> = {
   "auth-session-secret": SECRET,
@@ -117,8 +120,7 @@ async function signIn(deviceHeaders: Record<string, string> = {}): Promise<{ tok
     baseURL: "http://localhost",
     basePath: "/auth",
     trustedOrigins: ["http://localhost"],
-    google: undefined,
-    apple: undefined,
+    ...NO_SOCIAL_PROVIDERS,
     sendEmail: async (m) => {
       mailbox.push(m.template === "otp" ? { template: "otp", code: m.code } : { template: m.template });
     },

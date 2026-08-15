@@ -84,6 +84,22 @@ const ForbiddenPublic = z
   })
   .describe("The caller is authenticated but lacks permission (403).");
 
+const AuthProviderUnavailablePublic = z
+  .object({
+    code: z
+      .literal("auth/provider_unavailable")
+      .describe(
+        "A social sign-in provider this deployment enables could not be served, because its credential would not resolve for this environment. The other sign-in methods are unaffected — that is the whole reason this is not a 500. It is a separate code from `core/not_found` on purpose: Better Auth answers a provider nobody configured with a 404, and a caller who signs in with that provider every day must be able to tell 'nobody enabled this' from 'this is broken right now'.",
+      ),
+    status: z
+      .literal(503)
+      .describe(
+        "Service Unavailable — one of this service's own dependencies, the provider's credential, could not be read. Not 502/504: nothing was asked of the provider, so no hop failed or timed out.",
+      ),
+    ...publicFields,
+  })
+  .describe("An enabled social sign-in provider could not be served (503).");
+
 const NotFoundPublic = z
   .object({
     code: z.literal("core/not_found").describe("The requested resource does not exist."),
@@ -1388,6 +1404,7 @@ export const KitPublicErrorPayload = z
     InvalidInputPublic,
     InvalidTokenPublic,
     ForbiddenPublic,
+    AuthProviderUnavailablePublic,
     NotFoundPublic,
     ConflictPublic,
     RateLimitPublic,
@@ -1511,6 +1528,9 @@ export const KitPublicErrorPayload = z
 const InvalidInput = InvalidInputPublic.extend(internalFields).describe(InvalidInputPublic.description ?? "");
 const InvalidToken = InvalidTokenPublic.extend(internalFields).describe(InvalidTokenPublic.description ?? "");
 const Forbidden = ForbiddenPublic.extend(internalFields).describe(ForbiddenPublic.description ?? "");
+const AuthProviderUnavailable = AuthProviderUnavailablePublic.extend(internalFields).describe(
+  AuthProviderUnavailablePublic.description ?? "",
+);
 const NotFound = NotFoundPublic.extend(internalFields).describe(NotFoundPublic.description ?? "");
 const Conflict = ConflictPublic.extend(internalFields).describe(ConflictPublic.description ?? "");
 const RateLimit = RateLimitPublic.extend(internalFields).describe(RateLimitPublic.description ?? "");
@@ -1837,6 +1857,7 @@ export const KitErrorPayload = z
     InvalidInput,
     InvalidToken,
     Forbidden,
+    AuthProviderUnavailable,
     NotFound,
     Conflict,
     RateLimit,

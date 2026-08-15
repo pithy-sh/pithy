@@ -180,6 +180,33 @@ export async function emitControlPlaneAction(
   });
 }
 
+/**
+ * Emit a `provider_unavailable` event — somebody asked for a sign-in method this deployment enables and
+ * could not serve.
+ *
+ * `anonymous`, because the caller has no session yet by definition. `denied` rather than `failure`: the
+ * request was refused deliberately by a rule this Worker holds, not lost to a fault. `warning` rather
+ * than `critical` — the other sign-in methods are working, which is the entire point of #381, so this is
+ * notable rather than alert-worthy.
+ *
+ * `metadata.provider` is the provider id and nothing else. The secret name is derivable from it and is
+ * still not written: an audit row is long-lived and queryable, and naming a store entry in one is a map
+ * for whoever reads the trail later.
+ */
+export async function emitProviderUnavailable(
+  emit: AuditEmit,
+  context: { provider: string; headers: Headers | undefined },
+): Promise<void> {
+  await safeEmit(emit, {
+    action: AuthAuditActions.providerUnavailable,
+    outcome: "denied",
+    severity: "warning",
+    actorType: "anonymous",
+    metadata: { provider: context.provider },
+    ...correlation(context.headers),
+  });
+}
+
 /** A blocked/failed auth attempt — recorded as `denied` (first-class). */
 export async function emitDenied(
   emit: AuditEmit,

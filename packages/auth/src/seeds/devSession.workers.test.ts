@@ -15,6 +15,7 @@ import { Session, User } from "../data/betterAuth";
 import { authDatabase, authTables } from "../data/tables";
 import { baseURLResolver } from "../http/baseUrl";
 import { type AuthEmailMessage, makeAuth } from "../instance/auth";
+import { NO_SOCIAL_PROVIDERS } from "../instance/providers";
 import { AUTH_SESSION_SECRET } from "../instance/secrets";
 import { AUTH_MIGRATION_ORDER, auth_0001_init } from "../migrations/0001_init";
 import { authDevSessionSeed, DEV_SESSION_COOKIE_NAME } from "./devSession";
@@ -47,6 +48,7 @@ function instance(secret = SECRET, baseURL = "http://localhost:8787") {
     baseURL,
     basePath: "/api/auth",
     trustedOrigins: ["http://localhost:8787"],
+    ...NO_SOCIAL_PROVIDERS,
     sendEmail: async (message) => void mailbox.push(message),
     sessionExpiresIn: 60 * 60 * 24 * 7,
     sessionUpdateAge: 60 * 60 * 24,

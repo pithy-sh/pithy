@@ -92,6 +92,17 @@ A user who signed up with a magic link and later signs in with Google is linked 
 
 `requireLocalEmailVerified` stays on. That is the secure default: it blocks account takeover where an attacker pre-registers an unverified row for a victim's email and waits for the victim's Google sign-in to link into it. Leave it on.
 
+## When the credential will not read
+
+An enabled provider whose secret is missing, or whose stored value no longer matches its schema, costs
+**that provider and nothing else**. Magic link, OTP, and every other provider keep signing people in.
+
+A sign-in attempt with Google then answers `503` with the code `auth/provider_unavailable` and a
+message naming google, rather than the `404 PROVIDER_NOT_FOUND` a provider nobody enabled gets — the two
+are different facts and never share an answer. The attempt is recorded in the audit trail as
+`auth/provider_unavailable`, which is where an operator learns a sign-in method is down. Fix it by
+provisioning `auth-google-credentials` for that environment, or turn the provider off in config.
+
 ## Checklist
 
 - [ ] Google Cloud project created.

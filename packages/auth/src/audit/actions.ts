@@ -28,6 +28,18 @@ export const AuthAuditActions = {
   deviceRegistered: "auth/device_registered",
   /** A device was revoked (its session(s) signed out). */
   deviceRevoked: "auth/device_revoked",
+  /**
+   * Somebody tried to sign in with a provider this deployment enables and cannot serve — its credential
+   * would not resolve, so the instance was built without it (#381). Outcome `denied`, severity
+   * `warning`.
+   *
+   * **This is the operator's channel, and it is why degrading is not the same as degrading silently.**
+   * The refusal the caller gets names the provider, but a caller is not who fixes this; nobody at the
+   * adopter learns a sign-in method is down from a browser somebody else is holding. The trail carries
+   * one row per attempt, naming the provider, so the question "since when, and how many people has it
+   * cost" is answerable from the same place every other auth question is.
+   */
+  providerUnavailable: "auth/provider_unavailable",
 
   /**
    * The admin actions, emitted only from the control-plane surface (`http/adminRoutes.ts`) and always
