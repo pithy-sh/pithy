@@ -77,14 +77,17 @@ describe("secrets capability", () => {
     expect(secrets({ registry, secretsCacheTtlSeconds: 10 }).secretsCacheTtlSeconds).toBe(10);
   });
 
-  test("declares a management surface, always, behind its own scope", () => {
+  test("declares a management surface, always, behind its own scopes", () => {
     // Always declared and always mounted, so it is default-denied rather than absent: a surface that
     // appears only once `controlplane()` is composed is a surface nobody can discover.
-    expect(cap().adminRoutes?.map((route) => `${route.method} ${route.path}`)).toEqual([
-      "GET /secrets/admin/status",
-      "GET /secrets/admin/status/:name/rotations",
+    expect(cap().adminRoutes?.map((route) => `${route.method} ${route.path} ${route.scope}`)).toEqual([
+      "GET /secrets/admin/status secrets:status:read",
+      "GET /secrets/admin/status/:name/rotations secrets:status:read",
+      // The write, behind a scope of its own. Spelled out beside the reads rather than checked in a loop,
+      // because the pairing is the fact: a rotation quietly sharing `secrets:status:read` would confer
+      // credential replacement on every adopter who ever granted a status pane.
+      "POST /secrets/admin/status/:name/rotate secrets:rotate",
     ]);
-    for (const route of cap().adminRoutes ?? []) expect(route.scope).toBe("secrets:status:read");
   });
 
   test("moves the advertised paths with the mount point", () => {

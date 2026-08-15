@@ -96,6 +96,36 @@ export class SecretRotationUnrecordedError extends PithyError {
   }
 }
 
+/**
+ * **This secret cannot be rotated from here, and something else can.**
+ *
+ * Raised only by the Worker-side rotation route, and only *before* anything is called — a Worker holds one
+ * environment's D1 and its own master key, and that is the whole of what it can replace. A
+ * `cf-secrets-store` value is one account-level entry written through Cloudflare's API with a token this
+ * Worker must never hold; a `global` value is defined by being identical everywhere, and a Worker that
+ * wrote its own environment and stopped would leave exactly the mixed state a rotation exists to avoid.
+ *
+ * Its own code rather than a 400 or a 500 because a client has three different things to render and only
+ * one of them is a mistake: *you may not* is a scope refusal, *it broke* is a fault, and this is neither —
+ * it is **run the command**. So the `action` names `pithy secrets rotate`, and the client can draw the free
+ * path instead of a button. `action` is the operator's and is stripped at the HTTP boundary; the sentence a
+ * client renders is in `message`, which is why the message names the command too.
+ */
+export class SecretRotationUnsupportedError extends PithyError {
+  constructor(args: SecretErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "secrets/rotation_unsupported",
+        status: 409,
+        message: args.message ?? "This secret cannot be rotated from here.",
+        action: args.action,
+        detail: args.detail,
+      },
+      options,
+    );
+  }
+}
+
 /** Encrypting or decrypting a secret failed — a missing key version, or unreadable ciphertext. */
 export class SecretCryptoError extends PithyError {
   constructor(args: SecretErrorArgs = {}, options?: { cause?: unknown }) {

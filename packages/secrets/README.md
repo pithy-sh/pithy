@@ -162,22 +162,49 @@ Every other capability gets the same treatment through its registry. An entry th
 
 `pithy secrets provision` mints the manager's least-privilege runtime token itself — a scoped, account-owned CF API token with **Secrets Store Read + Write only** — and writes it straight into the Secrets Store as `<project>-global-secrets-manager-cf-api-token`. The operator never creates or sees it. The broad token never reaches the worker; the minted token never deploys. If the bootstrap token lacks **Account API Tokens Write**, the mint fails fast with an actionable error. Teardown deletes the minted token. (Also required: `CLOUDFLARE_ACCOUNT_ID` and `SECRETS_STORE_ID`.)
 
-## Control-plane status read
+## Control-plane surface
 
-The capability contributes two read-only admin routes behind its own scope, `secrets:status:read`, so an adopter grants secret status separately from everything else at `pithy dashboard connect`:
+Two reads and one write, each behind its own scope, so an adopter grants secret status separately from everything else at `pithy dashboard connect` — and grants replacing a credential separately again:
 
 ```
-GET {base}/admin/status                  # every declared secret's status
-GET {base}/admin/status/:name/rotations  # one secret's rotation history, newest first
+GET  {base}/admin/status                  # every declared secret's status         secrets:status:read
+GET  {base}/admin/status/:name/rotations  # one secret's rotation history          secrets:status:read
+POST {base}/admin/status/:name/rotate     # replace one secret, in this env        secrets:rotate
 ```
 
-Per secret: its name, `backend`, `valueType` and `rotatable` from the registry, the `keyVersion` its stored envelope sits under, when it was created and last written, `lastRotatedAt`, how many rotations are recorded, the declared `rotateEveryDays`, and whether it is `overdue`. Per rotation: the timestamps, the status, the trigger, and who.
+Per secret: its name, `backend`, `valueType` and `rotatable` from the registry, **how it rotates** (`rotation`), the `keyVersion` its stored envelope sits under, when it was created and last written, `lastRotatedAt`, how many rotations are recorded, the declared `rotateEveryDays`, and whether it is `overdue`. Per rotation: the timestamps, the status, the trigger, and who.
 
 **No route reads a value, and no scope could grant one.** The response shapes are *incapable* of carrying a ciphertext, an IV, a metadata snapshot or a rotation's error message — those fields are absent from the type, not omitted by a projection, so widening them is a compile error rather than a review miss (`src/admin/status.ts`). A failure is reported as a status, never as a message: an error message is free text written at a failure site, which is where a value gets pasted by accident.
 
 Three nulls, three different facts. `lastRotatedAt: null` is **never rotated** — not zero, and not rotated long ago. `createdAt: null` means nothing is stored under that name in this database, which is why `backend` is reported: a `cf-secrets-store` secret never has a row here. `overdue: null` means the question has no answer, either because no cadence is declared or because there is nothing to measure from.
 
 The listing covers every **composed capability's** secrets — auth's signing key, email's link key — not only the ones you typed. Keyed entries are excluded: a keyspace has no single value, and its members are per-tenant rows, so listing them would be a tenant enumeration.
+
+### `rotation` — how a secret is replaced
+
+`rotation` carries the registry entry's own declaration: `local` (the kit mints another from the same recipe), `provider` (its issuer is called and returns the successor), or `manual` (a human, in a console, with the issuer and the page named). `null` means the entry declares nothing, which is **not** the same as `manual`.
+
+It is not `rotatable`, and the two disagree in this repository: `SECRETS_ENCRYPTION_KEYS` is `rotation: local` and `rotatable: false`, while a payments credential is `rotatable: true` and rotates only by hand. `rotatable` says whether the stored envelope may accumulate versions; `rotation` says who does the replacing. A client that has only the first has to guess, and the only safe guess is to offer nothing.
+
+Nothing in it can hold a value: a kind from a closed set, an issuer from a closed set, and a documentation URL the schema holds to `https:`.
+
+### Rotating one secret
+
+`POST {base}/admin/status/:name/rotate` replaces one secret in **this Worker's own environment** and answers what happened, per environment:
+
+```json
+{ "rotation": { "name": "session-key", "status": "rotated", "kind": "local",
+                "rolled": false, "rollFailed": false,
+                "recorded": ["prod"], "stranded": [], "reason": null, "attempts": null } }
+```
+
+`status` is `rotated`, `unchanged`, `unrecorded` or `failed`. **`unrecorded` is the one that needs a human now**: the issuer rolled the credential and the store did not take its successor, so the previous value is dead where it was issued and no retry repairs it. It answers 200 like the others, deliberately — a 500 renders one sentence and drops `recorded` and `stranded`, which is the "all rotated" summary over a partial failure the design exists to refuse. Rotations are audited as `secrets/rotated`, `critical` on that member, carrying the operator, the secret, the environments and the flags — never a value.
+
+**A rotation supplies nothing, which is why this write can exist where create and update cannot.** A management client holds neither your registry nor your Zod schemas, so it could not write a value against the schema that governs it. A rotation's successor is produced *inside* the Worker, from the entry's own recipe or its own rotator, so nothing crosses in either direction.
+
+**What a Worker refuses, before anything is rolled.** A Worker holds one environment's D1 and its own master key, and that is the whole of what it can replace. A `cf-secrets-store` secret (one account-level entry, written through Cloudflare's API with a token an app Worker must never hold) and a `global` secret (identical in every environment by definition) are answered `secrets/rotation_unsupported` (409) naming `pithy secrets rotate`, which holds the whole project and can do both. So are a keyspace, an undeclared rotation, a `provider` secret with no rotator, the master key, and a name this environment has never stored — that last one because discovering it *after* a provider roll would manufacture the unrecorded incident out of a configuration gap that cost nothing to check.
+
+`secrets:rotate` never enters a default grant. `pithy dashboard connect` derives its default from route methods, and every route requiring this scope is a `POST`.
 
 ## The CLI
 

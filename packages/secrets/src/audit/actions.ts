@@ -27,6 +27,20 @@ export const SecretsAuditActions = {
   statusRead: "secrets/status_read",
   /** A management client read one secret's rotation history. */
   rotationsRead: "secrets/rotations_read",
+  /**
+   * A management client replaced one secret's value.
+   *
+   * The same code `pithy secrets rotate` emits, on purpose: it is the same act, and an incident review
+   * asking *who rolled the production key on the twelfth* must not have to know which door it came through
+   * to find it. Which door it was is in the actor — a `control-plane` actor with a connection id is the
+   * dashboard, a CLI actor is a terminal.
+   *
+   * **Emitted on failure as well as success, and `critical` for `unrecorded`.** A rotation that rolled a
+   * credential at its issuer and failed to store the successor is the one administrative act here that
+   * leaves a system broken, and a trail that records only the rotations that worked is a trail that is
+   * silent about exactly the ones somebody is looking for.
+   */
+  rotated: "secrets/rotated",
   /** An application stored a keyspace member — created it, or replaced it (`mode` says which). */
   memberWritten: "secrets/member_written",
   /** An application added a version to a keyspace member, keeping the prior one valid. */
