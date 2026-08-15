@@ -131,7 +131,7 @@ One page per command, under [`docs/commands/`](commands/). Every page carries th
 | `pithy migrate` | [`commands/migrate.md`](commands/migrate.md) — Run each Worker's migration registry |
 | `pithy payments` | [`commands/payments.md`](commands/payments.md) — Provision and inspect the payments capability |
 | `pithy remove` | [`commands/remove.md`](commands/remove.md) — Unwire a capability. Manual only |
-| `pithy secrets` | [`commands/secrets.md`](commands/secrets.md) — Create, edit, and provision the secret registry |
+| `pithy secrets` | [`commands/secrets.md`](commands/secrets.md) — Create, rotate, edit, and provision the secret registry |
 | `pithy seed` | [`commands/seed.md`](commands/seed.md) — Seed an environment from your Zod-typed fixtures |
 | `pithy storage` | [`commands/storage.md`](commands/storage.md) — Provision and manage the storage backends |
 | `pithy support` | [`commands/support.md`](commands/support.md) — Provision and manage the support capability |

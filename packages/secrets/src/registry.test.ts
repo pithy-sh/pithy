@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { DeclaredSecret } from "@pithy-sh/core/src/capability/secretOrigin";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
@@ -457,5 +458,54 @@ describe("origin and rotation", () => {
         }),
       ),
     ).toThrow(/json/);
+  });
+});
+
+/**
+ * **The rotator is code, and code cannot cross into `pithy.manifest.json`.**
+ *
+ * That constraint is why `rotation` and `rotator` are two fields rather than one (#322), and it is worth a
+ * test rather than a sentence: the manifest is read out of `node_modules` by clients that never execute a
+ * capability, so a function reaching one would be a field nobody could parse and a promise nobody could
+ * keep. `DeclaredSecret` parses rather than copies, so the guarantee is structural — this is what says so.
+ */
+describe("the rotator seam (#367)", () => {
+  const rotator = {
+    async roll() {
+      return { newValue: "x" };
+    },
+  };
+  const providerEntry: SecretRegistryEntry = {
+    backend: "d1",
+    scope: "environment",
+    rotatable: true,
+    valueType: "text",
+    origin: { kind: "obtained", issuer: "cloudflare", documentation: "https://dash.cloudflare.com/profile/api-tokens" },
+    rotation: { kind: "provider", issuer: "cloudflare" },
+    rotator,
+  };
+
+  test("a provider entry may carry one, and it stays out of the manifest projection", () => {
+    const registry = defineSecretRegistry({ CF_TOKEN: providerEntry });
+    expect(registry.CF_TOKEN.rotator).toBe(rotator);
+    const declared = DeclaredSecret.parse({
+      name: "CF_TOKEN",
+      origin: registry.CF_TOKEN.origin,
+      rotation: registry.CF_TOKEN.rotation,
+      rotator: registry.CF_TOKEN.rotator,
+    });
+    expect(declared).not.toHaveProperty("rotator");
+    expect(Object.keys(declared).sort()).toEqual(["name", "origin", "rotation"]);
+  });
+
+  test("a provider entry without one is legal — the adopter may hold credentials the capability does not", () => {
+    const { rotator: _dropped, ...withoutRotator } = providerEntry;
+    expect(() => defineSecretRegistry({ CF_TOKEN: withoutRotator })).not.toThrow();
+  });
+
+  test("a rotator with no roll() is refused where the author is", () => {
+    expect(() => defineSecretRegistry(asRegistry({ CF_TOKEN: { ...providerEntry, rotator: {} } }))).toThrow(
+      /no roll\(\)/,
+    );
   });
 });

@@ -262,6 +262,20 @@ const SecretCryptoFailedPublic = z
   })
   .describe("Encrypting or decrypting a secret failed (500).");
 
+const SecretRotationUnrecordedPublic = z
+  .object({
+    code: z
+      .literal("secrets/rotation_unrecorded")
+      .describe(
+        "A secret's issuer rolled the credential and the store did not take its successor. The previous value is dead where it was issued, the new one was never recorded, and no retry repairs it — rolling again produces a third value and loses the second. Its own code because the operator's next move is unlike every other secrets failure: a human, in the issuer's console, now.",
+      ),
+    status: z
+      .literal(500)
+      .describe("Internal Server Error — this side failed to record what a third party successfully did."),
+    ...publicFields,
+  })
+  .describe("A credential was rolled at its issuer and its successor was not stored (500).");
+
 // --- @pithy-sh/email: job-table email platform codes ---
 
 const EmailTemplateNotFoundPublic = z
@@ -1359,6 +1373,7 @@ export const KitPublicErrorPayload = z
     SecretAlreadyExistsPublic,
     SecretInvalidValuePublic,
     SecretCryptoFailedPublic,
+    SecretRotationUnrecordedPublic,
     EmailTemplateNotFoundPublic,
     EmailInvalidPayloadPublic,
     EmailInvalidTokenPublic,
@@ -1496,6 +1511,9 @@ const SecretInvalidValue = SecretInvalidValuePublic.extend(internalFields).descr
 );
 const SecretCryptoFailed = SecretCryptoFailedPublic.extend(internalFields).describe(
   SecretCryptoFailedPublic.description ?? "",
+);
+const SecretRotationUnrecorded = SecretRotationUnrecordedPublic.extend(internalFields).describe(
+  SecretRotationUnrecordedPublic.description ?? "",
 );
 const EmailTemplateNotFound = EmailTemplateNotFoundPublic.extend(internalFields).describe(
   EmailTemplateNotFoundPublic.description ?? "",
@@ -1798,6 +1816,7 @@ export const KitErrorPayload = z
     SecretAlreadyExists,
     SecretInvalidValue,
     SecretCryptoFailed,
+    SecretRotationUnrecorded,
     EmailTemplateNotFound,
     EmailInvalidPayload,
     EmailInvalidToken,

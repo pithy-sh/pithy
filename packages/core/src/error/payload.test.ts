@@ -67,6 +67,7 @@ describe("ErrorPayload (the kit taxonomy)", () => {
       ["secrets/already_exists", 409],
       ["secrets/invalid_value", 400],
       ["secrets/crypto_failed", 500],
+      ["secrets/rotation_unrecorded", 500],
       ["turnstile/missing_token", 400],
       ["turnstile/failed", 403],
       ["turnstile/config", 500],
@@ -179,9 +180,11 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * all the way down to empty. Both unions are measured against this number and never against each
  * other's length. Changing the taxonomy's size is a deliberate act; changing this line is part of it.
  *
- * Verified 2026-08-14: 115 members in each union, no duplicates, sorted lists identical.
+ * Verified 2026-08-14: 116 members in each union, no duplicates, sorted lists identical. The one added
+ * that day is `secrets/rotation_unrecorded` (#367) — a credential rolled at its issuer whose successor the
+ * store never took, which needs its own code because it is the one secrets failure a retry cannot repair.
  */
-const KIT_ERROR_CODE_COUNT = 115;
+const KIT_ERROR_CODE_COUNT = 116;
 
 /** One member of either kit union — the public projection or its `action`/`detail` twin. */
 type KitUnionMember = (typeof KitErrorPayload | typeof KitPublicErrorPayload)["options"][number];
