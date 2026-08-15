@@ -49,6 +49,8 @@ async function filtersFor(changed: readonly string[]): Promise<string[]> {
 const RECORD: Record<string, string> = {
   ".": "The repo root. `project/atomic.test.ts`'s rename and recursive-delete tripwires walk every source file in the tree, and the docs tests hold `README.md` and `docs/` to the CLI's real output.",
   "docs/CLI.md": "`terminal/styleDocs.test.ts` holds the documented styles to the ones the terminal module exports.",
+  "docs/FIXTURES.md":
+    "`@pithy-sh/cloudflare`'s `test-utils/fixtures.test.ts` holds every live fixture to the section its skip message cites. A skip line naming a document nobody wrote is worse than no line at all, so the citation is a gate rather than a convention — and it only means anything if editing the document re-runs it (#106).",
   "node_modules/.bin/biome":
     "The workspace's Biome, run as a subprocess. `project/jsonc.test.ts` and `ui/formatting.test.ts` assert that a config Pithy writes is one the formatter the kit scaffolds would print unchanged (#249), and the only honest way to answer that is to ask the formatter.",
   "packages/core/src/error/cause.ts":
@@ -74,9 +76,14 @@ describe("the cross-package reads CI plans from", () => {
     // `@pithy-sh/browser-scopes` is the second, and it is here for the same reason the CLI is: its gate
     // reads every capability's source to find every control-plane scope the kit declares, so a scope
     // added in a package it does not depend on is a scope its suite must re-check (#315).
+    //
+    // `@pithy-sh/cloudflare` is the third, and it reads exactly one thing: `docs/FIXTURES.md`, the
+    // document every live-fixture skip message cites. The gate is that the cited section exists, and a
+    // gate on a document is worthless unless editing the document runs it (#106).
     expect([...new Set((await reads()).map((read) => read.package))].sort()).toEqual([
       "@pithy-sh/browser-scopes",
       "@pithy-sh/cli",
+      "@pithy-sh/cloudflare",
     ]);
   });
 
@@ -117,6 +124,13 @@ describe("what CI plans for a change", () => {
 
   test("editing any package's source plans the CLI — the tripwires walk all of them", async () => {
     expect(await filtersFor(["packages/leaderboard/src/capability.ts"])).toContain("--filter=@pithy-sh/cli");
+  });
+
+  test("editing the fixture document plans the package whose gate cites it (#106)", async () => {
+    // The citation gate lives in `@pithy-sh/cloudflare` and the document lives in `docs/`, which no
+    // dependency edge connects. Without this, deleting a section leaves every skip message pointing at
+    // nothing and CI has no reason to notice — #52's defect class, and the reason the gate exists.
+    expect(await filtersFor(["docs/FIXTURES.md"])).toContain("--filter=@pithy-sh/cloudflare");
   });
 
   test("editing any package's source plans the browser-scope gate too (#315)", async () => {
