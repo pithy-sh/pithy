@@ -18,6 +18,7 @@ import {
   rollbackMigration,
   runMigrations,
 } from "@pithy-sh/core/src/migrations/runner";
+import { partialWriteReport } from "@pithy-sh/secrets/src/cli/partialWrite";
 import { parse } from "comment-json";
 import type { Migration, MigrationProvider, MigrationResult } from "kysely/migration";
 import { Miniflare } from "miniflare";
@@ -653,7 +654,81 @@ interface MigrationPass {
   spansLedger: boolean;
 }
 
-/** Open the driver, run the pass per group, fold the results into a per-Worker report, and tear down. */
+/**
+ * What a fan-out changed before it stopped, in the three states a database in scope can be left in
+ * (#380).
+ *
+ * A run visits one database at a time and each one is a **write**. The pass on the third throws, the
+ * first two have already moved their schema, and the return value that would have named them never
+ * happens — so the operator is told a migration failed and nothing at all about which databases are now
+ * ahead of the others. That is the record you need most when a run dies partway, and it was the one the
+ * throw took with it.
+ *
+ * The three fields are three different facts and they share no entry, which is the point: `migrated` is
+ * what definitely ran, `failed` is the one database whose pass threw, and `unreached` is every database
+ * the run never opened. An empty `unreached` means the failure was on the last database — never "no
+ * scan". Absent and unknown do not collapse into one another here.
+ *
+ * **Nothing derived from the failure is in it.** The report names databases and bindings; what a
+ * migration throws names a statement, a table, or an id, and that stays on the error the operator is
+ * already reading.
+ */
+export interface MigrationProgress {
+  /**
+   * Per-Worker rows for every database whose pass **completed**, in fan-out order — exactly the report a
+   * finished run returns, truncated at the failure. A Worker whose databases were all unreached appears
+   * with an empty `databases`, as it does in a clean run.
+   */
+  migrated: WorkerMigrationRun[];
+  /** The database the run died on. Its schema is in whatever state the failed pass left it. */
+  failed: MigrationTarget;
+  /** Every database in scope this run never opened, in fan-out order. Empty means the failure was the last one. */
+  unreached: MigrationTarget[];
+}
+
+/** A carried value arrives as `unknown`; this is the narrowing, never a cast. */
+function isMigrationProgress(value: unknown): value is MigrationProgress {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<MigrationProgress>;
+  if (!Array.isArray(candidate.migrated) || !Array.isArray(candidate.unreached)) return false;
+  return typeof candidate.failed === "object" && candidate.failed !== null;
+}
+
+/**
+ * **Where the record of a partial run rides out of a failure (#380).**
+ *
+ * The mechanism is `partialWriteReport`'s, the same one `mintDeclaredSecrets` carries its minted
+ * secrets on (#324) and `dispatchSecretWrite` its reached environments (#325). Carried, never replaced:
+ * the failure an operator reads is the failure that happened, and what the run wrote is what makes the
+ * remedy in it safe to perform.
+ */
+const progressReport = partialWriteReport<MigrationProgress>("pithy.cli.migrationProgress", isMigrationProgress);
+
+/**
+ * What a failed fan-out ({@link migrateProject}, {@link resetProject}, a capability drop) changed before
+ * it failed, or `undefined` for a throw from anywhere else — which is the honest answer when the run
+ * never reached a database at all.
+ */
+export function migratedBeforeFailure(error: unknown): MigrationProgress | undefined {
+  return progressReport.read(error);
+}
+
+/**
+ * Open the driver, run the pass per group, fold the results into a per-Worker report, and tear down.
+ *
+ * **The run still stops at the first database that fails, and it still throws.** Every entry point that
+ * writes a schema comes through here, and a pass that failed for a reason belonging to the whole run —
+ * a revoked token, an account that is not this project's — would otherwise carry on applying migrations
+ * to the databases behind it. What changed is that the record survives the throw: {@link
+ * migratedBeforeFailure} reads back which databases moved, which one died, and which were never opened
+ * (#380).
+ *
+ * **The three steps above the loop are deliberately not guarded.** `scopedGroups`, `claimGroups` and
+ * `assertLedgerDeclared` decide *what* the run is over and whether it may write at all — the loop's
+ * preconditions, not contributors to it — so their failure is not one database missing, it is there
+ * being no run. `claimGroups` in particular is the choke point that refuses another project's database,
+ * and a guard around it would be a guard around the refusal.
+ */
 async function runGroups(context: RunContext, pass: MigrationPass): Promise<WorkerMigrationRun[]> {
   const report = emptyReport(context.workers);
   const groups = await scopedGroups(context);
@@ -663,9 +738,24 @@ async function runGroups(context: RunContext, pass: MigrationPass): Promise<Work
   try {
     await claimGroups(context, driver, groups);
     if (pass.spansLedger) await assertLedgerDeclared({ env: context.env, driver, groups });
-    for (const group of groups) {
+    for (const [index, group] of groups.entries()) {
       const target = { binding: group.binding, database: group.database };
-      record(report, group, await pass.execute(driver.database(group), group.provider, target));
+      let results: MigrationResult[];
+      // `try`/`catch` rather than `.catch()`: a pass that throws before it returns a promise — a driver
+      // handing back a database that is not there, a provider that will not build — is not a rejected
+      // promise, and a `.catch()` would not see it (#371).
+      try {
+        results = await pass.execute(driver.database(group), group.provider, target);
+      } catch (error) {
+        // The guard takes no binding. The two names are what an operator acts on; what a migration
+        // throws is already on the error being rethrown, untouched.
+        throw progressReport.carry(error, {
+          migrated: report,
+          failed: target,
+          unreached: groups.slice(index + 1).map((rest) => ({ binding: rest.binding, database: rest.database })),
+        });
+      }
+      record(report, group, results);
     }
     return report;
   } finally {

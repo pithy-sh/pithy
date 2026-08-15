@@ -56,6 +56,24 @@ One line on stdout, whose `workers` array groups the run exactly as the human ou
 | `…results[].status` | string | `"Success"`, `"Error"`, or `"NotExecuted"` — the last meaning an earlier migration failed first. |
 | `workers[].databases[].sharedWith` | string[], optional | The other Workers bound to this same physical D1. Present **only** when the database is shared. |
 
+### A run that died partway
+
+A fan-out has no transaction across databases: the third one throws and the first two are already ahead of
+it. So the failure line still goes to stderr and the exit is still non-zero, and stdout carries **what the
+run changed on the way** — the record you need most when a migration dies mid-fan-out.
+
+```
+$ pithy migrate --env staging --json
+{"command":"migrate","project":"acme","env":"staging","rollback":false,"workers":[{"worker":"api","databases":[{"database":"app","binding":"DB","results":[{"migrationName":"0100_auth_0001_init","direction":"Up","status":"Success"}]}]}],"failed":{"binding":"COLLAB_DB","database":"collab"},"unreached":[{"binding":"MEDIA_DB","database":"media"}],"interrupted":true}
+```
+
+| key | type | meaning |
+|---|---|---|
+| `interrupted` | boolean | Present and `true` on this line alone. **It is what says `workers` is a truncated report**, not a whole one |
+| `workers` | object[] | Here, only the databases whose pass completed before the failure. Same shape as above |
+| `failed` | object | The database the run died on, as its `binding` and `database`. Its schema is in whatever state the failed pass left it. No reason: what a migration throws is on the `{"error": …}` line |
+| `unreached` | object[] | Every database in scope the run never opened, in fan-out order. Empty means the failure was on the last one — never "nothing was scanned" |
+
 ## Errors
 
 - **`No pithy.config.ts here.`** Run it from a Pithy project.

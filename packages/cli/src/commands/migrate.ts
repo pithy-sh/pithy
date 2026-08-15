@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { defineCommand } from "citty";
-import { migrateProject, type WorkerMigrationRun } from "../migrations/run";
+import {
+  type MigrationProgress,
+  migratedBeforeFailure,
+  migrateProject,
+  type WorkerMigrationRun,
+} from "../migrations/run";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -38,6 +43,47 @@ export function formatMigrateReport(
   return `${lines.join("\n")}\n${formatDone()}\n`;
 }
 
+/**
+ * What a run that died partway did before it died (#380).
+ *
+ * A fan-out has no transaction across databases: the third one throws and the first two are already
+ * ahead of it. Until now the throw took the whole report with it, so the operator was told a migration
+ * failed and nothing about which schemas had moved — on the one command where that is the first
+ * question. `withErrorReporting` writes the failure to stderr and exits 1; this writes what the run did
+ * to stdout first, so both streams and the exit code agree that it failed and name what it changed.
+ *
+ * The three states are kept apart on purpose. A database that migrated, the one that failed, and one
+ * the run never opened are three different things to do next, and a single list would make them one.
+ */
+export function formatMigrateProgress(
+  progress: MigrationProgress,
+  options: { project: string; env: string; rollback: boolean; json: boolean },
+): string {
+  if (options.json) {
+    return `${formatJsonLine({
+      command: "migrate",
+      project: options.project,
+      env: options.env,
+      rollback: options.rollback,
+      workers: progress.migrated,
+      failed: progress.failed,
+      unreached: progress.unreached,
+      interrupted: true,
+    })}\n`;
+  }
+  const lines = progress.migrated
+    .filter((worker) => worker.databases.length > 0)
+    .map((worker) => `${worker.worker}  ${describe(worker, options.rollback)}`);
+  lines.push(
+    `${progress.failed.binding} (${progress.failed.database}) failed. Its schema is where the failure left it.`,
+  );
+  if (progress.unreached.length > 0) {
+    const named = progress.unreached.map((target) => `${target.binding} (${target.database})`).join(", ");
+    lines.push(`Not reached: ${named}.`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 export default defineCommand({
   meta: { name: "migrate", description: "Run migrations for an environment" },
   args: {
@@ -59,14 +105,25 @@ export default defineCommand({
       // account's credentials would run it against another company's database (#206). This command is
       // the one that has to supply the answer, and for a long while it did not.
       const account = await projectCloudflareAccount(projectDir);
-      const workers = await migrateProject({
-        projectDir,
-        project,
-        account,
-        env,
-        ...(args.worker !== undefined ? { worker: args.worker } : {}),
-        rollback: args.rollback,
-      });
-      process.stdout.write(formatMigrateReport(workers, { project, env, rollback: args.rollback, json: args.json }));
+      const render = { project, env, rollback: args.rollback, json: args.json };
+      let workers: WorkerMigrationRun[];
+      try {
+        workers = await migrateProject({
+          projectDir,
+          project,
+          account,
+          env,
+          ...(args.worker !== undefined ? { worker: args.worker } : {}),
+          rollback: args.rollback,
+        });
+      } catch (error) {
+        // A run that failed on the third database has already moved the first two, and until #380 the
+        // report of it died with the throw. What ran is printed here, then the same error is rethrown
+        // unchanged for `withErrorReporting` to render and exit 1 on.
+        const progress = migratedBeforeFailure(error);
+        if (progress) process.stdout.write(formatMigrateProgress(progress, render));
+        throw error;
+      }
+      process.stdout.write(formatMigrateReport(workers, render));
     }),
 });
