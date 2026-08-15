@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudflareWorkersManager } from "./workersManager";
 
 const mockScriptsList = vi.fn();
-const mockScriptsUpdate = vi.fn();
+const mockPut = vi.fn();
 const mockScriptsDelete = vi.fn();
 const mockSubdomainCreate = vi.fn();
 const mockSubdomainGet = vi.fn();
@@ -37,10 +37,10 @@ function asyncList<T>(items: T[]): AsyncIterable<T> {
 
 vi.mock("cloudflare", () => ({
   Cloudflare: class {
+    put = mockPut;
     workers = {
       scripts: {
         list: mockScriptsList,
-        update: mockScriptsUpdate,
         delete: mockScriptsDelete,
         subdomain: { create: mockSubdomainCreate },
         settings: { edit: mockSettingsEdit },
@@ -143,16 +143,96 @@ describe("CloudflareWorkersManager", () => {
   });
 
   describe("createWorker", () => {
-    it("uploads a placeholder module with merged metadata and returns the script", async () => {
-      mockScriptsUpdate.mockResolvedValue({ id: "new-1" });
+    /** The upload's path, its metadata part parsed, and every other part by name. #373 is a wire bug. */
+    async function uploadSent(): Promise<{
+      path: string;
+      metadata: Record<string, unknown>;
+      parts: Map<string, { body: string; type: string; filename: string | null }>;
+    }> {
+      const [path, options] = mockPut.mock.calls[0] ?? [];
+      const form: unknown = options?.body;
+      if (!(form instanceof FormData)) throw new TypeError("The upload body was not FormData.");
+
+      const parts = new Map<string, { body: string; type: string; filename: string | null }>();
+      let metadata: Record<string, unknown> = {};
+      for (const [name, value] of form.entries()) {
+        if (!(value instanceof Blob)) throw new TypeError(`Part '${name}' was not a Blob.`);
+        const body = await value.text();
+        if (name === "metadata") {
+          metadata = JSON.parse(body) as Record<string, unknown>;
+          continue;
+        }
+        parts.set(name, { body, type: value.type, filename: "name" in value ? String(value.name) : null });
+      }
+      return { path, metadata, parts };
+    }
+
+    it("PUTs one JSON metadata part and one module part named by main_module", async () => {
+      mockPut.mockResolvedValue({ result: { id: "new-1" } });
+
       const result = await manager.createWorker("w1", { tag: "x" });
+
       expect(result).toEqual({ id: "new-1" });
-      const [scriptName, params, options] = mockScriptsUpdate.mock.calls[0] ?? [];
-      expect(scriptName).toBe("w1");
-      expect(params.account_id).toBe("acct-1");
-      expect(params.metadata).toMatchObject({ tag: "x", main_module: "index.js", compatibility_date: "2026-04-07" });
-      expect(params.files).toHaveLength(1);
-      expect(options).toEqual({ timeout: 10000, maxRetries: 3 });
+      const { path, metadata, parts } = await uploadSent();
+      expect(path).toBe("/accounts/acct-1/workers/scripts/w1");
+      // One `metadata` part carrying JSON — not the SDK's flattened `metadata[main_module]` fields.
+      expect(metadata).toEqual({ tag: "x", main_module: "index.js", compatibility_date: "2026-04-07" });
+      // The module part is named by its filename, which is what `main_module` points at. Never `files[]`.
+      expect([...parts.keys()]).toEqual(["index.js"]);
+      expect(parts.get("index.js")?.type).toBe("application/javascript+module");
+      expect(parts.get("index.js")?.body).toContain("export default");
+      expect(mockPut.mock.calls[0]?.[1]).toMatchObject({ timeout: 10000, maxRetries: 3 });
+    });
+
+    it("never pins a Content-Type on the request — the FormData body decides it", async () => {
+      // The whole of #373: `workers.scripts.update` sent `Content-Type: application/javascript` with a
+      // multipart body, so Cloudflare parsed the `------WebKit…` boundary as a classic script and
+      // answered `10021 … Invalid left-hand side expression in prefix operation at worker.js:1:4`.
+      mockPut.mockResolvedValue({ result: { id: "new-1" } });
+      await manager.createWorker("w1");
+      const headers: unknown = mockPut.mock.calls[0]?.[1]?.headers;
+      expect(headers).toBeUndefined();
+    });
+
+    it("uploads a caller's module under its own name", async () => {
+      mockPut.mockResolvedValue({ result: { id: "new-1" } });
+
+      await manager.createWorker(
+        "w1",
+        { bindings: [{ type: "kv_namespace", name: "OBSERVED", namespace_id: "ns-1" }] },
+        { name: "worker.mjs", body: "export default { async email() {} };" },
+      );
+
+      const { metadata, parts } = await uploadSent();
+      expect(metadata.main_module).toBe("worker.mjs");
+      expect(metadata.bindings).toEqual([{ type: "kv_namespace", name: "OBSERVED", namespace_id: "ns-1" }]);
+      expect(parts.get("worker.mjs")?.body).toBe("export default { async email() {} };");
+      expect(parts.get("worker.mjs")?.filename).toBe("worker.mjs");
+    });
+
+    it("lets the caller's metadata pick the compatibility date, but never main_module", async () => {
+      mockPut.mockResolvedValue({ result: { id: "new-1" } });
+
+      await manager.createWorker("w1", { compatibility_date: "2025-01-01", main_module: "wrong.js" });
+
+      const { metadata } = await uploadSent();
+      expect(metadata.compatibility_date).toBe("2025-01-01");
+      expect(metadata.main_module).toBe("index.js");
+    });
+
+    it("refuses a classic service-worker script rather than half-supporting one", async () => {
+      // The manager uploads ES modules only, and says so. `body_part` is the classic shape.
+      await expect(manager.createWorker("w1", { body_part: "worker.js" })).rejects.toThrowError(
+        expect.objectContaining({ payload: expect.objectContaining({ code: "validation/invalid_input" }) }),
+      );
+      expect(mockPut).not.toHaveBeenCalled();
+    });
+
+    it("throws invalid_response when Cloudflare returns a success envelope with no script", async () => {
+      mockPut.mockResolvedValue({ result: null });
+      await expect(manager.createWorker("w1")).rejects.toThrowError(
+        expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/invalid_response" }) }),
+      );
     });
   });
 

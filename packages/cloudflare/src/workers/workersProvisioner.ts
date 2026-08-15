@@ -69,7 +69,7 @@ export class WorkersProvisioner {
     if (!script.id) {
       throw new CloudflareNotConfiguredError({
         message: `Worker '${workerName}' was created but returned no script id.`,
-        detail: "workers.scripts.update returned a script with no id.",
+        detail: "The Worker upload returned a script with no id.",
       });
     }
     await this.workers.setSubdomainSettings(workerName, true, false);

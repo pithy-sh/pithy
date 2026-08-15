@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkersProvisioner } from "./workersProvisioner";
 
-const mockScriptsUpdate = vi.fn();
+const mockPut = vi.fn();
 const mockSubdomainCreate = vi.fn();
 const mockSettingsEdit = vi.fn();
 const mockSecretsUpdate = vi.fn();
@@ -24,9 +24,9 @@ function asyncList<T>(items: T[]): AsyncIterable<T> {
 
 vi.mock("cloudflare", () => ({
   Cloudflare: class {
+    put = mockPut;
     workers = {
       scripts: {
-        update: mockScriptsUpdate,
         subdomain: { create: mockSubdomainCreate },
         settings: { edit: mockSettingsEdit },
         secrets: { update: mockSecretsUpdate },
@@ -93,7 +93,7 @@ describe("WorkersProvisioner", () => {
 
   describe("createWorker", () => {
     it("creates the script, enables the subdomain + observability, and returns the script id", async () => {
-      mockScriptsUpdate.mockResolvedValue({ id: "script-1" });
+      mockPut.mockResolvedValue({ result: { id: "script-1" } });
       mockSubdomainCreate.mockResolvedValue(undefined);
       mockSettingsEdit.mockResolvedValue(undefined);
 
@@ -111,7 +111,7 @@ describe("WorkersProvisioner", () => {
     });
 
     it("throws not_configured when the created script has no id", async () => {
-      mockScriptsUpdate.mockResolvedValue({ id: "" });
+      mockPut.mockResolvedValue({ result: { id: "" } });
       await expect(provisioner.createWorker("w1")).rejects.toThrowError(
         expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/not_configured" }) }),
       );

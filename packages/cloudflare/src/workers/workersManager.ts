@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { Cloudflare } from "cloudflare";
 import type { RouteCreateResponse, RouteListResponse } from "cloudflare/resources/workers/routes";
 import type { Deployment } from "cloudflare/resources/workers/scripts/deployments";
@@ -9,7 +9,7 @@ import type { Script } from "cloudflare/resources/workers/scripts/scripts";
 import type { SecretListResponse } from "cloudflare/resources/workers/scripts/secrets";
 import type { SettingEditParams } from "cloudflare/resources/workers/scripts/settings";
 import type { VersionGetResponse, VersionListResponse } from "cloudflare/resources/workers/scripts/versions";
-import { cloudflareRequest, messageOf } from "../client/errors";
+import { CloudflareInvalidResponseError, cloudflareRequest, messageOf } from "../client/errors";
 import { CloudflareManager } from "../client/manager";
 
 /** Per-call SDK timeout + retry budget for Worker management operations. */
@@ -24,8 +24,34 @@ const PLACEHOLDER_MODULE = "index.js";
 const PLACEHOLDER_BODY =
   "export default { async fetch() { return new Response('Provisioning...', { status: 503 }); } };";
 
+/** The compatibility date a Worker is uploaded at when the caller's metadata does not name one. */
+const DEFAULT_COMPATIBILITY_DATE = "2026-04-07";
+
+/** The content type every module part carries. ES modules only — see {@link WorkerModule}. */
+const MODULE_CONTENT_TYPE = "application/javascript+module";
+
 /** Worker settings a caller may edit (observability, logpush, tags, …); the account id is supplied. */
 export type WorkerSettings = Omit<SettingEditParams, "account_id">;
+
+/**
+ * One ES-module file of a Worker upload.
+ *
+ * **ES modules only.** `name` becomes both the multipart part name and the upload's `main_module`,
+ * and the part is sent as `application/javascript+module`. Classic service-worker scripts — the
+ * `body_part` shape, with a global `addEventListener("fetch", …)` — are not supported by this
+ * manager and never were: every upload it has ever sent set `main_module`. {@link
+ * CloudflareWorkersManager.createWorker} refuses a `body_part` in metadata rather than sending a
+ * request with both shapes half-declared.
+ */
+export interface WorkerModule {
+  /** The module's filename, e.g. `index.js`. Becomes the part name and the upload's `main_module`. */
+  name: string;
+  /** The module's ES-module source, uploaded verbatim as `application/javascript+module`. */
+  body: string;
+}
+
+/** The placeholder module `createWorker` uploads when the caller supplies none. */
+const PLACEHOLDER: WorkerModule = { name: PLACEHOLDER_MODULE, body: PLACEHOLDER_BODY };
 
 /**
  * Out-of-Worker Workers access over the REST API: script create/list/delete, subdomain + settings,
@@ -69,23 +95,63 @@ export class CloudflareWorkersManager extends CloudflareManager {
   }
 
   /**
-   * Create (upload) a Worker script with a placeholder module. The real build output replaces it via
-   * a later version upload. `metadata` is merged into the script's metadata.
+   * Create (upload) a Worker script. With no `module` the placeholder above is uploaded and the real
+   * build output replaces it via a later version upload; pass one to upload real source. `metadata`
+   * is merged into the upload's metadata — bindings, compatibility flags, tags — and this method
+   * fixes `main_module` and supplies a `compatibility_date` when the caller names none.
+   *
+   * **The multipart request is built here rather than through `workers.scripts.update`, and that is
+   * a fix rather than a preference (#373).** The typed SDK's `update` pins
+   * `Content-Type: application/javascript` on the request and *then* lets its uploader turn the body
+   * into `FormData`. Cloudflare believes the header, parses the multipart envelope as a classic
+   * service-worker script, and rejects every upload with `10021 Uncaught SyntaxError: Invalid
+   * left-hand side expression in prefix operation at worker.js:1:4` — the leading `------WebKit…`
+   * boundary read as prefix `--` operators. Its form is wrong twice over besides: metadata is
+   * flattened to `metadata[main_module]` fields instead of one JSON part, and the module is appended
+   * as `files[]` rather than under the filename `main_module` names. So the form is assembled here
+   * and handed to the SDK's own `put`, which keeps auth, retries, timeout and error mapping intact.
    */
-  async createWorker(scriptName: string, metadata: Record<string, unknown> = {}): Promise<Script> {
-    return cloudflareRequest(`create worker '${scriptName}'`, () => {
-      const placeholderFile = new File([PLACEHOLDER_BODY], PLACEHOLDER_MODULE, {
-        type: "application/javascript+module",
+  async createWorker(
+    scriptName: string,
+    metadata: Record<string, unknown> = {},
+    module: WorkerModule = PLACEHOLDER,
+  ): Promise<Script> {
+    if ("body_part" in metadata) {
+      throw new ValidationError({
+        message: "This client uploads ES-module Workers only.",
+        action: "Remove `body_part` from the metadata and pass the script as a module.",
+        detail: `createWorker('${scriptName}') was given a 'body_part', the classic service-worker shape. Every upload sets 'main_module'.`,
       });
-      return this.getClient().workers.scripts.update(
-        scriptName,
-        {
-          account_id: this.accountId,
-          metadata: { ...metadata, main_module: PLACEHOLDER_MODULE, compatibility_date: "2026-04-07" },
-          files: [placeholderFile],
-        },
-        requestOptions,
+    }
+
+    const form = new FormData();
+    form.append(
+      "metadata",
+      new Blob(
+        [
+          JSON.stringify({
+            compatibility_date: DEFAULT_COMPATIBILITY_DATE,
+            ...metadata,
+            main_module: module.name,
+          }),
+        ],
+        { type: "application/json" },
+      ),
+    );
+    form.append(module.name, new Blob([module.body], { type: MODULE_CONTENT_TYPE }), module.name);
+
+    return cloudflareRequest(`create worker '${scriptName}'`, async () => {
+      const envelope = await this.getClient().put<{ result: Script | null }>(
+        `/accounts/${this.accountId}/workers/scripts/${scriptName}`,
+        { body: form, ...requestOptions },
       );
+      if (!envelope.result) {
+        throw new CloudflareInvalidResponseError({
+          message: "Cloudflare accepted the Worker upload but returned no script.",
+          detail: `Upload of '${scriptName}' returned a success envelope with a null result.`,
+        });
+      }
+      return envelope.result;
     });
   }
 

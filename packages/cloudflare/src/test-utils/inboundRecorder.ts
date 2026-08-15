@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import { CloudflareInvalidResponseError, CloudflareRequestError } from "../client/errors";
+import type { CloudflareWorkersManager } from "../workers/workersManager";
 import type { IntegrationCreds } from "./harness";
 
 /**
@@ -125,63 +126,28 @@ export type ObservedInbound = z.output<typeof ObservedInbound>;
 /** A trivial module Worker: enough for an Email Routing rule to be allowed to point at it. */
 export const PLACEHOLDER_INBOUND_MODULE = "export default { async email() {} };\n";
 
-/** The compatibility date every throwaway Worker here is uploaded at. */
-const COMPATIBILITY_DATE = "2026-04-07";
+/** The module filename every throwaway Worker here is uploaded under. */
+export const INBOUND_MODULE_NAME = "worker.mjs";
 
 /**
- * Upload an ES-module Worker over the REST API.
+ * Deploy the recorder at `scriptName`, bound to the KV namespace records are written to.
  *
- * **Not `CloudflareWorkersManager.createWorker`, and that is a finding rather than a preference.** That
- * method uploads through the typed SDK's `workers.scripts.update({ metadata, files })`, and against the
- * live API every such upload is rejected with `10021 Uncaught SyntaxError: Invalid left-hand side
- * expression in prefix operation at worker.js:1:4` — Cloudflare parsing an ESM body as a classic
- * service-worker script, where `export default` is a syntax error. It reproduces on `main` with the
- * manager's own placeholder module and its own live suite, so it is not this file's module and not this
- * suite's doing. The same bytes uploaded as multipart with `main_module` and a
- * `application/javascript+module` part are accepted.
- *
- * So this reaches for `fetch` deliberately, and the escape hatch is documented rather than quiet.
- * Delete it the day the manager can upload a module again.
+ * Uploaded through `CloudflareWorkersManager.createWorker` like anything else. It briefly was not:
+ * #373 was a manager that could not upload a module to the live API at all, and this file carried a
+ * hand-rolled `fetch` around it. The manager is the path again — a helper that exists because the
+ * product is broken is the thing people copy.
  */
-export async function uploadModuleWorker(options: {
-  creds: IntegrationCreds;
-  scriptName: string;
-  module: string;
-  bindings?: readonly Record<string, unknown>[];
-}): Promise<void> {
-  const { creds, scriptName, module, bindings = [] } = options;
-  const metadata = { main_module: "worker.mjs", compatibility_date: COMPATIBILITY_DATE, bindings };
-
-  const form = new FormData();
-  form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
-  form.append("worker.mjs", new Blob([module], { type: "application/javascript+module" }), "worker.mjs");
-
-  const response = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${creds.accountId}/workers/scripts/${scriptName}`,
-    { method: "PUT", headers: { Authorization: `Bearer ${creds.apiToken}` }, body: form },
-  );
-  if (!response.ok) {
-    throw new CloudflareRequestError({
-      message: "Could not upload the throwaway Worker.",
-      action: "Check the token carries Workers Scripts: Edit on this account.",
-      detail: `Worker upload for '${scriptName}' returned ${response.status}: ${await response.text()}`,
-    });
-  }
-}
-
-/** Deploy the recorder at `scriptName`, bound to the KV namespace records are written to. */
 export async function deployInboundRecorder(options: {
-  creds: IntegrationCreds;
+  workers: CloudflareWorkersManager;
   scriptName: string;
   namespaceId: string;
 }): Promise<void> {
-  const { creds, scriptName, namespaceId } = options;
-  await uploadModuleWorker({
-    creds,
+  const { workers, scriptName, namespaceId } = options;
+  await workers.createWorker(
     scriptName,
-    module: INBOUND_RECORDER_MODULE,
-    bindings: [{ type: "kv_namespace", name: INBOUND_RECORDER_BINDING, namespace_id: namespaceId }],
-  });
+    { bindings: [{ type: "kv_namespace", name: INBOUND_RECORDER_BINDING, namespace_id: namespaceId }] },
+    { name: INBOUND_MODULE_NAME, body: INBOUND_RECORDER_MODULE },
+  );
 }
 
 /**

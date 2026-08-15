@@ -11,10 +11,10 @@ import { fixtureReady, fixtureValue } from "@pithy-sh/cloudflare/src/test-utils/
 import { loadIntegrationCreds, uniqueName, withNamedResource } from "@pithy-sh/cloudflare/src/test-utils/harness";
 import {
   deployInboundRecorder,
+  INBOUND_MODULE_NAME,
   INBOUND_NONCE_HEADER,
   PLACEHOLDER_INBOUND_MODULE,
   readObservedInbound,
-  uploadModuleWorker,
 } from "@pithy-sh/cloudflare/src/test-utils/inboundRecorder";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -126,8 +126,9 @@ describe.skipIf(!routingReady)("Email Routing rules — LIVE", () => {
     // Cloudflare refuses a rule whose target script does not exist (`2016 Workers Script Info not
     // found`), so the Worker has to be real before the rule can be. A placeholder script is enough:
     // these tests are about the rule, not about what the Worker does with the mail.
-    await uploadModuleWorker({ creds, scriptName: worker, module: PLACEHOLDER_INBOUND_MODULE });
-    await uploadModuleWorker({ creds, scriptName: sibling, module: PLACEHOLDER_INBOUND_MODULE });
+    const placeholder = { name: INBOUND_MODULE_NAME, body: PLACEHOLDER_INBOUND_MODULE };
+    await clients.workers().createWorker(worker, {}, placeholder);
+    await clients.workers().createWorker(sibling, {}, placeholder);
   }, 120_000);
 
   afterAll(async () => {
@@ -288,7 +289,7 @@ describe.skipIf(!deliveryReady)("An inbound message reaches the Worker's email()
     // The Worker is the destination and the witness: it writes what it was handed to KV, and this
     // suite reads it back. There is no mailbox to read instead.
     namespaceId = (await clients.kvProvisioner().createNamespace(namespaceTitle)).id;
-    await deployInboundRecorder({ creds, scriptName: recorder, namespaceId });
+    await deployInboundRecorder({ workers: clients.workers(), scriptName: recorder, namespaceId });
   }, 120_000);
 
   afterAll(async () => {
