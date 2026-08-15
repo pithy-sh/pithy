@@ -90,22 +90,68 @@ export const AdminUsersResponse = z
 export type AdminUsersResponse = z.output<typeof AdminUsersResponse>;
 
 /** `GET {base}/admin/users/:userId`. */
+/**
+ * A sub-read of the user pane that could not be made (#380).
+ *
+ * The pane fans out over three independent tables and this route used to `Promise.all` them: one D1 read
+ * failing took the whole page down, so a support agent looking at a locked-out account saw a 500 instead
+ * of the user and whichever lists did read.
+ *
+ * It carries **no rows and no reason**. No rows, because an empty array means *this user has none* and a
+ * pane rendering "no active sessions" over a list nobody read is telling a support agent something that
+ * was never established. No reason, because what a D1 read throws names a query and a table, and this
+ * response crosses a trust boundary to a management client.
+ */
+const ListUnavailable = z
+  .object({ state: z.literal("unavailable").describe("The list could not be read on this request.") })
+  .describe("Nothing was established about this list. Deliberately empty — there is nothing here to render as 'none'.");
+
+/** A bounded sub-list, behind its state: the rows and the truncation flag are unreachable without narrowing. */
+const boundedList = <T extends z.ZodTypeAny>(items: T, what: string) =>
+  z
+    .discriminatedUnion("state", [
+      z
+        .object({
+          state: z.literal("read").describe("The list was read."),
+          items: z.array(items).describe(`${what} Empty means this user has none.`),
+          truncated: z
+            .boolean()
+            .describe(
+              "True when more rows exist than the bound allowed. A pane must say so rather than imply a total.",
+            ),
+        })
+        .describe("The rows, and whether the bound cut them short."),
+      ListUnavailable,
+    ])
+    .describe(`${what} Behind a state, so an unread list cannot be rendered as an empty one.`);
+
+/** An unbounded sub-list, behind the same state. No truncation flag: this read has no bound to exceed. */
+const wholeList = <T extends z.ZodTypeAny>(items: T, what: string) =>
+  z
+    .discriminatedUnion("state", [
+      z
+        .object({
+          state: z.literal("read").describe("The list was read."),
+          items: z.array(items).describe(`${what} Empty means this user has none.`),
+        })
+        .describe("The rows, in full."),
+      ListUnavailable,
+    ])
+    .describe(`${what} Behind a state, so an unread list cannot be rendered as an empty one.`);
+
 export const AdminUserResponse = z
   .object({
     user: AdminUserView.describe("The user."),
-    providers: z
-      .array(z.string())
-      .describe(
-        "The OAuth providers linked to this account, as slugs. Read by a query that selects only `providerId`, so no provider token is ever loaded.",
-      ),
-    sessions: z.array(AdminSessionView).describe("Their live sessions, newest first, bounded."),
-    sessionsTruncated: z
-      .boolean()
-      .describe("True when more sessions exist than the bound allowed. A pane must say so rather than imply a total."),
-    devices: z.array(AdminDeviceView).describe("Their registered devices, most recently seen first, bounded."),
-    devicesTruncated: z.boolean().describe("True when more devices exist than the bound allowed."),
+    providers: wholeList(
+      z.string(),
+      "The OAuth providers linked to this account, as slugs. Read by a query that selects only `providerId`, so no provider token is ever loaded.",
+    ),
+    sessions: boundedList(AdminSessionView, "Their live sessions, newest first, bounded."),
+    devices: boundedList(AdminDeviceView, "Their registered devices, most recently seen first, bounded."),
   })
-  .describe("One user with their live sessions, registered devices, and linked providers.");
+  .describe(
+    "One user with their live sessions, registered devices, and linked providers. The user is the subject and its absence is a 404; the three lists are contributors, and one that will not read costs its own list and not the page (#380).",
+  );
 export type AdminUserResponse = z.output<typeof AdminUserResponse>;
 
 /** `GET {base}/admin/devices`. */
