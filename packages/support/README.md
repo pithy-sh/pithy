@@ -155,6 +155,24 @@ The submitter's view is built from scratch rather than by nulling fields on the 
 
 Set `submission: { enabled: false }` and the routes are not mounted at all. They answer 404, which is the honest answer for a feature a deployment does not have; a 403 would say "this exists and you may not use it".
 
+## What the browser is told
+
+A submission form is the one thing on this capability a browser calls, so support publishes a client-safe projection like `auth`, `payments` and `turnstile` do. Import it and narrow on `enabled` — never write the path down.
+
+```ts
+import support from "virtual:pithy/support";
+
+if (support.enabled) {
+  await fetch(`${support.basePath}/feedback`, { method: "POST", /* … */ });
+}
+```
+
+`basePath` is the load-bearing field: move the mount and the client follows, instead of posting to an address that answers 404 — which reads to the person pressing Send as *the request did not go*, indistinguishable from a server that is down. Beside it are the bounds a compose form should hold somebody to before it lets them send: `submission.maxSubjectChars`, `submission.maxBodyChars`, and `submission.attachments` (`maxCount`, `maxBytes`, `allowedContentTypes`, or `null` when attachments are off and no file picker should render).
+
+**`{ enabled: false }` when `submission.enabled` is false**, because the routes are then not mounted and a browser has nothing here to call. A screen branches once rather than guarding down two levels.
+
+**The taxonomy is deliberately not projected.** A category's value is the instruction a model reads and it lands in the prompt verbatim — prompt input written for a classifier, not copy for a chooser, and an adopter's UI wants its own words for a category either way. Nor are the inbox addresses, the canned replies, the classifier settings, the mail path's bounds, or `maxPerAccountPerHour` — a rate no client can pre-enforce honestly, since the count lives in D1 and the server's refusal is the only truth about it.
+
 ## Classification
 
 Three axes from one call — category, priority, sentiment — because together they make a sortable inbox rather than a labelled one.
