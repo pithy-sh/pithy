@@ -220,7 +220,21 @@ Three things follow, and each of them changes what you should build.
 
 ### Where the visitor's location comes from
 
-Omit `address` and Paddle resolves it from the browser's IP. That is right for a marketing page nobody has signed in to. A Worker can do better for a signed-in visitor — `request.cf.country` is on every Cloudflare request — and a customer with a saved address at Paddle needs only `customerId`. The kit does not choose for you; all three are fields on the query.
+Omit `address` and `customerId` and Paddle resolves the country from the browser's IP. That is right for a marketing page nobody has signed in to, and it is a guess everywhere else: **a customer is charged from their billing address**, because Paddle settles tax on the transaction's address rather than on where the browser connected from. In the United States the two differ by up to 15%.
+
+So the kit resolves it in one place. `resolvePriceLocation` in `src/pricing/location.ts` takes what you know about a visitor, picks the best source available, and says which one it picked:
+
+| `source` | From | Is it the charge? |
+| --- | --- | --- |
+| `customer` | a Paddle customer id. Paddle prices from the address it holds, which is the address the checkout charges | Yes. The only one that is not a guess |
+| `address` | a billing address you hold and Paddle does not | Closer than the network, still not proof — the buyer may enter another |
+| `ip` | nobody said | No. An estimate every time |
+
+`priceQueryFor(items, location)` builds the request from it, and `quoteIsEstimated(location, taxUnresolved)` decides the label. `location.provisional` is true exactly when the source is `ip`. Every site that quotes goes through the resolver; three call sites deciding this for themselves is how a page quotes from an address the checkout does not charge from.
+
+**Who Paddle prices a signed-in visitor as comes from your own Worker, not from the browser.** `GET /payments/pricing` answers `quotedFrom` — `{ "rail": "paddle", "providerAccountId": "ctm_…" }`, or `null` for a caller no store holds a customer for yet, or nothing at all on a Worker older than the bundle asking. It is read from the same provider-account row that `POST /payments/checkout` hands Paddle as `customer_id`, so the figure quoted and the figure charged resolve location from one row. `fetchPriceVisitor` makes the read and `usePriceVisitor` holds it; `ctm_…` is an identifier and authorizes nothing, and the route is `requireAuth()` and answers only about its own caller. The README's Routes section carries the response in full.
+
+**An address-derived quote supersedes an IP-derived one**, and a screen renders both in turn on purpose. The pricing page paints before the session resolves, so the first figure is the IP estimate — labelled, because it is one — and the second is the price the card will be charged. A read that fails answers `null`, which quotes from the IP and says so: treating a failed request as proof there is no address on file is the unsafe direction, and it is the one that would print a final-looking figure that is wrong.
 
 ### In flight, and failed
 
@@ -243,6 +257,8 @@ The pricing screen is public — it declares no `session`, because a stranger ha
 ### Zero-decimal currencies
 
 ¥725 is `725`, not `72500`. Render `formattedTotals` and `formattedUnitTotals` — Paddle has already applied the currency's own decimal places, its symbol and its separators. Never format the raw amounts yourself; they are exposed for comparing, and a kit that formatted them would need a table of which currencies have decimals and would eventually get one wrong.
+
+**The same rule reaches `GET /payments/pricing`.** `currentAmountMinor` and `listAmountMinor` are the store's integers in the smallest unit, so `500` is $5.00 in USD and ¥500 in JPY — the *number of decimals is a property of the currency*, and `/ 100` is a constant standing in for it. Read them beside `currency`, take the scale from the currency (`Intl.NumberFormat(locale, { style: "currency", currency }).resolvedOptions().minimumFractionDigits`), or pass a rendered total through untouched. A consumer that divides is right in every market it was tested in and wrong, silently, in Tokyo, Seoul and Santiago.
 
 ### A converted amount is not a stable number
 

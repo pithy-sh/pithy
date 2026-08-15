@@ -54,18 +54,16 @@ describe("a manifest from a Worker that predates the health fields", () => {
   });
 
   /**
-   * Absence and `null` land in the same place here, and that is correct rather than sloppy: #317 made
-   * `null` mean *no number* — either nothing is declared or the caller may not see it — and a Worker that
-   * declares no keys at all is the first of those. What neither ever means is zero, which the next test
-   * is here to keep true.
+   * A Worker saying nothing about health declares nothing, which is the first of the four states and
+   * the one absence has always meant. What it never means is zero, which the tests below keep true.
    */
-  test("and an absent summary reads as null, never as zero", () => {
+  test("and an absent summary reads as `undeclared`, never as zero", () => {
     const parsed = ControlPlaneManifest.parse(PRE_317_MANIFEST);
-    for (const capability of parsed.capabilities) expect(capability.health).toBeNull();
+    for (const capability of parsed.capabilities) expect(capability.health).toEqual({ state: "undeclared" });
   });
 });
 
-describe("and the three states #317 defined survive this", () => {
+describe("and the four states survive this", () => {
   const base = { name: "secrets", version: "0.4.1", adminRoutes: [] };
 
   /** One declared key, spelled out — a `count`, so `states` is null, which the schema refines for. */
@@ -78,7 +76,7 @@ describe("and the three states #317 defined survive this", () => {
     summary: "Secrets past their rotation window.",
   };
 
-  test("nothing declared, withheld, and zero are still three different answers", () => {
+  test("nothing declared, withheld, zero and unavailable are four different answers", () => {
     const declaredNothing = CapabilityDescriptor.parse({ ...base, healthKeys: [], health: null });
     const withheld = CapabilityDescriptor.parse({ ...base, healthKeys: [DUE_FOR_ROTATION], health: null });
     const zero = CapabilityDescriptor.parse({
@@ -86,25 +84,50 @@ describe("and the three states #317 defined survive this", () => {
       healthKeys: [DUE_FOR_ROTATION],
       health: { secretsDueForRotation: 0 },
     });
+    const unavailable = CapabilityDescriptor.parse({
+      ...base,
+      healthKeys: [DUE_FOR_ROTATION],
+      health: null,
+      healthUnavailable: true,
+    });
 
-    // Withheld is told from nothing-declared by the keys beside it, not by the null.
+    // Withheld is told from nothing-declared by the keys beside it, and both say so on the value now.
     expect(declaredNothing.healthKeys).toEqual([]);
     expect(withheld.healthKeys.map((k) => k.key)).toEqual(["secretsDueForRotation"]);
-    expect(declaredNothing.health).toBeNull();
-    expect(withheld.health).toBeNull();
+    expect(declaredNothing.health).toEqual({ state: "undeclared" });
+    expect(withheld.health).toEqual({ state: "withheld" });
 
-    // And zero is a number, which is the distinction the nullability exists to protect.
-    expect(zero.health).toEqual({ secretsDueForRotation: 0 });
-    expect(zero.health).not.toBeNull();
+    // Zero is a number, which is the distinction the whole design exists to protect.
+    expect(zero.health).toEqual({ state: "reported", values: { secretsDueForRotation: 0 } });
+
+    // And a producer that failed is its own answer — asserted against the other three as values (#350).
+    expect(unavailable.health).toEqual({ state: "unavailable" });
+    expect(unavailable.health).not.toEqual(withheld.health);
+    expect(unavailable.health).not.toEqual(zero.health);
+    expect(unavailable.health).not.toEqual(declaredNothing.health);
   });
 
-  test("a Worker that sends the fields is unaffected by the defaults", () => {
+  test("a Worker deployed before #350 sends no failure flag, and lands where it always did", () => {
+    // Same mechanism as #317's own fields, and the reason the flag sits beside `health` rather than
+    // inside it: absence is the only thing a client of an older build can be relied on to send.
     const sent = CapabilityDescriptor.parse({
       ...base,
       healthKeys: [DUE_FOR_ROTATION],
       health: { secretsDueForRotation: 3 },
     });
     expect(sent.healthKeys.map((k) => k.key)).toEqual(["secretsDueForRotation"]);
-    expect(sent.health).toEqual({ secretsDueForRotation: 3 });
+    expect(sent.health).toEqual({ state: "reported", values: { secretsDueForRotation: 3 } });
+  });
+
+  test("each state goes back on the wire as the entry it came from", () => {
+    const entries = [
+      { ...base, healthKeys: [], health: null, healthUnavailable: false },
+      { ...base, healthKeys: [DUE_FOR_ROTATION], health: null, healthUnavailable: false },
+      { ...base, healthKeys: [DUE_FOR_ROTATION], health: { secretsDueForRotation: 0 }, healthUnavailable: false },
+      { ...base, healthKeys: [DUE_FOR_ROTATION], health: null, healthUnavailable: true },
+    ];
+    for (const entry of entries) {
+      expect(CapabilityDescriptor.encode(CapabilityDescriptor.parse(entry))).toEqual(entry);
+    }
   });
 });

@@ -451,13 +451,24 @@ function readFailure(body: unknown): PaymentsFailure {
 }
 
 /**
- * One call: same-origin, cookie-carrying, never throwing.
+ * One call: same-origin, cookie-carrying, never throwing. **The only producer of that request.**
  *
  * The body is read before the status is judged, because a refusal's body is the failure a screen renders.
  * A body that will not parse is the generic failure rather than a crash — a corporate proxy's HTML page
  * reaches a browser far more often than anyone expects.
+ *
+ * **Exported, and that is the point of it.** This was private, so `../pricing/visitor.ts` wrote a second
+ * fetch with the same base-path default, the same `credentials: "include"`, and the same three failure
+ * directions — two producers of one rule, which is the shape of every recurring defect this kit has
+ * shipped. The second producer is always the cheap one to add and the one that drifts. Every browser
+ * program that asks this Worker a question calls this, and `sameOrigin.test.ts` fails the build on any
+ * module that grows its own (#346).
+ *
+ * **Zod-free, like everything on this side of the wire.** The answer is narrowed by the hand-written
+ * `guard` a caller passes, never by a schema: this compiles into an adopter's browser bundle, and
+ * dragging the Worker's schema graph in behind it would break their build.
  */
-async function call<T>(
+export async function callPayments<T>(
   path: string,
   init: PaymentsRequestInit,
   options: PaymentsClientOptions | undefined,
@@ -525,7 +536,7 @@ function isRestoreBody(value: unknown): value is { purchases: PurchaseView[]; en
 export async function getEntitlements(
   options?: PaymentsClientOptions,
 ): Promise<PaymentsResult<readonly EntitlementView[]>> {
-  const result = await call("/entitlements", {}, options, isEntitlementsBody);
+  const result = await callPayments("/entitlements", {}, options, isEntitlementsBody);
   return result.ok ? { ok: true, value: result.value.entitlements } : result;
 }
 
@@ -540,7 +551,7 @@ export function submitPurchase(
   input: { rail: PaymentsClientRail; receipt: string },
   options?: PaymentsClientOptions,
 ): Promise<PaymentsResult<PurchaseReceipt>> {
-  return call("/purchases", jsonPost(input), options, isPurchaseBody);
+  return callPayments("/purchases", jsonPost(input), options, isPurchaseBody);
 }
 
 /**
@@ -553,7 +564,7 @@ export function restorePurchases(
   input: { rail: PaymentsClientRail; receipts: readonly string[] },
   options?: PaymentsClientOptions,
 ): Promise<PaymentsResult<RestoredPurchases>> {
-  return call("/restore", jsonPost(input), options, isRestoreBody);
+  return callPayments("/restore", jsonPost(input), options, isRestoreBody);
 }
 
 /** Create a checkout for a product, and say how the browser reaches it. */
@@ -561,7 +572,7 @@ export function createCheckout(
   input: { productId: string; rail?: PaymentsHostedRail; discountCode?: string },
   options?: PaymentsClientOptions,
 ): Promise<PaymentsResult<PaymentsCheckoutHandoff>> {
-  return call("/checkout", jsonPost(input), options, isCheckoutHandoff);
+  return callPayments("/checkout", jsonPost(input), options, isCheckoutHandoff);
 }
 
 /**
@@ -572,7 +583,7 @@ export function createCheckout(
  * vulnerability.
  */
 export function createPortal(options?: PaymentsClientOptions): Promise<PaymentsResult<PaymentsPortalHandoff>> {
-  return call("/portal", { method: "POST" }, options, isPortalHandoff);
+  return callPayments("/portal", { method: "POST" }, options, isPortalHandoff);
 }
 
 /** How to leave the page, from the injected navigator or the browser's own. */

@@ -8,6 +8,7 @@ import type { z } from "zod";
 import { defineCapability } from "../../capability/capability";
 import { createBackend } from "../../createBackend";
 import { createDatabase } from "../../data/db";
+import { InternalError } from "../../error/pithyError";
 import { PACKAGE_VERSION } from "../../version.generated";
 import { controlplane } from "../capability";
 import { ControlPlaneConnection, type Ed25519PublicJwk, type RegisteredKey } from "../data/connection";
@@ -104,8 +105,57 @@ const inventory = defineCapability({
   },
 });
 
+/** The scope the sick fixture gates its own read, and its number, with. */
+const VAULT_READ_SCOPE = "vault:secrets:read";
+
+/** Whether the sick fixture's store answers at all. Mutable so one case can stand on each side of it. */
+let vaultUp = true;
+
+/** What the sick producer puts in `detail`. Nothing here may appear in any response, ever. */
+const VAULT_THROW_DETAIL =
+  "D1 SELECT id, name FROM vault_secrets WHERE project = 'acme' failed for connection 4f21 — token sk_live_hunter2";
+
+/**
+ * A capability whose health producer fails, the way a store in a customer's data path fails (#350).
+ *
+ * It throws what a producer *should* throw: client-safe text in `message`, throw-site context in
+ * `detail` — a query, a connection id, a token. Every one of those is a thing that must not reach the
+ * manifest, a log, or a browser, so the fixture puts them there on purpose and the cases below look for
+ * them in the bytes.
+ */
+const vault = defineCapability({
+  name: "vault",
+  requiredBindings: [],
+  adminRoutes: [
+    { method: "GET", path: "/vault/admin/secrets", scope: VAULT_READ_SCOPE, summary: "Every secret, in full." },
+  ],
+  health: defineCapabilityHealth({
+    keys: [
+      {
+        key: "secretsDueForRotation",
+        kind: "count",
+        states: null,
+        scope: VAULT_READ_SCOPE,
+        cost: "indexed",
+        summary: "Secrets past the rotation cadence their registry entry declares.",
+      },
+    ],
+    read: async () => {
+      if (vaultUp) return { secretsDueForRotation: 1 };
+      throw new InternalError({
+        message: "The secret store did not answer.",
+        action: "Try again once the store is reachable.",
+        detail: VAULT_THROW_DETAIL,
+      });
+    },
+  }),
+  routes: (app) => {
+    app.get("/vault/admin/secrets", requireControlPlane(VAULT_READ_SCOPE), (c) => c.json({ secrets: [] }));
+  },
+});
+
 /** One composed backend, exactly as a Worker assembles it. Stateless — every request re-reads D1. */
-const backend = createBackend({ capabilities: [controlplane(), quiet, inventory] });
+const backend = createBackend({ capabilities: [controlplane(), quiet, inventory, vault] });
 
 /** A management client's key pair: the private half it signs with, the public half the adopter stores. */
 interface Signer {
@@ -258,6 +308,9 @@ beforeEach(async () => {
   await controlplane_0001_init.up(db);
   // The replay set is a table now, not a KV namespace, and it is on the verification path for every
   [alice, bob, carol] = await Promise.all([signer("cpk_alice"), signer("cpk_bob"), signer("cpk_carol")]);
+  vaultUp = true;
+  pending = 0;
+  produced = 0;
 });
 
 describe("a Worker nobody has connected", () => {
@@ -303,13 +356,14 @@ describe("GET /control-plane/manifest", () => {
 
     const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
     expect(response.status).toBe(200);
-    const json = await body<ControlPlaneManifest>(response);
+    // The response is the contract a management client parses, so it parses here too. A field renamed
+    // without the schema noticing would break every client and nothing else.
+    const raw = await body<unknown>(response);
+    expect(() => ControlPlaneManifest.parse(raw)).not.toThrow();
+    const json = ControlPlaneManifest.parse(raw);
     expect(json.capabilities.map((capability) => capability.name)).toContain("controlplane");
     expect(json.grantedScopes).toEqual([MANIFEST_READ_SCOPE, KEYS_ROTATE_SCOPE]);
     expect(json.connectionId).toBe(CONNECTION_ID);
-    // The response is the contract a management client parses, so it parses here too. A field renamed
-    // without the schema noticing would break every client and nothing else.
-    expect(() => ControlPlaneManifest.parse(json)).not.toThrow();
   });
 
   test("reports both version axes, because neither answers the other's question", async () => {
@@ -325,7 +379,7 @@ describe("GET /control-plane/manifest", () => {
       { ...BINDINGS, CF_VERSION_METADATA: { id: "v-deadbeef", tag: "" } },
     );
 
-    const json = await body<ControlPlaneManifest>(response);
+    const json = ControlPlaneManifest.parse(await body<unknown>(response));
     expect(json.version).toBe("v-deadbeef");
     const seam = json.capabilities.find((capability) => capability.name === "controlplane");
     expect(seam?.version).toBe(PACKAGE_VERSION);
@@ -333,13 +387,12 @@ describe("GET /control-plane/manifest", () => {
     // the intersection of what it composes and what changed is worth reporting.
     const quietDescriptor = json.capabilities.find((capability) => capability.name === "quiet");
     expect(quietDescriptor?.version).toBeNull();
-    expect(() => ControlPlaneManifest.parse(json)).not.toThrow();
   });
 
   test("says it cannot tell, rather than inventing a build, with no version binding", async () => {
     await connect([registered(alice)]);
     const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
-    expect((await body<ControlPlaneManifest>(response)).version).toBeNull();
+    expect(ControlPlaneManifest.parse(await body<unknown>(response)).version).toBeNull();
   });
 
   test("stamps the running build on every control-plane response, allowed and denied alike", async () => {
@@ -407,7 +460,7 @@ describe("GET /control-plane/manifest", () => {
     await connect([registered(alice)]);
 
     const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
-    const json = await body<ControlPlaneManifest>(response);
+    const json = ControlPlaneManifest.parse(await body<unknown>(response));
     const seam = json.capabilities.find((capability) => capability.name === "controlplane");
 
     expect(seam?.adminRoutes.map((route) => `${route.method} ${route.path}`).sort()).toEqual([
@@ -432,7 +485,7 @@ describe("GET /control-plane/manifest", () => {
     await connect([registered(alice)]);
 
     const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
-    const json = await body<ControlPlaneManifest>(response);
+    const json = ControlPlaneManifest.parse(await body<unknown>(response));
     const plain = json.capabilities.find((capability) => capability.name === "quiet");
 
     expect(plain).toBeDefined();
@@ -449,16 +502,19 @@ describe("GET /control-plane/manifest", () => {
 });
 
 describe("the counts a client would otherwise pay a round trip for (#317)", () => {
-  /** Read the manifest, and pull out the capability that contributes a summary. */
-  async function inventoryEntry(): Promise<ControlPlaneManifest["capabilities"][number]> {
+  /** Read the manifest as a client does — over the wire, then through the schema it publishes. */
+  async function manifest(): Promise<ControlPlaneManifest> {
     const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
     expect(response.status).toBe(200);
-    const json = await body<ControlPlaneManifest>(response);
     // The whole manifest still parses. A number added to it is worthless if it breaks the contract the
     // client reads everything else through.
-    expect(() => ControlPlaneManifest.parse(json)).not.toThrow();
-    const entry = json.capabilities.find((capability) => capability.name === "inventory");
-    if (!entry) throw new Error("the fixture capability is missing from the manifest");
+    return ControlPlaneManifest.parse(await body<unknown>(response));
+  }
+
+  /** One capability's entry, by name. */
+  async function entryFor(name: string): Promise<ControlPlaneManifest["capabilities"][number]> {
+    const entry = (await manifest()).capabilities.find((capability) => capability.name === name);
+    if (!entry) throw new Error(`the fixture capability ${name} is missing from the manifest`);
     return entry;
   }
 
@@ -466,8 +522,8 @@ describe("the counts a client would otherwise pay a round trip for (#317)", () =
     await connect([registered(alice)], [MANIFEST_READ_SCOPE, INVENTORY_READ_SCOPE]);
     pending = 3;
 
-    const entry = await inventoryEntry();
-    expect(entry.health).toEqual({ thingsPending: 3 });
+    const entry = await entryFor("inventory");
+    expect(entry.health).toEqual({ state: "reported", values: { thingsPending: 3 } });
     // The declaration travels with it, so a client renders the number with a label it did not ship.
     expect(entry.healthKeys.map((key) => key.key)).toEqual(["thingsPending"]);
     expect(entry.healthKeys[0]?.cost).toBe("memory");
@@ -477,7 +533,7 @@ describe("the counts a client would otherwise pay a round trip for (#317)", () =
   test("zero is a number, and a withheld number is not zero", async () => {
     await connect([registered(alice)], [MANIFEST_READ_SCOPE, INVENTORY_READ_SCOPE]);
     pending = 0;
-    expect((await inventoryEntry()).health).toEqual({ thingsPending: 0 });
+    expect((await entryFor("inventory")).health).toEqual({ state: "reported", values: { thingsPending: 0 } });
   });
 
   test("a caller without the capability's read scope gets no summary, and costs the Worker nothing", async () => {
@@ -487,8 +543,8 @@ describe("the counts a client would otherwise pay a round trip for (#317)", () =
     pending = 3;
     produced = 0;
 
-    const entry = await inventoryEntry();
-    expect(entry.health).toBeNull();
+    const entry = await entryFor("inventory");
+    expect(entry.health).toEqual({ state: "withheld" });
     expect(entry.healthKeys.map((key) => key.key)).toEqual(["thingsPending"]);
     expect(produced).toBe(0);
   });
@@ -496,12 +552,9 @@ describe("the counts a client would otherwise pay a round trip for (#317)", () =
   test("a capability that contributes nothing declares nothing, which reads as neither", async () => {
     await connect([registered(alice)], [MANIFEST_READ_SCOPE, INVENTORY_READ_SCOPE]);
 
-    const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
-    const plain = (await body<ControlPlaneManifest>(response)).capabilities.find(
-      (capability) => capability.name === "quiet",
-    );
-    expect(plain?.healthKeys).toEqual([]);
-    expect(plain?.health).toBeNull();
+    const plain = await entryFor("quiet");
+    expect(plain.healthKeys).toEqual([]);
+    expect(plain.health).toEqual({ state: "undeclared" });
   });
 
   test("a value a client has never heard of renders as nothing rather than as an error", async () => {
@@ -509,7 +562,7 @@ describe("the counts a client would otherwise pay a round trip for (#317)", () =
     pending = 3;
 
     const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
-    const json = await body<ControlPlaneManifest>(response);
+    const json = await body<{ capabilities: { name: string; health: Record<string, unknown> | null }[] }>(response);
     // What an older client meets when a Worker reports a key its own build predates. The manifest must
     // still parse — a client that failed here would lose its navigation over a number it did not want.
     const newer = json.capabilities.map((capability) =>
@@ -521,9 +574,94 @@ describe("the counts a client would otherwise pay a round trip for (#317)", () =
     // And pairing values with their declarations drops the one nothing describes, so it renders as
     // nothing rather than as a guess.
     const entry = parsed.capabilities.find((capability) => capability.name === "inventory");
-    expect(namedHealthValues(entry ?? { healthKeys: [], health: null }).map((named) => named.key.key)).toEqual([
-      "thingsPending",
-    ]);
+    expect(
+      namedHealthValues(entry ?? { healthKeys: [], health: { state: "undeclared" } }).map((named) => named.key.key),
+    ).toEqual(["thingsPending"]);
+  });
+
+  describe("a sick capability costs its own number and nothing else (#350)", () => {
+    test("a producer that throws is `unavailable`, and its sibling still reports its number", async () => {
+      // The gate. Before #350 this call was a 500 and Overview went dark for every capability on the
+      // manifest, with nothing on screen saying which one had failed.
+      await connect([registered(alice)], [MANIFEST_READ_SCOPE, INVENTORY_READ_SCOPE, VAULT_READ_SCOPE]);
+      vaultUp = false;
+      pending = 3;
+
+      const entries = (await manifest()).capabilities;
+      const sick = entries.find((capability) => capability.name === "vault");
+      const sibling = entries.find((capability) => capability.name === "inventory");
+
+      expect(sick?.health).toEqual({ state: "unavailable" });
+      // The sibling's number, unharmed. This is the assertion the whole issue is about.
+      expect(sibling?.health).toEqual({ state: "reported", values: { thingsPending: 3 } });
+      // And every other entry still resolves too, sick one included — nothing is missing from the list.
+      expect(entries.map((capability) => capability.name).sort()).toEqual([
+        "controlplane",
+        "inventory",
+        "quiet",
+        "vault",
+      ]);
+      // Which one failed is on screen: the entry is named, and it carries the declaration of the number
+      // that is missing, so a client can say what it cannot show.
+      expect(sick?.healthKeys.map((key) => key.key)).toEqual(["secretsDueForRotation"]);
+    });
+
+    test("the failed state is not the withheld state and not zero, asserted on the values", async () => {
+      // On the values, not on a rendering: three states that each look different in one rendering can
+      // still be the same value, and the value is what every consumer branches on.
+      await connect([registered(alice)], [MANIFEST_READ_SCOPE, VAULT_READ_SCOPE, INVENTORY_READ_SCOPE]);
+      vaultUp = false;
+      pending = 0;
+      const failed = (await entryFor("vault")).health;
+      const zero = (await entryFor("inventory")).health;
+      const undeclared = (await entryFor("quiet")).health;
+
+      // The same connection, re-granted nothing but `manifest:read` — so `withheld` here is the real
+      // withheld state off the same route, not a value this test built.
+      await controlPlaneDatabase(env.DB).deleteFrom(CONTROL_PLANE_CONNECTIONS_TABLE).execute();
+      await connect([registered(alice)], [MANIFEST_READ_SCOPE]);
+      const withheld = (await entryFor("vault")).health;
+
+      // The inequalities first, so it is the collapse that is caught rather than the state's name. And
+      // the states before the values: two capabilities report under different keys, so a failure that
+      // fell to zero would still be unequal to a sibling's zero while being exactly as wrong.
+      expect(failed.state).not.toBe(zero.state);
+      expect(failed.state).not.toBe(withheld.state);
+      expect(failed).not.toEqual(zero);
+      expect(failed).not.toEqual(withheld);
+      expect(failed).not.toEqual(undeclared);
+      expect(failed).toEqual({ state: "unavailable" });
+      expect(new Set([failed.state, withheld.state, zero.state, undeclared.state]).size).toBe(4);
+    });
+
+    test("nothing the producer threw reaches the response bytes", async () => {
+      // The security boundary, checked on the bytes rather than on the parse. A producer throws from
+      // inside a customer's data path, so its `detail` is a query, a connection id, a token.
+      await connect([registered(alice)], [MANIFEST_READ_SCOPE, VAULT_READ_SCOPE]);
+      vaultUp = false;
+
+      const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
+      expect(response.status).toBe(200);
+      const text = await response.text();
+
+      expect(text).not.toContain("sk_live_hunter2");
+      expect(text).not.toContain("vault_secrets");
+      expect(text).not.toContain(VAULT_THROW_DETAIL);
+      // Nor the client-safe half, nor the action: the state carries no words at all, so there is nowhere
+      // for a later change to put one.
+      expect(text).not.toContain("The secret store did not answer.");
+      expect(text).toContain('"healthUnavailable":true');
+    });
+
+    test("the same capability reports its number the moment its store answers again", async () => {
+      // So the case above is failing for the reason it says, and not because the fixture never worked.
+      await connect([registered(alice)], [MANIFEST_READ_SCOPE, VAULT_READ_SCOPE]);
+      vaultUp = true;
+      expect((await entryFor("vault")).health).toEqual({
+        state: "reported",
+        values: { secretsDueForRotation: 1 },
+      });
+    });
   });
 });
 
@@ -789,6 +927,11 @@ describe("the exported response schemas against the live routes", () => {
    * the schema does not know about is dropped and shows as a difference, and a field it declares
    * wrongly fails the parse. `publicKeyView` returned a bare `Record<string, unknown>` before these
    * existed, which is to say the wire shape of the seam's own routes was stated nowhere.
+   *
+   * A schema that decodes rather than mirrors is compared through its own encoder instead, so the
+   * property survives (#350). The manifest's health value is four states on the wire's two fields, and
+   * `encode(decode(raw)) === raw` still fails for a field the schema does not know about — it is the
+   * same test, made honest about a boundary that now converts.
    */
   async function contract<T>(schema: z.ZodType<T>, response: Response, expected = 200): Promise<T> {
     expect(response.status).toBe(expected);
@@ -806,10 +949,14 @@ describe("the exported response schemas against the live routes", () => {
     );
     expect(ping.keyId).toBe(alice.keyId);
 
-    await contract(
-      ControlPlaneManifest,
-      await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE }),
-    );
+    // The manifest decodes rather than mirrors — its health value is four states over the wire's two
+    // fields (#350) — so the same binding is asserted through the encoder. `encode(decode(raw))` is still
+    // `raw` in both directions: a field the schema does not know about is dropped and shows as a
+    // difference, and a field it declares wrongly fails the parse.
+    const manifestResponse = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
+    expect(manifestResponse.status).toBe(200);
+    const rawManifest = await body<unknown>(manifestResponse);
+    expect(ControlPlaneManifest.encode(ControlPlaneManifest.parse(rawManifest))).toEqual(rawManifest);
 
     await contract(
       ControlPlaneKeysResponse,
