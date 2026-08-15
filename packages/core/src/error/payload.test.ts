@@ -3,7 +3,14 @@
 
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
-import { ErrorPayload, KitErrorPayload, KitPublicErrorPayload, PublicErrorPayload, ValidationIssue } from "./payload";
+import {
+  ErrorPayload,
+  KitErrorPayload,
+  KitPublicErrorPayload,
+  kitErrorStatus,
+  PublicErrorPayload,
+  ValidationIssue,
+} from "./payload";
 import { PithyError } from "./pithyError";
 
 describe("ErrorPayload (the kit taxonomy)", () => {
@@ -180,11 +187,13 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * all the way down to empty. Both unions are measured against this number and never against each
  * other's length. Changing the taxonomy's size is a deliberate act; changing this line is part of it.
  *
- * Verified 2026-08-14: 116 members in each union, no duplicates, sorted lists identical. The one added
- * that day is `secrets/rotation_unrecorded` (#367) — a credential rolled at its issuer whose successor the
- * store never took, which needs its own code because it is the one secrets failure a retry cannot repair.
+ * Verified 2026-08-15: 117 members in each union, no duplicates, sorted lists identical. The one added
+ * that day is `core/workflow_failed` (#365) — a dispatched Workflow that ran and ended without
+ * completing, needing its own code because it had been arriving as `cloudflare/request_failed` 502,
+ * which tells an operator the far side is broken and to wait, for a run that is permanently over.
+ * The day before, `secrets/rotation_unrecorded` (#367) took it to 116.
  */
-const KIT_ERROR_CODE_COUNT = 116;
+const KIT_ERROR_CODE_COUNT = 117;
 
 /** One member of either kit union — the public projection or its `action`/`detail` twin. */
 type KitUnionMember = (typeof KitErrorPayload | typeof KitPublicErrorPayload)["options"][number];
@@ -269,6 +278,42 @@ describe("PublicErrorPayload (the wire shape)", () => {
     });
     expect("detail" in parsed).toBe(false);
     expect(JSON.stringify(parsed)).not.toContain("9f2c");
+  });
+});
+
+/**
+ * **`kitErrorStatus` — the status a code carries when the payload it came from did not survive**
+ * (pithy-sh/pithy#365).
+ *
+ * Every expectation here is a hand-written pair. Reading either half off `KitErrorPayload` would be
+ * asking the subject to grade itself: the function is derived from that union, so a test derived
+ * from it too would pass on any union at all, including one where every status had moved.
+ */
+describe("kitErrorStatus", () => {
+  test("a kit code answers the status its member pins", () => {
+    expect(kitErrorStatus("secrets/already_exists")).toBe(409);
+    expect(kitErrorStatus("secrets/invalid_value")).toBe(400);
+    expect(kitErrorStatus("core/not_found")).toBe(404);
+    expect(kitErrorStatus("cloudflare/request_failed")).toBe(502);
+    expect(kitErrorStatus("core/upstream_timeout")).toBe(504);
+    expect(kitErrorStatus("core/workflow_failed")).toBe(500);
+  });
+
+  test("a code the kit does not define answers nothing, rather than a guess", () => {
+    // An adopter's own, a D1 fault class, `classifiedSteps`' word for a throw nothing recognises, and
+    // a typo. None has a pinned status, and inventing one is how a 502 got attached to a 409.
+    expect(kitErrorStatus("connect/device_code_expired")).toBeUndefined();
+    expect(kitErrorStatus("d1/transient")).toBeUndefined();
+    expect(kitErrorStatus("unclassified")).toBeUndefined();
+    expect(kitErrorStatus("secrets/already_exsits")).toBeUndefined();
+  });
+
+  test("`core/workflow_failed` and `cloudflare/request_failed` are a different pair, both halves", () => {
+    // The whole of what #365 fixed, stated as two literals: a Workflow that ran and terminally failed
+    // is not the Cloudflare API refusing a call, and neither the code nor the status may say it is.
+    expect(kitErrorStatus("core/workflow_failed")).not.toBe(kitErrorStatus("cloudflare/request_failed"));
+    expect(kitErrorStatus("core/workflow_failed")).toBe(500);
+    expect(kitErrorStatus("cloudflare/request_failed")).toBe(502);
   });
 });
 
