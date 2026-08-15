@@ -95,6 +95,9 @@ const APP_THREAD: SupportThread = {
   channel: "app",
   inboxAddress: null,
   accountLinkSource: "session",
+  // They filed it as a billing problem; `THREAD.category` says the classifier called it `billing` too.
+  // Overridden per-test where the disagreement is the point.
+  declaredCategory: "billing",
 };
 
 const LISTED: ListedThread = { ...THREAD, read: true, snoozedUntil: AT };
@@ -187,6 +190,22 @@ describe("support response schemas", () => {
     // Same for the attachment's storage key: server-derived, precisely so a client cannot name an
     // object or guess the one beside it.
     expect(Object.keys(SupportAttachmentView.shape)).not.toContain("storageKey");
+  });
+
+  test("the console can tell what the submitter said from what the classifier decided", () => {
+    // `pithy-sh/pithy#375`. Collapsing these is how a chooser becomes decoration: the operator sees
+    // one word and cannot tell whether a person claimed it or a model concluded it, and the same
+    // action follows from very different evidence. Two fields, both projected, neither derived.
+    expect(threadView(APP_THREAD).declaredCategory).toBe("billing");
+    expect(threadView(APP_THREAD).category).toBe("billing");
+
+    // The row worth having: they say billing, the model says bug_report. Both survive the projection.
+    const disputed = threadView({ ...APP_THREAD, category: "bug_report" });
+    expect(disputed).toMatchObject({ declaredCategory: "billing", category: "bug_report" });
+
+    // Mail. Nobody was asked, so nobody said — and null is not the catch-all key.
+    expect(threadView(THREAD).declaredCategory).toBeNull();
+    expect(threadView(THREAD).category).toBe("billing");
   });
 
   test("the console can tell a session-proven link from a header-inferred one", () => {

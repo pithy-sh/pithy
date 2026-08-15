@@ -10,6 +10,7 @@ import { attachmentKey, putAttachment, sha256Hex } from "../attachment/store";
 import { SupportAuditActions } from "../audit/actions";
 import type { SupportConfig } from "../config/config";
 import { SupportAttachment } from "../data/attachment";
+import { categoryEnum, type SupportCategories } from "../data/categories";
 import { SupportMessage, type SupportSubmissionContext } from "../data/message";
 import {
   SUPPORT_ATTACHMENTS_TABLE,
@@ -18,7 +19,7 @@ import {
   type SupportDatabase,
 } from "../data/tables";
 import { SupportThread, UNCLASSIFIED } from "../data/thread";
-import { SupportNotFoundError, SupportRejectedError } from "../error/errors";
+import { SupportInvalidCategoryError, SupportNotFoundError, SupportRejectedError } from "../error/errors";
 import { safeFilename } from "../mime/parse";
 import { indexMessage } from "../store/search";
 import { checkAccountRate, checkAttachment } from "./guard";
@@ -52,6 +53,8 @@ import { checkAccountRate, checkAttachment } from "./guard";
  * because `atob` materialises its whole result and a size check after it has already been handed the
  * allocation it meant to refuse. What is left arrives here as bytes:
  *
+ * 0. **The declared category**, which needs no I/O at all — it is a comparison against a taxonomy this
+ *    process already holds, so it is genuinely the cheapest true reason there is.
  * 1. **The account**, because everything else depends on the address a reply will come back to, and a
  *    report nobody can answer is not worth storing.
  * 2. **The rate bound**, before anything is written.
@@ -96,6 +99,15 @@ export interface SubmitDeps {
   db: SupportDatabase;
   /** The resolved config. */
   config: SupportConfig;
+  /**
+   * The effective taxonomy — the shipped defaults plus the adopter's, already merged.
+   *
+   * Taken as a dep rather than re-derived from `config.categories` here, because two resolutions of one
+   * taxonomy are two things free to disagree: the classifier parses against the capability's merged
+   * set, and a submitted claim validated against a differently-merged one would be accepted or refused
+   * on a vocabulary nothing else in the process uses.
+   */
+  categories: SupportCategories;
   /** The R2 bucket attachments are written to. Absent means none are stored. */
   bucket?: R2Bucket;
   /** Whether the FTS5 index is composed. */
@@ -126,6 +138,15 @@ export interface SubmitInput {
   subject: string;
   /** The report itself, as the person wrote it. */
   body: string;
+  /**
+   * What the submitter says this is about, from the app's own chooser. Their claim, not a
+   * classification — validated against the effective taxonomy, stored on the thread it opens, and never
+   * read by the classifier. Absent when the client offers no chooser, which stays the ordinary case.
+   *
+   * Accepted only on a submission that **opens** a thread; sending it with `threadId` is refused rather
+   * than ignored (see {@link checkDeclaredCategory}).
+   */
+  declaredCategory?: string;
   /** Continue this thread instead of opening one. Refused unless it is this account's own app thread. */
   threadId?: string;
   /** The bounded context the app supplied. */
@@ -179,6 +200,56 @@ async function resolveOwnThread(db: SupportDatabase, threadId: string, userId: s
     .executeTakeFirst();
   if (!thread) throw new SupportNotFoundError({ detail: `no app thread ${threadId} owned by ${userId}` });
   return thread;
+}
+
+/**
+ * Check a submitter's declared category, before anything else and before any I/O.
+ *
+ * **An undeclared key is refused, never stored and never downgraded.** Storing it would make
+ * `declared_category` a client-writable vocabulary: one client shipping `Billing` or `billng` and the
+ * console's filter silently misses those threads forever, while the inbox grows a long tail of one-off
+ * keys nobody declared. Downgrading to `uncategorized` is the worse of the two remaining options,
+ * because it makes a broken chooser indistinguishable from a submitter who genuinely chose nothing —
+ * the exact collapse this column exists to prevent, arrived at from the other side.
+ *
+ * It is refused rather than tolerated **because the writer can be fixed.** `classifyMessage` falls back
+ * to `uncategorized` on a label the model invented, and that is right there: a model cannot be told it
+ * was wrong at the call site. A client can, and a 400 is how it gets told — the chooser was built from
+ * a taxonomy the adopter declared, so a value outside it is that client's bug and should be loud.
+ *
+ * **A category may not ride along with a `threadId`.** A thread already carries what it was filed
+ * under, and a second, later claim has no honest meaning: ignoring it is a chooser that does nothing —
+ * which is the whole defect this seam exists to close — and honouring it would let a follow-up rewrite
+ * the premise a conversation was opened on, the way `subject` deliberately cannot. So it is refused,
+ * loudly, and a chooser stays what it is: something offered on the form that opens a request.
+ *
+ * **Nothing the submitter wrote reaches `message`.** The offending value goes in `detail`, which the
+ * HTTP codec strips — this capability's whole input is text somebody else chose, and an error that
+ * echoed it back would make the error channel a reflection surface.
+ */
+function checkDeclaredCategory(deps: SubmitDeps, input: SubmitInput): void {
+  const declared = input.declaredCategory;
+  if (declared === undefined) return;
+
+  if (input.threadId !== undefined) {
+    throw new ValidationError({
+      message: "A category is chosen when a request is opened, not on a later message.",
+      action: "Send the category with the first message, or leave it off to continue the conversation.",
+      detail: `submission declared a category alongside threadId ${input.threadId}`,
+    });
+  }
+
+  // The same schema `classifyMessage` parses a model's answer against, over the same effective
+  // taxonomy — one definition of "a category this project has", checked at both boundaries. `safeParse`
+  // rather than `parse`: a refusal here is a 400 this function shapes, never a `ZodError` escaping into
+  // somebody else's handler.
+  if (!categoryEnum(deps.categories).safeParse(declared).success) {
+    throw new SupportInvalidCategoryError({
+      message: "That is not a category this app offers.",
+      action: "Choose one of the categories the app declares, or send the request without one.",
+      detail: `submitted category ${JSON.stringify(declared)} is not in the effective taxonomy (${Object.keys(deps.categories).join(", ")})`,
+    });
+  }
 }
 
 /** How many columns one `pithy_support_attachments` row binds — derived, so a new column re-chunks. */
@@ -305,6 +376,12 @@ export function submissionMessageId(messageId: string, inboxAddress: string | nu
 export async function submitFeedback(deps: SubmitDeps, input: SubmitInput): Promise<SubmitOutcome> {
   const now = deps.now();
 
+  // 0. The declared category, first because it costs nothing: no query, no decode, no allocation the
+  // caller chose the size of. Checked here rather than only at the transport boundary for the reason
+  // the attachment count is — the bound has to hold for every caller that reaches this function
+  // directly, which is every test and every future transport.
+  checkDeclaredCategory(deps, input);
+
   // 1. The account. A session proved this id, so failing to read it is a fault in this deployment
   // rather than a supported state — `@pithy-sh/auth` composed is what made the session exist.
   const account = await deps.resolveAccount(input.userId);
@@ -386,6 +463,10 @@ export async function submitFeedback(deps: SubmitDeps, input: SubmitInput): Prom
         senderAuthenticated: true,
         userId: input.userId,
         accountLinkSource: "session",
+        // The submitter's claim, set once and never rewritten. **Beside the spread rather than inside
+        // it**: `UNCLASSIFIED` is the set of columns the classifier owns and overwrites on every run,
+        // and a claim listed among them would be gone the first time a model looked at this thread.
+        declaredCategory: input.declaredCategory ?? null,
         ...UNCLASSIFIED,
         archived: false,
         archivedAt: null,

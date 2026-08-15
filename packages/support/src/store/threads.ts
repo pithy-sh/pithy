@@ -78,8 +78,10 @@ export function decodeCursor(value: string | undefined): ThreadCursor | undefine
 export interface ListThreadsQuery {
   /** Open threads, done threads, or both. Defaults to open. */
   archived?: boolean;
-  /** One category key from the effective taxonomy. */
+  /** One category key from the effective taxonomy — what the classifier decided. */
   category?: string;
+  /** One category key from the effective taxonomy — what the submitter said. A different question. */
+  declaredCategory?: string;
   /** One priority. */
   priority?: SupportPriority;
   /** One sentiment. */
@@ -187,6 +189,11 @@ async function runListThreads(
     .where(`${SUPPORT_THREADS_TABLE}.archived`, "=", query.archived === true ? 1 : 0);
 
   if (query.category !== undefined) builder = builder.where(`${SUPPORT_THREADS_TABLE}.category`, "=", query.category);
+  // Its own predicate rather than an `OR` with the one above, because the two answer different
+  // questions and an operator asking both is asking for the threads where they agree — which is the
+  // one shape a single conflated filter could never express.
+  if (query.declaredCategory !== undefined)
+    builder = builder.where(`${SUPPORT_THREADS_TABLE}.declaredCategory`, "=", query.declaredCategory);
   if (query.priority !== undefined) builder = builder.where(`${SUPPORT_THREADS_TABLE}.priority`, "=", query.priority);
   if (query.sentiment !== undefined)
     builder = builder.where(`${SUPPORT_THREADS_TABLE}.sentiment`, "=", query.sentiment);

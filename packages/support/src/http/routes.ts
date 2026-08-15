@@ -79,6 +79,55 @@ import {
  * The validators sit **after** the gate on every line. A validator ahead of it turns a 401 into a
  * 400 and tells an unverified caller which requests were well-formed — and on this surface that is a
  * live oracle for the shape of an adopter's support tooling.
+ *
+ * ## An adopter's own authorisation on the submission route
+ *
+ * **This capability gates `POST {base}/feedback` on a session and same-origin, and on nothing else,
+ * permanently.** Writing to support must not be role-gated or it stops being a general intake: the
+ * person who most needs to reach support is often the one whose access is broken, and a role the kit
+ * invented would make one adopter's account model a condition on everybody's ability to report a bug.
+ *
+ * But an adopter whose *own* model makes some submissions act-on-behalf-of — `pithy-sh/dashboard#10`'s
+ * discount application is made for an organisation, and a member may not make one — needs somewhere to
+ * put that check, and it must not be the client. **The seam for it already exists, in the composition
+ * contract rather than in this capability's config**, and it is documented here because it was not
+ * discoverable rather than because it was missing:
+ *
+ * ```ts
+ * // the adopter's own `app` capability
+ * defineCapability({
+ *   name: "app",
+ *   middleware: [
+ *     (app) => {
+ *       app.use("/support/feedback", async (c, next) => {
+ *         // c.var.auth is already populated — @pithy-sh/auth's session middleware is a library's, and
+ *         // every capability's middleware mounts before any capability's routes.
+ *         if (c.var.auth && !(await mayWriteOnBehalfOfTheOrganisation(c))) throw new ForbiddenError({ … });
+ *         await next();
+ *       });
+ *     },
+ *   ],
+ *   …
+ * });
+ * ```
+ *
+ * `createBackend` mounts **every** capability's middleware before **any** capability's routes, and the
+ * adopter's `app` capability composes last — so their middleware runs after auth has resolved the
+ * session and before this file's `requireAuth()`. `createBackend.workers.test.ts` pins that ordering,
+ * because a paragraph asserting it is not the same as a test failing when it changes.
+ *
+ * Two consequences worth stating rather than discovering. Their middleware sees `c.var.auth` as **null**
+ * on an unauthenticated request, since it runs ahead of the route's own gate — so it should pass those
+ * through and let `requireAuth()` answer 401, rather than 403 a caller who was never signed in. And the
+ * path is theirs to write, from the `basePath` they configured; a mount point they changed and a
+ * middleware path they did not is a gate that silently stops covering anything.
+ *
+ * **A `beforeSubmit` callback in `SupportConfig` was the tempting alternative and is the wrong shape.**
+ * The need is not support's — every capability with a write route has it — so solving it once per
+ * capability would give an adopter a different mechanism per package, each with its own signature and
+ * its own answer to "what is in scope here". A config file is also the wrong home for an authorisation
+ * decision that wants `c.var`, and a second place to look for the gates on a route is how a Worker ends
+ * up with two of them, free to disagree.
  */
 
 /** How the support sub-router is built. */

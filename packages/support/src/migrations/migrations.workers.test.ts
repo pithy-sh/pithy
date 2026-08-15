@@ -134,10 +134,19 @@ describe("support_0001_threads", () => {
     ]);
   });
 
-  test("down removes every one of them", async () => {
+  test("down removes every one of them, and leaves no index behind either", async () => {
     await runMigrations(env.DB, provider({ "0001_threads": support_0001_threads }));
     await rollbackMigration(env.DB, provider({ "0001_threads": support_0001_threads }));
     expect(await tables()).toEqual([]);
+    // **Stated so the next reader knows what this does and does not prove.** SQLite drops an index
+    // with the table it is on, so a `down` that forgot a `dropIndex` line would still leave this
+    // empty — the explicit drops in `down` are a written invariant no observation of the database can
+    // fail on. What is actually gated here is that `down` runs without error and takes the tables
+    // with it, and `beforeEach` re-runs `up` against the result, so the round trip is real.
+    const { results } = await env.DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'pithy_support_%'",
+    ).all<{ name: string }>();
+    expect(results).toEqual([]);
   });
 
   test("the message id index is unique, so a redelivered message cannot duplicate", async () => {
@@ -189,6 +198,46 @@ describe("support_0001_threads", () => {
     ).run();
     const { results } = await env.DB.prepare("SELECT category FROM pithy_support_threads").all<{ category: string }>();
     expect(results[0]?.category).toBe("tournament_dispute");
+  });
+
+  test("declared_category is nullable and has no default, so 'nobody said' is a state SQLite can hold", async () => {
+    // The two columns are separable in the schema and not only in the code above it. `category`
+    // defaults to `uncategorized` because a thread always has a current classification, even before
+    // one has run; `declared_category` must not, because a default would make every mail thread look
+    // as though its sender had picked the catch-all.
+    await runMigrations(env.DB, provider({ "0001_threads": support_0001_threads }));
+    await env.DB.prepare(
+      `INSERT INTO pithy_support_threads
+         (id, inbox_address, subject, from_address, category, priority, sentiment, archived,
+          message_count, first_message_at, last_message_at, created_at, updated_at)
+       VALUES ('t1', 'support@x', 'Hi', 'a@x', 'uncategorized', 'normal', 'neutral', 0, 1, 1, 1, 1, 1)`,
+    ).run();
+
+    const columns = await env.DB.prepare("PRAGMA table_info(pithy_support_threads)").all<{
+      name: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>();
+    const declared = columns.results.find((column) => column.name === "declared_category");
+    expect(declared).toBeDefined();
+    expect(declared?.notnull).toBe(0);
+    expect(declared?.dflt_value).toBeNull();
+
+    const { results } = await env.DB.prepare("SELECT declared_category, category FROM pithy_support_threads").all<{
+      declared_category: string | null;
+      category: string;
+    }>();
+    expect(results[0]).toEqual({ declared_category: null, category: "uncategorized" });
+  });
+
+  test("the declared-category index exists, so the filter it serves is not a scan", async () => {
+    // Stated because it is the one thing a reader of the schema cannot check by reading the code that
+    // queries it, and the one thing that is miserable to retrofit once a table has rows.
+    await runMigrations(env.DB, provider({ "0001_threads": support_0001_threads }));
+    const { results } = await env.DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'pithy_support_threads' ORDER BY name",
+    ).all<{ name: string }>();
+    expect(results.map((row) => row.name)).toContain("pithy_support_threads_declared_category_idx");
   });
 });
 

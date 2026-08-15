@@ -96,6 +96,7 @@ export async function listInbox(
     {
       archived: query.archived === "true",
       category: query.category,
+      declaredCategory: query.declaredCategory,
       priority: query.priority,
       sentiment: query.sentiment,
       channel: query.channel,
@@ -336,6 +337,10 @@ export async function submitFeedbackRequest(
     {
       db: deps.db,
       config: deps.config,
+      // The capability's own merged taxonomy, handed straight through. The declared-category check is
+      // `submitFeedback`'s rather than this handler's on purpose: a bound that decides what may be
+      // *stored* belongs with the write, so it holds for every caller and not only for HTTP.
+      categories: deps.categories,
       bucket: deps.bucket,
       fts: deps.fts,
       resolveAccount: (id) => resolveSubmitterAccount(deps.d1, id),
@@ -349,6 +354,7 @@ export async function submitFeedbackRequest(
       userId,
       subject: input.subject,
       body: input.body,
+      declaredCategory: input.declaredCategory,
       threadId: input.threadId,
       context: input.context,
       // Decoded here, at the transport boundary, so `submitFeedback` takes bytes and stays testable

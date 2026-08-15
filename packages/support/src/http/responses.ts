@@ -62,7 +62,17 @@ export const SupportThreadView = z
     accountLinkSource: SupportAccountLinkSource.nullable().describe(
       "How `userId` was established, or null when there is no link. **Render these differently.** `session` means an authenticated request proved it and the account *is* the caller; `email_address` means it was matched against an address in a header nobody proved. The same operator action — a refund, a reset — follows from very different evidence.",
     ),
-    category: z.string().describe("The current category key, from this project's own federated taxonomy."),
+    declaredCategory: z
+      .string()
+      .nullable()
+      .describe(
+        "**What the submitter said this is about**, or null when nobody said — every mail thread, and every app thread filed without a chooser. **Render this and `category` differently, and never fold one into the other.** They are two facts with two authors: this is a claim by the person writing, `category` is a machine's judgement about them, and an operator deciding what to do needs to know which is on screen. Where they disagree, that disagreement is the most useful thing on the row. Where `classifiedAt` is null this is the only category anybody stated.",
+      ),
+    category: z
+      .string()
+      .describe(
+        "**What the classifier made of it** — the current category key, from this project's own federated taxonomy. `uncategorized` until a classification lands, and forever on a project with `ai.enabled: false`.",
+      ),
     priority: SupportPriority.describe("How fast this thread needs a human."),
     sentiment: SupportSentiment.describe("How the sender sounds — the churn signal."),
     confidence: z
