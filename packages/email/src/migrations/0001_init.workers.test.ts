@@ -69,10 +69,11 @@ describe("email_0001_init (app database: jobs + events)", () => {
     expect(await tablesLike(env.DB)).toEqual(["pithy_email_events", "pithy_email_jobs"]);
 
     await env.DB.prepare(
-      "insert into pithy_email_jobs (id, to_address, from_address, from_name, subject, template, category, payload, status, mode, attempts, send_at, open_tracking, click_tracking, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "insert into pithy_email_jobs (id, to_address, recipient_key, from_address, from_name, subject, template, category, payload, status, mode, attempts, send_at, open_tracking, click_tracking, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
       .bind(
         "job-1",
+        "u@example.com",
         "u@example.com",
         "noreply@pithy.sh",
         "Pithy",

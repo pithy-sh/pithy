@@ -168,8 +168,11 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
     ? await blockingSuppression(deps.suppressionDb, input.to, deps.now, templateKind(input.template))
     : null;
   const status = blocked ? "suppressed" : scheduled;
-  // The event key, on the same normalisation the list is written and read under. The row keeps the
-  // address as the caller typed it, exactly as it did before — only the event is keyed.
+  // The match key, on the same normalisation the suppression list is written and read under. The row
+  // keeps the address as the caller typed it in `toAddress` — an operator diagnosing a send needs the
+  // string that was actually addressed — and carries this beside it as `recipientKey`, which is what
+  // the events table is keyed on and what `sentSince` matches. One value, computed once, so a job and
+  // its events cannot disagree about who the person is.
   const recipient = normalizeAddress(input.to);
 
   // Whether this call starts a send Workflow at all: only an immediate job does, only where a binding
@@ -198,6 +201,7 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
   const job: EmailJob = {
     id: deps.newId(),
     toAddress: input.to,
+    recipientKey: recipient,
     fromAddress: deps.fromAddress,
     fromName: deps.fromName,
     subject,

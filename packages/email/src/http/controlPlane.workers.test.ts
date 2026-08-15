@@ -171,6 +171,7 @@ async function seedJob(overrides: Partial<EmailJob> = {}): Promise<EmailJob> {
   const job: EmailJob = {
     id: `job-${n}`,
     toAddress: `person${n}@example.com`,
+    recipientKey: `person${n}@example.com`,
     fromAddress: "noreply@pithy.sh",
     fromName: "Pithy",
     subject: "Your sign-in link",

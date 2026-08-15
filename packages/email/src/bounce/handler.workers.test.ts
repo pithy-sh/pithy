@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import { beforeEach, describe, expect, test } from "vitest";
 import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
 import { email_0001_init } from "../migrations/0001_init";
@@ -17,11 +18,12 @@ let seq = 0;
 async function insertSentJob(messageId: string, to = "u@example.com"): Promise<string> {
   const id = `job-${++seq}`;
   await env.DB.prepare(
-    "insert into pithy_email_jobs (id, to_address, from_address, from_name, subject, template, category, payload, status, mode, attempts, send_at, open_tracking, click_tracking, message_id, created_at, updated_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    "insert into pithy_email_jobs (id, to_address, recipient_key, from_address, from_name, subject, template, category, payload, status, mode, attempts, send_at, open_tracking, click_tracking, message_id, created_at, updated_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
   )
     .bind(
       id,
       to,
+      normalizeAddress(to),
       "noreply@pithy.sh",
       "Acme",
       "S",

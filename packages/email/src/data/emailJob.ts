@@ -43,6 +43,11 @@ export const EmailJob = z
     toAddress: z
       .string()
       .describe("The recipient's email address. Lowercased and checked against the suppression list before sending."),
+    recipientKey: z
+      .string()
+      .describe(
+        "The recipient under `normalizeAddress` — the one form every comparison in the kit is against, and the only column anything matches a recipient on. `toAddress` deliberately keeps what the caller typed, because an operator diagnosing a send needs to see the string that was actually addressed; that makes it useless as a key, since `Ada@example.com` and `ada@example.com` are one mailbox and two rows. Doing the folding in SQL instead would not work: SQLite's `lower()` is ASCII-only while `normalizeAddress` is `toLowerCase()`, so the two disagree on exactly the addresses nobody tests with. The same value `pithy_email_events.recipient` is keyed on, so a job and its events agree on who the person is.",
+      ),
     fromAddress: z.string().describe("The sender address. Must use a domain onboarded onto Cloudflare Email Service."),
     fromName: z.string().describe("The sender display name recipients see in their inbox."),
     subject: z.string().describe("The rendered subject line."),

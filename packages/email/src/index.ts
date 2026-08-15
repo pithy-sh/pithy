@@ -23,6 +23,20 @@ export {
   EMAIL_SUPPRESSIONS_READ_SCOPE,
   EMAIL_SUPPRESSIONS_WRITE_SCOPE,
 } from "./http/guards";
+/**
+ * Has this template already gone to this person (pithy-sh/pithy#354).
+ *
+ * Exported for the same reason the suppression readers are: **it is the adopter's database**, and the
+ * alternative to publishing this read is every adopter querying `pithy_email_jobs` through the handle
+ * `emailDatabase(d1)` already hands them — a second definition of this capability's schema in somebody
+ * else's repository, drifting in whichever direction nobody is looking.
+ *
+ * A notice that must not repeat, and must be corrected if what it announced stops being true, is the
+ * caller this exists for. Do not answer it with a column of your own: a flag saying "we sent it" is a
+ * second answer to a question this table already holds the first of, and the two disagree the first time
+ * a send fails after the flag is written.
+ */
+export { type SentFilter, type SentLog, SentSummary, sentSince } from "./jobs/read";
 export { type EnqueueInput, type EnqueueResult, enqueueEmail } from "./send/enqueue";
 // How a Workflow sends mail (pithy-sh/pithy#356). A route holds the bound `enqueue` its `compose` hook
 // handed it; a durable step has no such hook, and this is the seam that gets it there without restating
