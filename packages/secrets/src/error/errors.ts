@@ -69,6 +69,33 @@ export class SecretInvalidValueError extends PithyError {
   }
 }
 
+/**
+ * **The issuer rolled the credential and the store did not take its successor.**
+ *
+ * The one failure `pithy secrets rotate` is built around, and the reason it has a code of its own rather
+ * than an `UpstreamError` with a longer sentence: every other secrets failure leaves the previous value
+ * live and can be answered by running the command again, and this one cannot. Rolling again produces a
+ * third credential and loses the second, so the only remedy is a human in the issuer's console.
+ *
+ * The secret's name belongs in `message`, and so does the issuer — an operator holding this needs both
+ * before they can move, and `detail` is stripped at the HTTP boundary. Never the value: there is no value
+ * to carry by the time this is raised, which is the whole of what it says.
+ */
+export class SecretRotationUnrecordedError extends PithyError {
+  constructor(args: SecretErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "secrets/rotation_unrecorded",
+        status: 500,
+        message: args.message ?? "A credential was rolled at its issuer and its successor was not stored.",
+        action: args.action,
+        detail: args.detail,
+      },
+      options,
+    );
+  }
+}
+
 /** Encrypting or decrypting a secret failed — a missing key version, or unreadable ciphertext. */
 export class SecretCryptoError extends PithyError {
   constructor(args: SecretErrorArgs = {}, options?: { cause?: unknown }) {

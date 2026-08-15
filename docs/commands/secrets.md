@@ -1,12 +1,13 @@
 # pithy secrets
 
-Declare, write, list, and edit a project's secrets — and stand up the per-environment infrastructure that stores them.
+Declare, write, rotate, list, and edit a project's secrets — and stand up the per-environment infrastructure that stores them.
 
 ## Synopsis
 
 ```bash
 pithy secrets create <name> [--env <env>] [--json]
 pithy secrets update <name> [--env <env>] [--json]
+pithy secrets rotate <name> [--env <env>] [--dry-run] [--json]
 pithy secrets rm <name> [--env <env>] [--json]
 pithy secrets ls [--json]
 pithy secrets edit [--json]
@@ -18,8 +19,9 @@ pithy secrets deprovision [--keys] [--json]
 
 | Subcommand | Flag | Meaning |
 |---|---|---|
-| `create`, `update`, `rm` | `<name>` (positional, required) | The secret's name — a registry entry. |
-| `create`, `update`, `rm` | `--env <env>` | Target environment for an environment-scoped secret: `staging` or `prod`. Not `dev`. |
+| `create`, `update`, `rotate`, `rm` | `<name>` (positional, required) | The secret's name — a registry entry. |
+| `create`, `update`, `rotate`, `rm` | `--env <env>` | Target environment for an environment-scoped secret: `staging` or `prod`. Not `dev`. |
+| `rotate` | `--dry-run` | Resolve the declaration and say what would happen. Calls no issuer, writes nothing, needs no credentials. Default `false`. |
 | `deprovision` | `--keys` | Also delete each environment's master key. Irreversible: every stored secret becomes undecryptable. Default `false`. |
 | all | `--json` | Machine-readable output. Default `false`. |
 
@@ -52,13 +54,61 @@ email-link-signing-key written to staging, canary before this failed.
 
 Under `--json` that is one line with `"interrupted": true`, `environments` naming only what landed, the `{ "error": … }` line on stderr, and exit code 1. Nothing reports success. A `global` CF-Secrets-Store secret needs none of this: it is one account-level entry every environment binds, so there is one write and nothing for it to disagree with.
 
+### `rotate` — replacing a value against the declaration that says how
+
+A registry entry says how its secret is replaced, and until #367 nothing acted on it. `rotate` does, and it branches on that declaration and on nothing else — never on a list of names.
+
+- **`local`** — the kit produces the value, so it produces another. Minted here, written through the same manager Workflow every other write goes through.
+- **`provider`** — the issuer is called and returns the successor. The call is the adopter's or the capability's, attached to the registry entry as a rotator; a `provider` secret with no rotator is refused by name, with both ways out. The kit ships the tag on `turnstile-secret-keys` and no rotator for it, because rolling that widget needs a Cloudflare account token this package must never hold.
+- **`manual`** — a human, in somebody else's console. It prints the console, the page, and the `pithy secrets update` that records the result, and calls nothing. It exits `0`, and it never prints `Done.`: nothing was done.
+
+**`--dry-run` resolves the declaration and stops.** It reaches no account, needs no credentials, and rolls nothing — which is what makes it the thing to type first at 2am, when the question is *is this one rolled at somebody else's API, or minted here?*
+
+**There is no `--all`, and that is a decision.** The case that wants one is real — somebody has left, and every credential they could have seen needs rolling today. Two things argue against a flag. The blast radius is the obvious one: the failure below does not average out over ten secrets, it is ten chances to strand a live credential in one invocation, reported into one scrollback, at the hour an operator is least able to read carefully. The second is decisive. The precedent for a fleet-wide rotation is *more than one confirmation, plus an audit entry naming the operator* — and the CLI cannot honour the second half. A CLI audit resolves its actor from the Cloudflare API token and records `system, actorResolutionFailed` when there is none, so the one act most certain to be reviewed afterwards would be recorded as *somebody with the token*. What the case gets instead is `pithy secrets ls` and a shell loop, which is a worse ergonomic and forces the operator to see the list before they roll it.
+
+#### The failure this subcommand is built around
+
+**A provider roll succeeds and the store write fails.** The old credential is dead at the issuer, the new one exists only in the process that received it, and the environment is holding something that no longer works. Nothing repairs it by trying harder at the roll — a second roll issues a *third* credential and loses the second, so the retry meant to save it is what destroys it.
+
+So the ordering is the design:
+
+1. **Every refusal happens before anything is called.** An undeclared rotation, a `provider` secret with no rotator, a keyspace, the master key, missing Cloudflare credentials — each is answered with nothing rolled and nothing written. A refusal arriving *after* a roll would be the worst of both.
+2. **The value is produced once**, and never again for any reason.
+3. **The store is retried against that value** — three attempts, the same string every time. There is no path from a failed store back to a fresh roll.
+
+The report is per secret and never in aggregate. The word *rotated* is printed only where a value landed:
+
+```
+REPLAY_PROVIDER_TOKEN rolled at cloudflare and recorded nowhere.
+prod still holds a credential cloudflare has retired.
+```
+
+and on stderr, with exit code **3**:
+
+```
+REPLAY_PROVIDER_TOKEN was rolled at cloudflare and its new value was not stored. prod holds a credential cloudflare has retired.
+The new value is gone. It existed only in this process, and printing it would leave a live credential in your shell history. Roll it again at cloudflare, then record it with pithy secrets update REPLAY_PROVIDER_TOKEN --env prod. https://developers.cloudflare.com/api/resources/user/subresources/tokens/methods/update/
+```
+
+**Exit `3` is its own status, distinct from `1`.** `1` means the previous credential is still live and the command can simply be run again — a `local` mint whose store refused, a refusal, a missing token. `3` means it is not, and nothing automated will fix it. A script cannot tell those apart from a message, and the two need opposite reactions. `2` is left alone: shells and citty use it for usage errors, and a status that might mean *you typed it wrong* or *a production credential is dead* is no signal at all.
+
+#### What happens to the value, said plainly
+
+**It is discarded.** Not printed, not written to a file, not put in the audit trail, not returned to a caller. The rotation result has no field that could carry one, so this is structural rather than a habit.
+
+That is a real cost and it is worth stating the alternative rather than implying there wasn't one. Printing it would put a live production credential in shell scrollback, in the CI log, in the terminal-recording buffer, and in whatever ships those elsewhere — permanently, and for a value that is by construction the most sensitive thing this command touches. Writing it to a file is the same leak with a filename. Against that, a rolled-and-unrecorded credential is an outage with a known remedy the declaration can name: the issuer has a console, `origin` and `rotation` both record where it is, and the failure prints it. The three store attempts are what make reaching this point rare; the refusal to pretend otherwise is what makes it survivable.
+
+**A rotator that *throws* is reported differently, and the difference is not cosmetic.** A rotator that returned and a store that refused means the credential was rolled. A rotator that threw means it *may* have been — the call reached the issuer and the answer did not. Both exit `3` and both need a human at the issuer, but only one may be described as rolled, and a report that says so of both is wrong half the time about the one fact being acted on. So the second says *may have been rolled at cloudflare*, and its remedy starts with checking rather than with rolling again — because rolling again on an issuer that already rolled produces a second orphan. It does not claim the value is gone either: whether this process ever held it is itself unknown when the rotator threw, and a second guess stacked on the first is how a message stops being trusted.
+
+**Two gaps, named rather than left to be discovered.** Nothing here verifies the new value against the issuer before treating it as current — a verification seam no rotator implements would be a step that always passes. And a crash between the roll returning and the store accepting leaves the same state with no report at all; that window is far smaller than the store's, and it is not zero. Both belong to the rotation Workflow this command will eventually enter rather than to the command.
+
 `ls` lists the declared names with their routing facts, offline. It reads the registry and nothing else — no credentials, no network.
 
 `edit` is the odd one out, and deliberately: it touches nothing but this machine's dev values at `<config>/<project>/secrets.jsonc`, the file every registry secret's local value lives in as a versioned envelope and the source generation reads. It opens a draft beside the real file, validates what comes back, and writes it atomically at `0600`. **It prints a path and a count, never a name and never a value** — `ls` is what lists names. A draft that will not validate is handed back with the problem printed above it; a draft that is still broken, that the editor abandoned, or that lost a race with another command is kept, and the refusal names its absolute path. Nothing here deletes text it could not write.
 
 `provision` stands up the per-environment infrastructure for every managed environment in order: the manager's own least-privilege token first, then per environment a dedicated D1, a minted master key, the migrated schema, and the deployed manager Worker. Every step is idempotent — running it again is a no-op. `deprovision` reverses it, and keeps the master keys unless `--keys` says otherwise.
 
-Credentials for the last four paragraphs' Cloudflare work come from `<config>/cloudflare.json`, or `<config>/cloudflare.<accountName>.json` when the root `pithy.config.ts` names an account — account-scoped, not per project. `provision` and `deprovision` additionally need `SECRETS_STORE_ID`, which `pithy add secrets` records. `PITHY_OFFLINE` refuses ambient credentials outright, so an offline run of a Cloudflare-touching subcommand fails rather than reaching an account nobody named.
+Credentials for every subcommand above that reaches an account come from `<config>/cloudflare.json`, or `<config>/cloudflare.<accountName>.json` when the root `pithy.config.ts` names an account — account-scoped, not per project. `provision` and `deprovision` additionally need `SECRETS_STORE_ID`, which `pithy add secrets` records. `PITHY_OFFLINE` refuses ambient credentials outright, so an offline run of a Cloudflare-touching subcommand fails rather than reaching an account nobody named.
 
 ## `--json`
 
@@ -72,6 +122,24 @@ One line on stdout. A failure is one `{"error": …}` line on stderr and a non-z
 | `name` | string | The secret name given on the command line. |
 | `environments` | string[] | The managed environments the write reached: `"staging"`, `"prod"`, or both. What landed, never what was planned — on an interrupted fan-out it names only the environments actually written. |
 | `interrupted` | boolean | Present and `true` only on a `global` fan-out that failed after at least one environment was written. `environments` then names what landed, the `{ "error": … }` line is on stderr, and the exit code is 1. Absent on a run that finished, and absent on a failure that wrote nothing. |
+
+### `secrets rotate`
+
+| key | type | meaning |
+|---|---|---|
+| `command` | string | `"secrets rotate"`. |
+| `name` | string | The secret name given on the command line. |
+| `rotations` | object[] | One record per secret. Always one today, because there is no `--all` — the shape is per secret so that no aggregate field can ever be added beside it and disagree. |
+| `rotations[].name` | string | The secret's registry name. Never its value; this payload has no field that could carry one. |
+| `rotations[].status` | string | `"rotated"`, `"unchanged"`, `"unrecorded"`, or `"failed"`. `unrecorded` is the issuer-rolled-and-not-stored state, and it is the only one that exits `3`. |
+| `rotations[].rotation` | string | How the registry says the secret is replaced: `"local"`, `"provider"`, or `"manual"`. |
+| `rotations[].rolled` | boolean | Whether a third party's credential was actually changed. `true` only for a `provider` rotation that reached its rotator — and `true` on the failure path too, which is the point of the field. |
+| `rotations[].rollFailed` | boolean | Present and `true` when the **rotator itself** failed rather than the store after it. Then `rolled` is a guess: the call reached the issuer and the answer did not come back, and nothing can tell a request that never landed from a response that was lost. The report says *may have been rolled* rather than *was*, and the remedy starts with checking at the issuer instead of rolling again. |
+| `rotations[].recorded` | string[] | The environments that took the new value, in the order they took it. |
+| `rotations[].stranded` | string[] | The environments the new value never reached. Empty on a run that finished. On an `unrecorded` run these are the environments now holding a credential the issuer has retired. |
+| `rotations[].reason` | string | `"manual"` or `"dry-run"`. Present only when `status` is `unchanged` — why nothing was called. |
+
+An `unrecorded` run also writes one `{ "error": … }` line to stderr with code `secrets/rotation_unrecorded`, and exits `3`. A `failed` run writes the store's own failure and exits `1`. Nothing on either stream carries a value.
 
 ### `secrets ls`
 
@@ -133,6 +201,10 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 - **No secrets capability.** No Worker in the project composes `secrets`, so there is no registry to read.
 - **`Secret '<name>' is not declared in the registry.`** Add it to the registry first. Nothing writes a name the registry has never heard of.
 - **`Secret '<name>' is a keyspace, not a secret.`** A keyspace has no single value; its members belong to the application that mints them, and it writes them with `putKeyed`.
+- **`Secret '<name>' does not declare how it rotates.`** `rotate` only. Add a `rotation` to its registry entry, or replace the value with `pithy secrets update`.
+- **`Secret '<name>' rotates by calling <issuer>, and this project supplies no rotator for it.`** `rotate` only. The declaration is right and the code is missing: attach a rotator to the entry, or roll it at the issuer by hand and record it with `pithy secrets update`.
+- **`Secret '<name>' is the key every other secret is read through, so nothing replaces it in place.`** `rotate` only, and only for `SECRETS_ENCRYPTION_KEYS`. It rotates on its own axis, inside the manager, on the manager's own cron. Replacing it here would leave every stored secret sealed under a key nothing holds.
+- **`<name> was rolled at <issuer> and its new value was not stored.`** `rotate` only, exit code `3`. The one failure this command cannot undo. Roll again at the issuer, then `pithy secrets update`.
 - **`Secret '<name>' is environment-scoped — choose an environment.`** Pass `--env staging` or `--env prod`.
 - **`Secret '<name>' is global. It holds one value across every environment, so --env cannot narrow it.`** Run it again without `--env`. Nothing was dispatched, so nothing was written — the re-run is the confirmation, and there is no flag that skips it. `rm` says *remove it from every environment* instead of *set it in*.
 - **`--env dev`.** Refused with `--env must be one of staging, prod`, and pointed at `pithy dev` — this writes to a Cloudflare account, and `dev` is local.
@@ -153,6 +225,12 @@ printf '%s' "$THE_VALUE" | pithy secrets create STRIPE_SECRET_KEY --env prod --j
 # Update one interactively — a masked prompt asks for the value.
 pithy secrets update STRIPE_SECRET_KEY --env prod
 
+# Say what rotating would do. Reaches no account, rolls nothing.
+pithy secrets rotate TURNSTILE_SECRET --env prod --dry-run
+
+# Rotate it for real, against the rotator its registry entry declares.
+pithy secrets rotate SESSION_SIGNING_KEY --env prod
+
 # Remove one.
 pithy secrets rm OLD_WEBHOOK_SECRET --env staging --json
 
@@ -164,6 +242,8 @@ pithy secrets edit
 {"command":"secrets create","name":"STRIPE_SECRET_KEY","environments":["prod"]}
 {"command":"secrets update","name":"email-link-signing-key","environments":["staging","canary"],"interrupted":true}
 {"command":"secrets ls","secrets":[{"name":"SESSION_SIGNING_KEY","description":"d1 · environment · rotatable"},{"name":"TENANT_KEYS","description":"d1 · environment · keyspace"}]}
+{"command":"secrets rotate","name":"SESSION_SIGNING_KEY","rotations":[{"name":"SESSION_SIGNING_KEY","status":"rotated","rotation":"local","rolled":false,"recorded":["prod"],"stranded":[]}]}
+{"command":"secrets rotate","name":"CLOUDFLARE_API_TOKEN","rotations":[{"name":"CLOUDFLARE_API_TOKEN","status":"unrecorded","rotation":"provider","rolled":true,"recorded":[],"stranded":["prod"]}]}
 {"command":"secrets edit","path":"/home/you/.config/pithy/acme/secrets.jsonc","changed":true,"secrets":4}
 {"command":"secrets provision","environments":[{"env":"staging","databaseId":"<database-id>","storeId":"<store-id>"},{"env":"prod","databaseId":"<database-id>","storeId":"<store-id>"}]}
 {"command":"secrets deprovision","keysDeleted":false}

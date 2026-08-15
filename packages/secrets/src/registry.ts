@@ -6,6 +6,7 @@ import { SecretOrigin, SecretRotation } from "@pithy-sh/core/src/capability/secr
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { KEYSPACE_SEPARATOR } from "./keyspace";
+import type { ValueRotator } from "./rotation/valueRotator";
 
 /**
  * The secret registry is the dispatcher. Each entry declares where a secret lives
@@ -165,6 +166,30 @@ interface SecretRegistryEntryBase {
    * about who changes it.
    */
   rotation?: SecretRotation;
+  /**
+   * **The code behind a `provider` rotation.** See {@link ValueRotator}.
+   *
+   * `rotation` is a tag and crosses into `pithy.manifest.json`; this is a function and cannot. That is the
+   * whole reason they are two fields rather than one — #322's constraint, stated where an author meets it.
+   * Neither is derivable from the other, so both are declared, and `defineSecretRegistry` refuses a pair
+   * that disagrees:
+   *
+   * - **`provider` may carry one, and only `provider` may.** `local` is rotated by the same
+   *   `mintSecretValue` that created the value, and a second producer beside `origin.recipe` is exactly
+   *   the drift the origin/rotation checks exist to refuse. `manual` means no API returns the new value,
+   *   so a rotator there is a contradiction the declaration already spelled out.
+   * - **`provider` is not *required* to carry one**, because an adopter may hold the credentials a
+   *   capability's secret rotates against while the capability does not. Turnstile is the case in the kit
+   *   today: `rotation.kind: "provider"`, issuer `cloudflare`, and no rotator, because rolling that widget
+   *   needs an account token this package must never hold. `pithy secrets rotate` answers that state by
+   *   naming it and the two ways out, which beats a define-time refusal that would make declaring the
+   *   truth impossible.
+   *
+   * **Never serialised.** `DeclaredSecret` — the manifest's projection — carries `name`, `origin` and
+   * `rotation`, and parses rather than copies, so a function has no route into a JSON document. Held to
+   * that by `registry.test.ts` rather than by this sentence.
+   */
+  rotator?: ValueRotator;
   /** Optional human note surfaced by the audit (`ls --check`). */
   notes?: string;
 }
@@ -247,6 +272,25 @@ export function isMintableSecret(entry: SecretRegistryEntry): boolean {
  * which can tell a mistake from a fact. So the mistakes are refused where the author is.
  */
 function validateSecretDeclaration(name: string, entry: SecretRegistryEntry): void {
+  // The tag and the code must agree, and neither is derivable from the other (#322), so both are checked
+  // against each other here — where the author is — rather than at a rotation that finds a rotator on a
+  // secret nothing was ever going to call one for. See `SecretRegistryEntryBase.rotator`.
+  if (entry.rotator !== undefined) {
+    if (typeof entry.rotator.roll !== "function") {
+      throw new InternalError({ message: `secret registry: entry "${name}" has a rotator with no roll().` });
+    }
+    if (entry.rotation?.kind !== "provider") {
+      throw new InternalError({
+        message: `secret registry: entry "${name}" carries a rotator, so its rotation must be provider — ${
+          entry.rotation === undefined
+            ? "it declares none"
+            : entry.rotation.kind === "local"
+              ? "a local secret is re-minted from its own recipe, and a second producer is drift"
+              : "a manual secret is replaced by a human, and no call returns the new value"
+        }.`,
+      });
+    }
+  }
   // Declared together or not at all. See `SecretRegistryEntryBase.origin`.
   if ((entry.origin === undefined) !== (entry.rotation === undefined)) {
     throw new InternalError({

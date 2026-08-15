@@ -253,12 +253,12 @@ describe("no reader in this module discards a PaymentsResult", () => {
     expect(exported.map((fn) => fn.name)).toContain("getEntitlements");
   });
 
-  test("every reader that goes through `call` answers a PaymentsResult", () => {
+  test("every reader that goes through `callPayments` answers a PaymentsResult", () => {
     // A "reader" is a function whose body reaches the one fetch path. The three navigators
     // (startCheckout, openBillingPortal) deliberately answer `PaymentsFailure | null` — they are actions
-    // that leave the page, not readers, and they reach `call` only through `leaveFor`.
+    // that leave the page, not readers, and they reach `callPayments` only through `leaveFor`.
     const navigators = new Set(["startCheckout", "openBillingPortal"]);
-    const readers = exported.filter((fn) => /\bcall[(<]/.test(fn.body) && !navigators.has(fn.name));
+    const readers = exported.filter((fn) => /\bcallPayments[(<]/.test(fn.body) && !navigators.has(fn.name));
 
     expect(readers.length).toBeGreaterThan(3);
     for (const reader of readers) {

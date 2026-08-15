@@ -1,15 +1,18 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import type { z } from "zod";
 import { defineCapability } from "../../capability/capability";
-import { PithyError } from "../../error/pithyError";
+import { InternalError, PithyError } from "../../error/pithyError";
 import {
+  type CapabilityHealthReport,
   type CapabilityHealthSource,
   capabilityHealthSources,
   defineCapabilityHealth,
   HealthSummaryKey,
+  healthReport,
+  healthWire,
   namedHealthValues,
   readCapabilityHealth,
 } from "./health";
@@ -153,16 +156,16 @@ describe("a withheld number and a zero do not look the same", () => {
     const summary = await readCapabilityHealth(source([dueForRotation]), ["secrets:status:read"], async () => ({
       secretsDueForRotation: 0,
     }));
-    expect(summary).toEqual({ secretsDueForRotation: 0 });
+    expect(summary).toEqual({ state: "reported", values: { secretsDueForRotation: 0 } });
   });
 
-  test("a caller without the scope gets null, and the producer is never asked", async () => {
+  test("a caller without the scope gets `withheld`, and the producer is never asked", async () => {
     let asked = false;
     const summary = await readCapabilityHealth(source([dueForRotation]), ["manifest:read"], async () => {
       asked = true;
       return { secretsDueForRotation: 3 };
     });
-    expect(summary).toBeNull();
+    expect(summary).toEqual({ state: "withheld" });
     expect(asked).toBe(false);
   });
 
@@ -172,54 +175,170 @@ describe("a withheld number and a zero do not look the same", () => {
       secretsDueForRotation: 2,
       storeState: "ready",
     }));
-    expect(summary).toEqual({ secretsDueForRotation: 2 });
+    expect(summary).toEqual({ state: "reported", values: { secretsDueForRotation: 2 } });
   });
 
-  test("no source at all is null, so a capability that says nothing renders as nothing", async () => {
-    expect(await readCapabilityHealth(undefined, ["secrets:status:read"], async () => ({}))).toBeNull();
+  test("no source at all is `undeclared`, so a capability that says nothing renders as nothing", async () => {
+    expect(await readCapabilityHealth(undefined, ["secrets:status:read"], async () => ({}))).toEqual({
+      state: "undeclared",
+    });
   });
 });
 
-describe("the produced summary is the declaration, and anything else throws", () => {
+describe("the produced summary is the declaration, and anything else is unavailable", () => {
   const granted = ["secrets:status:read"];
 
-  test("a key nobody declared throws rather than being reported or quietly dropped", async () => {
-    await expect(
-      readCapabilityHealth(source([dueForRotation]), granted, async () => ({ secretsDueForRotation: 1, rows: 12 })),
-    ).rejects.toThrow(PithyError);
+  /**
+   * A violated declaration lands on `unavailable` rather than rejecting, and that is the #350 change to
+   * #317's behaviour, made deliberately: the blast radius of a rejection is every other capability's
+   * number, and from a caller's side "the producer threw" and "what it produced was not permitted" are
+   * one fact — this capability could not say. The shape of a declaration is still a hard failure, at
+   * assembly, before any request; what reaches here is data-dependent.
+   */
+  const unavailable = { state: "unavailable" } as const;
+
+  test("a key nobody declared is unavailable rather than being reported or quietly dropped", async () => {
+    expect(
+      await readCapabilityHealth(source([dueForRotation]), granted, async () => ({
+        secretsDueForRotation: 1,
+        rows: 12,
+      })),
+    ).toEqual(unavailable);
   });
 
-  test("a declared key the producer omits throws — a declaration is a promise", async () => {
-    await expect(readCapabilityHealth(source([dueForRotation]), granted, async () => ({}))).rejects.toThrow(PithyError);
+  test("a declared key the producer omits is unavailable — a declaration is a promise", async () => {
+    expect(await readCapabilityHealth(source([dueForRotation]), granted, async () => ({}))).toEqual(unavailable);
   });
 
-  test("a count that is not a whole non-negative number throws", async () => {
-    await expect(
-      readCapabilityHealth(source([dueForRotation]), granted, async () => ({ secretsDueForRotation: -1 })),
-    ).rejects.toThrow(PithyError);
-    await expect(
-      readCapabilityHealth(source([dueForRotation]), granted, async () => ({ secretsDueForRotation: 1.5 })),
-    ).rejects.toThrow(PithyError);
-    await expect(
-      readCapabilityHealth(source([dueForRotation]), granted, async () => ({ secretsDueForRotation: "many" })),
-    ).rejects.toThrow(PithyError);
+  test("a count that is not a whole non-negative number is unavailable", async () => {
+    expect(
+      await readCapabilityHealth(source([dueForRotation]), granted, async () => ({ secretsDueForRotation: -1 })),
+    ).toEqual(unavailable);
+    expect(
+      await readCapabilityHealth(source([dueForRotation]), granted, async () => ({ secretsDueForRotation: 1.5 })),
+    ).toEqual(unavailable);
+    expect(
+      await readCapabilityHealth(source([dueForRotation]), granted, async () => ({ secretsDueForRotation: "many" })),
+    ).toEqual(unavailable);
   });
 
-  test("a state outside its closed list throws", async () => {
+  test("a state outside its closed list is unavailable", async () => {
     const one = source([storeState]);
-    await expect(readCapabilityHealth(one, granted, async () => ({ storeState: "on fire" }))).rejects.toThrow(
-      PithyError,
-    );
+    expect(await readCapabilityHealth(one, granted, async () => ({ storeState: "on fire" }))).toEqual(unavailable);
     expect(await readCapabilityHealth(one, granted, async () => ({ storeState: "degraded" }))).toEqual({
-      storeState: "degraded",
+      state: "reported",
+      values: { storeState: "degraded" },
     });
   });
 
   test("a withheld key is still checked, so a producer cannot hide a violation behind a grant", async () => {
     const two = source([dueForRotation, { ...storeState, scope: "secrets:liveness:read" }]);
-    await expect(
-      readCapabilityHealth(two, granted, async () => ({ secretsDueForRotation: 1, storeState: "on fire" })),
-    ).rejects.toThrow(PithyError);
+    expect(
+      await readCapabilityHealth(two, granted, async () => ({ secretsDueForRotation: 1, storeState: "on fire" })),
+    ).toEqual(unavailable);
+  });
+});
+
+describe("a producer that throws is its own state, and it rides on the value (#350)", () => {
+  const granted = ["secrets:status:read"];
+
+  /** What a producer inside a customer's data path would throw: client-safe text, context in `detail`. */
+  function sick(): never {
+    throw new InternalError({
+      message: "The secret store did not answer.",
+      action: "Try again once the store is reachable.",
+      detail:
+        "D1 SELECT id, name FROM secrets WHERE project = 'acme' failed for connection 4f21 — token sk_live_hunter2",
+    });
+  }
+
+  test("the state is not equal to withheld and not equal to zero", async () => {
+    const one = source([dueForRotation]);
+    const failed = await readCapabilityHealth(one, granted, async () => sick());
+    const withheld = await readCapabilityHealth(one, ["manifest:read"], async () => ({ secretsDueForRotation: 3 }));
+    const zero = await readCapabilityHealth(one, granted, async () => ({ secretsDueForRotation: 0 }));
+    const undeclared = await readCapabilityHealth(undefined, granted, async () => ({}));
+
+    // Asserted on the values, not on a rendering: three states that each look different in one
+    // rendering can still be the same value, and it is the value every consumer branches on. The
+    // inequalities come first so it is the collapse that is caught, rather than the name of the state.
+    expect(failed).not.toEqual(zero);
+    expect(failed).not.toEqual(withheld);
+    expect(failed).not.toEqual(undeclared);
+    expect(failed).toEqual({ state: "unavailable" });
+    // And the four are four, rather than three plus an alias.
+    expect(new Set([failed.state, withheld.state, zero.state, undeclared.state]).size).toBe(4);
+  });
+
+  test("a producer that throws synchronously is caught too", async () => {
+    // `read` need not be an async function. If it throws before returning a promise, a `try` around the
+    // `await` alone would not have caught it.
+    expect(await readCapabilityHealth(source([dueForRotation]), granted, () => sick())).toEqual({
+      state: "unavailable",
+    });
+  });
+
+  test("nothing the producer threw survives — the state carries no message, no code, no detail", async () => {
+    const failed = await readCapabilityHealth(source([dueForRotation]), granted, async () => sick());
+    // The whole value, byte for byte. A field added to `unavailable` later that carried an error's text
+    // would fail here, which is the point: the boundary is that there is nowhere to put it.
+    expect(Object.keys(failed)).toEqual(["state"]);
+    expect(JSON.stringify(failed)).toBe('{"state":"unavailable"}');
+    expect(JSON.stringify(failed)).not.toContain("sk_live_hunter2");
+  });
+
+  test("nothing is logged, so no console carries the detail the producer threw", async () => {
+    const written: unknown[] = [];
+    const methods = ["log", "info", "warn", "error", "debug"] as const;
+    const spies = methods.map((method) =>
+      vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
+        written.push(...args);
+      }),
+    );
+    try {
+      expect(await readCapabilityHealth(source([dueForRotation]), granted, async () => sick())).toEqual({
+        state: "unavailable",
+      });
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+    expect(written).toEqual([]);
+  });
+});
+
+describe("the four states round-trip the wire, and an older Worker still lands on the right one", () => {
+  const keys = [HealthSummaryKey.parse(dueForRotation)];
+
+  test("each state encodes and decodes back to itself", () => {
+    const reports: CapabilityHealthReport[] = [
+      { state: "undeclared" },
+      { state: "withheld" },
+      { state: "reported", values: { secretsDueForRotation: 0 } },
+      { state: "unavailable" },
+    ];
+    for (const report of reports) {
+      // `undeclared` and `withheld` encode alike; `healthKeys` rides in the same entry and tells them
+      // apart, which is the arrangement #317 chose.
+      const declared = report.state === "undeclared" ? [] : keys;
+      expect(healthReport({ healthKeys: declared, ...healthWire(report) })).toEqual(report);
+    }
+  });
+
+  test("a Worker deployed before #350 sends no flag and lands on the three states it had", () => {
+    expect(healthReport({ healthKeys: [], health: null, healthUnavailable: false })).toEqual({ state: "undeclared" });
+    expect(healthReport({ healthKeys: keys, health: null, healthUnavailable: false })).toEqual({ state: "withheld" });
+    expect(healthReport({ healthKeys: keys, health: { secretsDueForRotation: 0 }, healthUnavailable: false })).toEqual({
+      state: "reported",
+      values: { secretsDueForRotation: 0 },
+    });
+  });
+
+  test("a Worker sending both a failure and values is read as the failure", () => {
+    // Not a shape this seam produces, and exactly why it is pinned: whatever a broken producer left in
+    // the values is not an answer, and reading it would be reading the wreckage.
+    expect(healthReport({ healthKeys: keys, health: { secretsDueForRotation: 9 }, healthUnavailable: true })).toEqual({
+      state: "unavailable",
+    });
   });
 });
 
@@ -229,12 +348,15 @@ describe("a client renders an unknown key as nothing", () => {
     // declaration, so it renders generically; a value with *no* declaration is not renderable at all.
     const named = namedHealthValues({
       healthKeys: [HealthSummaryKey.parse(dueForRotation)],
-      health: { secretsDueForRotation: 3, somethingNewer: 9 },
+      health: { state: "reported", values: { secretsDueForRotation: 3, somethingNewer: 9 } },
     });
     expect(named).toEqual([{ key: HealthSummaryKey.parse(dueForRotation), value: 3 }]);
   });
 
-  test("a withheld summary names nothing", () => {
-    expect(namedHealthValues({ healthKeys: [HealthSummaryKey.parse(dueForRotation)], health: null })).toEqual([]);
+  test("a withheld summary and a failed one both name nothing", () => {
+    const declared = [HealthSummaryKey.parse(dueForRotation)];
+    expect(namedHealthValues({ healthKeys: declared, health: { state: "withheld" } })).toEqual([]);
+    expect(namedHealthValues({ healthKeys: declared, health: { state: "unavailable" } })).toEqual([]);
+    expect(namedHealthValues({ healthKeys: declared, health: { state: "undeclared" } })).toEqual([]);
   });
 });

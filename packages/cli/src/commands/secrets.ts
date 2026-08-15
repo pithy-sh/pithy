@@ -23,6 +23,12 @@ import {
   mintReportLines,
   storeSecretMinter,
 } from "../capabilities/mintSecrets";
+import {
+  EXIT_ROLLED_NOT_RECORDED,
+  rotationReportLines,
+  runSecretRotation,
+  unrecordedFailure,
+} from "../capabilities/rotateSecrets";
 import { resolveSecretRegistry, runSecretWrite } from "../capabilities/secrets";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import {
@@ -40,7 +46,14 @@ import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
 import { cloudflareSecretsStore } from "../provision/store";
 import { applySecretBindings } from "../provision/wranglerEnv";
-import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
+import {
+  formatDone,
+  formatError,
+  formatErrorJson,
+  formatJsonLine,
+  formatList,
+  withErrorReporting,
+} from "../terminal/output";
 
 /**
  * The secret registry for the whole project: every Worker's, merged by secret name.
@@ -260,6 +273,120 @@ const rm = defineCommand({
   meta: { name: "rm", description: "Remove a secret" },
   args: { ...nameArg, ...sharedArgs },
   run: ({ args }) => withErrorReporting(args.json, () => write("delete", args)),
+});
+
+/**
+ * `pithy secrets rotate` — replace one secret's value against the rotation its registry entry declares.
+ *
+ * **One secret per invocation. There is no `--all`, and that is a decision rather than an omission.**
+ *
+ * The case that wants one is real: somebody has left, and every credential they could have seen needs
+ * rolling today. The dashboard solved the same problem for connection signing keys and settled on *more
+ * than one confirmation, plus an audit entry naming the operator* — and the second half is the half this
+ * command cannot honour. `createCliAudit` resolves the actor from the Cloudflare API token and falls back
+ * to `system, actorResolutionFailed` when there is none, so the one act most certain to be reviewed
+ * afterwards would be recorded as *somebody with the token*. A fleet path that cannot say who took it is
+ * worse than no fleet path, because it is the difference between an incident with a name on it and an
+ * incident without one.
+ *
+ * The blast radius argues the same way from the other end. The failure this command is built around —
+ * rolled at the issuer, not recorded — does not average out over ten secrets; it is ten chances to strand
+ * a live credential inside one invocation, reported into one scrollback, at the hour an operator is least
+ * able to read carefully. A flag one character from the ordinary command is the wrong place for that.
+ *
+ * **What the case gets instead**: `pithy secrets ls` names every declared secret, and a shell loop over it
+ * makes the operator see the list they are about to roll before they roll it. That is a worse ergonomic
+ * and a better 2am.
+ *
+ * `--dry-run` is here because it costs almost nothing and answers the question an operator has just before
+ * the irreversible one: *is this secret rolled at somebody else's API, or minted here?*
+ */
+const rotate = defineCommand({
+  meta: { name: "rotate", description: "Rotate one secret against its declared rotator" },
+  args: {
+    ...nameArg,
+    ...sharedArgs,
+    "dry-run": { type: "boolean", default: false, description: "Say what would happen; call nothing" },
+  },
+  run: ({ args }) =>
+    withErrorReporting(args.json, async () => {
+      const projectDir = process.cwd();
+      const registry = await projectSecretRegistry(projectDir);
+      const environments = await projectEnvironments(projectDir);
+      const env = args.env ? requireManagedEnvironment(args.env, environments) : undefined;
+      const entry = registry[args.name];
+      const dryRun = args["dry-run"];
+
+      // **The dispatcher is built before anything is rolled**, and the ordering is load-bearing rather
+      // than tidy. Missing credentials raise here, with the previous value untouched; built after the
+      // roll, the same missing credentials would strand a live one behind a message about `pithy init`.
+      // A dry run reaches no account at all, which is what makes it usable before the credentials exist.
+      const dispatcher = dryRun ? { dispatch: async () => {} } : await buildDispatcher(projectDir);
+      const audit = dryRun ? async () => {} : await buildAudit(projectDir, auditOrigin(env, environments));
+
+      const outcome = await runSecretRotation(
+        registry,
+        dispatcher,
+        { name: args.name, env, environments, dryRun },
+        audit,
+      );
+      // `runSecretRotation` refuses an undeclared name before anything else happens, so reaching here with
+      // no entry is impossible — this narrows for the type checker rather than for a state that can occur.
+      if (!entry) throw new ValidationError({ message: `Secret '${args.name}' is not declared in the registry.` });
+
+      if (args.json) {
+        const rotations = [
+          {
+            name: outcome.name,
+            status: outcome.status,
+            rotation: outcome.kind,
+            rolled: outcome.rolled,
+            ...(outcome.rollFailed === undefined ? {} : { rollFailed: outcome.rollFailed }),
+            recorded: outcome.recorded,
+            stranded: outcome.stranded,
+            ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+          },
+        ];
+        process.stdout.write(`${formatJsonLine({ command: "secrets rotate", name: args.name, rotations })}\n`);
+      } else {
+        for (const line of rotationReportLines(entry, outcome, env)) process.stdout.write(`${line}\n`);
+      }
+
+      // **The two ends of the same run, and they must never disagree.** Whatever the outcome, stdout has
+      // already said per secret what happened; these decide what the shell learns.
+      if (outcome.status === "unrecorded") {
+        const failure = unrecordedFailure(entry, outcome, env);
+        process.stderr.write(`${args.json ? formatErrorJson(failure.payload) : formatError(failure.payload)}\n`);
+        // Not a throw: `withErrorReporting` would exit 1, and 1 is the status that means *the previous
+        // credential is still live*. This state is the one thing in the command that is not that.
+        process.exitCode = EXIT_ROLLED_NOT_RECORDED;
+        return;
+      }
+      if (outcome.status === "failed") {
+        // Ordinary: nothing was rolled, so the previous value is still live and the run can be repeated.
+        // The cause is what the operator needs, and `withErrorReporting` puts it on stderr with exit 1. The
+        // fallback is not decoration — `throw undefined` would exit non-zero with a blank stderr, which is
+        // the one report worse than a bad one.
+        throw (
+          outcome.cause ??
+          new ValidationError({
+            message: `Secret '${args.name}' was not rotated.`,
+            action: "Run it again. The previous value is still live.",
+            detail: `rotate '${args.name}': store refused with no recorded cause`,
+          })
+        );
+      }
+      if (args.json) return;
+      if (dryRun) {
+        process.stdout.write("Dry run. Nothing rolled, nothing written.\n");
+        return;
+      }
+      // **No `Done.` over a `manual` secret.** The lines above have just told the operator that a human has
+      // to go to a console, and `Done.` under them reads as the command having handled it. The last thing
+      // they see is the instruction, which is the only thing left to act on.
+      if (outcome.reason === "manual") return;
+      process.stdout.write(`${formatDone()}\n`);
+    }),
 });
 
 const ls = defineCommand({
@@ -498,5 +625,5 @@ const deprovision = defineCommand({
 
 export default defineCommand({
   meta: { name: "secrets", description: "Manage encrypted secrets" },
-  subCommands: { create, update, rm, ls, edit, provision, deprovision },
+  subCommands: { create, update, rotate, rm, ls, edit, provision, deprovision },
 });
