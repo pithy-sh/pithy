@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { callPayments, type PaymentsClientOptions } from "../client/api";
 import type { PriceVisitor } from "./location";
 
 /**
@@ -24,33 +25,24 @@ import type { PriceVisitor } from "./location";
  * it would break their build. The server's half of this response *is* a Zod object — `http/responses.ts`
  * — so the boundary is validated on both sides, each in the vocabulary its own program can carry.
  *
+ * **The request itself is not written here.** `callPayments` is the one producer of a same-origin,
+ * cookie-bearing call to this Worker, and this module routes through it like every other reader. It used
+ * to own a second fetch — its own base-path default, its own `credentials: "include"`, its own three
+ * failure directions — which is the drift this kit keeps paying for (#346).
+ *
  * **A failure is not an answer, and this one fails honest.** Unreachable, refused, or unreadable all
  * return `null`, which resolves to the IP location and renders the figure labelled `Estimated.` A guess
  * that says it is a guess is the safe direction; the unsafe one would be treating a failed read as
  * proof there is no address on file.
  */
 
-/** Where the payments routes mount by default. The same default `PaymentsConfig.basePath` carries. */
-const DEFAULT_BASE_PATH = "/payments";
-
-/** The one response field this reader needs. Declared structurally — see the header. */
-interface PriceVisitorResponse {
-  /** The body, whatever it turns out to be. */
-  json(): Promise<unknown>;
-  /** Whether the status was 2xx. */
-  ok: boolean;
-}
-
-/** The fetch this reader uses. Narrower than the platform's on purpose: a URL, and a cookie. */
-export type PriceVisitorFetch = (input: string, init: { credentials: "include" }) => Promise<PriceVisitorResponse>;
-
-/** Where to ask, and what to ask with. Satisfied by `PaymentsClientOptions` without naming it. */
-export interface PriceVisitorOptions {
-  /** Where the payments routes mount. Defaults to `/payments`. */
-  basePath?: string;
-  /** The fetch to use. Defaults to the global one, and there is no answer without one. */
-  fetch?: PriceVisitorFetch;
-}
+/**
+ * Where to ask, and what to ask with — the same options every other call on this side of the wire takes.
+ *
+ * An alias rather than a second declaration. The two shapes agreed by hand until this read started going
+ * through `callPayments`; now there is one of them, and a name a scaffolded screen already imports.
+ */
+export type PriceVisitorOptions = PaymentsClientOptions;
 
 /** Whether a value is a plain record — the first step of the guard. */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -80,15 +72,11 @@ export function readPaddleCustomer(body: unknown): string | null {
  * the IP and say so, which is what `null` already means.
  */
 export async function fetchPriceVisitor(options?: PriceVisitorOptions): Promise<PriceVisitor | null> {
-  const fetcher = options?.fetch ?? (globalThis as { fetch?: PriceVisitorFetch }).fetch;
-  if (!fetcher) return null;
-  const base = options?.basePath ?? DEFAULT_BASE_PATH;
-  try {
-    const response = await fetcher(`${base}/pricing`, { credentials: "include" });
-    if (!response.ok) return null;
-    const customerId = readPaddleCustomer(await response.json());
-    return customerId === null ? null : { customerId };
-  } catch {
-    return null;
-  }
+  // `isRecord` is the whole guard, and deliberately so: `readPaddleCustomer` is total over anything, so
+  // narrowing harder here would only move the same refusal a line earlier. What matters is that a
+  // refusal, an unreachable Worker and an unreadable body all land in the same `!ok` branch.
+  const result = await callPayments("/pricing", {}, options, isRecord);
+  if (!result.ok) return null;
+  const customerId = readPaddleCustomer(result.value);
+  return customerId === null ? null : { customerId };
 }

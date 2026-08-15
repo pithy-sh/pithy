@@ -7,8 +7,10 @@ import { missingAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/dr
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
+import * as z from "zod";
 import { payments } from "../capability";
 import { PaymentsConfig } from "../config/config";
+import { PaymentsPricingEnvelope } from "./responses";
 import { registerPaymentsRoutes } from "./routes";
 import {
   PAYMENTS_CATALOG_READ_SCOPE,
@@ -201,6 +203,61 @@ describe("the README's Routes table", () => {
       phantom,
       `The Routes table in packages/payments/README.md documents routes this capability does not register:\n${phantom.map((route) => `  ${route}`).join("\n")}`,
     ).toEqual([]);
+  });
+
+  /**
+   * The response envelopes the README describes field by field, and the schema each is held against.
+   *
+   * **A frozen literal, and it is a short list on purpose.** The Routes table checked the method and the
+   * path, so the row for `GET /payments/pricing` stayed true while its response grew `quotedFrom` — a
+   * field a real adopter then built a quote seam on, undescribed on both sides (#347). A gate that passes
+   * the change it exists to catch is the class #326 tracks, so this is the half that was missing: every
+   * top-level field of a documented envelope has to be named in the README, and adding one is a failing
+   * build until it is.
+   *
+   * **Why not every route.** The other twenty are webhooks, whose bodies belong to a store, and management
+   * reads whose consumer is `GET /control-plane/manifest` rather than a person reading this file — and a
+   * README that listed every field of every admin page would be a second, worse copy of the schemas, which
+   * is the documentation this repository deliberately does not write. The line is: a response a **browser**
+   * reads field by field is described here. Moving that line is an edit to this list, with a reason.
+   */
+  const DOCUMENTED_RESPONSES: Readonly<Record<string, z.ZodObject>> = {
+    "GET /payments/pricing": PaymentsPricingEnvelope,
+  };
+
+  /** Every field a response carries, one level into the objects nested directly on it. */
+  function fields(schema: z.ZodObject): string[] {
+    return Object.entries(schema.shape).flatMap(([name, value]) => {
+      const inner = value instanceof z.ZodNullable ? value.unwrap() : value;
+      return inner instanceof z.ZodObject ? [name, ...Object.keys(inner.shape)] : [name];
+    });
+  }
+
+  test("the field sweep reads real schemas, so the assertion below is not vacuous", () => {
+    // Anti-vacuous, and specific: an introspection that silently returned nothing would pass every
+    // envelope. Both nullable objects are descended into, which is what the nested names prove.
+    expect(fields(PaymentsPricingEnvelope)).toEqual([
+      "pricing",
+      "currency",
+      "currentAmountMinor",
+      "listAmountMinor",
+      "discountCode",
+      "discountEndsAt",
+      "quotedFrom",
+      "rail",
+      "providerAccountId",
+    ]);
+  });
+
+  test("names every field of every response envelope it documents", () => {
+    const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+    for (const [route, schema] of Object.entries(DOCUMENTED_RESPONSES)) {
+      const undescribed = fields(schema).filter((field) => !readme.includes(`\`${field}\``));
+      expect(
+        undescribed,
+        `The response to ${route} carries fields packages/payments/README.md never names. A row that says only the method and the path stays true while the envelope under it changes, which is exactly how \`quotedFrom\` shipped undescribed (#347):\n${undescribed.map((field) => `  ${field}`).join("\n")}`,
+      ).toEqual([]);
+    }
   });
 
   test("names the scope every control-plane route's guard demands", () => {
