@@ -543,7 +543,9 @@ describe("the docs say what the code emits", () => {
     expect(scanned.filter(([, read]) => read.unparsedSites > 0).map(([command]) => command)).toEqual(UNPARSED_SITES);
     // 31 since #251: provisioning is one command with two modes, so the two payload spreads that built
     // one report each are now the one spread `pithy provision` builds for both.
-    expect(scanned.reduce((total, [, read]) => total + read.spreadSites, 0)).toBe(31);
+    // 32 since #380: `pithy feature destroy` builds a second spread for the teardown that failed
+    // partway, which reports what it destroyed before the failure rather than nothing at all.
+    expect(scanned.reduce((total, [, read]) => total + read.spreadSites, 0)).toBe(32);
   });
 
   /**
@@ -787,7 +789,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   from: ["email", "worker"],
   // Three commands whose work is a fan-out with no transaction across it: a run that failed part-way
   // says what it wrote, and this is the flag that says the report beside it is truncated (#324, #380).
-  interrupted: ["migrate", "secrets"],
+  interrupted: ["feature", "migrate", "secrets"],
   manifestFaults: ["add", "upgrade"],
   name: ["secrets", "token"],
   packageManager: ["add", "ui"],

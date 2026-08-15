@@ -4,12 +4,13 @@
 import { rm } from "node:fs/promises";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
+import { partialWriteReport } from "@pithy-sh/secrets/src/cli/partialWrite";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import type { ResourceProvisioners } from "../provision/resources";
 import type { SecretsStore } from "../provision/store";
 import { devConfigPath } from "./devConfig";
 import { freePortBlock, resolvePortsRegistryPath } from "./ports";
-import { type DeprovisionedResource, deprovisionFeature } from "./provision";
+import { type DeprovisionedResource, deletedBeforeFailure, deprovisionFeature } from "./provision";
 import { defaultGit, type GitRunner, teardownWorktree } from "./worktree";
 
 /**
@@ -34,6 +35,29 @@ export interface DestroyReport {
   worktreePruned: boolean;
   /** Whether the feature branch was deleted (only when merged). */
   branchDeleted: boolean;
+}
+
+/** A carried value arrives as `unknown`; this is the narrowing, never a cast. */
+function isDestroyReport(value: unknown): value is DestroyReport {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<DestroyReport>;
+  return candidate.command === "feature.destroy" && Array.isArray(candidate.deleted);
+}
+
+/**
+ * **Where the record of a teardown that failed partway rides out of it (#380).**
+ *
+ * A teardown destroys infrastructure and reports what it destroyed. Until now a throw from the remote
+ * half took that report with it, so an operator whose token expired on the fourth of five deletes was
+ * told only that it failed — and the three databases that were already gone were gone unrecorded. The
+ * report is the whole product of this command, so it survives the failure the same way a partial mint
+ * does (#324).
+ */
+const deprovisionReport = partialWriteReport<DestroyReport>("pithy.cli.destroyReport", isDestroyReport);
+
+/** What a failed {@link destroyFeature} run tore down before it failed, or `undefined` for any other throw. */
+export function destroyedBeforeFailure(error: unknown): DestroyReport | undefined {
+  return deprovisionReport.read(error);
 }
 
 /** Options for {@link destroyFeature}. */
@@ -77,16 +101,31 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
   let deleted: DeprovisionedResource[] = [];
   const remote = options.provisioners !== undefined;
   if (options.provisioners) {
-    const report = await deprovisionFeature({
-      projectDir: options.projectDir,
-      identity: options.identity,
-      capabilities: options.capabilities,
-      env: options.env,
-      provisioners: options.provisioners,
-      ...(options.store !== undefined ? { store: options.store } : {}),
-      ...(options.audit !== undefined ? { audit: options.audit } : {}),
-    });
-    deleted = report.deleted;
+    try {
+      const report = await deprovisionFeature({
+        projectDir: options.projectDir,
+        identity: options.identity,
+        capabilities: options.capabilities,
+        env: options.env,
+        provisioners: options.provisioners,
+        ...(options.store !== undefined ? { store: options.store } : {}),
+        ...(options.audit !== undefined ? { audit: options.audit } : {}),
+      });
+      deleted = report.deleted;
+    } catch (error) {
+      // What the remote half destroyed before it failed, moved onto this report and carried on again so
+      // the command can print it beside the failure (#380). The local half below deliberately does not
+      // run: pruning the worktree would remove the checkout the re-run has to happen from, and the
+      // feature manifest that says what is left to delete lives in it.
+      throw deprovisionReport.carry(error, {
+        command: "feature.destroy",
+        deleted: deletedBeforeFailure(error),
+        remote,
+        portsFreed: false,
+        worktreePruned: false,
+        branchDeleted: false,
+      });
+    }
   }
 
   const registryPath = options.registryPath ?? (await resolvePortsRegistryPath(options.projectDir));

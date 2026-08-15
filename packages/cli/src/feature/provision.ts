@@ -7,6 +7,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { type FeatureIdentity, type FeatureResourceKind, featureResourceName } from "@pithy-sh/core/src/naming/feature";
 import { featureScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { partialWriteReport } from "@pithy-sh/secrets/src/cli/partialWrite";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
@@ -216,6 +217,32 @@ export interface DeprovisionReport {
   deleted: DeprovisionedResource[];
 }
 
+/** A carried value arrives as `unknown`; this is the narrowing, never a cast. */
+function isDeletedList(value: unknown): value is DeprovisionedResource[] {
+  return Array.isArray(value);
+}
+
+/**
+ * **Where the record of a partial teardown rides out of a failure (#380).**
+ *
+ * A teardown deletes real infrastructure one resource at a time and has no transaction across them. The
+ * fourth delete throws, three databases are already gone, and the return value that would have named
+ * them never happens — so the operator is told the teardown failed and nothing about what it destroyed.
+ * That is the report `pithy feature destroy` exists to produce, and it was the one the throw took.
+ *
+ * The mechanism is `partialWriteReport`'s, the same one `mintDeclaredSecrets` carries its minted secrets
+ * on (#324). Carried, never replaced: the failure the operator reads is the failure that happened.
+ */
+const deprovisionReport = partialWriteReport<DeprovisionedResource[]>("pithy.cli.deprovisionReport", isDeletedList);
+
+/**
+ * What a failed {@link deprovisionFeature} run deleted before it failed, in deletion order. Empty when
+ * the thrown thing carries no report — which is the honest answer for a throw from anywhere else.
+ */
+export function deletedBeforeFailure(error: unknown): DeprovisionedResource[] {
+  return deprovisionReport.read(error) ?? [];
+}
+
 /** Options for {@link deprovisionFeature}. */
 export interface DeprovisionFeatureOptions {
   /** The worktree root — where the manifest lives. */
@@ -279,37 +306,51 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
     });
   };
 
-  assertManifestBelongs(options.identity, manifest);
-  for (const resource of manifest?.resources ?? []) {
-    // Only delete what this feature could have named. An entry pointing anywhere else is not ours to
-    // remove — the reconcile pass below re-derives every real name from the identity anyway, so nothing
-    // legitimate is lost by distrusting the file.
-    if (isOwnedByFeature(options.identity, resource)) await remove(resource.kind, resource.name, resource.id);
-  }
-
-  // Reconcile by exact expected name — a resource `provision` may have created but not yet recorded.
-  for (const { binding, kind } of provisionableBindings(options.capabilities)) {
-    const name = featureResourceName(options.identity, binding, kind);
-    const found = await options.provisioners[kind].find(name);
-    if (found) await remove(kind, name, found.id);
-  }
-
-  // The feature's own store entries, by recomputed name — the same rule the resources above follow, and
-  // the same reason: an exact name is the only thing that cannot reach a sibling's or an environment's.
-  // A `global` secret is never touched: it is one account-level value every environment binds, and this
-  // feature was binding the project's rather than a copy of it.
-  if (options.store) {
-    const scope = featureScope(options.identity);
-    const registry: SecretRegistry = Object.assign(
-      {},
-      ...options.capabilities.map((capability) => workerSecretRegistry([capability]) ?? {}),
-    );
-    for (const [binding, entry] of Object.entries(registry)) {
-      if (entry.backend !== "cf-secrets-store" || entry.scope !== "environment" || entry.keyed) continue;
-      await options.store.remove(scope.secretEntry(binding, "environment"));
+  // Everything from here destroys infrastructure, and `deleted` grows one resource at a time. A throw
+  // anywhere inside used to take the whole list with it — the resources were gone and the record of
+  // which ones was not, on the command whose entire output is that record (#380). It is carried on the
+  // failure instead, and the failure itself is rethrown untouched: teardown still stops, because a
+  // delete that failed for a reason belonging to the account — a revoked token, a resource another
+  // project holds — is not a reason to keep deleting.
+  try {
+    assertManifestBelongs(options.identity, manifest);
+    for (const resource of manifest?.resources ?? []) {
+      // Only delete what this feature could have named. An entry pointing anywhere else is not ours to
+      // remove — the reconcile pass below re-derives every real name from the identity anyway, so nothing
+      // legitimate is lost by distrusting the file.
+      if (isOwnedByFeature(options.identity, resource)) await remove(resource.kind, resource.name, resource.id);
     }
+
+    // Reconcile by exact expected name — a resource `provision` may have created but not yet recorded.
+    for (const { binding, kind } of provisionableBindings(options.capabilities)) {
+      const name = featureResourceName(options.identity, binding, kind);
+      const found = await options.provisioners[kind].find(name);
+      if (found) await remove(kind, name, found.id);
+    }
+
+    // The feature's own store entries, by recomputed name — the same rule the resources above follow, and
+    // the same reason: an exact name is the only thing that cannot reach a sibling's or an environment's.
+    // A `global` secret is never touched: it is one account-level value every environment binds, and this
+    // feature was binding the project's rather than a copy of it.
+    if (options.store) {
+      const scope = featureScope(options.identity);
+      const registry: SecretRegistry = Object.assign(
+        {},
+        ...options.capabilities.map((capability) => workerSecretRegistry([capability]) ?? {}),
+      );
+      for (const [binding, entry] of Object.entries(registry)) {
+        if (entry.backend !== "cf-secrets-store" || entry.scope !== "environment" || entry.keyed) continue;
+        await options.store.remove(scope.secretEntry(binding, "environment"));
+      }
+    }
+  } catch (error) {
+    // Carried, never replaced. `deleted` is what this run destroyed, by kind, name and id — the three
+    // facts an operator needs to finish the teardown by hand. Nothing from the throw is copied into it.
+    throw deprovisionReport.carry(error, deleted);
   }
 
+  // The manifest is removed only on a clean pass. It is the record of what is left to delete, and a
+  // teardown that failed partway is precisely when a re-run needs it.
   await rm(path, { force: true });
   return { deleted };
 }

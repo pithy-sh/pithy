@@ -16,7 +16,7 @@ import { sourceFiles } from "../ci/sourceFiles";
 import { featureConfigPath } from "../provision/featureConfig";
 import { ProvisionAuditActions, type ResourceProvisioner, type ResourceProvisioners } from "../provision/resources";
 import { emptyManifest, type FeatureResource, manifestPath, readManifest, writeManifest } from "./manifest";
-import { deprovisionFeature, provisionFeature } from "./provision";
+import { deletedBeforeFailure, deprovisionFeature, provisionFeature } from "./provision";
 
 /** An in-memory provisioner over a name→id map, mirroring the real find/create/delete semantics. */
 function fakeKind(kind: string, store: Map<string, string>): ResourceProvisioner & { creates: number } {
@@ -852,5 +852,70 @@ describe("provisionFeature / deprovisionFeature", () => {
     const { provisioners } = fakeProvisioners();
     const report = await deprovisionFeature({ projectDir: dir, identity, capabilities, env: "feature", provisioners });
     expect(report.deleted).toEqual([]);
+  });
+});
+
+/**
+ * **A teardown that failed partway still says what it destroyed (#380).**
+ *
+ * `deprovisionFeature` deletes real infrastructure one resource at a time, with no transaction across
+ * them, and `deleted` is the whole product of the command. A throw from the third delete used to take
+ * the record of the first two with it — the databases were gone, and what had gone was not written
+ * down anywhere. These tests exist to fail when that carry is removed.
+ */
+describe("deprovisionFeature — a delete that throws", () => {
+  let dir: string;
+  const identity: FeatureIdentity = { project: "acme", issue: "69", slug: "demo" };
+  const capabilities = [appCapability()];
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-feature-fail-"));
+    await mkdir(join(dir, "apps", "app"), { recursive: true });
+    await writeFile(join(dir, "apps", "app", "wrangler.jsonc"), '{\n  "name": "app"\n}\n');
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** Provision the feature, then break one kind's delete. Returns whatever the teardown threw. */
+  async function tornDownWith(broken: "d1" | "kv" | "r2"): Promise<unknown> {
+    const { provisioners, typed } = fakeProvisioners();
+    await provisionFeature({ projectDir: dir, capabilities, identity, provisioners, ...noBackend });
+    // The plant, in the seam the run already takes. Synchronous on purpose: a `.catch()` guard would
+    // not see a seam that throws before it returns a promise, and #371's plant escaped exactly one.
+    typed[broken].delete = () => {
+      throw new Error("planted: this resource will not delete");
+    };
+    return await deprovisionFeature({ projectDir: dir, identity, capabilities, env: "feature", provisioners }).then(
+      () => {
+        throw new Error("expected the planted delete to fail the teardown");
+      },
+      (error: unknown) => error,
+    );
+  }
+
+  test("names the resources that were destroyed before it failed", async () => {
+    // d1 is the first of the three in the manifest, so kv's failure comes after it went.
+    const deleted = deletedBeforeFailure(await tornDownWith("kv"));
+    expect(deleted.map((resource) => resource.kind)).toEqual(["d1"]);
+    expect(deleted[0]).toMatchObject({ kind: "d1", name: featureResourceName(identity, "DB", "d1") });
+  });
+
+  test("carries nothing derived from the throw — kind, name and id, and no reason", async () => {
+    const deleted = deletedBeforeFailure(await tornDownWith("kv"));
+    expect(Object.keys(deleted[0] ?? {}).sort()).toEqual(["id", "kind", "name"]);
+    expect(JSON.stringify(deleted)).not.toContain("planted");
+  });
+
+  test("keeps the manifest, because it is the record of what is left to delete", async () => {
+    await tornDownWith("kv");
+    await expect(stat(manifestPath(dir))).resolves.toBeDefined();
+  });
+
+  test("a teardown that succeeds carries no report, and neither does an unrelated throw", async () => {
+    const { provisioners } = fakeProvisioners();
+    await provisionFeature({ projectDir: dir, capabilities, identity, provisioners, ...noBackend });
+    await deprovisionFeature({ projectDir: dir, identity, capabilities, env: "feature", provisioners });
+    expect(deletedBeforeFailure(new Error("unrelated"))).toEqual([]);
   });
 });

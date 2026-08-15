@@ -114,6 +114,11 @@ $ pithy feature destroy --json
 | `portsFreed` | `boolean` | Whether the feature's port block was returned to the registry |
 | `worktreePruned` | `boolean` | Whether a registered worktree was pruned |
 | `branchDeleted` | `boolean` | Whether the feature branch was deleted. Only when it has been merged |
+| `interrupted` | `boolean` | Present and `true` only on a teardown that failed partway (#380). It says `deletedResources` is a record of what went before the failure rather than of the whole teardown, and that `portsFreed`, `worktreePruned` and `branchDeleted` are all `false` because the local half deliberately did not run — the worktree is where the re-run happens from, and the manifest naming what is left lives in it. The failure itself is the `{"error":{…}}` line on stderr, and the exit is 1 |
+
+A teardown deletes real infrastructure one resource at a time, with no transaction across them. So a
+failure on the fourth delete still fails the command, and stdout still names the three that went: an
+operator finishing the teardown by hand needs the record more on that run than on the one that worked.
 
 ## Errors
 
