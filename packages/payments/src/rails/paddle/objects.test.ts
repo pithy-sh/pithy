@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
+import { PaymentsVerificationFailedError } from "../../error/errors";
 import { BROWSER_ITEMS_FORGERY, BROWSER_OVERWROTE_SERVER_STAMP } from "./fixtures/browserForged";
+import {
+  PADDLE_PAUSE_RESUME_AT,
+  PADDLE_PAUSED_INDEFINITELY,
+  PADDLE_PAUSED_WITH_RESUME_DATE,
+} from "./fixtures/pausedSubscription";
 import {
   accountReferenceOf,
   accountReferenceProof,
@@ -10,6 +16,9 @@ import {
   PADDLE_CUSTOM_ACCOUNT,
   PADDLE_CUSTOM_ENV,
   PADDLE_CUSTOM_PROOF,
+  PaddleSubscription,
+  subscriptionEvent,
+  subscriptionResumesAt,
 } from "./objects";
 
 /**
@@ -74,5 +83,82 @@ describe("a stamp a browser wrote binds nobody", () => {
       [PADDLE_CUSTOM_PROOF]: await accountReferenceProof(reference, "prod", SECRET),
     };
     expect(await accountReferenceOf(proven, undefined, SECRET)).toBeNull();
+  });
+});
+
+/**
+ * When a paused Paddle subscription comes back (#369).
+ *
+ * Every input is `fixtures/pausedSubscription.ts` — two objects Paddle stored and handed back, not two an
+ * author typed. The expectation is the literal string that went into the pause request, so the assertion
+ * cannot be satisfied by any date this package could compute from the fixture's other fields.
+ */
+describe("a paused subscription says when it resumes", () => {
+  const OCCURRED = new Date("2026-08-15T13:43:55.956Z");
+
+  test("the date is on the `resume` scheduled change, and `resume_at` beside it is null", () => {
+    // The recording that refutes the obvious fix. A change keyed on `scheduled_change.resume_at` — which
+    // is how the issue describes this rail — would read null here and look correct while shipping nothing.
+    expect(PADDLE_PAUSED_WITH_RESUME_DATE.scheduled_change.resume_at).toBeNull();
+    expect(PADDLE_PAUSED_WITH_RESUME_DATE.scheduled_change.action).toBe("resume");
+    expect(subscriptionResumesAt(PaddleSubscription.parse(PADDLE_PAUSED_WITH_RESUME_DATE))).toBe(
+      "2026-10-01T00:00:00Z",
+    );
+  });
+
+  test("so the projected event carries Paddle's own instant", () => {
+    const event = subscriptionEvent(PaddleSubscription.parse(PADDLE_PAUSED_WITH_RESUME_DATE), OCCURRED, "sandbox");
+    expect(event.status).toBe("paused");
+    expect(event.resumesAt).toEqual(new Date(PADDLE_PAUSE_RESUME_AT));
+    // Not the period end, which the same fixture carries and which is a different date entirely. Reaching
+    // for it is what would have put a wrong date in front of a paying customer.
+    expect(event.resumesAt).not.toEqual(new Date(PADDLE_PAUSED_WITH_RESUME_DATE.current_billing_period.ends_at));
+  });
+
+  test("a pause Paddle put no end on is indefinite, and reads as one", () => {
+    // `scheduled_change: null` on a paused subscription. Null here is Paddle saying "until they ask",
+    // which a consumer must be able to tell from "not paused" — the status is what does that.
+    const event = subscriptionEvent(PaddleSubscription.parse(PADDLE_PAUSED_INDEFINITELY), OCCURRED, "sandbox");
+    expect(event.status).toBe("paused");
+    expect(event.resumesAt).toBeNull();
+  });
+
+  test("a scheduled cancel or pause is not a resumption, whatever date it carries", () => {
+    // `effective_at` means something different per action: when access ends on a `cancel`, when the pause
+    // begins on a `pause`. Only a `resume` names a return, and only a paused row may carry one.
+    for (const action of ["cancel", "pause"]) {
+      const scheduled = {
+        ...PADDLE_PAUSED_WITH_RESUME_DATE,
+        scheduled_change: { action, effective_at: "2026-12-01T00:00:00Z", resume_at: null },
+      };
+      expect(subscriptionResumesAt(PaddleSubscription.parse(scheduled)), action).toBeNull();
+    }
+  });
+
+  test("a subscription still active with a pause scheduled carries no resume date on its row", () => {
+    // This is where Paddle really does populate `resume_at` — and the subscription is `active`, so it has
+    // not gone anywhere and nothing is coming back. The field is read, and the status is what withholds it.
+    const scheduledPause = {
+      ...PADDLE_PAUSED_WITH_RESUME_DATE,
+      status: "active",
+      scheduled_change: {
+        action: "pause",
+        effective_at: "2026-09-13T20:03:06.313818Z",
+        resume_at: PADDLE_PAUSE_RESUME_AT,
+      },
+    };
+    const parsed = PaddleSubscription.parse(scheduledPause);
+    expect(subscriptionResumesAt(parsed)).toBe(PADDLE_PAUSE_RESUME_AT);
+    expect(subscriptionEvent(parsed, OCCURRED, "sandbox").resumesAt).toBeNull();
+  });
+
+  test("an unreadable resume date is refused rather than stored as an Invalid Date", () => {
+    const broken = {
+      ...PADDLE_PAUSED_WITH_RESUME_DATE,
+      scheduled_change: { action: "resume", effective_at: "soon", resume_at: null },
+    };
+    expect(() => subscriptionEvent(PaddleSubscription.parse(broken), OCCURRED, "sandbox")).toThrow(
+      PaymentsVerificationFailedError,
+    );
   });
 });

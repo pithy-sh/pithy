@@ -198,6 +198,14 @@ export interface PurchaseView {
   purchasedAt: string;
   /** When access lapses, as an ISO string, or null. */
   expiresAt: string | null;
+  /**
+   * When a paused subscription resumes, as an ISO string, or null.
+   *
+   * Null means two different things and `status` tells them apart: with `paused`, the store put no end on
+   * the pause; with anything else, the subscription is not paused. A screen that renders "paused until"
+   * has to branch on both.
+   */
+  resumesAt: string | null;
   /** What this submission did to the projection. `ignored` is a replay, and a replay is a success. */
   outcome: "created" | "updated" | "ignored";
 }

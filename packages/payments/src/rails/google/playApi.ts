@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
+import { pauseResumesAt } from "../../data/pause";
 import type { PaymentsPurchase, PurchaseEnvironment } from "../../data/purchase";
 import type { PurchaseStatus } from "../../data/status";
 import {
@@ -27,9 +28,11 @@ import type { GoogleNotificationPointer } from "./rtdn";
  *
  * `on_hold` and `paused` are Play's own. **On hold** is a subscription whose billing retry window has run out:
  * Google keeps trying for up to 30 days and access is withdrawn throughout, which is why `on_hold` never
- * grants. **Paused** is a subscription the *user* suspended, with an `autoResumeTime` set; they will come back,
- * and until they do they are not entitled. Neither has an Apple analogue, and both would be lost by a status
- * set built from Apple's notifications alone.
+ * grants. **Paused** is a subscription the *user* suspended, usually with an `autoResumeTime` set; they will
+ * come back, and until they do they are not entitled — so that date lands on the row as `resumesAt`, and its
+ * absence is Play reporting an indefinite pause rather than this rail declining to look (`data/pause.ts`).
+ * Neither state has an Apple analogue, and both would be lost by a status set built from Apple's
+ * notifications alone.
  *
  * ## What Play does not report, and what follows
  *
@@ -460,6 +463,13 @@ export function playSubscriptionEvent(
     // Play does not date a revocation. The notification's own time is when we learned of it, which is the only
     // timestamp either side actually has.
     revokedAt: status === "revoked" || status === "refunded" ? context.eventAt : null,
+    // Play's own answer to "when does this come back", and the reason the pause context is read at all.
+    // Absent for an indefinite pause, which `pauseResumesAt` keeps distinct from "not paused".
+    resumesAt: pauseResumesAt({
+      rail: "google",
+      status,
+      reported: purchase.pausedStateContext?.autoResumeTime,
+    }),
     // The token is the family key: every renewal of one subscription carries the same one, which is what lets a
     // renewal's owner be resolved from the purchase that started it.
     originalTransactionId: context.purchaseToken,

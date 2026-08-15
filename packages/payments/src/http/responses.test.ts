@@ -48,6 +48,7 @@ const PURCHASE: PaymentsPurchaseView = {
   environment: "production",
   purchasedAt: "2026-06-01T00:00:00.000Z",
   expiresAt: "2026-07-01T00:00:00.000Z",
+  resumesAt: null,
   outcome: "created",
 };
 
@@ -117,6 +118,7 @@ describe("the management read schemas", () => {
       purchasedAt: new Date("2026-06-01T00:00:00.000Z"),
       expiresAt: new Date("2026-07-01T00:00:00.000Z"),
       revokedAt: null,
+      resumesAt: null,
       updatedAt: new Date("2026-06-01T00:00:00.000Z"),
     });
     accepts(PaymentsAdminPurchaseView, purchase);
@@ -166,6 +168,7 @@ describe("the management read schemas", () => {
       purchasedAt: "2026-06-01T00:00:00.000Z",
       expiresAt: null,
       revokedAt: null,
+      resumesAt: null,
       updatedAt: "2026-06-01T00:00:00.000Z",
     };
     const entitlement: PaymentsAdminEntitlementView = {

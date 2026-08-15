@@ -164,6 +164,7 @@ export async function projectPurchase(
     purchasedAt: event.purchasedAt,
     expiresAt: event.expiresAt,
     revokedAt: event.revokedAt,
+    resumesAt: event.resumesAt,
     originalTransactionId: event.originalTransactionId,
     amountMinor: event.amountMinor,
     currency: event.currency,
@@ -355,6 +356,10 @@ function upsertPurchase(db: PaymentsDatabase, row: PaymentsPurchaseRow) {
             purchasedAt: row.purchasedAt,
             expiresAt: row.expiresAt,
             revokedAt: row.revokedAt,
+            // Cleared by the same write that ends the pause: a resumed subscription arrives `active` with
+            // nothing reported, and a row keeping yesterday's date would say a live subscription is coming
+            // back. The column is the current state, exactly as `status` is.
+            resumesAt: row.resumesAt,
             originalTransactionId: row.originalTransactionId,
             amountMinor: row.amountMinor,
             currency: row.currency,

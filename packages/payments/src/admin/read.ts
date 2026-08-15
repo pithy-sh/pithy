@@ -87,6 +87,7 @@ export const PaymentsPurchaseRecord = PaymentsPurchase.pick({
   purchasedAt: true,
   expiresAt: true,
   revokedAt: true,
+  resumesAt: true,
   updatedAt: true,
 }).describe("One purchase as a management read selects it — never the stored provider payload.");
 export type PaymentsPurchaseRecord = z.output<typeof PaymentsPurchaseRecord>;
