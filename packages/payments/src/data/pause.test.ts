@@ -99,21 +99,24 @@ describe("PAYMENTS_PAUSE_RESUMPTION", () => {
 /** This file's own directory, for the source scans below. */
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-/** Every rail module's source, so the scan reads what ships rather than what a test re-declares. */
+/**
+ * Every rail module's source, so the scan reads what ships rather than what a test re-declares.
+ *
+ * **Node's own recursive listing, not a recursion written here.** `packages/cli`'s
+ * `ci/sourceFiles.test.ts` refuses a hand-rolled directory walk anywhere in the repository — there were
+ * six copies once — and offers two ways out: route through `ci/sourceFiles.ts`, or declare the module
+ * as debt. Neither applies. This package cannot reach that helper (`cli` depends on the capabilities,
+ * not the other way round), and debt is the wrong answer to a walk that need not exist: `readdirSync`
+ * has done this since Node 18, and the gate names it as explicitly not a walk.
+ */
 function railSources(): { path: string; source: string }[] {
   const root = join(HERE, "..", "rails");
-  const found: { path: string; source: string }[] = [];
-  const walk = (directory: string): void => {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) walk(path);
-      else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) {
-        found.push({ path, source: readFileSync(path, "utf8") });
-      }
-    }
-  };
-  walk(root);
-  return found;
+  return readdirSync(root, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts"))
+    .map((entry) => {
+      const path = join(entry.parentPath, entry.name);
+      return { path, source: readFileSync(path, "utf8") };
+    });
 }
 
 describe("the date is never computed (#369, acceptance 2)", () => {
