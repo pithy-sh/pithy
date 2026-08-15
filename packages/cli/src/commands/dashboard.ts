@@ -12,7 +12,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { z } from "zod";
 import { createCliAudit } from "../audit/cliAudit";
-import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { type CloudflareAccountSelection, resolveCloudflare } from "../cloudflare/config";
 import { httpDashboardClient } from "../dashboard/api";
 import {
   authorizeDashboard,
@@ -250,12 +250,19 @@ const authorize = (client: DashboardClient): Promise<string> => authorizeDashboa
  * resolves the database. And Cloudflare credentials are optional: connecting a `dev` environment touches
  * no account, so demanding an account token to record it would make the trail depend on something the
  * action does not. Without one the row is written unattributed rather than dropped.
+ *
+ * **A mismatched account names nobody, and does not throw here (#236).** This resolves credentials only to
+ * put a name on the actor, so it reads through {@link resolveCloudflare} rather than {@link cloudflareEnv}:
+ * an operator whose pin and credentials disagree must not be recorded in their own trail as the account
+ * the project does not claim, and a trail wiring must not be the thing that refuses a `dev` run that
+ * touches no account at all. The refusal for the environments that *do* reach an account is
+ * `openConnectionRegistry`'s, stated once, ahead of the fan-out.
  */
 async function openAudit(projectDir: string, env: string, account: CloudflareAccountSelection | null) {
   const capabilities = await resolveWorkers({ projectDir }).then(projectCapabilities).catch(NO_CAPABILITIES);
-  const vars = cloudflareEnv({ account });
-  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
-  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
+  const resolved = resolveCloudflare({ account });
+  const accountId = resolved.mismatch ? "" : (resolved.vars.CLOUDFLARE_ACCOUNT_ID ?? "");
+  const apiToken = resolved.mismatch ? "" : (resolved.vars.CLOUDFLARE_API_TOKEN ?? "");
   const named = accountId !== "" && apiToken !== "";
   return (database: D1Database) =>
     createCliAudit({
