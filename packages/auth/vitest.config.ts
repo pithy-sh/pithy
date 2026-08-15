@@ -1,12 +1,14 @@
 import { defineConfig } from "vitest/config";
-import { CONFIG_DIR_SETUP, NO_ACCOUNT } from "../../vitest.shared";
+import { CONFIG_DIR_SETUP, NO_ACCOUNT, UNIT_BUDGETS } from "../../vitest.shared";
 
 export default defineConfig({
   test: {
+    ...UNIT_BUDGETS,
     passWithNoTests: true,
     projects: [
       {
         test: {
+          ...UNIT_BUDGETS,
           name: "node",
           environment: "node",
           include: ["src/**/*.test.ts"],

@@ -1,6 +1,7 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { devEncryptionKeys } from "@pithy-sh/secrets/src/test-utils/devEncryptionKeys";
 import { defineConfig } from "vitest/config";
+import { UNIT_BUDGETS } from "../../vitest.shared";
 
 /**
  * Workers-runtime tests run against Miniflare with a real `DB` D1 — the app database auth's tables live
@@ -22,6 +23,7 @@ export default defineConfig({
     }),
   ],
   test: {
+    ...UNIT_BUDGETS,
     name: "workers",
     include: ["src/**/*.workers.test.ts"],
   },

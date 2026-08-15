@@ -81,3 +81,42 @@ export const NO_ACCOUNT: Readonly<Record<string, string>> = Object.fromEntries([
   ...CLOUDFLARE_ENV_KEYS.map((key) => [key, ""]),
   [OFFLINE_ENV, ""],
 ]);
+
+/**
+ * The two budgets every unit and workers project states, and the reason they are not vitest's defaults.
+ *
+ * **Twenty-two of twenty-three packages had never chosen either number** (#361). Only `@pithy-sh/cli`
+ * set `testTimeout`, so every other suite in this repository — including every workers suite, each of
+ * which spawns workerd and talks to real D1 — ran against vitest's out-of-the-box `testTimeout` of
+ * **5,000ms** and `hookTimeout` of **10,000ms**. Nothing decided that. It is what you get for saying
+ * nothing, and it is far too tight for a suite doing real I/O on a machine running `bun run test`,
+ * which starts twenty-three packages at `--concurrency=50%` and deliberately oversubscribes the box.
+ *
+ * **The measurement, so a later reader can check it rather than take it.** Every case in five packages
+ * was timed under a real parallel load. The slowest legitimate case in the whole measured population is
+ * **3,287ms** (`storage`, `sweep.workers.test.ts`, chunking a page past D1's bound-parameter cap) —
+ * against the 5,000ms default that is a **1.5x margin**. A dozen more sat between 1.6s and 2.5s, all
+ * inside 3x. Meanwhile `bun run test --force` on this box produced a measured **7.5x** whole-file
+ * slowdown versus running the same file alone. A population whose margins are 1.5x-3x under a 7.5x
+ * spread does not fail sometimes; it fails on a schedule nobody can predict, and it did — three
+ * separate packages went red on three consecutive full runs, each passing alone straight afterwards.
+ *
+ * **These are hang ceilings, not margins any test is meant to live in.** 60,000ms is ~18x the slowest
+ * case ever measured here and 120,000ms is ~39x the slowest hook. Nothing should approach either; a
+ * test that does has hung, which is the only thing a timeout is any good at catching. **Slowness is not
+ * what these numbers are for** — a case creeping from 300ms to 3s is a real regression and one of these
+ * would never notice it. That is what timing the population catches, and #361's report is the worked
+ * example of doing it.
+ *
+ * A project needing genuinely longer states it on the case, where the reader of that case can see it —
+ * as `cli`'s `e2e.test.ts` and `scaffoldGates.test.ts` already do. **Integration configs set their own**
+ * and deliberately do not use these: those suites wait on live Cloudflare, and their budgets answer to
+ * the network rather than to this machine.
+ *
+ * `packages/cli/src/ci/testIsolation.test.ts` gates that every unit project actually states both, for
+ * the same reason it gates the other two constants here: a config is a place to forget.
+ */
+export const UNIT_BUDGETS: Readonly<{ testTimeout: number; hookTimeout: number }> = {
+  testTimeout: 60_000,
+  hookTimeout: 120_000,
+};

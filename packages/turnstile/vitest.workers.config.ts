@@ -1,6 +1,7 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { devEncryptionKeys } from "@pithy-sh/secrets/src/test-utils/devEncryptionKeys";
 import { defineConfig } from "vitest/config";
+import { UNIT_BUDGETS } from "../../vitest.shared";
 
 /**
  * Workers-runtime tests run the `turnstile()` middleware inside Miniflare, where its `fetch` to
@@ -23,5 +24,9 @@ export default defineConfig({
       },
     }),
   ],
-  test: { name: "workers", include: ["src/**/*.workers.test.ts"] },
+  test: {
+    ...UNIT_BUDGETS,
+    name: "workers",
+    include: ["src/**/*.workers.test.ts"],
+  },
 });

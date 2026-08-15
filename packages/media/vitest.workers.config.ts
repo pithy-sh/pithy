@@ -1,5 +1,6 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
+import { UNIT_BUDGETS } from "../../vitest.shared";
 
 /**
  * Workers-runtime tests run against Miniflare with real D1 and KV bindings — the same `DB` database the
@@ -19,5 +20,9 @@ export default defineConfig({
       },
     }),
   ],
-  test: { name: "workers", include: ["src/**/*.workers.test.ts"] },
+  test: {
+    ...UNIT_BUDGETS,
+    name: "workers",
+    include: ["src/**/*.workers.test.ts"],
+  },
 });

@@ -1,15 +1,17 @@
 import { defineConfig } from "vitest/config";
-import { CONFIG_DIR_SETUP, NO_ACCOUNT } from "../../vitest.shared";
+import { CONFIG_DIR_SETUP, NO_ACCOUNT, UNIT_BUDGETS } from "../../vitest.shared";
 
 // One `vitest run`, two projects (mirrors core/secrets).
 //   node    — pure logic in `*.test.ts` (the CLI emitter, actor resolution, codecs).
 //   workers — real D1 (`DB`) via Miniflare in `*.workers.test.ts` (the recorder, migrations, query).
 export default defineConfig({
   test: {
+    ...UNIT_BUDGETS,
     passWithNoTests: true,
     projects: [
       {
         test: {
+          ...UNIT_BUDGETS,
           name: "node",
           environment: "node",
           include: ["src/**/*.test.ts"],
