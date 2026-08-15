@@ -45,7 +45,15 @@ export type DevPreferencesState =
    * the same sentence. When a second set starts reading `dev.json`, this check has to widen with it — a file
    * written for that set would otherwise be reported as a fault by a check that had never heard of it.
    */
-  | "no-user";
+  | "no-user"
+  /**
+   * The check itself threw, so nothing about the file was established (#371).
+   *
+   * **Not `absent`.** That is the documented default and reads as "everything is as it should be", which
+   * is the one thing this state must not say. It never fails the exit, on the same rule every other
+   * establishes-nothing state in this report follows.
+   */
+  | "could-not-check";
 
 /** What `doctor` learned about this project's dev-login preference file. */
 export interface DevPreferencesCheck {
@@ -139,5 +147,9 @@ export function describeDevPreferences(check: DevPreferencesCheck): string {
       return "will not parse; seed reads nothing from it";
     case "no-user":
       return 'no "user"; seed has nobody to sign in as';
+    case "could-not-check":
+      // Not "none yet". Nothing was read, so nothing is known — and the path is still the answer to the
+      // question this line exists for.
+      return "couldn't be checked";
   }
 }

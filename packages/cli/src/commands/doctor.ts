@@ -241,7 +241,7 @@ export interface DoctorReport {
    * secrets by definition, and an upgrade that turns a green `pithy doctor` red in CI over a file that
    * still works is a surprise rather than a diagnosis. Migration is told, not enforced.
    */
-  devSecrets: DevSecretsCheck | null;
+  devSecrets: Checked<DevSecretsCheck> | null;
   /**
    * Whether every declared environment binds the `cf-secrets-store` secrets its Worker reads (#238).
    * `null` outside a project that composes `secrets` — with no registry there is nothing to bind.
@@ -261,7 +261,7 @@ export interface DoctorReport {
    * It reports and never fails the exit, for the reason {@link ./devVarsLocal} gives: both states are
    * legitimate, and neither may be invisible.
    */
-  devVarsLocal: DevVarsLocalCheck | null;
+  devVarsLocal: Checked<DevVarsLocalCheck> | null;
   /**
    * The two `.dev.vars` questions nothing else asks: whether each Worker's generated file actually
    * carries anything, and whether the project root's hand-written one is still holding values nothing
@@ -273,7 +273,7 @@ export interface DoctorReport {
    * must not be is silent — until #178 the only thing that reported either was a 500 from a running
    * Worker naming the bindings it did not have.
    */
-  devVars: DevVarsCheck | null;
+  devVars: Checked<DevVarsCheck> | null;
   /**
    * Where this project's dev secrets file is, and whether it is there. `null` outside a project with a
    * resolvable name, on the same footing as {@link DoctorReport.devPreferences}.
@@ -285,7 +285,7 @@ export interface DoctorReport {
    * term in the terse predicate: a path is not a fault. It prints in **both** forms of the report for
    * that same reason (#166) — a healthy project is the one most likely to be asking where the file is.
    */
-  devSecretsFile: DevSecretsLocationCheck | null;
+  devSecretsFile: Checked<DevSecretsLocationCheck> | null;
   os: { name: string; version: string };
   /** The runtime actually executing, which under Bun is not what `process.versions.node` reports. */
   runtime: RuntimeInfo;
@@ -301,6 +301,112 @@ export interface DoctorReport {
    * a script reading `state: "unknown"` cannot otherwise tell a skipped check from a failed one.
    */
   offline: boolean;
+}
+
+/**
+ * A probe's own answer, or that the probe threw (#371).
+ *
+ * Eleven checks contribute to this report, and until #371 five of them could take the whole thing down
+ * while six were caught into `null` — which already meant *the question does not arise here*. Both halves
+ * were the same defect: a report is what an adopter reads to find out why something is wrong, and losing
+ * ten findings to an eleventh, or filing a failure under "not applicable", are two ways of not saying it.
+ *
+ * Every probe is guarded now, and every failure lands as a `state` **on the value**. Six of the eleven
+ * checks already carried a `could-not-check` member of their own and use it; `CloudflareAccess` and
+ * `DevPreferencesCheck` gained one; and the four whose payload is a bag of findings with no discriminant
+ * wear this wrapper, so the finding fields are unreachable without narrowing. One representation — a
+ * `state` on the value — in four vocabularies, which is how `#210` and `#350` differ too.
+ *
+ * **`null` still means the question does not arise**, and that is what keeps the two apart: a project that
+ * composes no `secrets` has no dev-secrets question, and a project whose registry would not load has one
+ * nobody answered.
+ */
+export type Checked<T> = ({ state: "checked" } & T) | { state: "could-not-check" };
+
+/**
+ * Run a probe, and turn a throw into `could-not-check` rather than into a lost report (#371).
+ *
+ * The `catch` takes no binding, on `#350`'s rule: these probes read an adopter's config files, their
+ * `.dev.vars`, and their Cloudflare credentials, so what they throw names paths, account ids and — in the
+ * worst case — a value. Nothing derived from it reaches a terminal or `--json`. What survives is which
+ * check could not run, which is the one thing anybody can act on and which the line already names.
+ */
+async function probed<T>(probe: () => Promise<T>, unavailable: T): Promise<T> {
+  try {
+    return await probe();
+  } catch {
+    return unavailable;
+  }
+}
+
+/**
+ * The same guard for a check whose payload has no discriminant of its own — see {@link Checked}.
+ *
+ * `try`/`catch` rather than `.catch()` in both, and that is not style. Every one of these probes is an
+ * injectable seam, and a seam that throws *before* returning a promise is not a rejected promise —
+ * `.catch()` never sees it, and the report dies exactly as it did before the guard was written.
+ */
+async function checkedProbe<T>(probe: () => Promise<T | null>): Promise<Checked<T> | null> {
+  try {
+    const answer = await probe();
+    // A probe's own `null` is preserved, never wrapped. It is the third fact this report already had a
+    // word for — the question does not arise here — and folding it into `checked` would trade one
+    // conflation for another.
+    return answer === null ? null : { state: "checked", ...answer };
+  } catch {
+    return { state: "could-not-check" };
+  }
+}
+
+/**
+ * The `devSecrets` payload: every finding with its own sentence, or the state that says nobody looked.
+ *
+ * Lifted out of the JSON renderer because it is the one probe whose payload is long enough that a
+ * conditional expression around it stopped being readable — and because #371 gave it a second shape a
+ * consumer has to be able to tell apart from `null`. `null` is "this project composes no secrets";
+ * `{ state: "could-not-check" }` is "it does and nobody could read the registry".
+ */
+function jsonDevSecrets(value: Checked<DevSecretsCheck> | null): Record<string, unknown> | null {
+  if (value === null) return null;
+  const check = reported(value);
+  if (check === null) return { state: "could-not-check" };
+  return {
+    state: "checked",
+    path: check.path,
+    misplaced: check.misplaced,
+    missing: check.missing,
+    // The two the human block has printed since #323 and this payload did not carry (#325). A JSON
+    // consumer could not see the fault class that wave added — and `malformed` is the one that flips
+    // the exit, so a script read a value the next seed refuses as a healthy project.
+    bootstrapMissing: check.bootstrapMissing,
+    malformed: check.malformed,
+    undeclared: check.undeclared,
+    mode: check.mode === null ? null : check.mode.toString(8),
+    // The loader's sentence since #323, and a `string | null` ever since. A script gating on
+    // `unreadable === true` stopped firing the moment it stopped being a boolean, and stopped silently,
+    // because a non-empty string is not `false` — it is merely not `true`. The sentence stays, because
+    // it names the secret and the shape; `healthy` is what a gate reads.
+    unreadable: check.unreadable,
+    // The one field a script can gate on without enumerating fault names. Through the same function the
+    // exit code is computed from, so the payload and the exit cannot come to two answers — and so the
+    // next fault class added here needs no consumer to be updated (#325).
+    healthy: devSecretsHealthy(check),
+    // The Workers this project has that nobody could ask what they declare (#208). Carried here because
+    // a `devSecrets` object with no targets and a `null` one used to be the same answer, and an agent
+    // reading either had no way to tell "no secrets" from "nothing loaded".
+    unresolvable: check.unresolvable,
+    detail: describeDevSecrets(check),
+  };
+}
+
+/**
+ * The check when the probe answered, and `null` when it either did not arise or could not run.
+ *
+ * A convenience for the render sites that treat "no answer" alike — the ones that must say *which*
+ * kind of no-answer it is read `state` directly, and there are lines below that do.
+ */
+function reported<T>(value: Checked<T> | null): T | null {
+  return value?.state === "checked" ? value : null;
 }
 
 /**
@@ -586,44 +692,87 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
 
   // Credentials are checked whether or not a project loaded: `.dev.vars` is read from the directory, and
   // "are my credentials right" is a question worth answering before `pithy init` as much as after.
-  const cloudflare = await probeCloudflare();
+  // Every probe below is guarded, and each failure lands on that check's own value (#371). None of them
+  // is load-bearing: they are eleven independent questions about one project, and there is no order in
+  // which one's answer is a precondition for another's.
+  const cloudflare = await probed<CloudflareAccess>(probeCloudflare, {
+    state: "probe_failed",
+    missing: [],
+    tokenStatus: null,
+    credentialSplit: null,
+  });
   // The name is different, and it is asked only of a project whose root config actually loaded. It is not a
   // question about the directory, it is a question about a config: "is the `name` in this file still the one
   // every provisioned resource was named under". With no readable config there is no name and no question,
   // and the `Project:` block below already reports which of the two happened. Gated on the same `inProject`
   // that block is written from, so neither can contradict the other about whether a project is here.
-  const projectName = inProject ? await probeProjectName(options.projectDir) : null;
+  const projectName = inProject
+    ? await probed<ProjectNameCheck | null>(() => probeProjectName(options.projectDir), {
+        state: "could-not-check",
+        project: null,
+        misnamed: [],
+      })
+    : null;
   // The same question one level down, and gated the same way. `checkProjectName` asks whether this
   // project's name still names its resources; this asks whether each Worker's own three names still name
   // one Worker. Files only, so it costs nothing and answers offline.
-  const workerNames = inProject ? await probeWorkerNames(options.projectDir) : null;
+  const workerNames = inProject
+    ? await probed<WorkerNameCheck>(() => probeWorkerNames(options.projectDir), {
+        state: "could-not-check",
+        mismatches: [],
+      })
+    : null;
   // And once more, one level out: the declaration is project-wide, so with no readable config there is
   // nothing to compare each Worker's stanzas to. Files only, so it answers offline like the two above.
-  const environments = inProject ? await probeEnvironments(options.projectDir) : null;
+  const environments = inProject
+    ? await probed<EnvironmentsCheck>(() => probeEnvironments(options.projectDir), {
+        state: "could-not-check",
+        declared: [],
+        drift: [],
+      })
+    : null;
   // One level further out again, and gated the same way: an environment is declared, and now what is
   // true *about* it — where it answers — must be too. Files only, so it answers offline like the rest.
-  const origins = inProject ? await probeOrigins(options.projectDir).catch(() => null) : null;
+  const origins = inProject
+    ? await probed<OriginsCheck>(() => probeOrigins(options.projectDir), { state: "could-not-check", drift: [] })
+    : null;
   // The same shape once more, on the other thing a `pithy.config.ts` declares and a `wrangler.jsonc` has
   // to agree with: the app capability's Workflows and cron. Files only, so it answers offline like the rest.
-  const workflows = inProject ? await probeWorkflows(options.projectDir).catch(() => null) : null;
+  const workflows = inProject
+    ? await probed<WorkflowsCheck>(() => probeWorkflows(options.projectDir), { state: "could-not-check", drift: [] })
+    : null;
   // Gated the same way once more: `dev.json` is keyed by the project's own name, so with no readable config
   // there is no path to resolve and no file to look for. Files only, no account, no seed run.
-  const devPreferences = inProject ? await probeDevPreferences(options.projectDir) : null;
+  const devPreferences = inProject
+    ? await probed<DevPreferencesCheck | null>(() => probeDevPreferences(options.projectDir), {
+        // The config directory this report already resolved, never a `dev.json` path this run did not
+        // compute — resolving that path is what failed (#131's rule, applied to #371's state). Nothing
+        // prints it: the `Dev login:` line drops the path entirely in this state.
+        state: "could-not-check",
+        path: stateDir({ homedir: options.homedir, env }),
+        user: null,
+      })
+    : null;
   // Gated the same way, and files only: the two `.dev.` files and each Worker's registry. No account, no
   // database, no seed run — so it answers offline, in the project that is not working.
-  const devSecrets = inProject ? await probeDevSecrets(options.projectDir).catch(() => null) : null;
+  const devSecrets = inProject ? await checkedProbe(() => probeDevSecrets(options.projectDir)) : null;
   // The same registry, asked about the deployed environments rather than the local file. Files only once
   // more: whether a store *entry* exists is provisioning's question, and this one is whether the stanza
   // that would bind it is there at all (#238).
-  const secretBindings = inProject ? await probeSecretBindings(options.projectDir).catch(() => null) : null;
+  const secretBindings = inProject
+    ? await probed<SecretBindingsCheck | null>(() => probeSecretBindings(options.projectDir), {
+        state: "could-not-check",
+        missing: [],
+      })
+    : null;
   // Gated the same way, and asked separately: this one needs no registry, so it answers for a project
   // that has never composed `secrets` — which is the project most likely to be asking where the file is.
-  const devSecretsFile = inProject ? await probeDevSecretsFile(options.projectDir).catch(() => null) : null;
-  const devVarsLocal = inProject ? await probeDevVarsLocal(options.projectDir).catch(() => null) : null;
+  const devSecretsFile = inProject ? await checkedProbe(() => probeDevSecretsFile(options.projectDir)) : null;
+  const devVarsLocal = inProject ? await checkedProbe(() => probeDevVarsLocal(options.projectDir)) : null;
   // Gated the same way, and files only once more: each Worker's generated `.dev.vars` and the root's.
   // No account, no store, no seed run — which matters here more than anywhere, because the state it
   // reports is a project whose Workers cannot start.
-  const devVars = inProject ? await probeDevVars(options.projectDir).catch(() => null) : null;
+  const devVars = inProject ? await checkedProbe(() => probeDevVars(options.projectDir)) : null;
 
   return {
     cli,
@@ -663,7 +812,16 @@ export function doctorExitCode(report: DoctorReport): number {
   // `not_checked` is the same standard once more and the clearest case of it — the check did not run, so it
   // established nothing, and a caller who asked for no network did not ask for a red exit (#218).
   const cloudflare = report.cloudflare.state;
-  if (cloudflare !== "ok" && cloudflare !== "unconfigured" && cloudflare !== "not_checked") return 1;
+  // `probe_failed` joins them on the same standard (#371): the probe threw, so it established nothing —
+  // and a credentials file that will not parse is not a credential this project has been shown to lack.
+  if (
+    cloudflare !== "ok" &&
+    cloudflare !== "unconfigured" &&
+    cloudflare !== "not_checked" &&
+    cloudflare !== "probe_failed"
+  ) {
+    return 1;
+  }
   // Listed positively, never as "anything but ok": only a fault this project's own config or wiring
   // positively establishes may gate CI. `unconfigured` (no name yet) and `could-not-check` (the wiring
   // would not read) establish nothing, and failing on either would break every run in an unprovisioned
@@ -1068,7 +1226,11 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // the state every project that predates the dev secrets file starts in. A *missing* one does not — the
   // four OAuth pairs auth declares are unset in almost every project, and treating that as a fault would
   // drag every report in the world verbose. `devSecretsHealthy` draws that line; the block still prints.
-  const devSecretsOk = !report.devSecrets || devSecretsHealthy(report.devSecrets);
+  // A probe that could not run keeps the report verbose, on the same rule `Alias: unknown` follows:
+  // "I could not check" is information, and the terse form is the report saying there is nothing to
+  // look at (#371). It still never fails the exit.
+  const devSecretsCheck = reported(report.devSecrets);
+  const devSecretsOk = report.devSecrets === null || (devSecretsCheck !== null && devSecretsHealthy(devSecretsCheck));
   // A deployed Worker that will answer every request with a missing-binding error is worth the ink for
   // the same reason, and it does not fail the exit for the same reason either — see
   // {@link DoctorReport.secretBindings}.
@@ -1076,7 +1238,8 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // A Worker that would start with no bindings at all is worth the ink for exactly the same reason a
   // misplaced secret is, and more so. It does not fail the exit — see {@link DoctorReport.devVars} —
   // but a report that called this project healthy is what #178 was reported about.
-  const devVarsOk = !report.devVars || devVarsHealthy(report.devVars);
+  const devVarsCheck = reported(report.devVars);
+  const devVarsOk = report.devVars === null || (devVarsCheck !== null && devVarsHealthy(devVarsCheck));
   // An alias nobody could read keeps the report verbose, on the same rule the `unknown` version state
   // follows: "I could not check" is information, and the terse form is the report saying there is nothing
   // to look at. It still never fails the exit — toolchain state does not (#210).
@@ -1118,14 +1281,19 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
    * and open it" as the workflow. `pithy secrets edit` (#157) is that step, and this is the only line in
    * the toolchain positioned to mention it.
    */
+  const secretsFile = reported(report.devSecretsFile);
   const secretsLocation =
     report.devSecretsFile === null
       ? null
-      : (() => {
-          const detail = describeDevSecretsLocation(report.devSecretsFile);
-          const path = tildify(report.devSecretsFile.path, home);
-          return `${path} (run \`pithy secrets edit\`)${detail ? ` — ${detail}` : ""}`;
-        })();
+      : secretsFile === null
+        ? // Not a path, because none was resolved. Saying nothing would be the report implying there is
+          // no file to find, which is the one thing this line exists to prevent (#371).
+          "couldn't be checked"
+        : (() => {
+            const detail = describeDevSecretsLocation(secretsFile);
+            const path = tildify(secretsFile.path, home);
+            return `${path} (run \`pithy secrets edit\`)${detail ? ` — ${detail}` : ""}`;
+          })();
 
   /**
    * The `Cloudflare:` line, built once and rendered in **both** forms — the same rule `Secrets:` follows,
@@ -1175,7 +1343,11 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     // resolvable from them: `dev.json` lived under a second, unrelated config root, so this block named a
     // directory that did not contain it. One root, one block.
     const paths = [`Config dir: ${tildify(report.configDir, home)}`, `State file: ${tildify(report.stateFile, home)}`];
-    if (report.devPreferences) {
+    if (report.devPreferences?.state === "could-not-check") {
+      // No path, because none was resolved — resolving it is what failed. Naming the config directory
+      // here would be a claim about a file this run never located (#371, #131's rule).
+      paths.push(`Dev login:  ${describeDevPreferences(report.devPreferences)}`);
+    } else if (report.devPreferences) {
       const path = tildify(report.devPreferences.path, home);
       paths.push(`Dev login:  ${path} — ${describeDevPreferences(report.devPreferences)}`);
     }
@@ -1249,15 +1421,23 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // the dev secrets file needs one every run until it moves them. Nothing here fails the exit — see
   // {@link DoctorReport.devSecrets}.
   if (report.devSecrets || report.devVars || report.devVarsLocal) {
+    // A probe that could not run says so rather than contributing nothing (#371). Silence here is the
+    // same sentence a clean file produces, and this block is read by somebody whose dev environment is
+    // already not working.
+    const unchecked = (label: string, value: Checked<unknown> | null): string[] =>
+      value?.state === "could-not-check" ? [`${label} couldn't be checked.`] : [];
+    const devVars = reported(report.devVars);
+    const devSecrets = reported(report.devSecrets);
+    const devVarsLocal = reported(report.devVarsLocal);
     const lines = [
       // First in the block, because it is the loudest thing there is to say about a dev environment:
       // that Worker answers every request with a missing-binding error, and the lines below it are
       // usually why. Everything else here is a value in the wrong file; this one is a Worker with none.
-      ...(report.devVars ? describeDevVars(report.devVars) : []),
-      ...(report.devSecrets ? describeDevSecrets(report.devSecrets) : []),
+      ...(devVars ? describeDevVars(devVars) : unchecked(".dev.vars:", report.devVars)),
+      ...(devSecrets ? describeDevSecrets(devSecrets) : unchecked("secrets.jsonc:", report.devSecrets)),
       // In the same block, because it is the same question asked of the file beside it: what is in a
       // git-ignored file that nothing else in the project knows about.
-      ...(report.devVarsLocal ? describeDevVarsLocal(report.devVarsLocal) : []),
+      ...(devVarsLocal ? describeDevVarsLocal(devVarsLocal) : unchecked(".dev.vars.local:", report.devVarsLocal)),
     ];
     if (lines.length > 0) blocks.push(["Dev secrets:", ...lines.map((line) => `  ${line}`)].join("\n"));
   }
@@ -1386,35 +1566,8 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
     // Same `null` discipline, and each finding carries its own sentence so an agent fixing it never has to
     // reproduce the wording from the fields. `mode` is octal-formatted here for the same reason: `420` is
     // not a permission anybody recognises.
-    devSecretsFile: report.devSecretsFile,
-    devSecrets: report.devSecrets
-      ? {
-          path: report.devSecrets.path,
-          misplaced: report.devSecrets.misplaced,
-          missing: report.devSecrets.missing,
-          // The two the human block has printed since #323 and this payload did not carry (#325). A JSON
-          // consumer could not see the fault class that wave added — and `malformed` is the one that
-          // flips the exit, so a script read a value the next seed refuses as a healthy project.
-          bootstrapMissing: report.devSecrets.bootstrapMissing,
-          malformed: report.devSecrets.malformed,
-          undeclared: report.devSecrets.undeclared,
-          mode: report.devSecrets.mode === null ? null : report.devSecrets.mode.toString(8),
-          // The loader's sentence since #323, and a `string | null` ever since. A script gating on
-          // `unreadable === true` stopped firing the moment it stopped being a boolean, and stopped
-          // silently, because a non-empty string is not `false` — it is merely not `true`. The sentence
-          // stays, because it names the secret and the shape; {@link healthy} is what a gate reads.
-          unreadable: report.devSecrets.unreadable,
-          // The one field a script can gate on without enumerating fault names. Through the same
-          // function the exit code is computed from, so the payload and the exit cannot come to two
-          // answers — and so the next fault class added here needs no consumer to be updated (#325).
-          healthy: devSecretsHealthy(report.devSecrets),
-          // The Workers this project has that nobody could ask what they declare (#208). Carried here
-          // because a `devSecrets` object with no targets and a `null` one used to be the same answer,
-          // and an agent reading either had no way to tell "no secrets" from "nothing loaded".
-          unresolvable: report.devSecrets.unresolvable,
-          detail: describeDevSecrets(report.devSecrets),
-        }
-      : null,
+    devSecretsFile: report.devSecretsFile === null ? null : { ...report.devSecretsFile },
+    devSecrets: jsonDevSecrets(report.devSecrets),
     // Same `null` discipline once more, and each finding carries its own sentence: one command writes
     // every one of them, and an agent must not have to reconstruct which from a binding name.
     secretBindings: report.secretBindings
@@ -1424,13 +1577,15 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           detail: describeSecretBindings(report.secretBindings),
         }
       : null,
-    devVarsLocal: report.devVarsLocal
-      ? { ...report.devVarsLocal, detail: describeDevVarsLocal(report.devVarsLocal) }
-      : null,
+    devVarsLocal: reported(report.devVarsLocal)
+      ? { ...report.devVarsLocal, detail: describeDevVarsLocal(report.devVarsLocal as DevVarsLocalCheck) }
+      : report.devVarsLocal,
     // Names only, never a value — the same discipline as its neighbour. The whole `root` classification
     // is carried rather than only the findings, because an agent asking "what is in that file and what
     // reads it" is asking the question the classification *is*, and a filtered list answers half of it.
-    devVars: report.devVars ? { ...report.devVars, detail: describeDevVars(report.devVars) } : null,
+    devVars: reported(report.devVars)
+      ? { ...report.devVars, detail: describeDevVars(report.devVars as DevVarsCheck) }
+      : report.devVars,
     os: `${report.os.name} ${report.os.version}`,
     runtime: report.runtime,
     node: report.node,

@@ -363,6 +363,66 @@ describe("renderDoctorText", () => {
   });
 });
 
+/**
+ * The #371 gates on this report's eleven probes. A report is what an adopter reads to find out why
+ * something is wrong, so one probe that throws must cost its own line and leave the other ten standing.
+ *
+ * Planted one probe at a time, in both halves of the defect the issue names: an **unguarded** probe, whose
+ * throw used to take the whole report, and a **guarded** one, whose throw used to be filed under `null` —
+ * indistinguishable from the question not arising here.
+ */
+describe("a probe that throws", () => {
+  const throwing = (message: string) => () => {
+    throw new Error(message);
+  };
+
+  test("an unguarded probe that throws costs its own line, never the other ten", async () => {
+    const control = await buildDoctorReport(harness.healthyOptions());
+    const report = await buildDoctorReport(
+      harness.healthyOptions({
+        // Was unguarded: this threw straight out of buildDoctorReport.
+        checkProjectName: throwing("EACCES: permission denied, open '/home/dev/acme/pithy.config.ts'"),
+      }),
+    );
+
+    // Its own value says it could not be checked — not "ok", and not the `null` that means no project.
+    expect(report.projectName).toEqual({ state: "could-not-check", project: null, misnamed: [] });
+    expect(control.projectName?.state).toBe("ok");
+    // And **nothing else moved**, asserted against the same report without the plant rather than against a
+    // handful of fields somebody remembered to list.
+    expect({ ...report, projectName: null }).toEqual({ ...control, projectName: null });
+    // It establishes nothing, so it does not gate CI.
+    expect(doctorExitCode(report)).toBe(0);
+    // And nothing the throw said travels — this payload is read by scripts and printed to a terminal.
+    expect(JSON.stringify(renderDoctorJson(report))).not.toMatch(/EACCES|permission denied/);
+  });
+
+  test("a guarded probe that throws is distinguishable from one that had nothing to say", async () => {
+    const thrown = await buildDoctorReport(
+      harness.healthyOptions({
+        // Was guarded — into `null`, which already meant "this project composes no secrets".
+        checkDevSecrets: throwing("EACCES: permission denied, open '/home/dev/.config/pithy/acme/secrets.jsonc'"),
+      }),
+    );
+    const quiet = await buildDoctorReport(harness.healthyOptions({ checkDevSecrets: async () => null }));
+
+    expect(thrown.devSecrets).toEqual({ state: "could-not-check" });
+    expect(quiet.devSecrets).toBeNull();
+    // The two are different facts and no longer the same bytes.
+    expect(thrown.devSecrets).not.toEqual(quiet.devSecrets);
+    // And the failed one carries no findings to read as an all-clear.
+    expect(thrown.devSecrets && "misplaced" in thrown.devSecrets).toBe(false);
+    // The report says so out loud rather than printing the same silence a clean file produces.
+    expect(renderDoctorText(thrown, "/home/u")).toContain("secrets.jsonc: couldn't be checked.");
+    expect(renderDoctorText(quiet, "/home/u")).not.toContain("couldn't be checked");
+    // Every sibling probe still reported — asserted against the quiet report, which differs from this one
+    // in exactly the probe that was planted.
+    expect({ ...thrown, devSecrets: null }).toEqual({ ...quiet, devSecrets: null });
+    // And nothing from the throw travels.
+    expect(JSON.stringify(renderDoctorJson(thrown))).not.toMatch(/EACCES|permission denied/);
+  });
+});
+
 describe("doctorExitCode", () => {
   test("0 when all health checks pass", async () => {
     const report = await buildDoctorReport(baseOptions());

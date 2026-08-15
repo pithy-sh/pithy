@@ -207,9 +207,17 @@ test("pithy add auth --with-prerequisites composes secrets, email and auth, and 
   // `pithy dev` on an unmigrated schema is a 500 on every route that touches a table.
   const checked = await cli(["doctor", "--json"], target);
   const health = JSON.parse(checked.stdout.trim()) as {
-    project: { health: { workers: { migrations: { ok: boolean; pending: number } }[] } };
+    project: {
+      health: { workers: { migrations: { ok: boolean; ledger: { state: string; pending: number } } }[] };
+    };
   };
-  expect(health.project.health.workers[0]?.migrations).toMatchObject({ ok: true, pending: 0 });
+  // `ledger.state` is asserted beside the count, because since #371 a count on its own no longer says the
+  // comparison happened: a database that could not be read reports no `pending` at all, and matching on
+  // `ok` alone would pass on a `partial` read of a schema nobody compared.
+  expect(health.project.health.workers[0]?.migrations).toMatchObject({
+    ok: true,
+    ledger: { state: "read", pending: 0 },
+  });
 }, 300_000);
 
 test("pithy doctor reports a composed capability whose prerequisite is absent, and fails the exit", async () => {
