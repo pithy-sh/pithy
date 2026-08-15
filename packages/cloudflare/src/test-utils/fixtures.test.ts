@@ -68,7 +68,7 @@ describe("a missing fixture skips, and says so", () => {
     );
     const lines = fixtureReportLines(resolutions);
     expect(lines.at(-1)).toBe(
-      "fixtures: 0 present, 8 absent, 0 malformed, 0 declined. A skipped suite is not a passing one.",
+      "fixtures: 0 present, 9 absent, 0 malformed, 0 declined. A skipped suite is not a passing one.",
     );
   });
 

@@ -124,6 +124,35 @@ that is not configured for routing, it is known, and it is not a bug to file.
 **Make it elsewhere.** **Email → Email Routing → Get started** on a zone whose MX you are willing to move,
 then **Destination addresses** for anything you want actually delivered.
 
+**The address is read for its domain, not claimed.** The live suite mints its own
+`pithy-int-…@<that domain>` address per run and provisions a rule for that, so two runs cannot collide
+and the fixture's own address is never touched. Point it at anything on the routed hostname.
+
+**The token needs more than the account scopes.** Email Routing Rules: Read and Edit on the zone, plus
+Workers Scripts: Edit and Workers KV Storage: Edit — the suite deploys a throwaway Worker to route mail
+to, because Cloudflare refuses a rule whose target script does not exist (`2016 Workers Script Info not
+found`).
+
+## email-sending
+
+`EMAIL_SENDING_FROM`
+
+An address on a domain onboarded to Cloudflare Email Sending, which the live inbound suite posts its
+test message from. Unlocks the delivery half of #47 — the half that proves an inbound message reaches a
+Worker's `email()` handler, rather than only that the rule was created.
+
+**It already exists on the maintainer account.** `pithy.sh` is onboarded and DKIM-signed
+(`cf2024-1._domainkey`), so `noreply@pithy.sh` is the value.
+
+**The token needs Email Sending: Edit**, which a general account token does not carry — the endpoint
+answers `10000` without it.
+
+**Cloudflare refuses to set some headers on a send.** `Authentication-Results` and `Received` are
+rejected with `10202 email.sending.error.email.invalid`, and a CRLF smuggled into a custom header's
+value is rejected the same way. That is why the forged-`Authentication-Results` question in #47 cannot
+be answered from this fixture: the only sender available refuses to forge. Arbitrary `X-` headers *are*
+accepted, which is what the suite addresses its record with.
+
 ## google-oauth
 
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
