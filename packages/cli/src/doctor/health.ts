@@ -93,17 +93,46 @@ export interface PrerequisiteHealth {
   missing: MissingPrerequisite[];
 }
 
-/** One Worker's health. `ok` is the AND of its five checks. */
-export interface WorkerHealth {
-  /** The Worker's name, as `pithy worker list` shows it. */
-  worker: string;
-  ok: boolean;
+/** One Worker's five checks, when the plan behind them was built. `ok` is their AND. */
+export interface WorkerChecks {
   config: ConfigHealth;
   bindings: BindingHealth;
   migrations: MigrationHealth;
   entitlements: EntitlementHealth;
   prerequisites: PrerequisiteHealth;
 }
+
+/**
+ * One Worker's health — **or that this Worker could not be checked at all (#371)**.
+ *
+ * The plan behind a Worker's five checks reads that Worker's own `pithy.config.ts` and `wrangler.jsonc`
+ * and, through the ledger, its databases. Any of that can fail for reasons that belong to one Worker: a
+ * config that will not import, a stanza that will not parse. It used to throw out of the loop, and one
+ * Worker in that state erased every *other* Worker's config, bindings, migrations, entitlement and
+ * prerequisite lines — from the command whose whole job is to say which part of a project is broken.
+ *
+ * **The state rides on the value**, so an unchecked Worker cannot be rendered as a checked one. The five
+ * checks live behind `checked`, and `unavailable` carries nothing but the Worker's name: a Worker with no
+ * `ok`, no empty drift lists and no `0 pending` to mistake for a clean bill.
+ *
+ * This is the same treatment the *manifest* half of {@link buildProjectHealth} got under #184. It was
+ * applied to one loop in this file and not the other.
+ */
+export type WorkerHealth =
+  | ({
+      /** The plan was built and every check ran. */
+      state: "checked";
+      /** The Worker's name, as `pithy worker list` shows it. */
+      worker: string;
+      /** The AND of the five checks below. */
+      ok: boolean;
+    } & WorkerChecks)
+  | {
+      /** The plan could not be built, so nothing is known about this Worker. */
+      state: "unavailable";
+      /** The Worker's name, as `pithy worker list` shows it. */
+      worker: string;
+    };
 
 /**
  * The `manifests` check: installed packages whose `pithy.manifest.json` is present and unusable.
@@ -212,6 +241,7 @@ function healthFromPlan(worker: string, plan: ReconcilePlan): WorkerHealth {
   };
 
   return {
+    state: "checked",
     worker,
     ok: config.ok && bindings.ok && migrations.ok && entitlements.ok && prerequisites.ok,
     config,
@@ -241,20 +271,38 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
   // hole this reports, and the reason it is not a per-Worker line.
   const { faults } = await scan(options.projectDir);
 
+  // **One Worker at a time (#371).** The wiring is per Worker, so a failure to read it is per Worker too —
+  // and this is a diagnostic, so one Worker nobody could check must never cost the report on the others.
+  // The manifest scan above is not a contributor to this loop: it is read once, at the project, and every
+  // plan is built from it, which is why it is a project-wide line and why it still throws.
+  //
+  // The guard takes no binding. A plan reaches a customer's D1 and imports their config, so what it throws
+  // is throw-site context; the Worker's name is the actionable fact and `doctor` already prints it.
   const workers: WorkerHealth[] = [];
   for (const worker of options.workers) {
-    const plan = await build({
-      projectDir: options.projectDir,
-      workerDir: worker.dir,
-      worker: worker.name,
-      env: options.env,
-      account: options.account,
-      capabilities: worker.capabilities,
-      readLedger: options.readLedger,
-    });
+    let plan: ReconcilePlan;
+    try {
+      plan = await build({
+        projectDir: options.projectDir,
+        workerDir: worker.dir,
+        worker: worker.name,
+        env: options.env,
+        account: options.account,
+        capabilities: worker.capabilities,
+        readLedger: options.readLedger,
+      });
+    } catch {
+      workers.push({ state: "unavailable", worker: worker.name });
+      continue;
+    }
     workers.push(healthFromPlan(worker.name, plan));
   }
 
   const manifests: ManifestHealth = { ok: faults.length === 0, faults };
-  return { ok: manifests.ok && workers.every((worker) => worker.ok), workers, manifests };
+  // An unchecked Worker fails the project, on the same standard #184 set for an unreadable manifest: a
+  // check that did not run established nothing, and a report calling a project healthy around a hole is
+  // the under-report this whole family exists to prevent. It is also what the behaviour already was —
+  // the throw reached `pithy doctor`'s catch and drove a non-zero exit — so the gate does not weaken.
+  const checked = workers.every((worker) => worker.state === "checked" && worker.ok);
+  return { ok: manifests.ok && checked, workers, manifests };
 }

@@ -6,7 +6,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import { buildDoctorReport, doctorExitCode, renderDoctorText } from "../commands/doctor";
 import { buildProjectHealth } from "../doctor/health";
-import { doctorHarness } from "../test-utils/doctorHarness";
+import { checkedWorker, doctorHarness } from "../test-utils/doctorHarness";
 import { createTable, migrateHarness } from "../test-utils/migrateHarness";
 import { describeUndeclared, undeclaredRemedy } from "./ledger";
 import { migrateProject, readProjectLedger } from "./run";
@@ -103,7 +103,7 @@ describe("a ledger row the project no longer declares", () => {
     });
 
     expect(health.ok).toBe(false);
-    expect(health.workers[0]?.migrations).toEqual({
+    expect(checkedWorker(health).migrations).toEqual({
       ok: false,
       ledger: {
         state: "read",

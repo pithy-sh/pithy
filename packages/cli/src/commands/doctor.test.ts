@@ -13,6 +13,7 @@ import { readState, writeState } from "../notifier/state";
 import { scaffoldProject } from "../project/scaffold";
 import type { ResolvedWorker } from "../project/workerScope";
 import {
+  checkedWorker,
   cleanPlanFor,
   doctorHarness,
   planStub,
@@ -383,7 +384,7 @@ describe("doctorExitCode", () => {
         }),
       }),
     );
-    expect(report.project?.health.workers[0]?.config.ok).toBe(false);
+    expect(checkedWorker(report.project?.health).config.ok).toBe(false);
     expect(doctorExitCode(report)).toBe(1);
   });
 
@@ -396,7 +397,11 @@ describe("doctorExitCode", () => {
         }),
       }),
     );
-    expect(report.project?.health.workers.map((worker) => worker.ok)).toEqual([true, false, true]);
+    expect(report.project?.health.workers.map((worker) => worker.state === "checked" && worker.ok)).toEqual([
+      true,
+      false,
+      true,
+    ]);
     expect(report.project?.health.ok).toBe(false);
     expect(doctorExitCode(report)).toBe(1);
   });
@@ -434,7 +439,7 @@ describe("doctorExitCode", () => {
     const report = await buildDoctorReport(
       baseOptions({ buildPlan: planStub({ ...cleanPlan, ledger: { state: "read", pending: 3, undeclared: [] } }) }),
     );
-    expect(report.project?.health.workers[0]?.migrations).toEqual({
+    expect(checkedWorker(report.project?.health).migrations).toEqual({
       ok: false,
       ledger: { state: "read", pending: 3, undeclared: [] },
       env: "dev",
@@ -726,14 +731,14 @@ describe("project health — installed is not composed (regression)", () => {
 
   test("a worker composing nothing is healthy and exits zero", async () => {
     const report = await buildDoctorReport(realEngine([worker("web", web, [])]));
-    expect(report.project?.health.workers[0]?.bindings).toEqual({ ok: true, missing: [] });
+    expect(checkedWorker(report.project?.health).bindings).toEqual({ ok: true, missing: [] });
     expect(report.project?.health.ok).toBe(true);
     expect(doctorExitCode(report)).toBe(0);
   });
 
   test("the worker that does compose it still reports its drift", async () => {
     const report = await buildDoctorReport(realEngine([worker("api", api, composes("auth"))]));
-    expect(report.project?.health.workers[0]?.bindings.missing.map((binding) => binding.name)).toEqual([
+    expect(checkedWorker(report.project?.health).bindings.missing.map((binding) => binding.name)).toEqual([
       "DB",
       "SESSIONS",
     ]);
@@ -742,7 +747,9 @@ describe("project health — installed is not composed (regression)", () => {
 
   test("across both workers, only the composing one is unhealthy", async () => {
     const report = await buildDoctorReport(realEngine([worker("api", api, composes("auth")), worker("web", web, [])]));
-    expect(report.project?.health.workers.map((entry) => [entry.worker, entry.ok])).toEqual([
+    expect(
+      report.project?.health.workers.map((entry) => [entry.worker, entry.state === "checked" && entry.ok]),
+    ).toEqual([
       ["api", false],
       ["web", true],
     ]);
@@ -1564,7 +1571,7 @@ describe("manifest faults in the health block", () => {
     expect(text).toContain("malformed pithy.manifest.json");
     expect(text).toContain("configOptions[0].key");
     // The Worker itself is clean; the project is not, and CI can gate on it.
-    expect(report.project?.health.workers.every((worker) => worker.ok)).toBe(true);
+    expect(report.project?.health.workers.every((worker) => worker.state === "checked" && worker.ok)).toBe(true);
     expect(doctorExitCode(report)).toBe(1);
   });
 

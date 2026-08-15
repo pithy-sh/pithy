@@ -189,7 +189,7 @@ describe("docs/commands/doctor.md", () => {
   test("pastes exactly the blocks pinned below, and nothing else", () => {
     // An unclassified block, a fourth transcript, or a second sample would be an unpinned example. The
     // page total counts the synopsis too, so a worked example added anywhere lands in one of these.
-    expect(WHAT_BLOCKS).toHaveLength(6);
+    expect(WHAT_BLOCKS).toHaveLength(8);
     expect(EXAMPLE_BLOCKS).toHaveLength(2);
     expect(JSON_SAMPLES).toHaveLength(1);
     expect(fencedBlocks(PAGE)).toHaveLength(WHAT_BLOCKS.length + EXAMPLE_BLOCKS.length + JSON_SAMPLES.length + 1);
@@ -284,7 +284,36 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
-   * The `prereqs` fragment (#273), pinned against a Worker composing `auth` with neither peer beside it.
+   * The unreadable-database fragment (#371), pinned against a Worker one of whose databases would not
+   * answer.
+   *
+   * The page has to show it because it is the one thing a count cannot say. Before this, an unreachable D1
+   * contributed nothing to the sum and the line read `none pending ✓` about a schema nobody had compared —
+   * so the fragment an adopter needs to recognise is precisely the one no count could produce.
+   */
+  test("the unreadable-database fragment is what the renderer prints for a ledger read that came up short", async () => {
+    const report = await buildDoctorReport(
+      docOptions(
+        harness.baseOptions({
+          resolveWorkers: async () => workerSet("api"),
+          buildPlan: planStub({
+            ...cleanPlanFor("api"),
+            ledger: {
+              state: "partial",
+              counted: { pending: 2, undeclared: [] },
+              unreadable: [{ database: "collab", binding: "COLLAB_DB" }],
+            },
+          }),
+        }),
+      ),
+    );
+    const fragment = FRAGMENTS[1];
+    if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the unreadable-database fragment.`);
+    expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  /**
+   * The prereqs fragment (#273), pinned against a Worker composing `auth` with neither peer beside it.
    *
    * The one check in the block that is not drift: `createBackend` refuses to assemble that composition, so
    * the Worker does not start. It is pasted because it is the line that would have caught the defect
@@ -305,8 +334,39 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[1];
+    const fragment = FRAGMENTS[2];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the prerequisites fragment.`);
+    expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  /**
+   * The unchecked-Worker fragment (#371), pinned against a project whose `api` plan would not build.
+   *
+   * One line and no checks, beside a sibling reporting in full — which is the whole finding. Set on the
+   * health structure rather than through a throwing `buildPlan`, for the reason the manifests fragment
+   * below gives: the renderer is a pure function of this structure, and pinning the document against the
+   * structure is what keeps the two from drifting.
+   */
+  test("the unchecked-worker fragment is what the renderer prints for a plan that would not build", async () => {
+    const report = await buildDoctorReport(
+      docOptions(
+        harness.baseOptions({
+          resolveWorkers: async () => workerSet("api", "collab"),
+          buildPlan: planStubPer({}),
+        }),
+      ),
+    );
+    if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere else to sit.");
+    report.project.health = {
+      ok: false,
+      workers: [
+        { state: "unavailable", worker: "api" },
+        ...report.project.health.workers.filter((worker) => worker.worker === "collab"),
+      ],
+      manifests: { ok: true, faults: [] },
+    };
+    const fragment = FRAGMENTS[3];
+    if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the unchecked-worker fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
 
@@ -333,7 +393,7 @@ describe("docs/commands/doctor.md", () => {
         faults: [{ package: "@pithy-sh/leaderboard", reason: "configOptions[0].key: not a bare identifier" }],
       },
     };
-    const fragment = FRAGMENTS[2];
+    const fragment = FRAGMENTS[4];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the Project health fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -359,7 +419,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[3];
+    const fragment = FRAGMENTS[5];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the unknown-alias fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -385,7 +445,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[4];
+    const fragment = FRAGMENTS[6];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the offline fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });

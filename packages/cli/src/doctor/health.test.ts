@@ -4,6 +4,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { type BuildReconcilePlanOptions, buildReconcilePlan, type ReconcilePlan } from "../capabilities/reconcile";
 import type { ProjectLedger } from "../migrations/run";
+import { checkedWorker } from "../test-utils/doctorHarness";
 import { type BuildPlan, buildProjectHealth, defaultBuildPlan } from "./health";
 
 /** A plan builder keyed by Worker, so health is tested without touching a project on disk. */
@@ -45,10 +46,10 @@ describe("buildProjectHealth", () => {
     });
     expect(health.ok).toBe(true);
     expect(health.workers).toHaveLength(1);
-    expect(health.workers[0]?.worker).toBe("api");
-    expect(health.workers[0]?.config.ok).toBe(true);
-    expect(health.workers[0]?.bindings.ok).toBe(true);
-    expect(health.workers[0]?.migrations).toEqual({
+    expect(checkedWorker(health).worker).toBe("api");
+    expect(checkedWorker(health).config.ok).toBe(true);
+    expect(checkedWorker(health).bindings.ok).toBe(true);
+    expect(checkedWorker(health).migrations).toEqual({
       ok: true,
       ledger: { state: "read", pending: 0, undeclared: [] },
       env: "dev",
@@ -77,8 +78,8 @@ describe("buildProjectHealth", () => {
       buildPlan: planStub({ api: plan }),
     });
     expect(health.ok).toBe(false);
-    expect(health.workers[0]?.config.ok).toBe(false);
-    expect(health.workers[0]?.config.drift).toEqual([{ capability: "auth", keys: ["basePath", "sessionDays"] }]);
+    expect(checkedWorker(health).config.ok).toBe(false);
+    expect(checkedWorker(health).config.drift).toEqual([{ capability: "auth", keys: ["basePath", "sessionDays"] }]);
   });
 
   test("bindings check groups a missing binding across the envs that lack it", async () => {
@@ -103,7 +104,7 @@ describe("buildProjectHealth", () => {
       buildPlan: planStub({ api: plan }),
     });
     expect(health.ok).toBe(false);
-    expect(health.workers[0]?.bindings.missing).toEqual([
+    expect(checkedWorker(health).bindings.missing).toEqual([
       { name: "MEDIA_BUCKET", type: "r2", envs: ["staging", "prod"] },
     ]);
   });
@@ -117,7 +118,7 @@ describe("buildProjectHealth", () => {
       buildPlan: planStub({ api: { ...clean("api"), ledger: { state: "read", pending: 2, undeclared: [] } } }),
     });
     expect(health.ok).toBe(false);
-    expect(health.workers[0]?.migrations).toEqual({
+    expect(checkedWorker(health).migrations).toEqual({
       ok: false,
       ledger: { state: "read", pending: 2, undeclared: [] },
       env: "dev",
@@ -135,7 +136,7 @@ describe("buildProjectHealth", () => {
       buildPlan: planStub({ api: { ...clean("api"), ledger: { state: "read", pending: 0, undeclared } } }),
     });
     expect(health.ok).toBe(false);
-    expect(health.workers[0]?.migrations).toEqual({
+    expect(checkedWorker(health).migrations).toEqual({
       ok: false,
       ledger: { state: "read", pending: 0, undeclared },
       env: "dev",
@@ -155,7 +156,7 @@ describe("buildProjectHealth", () => {
     // The seam fails closed, so this Worker would deny every gated route — an unhealthy project, not a
     // cosmetic warning. That is what makes `pithy doctor` exit non-zero and lets CI gate on it.
     expect(health.ok).toBe(false);
-    expect(health.workers[0]?.entitlements).toEqual({
+    expect(checkedWorker(health).entitlements).toEqual({
       ok: false,
       gap: { state: "read", gates: ["src/routes/reports.ts"] },
     });
@@ -170,7 +171,7 @@ describe("buildProjectHealth", () => {
       buildPlan: planStub({ api: clean("api") }),
     });
     expect(health.ok).toBe(true);
-    expect(health.workers[0]?.entitlements).toEqual({ ok: true, gap: { state: "read", gates: [] } });
+    expect(checkedWorker(health).entitlements).toEqual({ ok: true, gap: { state: "read", gates: [] } });
   });
 
   test("shares one engine with upgrade: the default plan builder is buildReconcilePlan", () => {
@@ -237,8 +238,44 @@ describe("buildProjectHealth — per Worker", () => {
       buildPlan: planStub({ api: clean("api"), collab: drifted }),
     });
     expect(health.ok).toBe(false);
-    expect(health.workers.find((worker) => worker.worker === "api")?.ok).toBe(true);
-    expect(health.workers.find((worker) => worker.worker === "collab")?.ok).toBe(false);
+    expect(checkedWorker(health, 0).ok).toBe(true);
+    expect(checkedWorker(health, 1).ok).toBe(false);
+  });
+
+  /**
+   * The #371 gate. One Worker's plan throws; every sibling Worker keeps all five of its checks.
+   *
+   * Both directions, asserted on the value rather than through the renderer: the sibling's lines are
+   * still there, and the sick Worker does not read as a Worker that passed — `unavailable` carries no
+   * `ok`, no empty drift lists and no `0 pending`.
+   */
+  test("a worker whose plan throws costs its own entry, never its siblings", async () => {
+    const build: BuildPlan = async (options) => {
+      if (options.worker === "api") {
+        throw new Error("EACCES: permission denied, open '/p/apps/api/wrangler.jsonc'");
+      }
+      return clean(options.worker ?? "");
+    };
+    const health = await buildProjectHealth({
+      account: null,
+      projectDir: "/p",
+      env: "dev",
+      workers: [api, collab],
+      buildPlan: build,
+    });
+
+    expect(health.workers[0]).toEqual({ state: "unavailable", worker: "api" });
+    // The sibling kept all five checks.
+    expect(checkedWorker(health, 1)).toMatchObject({ state: "checked", worker: "collab", ok: true });
+    // And the sick Worker is not a Worker that passed: there is no `ok` on it to read as true, and no
+    // empty drift list to read as no drift.
+    const sick = health.workers[0];
+    expect(sick && "ok" in sick).toBe(false);
+    expect(sick && "config" in sick).toBe(false);
+    // A Worker nobody checked fails the project, so CI does not go green around the hole.
+    expect(health.ok).toBe(false);
+    // And nothing the throw said travels — an errno message carries the adopter's own paths.
+    expect(JSON.stringify(health)).not.toMatch(/EACCES|permission denied|wrangler\.jsonc/);
   });
 
   test("a project with no workers is vacuously healthy — nothing was checked", async () => {
@@ -285,7 +322,7 @@ describe("buildProjectHealth — manifests", () => {
       readManifests: async () => ({ manifests: [], faults: [fault] }),
     });
     // Every Worker is clean; the project is not.
-    expect(health.workers.every((worker) => worker.ok)).toBe(true);
+    expect(health.workers.every((worker) => worker.state === "checked" && worker.ok)).toBe(true);
     expect(health.manifests).toEqual({ ok: false, faults: [fault] });
     expect(health.ok).toBe(false);
   });

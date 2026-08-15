@@ -23,7 +23,7 @@ import {
 import { checkDevVars, type DevVarsCheck, describeDevVars, devVarsHealthy } from "../doctor/devVars";
 import { checkDevVarsLocal, type DevVarsLocalCheck, describeDevVarsLocal } from "../doctor/devVarsLocal";
 import { checkEnvironments, describeEnvironmentDrift, type EnvironmentsCheck } from "../doctor/environments";
-import { buildProjectHealth, type MigrationHealth, type ProjectHealth, type WorkerHealth } from "../doctor/health";
+import { buildProjectHealth, type MigrationHealth, type ProjectHealth, type WorkerChecks } from "../doctor/health";
 import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
 import { checkSecretBindings, describeSecretBindings, type SecretBindingsCheck } from "../doctor/secretBindings";
 import { checkWorkerNames, describeWorkerName, type WorkerNameCheck } from "../doctor/workerName";
@@ -791,7 +791,7 @@ function migrationLines(health: MigrationHealth): string[] {
 }
 
 /** One Worker's five check lines. Every check is shown, so a passing one still reads as checked. */
-function workerHealthLines(health: WorkerHealth): string[] {
+function workerHealthLines(health: WorkerChecks): string[] {
   const lines: string[] = [];
 
   // First, and above the rest, because it is the only one that means the Worker does not start. Binding
@@ -872,6 +872,13 @@ function healthBlock(health: ProjectHealth): string {
     }
   }
   for (const worker of health.workers) {
+    // Not "healthy", and not five empty checks either. Nothing was read about this Worker, so the block
+    // says exactly that and names the two files a plan is built from (#371).
+    if (worker.state === "unavailable") {
+      lines.push(`  ${worker.worker}: couldn't be checked`);
+      lines.push(`${HEALTH_INDENT}Its pithy.config.ts or wrangler.jsonc would not read. Nothing below is about it.`);
+      continue;
+    }
     if (worker.ok) {
       lines.push(`  ${worker.worker}: healthy ✓`);
       continue;

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, vi } from "vitest";
 import type { ReconcilePlan } from "../capabilities/reconcile";
 import type { DoctorReportOptions } from "../commands/doctor";
-import type { BuildPlan } from "../doctor/health";
+import type { BuildPlan, ProjectHealth, WorkerHealth } from "../doctor/health";
 import type { FetchLike } from "../notifier/check";
 import type { ShellInfo } from "../platform/shell";
 import type { ProjectConfig } from "../project/config";
@@ -22,6 +22,22 @@ import type { ResolvedWorker } from "../project/workerScope";
  * builders would let the doc pin drift from the suite it is meant to hold the doc against — the pin would
  * still pass while describing a report the CLI no longer produces.
  */
+
+/**
+ * The nth **checked** Worker in a health report — #371's `WorkerHealth` union narrowed in one place.
+ *
+ * It throws rather than answering `undefined`, so a Worker that silently stopped being checked fails the
+ * assertion that was about something else, loudly, instead of passing as an optional-chained skip. The
+ * suites that are about the unchecked state read `health.workers` directly.
+ */
+export function checkedWorker(
+  health: ProjectHealth | undefined,
+  index = 0,
+): Extract<WorkerHealth, { state: "checked" }> {
+  const worker = health?.workers[index];
+  if (worker?.state !== "checked") throw new Error(`worker ${index} was not checked: ${worker?.state ?? "absent"}`);
+  return worker;
+}
 
 /** A `fetch` mapping each package's registry URL to a canned latest version. */
 export function registryFetch(versions: Record<string, string>): FetchLike {
