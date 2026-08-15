@@ -12,7 +12,7 @@ import { runWriteSecret } from "../management/writeSecret";
 import type { SecretRegistryEntry } from "../registry";
 import { refuseUnrotatable, rotateSecretValue, type SecretRotationOutcome } from "../rotation/rotateValue";
 import { ManagedEnvironment } from "../scope";
-import { RotationTracker } from "../store/rotationTracker";
+import { RotationTracker, trackerRotationLedger } from "../store/rotationTracker";
 import { SystemSecretsStore } from "../store/systemSecretsStore";
 
 /**
@@ -155,17 +155,6 @@ export async function workerRotationDeps(c: Context<PithyHonoEnv>): Promise<Work
   return { store: await SystemSecretsStore.fromEnv(env), tracker: RotationTracker.fromD1(database) };
 }
 
-/** A fixed, composed sentence for the rotation row. Never `cause`, and never anything a value could be in. */
-function failureText(outcome: SecretRotationOutcome): string {
-  const where = outcome.stranded.length > 0 ? outcome.stranded.join(", ") : "nowhere";
-  if (outcome.status === "unrecorded") {
-    return outcome.rollFailed
-      ? `the rotator did not answer; nothing recorded in ${where}`
-      : `rolled at the issuer; not recorded in ${where}`;
-  }
-  return `not rotated; nothing was rolled and nothing was written in ${where}`;
-}
-
 /**
  * Rotate one secret in this Worker's own environment, and record the attempt.
  *
@@ -208,11 +197,20 @@ export async function runWorkerRotation(
     });
   }
 
-  const rotationId = await deps.tracker.startRotation(name, "manual", request.actor);
-  const outcome = await rotateSecretValue({
+  // **The bracket is the core's, not this route's (`#379`).** This function opened the row and closed it
+  // by hand, which was right when `rotateSecretValue` recorded nothing. `#379` moved the bracket into the
+  // function that *performs* a rotation — same order, refuse then open then roll then close — and made
+  // the ledger a required option, so the CLI cannot omit it the way it did. Keeping this bracket as well
+  // would write the row twice.
+  return rotateSecretValue({
     name,
     entry,
     targets: [request.environment],
+    ledger: trackerRotationLedger(deps.tracker, {
+      environment: request.environment,
+      trigger: "manual",
+      rotatedBy: request.actor,
+    }),
     store: ({ value }) =>
       runWriteSecret(deps, {
         mode: "update",
@@ -223,8 +221,4 @@ export async function runWorkerRotation(
       }).then(() => undefined),
     ...(request.attempts === undefined ? {} : { attempts: request.attempts }),
   });
-
-  if (outcome.status === "rotated") await deps.tracker.markSuccess(rotationId);
-  else await deps.tracker.markFailure(rotationId, failureText(outcome));
-  return outcome;
 }
