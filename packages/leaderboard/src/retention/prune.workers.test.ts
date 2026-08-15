@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import type { D1Database } from "@cloudflare/workers-types";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import type { MigrationProvider } from "kysely/migration";
@@ -48,6 +49,29 @@ async function seedDays(days: number, b: LeaderboardBoard): Promise<string[]> {
     await store.submit(b, key, "u1", 10, day, true);
   }
   return keys;
+}
+
+/**
+ * A D1 that refuses every statement bound to one board's key, and answers everything else for real. The
+ * same wrapper the rank-pass suite uses, and for the same reason: the sibling boards must run against a
+ * real database or the gate proves nothing about the loop.
+ */
+function d1RefusingBoard(base: D1Database, boardKey: string): D1Database {
+  const wrap = <T extends object>(target: T, key: string, replacement: (...args: never[]) => unknown): T =>
+    new Proxy(target, {
+      get(object, property, receiver) {
+        if (property === key) return replacement;
+        const value = Reflect.get(object, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(object) : value;
+      },
+    });
+  return wrap(base, "prepare", (sql: never) => {
+    const statement = base.prepare(sql);
+    return wrap(statement, "bind", (...values: never[]) => {
+      if (values.includes(boardKey as never)) throw new Error(`D1_ERROR: no such table: retained_${boardKey}`);
+      return statement.bind(...values);
+    });
+  });
 }
 
 beforeEach(async () => {
@@ -170,6 +194,26 @@ describe("pruneBoards", () => {
     const b2 = board({ key: "b2", window: DAILY, retain: 0 });
     await seedDays(3, b1);
     await seedDays(3, b2);
-    expect(await pruneBoards(db(), [b1, b2], NOW)).toBe(4);
+    expect(await pruneBoards(db(), [b1, b2], NOW)).toEqual({ state: "pruned", deleted: 4 });
+  });
+
+  /**
+   * The #371 gate on the sweep. One board's prune throws; the deletions the sweep already made survive,
+   * and the sweep says which board it did not reach.
+   */
+  test("a board whose prune throws costs its own entry, never its siblings", async () => {
+    const b1 = board({ window: DAILY, retain: 0 });
+    const b2 = board({ key: "b2", window: DAILY, retain: 0 });
+    await seedDays(3, b1);
+    await seedDays(3, b2);
+
+    const outcome = await pruneBoards(leaderboardDatabase(d1RefusingBoard(env.DB, "b2")), [b1, b2], NOW);
+
+    expect(outcome).toEqual({ state: "partial", counted: { deleted: 2 }, unpruned: ["b2"] });
+    // Not a clean sweep of two rows. `partial` and `pruned` share no field, so a caller reaches the
+    // total only after being told it is short.
+    expect("deleted" in outcome).toBe(false);
+    // And nothing the D1 failure said travels — only the board key, which is the adopter's own config.
+    expect(JSON.stringify(outcome)).not.toMatch(/retained_|D1_ERROR/);
   });
 });

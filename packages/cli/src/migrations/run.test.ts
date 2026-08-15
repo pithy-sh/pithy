@@ -16,7 +16,7 @@ import {
   multiplayerCapability,
   pendingFrom,
 } from "../test-utils/migrateHarness";
-import { dropCapabilityTables, migrateProject, previewReset, resetProject } from "./run";
+import { dropCapabilityTables, migrateProject, previewReset, readProjectLedger, resetProject } from "./run";
 
 describe("migrateProject", () => {
   const h = migrateHarness();
@@ -299,6 +299,69 @@ describe("migrateProject", () => {
 
     test("an empty registry has nothing pending", async () => {
       expect(await pendingFrom({ account: null, projectDir: h.projectDir, workers: [h.api([])], env: "dev" })).toBe(0);
+    });
+
+    /**
+     * The #371 gate. One database in scope will not answer; every sibling still reports.
+     *
+     * Asserted on the value rather than on a rendering, and in **both** directions the issue asks for:
+     * the sibling's count survives (it is not blanked), and the answer is not the shape a clean read
+     * has (it is not a zero). The second assertion is the one that matters — a `try`/`catch` alone
+     * would satisfy the first while reporting `pending: 1` about a project with an unread database.
+     */
+    test("a database whose ledger will not read costs its own entry, never its siblings", async () => {
+      await writeFile(
+        join(h.projectDir, "apps", "api", "wrangler.jsonc"),
+        JSON.stringify({
+          d1_databases: [],
+          env: {
+            staging: {
+              d1_databases: [
+                { binding: "DB", database_id: "app-staging-id" },
+                { binding: "COLLAB_DB", database_id: "collab-staging-id" },
+              ],
+            },
+          },
+        }),
+      );
+      await writeFile(join(h.projectDir, ".dev.vars"), "CLOUDFLARE_ACCOUNT_ID=acct-1\nCLOUDFLARE_API_TOKEN=tok-1\n");
+
+      const miniflare = new Miniflare({
+        modules: true,
+        script: "export default {};",
+        d1Databases: { REMOTE: "app-staging-id" },
+      });
+      try {
+        const reachable = (await miniflare.getD1Database("REMOTE")) as unknown as D1Database;
+        // What a revoked token or a deleted database actually does to a read.
+        const unreachable = {
+          prepare(): never {
+            throw new Error("D1_ERROR: Authentication error. token id 9f3c is not valid.");
+          },
+        } as unknown as D1Database;
+
+        const ledger = await readProjectLedger({
+          account: null,
+          projectDir: h.projectDir,
+          workers: [h.api([appCapability(), multiplayerCapability()])],
+          env: "staging",
+          remoteD1: ({ binding }) => (binding === "DB" ? reachable : unreachable),
+        });
+
+        expect(ledger).toEqual({
+          state: "partial",
+          counted: { pending: 1, undeclared: [] },
+          unreadable: [{ database: "collab", binding: "COLLAB_DB" }],
+        });
+        // Not a clean read of anything. `partial` and `read` do not share a field, so no caller can
+        // reach the count without having been told the sum is short.
+        expect(ledger.state).not.toBe("read");
+        expect("pending" in ledger).toBe(false);
+        // And nothing the failure said travels — the token id above is throw-site context.
+        expect(JSON.stringify(ledger)).not.toMatch(/9f3c|Authentication/);
+      } finally {
+        await miniflare.dispose();
+      }
     });
   });
 

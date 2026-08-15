@@ -7,11 +7,13 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { buildReconcilePlan } from "../capabilities/reconcile";
+import type { ProjectLedger } from "../migrations/run";
 import type { FetchLike } from "../notifier/check";
 import { readState, writeState } from "../notifier/state";
 import { scaffoldProject } from "../project/scaffold";
 import type { ResolvedWorker } from "../project/workerScope";
 import {
+  checkedWorker,
   cleanPlanFor,
   doctorHarness,
   planStub,
@@ -156,9 +158,8 @@ describe("renderDoctorText", () => {
               ],
             },
           ],
-          pendingMigrations: 2,
-          undeclaredMigrations: [],
-          entitlementGap: [],
+          ledger: { state: "read", pending: 2, undeclared: [] },
+          entitlements: { state: "read", gates: [] },
           missingPrerequisites: [],
           missingVersionMetadata: false,
         }),
@@ -212,7 +213,7 @@ describe("renderDoctorText", () => {
         resolveWorkers: async () => workerSet("api", "collab"),
         buildPlan: planStubPer({
           api: cleanPlanFor("api"),
-          collab: { ...cleanPlanFor("collab"), pendingMigrations: 2 },
+          collab: { ...cleanPlanFor("collab"), ledger: { state: "read", pending: 2, undeclared: [] } },
         }),
       }),
     );
@@ -244,7 +245,11 @@ describe("renderDoctorText", () => {
         installedCapabilities: async () => [{ name: "@pithy-sh/core", version: "1.2.0" }],
         buildPlan: planStub({
           ...cleanPlan,
-          undeclaredMigrations: [{ database: "app", binding: "DB", name: "0250_audit_0002_tenant" }],
+          ledger: {
+            state: "read",
+            pending: 0,
+            undeclared: [{ database: "app", binding: "DB", name: "0250_audit_0002_tenant" }],
+          },
         }),
       }),
     );
@@ -264,7 +269,10 @@ describe("renderDoctorText", () => {
         installedVersion: "1.3.0",
         fetch: registryFetch({ cli: "1.3.0", core: "1.2.0" }),
         installedCapabilities: async () => [{ name: "@pithy-sh/core", version: "1.2.0" }],
-        buildPlan: planStub({ ...cleanPlan, entitlementGap: ["src/routes/reports.ts", "src/routes/team.ts"] }),
+        buildPlan: planStub({
+          ...cleanPlan,
+          entitlements: { state: "read", gates: ["src/routes/reports.ts", "src/routes/team.ts"] },
+        }),
       }),
     );
     expect(renderDoctorText(report, "/home/u")).toContain(
@@ -355,6 +363,66 @@ describe("renderDoctorText", () => {
   });
 });
 
+/**
+ * The #371 gates on this report's eleven probes. A report is what an adopter reads to find out why
+ * something is wrong, so one probe that throws must cost its own line and leave the other ten standing.
+ *
+ * Planted one probe at a time, in both halves of the defect the issue names: an **unguarded** probe, whose
+ * throw used to take the whole report, and a **guarded** one, whose throw used to be filed under `null` —
+ * indistinguishable from the question not arising here.
+ */
+describe("a probe that throws", () => {
+  const throwing = (message: string) => () => {
+    throw new Error(message);
+  };
+
+  test("an unguarded probe that throws costs its own line, never the other ten", async () => {
+    const control = await buildDoctorReport(harness.healthyOptions());
+    const report = await buildDoctorReport(
+      harness.healthyOptions({
+        // Was unguarded: this threw straight out of buildDoctorReport.
+        checkProjectName: throwing("EACCES: permission denied, open '/home/dev/acme/pithy.config.ts'"),
+      }),
+    );
+
+    // Its own value says it could not be checked — not "ok", and not the `null` that means no project.
+    expect(report.projectName).toEqual({ state: "could-not-check", project: null, misnamed: [] });
+    expect(control.projectName?.state).toBe("ok");
+    // And **nothing else moved**, asserted against the same report without the plant rather than against a
+    // handful of fields somebody remembered to list.
+    expect({ ...report, projectName: null }).toEqual({ ...control, projectName: null });
+    // It establishes nothing, so it does not gate CI.
+    expect(doctorExitCode(report)).toBe(0);
+    // And nothing the throw said travels — this payload is read by scripts and printed to a terminal.
+    expect(JSON.stringify(renderDoctorJson(report))).not.toMatch(/EACCES|permission denied/);
+  });
+
+  test("a guarded probe that throws is distinguishable from one that had nothing to say", async () => {
+    const thrown = await buildDoctorReport(
+      harness.healthyOptions({
+        // Was guarded — into `null`, which already meant "this project composes no secrets".
+        checkDevSecrets: throwing("EACCES: permission denied, open '/home/dev/.config/pithy/acme/secrets.jsonc'"),
+      }),
+    );
+    const quiet = await buildDoctorReport(harness.healthyOptions({ checkDevSecrets: async () => null }));
+
+    expect(thrown.devSecrets).toEqual({ state: "could-not-check" });
+    expect(quiet.devSecrets).toBeNull();
+    // The two are different facts and no longer the same bytes.
+    expect(thrown.devSecrets).not.toEqual(quiet.devSecrets);
+    // And the failed one carries no findings to read as an all-clear.
+    expect(thrown.devSecrets && "misplaced" in thrown.devSecrets).toBe(false);
+    // The report says so out loud rather than printing the same silence a clean file produces.
+    expect(renderDoctorText(thrown, "/home/u")).toContain("secrets.jsonc: couldn't be checked.");
+    expect(renderDoctorText(quiet, "/home/u")).not.toContain("couldn't be checked");
+    // Every sibling probe still reported — asserted against the quiet report, which differs from this one
+    // in exactly the probe that was planted.
+    expect({ ...thrown, devSecrets: null }).toEqual({ ...quiet, devSecrets: null });
+    // And nothing from the throw travels.
+    expect(JSON.stringify(renderDoctorJson(thrown))).not.toMatch(/EACCES|permission denied/);
+  });
+});
+
 describe("doctorExitCode", () => {
   test("0 when all health checks pass", async () => {
     const report = await buildDoctorReport(baseOptions());
@@ -376,7 +444,7 @@ describe("doctorExitCode", () => {
         }),
       }),
     );
-    expect(report.project?.health.workers[0]?.config.ok).toBe(false);
+    expect(checkedWorker(report.project?.health).config.ok).toBe(false);
     expect(doctorExitCode(report)).toBe(1);
   });
 
@@ -384,10 +452,16 @@ describe("doctorExitCode", () => {
     const report = await buildDoctorReport(
       baseOptions({
         resolveWorkers: async () => workerSet("api", "collab", "web"),
-        buildPlan: planStubPer({ collab: { ...cleanPlanFor("collab"), pendingMigrations: 1 } }),
+        buildPlan: planStubPer({
+          collab: { ...cleanPlanFor("collab"), ledger: { state: "read", pending: 1, undeclared: [] } },
+        }),
       }),
     );
-    expect(report.project?.health.workers.map((worker) => worker.ok)).toEqual([true, false, true]);
+    expect(report.project?.health.workers.map((worker) => worker.state === "checked" && worker.ok)).toEqual([
+      true,
+      false,
+      true,
+    ]);
     expect(report.project?.health.ok).toBe(false);
     expect(doctorExitCode(report)).toBe(1);
   });
@@ -423,12 +497,11 @@ describe("doctorExitCode", () => {
 
   test("non-zero when migrations are pending", async () => {
     const report = await buildDoctorReport(
-      baseOptions({ buildPlan: planStub({ ...cleanPlan, pendingMigrations: 3 }) }),
+      baseOptions({ buildPlan: planStub({ ...cleanPlan, ledger: { state: "read", pending: 3, undeclared: [] } }) }),
     );
-    expect(report.project?.health.workers[0]?.migrations).toEqual({
+    expect(checkedWorker(report.project?.health).migrations).toEqual({
       ok: false,
-      pending: 3,
-      undeclared: [],
+      ledger: { state: "read", pending: 3, undeclared: [] },
       env: "dev",
     });
     expect(doctorExitCode(report)).toBe(1);
@@ -646,7 +719,9 @@ describe("--worker", () => {
     const all = workerSet("api", "collab");
     const resolveWorkers = async ({ worker }: { projectDir: string; worker?: string }) =>
       worker === undefined ? all : all.filter((candidate) => candidate.name === worker);
-    const buildPlan = planStubPer({ collab: { ...cleanPlanFor("collab"), pendingMigrations: 2 } });
+    const buildPlan = planStubPer({
+      collab: { ...cleanPlanFor("collab"), ledger: { state: "read", pending: 2, undeclared: [] } },
+    });
 
     const whole = await buildDoctorReport(baseOptions({ resolveWorkers, buildPlan }));
     expect(whole.project?.health.workers.map((worker) => worker.worker)).toEqual(["api", "collab"]);
@@ -680,7 +755,7 @@ describe("project health — installed is not composed (regression)", () => {
       projectDir,
       resolveWorkers: async () => workers,
       buildPlan: undefined,
-      readLedger: async () => ({ pending: 0, undeclared: [] }),
+      readLedger: async (): Promise<ProjectLedger> => ({ state: "read", pending: 0, undeclared: [] }),
     });
   }
 
@@ -716,14 +791,14 @@ describe("project health — installed is not composed (regression)", () => {
 
   test("a worker composing nothing is healthy and exits zero", async () => {
     const report = await buildDoctorReport(realEngine([worker("web", web, [])]));
-    expect(report.project?.health.workers[0]?.bindings).toEqual({ ok: true, missing: [] });
+    expect(checkedWorker(report.project?.health).bindings).toEqual({ ok: true, missing: [] });
     expect(report.project?.health.ok).toBe(true);
     expect(doctorExitCode(report)).toBe(0);
   });
 
   test("the worker that does compose it still reports its drift", async () => {
     const report = await buildDoctorReport(realEngine([worker("api", api, composes("auth"))]));
-    expect(report.project?.health.workers[0]?.bindings.missing.map((binding) => binding.name)).toEqual([
+    expect(checkedWorker(report.project?.health).bindings.missing.map((binding) => binding.name)).toEqual([
       "DB",
       "SESSIONS",
     ]);
@@ -732,7 +807,9 @@ describe("project health — installed is not composed (regression)", () => {
 
   test("across both workers, only the composing one is unhealthy", async () => {
     const report = await buildDoctorReport(realEngine([worker("api", api, composes("auth")), worker("web", web, [])]));
-    expect(report.project?.health.workers.map((entry) => [entry.worker, entry.ok])).toEqual([
+    expect(
+      report.project?.health.workers.map((entry) => [entry.worker, entry.state === "checked" && entry.ok]),
+    ).toEqual([
       ["api", false],
       ["web", true],
     ]);
@@ -1554,7 +1631,7 @@ describe("manifest faults in the health block", () => {
     expect(text).toContain("malformed pithy.manifest.json");
     expect(text).toContain("configOptions[0].key");
     // The Worker itself is clean; the project is not, and CI can gate on it.
-    expect(report.project?.health.workers.every((worker) => worker.ok)).toBe(true);
+    expect(report.project?.health.workers.every((worker) => worker.state === "checked" && worker.ok)).toBe(true);
     expect(doctorExitCode(report)).toBe(1);
   });
 

@@ -51,15 +51,54 @@ export async function pruneBoard(db: LeaderboardDatabase, board: LeaderboardBoar
   return 0;
 }
 
-/** Prune every board that configures a retention limit. Returns the total rows deleted. */
+/**
+ * What a sweep over several boards deleted, and whether every board was swept (#371).
+ *
+ * The count sits behind the discriminant rather than beside a list of failures. A sweep that skipped a
+ * board deleted fewer rows than a sweep that did not, and `{ deleted: 4 }` cannot tell those apart —
+ * so `partial` spells the number differently, and a caller reaches it only by having been told the
+ * sweep was short.
+ */
+export type PruneOutcome =
+  | {
+      /** Every board with a retention limit was swept. */
+      state: "pruned";
+      /** Rows deleted across them all. */
+      deleted: number;
+    }
+  | {
+      /** Some boards were swept and at least one threw. */
+      state: "partial";
+      /** What the boards that were swept deleted — a total with a known hole in it. */
+      counted: { deleted: number };
+      /** The key of every board whose prune threw. Non-empty, or this would be `pruned`. */
+      unpruned: string[];
+    };
+
+/**
+ * Prune every board that configures a retention limit.
+ *
+ * **One board at a time (#371).** Retention is per board and boards are independent, so a board whose
+ * prune throws — a window key its config disagrees with, a D1 that stopped answering mid-sweep — used to
+ * discard every deletion the sweep had already made and take the rank pass down with it. It now costs its
+ * own entry and nothing else, and the boards it did not reach are named.
+ *
+ * **The guard takes no binding.** What a D1 write throws is throw-site context about somebody's database.
+ * The board key is this capability's own configuration and is the only thing anybody can act on.
+ */
 export async function pruneBoards(
   db: LeaderboardDatabase,
   boards: readonly LeaderboardBoard[],
   now: Date,
-): Promise<number> {
+): Promise<PruneOutcome> {
   let deleted = 0;
+  const unpruned: string[] = [];
   for (const board of boards) {
-    deleted += await pruneBoard(db, board, now);
+    try {
+      deleted += await pruneBoard(db, board, now);
+    } catch {
+      unpruned.push(board.key);
+    }
   }
-  return deleted;
+  return unpruned.length === 0 ? { state: "pruned", deleted } : { state: "partial", counted: { deleted }, unpruned };
 }

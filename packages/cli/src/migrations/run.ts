@@ -12,6 +12,7 @@ import { claimMigrationOwnership } from "@pithy-sh/core/src/migrations/owner";
 import { createMigrationRegistry, type NamespacedMigrations } from "@pithy-sh/core/src/migrations/registry";
 import {
   dropMigrations,
+  type MigrationLedger,
   type MigrationTarget,
   readMigrationLedger,
   resetMigrations,
@@ -21,10 +22,11 @@ import {
 import { parse } from "comment-json";
 import type { Migration, MigrationProvider, MigrationResult } from "kysely/migration";
 import { Miniflare } from "miniflare";
+import { z } from "zod";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { resolveWorkers } from "../project/workerScope";
 import { wranglerConfigPath } from "../provision/featureConfig";
-import { assertLedgerDeclared, type UndeclaredMigration } from "./ledger";
+import { assertLedgerDeclared, UndeclaredMigration } from "./ledger";
 import { collectMigrationSets } from "./registry";
 
 /**
@@ -774,16 +776,86 @@ export async function previewReset(options: MigrationFanOutOptions): Promise<Res
   return preview;
 }
 
-/** What one environment's databases have applied, against what this project declares. */
-export interface ProjectLedger {
-  /** How many declared migrations have not run yet, across every database in scope. */
-  pending: number;
-  /**
-   * Every applied migration this project no longer declares, in group order. Non-empty means `migrate`
-   * refuses — see {@link ./ledger} — so a reporter that shows the count and hides this is the #282 bug.
-   */
-  undeclared: UndeclaredMigration[];
-}
+/** One database in scope whose ledger could not be read at all. Named, because the fix is on that one. */
+export const UnreadableLedger = z
+  .object({
+    database: z.string().describe("The database name — a capability's `databases` key."),
+    binding: z
+      .string()
+      .describe("The D1 binding it resolves to, as wrangler.jsonc declares it — the name an adopter recognises."),
+  })
+  .describe(
+    "One database whose ledger could not be read on this pass. It carries no reason: what the read threw is throw-site context about somebody's database, and the actionable fact is which database went unread.",
+  );
+export type UnreadableLedger = z.infer<typeof UnreadableLedger>;
+
+/** The two halves of the comparison, over the databases that answered. */
+export const LedgerCounts = z
+  .object({
+    pending: z.number().int().nonnegative().describe("How many declared migrations have not run yet."),
+    undeclared: z
+      .array(UndeclaredMigration)
+      .describe(
+        "Every applied migration this project no longer declares, in group order. Non-empty means `migrate` refuses — see {@link ./ledger} — so a reporter that shows the count and hides this is the #282 bug.",
+      ),
+  })
+  .describe("What the databases that answered have applied, against what this project declares.");
+export type LedgerCounts = z.infer<typeof LedgerCounts>;
+
+/**
+ * What one environment's databases have applied, against what this project declares — **and whether
+ * every one of them answered** (#371).
+ *
+ * A project migrates several databases and the counts are a sum over them, so one unreachable D1 used to
+ * throw out of the loop and lose the ledger for every other database with it. Guarding the loop is only
+ * half the fix: a sum computed over four databases out of five is not the same number as a sum over five,
+ * and nothing in `{ pending, undeclared }` could say so.
+ *
+ * So the scalars live **behind the discriminant**, on #350's rule. `read` carries them flat; `partial`
+ * nests them under `counted` beside the databases that went unread, which is what stops
+ * `if (ledger.state !== "unavailable") use(ledger.pending)` from compiling and quietly reporting a short
+ * sum. `unavailable` carries no number at all.
+ *
+ * **`readProjectLedger` never returns `unavailable`.** It throws instead, because enumerating the
+ * databases is not a contributor to this aggregate — it is the aggregate's precondition, and there is no
+ * partial answer to give when nothing could be enumerated. The state exists for the caller that catches
+ * that throw and still has siblings of its own to report ({@link ../capabilities/reconcile}).
+ */
+export const ProjectLedger = z
+  .discriminatedUnion("state", [
+    z
+      .object({
+        state: z.literal("read").describe("Every database in scope answered."),
+        pending: LedgerCounts.shape.pending.describe("How many declared migrations have not run yet, across them all."),
+        undeclared: LedgerCounts.shape.undeclared.describe(
+          "Every applied migration this project no longer declares, in group order.",
+        ),
+      })
+      .describe("The whole comparison, over every database in scope."),
+    z
+      .object({
+        state: z.literal("partial").describe("Some databases answered and at least one could not be read."),
+        counted: LedgerCounts.describe(
+          "The comparison over the databases that answered — a sum with a known hole in it, which is why it is not spelled the way `read` spells it.",
+        ),
+        unreadable: z
+          .array(UnreadableLedger)
+          .min(1)
+          .describe("Every database whose ledger could not be read. Non-empty, or this would be `read`."),
+      })
+      .describe("A comparison over some of the databases, naming the ones it could not include."),
+    z
+      .object({
+        state: z.literal("unavailable").describe("The ledger could not be read at all."),
+      })
+      .describe(
+        "No comparison was made. Deliberately empty: nothing derived from the failure travels, and there is no number here to mistake for a zero.",
+      ),
+  ])
+  .describe(
+    "What one environment's databases have applied against what this project declares, and whether every database answered. The counts sit behind the discriminant, so a short sum cannot be read as a whole one.",
+  );
+export type ProjectLedger = z.infer<typeof ProjectLedger>;
 
 /**
  * Read every Worker's databases for an environment against what the project declares — read-only,
@@ -796,23 +868,48 @@ export interface ProjectLedger {
  * whose callers could only ever learn that a declared migration had not run — never that the ledger held
  * one the project had dropped, which is the state that stops migrate dead (#282). Returning one object
  * is what keeps a caller from re-acquiring half the question.
+ *
+ * **One database at a time, because the answer is a sum (#371).** A project migrates several databases,
+ * and one of them being unreachable — a revoked token, a deleted D1, a `wrangler.jsonc` naming an id that
+ * is gone — used to throw out of this loop and lose the ledger for every other database in the project.
+ * Each group is read under its own guard now, and a group that will not read is named on `unreadable`
+ * rather than absorbed into a smaller `pending`.
+ *
+ * **Enumerating the databases is not one of the contributors.** `contextFor`, `scopedGroups` and
+ * `driverFor` run before the loop and still throw: they decide *what* the aggregate is over, so their
+ * failure is not one contributor missing, it is there being nothing to aggregate. A caller that wants to
+ * survive that catches it — {@link ../capabilities/reconcile} does, into `unavailable`.
+ *
+ * **The guard takes no binding.** What a D1 read throws names a database id, a token, or a query, and none
+ * of that is anybody's business but the adopter's — so nothing derived from it is kept, which is a
+ * property of the code rather than a promise about it (#350).
  */
 export async function readProjectLedger(options: MigrationFanOutOptions): Promise<ProjectLedger> {
   const context = await contextFor(options);
   const groups = await scopedGroups(context);
-  if (groups.length === 0) return { pending: 0, undeclared: [] };
+  if (groups.length === 0) return { state: "read", pending: 0, undeclared: [] };
 
   const driver = await driverFor(context, groups);
   try {
-    const ledger: ProjectLedger = { pending: 0, undeclared: [] };
+    let pending = 0;
+    const undeclared: UndeclaredMigration[] = [];
+    const unreadable: UnreadableLedger[] = [];
     for (const group of groups) {
-      const state = await readMigrationLedger(driver.database(group), group.provider);
-      ledger.pending += state.pending.length;
-      for (const name of state.undeclared) {
-        ledger.undeclared.push({ database: group.database, binding: group.binding, name });
+      let read: MigrationLedger;
+      try {
+        read = await readMigrationLedger(driver.database(group), group.provider);
+      } catch {
+        unreadable.push({ database: group.database, binding: group.binding });
+        continue;
+      }
+      pending += read.pending.length;
+      for (const name of read.undeclared) {
+        undeclared.push({ database: group.database, binding: group.binding, name });
       }
     }
-    return ledger;
+    return unreadable.length === 0
+      ? { state: "read", pending, undeclared }
+      : { state: "partial", counted: { pending, undeclared }, unreadable };
   } finally {
     await driver.dispose();
   }

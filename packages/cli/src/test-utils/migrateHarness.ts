@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { Migration } from "kysely/migration";
 import { afterEach, beforeEach } from "vitest";
 import { type MigrationFanOutOptions, readProjectLedger, type WorkerScope } from "../migrations/run";
@@ -26,8 +27,20 @@ import { type MigrationFanOutOptions, readProjectLedger, type WorkerScope } from
  * The other half — a migration the ledger records and the project no longer declares — has its own
  * suite in `migrations/ledger.test.ts`, because it is a refusal rather than a number.
  */
-export const pendingFrom = async (options: MigrationFanOutOptions): Promise<number> =>
-  (await readProjectLedger(options)).pending;
+export const pendingFrom = async (options: MigrationFanOutOptions): Promise<number> => {
+  const ledger = await readProjectLedger(options);
+  // These suites migrate databases they created a moment ago, so every one of them answers. A `partial`
+  // here is the harness reporting a sum with a hole in it, and asserting a number against that would be
+  // the #371 defect wearing a test's clothes — so it fails loudly instead (#371).
+  if (ledger.state !== "read") {
+    throw new InternalError({
+      message: "The migration harness could not read every database's ledger.",
+      action: "Check the fixture's wrangler.jsonc bindings — a database in scope did not answer.",
+      detail: `readProjectLedger returned state ${ledger.state}`,
+    });
+  }
+  return ledger.pending;
+};
 
 /** Creates a one-column table — the smallest migration that proves `up`/`down` ran. */
 export const createTable = (name: string): Migration => ({

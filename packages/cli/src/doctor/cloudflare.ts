@@ -57,7 +57,16 @@ export type CloudflareAccessState =
    * fault positively established may gate CI. An adopter on a plane, and a sandbox with no business
    * touching an account, get the same green exit and the same honest line.
    */
-  | "not_checked";
+  | "not_checked"
+  /**
+   * The probe itself threw — most often a credentials file that will not parse (#371).
+   *
+   * **Distinct from `not_checked`, which is the caller having said not to look.** One is a decision and
+   * the other is a failure, and a diagnostic that reports "offline" about a broken config file has sent
+   * the reader to unset an environment variable that was never set. It never fails the exit, on the rule
+   * every other establishes-nothing state here follows.
+   */
+  | "probe_failed";
 
 /** What `doctor` learned about the configured Cloudflare credentials. */
 export interface CloudflareAccess {
@@ -229,6 +238,10 @@ function describeState(access: CloudflareAccess, home?: string): string {
       // likely to be somebody who did not know the mode was on — a harness, a CI job, a shell profile —
       // as the person who asked for it, and they need to know what to go and unset.
       return `not checked — offline (${PITHY_OFFLINE_ENV} or --offline)`;
+    case "probe_failed":
+      // No reason from the throw: a credentials-resolution failure names paths, account ids and, in the
+      // worst case, a value. The file it would have read is the actionable fact and the suffix says it.
+      return "couldn't be checked — the credentials would not resolve";
   }
 }
 
@@ -246,7 +259,8 @@ function describeState(access: CloudflareAccess, home?: string): string {
  */
 function credentialOrigin(access: CloudflareAccess, home: string | undefined): string {
   const path = configPath(access, home);
-  if (access.state === "not_checked") return `credentials would resolve from ${path}`;
+  if (access.state === "not_checked" || access.state === "probe_failed")
+    return `credentials would resolve from ${path}`;
   if (access.credentialSource === "environment") return `credentials from the environment, not ${path}`;
   return `from ${path}`;
 }

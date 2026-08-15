@@ -6,7 +6,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import { buildDoctorReport, doctorExitCode, renderDoctorText } from "../commands/doctor";
 import { buildProjectHealth } from "../doctor/health";
-import { doctorHarness } from "../test-utils/doctorHarness";
+import { checkedWorker, doctorHarness } from "../test-utils/doctorHarness";
 import { createTable, migrateHarness } from "../test-utils/migrateHarness";
 import { describeUndeclared, undeclaredRemedy } from "./ledger";
 import { migrateProject, readProjectLedger } from "./run";
@@ -84,6 +84,7 @@ describe("a ledger row the project no longer declares", () => {
 
     expect(await readProjectLedger({ account: null, projectDir: h.projectDir, workers: [worker], env: "dev" })).toEqual(
       {
+        state: "read",
         // The subtraction that used to be the whole check. It is right, and it is not the answer.
         pending: 0,
         undeclared: [{ database: "app", binding: "DB", name: "1000_app_0002_tenant" }],
@@ -102,10 +103,13 @@ describe("a ledger row the project no longer declares", () => {
     });
 
     expect(health.ok).toBe(false);
-    expect(health.workers[0]?.migrations).toEqual({
+    expect(checkedWorker(health).migrations).toEqual({
       ok: false,
-      pending: 0,
-      undeclared: [{ database: "app", binding: "DB", name: "1000_app_0002_tenant" }],
+      ledger: {
+        state: "read",
+        pending: 0,
+        undeclared: [{ database: "app", binding: "DB", name: "1000_app_0002_tenant" }],
+      },
       env: "dev",
     });
   });
@@ -142,6 +146,7 @@ describe("a ledger row the project no longer declares", () => {
 
     expect(again[0]?.databases[0]?.results).toEqual([]);
     expect(await readProjectLedger({ account: null, projectDir: h.projectDir, workers, env: "dev" })).toEqual({
+      state: "read",
       pending: 0,
       undeclared: [],
     });

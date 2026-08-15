@@ -283,7 +283,7 @@ describe("buildReconcilePlan — per Worker", () => {
       capabilities: AUTH,
       readLedger: async ({ projectDir, workerDir: wd, env }) => {
         seen.push({ projectDir, workerDir: wd, env });
-        return { pending: 0, undeclared: [] };
+        return { state: "read", pending: 0, undeclared: [] };
       },
     });
     expect(seen).toEqual([{ projectDir: dir, workerDir, env: "staging" }]);
@@ -430,10 +430,10 @@ describe("buildReconcilePlan — migrations and purity", () => {
       workerDir,
       env: "staging",
       capabilities: AUTH,
-      readLedger: async ({ env }) => ({ pending: env === "staging" ? 4 : 0, undeclared: [] }),
+      readLedger: async ({ env }) => ({ state: "read", pending: env === "staging" ? 4 : 0, undeclared: [] }),
     });
     expect(plan.env).toBe("staging");
-    expect(plan.pendingMigrations).toBe(4);
+    expect(plan.ledger).toEqual({ state: "read", pending: 4, undeclared: [] });
   });
 
   test("reports the entitlement gap for a Worker whose routes gate with no provider composed", async () => {
@@ -451,7 +451,65 @@ describe("buildReconcilePlan — migrations and purity", () => {
       env: "dev",
       capabilities: AUTH,
     });
-    expect(plan.entitlementGap).toEqual(["src/reports.ts"]);
+    expect(plan.entitlements).toEqual({ state: "read", gates: ["src/reports.ts"] });
+  });
+
+  /**
+   * The #371 gates on this plan's two unguarded contributors. Planted one at a time, because a plan that
+   * survives both together tells you nothing about which guard did it.
+   *
+   * Both directions each time: the siblings are still there, and the sick contributor does not read as a
+   * clean answer. The second is the assertion that matters — a bare `try`/`catch` would satisfy the first
+   * while reporting `0 pending` and `no entitlement gap` about a Worker nobody checked.
+   */
+  test("a ledger read that throws costs its own line, never the rest of the plan", async () => {
+    await writeManifest(dir, authManifest);
+    await writeFile(join(workerDir, "pithy.config.ts"), configWith("    auth(),"));
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "staging",
+      capabilities: AUTH,
+      readLedger: () => {
+        throw new Error("D1_ERROR: Authentication error. token id 9f3c is not valid.");
+      },
+    });
+
+    expect(plan.ledger).toEqual({ state: "unavailable" });
+    // Not a clean read of nothing: `unavailable` carries no count for a caller to render as zero.
+    expect("pending" in plan.ledger).toBe(false);
+    // Every sibling contributor still reported.
+    expect(plan.perCapability.map((cap) => cap.name)).toEqual(["auth"]);
+    expect(plan.entitlements).toEqual({ state: "read", gates: [] });
+    expect(plan.worker).toBe("api");
+    // And nothing the throw said travels — this plan is what `pithy upgrade --json` prints.
+    expect(JSON.stringify(plan)).not.toMatch(/9f3c|Authentication|D1_ERROR/);
+  });
+
+  test("an entitlement scan that throws costs its own line, never the rest of the plan", async () => {
+    await writeManifest(dir, authManifest);
+    await writeFile(join(workerDir, "pithy.config.ts"), configWith("    auth(),"));
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "staging",
+      capabilities: AUTH,
+      readLedger: async () => ({ state: "read", pending: 2, undeclared: [] }),
+      findGap: () => {
+        throw new Error("EACCES: permission denied, scandir '/home/dev/acme/apps/api/src/private'");
+      },
+    });
+
+    expect(plan.entitlements).toEqual({ state: "unavailable" });
+    // Not "no gap": `unavailable` carries no list for a caller to read as an all-clear.
+    expect("gates" in plan.entitlements).toBe(false);
+    // Every sibling contributor still reported.
+    expect(plan.ledger).toEqual({ state: "read", pending: 2, undeclared: [] });
+    expect(plan.perCapability.map((cap) => cap.name)).toEqual(["auth"]);
+    // And nothing the throw said travels — an errno message carries the adopter's own paths.
+    expect(JSON.stringify(plan)).not.toMatch(/EACCES|private|home\/dev/);
   });
 
   test("a composed provider closes the gap, whatever the routes gate on", async () => {
@@ -465,7 +523,7 @@ describe("buildReconcilePlan — migrations and purity", () => {
       env: "dev",
       capabilities: [...AUTH, { name: "payments", requiredBindings: [], providesEntitlements: true }],
     });
-    expect(plan.entitlementGap).toEqual([]);
+    expect(plan.entitlements).toEqual({ state: "read", gates: [] });
   });
 
   test("writes nothing — building a plan is read-only", async () => {

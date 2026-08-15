@@ -93,8 +93,26 @@ because the tool knows: `dev` is the Miniflare store under `.wrangler/state` and
 re-migrate, while a deployed environment is a database with real rows in it, where the same advice would be
 data loss. There the line says to restore the migration or remove its `pithy_migrations` row. It is the
 same sentence `pithy migrate` refuses with — one wording, two commands, so the two can never disagree about
-one database again. In `--json` the check carries `pending` and `undeclared`, the latter one entry per
-migration with its `database`, `binding` and `name`.
+one database again. In `--json` the check carries a `ledger` whose `state` is `read`, `partial` or
+`unavailable`: the counts sit behind it, so a sum taken over some of an environment's databases cannot be
+read as a sum over all of them. `read` carries `pending` and `undeclared` — the latter one entry per
+migration with its `database`, `binding` and `name`. `partial` carries the same two under `counted` and
+names every database it could not read on `unreadable`. `unavailable` carries no number at all.
+
+```
+Project health:
+  api:
+    prereqs      every composed capability has its peers ✓
+    config       parses against every capability schema ✓
+    bindings     all required bindings present ✓
+    migrations   2 pending — run: pithy migrate --env dev
+                 couldn't read COLLAB_DB (collab)
+                 Every number above counts the databases that answered, and not those.
+    entitlements no gated route without a provider ✓
+```
+
+A database that could not be read is **not** `0 pending`. It is the one thing a count cannot say, and
+saying it wrongly is a green line about a schema nobody compared.
 
 The block's first per-Worker line is **`prereqs`**, and it is the only check here that is not drift. A capability's manifest declares the capabilities it composes against — `auth` declares `secrets` and `email`, `email` declares `secrets` — and `createBackend` refuses to assemble without them. So a Worker failing this line does not start at all, and every other line below it is describing a Worker that is down. It is reported first for that reason.
 
@@ -107,6 +125,24 @@ Project health:
 ```
 
 Like the entitlement gap, it reports and does not fix: `pithy upgrade` writes bindings and config keys, and composing a capability is a different kind of decision. `pithy add auth --with-prerequisites` is the command that makes it. It fails the exit, because this was the state `pithy add auth` used to leave behind — and doctor called that project healthy, which is how it reached `pithy dev` to be found there instead.
+
+A Worker whose plan could not be built at all gets **one line and no checks**. Its `pithy.config.ts` or its
+`wrangler.jsonc` would not read, so nothing was established about it — and the four other lines a Worker
+normally has would each be a claim nobody checked. Every *other* Worker still reports in full: a diagnostic
+that loses four Workers' findings to a fifth one's broken config is the report you cannot use on exactly the
+day you need it.
+
+```
+Project health:
+  api: couldn't be checked
+    Its pithy.config.ts or wrangler.jsonc would not read. Nothing below is about it.
+  collab: healthy ✓
+```
+
+It **fails the exit**, on the same standard the `manifests:` section below is held to: a check that did not
+run established nothing, and calling a project healthy around a hole is the under-report both exist to
+prevent. In `--json` the entry carries `"state":"unavailable"` and its `worker`, and nothing else — there is
+no `ok` on it to read as `true`.
 
 The block opens with a **`manifests:`** section when an installed `@pithy-sh/*` package ships a `pithy.manifest.json` that will not parse or will not validate. It sits above the Workers, and outside all of them, because that is where the fault is: manifests resolve once from the project root, so no Worker owns one — and a capability nobody can read contributes no drift to any check underneath it. Without this section a project full of unreadable manifests read as healthy and said nothing at all. It names the package and the reason, it **fails the exit** like every other check here, and it is the one finding in the block `pithy upgrade` cannot act on: the file belongs to someone else's package, so the fix is a reinstall or a word with its maintainer.
 
@@ -257,10 +293,10 @@ A **`Worker names:`** block appears when a Worker's three names stop agreeing �
 
 ```
 $ pithy doctor --json
-{"cli":{"installed":"1.3.0","latest":"1.3.0","installer":"brew","state":"current","upgradeCommand":"brew upgrade pithy"},"shell":"zsh","alias":{"state":"installed","rcPath":"/Users/jo/.zshrc","reason":null},"configDir":"/Users/jo/.config/pithy","stateFile":"/Users/jo/.config/pithy/state.json","notifier":"enabled","offline":false,"project":{"present":true,"capabilities":[{"name":"@pithy-sh/core","installed":"1.2.0","latest":"1.2.0","state":"current"}],"health":{"ok":true,"workers":[{"worker":"api","ok":true,"config":{"ok":true,"drift":[]},"bindings":{"ok":true,"missing":[]},"migrations":{"ok":true,"pending":0,"undeclared":[],"env":"dev"},"entitlements":{"ok":true,"gates":[]},"prerequisites":{"ok":true,"missing":[]}}],"manifests":{"ok":true,"faults":[]}}},"cloudflare":{"state":"ok","missing":[],"tokenStatus":"active","credentialSplit":null,"configPath":"/Users/jo/.config/pithy/cloudflare.leed.json","accountName":"leed","accountMismatch":null,"credentialSource":"file","detail":"reachable (token active); from ~/.config/pithy/cloudflare.leed.json"},"projectName":{"state":"ok","project":"acme","misnamed":[],"detail":"acme — every resource name matches"},"workerNames":{"state":"ok","mismatches":[]},"environments":{"state":"ok","declared":["staging","prod"],"drift":[]},"origins":{"state":"ok","drift":[]},"workflows":{"state":"ok","drift":[]},"extensions":{"extensions":[{"worker":"api","capability":"auth","kind":"better-auth-plugin","id":"organization","tables":["organization","member","invitation"],"detail":"auth: organization (better-auth-plugin), tables organization, member, invitation."}]},"devPreferences":{"state":"absent","path":"/Users/jo/.config/pithy/acme/dev.json","user":null,"detail":"none yet; sign-in stays magic-link only"},"devSecretsFile":{"path":"/Users/jo/.config/pithy/acme/secrets.jsonc","present":true,"orphans":[]},"devSecrets":null,"secretBindings":null,"devVarsLocal":null,"devVars":null,"os":"macOS 14.5","runtime":{"name":"Bun","version":"1.2.4","nodeCompat":"22.10.0"},"node":"22.10.0"}
+{"cli":{"installed":"1.3.0","latest":"1.3.0","installer":"brew","state":"current","upgradeCommand":"brew upgrade pithy"},"shell":"zsh","alias":{"state":"installed","rcPath":"/Users/jo/.zshrc","reason":null},"configDir":"/Users/jo/.config/pithy","stateFile":"/Users/jo/.config/pithy/state.json","notifier":"enabled","offline":false,"project":{"present":true,"capabilities":[{"name":"@pithy-sh/core","installed":"1.2.0","latest":"1.2.0","state":"current"}],"health":{"ok":true,"workers":[{"state":"checked","worker":"api","ok":true,"config":{"ok":true,"drift":[]},"bindings":{"ok":true,"missing":[]},"migrations":{"ok":true,"ledger":{"state":"read","pending":0,"undeclared":[]},"env":"dev"},"entitlements":{"ok":true,"gap":{"state":"read","gates":[]}},"prerequisites":{"ok":true,"missing":[]}}],"manifests":{"ok":true,"faults":[]}}},"cloudflare":{"state":"ok","missing":[],"tokenStatus":"active","credentialSplit":null,"configPath":"/Users/jo/.config/pithy/cloudflare.leed.json","accountName":"leed","accountMismatch":null,"credentialSource":"file","detail":"reachable (token active); from ~/.config/pithy/cloudflare.leed.json"},"projectName":{"state":"ok","project":"acme","misnamed":[],"detail":"acme — every resource name matches"},"workerNames":{"state":"ok","mismatches":[]},"environments":{"state":"ok","declared":["staging","prod"],"drift":[]},"origins":{"state":"ok","drift":[]},"workflows":{"state":"ok","drift":[]},"extensions":{"extensions":[{"worker":"api","capability":"auth","kind":"better-auth-plugin","id":"organization","tables":["organization","member","invitation"],"detail":"auth: organization (better-auth-plugin), tables organization, member, invitation."}]},"devPreferences":{"state":"absent","path":"/Users/jo/.config/pithy/acme/dev.json","user":null,"detail":"none yet; sign-in stays magic-link only"},"devSecretsFile":{"state":"checked","path":"/Users/jo/.config/pithy/acme/secrets.jsonc","present":true,"orphans":[]},"devSecrets":null,"secretBindings":null,"devVarsLocal":null,"devVars":null,"os":"macOS 14.5","runtime":{"name":"Bun","version":"1.2.4","nodeCompat":"22.10.0"},"node":"22.10.0"}
 ```
 
-Three rules hold across the payload. **Paths are absolute here, never tilde-abbreviated** — this output is opened by a script, not recognised by a human. **A check with no project to run against is `null`, not an empty verdict**: `project`, `projectName`, `workerNames`, `environments`, `origins`, `workflows`, `devPreferences`, `devSecretsFile`, `devSecrets`, `secretBindings`, `devVarsLocal` and `devVars` all take that shape, so nothing ever reports a name verdict for a directory that has no config. And **every finding carries its own `detail` sentence** beside its fields, so an agent fixing one never has to reproduce the report's wording from the parts.
+Three rules hold across the payload. **Paths are absolute here, never tilde-abbreviated** — this output is opened by a script, not recognised by a human. **A check with no project to run against is `null`, not an empty verdict**: `project`, `projectName`, `workerNames`, `environments`, `origins`, `workflows`, `devPreferences`, `devSecretsFile`, `devSecrets`, `secretBindings`, `devVarsLocal` and `devVars` all take that shape, so nothing ever reports a name verdict for a directory that has no config. **And a check that threw is neither of those.** Every probe is guarded, so one that fails costs its own line rather than the report — and it says so on its own value rather than being filed under `null`. `projectName`, `workerNames`, `environments`, `origins`, `workflows` and `secretBindings` report `"state":"could-not-check"`; `devPreferences` does too; `cloudflare` reports `"state":"probe_failed"`, distinct from `not_checked`, which is the caller having said not to look; and `devSecretsFile`, `devSecrets`, `devVarsLocal` and `devVars` carry a `state` of `checked` or `could-not-check` beside their findings, so a bag of empty lists can never be read as an all-clear. None of these states fails the exit: a check that did not run established nothing. And **every finding carries its own `detail` sentence** beside its fields, so an agent fixing one never has to reproduce the report's wording from the parts.
 
 `project.health.manifests` is the `manifests:` block above, and it is project-wide rather than per Worker for the same reason. `devSecrets.mode` is octal-formatted (`600`), because `384` is not a permission anybody recognises. **`devSecrets.healthy` is the field to gate on.** It is every fault in that block, decided by the same function the text report draws its lines from, so a script never has to enumerate fault names — and a fault class added later needs no consumer to be updated. `devSecrets.unreadable` is the loader's own sentence for a file that will not parse, or `null`; it was a boolean once, so a gate written as `unreadable === true` stopped firing the day it became a sentence. `devSecrets.malformed` names each stated value that will not read and why, and `devSecrets.bootstrapMissing` the bootstrap secrets nothing has minted yet. `devSecrets.unresolvable` and `devVars.unresolvable` are the Workers whose `pithy.config.ts` would not import, each naming the Worker, its directory and the reason — a `devSecrets` object carrying one is how a script tells "nothing loaded" from the `null` that means this project composes no secrets. `runtime` is the interpreter that ran, `node` the version it emulates — equal on Node, different under Bun.
 
@@ -299,6 +335,7 @@ Nothing here refuses except a contradiction between two flags: `pithy doctor` is
 | `--disable-notifier` and `--enable-notifier` together | Refused before anything is read: *Pass either --disable-notifier or --enable-notifier, not both.* |
 | A `pithy.config.ts` that will not load | Exit 1. |
 | A Worker failing a config, binding, migration, or entitlement check, or a manifest nothing can read | Exit 1. |
+| A Worker whose plan could not be built, or a database whose ledger could not be read | Exit 1. A check that did not run established nothing, and a healthy verdict around a hole is the under-report this block exists to prevent. |
 | A Cloudflare credential that is configured and broken, or a pinned account the credentials do not match | Exit 1. `not configured` and `not checked` establish nothing, so neither gates. |
 | A project name that is `invalid`, `drifted`, or `orphaned` | Exit 1. |
 | A Worker whose three names disagree | Exit 1. |
