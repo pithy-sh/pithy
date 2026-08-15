@@ -510,6 +510,7 @@
       "name": "@pithy-sh/ui-react",
       "version": "0.0.0",
       "devDependencies": {
+        "@pithy-sh/auth": "workspace:*",
         "@pithy-sh/payments": "workspace:*",
         "@pithy-sh/tsconfig": "workspace:*",
         "@types/node": "^22.15.0",

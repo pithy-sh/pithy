@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { AuthFetch } from "@pithy-sh/auth/src/client/api";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, test } from "vitest";
@@ -44,19 +45,24 @@ interface Call {
   headers: Record<string, string>;
 }
 
-/** A fetch that records what was asked and answers from a table. */
-function recorder(answers: Record<string, () => Response> = {}): { fetch: typeof fetch; calls: Call[] } {
+/**
+ * A fetch that records what was asked and answers from a table.
+ *
+ * Typed as `AuthFetch` rather than `typeof fetch`, because that is the seam the screen now takes: every
+ * request it makes goes through `callAuth`, which declares the slice of `fetch` it uses structurally so
+ * one signature holds in a Worker-typed program, in a browser, and here (#370).
+ */
+function recorder(answers: Record<string, () => Response> = {}): { fetch: AuthFetch; calls: Call[] } {
   const calls: Call[] = [];
-  const send = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const url = String(input);
+  const send: AuthFetch = async (url, init) => {
     calls.push({
       url,
       body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>,
-      headers: (init?.headers ?? {}) as Record<string, string>,
+      headers: init?.headers ?? {},
     });
     return (answers[url] ?? (() => Response.json({})))();
   };
-  return { fetch: send as unknown as typeof fetch, calls };
+  return { fetch: send, calls };
 }
 
 /** A check that still owes a token, so the gated submit must stay disabled. */

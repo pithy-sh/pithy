@@ -1,3 +1,5 @@
+import type { AuthSession, AuthUser } from "@pithy-sh/auth/src/client/api";
+import { signOut as endSession, getSession as readSession } from "@pithy-sh/auth/src/client/api";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { authConfig } from "./pithy-config";
 import { navigate } from "./router";
@@ -7,41 +9,41 @@ import { navigate } from "./router";
  *
  * COOKIE/SESSION, NOT BEARER. The SPA is same-origin with its worker, so the session rides an
  * httpOnly cookie: no access token, no refresh token, nothing in localStorage or sessionStorage, and
- * no rotation logic here. JavaScript cannot read the cookie, so XSS has nothing to steal. Every
- * request below carries `credentials: "include"`, and the server's same-origin check covers CSRF.
+ * no rotation logic here. JavaScript cannot read the cookie, so XSS has nothing to steal.
+ *
+ * **The requests themselves are not in this file, and that is deliberate.** Pithy wrote this file once
+ * and may never rewrite it — it is yours now — so a `fetch` written here would freeze the base-path
+ * join, the cookie mode and the failure handling into your repository on the day you scaffolded. They
+ * live in `@pithy-sh/auth/src/client/api`, which is the one place that knows how a browser program
+ * asks this worker an auth question, and which upgrades with a minor release. Same-origin and CSRF are
+ * its problem, not this screen's.
  */
 
-/** The signed-in user, as `GET ${authConfig.basePath}/get-session` returns it. */
-export interface SessionUser {
-  id: string;
-  email: string;
-  name?: string;
-}
+/** The signed-in user, as the session route returns them. */
+export type SessionUser = AuthUser;
 
 /** A live session, or `null` when nobody is signed in. */
-export type Session = { user: SessionUser } | null;
+export type Session = AuthSession;
 
-function isSession(value: unknown): value is { user: SessionUser } {
-  const user = (value as { user?: { id?: unknown; email?: unknown } } | null)?.user;
-  return typeof user?.id === "string" && typeof user.email === "string";
-}
+/** Where the auth routes are, for every call this file makes. */
+const client = { basePath: authConfig.basePath };
 
-/** The current session, or `null`. Never throws — an unreachable worker reads as signed out. */
+/**
+ * The current session, or `null`.
+ *
+ * Never throws. A worker that could not be reached, or answered with something unreadable, reads as
+ * signed out here — which is a decision this file makes rather than one the package makes for it. If
+ * you would rather show "we couldn't check" than a sign-in form, read `result.failure` instead.
+ */
 export async function getSession(): Promise<Session> {
   if (!authConfig.enabled) return null;
-  try {
-    const response = await fetch(`${authConfig.basePath}/get-session`, { credentials: "include" });
-    if (!response.ok) return null;
-    const body: unknown = await response.json();
-    return isSession(body) ? body : null;
-  } catch {
-    return null;
-  }
+  const result = await readSession(client);
+  return result.ok ? result.value : null;
 }
 
 /** End the session server-side and return to the sign-in screen. */
 export async function signOut(): Promise<void> {
-  await fetch(`${authConfig.basePath}/sign-out`, { method: "POST", credentials: "include" });
+  await endSession(client);
   navigate("/sign-in");
 }
 

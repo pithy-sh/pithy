@@ -1,3 +1,5 @@
+import type { AuthFetch } from "@pithy-sh/auth/src/client/api";
+import { sendMagicLink, startSocialSignIn } from "@pithy-sh/auth/src/client/api";
 import { type FormEvent, type ReactNode, useCallback, useMemo, useState } from "react";
 import { authConfig } from "../../pithy-config";
 import { Turnstile, turnstilePending, turnstileRequest } from "../../turnstile";
@@ -74,7 +76,7 @@ export interface SignInScreenProps {
   /** The compact mark, shown where the panel is not. */
   readonly mark?: ReactNode;
   /** The fetch to use. Undefined in the browser, which is the point of it being optional. */
-  readonly fetch?: typeof fetch;
+  readonly fetch?: AuthFetch;
   /** This page's origin, which the callback URL is built against. */
   readonly origin?: string;
   /** How the browser leaves for a provider. Injected so a test never navigates. */
@@ -233,32 +235,6 @@ const SOCIAL: readonly { id: string; label: string; mark: ReactNode }[] = [
   { id: "facebook", label: "Facebook", mark: <FacebookMark /> },
 ];
 
-/**
- * A provider redirect this screen is willing to follow, and the two reasons it might not be.
- *
- * **The scheme check.** `window.location.href = url` with a `javascript:` URL executes that script in
- * this page, so a response body is not something to hand straight to the navigator however trusted its
- * origin. `@pithy-sh/email` makes the same http(s)-only check before following a tracked link.
- *
- * **The `client_id` check.** An OAuth 2.0 authorization request must carry one, so an authorization URL
- * naming no client is a provider that is switched on in config with a blank credential behind it. The
- * client projection carries booleans and never credentials, so the browser cannot know that in advance
- * — refusing the *response* is what turns a blank credential into a sentence on the screen instead of a
- * bounce to Google's own error page. A provider that ever minted an authorization URL without a
- * `client_id` would be refused too; that is a false negative showing honest copy, the safe direction.
- */
-function followable(value: unknown): value is { url: string } {
-  const url = (value as { url?: unknown } | null)?.url;
-  if (typeof url !== "string") return false;
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return false;
-    return (parsed.searchParams.get("client_id") ?? "") !== "";
-  } catch {
-    return false;
-  }
-}
-
 /** Why a provider button did not take you anywhere. Two faults, because they need two sentences. */
 type Refusal = { provider: string; reason: "unconfigured" | "silent" } | null;
 
@@ -305,7 +281,10 @@ function Frame(props: { brand: ReactNode; mark: ReactNode; children: ReactNode }
 export function SignInScreen(props: SignInScreenProps): ReactNode {
   const { auth } = props;
   const check = props.check ?? NO_CHECK;
-  const send = props.fetch ?? fetch;
+  // Where the auth routes are, and the fetch to reach them with. Everything else about the request —
+  // the base-path join, the cookie mode, the same-origin refusal, the failure directions — belongs to
+  // `@pithy-sh/auth`, so it can still be fixed after this file has been copied into your repository.
+  const client = { basePath: auth.basePath, fetch: props.fetch };
   const origin = props.origin ?? window.location.origin;
   const redirect =
     props.redirect ??
@@ -323,13 +302,7 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
   async function sendLink(event: FormEvent): Promise<void> {
     event.preventDefault();
     setBusy(true);
-    const request = check.attach({ email, callbackURL: `${origin}/callback` });
-    await send(`${auth.basePath}/sign-in/magic-link`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "content-type": "application/json", ...request.headers },
-      body: JSON.stringify(request.body),
-    }).catch(() => undefined);
+    await sendMagicLink({ email, callbackURL: `${origin}/callback` }, { ...client, gate: check.attach });
     setBusy(false);
     // Always the same answer, whether or not the address is registered. Telling the two apart is an
     // enumeration oracle, so neither the copy nor the timing of it confirms either way.
@@ -338,22 +311,16 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
 
   async function social(provider: { id: string; label: string }): Promise<void> {
     setRefusal(null);
-    // No `check.attach` here, deliberately: the redirect carries no token and the provider runs its own
-    // bot defense. Gating it would only stop people signing in.
-    const response = await send(`${auth.basePath}/sign-in/social`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ provider: provider.id, callbackURL: `${origin}/callback` }),
-    }).catch(() => undefined);
-    const body: unknown = await response?.json().catch(() => undefined);
-    if (followable(body)) {
-      redirect(body.url);
+    // No humanity check here, deliberately: the redirect carries no token and the provider runs its own
+    // bot defense. `startSocialSignIn` drops one even if it is passed, so this cannot be forgotten.
+    const started = await startSocialSignIn({ provider: provider.id, callbackURL: `${origin}/callback` }, client);
+    if (started.kind === "authorize") {
+      redirect(started.url);
       return;
     }
-    // An answer we could read but could not follow means the provider is on with no credential behind
-    // it; anything else means our own server did not answer. Different faults, different copy.
-    setRefusal({ provider: provider.label, reason: response?.ok ? "unconfigured" : "silent" });
+    // A URL we could read but could not follow means the provider is on with no credential behind it;
+    // anything else means our own server did not answer. Different faults, different copy.
+    setRefusal({ provider: provider.label, reason: started.kind === "unconfigured" ? "unconfigured" : "silent" });
   }
 
   if (sent) {
