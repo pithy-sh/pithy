@@ -11,7 +11,7 @@ import type { StepRunner } from "../rotation/atRestKeyRotation";
 import { SystemSecretsStore } from "../store/systemSecretsStore";
 import type { ConfigWriter } from "./configWriter";
 import { runRotationWorkflow } from "./rotationWorkflow";
-import { runWriteWorkflow } from "./writeWorkflow";
+import { runWriteWorkflow, type WriteWorkflowPayload } from "./writeWorkflow";
 
 /** A synchronous step runner (no durable replay in tests). */
 const syncStep: StepRunner = { do: (_name, fn) => fn() };
@@ -141,6 +141,90 @@ describe("runWriteWorkflow — config resolved from the SECRETS_ENCRYPTION_KEYS 
 
     const store = await SystemSecretsStore.fromEnv(managerEnv());
     expect(await store.getValue("x")).toBeUndefined();
+  });
+});
+
+/**
+ * **The rotation ledger arriving as a dispatch (`#379`).**
+ *
+ * `pithy secrets rotate` cannot reach `pithy_secrets_rotations` — the master key is worker-only, so every
+ * value-touching command is a dispatch — and it must record a rotation anyway, or a fully successful
+ * command leaves the secret reporting overdue forever. These two modes are how it does, and they are the
+ * same rows the in-Worker ledger writes.
+ */
+describe("runWriteWorkflow — the rotation ledger", () => {
+  test("opens a row and hands back the id, touching no store and no key", async () => {
+    const result = await runWriteWorkflow(managerEnv(), {
+      mode: "rotation-open",
+      name: "CF_TOKEN",
+      trigger: "manual",
+      rotatedBy: "pithy secrets rotate",
+    });
+
+    expect(result.outcome).toBe("opened");
+    expect(result.rotationId).toBeTypeOf("number");
+    const row = await env.SECRETS.prepare(
+      "select status, trigger, rotated_by from pithy_secrets_rotations where id = ?",
+    )
+      .bind(result.rotationId)
+      .first<{ status: string; trigger: string; rotated_by: string }>();
+    // `in_progress` is the trace: a rotator that never returns leaves this behind rather than nothing.
+    expect(row).toMatchObject({ status: "in_progress", trigger: "manual", rotated_by: "pithy secrets rotate" });
+  });
+
+  test("closes a row success, which is what moves lastRotatedAt", async () => {
+    const opened = await runWriteWorkflow(managerEnv(), {
+      mode: "rotation-open",
+      name: "CF_TOKEN",
+      trigger: "manual",
+      rotatedBy: "op",
+    });
+
+    const result = await runWriteWorkflow(managerEnv(), {
+      mode: "rotation-close",
+      rotationId: opened.rotationId ?? 0,
+      closure: { status: "success" },
+    });
+
+    expect(result).toEqual({ outcome: "closed" });
+    expect(await latestRotationStatus()).toBe("success");
+  });
+
+  test("a failed closure carries a code, and the sentence is composed in here", async () => {
+    const opened = await runWriteWorkflow(managerEnv(), {
+      mode: "rotation-open",
+      name: "CF_TOKEN",
+      trigger: "manual",
+      rotatedBy: "op",
+    });
+
+    await runWriteWorkflow(managerEnv(), {
+      mode: "rotation-close",
+      rotationId: opened.rotationId ?? 0,
+      closure: { status: "failed", reason: "not-recorded" },
+    });
+
+    const row = await env.SECRETS.prepare("select status, error_message from pithy_secrets_rotations where id = ?")
+      .bind(opened.rotationId)
+      .first<{ status: string; error_message: string | null }>();
+    expect(row?.status).toBe("failed");
+    // Fixed text chosen by a code. `admin/status.ts` refuses to publish this column precisely because free
+    // text is where a value gets pasted by accident, and nothing on this wire could carry one.
+    expect(row?.error_message).toBe("rolled at the issuer, and not recorded here");
+  });
+
+  test.each([
+    { mode: "rotation-open", name: "", trigger: "manual", rotatedBy: "op" },
+    { mode: "rotation-open", name: "CF_TOKEN", trigger: "whenever", rotatedBy: "op" },
+    { mode: "rotation-close", rotationId: 0, closure: { status: "success" } },
+    { mode: "rotation-close", rotationId: 1, closure: { status: "failed" } },
+    { mode: "rotation-close", rotationId: 1, closure: { status: "failed", reason: "because" } },
+    { mode: "rotation-close", rotationId: 1, closure: { status: "failed", reason: "the-token-is-sk-live-1" } },
+  ])("refuses a ledger payload it cannot read: %s", async (payload) => {
+    // The payload crosses from another process, so it is untrusted like any other input — and `rotationId`
+    // addresses a row, so an unvalidated one closes somebody else's rotation.
+    await expect(runWriteWorkflow(managerEnv(), payload as unknown as WriteWorkflowPayload)).rejects.toThrow();
+    expect(await latestRotationStatus()).toBeUndefined();
   });
 });
 

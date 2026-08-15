@@ -6,6 +6,7 @@ import { z } from "zod";
 import { mintSecretValue } from "../mintValue";
 import type { SecretRegistryEntry } from "../registry";
 import type { ManagedEnvironment } from "../scope";
+import type { OpenRotation, RotationLedger } from "./rotationLedger";
 
 /**
  * **One rotation of one secret's value, built around the failure that cannot be undone.**
@@ -43,6 +44,15 @@ import type { ManagedEnvironment } from "../scope";
  * is an outage with a known remedy the declaration can name — roll again at the issuer by hand, then
  * `pithy secrets update`. The retries above are what make reaching that point rare; the honesty about it
  * is what makes it survivable.
+ *
+ * ## The attempt is recorded here, and only here
+ *
+ * A rotation that succeeds and records nothing leaves the secret reporting **overdue forever** — `#379`,
+ * which reached production behaviour precisely because the recording lived at a *call site* rather than at
+ * the act. So the {@link RotationLedger} is an argument to this function and it is **required**: refuse,
+ * open the row, produce once, store with retries, close the row. A third caller inherits the ordering by
+ * calling this, and cannot opt out of it by forgetting. `./rotationLedger.ts` holds the seam and the
+ * argument for its shape.
  *
  * ## What this does not do, stated rather than implied
  *
@@ -133,6 +143,14 @@ export interface RotateSecretValueOptions {
   targets: readonly ManagedEnvironment[];
   /** The store write, per environment. Called once per attempt, always with the same value. */
   store: SecretValueStore;
+  /**
+   * Where the attempt is recorded — opened before the roll, closed with the outcome.
+   *
+   * **Required, and that is the fix for `#379`.** An optional ledger is one a caller forgets, and the
+   * caller that forgot was `pithy secrets rotate`: it dispatched an ordinary `update`, nothing recorded a
+   * rotation, and the secret reported overdue permanently. See {@link RotationLedger}.
+   */
+  ledger: RotationLedger;
   /** Store attempts per environment before the run ends. Defaults to 3. Never a re-roll. */
   attempts?: number;
   /** Injected in tests. Defaults to a real `setTimeout`. */
@@ -236,11 +254,45 @@ async function nextValue(options: {
 }
 
 /**
- * Rotate one secret's value: refuse, produce once, store with retries, report per secret.
+ * Open the rotation row, and **never let the bookkeeping stop the act**.
+ *
+ * A ledger that cannot be reached is a gap in a history. A credential that was not replaced because the
+ * history could not be written is an unrotated credential, and during the incident that prompted the
+ * rotation that is the worse of the two by a wide margin. So a ledger failure is absorbed: the row is
+ * simply absent, which is visible as a missing entry and as a `lastRotatedAt` that did not move — the
+ * same two signals `#379` itself was found through.
+ */
+async function openAttempt(ledger: RotationLedger, name: string): Promise<OpenRotation | undefined> {
+  try {
+    return await ledger.open(name);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Close the row, absorbing a ledger failure for the same reason {@link openAttempt} does — and one more:
+ * by the time this runs the rotation has happened, and a throw here would take `recorded` and `stranded`
+ * with it. Losing the record of what landed is how a recoverable store failure becomes an unrecoverable
+ * one.
+ */
+async function closeAttempt(attempt: OpenRotation | undefined, outcome: SecretRotationOutcome): Promise<void> {
+  if (attempt === undefined) return;
+  try {
+    await attempt.close(outcome);
+  } catch {
+    // Deliberately absorbed. See above.
+  }
+}
+
+/**
+ * Rotate one secret's value: refuse, open the row, produce once, store with retries, close the row, report
+ * per secret.
  *
  * Never throws for a rotation that *happened* and went wrong — that is an outcome, because a throw would
  * take the record of what landed with it, and the record is what makes the remedy safe. It throws only for
- * the refusals above, which happen before anything is called and leave nothing to report.
+ * the refusals above, which happen before anything is called and leave nothing to report — and, because
+ * they land before the row is opened, a refused rotation writes no history either.
  */
 export async function rotateSecretValue(options: RotateSecretValueOptions): Promise<SecretRotationOutcome> {
   const { name, entry, targets } = options;
@@ -271,6 +323,33 @@ export async function rotateSecretValue(options: RotateSecretValueOptions): Prom
   // credential may already be dead at its issuer, and every remaining step is retryable against one value.
   const first = targets[0];
   if (first === undefined) throw new ValidationError({ message: `Secret '${name}' has no environment to rotate in.` });
+
+  // **Opened here, and not one line later.** Every refusal above has already been answered, so no row is
+  // written for a rotation that never started; and the roll is the next thing that happens, so a rotator
+  // that never returns still leaves an `in_progress` row naming the secret and who asked.
+  const attempt = await openAttempt(options.ledger, name);
+  const outcome = await rollAndStore(options, { base, rotation, first });
+  await closeAttempt(attempt, outcome);
+  return outcome;
+}
+
+/**
+ * Everything below the irreversible line: produce the value once, then store it with retries.
+ *
+ * Split out so the ledger bracket in {@link rotateSecretValue} reads as one statement — open, run, close —
+ * rather than as a `close` repeated at each of four exits, which is the shape somebody eventually adds a
+ * fifth exit to.
+ */
+async function rollAndStore(
+  options: RotateSecretValueOptions,
+  context: {
+    base: Pick<SecretRotationOutcome, "name" | "kind">;
+    rotation: NonNullable<SecretRegistryEntry["rotation"]>;
+    first: ManagedEnvironment;
+  },
+): Promise<SecretRotationOutcome> {
+  const { name, entry, targets } = options;
+  const { base, rotation, first } = context;
   let produced: { value: string; rolled: boolean };
   try {
     produced = await nextValue({ name, entry, env: first });
