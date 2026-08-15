@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import { ControlPlaneScope } from "../scope/scope";
-import { HealthSummary, HealthSummaryKey } from "./health";
+import { CapabilityHealthReport, HealthSummary, HealthSummaryKey, healthReport, healthWire } from "./health";
 
 /**
  * What a capability tells a management client about its own admin surface.
@@ -95,25 +95,72 @@ export const CapabilityDeclaration = z
 export type CapabilityDeclaration = z.infer<typeof CapabilityDeclaration>;
 
 /**
- * One composed capability, as `GET /control-plane/manifest` reports it to **this** caller.
+ * One composed capability's manifest entry **as it goes over the wire**.
  *
- * `health` is the only per-caller part of a manifest entry, and its null is load-bearing: it means *no
- * number*, never zero. Read it with `healthKeys` beside it and three states are distinguishable — a
- * capability that declares nothing, one that declares a number this connection was not granted, and one
- * that reports zero. A management client that collapsed the first two would tell an adopter everything
- * is fine when it has simply not been allowed to look.
+ * Two flat fields, and neither is what a consumer reads: {@link CapabilityDescriptor} decodes them into
+ * one value that says which of the four states it is in. They are flat here because the wire has an
+ * older half to keep working. A Worker deployed before #350 sends no `healthUnavailable` and a Worker
+ * deployed before #317 sends neither field, and both must still parse; and a client pinned to a build
+ * older than the Worker it is reading strips the field it has never heard of and lands on `health:
+ * null`, which renders as silence rather than as a zero. Putting the fourth state *inside* `health`
+ * would have cost that client the whole manifest for one capability's bad afternoon, which is the
+ * failure #352 is about.
  */
-export const CapabilityDescriptor = CapabilityDeclaration.extend({
+const CapabilityDescriptorWire = CapabilityDeclaration.extend({
   // Defaulted for the same reason as `healthKeys` above, and it lands on the meaning it already had: a
-  // Worker that says nothing about health has nothing declared, which is the first of the three states.
+  // Worker that says nothing about health has nothing declared, which is the first of the four states.
   health: HealthSummary.nullable()
     .default(null)
     .describe(
-      "Every declared value this caller may see, or null when there is none to give — either nothing is declared, or this connection lacks the scope the value is behind, or the Worker predates this field. **Null is never zero.** A key declared in `healthKeys` and absent here was withheld.",
+      "Every declared value this caller may see, or null when there is none to give — either nothing is declared, or this connection lacks the scope the value is behind, or producing it failed, or the Worker predates this field. **Null is never zero.**",
     ),
-}).describe(
-  "One capability this Worker composes, as reported to one caller: its version, its admin surface, and the summary that caller is entitled to.",
-);
+  healthUnavailable: z
+    .boolean()
+    .default(false)
+    .describe(
+      "Whether producing this capability's summary failed on this read — the fourth state (#350), and the reason `health` being null is not enough on its own. Carries no message, no code and no error: what the producer threw may name a row or a key, so nothing derived from it travels. False when the Worker predates this field.",
+    ),
+});
+
+/**
+ * One composed capability, as `GET /control-plane/manifest` reports it to **this** caller.
+ *
+ * `health` is the only per-caller part of a manifest entry, and it is a four-state value rather than a
+ * nullable record: a capability that declares nothing, one that declares a number this connection was
+ * not granted, one that reports a number — zero included — and one whose producer failed. A management
+ * client that collapsed any two of those tells an adopter something untrue. The first two collapsed
+ * says everything is fine when it has simply not been allowed to look; the last two collapsed says
+ * nothing is pending when the store is down.
+ *
+ * The state travels **on** the value, so the scalars are unreachable without narrowing and a consumer
+ * that forgets the sick case gets a type error rather than a zero.
+ */
+const CapabilityDescriptorRead = CapabilityDeclaration.extend({
+  health: CapabilityHealthReport.describe(
+    "What this caller is told about the capability's own state: nothing declared, a number withheld, the numbers themselves, or a producer that failed. Four states on one value, so none of them is reachable by forgetting to check another.",
+  ),
+});
+
+export const CapabilityDescriptor = z
+  .codec(CapabilityDescriptorWire, CapabilityDescriptorRead, {
+    decode: ({ health, healthUnavailable, ...declaration }) => ({
+      ...declaration,
+      health: healthReport({ healthKeys: declaration.healthKeys, health, healthUnavailable }),
+    }),
+    // Both fields, from the one value, in the one place. A handler cannot write the numbers and forget
+    // the flag, which is what makes `encode(decode(entry))` the entry again — the property the seam's
+    // response contract test rests on.
+    encode: ({ health, healthKeys, ...declaration }) => ({
+      ...declaration,
+      // The vocabulary is defaulted on the way in, so it is optional on the way back out. Empty is the
+      // meaning absence already had: a capability that declares no summary.
+      healthKeys: healthKeys ?? [],
+      ...healthWire(health),
+    }),
+  })
+  .describe(
+    "One capability this Worker composes, as reported to one caller: its version, its admin surface, and the summary that caller is entitled to — or the named reason there is none.",
+  );
 export type CapabilityDescriptor = z.infer<typeof CapabilityDescriptor>;
 
 /**
@@ -158,3 +205,12 @@ export const ControlPlaneManifest = z
   })
   .describe("What this Worker is, what it composes, and how to call the admin surface it exposes.");
 export type ControlPlaneManifest = z.infer<typeof ControlPlaneManifest>;
+
+/**
+ * The manifest as the Worker sends it, before a client decodes it.
+ *
+ * The handler builds this and is `satisfies`-checked against it, which keeps the response a compile-time
+ * contract rather than a validation pass over values this Worker just built. A client parses with
+ * {@link ControlPlaneManifest} and gets the four-state health value out the far side.
+ */
+export type ControlPlaneManifestWire = z.input<typeof ControlPlaneManifest>;

@@ -38,9 +38,20 @@ import { ControlPlaneScope } from "../scope/scope";
  *
  * A count is less sensitive than the thing it counts, but "3 secrets need rotating" is still a fact
  * about somebody's security posture. So a key inherits a scope the capability *already* gates a read
- * with, and a caller without that scope gets no value at all rather than a zero. The manifest reports
- * both halves — `healthKeys` says what exists, `health` says what this caller may see — so three states
- * are distinguishable: nothing declared, declared and withheld, declared and zero.
+ * with, and a caller without that scope gets no value at all rather than a zero.
+ *
+ * ## And a broken store is a fourth fact (#350)
+ *
+ * #317 got three states right and left the fourth to a reviewer, deliberately: a producer that throws
+ * is neither a withheld number nor a zero, and returning null for it would have made a sick store
+ * indistinguishable from one this caller may not look at. The reasoning was right. The behaviour was
+ * that the throw propagated, the whole manifest read failed, and one sick capability blanked Overview
+ * for every capability beside it — with nothing on screen saying which one.
+ *
+ * So there are four, and they live on {@link CapabilityHealthReport}: `undeclared`, `withheld`,
+ * `reported`, `unavailable`. The state rides on the value rather than beside it, so a consumer reaches
+ * a number only by narrowing, and one that forgets the failure does not render a zero — it does not
+ * compile.
  *
  * **Staleness.** These numbers are as old as the manifest a client cached. They are right for a rail
  * and must never be presented as live.
@@ -291,31 +302,139 @@ function checked(source: CapabilityHealthSource, produced: HealthSummary): Healt
 }
 
 /**
- * One capability's summary for one caller, or null when there is none to give.
+ * What one capability's summary is, for one caller. Four states, and the value carries which.
  *
- * Null covers both "declares nothing" and "declares something this caller may not see", and the
- * manifest keeps them apart by reporting `healthKeys` beside it. What null never means is zero.
+ * A discriminated union rather than a nullable record with a flag beside it, and that is the whole
+ * point of #350. A flag is the same information and the opposite property: correct for whoever
+ * remembered to read it, and a zero for everybody else. Here the scalars are unreachable without
+ * narrowing on `state`, so forgetting the sick case is a type error rather than a screen that says
+ * everything is fine.
+ *
+ * - `undeclared` — the capability contributes no summary. Nothing to show, and nothing wrong.
+ * - `withheld` — it declares one, and this connection was not granted the scope it sits behind. Read
+ *   `healthKeys` beside this and a client can say a number exists that it may not see.
+ * - `reported` — the values, each one named by a declaration that travels with it. Zero is one of these.
+ * - `unavailable` — producing the summary failed. Not zero, not withheld, and never both.
+ */
+export const CapabilityHealthReport = z
+  .discriminatedUnion("state", [
+    z
+      .object({
+        state: z.literal("undeclared").describe("This capability contributes no summary at all."),
+      })
+      .describe("A capability with nothing to report. Nothing to show, and nothing wrong."),
+    z
+      .object({
+        state: z.literal("withheld").describe("A summary exists that this connection was not granted."),
+      })
+      .describe(
+        "A declared summary this caller may not see. Read `healthKeys` beside it to say a number exists rather than to say there is none.",
+      ),
+    z
+      .object({
+        state: z.literal("reported").describe("The summary was produced and this caller may see it."),
+        values: HealthSummary.describe("Each declared key this caller is entitled to, and its scalar. Zero is one."),
+      })
+      .describe("The numbers, each one named by a declaration that travels beside it in `healthKeys`."),
+    z
+      .object({
+        state: z.literal("unavailable").describe("Producing this capability's summary failed on this read."),
+      })
+      .describe(
+        "A summary that could not be produced. Deliberately empty: what the producer threw may name a row or a key, so nothing derived from it travels — there is nowhere to put it.",
+      ),
+  ])
+  .describe(
+    "What one capability's summary is, for one caller: nothing declared, declared and withheld, reported, or failed. The state is on the value, so a scalar is unreachable without narrowing.",
+  );
+export type CapabilityHealthReport = z.output<typeof CapabilityHealthReport>;
+
+/**
+ * One capability's summary for one caller.
  *
  * **The producer is not called when no key is permitted**, so a caller with no grant costs the adopter's
  * Worker nothing at all. When it *is* called, the whole of what it produced is checked before anything
  * is withheld: a producer must not be able to hide a violation behind a scope the caller happens to
  * lack.
+ *
+ * **A failure is caught here and goes no further.** The manifest is the read every other pane is built
+ * from, so one capability's bad afternoon must cost that capability's number and nothing else. Both
+ * kinds of failure land in the same state, because from a caller's side they are one fact — this
+ * capability could not say: the producer threw, or what it produced its own declaration does not
+ * permit. An author's mistake is not what this hides. The scope a key inherits, its name, its cost and
+ * the brand on the declaration are all checked at assembly, so the shape of a declaration fails a
+ * deploy rather than a request; what reaches here is data-dependent, which is the transient kind.
+ *
+ * **The caught error is dropped whole, and the `catch` takes no binding so that is visible rather than
+ * asserted.** It may be a `PithyError` whose `detail` names a row, a key id, or a query — throw-site
+ * context, which is exactly what a producer should put there and exactly what must not travel. Nothing
+ * derived from it reaches the manifest, a log, or a response: what survives is that this capability
+ * failed, and its name, which the manifest already carries in public. An adopter diagnoses it at their
+ * own throw site, where the context is theirs and stays theirs.
  */
 export async function readCapabilityHealth(
   source: CapabilityHealthSource | undefined,
   grantedScopes: readonly string[],
   produce: (source: CapabilityHealthSource) => Promise<HealthSummary>,
-): Promise<HealthSummary | null> {
-  if (!source) return null;
+): Promise<CapabilityHealthReport> {
+  if (!source) return { state: "undeclared" };
   const permitted = source.keys.filter((key) => grantedScopes.includes(key.scope));
-  if (permitted.length === 0) return null;
-  const produced = checked(source, await produce(source));
+  if (permitted.length === 0) return { state: "withheld" };
+  let produced: HealthSummary;
+  try {
+    produced = checked(source, await produce(source));
+  } catch {
+    return { state: "unavailable" };
+  }
   const visible: HealthSummary = {};
   for (const key of permitted) {
     // Present: `checked` refused anything the declaration does not name and anything it omits.
     visible[key.key] = produced[key.key] as HealthSummaryValue;
   }
-  return visible;
+  return { state: "reported", values: visible };
+}
+
+/** A manifest entry's health as the wire carries it: the #317 fields, plus the flag #350 added. */
+export interface CapabilityHealthWire {
+  /** The closed vocabulary this capability may report. Empty when it declares none. */
+  healthKeys: readonly HealthSummaryKey[];
+  /** The values this caller may see, or null when there are none to give. Null is never zero. */
+  health: HealthSummary | null;
+  /** Whether producing the summary failed on this read. */
+  healthUnavailable: boolean;
+}
+
+/**
+ * Read the four states off a manifest entry.
+ *
+ * **The failure flag is checked first and wins.** A Worker that sends both a failure and values is
+ * describing a producer that did not finish, and reading what it sent anyway is reading whatever the
+ * failure left behind.
+ *
+ * A Worker deployed before #350 sends no flag, which defaults to false, and lands on the three states
+ * it already had. A Worker deployed before #317 sends neither field and lands on `undeclared`.
+ */
+export function healthReport(entry: CapabilityHealthWire): CapabilityHealthReport {
+  if (entry.healthUnavailable) return { state: "unavailable" };
+  if (entry.health) return { state: "reported", values: entry.health };
+  return entry.healthKeys.length === 0 ? { state: "undeclared" } : { state: "withheld" };
+}
+
+/**
+ * Put a report back on the wire.
+ *
+ * The one place the two fields are written, so a handler cannot set the values and forget the flag.
+ * `undeclared` and `withheld` encode alike on purpose — `healthKeys` rides in the same entry and tells
+ * them apart, which is the arrangement #317 chose and this does not disturb.
+ */
+export function healthWire(report: CapabilityHealthReport): {
+  health: HealthSummary | null;
+  healthUnavailable: boolean;
+} {
+  return {
+    health: report.state === "reported" ? report.values : null,
+    healthUnavailable: report.state === "unavailable",
+  };
 }
 
 /** One value with the declaration that says how to render it. */
@@ -332,16 +451,20 @@ export interface NamedHealthValue {
  * This is how "an unknown summary key is renderable as nothing rather than as an error" is real rather
  * than aspirational: a client renders what this returns, so a key from a Worker newer than its
  * declaration simply is not in the list.
+ *
+ * **Only `reported` has values.** A withheld summary and a failed one both name nothing here, which is
+ * right for a list of numbers — and it is why a surface that must say *why* there is no number reads
+ * `state` rather than the length of this.
  */
 export function namedHealthValues(descriptor: {
   healthKeys: readonly HealthSummaryKey[];
-  health: HealthSummary | null;
+  health: CapabilityHealthReport;
 }): NamedHealthValue[] {
   const health = descriptor.health;
-  if (!health) return [];
+  if (health.state !== "reported") return [];
   const named: NamedHealthValue[] = [];
   for (const key of descriptor.healthKeys) {
-    const value = health[key.key];
+    const value = health.values[key.key];
     if (value !== undefined) named.push({ key, value });
   }
   return named;
