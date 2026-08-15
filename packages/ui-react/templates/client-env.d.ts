@@ -84,6 +84,40 @@ declare module "virtual:pithy/payments" {
   export default config;
 }
 
+declare module "virtual:pithy/support" {
+  /** Whether support is composed AND serving the in-app submission routes — the only ones a browser calls. */
+  export const enabled: boolean;
+
+  const config:
+    | { enabled: false }
+    | {
+        enabled: true;
+        /** Where the support routes mount, e.g. `/support`. `POST {basePath}/feedback` writes in. */
+        basePath: string;
+        /**
+         * What one submission may carry. Hold a compose form to these so the handler does not have to
+         * refuse after somebody pressed Send. The taxonomy is not here: a category's text is the
+         * instruction a classifier reads, not copy for a chooser.
+         */
+        submission: {
+          /** The longest subject accepted. It becomes the thread's name in the inbox. */
+          maxSubjectChars: number;
+          /** The longest report body accepted. */
+          maxBodyChars: number;
+          /** What an upload control may offer, or null when attachments are off and it renders none. */
+          attachments: {
+            /** How many files one submission may carry. */
+            maxCount: number;
+            /** The largest single file, measured on the decoded bytes. */
+            maxBytes: number;
+            /** The exact MIME types accepted — an allowlist, and the `accept` a file input wants. */
+            allowedContentTypes: string[];
+          } | null;
+        };
+      };
+  export default config;
+}
+
 declare module "virtual:pithy/turnstile" {
   /** Whether turnstile is composed AND has a renderable login widget for this environment. */
   export const enabled: boolean;

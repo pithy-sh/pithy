@@ -382,6 +382,9 @@ describe("the React 19 stub", () => {
       expect(ambient).toContain('declare module "virtual:pithy/auth"');
       expect(ambient).toContain('declare module "virtual:pithy/turnstile"');
       expect(ambient).toContain('declare module "virtual:pithy/payments"');
+      // Support's is the fourth, and it is here for the same create-never-overwrite reason: a screen
+      // that posts a feedback form is written later, against a file this run is the only chance to write.
+      expect(ambient).toContain('declare module "virtual:pithy/support"');
       // Each module is a union discriminated on `enabled`, exported as the default — the shape that
       // makes an uncomposed capability narrow instead of breaking the build.
       expect(ambient).toContain("export default config;");

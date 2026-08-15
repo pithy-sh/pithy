@@ -1,9 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import type { Capability, PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
+import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
+import { unpublishedIn } from "@pithy-sh/core/src/projection/published";
+import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
-import { isSupportCapability, SUPPORT_MIGRATION_ORDER, support } from "./capability";
+import { isSupportCapability, SUPPORT_MIGRATION_ORDER, type SupportCapability, support } from "./capability";
 import { SUPPORT_CONTROL_PLANE_SCOPES } from "./http/scopes";
 import { supportWorkflows } from "./workflows/specs";
 
@@ -120,6 +123,209 @@ describe("the admin surface support advertises", () => {
       "/inbox/threads/:id/flags",
       "/inbox/replies",
     ]);
+  });
+});
+
+/**
+ * The client projection — `virtual:pithy/support`, and the one place a decision about what a browser
+ * may know is made. `pithy-sh/pithy#376`.
+ *
+ * Four halves, on the shape `payments/src/capability.test.ts` established. An **exact-key lock**,
+ * because a projection grows by somebody adding a key and the review that would have caught it is
+ * this test. A **positive sweep** over the serialized result — every leaf is a fact a browser may
+ * know, every key one written out by hand — so a future edit that reached for the taxonomy or an
+ * inbox address fails here rather than in a bundle. A **vacuity check**, because a projection that
+ * leaked nothing by projecting nothing would pass both of those perfectly. And **the gate this issue
+ * was filed for**: the projected `basePath` is where the feedback routes actually mount, measured
+ * against the composed route table rather than against the config it came from.
+ */
+
+/**
+ * A composition that carries something forbidden of every JSON type the sweep can see, so the
+ * assertions below have something to be measured by.
+ *
+ * The bounds are deliberately unlike the defaults. `maxSubjectChars: 200` and `maxBodyChars: 10_000`
+ * are what an unconfigured project resolves to, so a projection that ignored config entirely and
+ * wrote the defaults down would agree with a default fixture on every number — the one mistake the
+ * bounds half of this exists to catch.
+ */
+const CLIENT_CONFIG = {
+  inboundAddresses: ["support@help.example.com"],
+  // The taxonomy: a key and the instruction a model reads. Neither is chooser copy, and neither crosses.
+  categories: { billing_dispute: "The customer disagrees with a charge they can see on their statement." },
+  ai: { model: "@cf/meta/llama-3.1-70b-instruct", maxChars: 4321 },
+  guard: { maxPerSenderPerHour: 77, authservId: "mx.acme.example" },
+  attachments: { maxBytes: 9_876_543 },
+  reply: {
+    replyToAddress: "answers@help.example.com",
+    // A boolean the config carries and the bundle must not. The leaf half is blind to this whole JSON
+    // type by construction — `true` is published, because `enabled` is — so the key half is the only
+    // one that can police it, and it needs something to police.
+    deliverInApp: true,
+    snippets: { refund: { label: "Refund issued", category: "billing", body: "Hi {{name}}, refunded." } },
+  },
+  search: { fts: true },
+  submission: {
+    maxSubjectChars: 140,
+    maxBodyChars: 6_500,
+    maxPerAccountPerHour: 7,
+    attachments: { maxCount: 2, maxBytes: 1_234_567, allowedContentTypes: ["image/png", "text/plain"] },
+  },
+};
+
+/**
+ * Every key the projection may carry, at any depth. Seven.
+ *
+ * **Written out, never `Object.keys(...)` of the projection or its type.** A gate that reads its own
+ * subject cannot fail when the subject changes — deriving the permitted set from the thing being
+ * policed widens the permission in the same commit that widens the projection, and the test whose
+ * whole job is to catch that passes. Adding a key to a browser bundle means editing this line.
+ */
+const PUBLISHED_CLIENT_KEYS = [
+  "enabled",
+  "basePath",
+  "submission",
+  "maxSubjectChars",
+  "maxBodyChars",
+  "attachments",
+  "maxCount",
+  "maxBytes",
+  "allowedContentTypes",
+];
+
+/** Every `METHOD /path` a composed capability actually mounts. The route table, not the config. */
+function mountedRoutes(capability: SupportCapability): string[] {
+  const app = new Hono<PithyHonoEnv>();
+  capability.routes?.(app);
+  return app.routes.map((route) => `${route.method} ${route.path}`);
+}
+
+describe("support().client — virtual:pithy/support", () => {
+  const projection = resolveClientProjection(composed(CLIENT_CONFIG), { environment: "prod" });
+
+  test("projects exactly three keys, and under submission exactly three more", () => {
+    expect(Object.keys(projection).sort()).toEqual(["basePath", "enabled", "submission"]);
+    const submission = projection.submission as Record<string, unknown>;
+    expect(Object.keys(submission).sort()).toEqual(["attachments", "maxBodyChars", "maxSubjectChars"]);
+    expect(Object.keys(submission.attachments as Record<string, unknown>).sort()).toEqual([
+      "allowedContentTypes",
+      "maxBytes",
+      "maxCount",
+    ]);
+  });
+
+  test("nothing but what a browser may know crosses it, whatever a field is called", () => {
+    // Serialized and re-parsed on purpose: `JSON.stringify` is how this reaches a bundle, so what the
+    // sweep walks is exactly what an adopter's users receive.
+    const inlined: unknown = JSON.parse(JSON.stringify(projection));
+    const escaped = unpublishedIn(inlined, {
+      // The envelope, the address, and the bounds a compose form holds somebody to. Nothing else.
+      leaves: [true, "/support", 140, 6_500, 2, 1_234_567, "image/png", "text/plain"],
+      keys: PUBLISHED_CLIENT_KEYS,
+    });
+    expect(
+      escaped,
+      `These reached an adopter's users and are not the mount path or a bound a submission form enforces:\n  ${escaped.join("\n  ")}`,
+    ).toEqual([]);
+  });
+
+  test("the composition really carries everything the sweep is meant to refuse", () => {
+    // A gate over nothing passes perfectly. The config the assertion above reads must genuinely hold
+    // the taxonomy, the addresses, the model, the mail bounds and a flag, or that test proves nothing.
+    const serialized = JSON.stringify(CLIENT_CONFIG);
+    for (const withheld of [
+      "support@help.example.com",
+      "answers@help.example.com",
+      "billing_dispute",
+      "The customer disagrees with a charge",
+      "@cf/meta/llama-3.1-70b-instruct",
+      "4321",
+      "77",
+      "mx.acme.example",
+      "9876543",
+      "Refund issued",
+      // The rate a client cannot pre-enforce honestly, and the two booleans.
+      '"maxPerAccountPerHour":7',
+      '"deliverInApp":true',
+      '"fts":true',
+    ]) {
+      expect(serialized, withheld).toContain(withheld);
+    }
+  });
+
+  test("what is meant to cross does cross — a sweep over nothing would pass perfectly", () => {
+    const serialized = JSON.stringify(projection);
+    expect(serialized).toContain("/support");
+    expect(serialized).toContain("140");
+    expect(serialized).toContain("6500");
+    expect(serialized).toContain("image/png");
+    expect(serialized).not.toContain("undefined");
+  });
+
+  test("carries the configured bounds, not the kit's defaults", () => {
+    // The defaults are 200 and 10_000. A projection that wrote them down would be a second copy of
+    // the config rather than a reading of it, and every adopter who tuned a bound would ship a form
+    // holding people to a number their handler does not enforce.
+    expect(projection.submission).toEqual({
+      maxSubjectChars: 140,
+      maxBodyChars: 6_500,
+      attachments: { maxCount: 2, maxBytes: 1_234_567, allowedContentTypes: ["image/png", "text/plain"] },
+    });
+  });
+
+  test("attachments off is null, so a screen renders no file picker on one check", () => {
+    const off = resolveClientProjection(composed({ submission: { attachments: { enabled: false } } }), {
+      environment: "prod",
+    });
+    expect((off.submission as Record<string, unknown>).attachments).toBeNull();
+  });
+
+  test("the submission channel off is { enabled: false } — there is no route for a browser to call", () => {
+    // `registerSupportRoutes` does not mount the feedback routes when submission is off; they answer
+    // 404. So "composed with the channel closed" has to read the same as "not composed at all", and a
+    // screen branches on `enabled` rather than guarding down two levels.
+    const closed = composed({ submission: { enabled: false } });
+    expect(resolveClientProjection(closed, { environment: "prod" })).toEqual({ enabled: false });
+    expect(mountedRoutes(closed).some((route) => route.includes("/feedback"))).toBe(false);
+  });
+
+  test("an uncomposed capability is { enabled: false } too", () => {
+    expect(resolveClientProjection(undefined, { environment: "prod" })).toEqual({ enabled: false });
+  });
+});
+
+/**
+ * **The gate: move `basePath` and a client that reads the projection follows; one that wrote it down
+ * breaks.**
+ *
+ * Measured against the **composed route table**, never against `capability.basePath` or the option
+ * that produced it. Both of those are the projection's own source, so comparing to either would let a
+ * projection that faithfully published a path nothing serves pass green — the failure this issue
+ * describes, restated one layer in. The route table is the independent authority: it is where a
+ * request actually lands.
+ */
+describe("the address a browser posts a submission to", () => {
+  test("**the projected basePath is where the feedback routes actually mount**", () => {
+    const moved = composed({ basePath: "/help" });
+    const projected = resolveClientProjection(moved, { environment: "prod" }).basePath;
+    const routes = mountedRoutes(moved);
+    // Built from what the projection published, checked against what the router registered. A
+    // projection stuck on `/support` names three routes this table does not contain.
+    expect(routes).toEqual(
+      expect.arrayContaining([
+        `POST ${projected}/feedback`,
+        `GET ${projected}/feedback`,
+        `GET ${projected}/feedback/:id`,
+      ]),
+    );
+    // And the old address is gone, so a client that hardcoded it gets the 404 this is about.
+    expect(routes.some((route) => route.startsWith("POST /support/"))).toBe(false);
+  });
+
+  test("the literal, so the gate above cannot be satisfied by an empty route table", () => {
+    expect(resolveClientProjection(composed({ basePath: "/help" }), { environment: "prod" }).basePath).toBe("/help");
+    expect(resolveClientProjection(composed(), { environment: "prod" }).basePath).toBe("/support");
+    expect(mountedRoutes(composed())).toContain("POST /support/feedback");
   });
 });
 
