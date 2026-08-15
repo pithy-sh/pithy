@@ -23,10 +23,11 @@ async function insertJob(opts: {
 }): Promise<string> {
   const id = `job-${++seq}`;
   await env.DB.prepare(
-    "insert into pithy_email_jobs (id, to_address, from_address, from_name, subject, template, category, payload, status, mode, attempts, batch_id, send_at, open_tracking, click_tracking, created_at, updated_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    "insert into pithy_email_jobs (id, to_address, recipient_key, from_address, from_name, subject, template, category, payload, status, mode, attempts, batch_id, send_at, open_tracking, click_tracking, created_at, updated_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
   )
     .bind(
       id,
+      "u@example.com",
       "u@example.com",
       "noreply@pithy.sh",
       "Acme",
@@ -82,9 +83,10 @@ async function insertJobs(count: number): Promise<string[]> {
   await env.DB.batch(
     ids.map((id) =>
       env.DB.prepare(
-        "insert into pithy_email_jobs (id, to_address, from_address, from_name, subject, template, category, payload, status, mode, attempts, send_at, open_tracking, click_tracking, created_at, updated_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "insert into pithy_email_jobs (id, to_address, recipient_key, from_address, from_name, subject, template, category, payload, status, mode, attempts, send_at, open_tracking, click_tracking, created_at, updated_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
       ).bind(
         id,
+        "u@example.com",
         "u@example.com",
         "noreply@pithy.sh",
         "Acme",

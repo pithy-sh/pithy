@@ -19,6 +19,10 @@ export const email_0001_init: Migration = {
       .createTable("pithyEmailJobs")
       .addColumn("id", "text", (c) => c.primaryKey())
       .addColumn("toAddress", "text", (c) => c.notNull())
+      // The recipient under `normalizeAddress`, stored rather than derived. `toAddress` keeps the
+      // string the caller typed; this is what anything matching a recipient compares against, and
+      // `lower(to_address)` is not a substitute — SQLite's `lower()` folds ASCII only.
+      .addColumn("recipientKey", "text", (c) => c.notNull())
       .addColumn("fromAddress", "text", (c) => c.notNull())
       .addColumn("fromName", "text", (c) => c.notNull())
       .addColumn("subject", "text", (c) => c.notNull())
@@ -88,8 +92,20 @@ export const email_0001_init: Migration = {
       .columns(["status", "createdAt"])
       .execute();
     await db.schema.createIndex("pithyEmailJobsCreatedIdx").on("pithyEmailJobs").column("createdAt").execute();
+
+    // `sentSince` asks one question — has this template already gone to this person since a given
+    // instant — and asks it of a table holding every email the project ever queued. Without this the
+    // question is a full scan, and it is asked on the path that decides whether to send another one.
+    // Leading with the recipient rather than the template is what makes it selective: a project has a
+    // handful of templates and an unbounded number of recipients.
+    await db.schema
+      .createIndex("pithyEmailJobsRecipientTemplateIdx")
+      .on("pithyEmailJobs")
+      .columns(["recipientKey", "template", "createdAt"])
+      .execute();
   },
   down: async (db: Kysely<unknown>): Promise<void> => {
+    await db.schema.dropIndex("pithyEmailJobsRecipientTemplateIdx").execute();
     await db.schema.dropIndex("pithyEmailJobsCreatedIdx").execute();
     await db.schema.dropIndex("pithyEmailJobsStatusCreatedIdx").execute();
     await db.schema.dropIndex("pithyEmailEventsJobIdIdx").execute();

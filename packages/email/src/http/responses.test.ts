@@ -34,6 +34,7 @@ const NOW = new Date("2026-06-10T12:00:00.000Z");
 const JOB: EmailJob = {
   id: "job-1",
   toAddress: "ada@example.test",
+  recipientKey: "ada@example.test",
   fromAddress: "hello@acme.test",
   fromName: "Acme",
   subject: "Your receipt for order 4471",

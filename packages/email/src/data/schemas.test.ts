@@ -11,6 +11,7 @@ describe("EmailJob codec round-trip", () => {
     const row = {
       id: "job-1",
       toAddress: "u@example.com",
+      recipientKey: "u@example.com",
       fromAddress: "noreply@pithy.sh",
       fromName: "Pithy",
       subject: "Welcome",

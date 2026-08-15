@@ -23,6 +23,7 @@ function job(overrides: Partial<EmailJob> = {}): EmailJob {
   return {
     id: "job-1",
     toAddress: "ada.lovelace@example.com",
+    recipientKey: "ada.lovelace@example.com",
     fromAddress: "noreply@pithy.sh",
     fromName: "Pithy",
     subject: "Your sign-in link",
