@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
+import type { PaymentsFetch } from "../client/api";
 import { PaymentsPricingEnvelope } from "../http/responses";
-import { fetchPriceVisitor, type PriceVisitorFetch, readPaddleCustomer } from "./visitor";
+import { fetchPriceVisitor, readPaddleCustomer } from "./visitor";
 
 /**
  * The trust boundary between a browser and the adopter's own Worker.
@@ -16,14 +17,16 @@ import { fetchPriceVisitor, type PriceVisitorFetch, readPaddleCustomer } from ".
  */
 
 /** A fetch answering one body with one status, recording what it was asked. */
-function stubFetch(body: unknown, ok = true): { fetch: PriceVisitorFetch; urls: string[] } {
+function stubFetch(body: unknown, ok = true): { fetch: PaymentsFetch; urls: string[] } {
   const urls: string[] = [];
   return {
     urls,
     fetch: (input, init) => {
       urls.push(input);
-      expect(init.credentials, "the session rides a cookie; a request without it is signed out").toBe("include");
-      return Promise.resolve({ ok, json: () => Promise.resolve(body) });
+      // The cookie is set by `callPayments` now rather than here, and this still asserts it: the request
+      // this reader makes has to arrive signed in, whichever module wrote it.
+      expect(init?.credentials, "the session rides a cookie; a request without it is signed out").toBe("include");
+      return Promise.resolve({ ok, status: ok ? 200 : 401, json: () => Promise.resolve(body) });
     },
   };
 }
@@ -87,16 +90,17 @@ describe("fetchPriceVisitor", () => {
 
   test("a body that will not parse reads as nobody rather than crashing the pane", async () => {
     // A corporate proxy's HTML error page reaches a browser far more often than anyone expects.
-    const throwing: PriceVisitorFetch = () =>
+    const throwing: PaymentsFetch = () =>
       Promise.resolve({
         ok: true,
+        status: 200,
         json: () => Promise.reject(new Error("Unexpected token < in JSON at position 0")),
       });
     expect(await fetchPriceVisitor({ fetch: throwing })).toBeNull();
   });
 
   test("an unreachable Worker reads as nobody rather than throwing", async () => {
-    const refused: PriceVisitorFetch = () => Promise.reject(new Error("Failed to fetch"));
+    const refused: PaymentsFetch = () => Promise.reject(new Error("Failed to fetch"));
     expect(await fetchPriceVisitor({ fetch: refused })).toBeNull();
   });
 
