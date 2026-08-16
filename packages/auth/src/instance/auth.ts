@@ -169,6 +169,15 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
       database: { generateId: () => crypto.randomUUID() },
     },
     // Better Auth's errors bubble out of `handler` so the Hono boundary maps them to PithyError.
+    //
+    // **Load-bearing, and measured rather than assumed (#385).** The `before` hook below throws a
+    // `PithyError`, which better-call's router does not recognise as its own `APIError` — so without
+    // this it takes the default branch: `console.error("# SERVER_ERROR: ", error)`, which prints the
+    // whole payload including the `action` naming `auth-github-credentials`, and answers a bodyless
+    // 500. Removing it reddens two cases in `http/providerResolution.workers.test.ts` (503 becomes
+    // 500, and the caller's message disappears) and puts a secret name in the log. A handler could not
+    // replace it: `onAPIError.onError`'s return value is ignored, so the only way it reaches the same
+    // outcome is by throwing, which is what this is.
     onAPIError: { throw: true },
     databaseHooks: {
       user: {

@@ -17,7 +17,7 @@ import { keyedSecretName } from "./keyspace";
 import { type KeyedMemberWrite, type KeyedWriteMode, runKeyedRemove, runKeyedWrite } from "./keyspaceWrite";
 import type { KeyedSecretName, SecretName, SecretRegistry, SecretRegistryEntry, SecretValue } from "./registry";
 import { RotationTracker } from "./store/rotationTracker";
-import { SystemSecretsStore } from "./store/systemSecretsStore";
+import { type StoredSecretValue, SystemSecretsStore, unreadableSecret } from "./store/systemSecretsStore";
 
 /**
  * The read seam. `secretsStore(env, registry)` resolves every declared secret locally — no RPC —
@@ -626,9 +626,14 @@ export class SecretsAccessor<R extends SecretRegistry> {
  * the read.
  *
  * **This never rejects because a secret is missing (#170).** A secret that cannot be resolved — no row,
- * no binding, a value that fails its schema — holds its error, and the read of that secret raises it.
- * A missing secret still fails loudly and still names itself; it just stops taking every other
- * capability's secrets down with it. Reject only on something that is nobody's secret in particular.
+ * no binding, a row that will not decrypt, a value that fails its schema — holds its error, and the read
+ * of that secret raises it. A missing secret still fails loudly and still names itself; it just stops
+ * taking every other capability's secrets down with it. Reject only on something that is nobody's secret
+ * in particular.
+ *
+ * **The unreadable row is in that list since #384, and was not before.** It threw out of the batch decrypt,
+ * so it was held against every `d1` name at once — #170's promise held for a *missing* row and not for an
+ * *unreadable* one, which is narrower than the sentence reads and narrower in the direction nobody guesses.
  *
  * Nothing reads `ENVIRONMENT`. A `d1` secret cannot be shadowed by a plaintext binding anywhere, which
  * used to be true only of deployed workers.
@@ -653,7 +658,7 @@ export async function secretsStore<R extends SecretRegistry>(
   }
 
   if (d1Names.length > 0) {
-    let values: Record<string, VersionedValue> = {};
+    let values: Record<string, StoredSecretValue> = {};
     let storeFailure: Error | undefined;
     try {
       values = await (await SystemSecretsStore.fromEnv(env)).getValues(d1Names);
@@ -661,6 +666,12 @@ export async function secretsStore<R extends SecretRegistry>(
       // The store itself is unreachable — no `SECRETS` D1, or no master key. That is fatal for every
       // `d1` secret and for none of the others, so it is held against each `d1` name rather than
       // thrown: a `cf-secrets-store` secret in another capability is unaffected and still reads.
+      //
+      // **This is now the only thing that reaches here, and that is the #384 fix.** A row that would not
+      // decrypt used to throw out of `getValues` and land in this `catch`, so one unreadable secret was
+      // held against every `d1` name in the registry while the store was fine and every other row opened.
+      // Per-row outcomes come back on the value below; what is left here is genuinely nobody's secret in
+      // particular.
       storeFailure = held(error);
     }
     for (const name of d1Names) {
@@ -672,8 +683,12 @@ export async function secretsStore<R extends SecretRegistry>(
       }
       const value = values[name];
       try {
+        // Three facts, three sentences. No row at all is unprovisioned. A row that would not open is
+        // `secrets/crypto_failed` against this name and no other — a different remedy, so a different
+        // sentence. Anything else resolves.
         if (!value) throw unprovisioned(name, isBound(bindings, name));
-        resolved[name] = resolveVersioned(entry, name, value);
+        if (value.state === "unreadable") throw unreadableSecret(name);
+        resolved[name] = resolveVersioned(entry, name, value.value);
       } catch (error) {
         failures[name] = held(error);
       }

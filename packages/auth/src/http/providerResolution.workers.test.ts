@@ -38,26 +38,22 @@ import { createAuthRoutes } from "./routes";
  * | ---              | ---                       | ---        | ---                         |
  * | enabled          | provisioned               | works      | redirects to GitHub         |
  * | enabled          | **missing**               | works      | **503 `auth/provider_unavailable`** |
+ * | **not enabled**  | irrelevant                | works      | **404 `PROVIDER_NOT_FOUND`** |
  * | enabled          | missing, *and* no session secret | fails | fails                  |
  *
- * Row two is the fix. Row three is the precondition that keeps failing the whole instance, which is the
- * half of the issue that was already right and the half a change like this most easily breaks.
+ * Row two is the fix. Row three is the distinction the fix exists to draw — a fault and a choice are not
+ * the same fact, and they answer differently. Row four is the precondition that keeps failing the whole
+ * instance, which is the half of the issue that was already right and the half a change like this most
+ * easily breaks.
  *
- * **A provider merely *disabled* is deliberately not asked for here, and the reason is a Better Auth
- * defect rather than a preference.** On 1.6.19, an endpoint refusal is rendered into a Response *and*
- * re-thrown out of the router's `onError`; with `onAPIError: { throw: true }` that second throw is a
- * rejection nobody can be waiting on, because the Response has already gone. Every request for a
- * provider the instance does not hold therefore leaves one behind — over HTTP and through
- * `instance.api.signInSocial` alike, and `addEventListener("unhandledrejection", …)` inside workerd
- * does not reclaim it. Vitest counts it against the run.
- *
- * So the disabled side of the distinction is proven where no dispatch is needed: `unavailableProviderFor`
- * answers `undefined` for a disabled provider and names an unresolvable one (`instance/providers.test.ts`),
- * and `socialProviders` omits each for its own reason (`instance/auth.workers.test.ts`). What reaches a
- * caller for a disabled provider is Better Auth's own `{"code":"PROVIDER_NOT_FOUND"}` at 404 — measured,
- * not assumed — against this suite's 503 `auth/provider_unavailable`. Different status, different body
- * shape, different code. The upstream rejection is worth its own issue: it is in production too, not
- * only under test.
+ * **Row three was once asserted without dispatching, and that hole is now closed (#385).** Under
+ * workerd's pre-2026-03-03 behaviour an `async` function that *returned* a rejected promise rather than
+ * awaiting it fired `unhandledrejection` even where the caller awaited and caught it — Better Auth's
+ * `runWithEndpointContext` is that shape, so asking for a provider the instance does not hold left two
+ * phantom rejections behind and vitest counted them. The runtime fix is already shipped and default-on
+ * from compatibility date 2026-03-03; `vitest.workers.config.ts` names the flag. So the disabled side is
+ * a live request again, and the distinction is measured end to end rather than half proven by
+ * construction.
  */
 
 const SECRET = "test-secret-please-rotate-0000000000";
@@ -253,6 +249,34 @@ describe("an enabled provider whose credential will not resolve", () => {
     const { app, events } = buildApp(CONFIG);
     await socialSignIn(app, "github");
     expect(JSON.stringify(events)).not.toContain("auth-github-credentials");
+  });
+});
+
+describe("a provider nobody enabled", () => {
+  /**
+   * The other side of the distinction, over HTTP, because that is where it is worth anything: an
+   * operator reading a 503 `auth/provider_unavailable` learns something is broken, and a caller reading
+   * Better Auth's 404 learns GitHub was never offered here. Same request, two different facts.
+   *
+   * Everything is provisioned, so nothing is unresolvable — the only thing missing is the enabling, and
+   * the answer must come from Better Auth rather than from this kit's refusal.
+   */
+  test("answers Better Auth's own 404, not this kit's 503", async () => {
+    await seed(ALL_SECRETS);
+    const { app } = buildApp({ google: { enabled: true } });
+    const res = await socialSignIn(app, "github");
+    expect(res.status).toBe(404);
+    const body = await res.json<{ code?: string; error?: { code?: string } }>();
+    expect(body.code).toBe("PROVIDER_NOT_FOUND");
+    // Not a Pithy envelope: the refusal is Better Auth's, and nothing here re-homed it.
+    expect(body.error?.code).toBeUndefined();
+  });
+
+  test("nothing is recorded — a provider nobody enabled is a choice, not an incident", async () => {
+    await seed(ALL_SECRETS);
+    const { app, events } = buildApp({ google: { enabled: true } });
+    await socialSignIn(app, "github");
+    expect(events.filter((event) => event.action === "auth/provider_unavailable")).toHaveLength(0);
   });
 });
 
