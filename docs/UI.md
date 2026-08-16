@@ -38,8 +38,10 @@ apps/api/
   client-env.d.ts            new   ambient declarations for virtual:pithy/*
   src/
     index.ts                       the Worker entry — untouched
-    client.tsx               new   SPA entry: mounts the router
+    client.tsx               new   SPA entry: creates the mount node, mounts the router
+    client.test.tsx          new   the gate that fails if the mount point becomes two strings
     router.tsx               new   the two-glob router and its route guard
+    router.test.tsx          new   the gate that fails if a redirect target becomes a literal
     styles.css               new   yours: the palette tokens, the reset, body
     pithy-screens.css        new   Pithy's: every class Pithy's own screens render
     pithy-config.tsx         new   the one module that imports virtual:pithy/*
@@ -49,6 +51,7 @@ apps/api/
     payments.tsx             new   --payments  the client bound to the base path, and the guard's data
     routes/
       pithy/sign-in.tsx      new   --auth  and otp.tsx, callback.tsx — Pithy's screens
+      pithy/sign-in.test.tsx new   --auth  the gate over the magic link's callback URL
       pithy/paywall.tsx      new   --payments  and pricing.tsx, subscription.tsx
       app/home.tsx           new   yours, written once and never again
   wrangler.jsonc             edited  assets stanza
@@ -115,6 +118,10 @@ Two consequences worth stating plainly.
 **Adding a screen needs no edit and no re-run.** Drop `src/routes/app/settings.tsx` into place with `export const path = "/settings"`, and it is routed. There is no route table to register in, no generated manifest, no `pithy ui` command to run again.
 
 **Replacing a Pithy screen needs no fork.** Write `src/routes/app/sign-in.tsx` with `export const path = "/sign-in"` and yours wins. Pithy's file stays on disk, unmodified and inert — delete it whenever you like.
+
+**A screen names its own path, and a guard reads it.** The router sends a signed-out visitor to the screen that declares `export const role = "sign-in"`, and a visitor short an entitlement to the one that declares `export const role = "paywall"` — at whatever `path` that screen declares. So renaming `/sign-in` to `/login` is one edit, in one file, and the redirect follows it. Claim a role from `src/routes/app/` to take the job over, exactly as you take a path over; a role nothing claims throws rather than sending anyone nowhere.
+
+**The callback screen's path is the magic link's callback URL.** `sign-in.tsx` reads it from `callback.tsx`, so that rename is one edit too. This is the one round trip you cannot check by being signed in, which is why it is not left as two strings that agree today.
 
 **A test beside a screen is still just a test.** Co-locate `home.test.tsx` next to `home.tsx`, as the kit asks you to everywhere else. Both globs negate `*.test.tsx` and `*.spec.tsx` — the test runner's own names for its own files — so a co-located test is registered as nothing and reaches no bundle. That negation is the one filename rule the router has, and it earns its place: without it the file is a route, and everything in it — fixtures, stub tokens, the shape of an endpoint and how it fails — is served to anyone who asks. A companion file under another tool's convention, a `.stories.tsx` say, is not covered; give it its own negation, or keep it outside `src/routes/`.
 

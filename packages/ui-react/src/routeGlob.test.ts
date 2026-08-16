@@ -65,22 +65,20 @@ beforeAll(async () => {
   await writeFile(join(fixture, "src", "routes", "app", "home.tsx"), screen("/", "Home"));
   await writeFile(join(fixture, "src", "routes", "pithy", "sign-in.tsx"), screen("/sign-in", "SignIn"));
   await writeFile(join(fixture, "src", "routes", "app", "home.test.tsx"), PLANTED_TEST);
+  // The entry, in the shape the seeded `src/client.tsx` uses: the mount node is created here rather
+  // than looked up by an id `index.html` declares. Two strings and an `if (container)` around the
+  // render is what made a renamed div an empty page with no error (#394); a fixture that kept writing
+  // the old shape would be this gate quietly teaching it back.
   await writeFile(
     join(fixture, "src", "client.tsx"),
     `import { createRoot } from "react-dom/client";
 import { Router } from "./router";
 
-const container = document.getElementById("root");
-if (container) createRoot(container).render(<Router />);
+createRoot(document.body.appendChild(document.createElement("div"))).render(<Router />);
 `,
   );
-  await writeFile(
-    join(fixture, "index.html"),
-    `<!doctype html>
-<html lang="en"><head><meta charset="utf-8" /><title>gate</title></head>
-<body><div id="root"></div><script type="module" src="/src/client.tsx"></script></body></html>
-`,
-  );
+  // The seeded page, byte for byte. It carries no mount node, and the entry above does not want one.
+  await writeFile(join(fixture, "index.html"), await readFile(join(TEMPLATE_DIR, "index.html")));
 
   const { build } = await import("vite");
   await build({

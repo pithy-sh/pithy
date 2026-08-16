@@ -69,7 +69,8 @@ describe("every class a Pithy screen renders is defined by a stylesheet the same
     const files = await everyScreen();
     expect(files["src/pithy-screens.css"]).toBeDefined();
     for (const [path, contents] of Object.entries(files)) {
-      if (!path.startsWith(PITHY_SCREEN_DIR)) continue;
+      // A co-located gate beside a screen renders no screen of its own, so it imports no stylesheet.
+      if (!path.startsWith(PITHY_SCREEN_DIR) || path.includes(".test.")) continue;
       expect(contents, path).toContain("pithy-screens.css");
     }
   });

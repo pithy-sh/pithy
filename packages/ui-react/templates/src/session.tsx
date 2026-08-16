@@ -2,7 +2,7 @@ import type { AuthSession, AuthUser } from "@pithy-sh/auth/src/client/api";
 import { signOut as endSession, getSession as readSession } from "@pithy-sh/auth/src/client/api";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { authConfig } from "./pithy-config";
-import { navigate } from "./router";
+import { navigate, routeTable, screenPath } from "./router";
 
 /**
  * Session state, read from the server.
@@ -44,7 +44,9 @@ export async function getSession(): Promise<Session> {
 /** End the session server-side and return to the sign-in screen. */
 export async function signOut(): Promise<void> {
   await endSession(client);
-  navigate("/sign-in");
+  // Where "the sign-in screen" is comes from the screen itself, never a literal here. Renaming its
+  // path is one edit and this follows it (#393).
+  navigate(screenPath(await routeTable(), "sign-in"));
 }
 
 /** The session as component state, plus a `refresh` for after a sign-in completes. */
