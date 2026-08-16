@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
-import type { ClientProjection } from "@pithy-sh/core/src/capability/client";
+import type { TurnstileClientProjection } from "./client/projection";
 import { TURNSTILE_LOGIN_ACTION, TurnstileConfig, type TurnstileConfigInput } from "./config/config";
 import { turnstileSecretsRegistry } from "./secret/registry";
 import { PACKAGE_VERSION } from "./version.generated";
@@ -51,8 +51,13 @@ export function turnstile(config: TurnstileConfigInput = {}): TurnstileCapabilit
      * into the token at render and asserted by the route, so it is one contract with two ends, and it
      * was written out at both — where nothing before production could catch them disagreeing. See
      * {@link TURNSTILE_LOGIN_ACTION} for why that is worse than it sounds and which gates hold it.
+     *
+     * The return type is {@link TurnstileClientProjection} — **declared, not inferred**. `ClientProjection`
+     * is `{ enabled: boolean }` plus a JSON catchall, which accepts anything this closure could return.
+     * The declared type is what makes a dropped field, and a `mode` widened by a third widget in
+     * `TurnstileConfig`, a compile error here rather than a browser's problem.
      */
-    client: ({ environment }): ClientProjection => {
+    client: ({ environment }): TurnstileClientProjection => {
       const mode = resolved.protect[TURNSTILE_LOGIN_ACTION];
       if (!mode) return { enabled: false };
       const widget = resolved.widgets[mode];
