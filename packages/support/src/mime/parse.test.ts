@@ -415,6 +415,35 @@ describe("Authentication-Results, when a sender forges one of their own", () => 
     expect(parsed.autoSubmitted).toBe(true);
   });
 
+  test("a second From below the first does not become the sender", async () => {
+    // **The half of first-wins the header map never covered.** `fromAddress`, `subject` and the
+    // recipient lists do not come from that map — they come from `postal-mime`'s own single-value
+    // resolution, and through 2.7.x that resolution was *last*-wins. So a sender could append a
+    // second `From:` at the bottom of their own headers and the address this capability recorded as
+    // the sender was theirs to choose, while every verdict above it was stamped against the topmost
+    // one. What was authenticated and what was stored disagreed, by construction.
+    //
+    // `postal-mime` 3.0.0 resolves duplicated single-value headers first-wins, which is the same rule
+    // the map already applied, so the two halves finally agree. Planted here rather than asserted in
+    // prose: under 2.7.6 this test reads `mallory@attacker.test` and fails.
+    const parsed = await parseInbound(
+      message(
+        [
+          "Authentication-Results: mx.cloudflare.net; dmarc=pass",
+          "From: Ada Lovelace <ada@victim.test>",
+          "To: support@help.example.com",
+          "Subject: I lost my 2FA device",
+          "From: Mallory <mallory@attacker.test>",
+          "Subject: forged subject",
+        ],
+        "Please reset my account.",
+      ),
+    );
+    expect(parsed.fromAddress).toBe("ada@victim.test");
+    expect(parsed.fromName).toBe("Ada Lovelace");
+    expect(parsed.subject).toBe("I lost my 2FA device");
+  });
+
   test("an authserv-id that does not match the configured one is discarded entirely", async () => {
     // Defence in depth for the residual case: the MTA stamped nothing, so the forgery is topmost.
     const parsed = await parseInbound(

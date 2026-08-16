@@ -947,7 +947,96 @@ Useful as a "if you're tempted, here's why we said no" reference.
 
 ---
 
-## 17. Decisions still open
+## 17. Dependency floors
+
+**A published floor decides what every adopter resolves.** That is the whole reason this section exists.
+A caret range is a floor, not a pin — an adopter with an old lockfile, a constrained resolver, or a
+sibling dependency pulling the range down lands on the bottom of it. So a floor sitting inside an
+advisory range is a vulnerability handed to people who never chose it, whether or not the kit's own
+code touches the vulnerable path.
+
+Set before the first release, in #397. The survey and the reasoning are on that issue.
+
+### Hono: the exposure is the floor, not our usage
+
+`hono` is declared in seventeen packages and in the starter template, at **`^4.13.2`**.
+
+Seven advisories apply below `4.12.34`, and the serious ones are `hono/jsx` not isolating context per
+request and `memo()` retaining SSR output — both cross-user data disclosure — plus SSR XSS via `cx()`
+and ReDoS in the CORS middleware.
+
+**None of them applies to the kit's own code.** There is no `hono/jsx`, `hono/css`, `hono/cors`,
+`hono/proxy` or `hono/language` anywhere in `packages/*/src`; the one `memo(` in
+`cloudflare/src/client/clients.ts` is our own helper, unrelated to Hono's.
+
+That is not the point. **An adopter composing `hono/cors` or `hono/jsx` in their own Worker resolves
+Hono through our floor**, and gets whatever the bottom of the range gives them. `4.13.2` clears all
+seven. Do not lower it because a grep says we are clean — the grep is about us.
+
+### `@types/node` stays on 22.x
+
+`^22.20.1`, never 26. `CLAUDE.md` and §1 above set a **Node 22 LTS floor**; moving the types past it
+contradicts a stated constraint rather than satisfying it.
+
+### `miniflare` stays on 4.x, and `@cloudflare/vitest-pool-workers` is held with it
+
+`miniflare` 5 is published only as `5.x-alpha`, and #388 settled the compatibility-date story on 4.x.
+A first release does not ship on an alpha dependency.
+
+**These two are one decision, not two.** `@cloudflare/vitest-pool-workers` moved to the miniflare 5
+alpha line at **0.20.0** and has not come back: every version from 0.20.0 to 0.21.3 pins an exact
+`miniflare@5.x-alpha`. So taking the pool-workers major *is* taking the alpha. The declared
+`^0.19.0` caret enforces the exclusion on its own — for a `0.x` package it resolves `<0.20.0` — which
+is why no pin is needed to hold it.
+
+Revisit both together, the day miniflare 5 has a stable release.
+
+### `undici`: the one advisory we cannot close, and why
+
+`bun audit` reports five undici advisories (`>=7.0.0 <7.29.0`), reached through `miniflare`. One is
+high: cross-user information disclosure via degenerate private cache directives.
+
+**No floor of ours can move it.** Every `miniflare` 4.x release pins `undici` at exactly `7.28.0` —
+not a range — so there is no 4.x version that resolves a patched undici. Only `miniflare@5.x-alpha`
+pins `7.29.0`, and that is the alpha excluded above.
+
+What bounds it: miniflare is the local simulator behind `pithy dev` and the Workers test pool. It is
+**not in any deployed Worker** — a deployed Worker runs on workerd, which does not use undici. The
+exposure is a developer's own machine running their own dev server, and the advisories are
+HTTP-client and cache-directive faults that need an attacker-controlled upstream to reach.
+
+Accepted, not ignored. It closes when miniflare 5 stabilises, which is the same revisit as above.
+
+### `@cloudflare/workers-types` is held at `5.20260729.1`
+
+Held by an `overrides` entry in the root `package.json`, while the declared ranges stay `^5.20260729.1`
+so **adopters are not constrained by our tooling problem** — they are not affected by this.
+
+**5.20260816.1 added `declare const Buffer: any;`.** `@types/node` declares `var Buffer:
+BufferConstructor`, and a `var` merges where a block-scoped `const` does not. The redeclaration
+therefore discards `@types/node`'s whole `declare module "node:buffer" { global { … } }` augmentation,
+and every `Buffer` method that takes an encoding stops type-checking:
+`randomBytes(8).toString("hex")` becomes *"Expected 0 arguments, but got 1"*.
+
+It breaks any project listing both `@cloudflare/workers-types` and `node` in `types` — which
+`packages/cli` must do, because it is a Node program that type-checks against capability packages
+using `D1Database` and `KVNamespace` globals. Reordering `types` does not help.
+
+Adopters are unaffected: a scaffolded Worker's `tsconfig.json` lists `["@cloudflare/workers-types"]`
+alone. Lift the override once upstream declares `Buffer` mergeably, or drops it.
+
+### `postal-mime` is at `^3.0.0`, and that is a security bump
+
+It parses inbound mail from the open internet, so it is the highest-value dependency here to be
+current on. 3.0.0 resolves duplicated single-value headers **first**-wins; 2.7.x resolved them
+last-wins, which meant a sender could append a second `From:` below their own headers and choose the
+address `@pithy-sh/support` recorded as the sender. See
+`packages/support/src/mime/parse.test.ts`, *"a second From below the first does not become the
+sender"* — the test fails under 2.7.6 and passes under 3.0.0.
+
+---
+
+## 18. Decisions still open
 
 Things to revisit at specific moments:
 

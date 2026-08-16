@@ -68,15 +68,15 @@ export const reactStub: UiStub = {
     // then name something vite never published. `react.test.ts` holds the group and the equality; break
     // either and this line goes back to inventing a version.
     "@pithy-sh/vite": kitRange(PACKAGE_VERSION),
-    "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.0.4",
     // A DOM for the seeded gate, and for every client test the adopter writes after it. The starter's
     // node project already collects `.tsx` co-located tests (#245) but runs them in `environment:
     // "node"`, where `document` does not exist — so `src/turnstile.test.tsx` names its own environment
     // in a docblock, and this is the package that has to be installed for that name to resolve (#383).
-    "happy-dom": "^20.11.1",
-    vite: "^8.0.16",
+    "happy-dom": "^20.11.2",
+    vite: "^8.2.1",
     // The Worker's own pin, imported from the producer that writes it — this was a third copy of a
     // literal that `scaffoldParity.test.ts` held between only the other two.
     wrangler: WRANGLER_RANGE,

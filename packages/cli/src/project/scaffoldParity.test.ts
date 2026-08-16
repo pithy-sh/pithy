@@ -135,7 +135,7 @@ describe("both package.json producers", () => {
     const range = kitRange(PACKAGE_VERSION);
     for (const pkg of [starter, added]) {
       expect(pkg.dependencies?.[PACKAGE_NAME]).toBe(range ?? undefined);
-      expect(pkg.dependencies?.hono).toBe("^4.12.0");
+      expect(pkg.dependencies?.hono).toBe("^4.13.2");
     }
   });
 

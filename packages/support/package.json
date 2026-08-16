@@ -24,9 +24,9 @@
     "@pithy-sh/email": "workspace:*",
     "@pithy-sh/secrets": "workspace:*",
     "@pithy-sh/storage": "workspace:*",
-    "hono": "^4.12.0",
+    "hono": "^4.13.2",
     "kysely": "^0.29.0",
-    "postal-mime": "^2.7.4",
+    "postal-mime": "^3.0.0",
     "tldts": "^7.4.10",
     "zod": "^4.0.0"
   },
