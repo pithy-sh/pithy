@@ -24,7 +24,12 @@
     "@pithy-sh/core": "workspace:*"
   },
   "devDependencies": {
+    "@pithy-sh/auth": "workspace:*",
+    "@pithy-sh/payments": "workspace:*",
+    "@pithy-sh/support": "workspace:*",
     "@pithy-sh/tsconfig": "workspace:*",
+    "@pithy-sh/turnstile": "workspace:*",
+    "@pithy-sh/ui-react": "workspace:*",
     "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "^4.1.0",
     "typescript": "^7.0.2",
