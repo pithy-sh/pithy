@@ -9,6 +9,9 @@
  * The custom properties are the seam between the two. `pithy-screens.css` reads each of them with a
  * fallback, so editing a value here restyles Pithy's screens along with your own, and deleting one
  * leaves them standing.
+ *
+ * Declare them as a set, or declare none. Half a set is the one arrangement no fallback can catch —
+ * your background under Pithy's text — and `pithy-screens.test.tsx` beside this file is what notices.
  */
 
 :root {
@@ -18,6 +21,7 @@
   --fg-muted: #5f5d57;
   --border: #e5e3db;
   --accent: #d4a017;
+  --danger: #b3261e;
   color-scheme: light dark;
 }
 
@@ -28,6 +32,7 @@
     --fg: #fafaf6;
     --fg-muted: #9a988f;
     --border: #2e2e2b;
+    --danger: #f2b8b5;
   }
 }
 

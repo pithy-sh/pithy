@@ -79,6 +79,16 @@ Pithy writes a file **once**, and from that moment the file is yours.
 
 The practical upshot: edit anything. Delete `src/routes/pithy/sign-in.tsx` and write your own. Rewrite `styles.css` from scratch. Nothing upstream will argue with you, and nothing will silently revert.
 
+### The tests that come with them
+
+Some of the files Pithy writes arrive with a `.test.tsx` beside them. Those are yours too, and they are not there for coverage.
+
+Each one watches a contract **your own next edit can break without anything going red** — the sign-in link returning to the path `callback.tsx` declares, the Turnstile widget solving for the action your config names, the app mounting into a node it creates, your palette being declared as a set. Every one of those failures builds clean, typechecks, lints, and is first visible in production, or on a page you do not look at because you are signed in.
+
+The kit used to keep these gates for itself. That meant they held right up to the moment the file became yours and stopped holding immediately after, which is the moment it starts being edited. `docs/CONVENTIONS.md` § *Seeded files* is the rule and the reasoning.
+
+Delete them if you want — same ownership, same promise. But each one is roughly the ten minutes it would take you to work out the same failure from a 403 in production.
+
 ### Two stylesheets, and why
 
 `src/styles.css` is yours: the palette tokens, the reset, `body`. `src/pithy-screens.css` is Pithy's, and it defines **every class name a Pithy screen renders** — `screen`, `muted`, `stack`, `secondary`, `otp`, `divider`, and the `auth*` rules that lay out the sign-in page. Pithy's screens import it themselves.

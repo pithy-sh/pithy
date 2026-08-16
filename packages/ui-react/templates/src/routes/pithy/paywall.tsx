@@ -5,7 +5,9 @@ import {
 } from "@pithy-sh/payments/src/client/api";
 import { useCheckout, usePaddleCheckout, usePurchase } from "@pithy-sh/payments/src/client/hooks";
 import { useEffect, useState } from "react";
-import { paymentsClient } from "../../payments";
+// `CHECKOUT_FRAME` is imported rather than declared here: the two screens that sell share one class, and
+// `.pithy-checkout` is a hook you are meant to style. Two copies is one styled checkout and one bare one.
+import { CHECKOUT_FRAME, paymentsClient } from "../../payments";
 import { paymentsConfig } from "../../pithy-config";
 import { Link, useScreenPath } from "../../router";
 import "../../pithy-screens.css";
@@ -37,15 +39,6 @@ export const session = "required";
 function purchasable(product: { skus: Record<PaymentsHostedRail, string | null> }): boolean {
   return PAYMENTS_HOSTED_RAILS.some((rail) => paymentsConfig.rails[rail] && product.skus[rail] !== null);
 }
-
-/**
- * The class Paddle renders an inline checkout into.
- *
- * A class name, not an id — that is Paddle's `frameTarget` contract. The container is rendered only when
- * the handoff asks for it, from `paddle.checkout` in your config: switch that to `inline` and the form
- * appears here instead of over the page, with no edit to this file. Style `.pithy-checkout` to place it.
- */
-const CHECKOUT_FRAME = "pithy-checkout";
 
 export default function Paywall() {
   // Read before the early returns, because it is a hook — and read at all, rather than written out as
