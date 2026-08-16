@@ -8,7 +8,12 @@ import {
   namedRules,
 } from "@pithy-sh/cloudflare/src/test-utils/emailRoutingRules";
 import { fixtureReady, fixtureValue } from "@pithy-sh/cloudflare/src/test-utils/fixtures";
-import { loadIntegrationCreds, uniqueName, withNamedResource } from "@pithy-sh/cloudflare/src/test-utils/harness";
+import {
+  INTEGRATION_COMPATIBILITY_DATE,
+  loadIntegrationCreds,
+  uniqueName,
+  withNamedResource,
+} from "@pithy-sh/cloudflare/src/test-utils/harness";
 import {
   deployInboundRecorder,
   INBOUND_MODULE_NAME,
@@ -127,8 +132,8 @@ describe.skipIf(!routingReady)("Email Routing rules — LIVE", () => {
     // found`), so the Worker has to be real before the rule can be. A placeholder script is enough:
     // these tests are about the rule, not about what the Worker does with the mail.
     const placeholder = { name: INBOUND_MODULE_NAME, body: PLACEHOLDER_INBOUND_MODULE };
-    await clients.workers().createWorker(worker, {}, placeholder);
-    await clients.workers().createWorker(sibling, {}, placeholder);
+    await clients.workers().createWorker(worker, INTEGRATION_COMPATIBILITY_DATE, {}, placeholder);
+    await clients.workers().createWorker(sibling, INTEGRATION_COMPATIBILITY_DATE, {}, placeholder);
   }, 120_000);
 
   afterAll(async () => {
@@ -289,7 +294,12 @@ describe.skipIf(!deliveryReady)("An inbound message reaches the Worker's email()
     // The Worker is the destination and the witness: it writes what it was handed to KV, and this
     // suite reads it back. There is no mailbox to read instead.
     namespaceId = (await clients.kvProvisioner().createNamespace(namespaceTitle)).id;
-    await deployInboundRecorder({ workers: clients.workers(), scriptName: recorder, namespaceId });
+    await deployInboundRecorder({
+      workers: clients.workers(),
+      scriptName: recorder,
+      namespaceId,
+      compatibilityDate: INTEGRATION_COMPATIBILITY_DATE,
+    });
   }, 120_000);
 
   afterAll(async () => {

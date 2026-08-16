@@ -33,12 +33,17 @@ import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
  * instead: they must not state a date at all, they must import the floor — which leaves one value in the
  * tree for seventeen files, and nothing for a text scan to be wrong about.
  *
- * ## What this does not cover
+ * ## The one date this gate could not hold, and why it no longer exists
  *
- * `@pithy-sh/cloudflare`'s `workersManager` defaults an API-created Worker to `2026-04-07` when the
- * caller names none. That is past #385's fix and it is product behaviour with its own test, so #388 left
- * it alone and named it rather than moving it in passing. It is the one date in this tree this gate does
- * not hold to the floor.
+ * `@pithy-sh/cloudflare`'s `workersManager` used to default an API-created Worker to `2026-04-07` when
+ * the caller named none. It was past #385's fix, it was product behaviour with its own test, and it was
+ * unreachable from here — this gate reads `wrangler.jsonc` manifests, and that was a TypeScript
+ * constant. #388 named it rather than moving it in passing.
+ *
+ * #396 settled it by **removing the default rather than re-picking the number**. `createWorker` now
+ * requires a compatibility date, so the caller states the behaviour contract for the Worker landing in
+ * their account and there is no unchosen date left to drift below a floor. There is no exception to
+ * this gate any more.
  */
 
 /** The repository root. This file lives at `packages/cli/src/ci/`; the anchor test below proves it. */

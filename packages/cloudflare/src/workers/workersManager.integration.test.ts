@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { loadIntegrationCreds, uniqueName, withThrowawayResource } from "../test-utils/harness";
+import {
+  INTEGRATION_COMPATIBILITY_DATE,
+  loadIntegrationCreds,
+  uniqueName,
+  withThrowawayResource,
+} from "../test-utils/harness";
 import { CloudflareWorkersManager } from "./workersManager";
 
 /**
@@ -20,7 +25,7 @@ describe.skipIf(!creds.hasCreds)("CloudflareWorkersManager — LIVE", () => {
     const name = uniqueName("worker");
 
     await withThrowawayResource(
-      () => workers.createWorker(name),
+      () => workers.createWorker(name, INTEGRATION_COMPATIBILITY_DATE),
       async (script) => {
         expect(script.id).toBe(name);
         expect(await workers.validateServiceAccess()).toBe(true);
