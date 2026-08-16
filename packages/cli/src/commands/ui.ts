@@ -88,6 +88,14 @@ const add = defineCommand({
       } else {
         process.stdout.write(`${report.created.length} files created.\n`);
       }
+      // The one seeded test, named because its whole value is in being noticed. It is the only file
+      // here whose subject is a *silence*: the action label drifting out of the projection is invisible
+      // in dev and staging by construction — Cloudflare's test keys answer with no action to compare
+      // (#374) — so the first environment that can tell is the one where it refuses every sign-in.
+      if (report.auth) {
+        process.stdout.write("src/turnstile.test.tsx is yours now. It goes red when the widget stops reading\n");
+        process.stdout.write("its action from config. Dev and staging cannot see that drift. Production can.\n");
+      }
       // Written and styled are two claims. Saying only the first is what let a backfill report a
       // sign-in screen as created while three of the classes it renders were defined nowhere.
       if (report.unstyled.length > 0) {

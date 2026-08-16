@@ -283,6 +283,9 @@ describe("pithy ui", () => {
       "src/routes/pithy/otp.tsx",
       "src/routes/pithy/sign-in.tsx",
       "src/session.tsx",
+      // The widget's gate backfills with the widget (#383). A backfilled front end that got the file
+      // it can retype and not the test that notices is the exact hole this closes.
+      "src/turnstile.test.tsx",
       "src/turnstile.tsx",
     ]);
     expect(second.skipped).toEqual(first.created);

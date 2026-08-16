@@ -67,6 +67,12 @@ export const TEMPLATE_GROUPS = {
   auth: [
     "src/session.tsx",
     "src/turnstile.tsx",
+    // **The gate travels with the file it protects (#383).** `src/turnstile.tsx` is the adopter's the
+    // moment it lands, and its whole risk is that the action label can be retyped into it — a drift
+    // no environment before production can see, because the test keys dev and staging run answer with
+    // no action to compare (#374). The kit keeping the only gate for that leaves the adopter most
+    // likely to hit it with nothing that goes red. So this one is seeded, not kept.
+    "src/turnstile.test.tsx",
     "src/routes/pithy/sign-in.tsx",
     "src/routes/pithy/otp.tsx",
     "src/routes/pithy/callback.tsx",

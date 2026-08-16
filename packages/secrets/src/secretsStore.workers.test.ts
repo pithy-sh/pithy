@@ -4,7 +4,7 @@
 import { env } from "cloudflare:test";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { beforeEach, describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import type { EncryptionConfig } from "./crypto/envelope";
 import { appendVersion, encodeVersionedValue, initialVersionedValue } from "./crypto/versionedValue";
@@ -316,5 +316,146 @@ describe("secretsStore — a keyed entry over the real encrypted store", () => {
     const secrets = await secretsStore(envWith(), registry);
 
     expect(secrets.get("auth-signing-key")).toBe("kid-1-key");
+  });
+});
+
+/**
+ * **#170's promise, for the row that is there and will not open (#384).**
+ *
+ * "A failure belongs to its secret" held for a *missing* row and not for an *unreadable* one, because the
+ * batch decrypt threw and this accessor held that one throw against every `d1` name it had asked for. The
+ * blast radius was the registry.
+ *
+ * That is also why `#381`'s own title case was only half covered. `#381` split the provider credentials off
+ * the sign-in precondition in `buildAuthInstance`, so a provider that will not resolve no longer takes
+ * email/password and magic link down — but an *unreadable* `auth-github-credentials` still did, one layer
+ * lower, because `auth-session-secret` was in the same batch and died with it. The plant below is that exact
+ * pair, in the storage it actually happens in.
+ *
+ * The plants are raw SQL. The store cannot write a row it cannot read, so a gate built from its writer could
+ * not fail — and would be derived from the reader it polices.
+ */
+describe("secretsStore — an unreadable row costs its own name and no other (#384)", () => {
+  /** Corrupt one row's ciphertext in place: same length, same alphabet, one byte no key authenticates. */
+  async function corrupt(name: string): Promise<void> {
+    const row = await env.SECRETS.prepare("select encrypted_value from pithy_secrets_system_secrets where name = ?")
+      .bind(name)
+      .first<{ encrypted_value: string }>();
+    if (!row) throw new Error(`no row stored for '${name}'`);
+    const head = row.encrypted_value.startsWith("A") ? "B" : "A";
+    await env.SECRETS.prepare("update pithy_secrets_system_secrets set encrypted_value = ? where name = ?")
+      .bind(`${head}${row.encrypted_value.slice(1)}`, name)
+      .run();
+  }
+
+  /** Orphan a row's key version — the master-key rotation that pruned a version some row still names. */
+  async function orphan(name: string): Promise<void> {
+    await env.SECRETS.prepare("update pithy_secrets_system_secrets set key_version = 99 where name = ?")
+      .bind(name)
+      .run();
+  }
+
+  const authRegistry = defineSecretRegistry({
+    "auth-session-secret": { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
+    "auth-github-credentials": { backend: "d1", scope: "environment", rotatable: false, valueType: "text" },
+  });
+
+  test("the sign-in precondition still reads when the OAuth credential will not open (#381's title case)", async () => {
+    await store().put("auth-session-secret", initialVersionedValue("seeded-session-key"));
+    await store().put("auth-github-credentials", initialVersionedValue("the-github-secret"));
+    await corrupt("auth-github-credentials");
+
+    const secrets = await secretsStore(envWith(), authRegistry);
+
+    expect(secrets.get("auth-session-secret")).toBe("seeded-session-key");
+    const error = throwsFrom(() => secrets.get("auth-github-credentials"));
+    expect(error).toEqual(
+      expect.objectContaining({ payload: expect.objectContaining({ code: "secrets/crypto_failed" }) }),
+    );
+    const serialized = JSON.stringify((error as { payload: unknown }).payload);
+    expect(serialized).toContain("auth-github-credentials");
+    expect(serialized).not.toContain("auth-session-secret");
+  });
+
+  test("a key version the master key no longer holds costs the same one name", async () => {
+    await store().put("auth-session-secret", initialVersionedValue("seeded-session-key"));
+    await store().put("auth-github-credentials", initialVersionedValue("the-github-secret"));
+    await orphan("auth-github-credentials");
+
+    const secrets = await secretsStore(envWith(), authRegistry);
+
+    expect(secrets.get("auth-session-secret")).toBe("seeded-session-key");
+    expect(throwsFrom(() => secrets.get("auth-github-credentials"))).toEqual(
+      expect.objectContaining({ payload: expect.objectContaining({ code: "secrets/crypto_failed" }) }),
+    );
+  });
+
+  /**
+   * **Two faults, two remedies, two codes.** Provision the missing one; investigate or re-seal the unreadable
+   * one. Asserted on the errors the reads raise, not on anything that renders them.
+   */
+  test("a missing secret and an unreadable one are told apart at the read", async () => {
+    await store().put("stored-but-broken", initialVersionedValue("v"));
+    await corrupt("stored-but-broken");
+    const registry = defineSecretRegistry({
+      "stored-but-broken": { backend: "d1", scope: "environment", rotatable: false, valueType: "text" },
+      "never-written": { backend: "d1", scope: "environment", rotatable: false, valueType: "text" },
+    });
+
+    const secrets = await secretsStore(envWith(), registry);
+
+    const unreadable = throwsFrom(() => secrets.get("stored-but-broken")) as { payload: { code: string } };
+    const missing = throwsFrom(() => secrets.get("never-written")) as { payload: { code: string } };
+    expect(unreadable.payload.code).toBe("secrets/crypto_failed");
+    expect(missing.payload.code).toBe("secrets/not_found");
+    expect(missing).toBeInstanceOf(SecretNotFoundError);
+  });
+
+  test("a subset carries the unreadable secret's failure and no neighbour's", async () => {
+    await store().put("auth-session-secret", initialVersionedValue("seeded-session-key"));
+    await store().put("auth-github-credentials", initialVersionedValue("the-github-secret"));
+    await corrupt("auth-github-credentials");
+    const sessionOnly = defineSecretRegistry({
+      "auth-session-secret": { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
+    });
+
+    const secrets = await secretsStore(envWith(), authRegistry);
+
+    // The slice a capability composes: the neighbour's unreadable row is not in it, and cannot trip it.
+    expect(secrets.subset(sessionOnly).get("auth-session-secret")).toBe("seeded-session-key");
+  });
+
+  test("nothing from the decryption failure travels into the held error or a console", async () => {
+    await store().put("auth-github-credentials", initialVersionedValue("the-github-secret"));
+    const row = await env.SECRETS.prepare("select encrypted_value, iv from pithy_secrets_system_secrets where name = ?")
+      .bind("auth-github-credentials")
+      .first<{ encrypted_value: string; iv: string }>();
+    await corrupt("auth-github-credentials");
+
+    const spies = (["log", "info", "warn", "error", "debug", "trace"] as const).map((channel) =>
+      vi.spyOn(console, channel).mockImplementation(() => {}),
+    );
+
+    const secrets = await secretsStore(envWith(), authRegistry);
+    const error = throwsFrom(() => secrets.get("auth-github-credentials")) as Error & { payload?: unknown };
+
+    const said = [
+      error.message,
+      error.stack ?? "",
+      JSON.stringify(error.payload),
+      ...spies.flatMap((spy) => spy.mock.calls.flat().map(String)),
+    ].join("\n");
+
+    for (const forbidden of [row?.encrypted_value ?? "", row?.iv ?? "", "the-github-secret"]) {
+      expect(said).not.toContain(forbidden);
+    }
+    expect(said).not.toContain("AES-GCM decrypt failed");
+    expect(said).not.toContain("tampered ciphertext");
+    expect(said).not.toContain("not present in SECRETS_ENCRYPTION_KEYS");
+    expect(said).not.toContain("decrypted secret plaintext");
+    // The `catch` bound nothing, so there was nothing to attach.
+    expect(error.cause).toBeUndefined();
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
   });
 });

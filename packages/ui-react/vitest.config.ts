@@ -55,7 +55,11 @@ export default defineConfig({
           ...UNIT_BUDGETS,
           name: "dom",
           environment: "happy-dom",
-          include: ["src/**/*.test.tsx"],
+          // `templates/**` joins `src/**` because one test now lives in the template tree and is
+          // seeded with it (#383). A gate the kit ships to adopters and never runs itself is the same
+          // silence this issue exists to end, one level up — so it runs here, exactly as it will run
+          // there: same file, same mock, no alias of ours in the path.
+          include: ["src/**/*.test.tsx", "templates/**/*.test.tsx"],
           exclude: ["node_modules/**"],
           // No ambient account, no real config directory. #198, #200 — see `vitest.shared.ts`.
           env: { ...NO_ACCOUNT },
