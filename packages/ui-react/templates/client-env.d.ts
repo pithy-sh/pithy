@@ -11,6 +11,14 @@
 //   if (!turnstile.enabled) return null;   // narrowed: sitekey, mode and token exist below this line
 //
 // Nothing is generated to disk. These declarations describe modules the Vite plugin serves.
+//
+// **This file is hand-written and gated (#392).** `@pithy-sh/vite`'s `src/clientEnv.test.ts` builds
+// every capability's real client projection, renders it through the plugin's own `renderVirtualModule`,
+// and compiles the result against these exact declarations — so a field a projection stops emitting, one
+// it starts emitting, and one it retypes are each a compile error in the kit rather than an `undefined`
+// in somebody's browser. Editing a shape here without editing its `client:` projection goes red there.
+// Nothing about the declaration may be asserted by substring: a check that reads this file's own text is
+// a check of the file against itself.
 
 declare module "virtual:pithy/auth" {
   /** Whether the auth capability is composed on this worker. Also the union's discriminant. */

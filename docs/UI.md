@@ -174,6 +174,8 @@ Four things make this work the way it does.
 
 **The types are ambient.** `client-env.d.ts` declares the `virtual:pithy/*` modules for the client tsconfig, which is why the import above type-checks with no path mapping.
 
+That file is the one thing here that *is* an artifact, and it is hand-written — so it is the one thing that can drift. It cannot drift silently: `@pithy-sh/vite`'s `src/clientEnv.test.ts` builds every capability's real projection, renders it through the plugin's own renderer, and compiles the result against that exact file. A field a projection stops emitting — the drift that would otherwise leave a screen reading `undefined` in production with nothing red anywhere in between — is a compile error in the kit. Change a shape in `client-env.d.ts` and you must change the `client:` projection that produces it, and the other way round. #392.
+
 ## The sign-in screen
 
 It is the first screen anyone sees, so it is scaffolded finished rather than bare.
