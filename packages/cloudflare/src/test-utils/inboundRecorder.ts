@@ -141,10 +141,13 @@ export async function deployInboundRecorder(options: {
   workers: CloudflareWorkersManager;
   scriptName: string;
   namespaceId: string;
+  /** The date this throwaway Worker runs on. Named by the suite, because #396 left no default to inherit. */
+  compatibilityDate: string;
 }): Promise<void> {
-  const { workers, scriptName, namespaceId } = options;
+  const { workers, scriptName, namespaceId, compatibilityDate } = options;
   await workers.createWorker(
     scriptName,
+    compatibilityDate,
     { bindings: [{ type: "kv_namespace", name: INBOUND_RECORDER_BINDING, namespace_id: namespaceId }] },
     { name: INBOUND_MODULE_NAME, body: INBOUND_RECORDER_MODULE },
   );

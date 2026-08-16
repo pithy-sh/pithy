@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { loadIntegrationCreds, uniqueName, withThrowawayResource } from "../test-utils/harness";
+import {
+  INTEGRATION_COMPATIBILITY_DATE,
+  loadIntegrationCreds,
+  uniqueName,
+  withThrowawayResource,
+} from "../test-utils/harness";
 import { CloudflareWorkersManager } from "./workersManager";
 import { WorkersProvisioner } from "./workersProvisioner";
 
@@ -23,7 +28,7 @@ describe.skipIf(!creds.hasCreds)("WorkersProvisioner — LIVE", () => {
     const name = uniqueName("prov");
 
     await withThrowawayResource(
-      () => provisioner.createWorker(name),
+      () => provisioner.createWorker(name, INTEGRATION_COMPATIBILITY_DATE),
       async (scriptId) => {
         // Happy path: the orchestrated create returns the script id and enables subdomain + observability.
         expect(scriptId).toBeTruthy();

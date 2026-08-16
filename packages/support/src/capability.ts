@@ -5,13 +5,13 @@ import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { noopEmit } from "@pithy-sh/core/src/audit/recorder";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
-import type { ClientProjection } from "@pithy-sh/core/src/capability/client";
 import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
 import type { KvNamespaceSpecMap } from "@pithy-sh/core/src/kv/namespaces";
 import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
 import type { EmailCapability } from "@pithy-sh/email/src/capability";
 import { isEmailCapability } from "@pithy-sh/email/src/capability";
 import type { Migration } from "kysely/migration";
+import type { SupportClientProjection } from "./client/projection";
 import { type SupportConfig, type SupportConfigInput, SupportConfig as SupportConfigSchema } from "./config/config";
 import { resolveCategories, type SupportCategories } from "./data/categories";
 import { supportTables } from "./data/tables";
@@ -115,8 +115,13 @@ export interface SupportWiring {
  * `null` for attachments that are off, never `undefined`: the projection is inlined into a bundle with
  * `JSON.stringify`, which drops an undefined value and leaves the screen reading a key that is simply
  * absent. Null is also what makes "render no file picker" one check rather than three absences.
+ *
+ * The return type is {@link SupportClientProjection} — **declared, not inferred**. `ClientProjection` is
+ * `{ enabled: boolean }` plus a JSON catchall, which accepts anything this function could return. The
+ * declared type is what makes a dropped field a compile error here rather than a browser's problem, and
+ * what stops the list above widening by accident when `SupportConfig` grows.
  */
-function clientProjection(config: SupportConfig, basePath: string): ClientProjection {
+function clientProjection(config: SupportConfig, basePath: string): SupportClientProjection {
   const submission = config.submission;
   if (!submission.enabled) return { enabled: false };
   const attachments = submission.attachments;
@@ -249,7 +254,7 @@ export function support(options: SupportOptions = {}): SupportCapability {
     // What a browser may know. Built from the resolved `mountPath`, never the default — the whole
     // point is that moving the mount moves the address the client posts to. See `clientProjection`
     // for why the list is as short as it is.
-    client: () => clientProjection(resolved, mountPath),
+    client: (): SupportClientProjection => clientProjection(resolved, mountPath),
     adminRoutes: supportAdminRoutes(mountPath),
     routes: registerSupportRoutes({
       basePath: mountPath,

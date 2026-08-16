@@ -26,6 +26,24 @@ import { paymentsConfig } from "./pithy-config";
 export const paymentsClient = { basePath: paymentsConfig.basePath };
 
 /**
+ * The class Paddle renders an inline checkout into.
+ *
+ * A class name, not an id — that is Paddle's `frameTarget` contract. The container is rendered only when
+ * the handoff asks for it, from `paddle.checkout` in your config: switch that to `inline` and the form
+ * appears in the page instead of over it, with no edit to any screen.
+ *
+ * **It is here because two screens sell.** The paywall and the pricing page each declared their own copy
+ * of this string, and the class is the one thing about it you are meant to act on — `.pithy-checkout` is
+ * an adopter hook, deliberately styled by no stylesheet Pithy ships, so that the frame lands where your
+ * layout wants it. A styling instruction against two names that agree today is one that styles half your
+ * checkouts the day somebody renames one (#391, item E).
+ *
+ * That is also why the unstyled report never mentions it: it has no rule anywhere on purpose, and a
+ * class read out of an identifier is not a literal that report can see. Both facts are intended.
+ */
+export const CHECKOUT_FRAME = "pithy-checkout";
+
+/**
  * What Paddle.js starts with, or null when this project has no Paddle rail.
  *
  * Null rather than absent, because every hook that takes it takes null and reads it as "nothing to

@@ -117,6 +117,21 @@ export function loadIntegrationCreds(): IntegrationCreds {
  */
 export const RESERVED_TEST_PROJECT = `${RESERVED_TEST_PREFIX}test`;
 
+/**
+ * The compatibility date every throwaway Worker a live suite uploads runs on.
+ *
+ * `createWorker` has no default any more (#396): a compatibility date is a behaviour contract in
+ * somebody's account, so the caller names it. That makes every live suite a caller, and one place for
+ * them to read it from is the difference between one date and six.
+ *
+ * **It is stated rather than imported, and the reason is a wall rather than a preference.** The floor
+ * lives in `compatibility.ts` at the repository root, and this package's `rootDir` is `src` — a static
+ * import of a file above it is TS6059, the same wall `compatibilityDates.test.ts` records for
+ * `packages/cli`. So this is a fixture stating a date, which is the one shape that gate excludes on
+ * purpose. Keep it level with the floor when the floor moves.
+ */
+export const INTEGRATION_COMPATIBILITY_DATE = "2026-06-01";
+
 /** Deduplicates names minted within one test file; the random suffix covers the cross-file case. */
 let nameCounter = 0;
 

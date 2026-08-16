@@ -41,6 +41,17 @@ export const TEMPLATE_DIR: string = join(dirname(fileURLToPath(import.meta.url))
  * so in as many words, and a payments-only scaffold would otherwise never get the file its screens
  * read. It compiles with nothing composed: each projection is then `{ enabled: false }` and the
  * narrowing falls to the defaults it declares.
+ *
+ * ## Adding a file here is agreeing to one rule
+ *
+ * > **Every seeded file whose invariant an adopter can break silently ships with the gate that
+ * > notices.**
+ *
+ * `docs/CONVENTIONS.md` § *Seeded files* is the whole statement, with the three properties a seeded
+ * gate must meet and the two questions to answer before writing one. `seededGates.test.ts` beside this
+ * file is what makes the question due: a path added below is red until the ledger there says which gate
+ * holds it, or why none does. The reason is the deliverable either way — a decline with an argument is
+ * an answer, and this list growing quietly is not.
  */
 export const TEMPLATE_GROUPS = {
   base: [
@@ -70,6 +81,11 @@ export const TEMPLATE_GROUPS = {
     // The adopter's `src/styles.css` is correctly skipped on that backfill — it is theirs. Before this
     // file existed, the classes lived in it, so the run wrote a sign-in screen whose `stack`, `divider`
     // and `secondary` nothing defined and reported it as created.
+    // The palette these two files share is #391's item I, and its gate is the one that could NOT be
+    // seeded: the invariant is CSS text, and a scaffolded project's runner stubs CSS modules to the
+    // empty string, so a seeded gate would sweep nothing and pass. It is kept in `palette.test.ts`,
+    // with that reason at the site — see `seededGates.test.ts`, which records it rather than letting
+    // the ledger look complete.
     "src/pithy-screens.css",
   ],
   auth: [

@@ -8,7 +8,9 @@ import {
   resolvePriceLocation,
 } from "@pithy-sh/payments/src/pricing/location";
 import type { ReactNode } from "react";
-import { paddleSetup, paymentsClient, usePriceVisitor } from "../../payments";
+// `CHECKOUT_FRAME` is imported rather than declared here: the two screens that sell share one class, and
+// `.pithy-checkout` is a hook you are meant to style. Two copies is one styled checkout and one bare one.
+import { CHECKOUT_FRAME, paddleSetup, paymentsClient, usePriceVisitor } from "../../payments";
 import { paymentsConfig } from "../../pithy-config";
 import { Link, useOptionalScreenPath, useScreenPath, useSignedIn } from "../../router";
 import "../../pithy-screens.css";
@@ -35,15 +37,6 @@ const PADDLE_PRODUCTS =
         product.skus.paddle === null ? [] : [{ ...product, priceId: product.skus.paddle }],
       )
     : [];
-
-/**
- * The class Paddle renders an inline checkout into.
- *
- * A class name, not an id — that is Paddle's `frameTarget` contract. Whether it is used at all comes from
- * `paddle.checkout` in your config, through the handoff: switch that to `inline` and the card form appears
- * under the prices instead of over them, with no edit to this file. Style `.pithy-checkout` to place it.
- */
-const CHECKOUT_FRAME = "pithy-checkout";
 
 /** How often a price bills, in words. Null for a one-off, which needs no suffix. */
 function every(cycle: { interval: string; frequency: number } | null): string | null {

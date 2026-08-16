@@ -63,9 +63,17 @@ export class WorkersProvisioner {
   /**
    * Create the Worker script, enable its workers.dev subdomain, and turn on observability. Returns
    * the created script's id. workers.dev must be enabled via a separate call after script creation.
+   *
+   * `compatibilityDate` is passed through and not defaulted, which is this class's standing promise
+   * one level down: a compatibility date is a behaviour contract in the caller's own account, and the
+   * manager stopped inventing one in #396.
    */
-  async createWorker(workerName: string, metadata: Record<string, unknown> = {}): Promise<string> {
-    const script = await this.workers.createWorker(workerName, metadata);
+  async createWorker(
+    workerName: string,
+    compatibilityDate: string,
+    metadata: Record<string, unknown> = {},
+  ): Promise<string> {
+    const script = await this.workers.createWorker(workerName, compatibilityDate, metadata);
     if (!script.id) {
       throw new CloudflareNotConfiguredError({
         message: `Worker '${workerName}' was created but returned no script id.`,

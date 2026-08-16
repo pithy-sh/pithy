@@ -80,10 +80,17 @@ describe("the cross-package reads CI plans from", () => {
     // `@pithy-sh/cloudflare` is the third, and it reads exactly one thing: `docs/FIXTURES.md`, the
     // document every live-fixture skip message cites. The gate is that the cited section exists, and a
     // gate on a document is worthless unless editing the document runs it (#106).
+    //
+    // `@pithy-sh/ui-react` is the fourth, and it is #391's ledger. `seededGates.test.ts` records, for
+    // every seeded file, the gate that holds it — and for the ones the kit keeps, the path of that gate
+    // in another package. A ledger entry pointing at a renamed file rots into a subject that reads as
+    // held, so the entry resolves the path; and resolving it is worth nothing unless renaming the gate
+    // re-runs the ledger.
     expect([...new Set((await reads()).map((read) => read.package))].sort()).toEqual([
       "@pithy-sh/browser-scopes",
       "@pithy-sh/cli",
       "@pithy-sh/cloudflare",
+      "@pithy-sh/ui-react",
     ]);
   });
 
