@@ -191,7 +191,7 @@ Four things make this work the way it does.
 
 **The types are ambient.** `client-env.d.ts` declares the `virtual:pithy/*` modules for the client tsconfig, which is why the import above type-checks with no path mapping.
 
-That file is the one thing here that *is* an artifact, and it is hand-written — so it is the one thing that can drift. It cannot drift silently: `@pithy-sh/vite`'s `src/clientEnv.test.ts` builds every capability's real projection, renders it through the plugin's own renderer, and compiles the result against that exact file. A field a projection stops emitting — the drift that would otherwise leave a screen reading `undefined` in production with nothing red anywhere in between — is a compile error in the kit. Change a shape in `client-env.d.ts` and you must change the `client:` projection that produces it, and the other way round. #392.
+That file is the one thing here that *is* an artifact, and **it is generated, not written**. Each capability declares its client projection as a type — `src/client/projection.ts`, the same type its `client:` closure is checked against — and `@pithy-sh/vite`'s `src/clientEnvDeclaration.ts` emits those four declarations, unions and doc comments included, at kit build time. So the shape has one statement and cannot drift from itself: a field a projection stops emitting is a compile error where it is projected, and the declaration changes in the same commit. #398, on #392's finding and #395's measurement.
 
 ## The sign-in screen
 

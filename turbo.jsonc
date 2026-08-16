@@ -40,6 +40,15 @@
     // `@cloudflare/vitest-pool-workers` suites each spawn workerd — enough oversubscription to time
     // out `beforeAll` hooks on an 8-core machine. The root `test` script replaces the accidental
     // throttle with an explicit `--concurrency=50%`; keep it there if you touch these deps.
+    // `@pithy-sh/vite#build` writes one file outside its own package: `templates/client-env.d.ts` in
+    // `@pithy-sh/ui-react`, generated from the four declared client projections (#398). Both halves are
+    // named here or the cache lies about it — an output turbo does not know it produced is not restored
+    // on a hit, and an input it does not hash is a projection change that replays a stale artifact.
+    "@pithy-sh/vite#build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/packages/*/src/client/projection.ts"],
+      "outputs": ["dist/**", "$TURBO_ROOT$/packages/ui-react/templates/client-env.d.ts"]
+    },
     "typecheck": {},
     // `.github/scripts/` belongs to no workspace, so `turbo run typecheck` never reached either of the
     // two scripts CI's `plan` job runs (#214). They are a fourth program in `packages/cli` now —
