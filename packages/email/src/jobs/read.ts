@@ -15,8 +15,8 @@ import type { EmailDatabase } from "../data/tables";
  * The two are different questions and deliberately not one function. The routes serve an operator
  * walking the log — every job, newest first, filtered by status, paged, and gated by a control-plane
  * scope. `sentSince` answers a single question for the adopter's own code, in their own Worker, about a
- * message they are about to send: has this template already gone to this person. It is not exposed over
- * HTTP, because nothing calls it over HTTP — see its own note.
+ * message they are about to send: has this one already gone out. It is not exposed over HTTP, because
+ * nothing calls it over HTTP — see its own note.
  *
  * **Keyset pagination, never offset.** `pithy_email_jobs` is written to on every single send, which
  * makes it the worst possible table to page with `OFFSET`: a row inserted at the head while somebody is
@@ -98,7 +98,7 @@ export async function getJob(db: EmailDatabase, jobId: string): Promise<EmailJob
 }
 
 /**
- * ## `sentSince` — has this template already gone to this person
+ * ## `sentSince` — has this message already gone out
  *
  * The narrow read, for the caller deciding whether to send. A transactional notice that must not repeat,
  * and must be *corrected* if the thing it announced stops being true, cannot be decided from a flag of
@@ -106,6 +106,19 @@ export async function getJob(db: EmailDatabase, jobId: string): Promise<EmailJob
  * already holds the first of, and the two disagree the first time a send fails after the flag is
  * written. `pithy_email_jobs` is the record; this is the read over it, so nobody has to define its shape
  * a second time in their own repository.
+ *
+ * ## Two axes, because a template is not always one message
+ *
+ * It was `(to, template)` alone, and that could not finish its only intended consumer (pithy-sh/pithy#382).
+ * Six account notices ride one `operationalNotice` to the same addresses, so the template id does not
+ * separate them; `correlation` is the enqueue-side discriminator that does. See {@link SentSubject} for
+ * why the two are a union and not three optional fields.
+ *
+ * **The direction of the failure is why this was worth a column.** The dashboard uses the answer
+ * *positively*: the correction letter goes out only when the letter it corrects already did. An
+ * under-report there sends nothing at all — it withholds the correction from somebody holding a letter
+ * that has stopped being true. That is silence, to the one person owed the message, and silence is the
+ * failure nobody finds in production.
  *
  * ## Four columns, and every other one is a deliberate no
  *
@@ -120,8 +133,8 @@ export async function getJob(db: EmailDatabase, jobId: string): Promise<EmailJob
  * - **`subject`.** Rendered content, and the temptation is specific: it is the only per-row string that
  *   distinguishes two messages sharing a template, so a caller needing that discrimination would match
  *   on it. That match breaks on a copy edit, silently, in the direction of sending again. Discriminating
- *   two notices is the enqueue side's problem — see the report on #354 — not something to solve by
- *   exporting a rendered string to be string-matched.
+ *   two notices was the enqueue side's problem and now has an enqueue-side answer — `correlation`
+ *   (#382) — rather than a rendered string exported to be string-matched.
  * - **`messageId`, `error`, `bounceCode`.** The provider's own words. A provider error routinely embeds
  *   the recipient, which is why the list view carries `failed` rather than the text.
  *
@@ -148,12 +161,44 @@ export const SentSummary = EmailJob.pick({ id: true, status: true, createdAt: tr
 );
 export type SentSummary = z.output<typeof SentSummary>;
 
-/** What `sentSince` asks. Every field is required but the bound, and the bound is the only one clamped. */
-export interface SentFilter {
-  /** The recipient. Matched under `normalizeAddress`, the same rule the row was keyed under. */
-  to: string;
-  /** The template id, exactly. */
-  template: string;
+/**
+ * Which messages are being asked about — one of the two indexed axes, and the type admits no third
+ * answer.
+ *
+ * **`(to, template)`** is the original question: has this template already gone to this person. It runs
+ * on `(recipientKey, template, createdAt)`.
+ *
+ * **`correlation`** is the question a template carrying more than one kind of message needs
+ * (pithy-sh/pithy#382): has *this thing* already been said. Six account notices ride one
+ * `operationalNotice` to the same addresses, so the template id cannot separate them and the address is
+ * a proxy for the account only while one person belongs to one account. It runs on
+ * `(correlation, createdAt)`.
+ *
+ * Written as a union rather than three optional fields because the shape a union forbids is the one that
+ * matters: a filter naming *neither* axis is an unbounded scan of every email the project ever queued,
+ * asked on the path that decides whether to send. It cannot be constructed. Both axes together is
+ * allowed and narrows further.
+ */
+export type SentSubject =
+  | {
+      /** The recipient. Matched under `normalizeAddress`, the same rule the row was keyed under. */
+      readonly to: string;
+      /** The template id, exactly. */
+      readonly template: string;
+      /** Optionally narrower still: which of this template's messages. */
+      readonly correlation?: string;
+    }
+  | {
+      /** What the message was about, exactly as the enqueue stated it. */
+      readonly correlation: string;
+      /** Optional here — the correlation already bounds the read. */
+      readonly to?: string;
+      /** Optional here — the correlation already bounds the read. */
+      readonly template?: string;
+    };
+
+/** What `sentSince` asks: a subject, a floor, and a bound. The bound is the only one clamped. */
+export type SentFilter = SentSubject & {
   /**
    * The earliest `createdAt` to consider, inclusive.
    *
@@ -162,10 +207,10 @@ export interface SentFilter {
    * default would be this module choosing how far back "already" reaches, which is the caller's
    * decision and differs per notice.
    */
-  since: Date;
+  readonly since: Date;
   /** How many rows to return, clamped into range. The default is `DEFAULT_PAGE_SIZE`. */
-  limit?: number;
-}
+  readonly limit?: number;
+};
 
 /** What went out, and whether the bound cut the answer short. */
 export interface SentLog {
@@ -176,7 +221,10 @@ export interface SentLog {
 }
 
 /**
- * Every job of one template to one recipient since an instant, newest first.
+ * Every job matching one subject since an instant, newest first.
+ *
+ * The subject is `(to, template)`, or a `correlation`, or both — see {@link SentSubject}. Neither is not
+ * a subject, and the type will not build one.
  *
  * **A row that will not parse throws.** It is tempting to skip it and carry on, and it is wrong here in
  * a way it is not on a listing: this reader's answer decides whether a message goes out. A skipped row
@@ -187,19 +235,24 @@ export interface SentLog {
  */
 export async function sentSince(db: EmailDatabase, filter: SentFilter): Promise<SentLog> {
   const limit = pageLimit(filter.limit);
-  const rows = await db
+  let query = db
     .selectFrom("pithyEmailJobs")
     .select(["id", "status", "createdAt", "sentAt"])
-    // `recipientKey`, never `toAddress`: the row keeps what the caller typed and this is the column
-    // every comparison is against. The index is `(recipientKey, template, createdAt)`.
-    .where("recipientKey", "=", normalizeAddress(filter.to))
-    .where("template", "=", filter.template)
     .where("createdAt", ">=", filter.since.getTime())
     .orderBy("createdAt", "desc")
     .orderBy("id", "desc")
     // One more than asked for, so "was there more" is answerable without a second count query.
-    .limit(limit + 1)
-    .execute();
+    .limit(limit + 1);
+
+  // `recipientKey`, never `toAddress`: the row keeps what the caller typed and this is the column every
+  // comparison is against. The index is `(recipientKey, template, createdAt)`.
+  if (filter.to !== undefined) query = query.where("recipientKey", "=", normalizeAddress(filter.to));
+  if (filter.template !== undefined) query = query.where("template", "=", filter.template);
+  // The other indexed axis, `(correlation, createdAt)`. Compared exactly and never with `like`: a prefix
+  // match would make one caller's correlation the ancestor of another's by accident of spelling.
+  if (filter.correlation !== undefined) query = query.where("correlation", "=", filter.correlation);
+
+  const rows = await query.execute();
 
   const items = rows.slice(0, limit).map((row) => {
     const parsed = SentSummary.safeParse(row);

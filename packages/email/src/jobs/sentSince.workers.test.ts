@@ -9,7 +9,7 @@ import { emailDatabase } from "../data/tables";
 import { email_0001_init } from "../migrations/0001_init";
 import { enqueueEmail } from "../send/enqueue";
 import { defaultTheme, type EmailTheme } from "../templates/theme";
-import { sentSince } from "./read";
+import { type SentFilter, sentSince } from "./read";
 
 /**
  * `sentSince` against a real D1, because every way this can be wrong is a way SQLite is quiet about.
@@ -34,8 +34,20 @@ function db() {
 
 let sequence = 0;
 
-/** Enqueue one real job, through the real write path. `magicLink` and `welcome` are both registered. */
-async function enqueue(options: { to: string; template?: "magicLink" | "welcome"; at?: Date }): Promise<string> {
+/** The payload each registered template under test takes. */
+const PAYLOADS = {
+  magicLink: { url: "https://acme.test/s", expiresMinutes: 15 },
+  welcome: { name: "Ada", ctaUrl: "https://acme.test/start", ctaLabel: "Open your dashboard" },
+  operationalNotice: { severity: "warning", summary: "Your plan is ending", thing: "Acme", when: "18 June 2026" },
+} as const;
+
+/** Enqueue one real job, through the real write path. All three templates are registered in the kit. */
+async function enqueue(options: {
+  to: string;
+  template?: keyof typeof PAYLOADS;
+  correlation?: string;
+  at?: Date;
+}): Promise<string> {
   const id = `job-${++sequence}`;
   const template = options.template ?? "magicLink";
   await enqueueEmail(
@@ -50,10 +62,8 @@ async function enqueue(options: { to: string; template?: "magicLink" | "welcome"
     {
       to: options.to,
       template,
-      payload:
-        template === "magicLink"
-          ? { url: "https://acme.test/s", expiresMinutes: 15 }
-          : { name: "Ada", ctaUrl: "https://acme.test/start", ctaLabel: "Open your dashboard" },
+      payload: PAYLOADS[template],
+      ...(options.correlation === undefined ? {} : { correlation: options.correlation }),
     },
   );
   return id;
@@ -178,6 +188,189 @@ describe("sentSince — has this template already gone to this person", () => {
     });
 
     expect(log.items.map((job) => job.id)).toEqual([third, second, first]);
+  });
+});
+
+/**
+ * The second axis (pithy-sh/pithy#382).
+ *
+ * Six account notices ride one `operationalNotice` to the same addresses, so `(to, template)` sees one
+ * undifferentiated pile. Every test here is driven through `enqueueEmail`, because the claim is about
+ * what the *write path* stored — a fixture inserting `correlation` itself would prove only that this
+ * file can spell it.
+ */
+describe("correlation — which of this template's messages", () => {
+  const SINCE = new Date(NOW.getTime() - HOUR_MS);
+  /** The dashboard's six, spelled as the notice and the account it was about. */
+  const NOTICES = [
+    "plan_ending",
+    "plan_ended",
+    "plan_standing",
+    "plan_refunded",
+    "plan_revoked",
+    "plan_paused",
+  ] as const;
+  const about = (notice: string, organisation = "org-42"): string => `${notice}:${organisation}`;
+
+  /**
+   * The ambiguity itself, stated first.
+   *
+   * Without this, every assertion below could pass against a table where the six were distinguishable
+   * some other way. They are not: one template, one address, six messages, and the template axis returns
+   * all six for any of them.
+   */
+  test("`(to, template)` alone cannot tell the six apart — it answers all of them, whichever one you meant", async () => {
+    for (const notice of NOTICES) {
+      await enqueue({ to: "ada@example.com", template: "operationalNotice", correlation: about(notice) });
+    }
+
+    const log = await sentSince(db(), { to: "ada@example.com", template: "operationalNotice", since: SINCE });
+
+    expect(log.items).toHaveLength(6);
+  });
+
+  test("the correlation separates them: each of the six answers for itself and for none of the others", async () => {
+    const ids = new Map<string, string>();
+    for (const notice of NOTICES) {
+      ids.set(
+        notice,
+        await enqueue({ to: "ada@example.com", template: "operationalNotice", correlation: about(notice) }),
+      );
+    }
+
+    for (const notice of NOTICES) {
+      const log = await sentSince(db(), { correlation: about(notice), since: SINCE });
+      expect(
+        log.items.map((job) => job.id),
+        notice,
+      ).toEqual([ids.get(notice)]);
+    }
+  });
+
+  test("a notice about one account is not a notice about another", async () => {
+    const mine = await enqueue({
+      to: "ada@example.com",
+      template: "operationalNotice",
+      correlation: about("plan_ending", "org-42"),
+    });
+    await enqueue({
+      to: "ada@example.com",
+      template: "operationalNotice",
+      correlation: about("plan_ending", "org-99"),
+    });
+
+    const log = await sentSince(db(), { correlation: about("plan_ending", "org-42"), since: SINCE });
+
+    expect(log.items.map((job) => job.id)).toEqual([mine]);
+  });
+
+  /**
+   * The account question, which is the one the dashboard actually asks.
+   *
+   * A notice is decided once per account and fans out to every member, so "did this letter go" is not a
+   * question about any one mailbox — and a person who belongs to two accounts would answer it wrong if
+   * the address were the key. Asked by correlation alone, every member's row counts.
+   */
+  test("asked by correlation alone, it answers across every recipient the notice reached", async () => {
+    const ada = await enqueue({
+      to: "ada@example.com",
+      template: "operationalNotice",
+      correlation: about("plan_ending"),
+    });
+    const grace = await enqueue({
+      to: "grace@example.com",
+      template: "operationalNotice",
+      correlation: about("plan_ending"),
+    });
+
+    const log = await sentSince(db(), { correlation: about("plan_ending"), since: SINCE });
+
+    expect(log.items.map((job) => job.id).sort()).toEqual([ada, grace].sort());
+  });
+
+  test("matched exactly, never as a prefix — one account's subject is not another's ancestor", async () => {
+    // `org-4` is a prefix of `org-42`, and a `like` would have made the shorter one match the longer.
+    const shorter = await enqueue({
+      to: "ada@example.com",
+      template: "operationalNotice",
+      correlation: about("plan_ending", "org-4"),
+    });
+    await enqueue({
+      to: "ada@example.com",
+      template: "operationalNotice",
+      correlation: about("plan_ending", "org-42"),
+    });
+
+    const log = await sentSince(db(), { correlation: about("plan_ending", "org-4"), since: SINCE });
+
+    expect(log.items.map((job) => job.id)).toEqual([shorter]);
+  });
+
+  test("a job that stated no subject is not an answer to a question about one", async () => {
+    await enqueue({ to: "ada@example.com", template: "operationalNotice" });
+
+    const log = await sentSince(db(), { correlation: about("plan_ending"), since: SINCE });
+
+    expect(log.items).toEqual([]);
+  });
+
+  test("both axes together narrow further, rather than one silently winning", async () => {
+    const ada = await enqueue({
+      to: "ada@example.com",
+      template: "operationalNotice",
+      correlation: about("plan_ending"),
+    });
+    await enqueue({
+      to: "grace@example.com",
+      template: "operationalNotice",
+      correlation: about("plan_ending"),
+    });
+
+    const both = await sentSince(db(), {
+      to: "ada@example.com",
+      template: "operationalNotice",
+      correlation: about("plan_ending"),
+      since: SINCE,
+    });
+
+    expect(both.items.map((job) => job.id)).toEqual([ada]);
+  });
+
+  test("the write path stores it, and stores null when nobody stated one", async () => {
+    await enqueue({ to: "ada@example.com", correlation: about("plan_ending") });
+    await enqueue({ to: "ada@example.com" });
+
+    const rows = await db().selectFrom("pithyEmailJobs").select(["id", "correlation"]).orderBy("id", "asc").execute();
+
+    expect(rows.map((row) => row.correlation)).toEqual([about("plan_ending"), null]);
+  });
+
+  /**
+   * The shape the union exists to forbid, held at compile time.
+   *
+   * A filter naming neither axis is `select … where created_at >= ?` over every email the project ever
+   * queued, asked on the path that decides whether to send. `@ts-expect-error` is the assertion and it
+   * is self-invalidating: the day the union stops rejecting this, the directive becomes an unused
+   * suppression and `typecheck` fails on it — so this cannot quietly stop meaning anything.
+   */
+  test("a filter naming neither axis does not compile, so the unbounded scan cannot be asked for", () => {
+    // @ts-expect-error — no (to, template) pair and no correlation: no subject, so no filter.
+    const noSubject: SentFilter = { since: SINCE };
+
+    expect(noSubject.since).toBe(SINCE);
+  });
+
+  /** The bound applies to this axis too — a correlation is not an excuse to walk the whole log. */
+  test("the correlation question is answered from its own index", async () => {
+    const plan = await env.DB.prepare(
+      "explain query plan select id, status, created_at, sent_at from pithy_email_jobs where correlation = ? and created_at >= ? order by created_at desc, id desc limit ?",
+    )
+      .bind(about("plan_ending"), 0, 26)
+      .all<{ detail: string }>();
+    const detail = plan.results.map((row) => row.detail).join(" | ");
+
+    expect(detail).toContain("pithy_email_jobs_correlation_idx");
+    expect(detail).not.toContain("SCAN pithy_email_jobs");
   });
 });
 
