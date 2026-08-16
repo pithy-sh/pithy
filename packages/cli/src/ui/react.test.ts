@@ -274,6 +274,11 @@ describe("the React 19 stub", () => {
     expect(config).toContain('import react from "@vitejs/plugin-react"');
     expect(config).toContain('import { pithy } from "@pithy-sh/vite/src/plugin"');
     // Project-root state, so a database shared with a sibling worker stays shared locally.
+    //
+    // **This asserts the string is there, and that is all it can assert.** The contract is a depth —
+    // right relative to `apps/<worker>/`, wrong anywhere else — and a rename of the scaffolded layout
+    // reads identically here. `scaffoldGates.test.ts` resolves it against a real project instead
+    // (#399); keep this line as the cheap read, not as the gate.
     expect(config).toContain('persistState: { path: "../../.wrangler/state" }');
     // Pinned off: the inspector silently advances off 9229 on a collision.
     expect(config).toContain("inspectorPort: false");

@@ -55,6 +55,13 @@ type Held =
    * cannot travel. Two reasons have turned up so far and both are walls rather than judgements: the
    * party who can break the invariant is the kit rather than the adopter, or the gate cannot run where
    * it would be seeded. Either way the ledger says so, rather than looking complete.
+   *
+   * The second wall has two shapes now. #391 found the first — the runner an adopter has cannot read
+   * the subject, since Vitest stubs CSS modules to `""`. #399 found the other: the invariant is a fact
+   * about *where the Worker sits in a scaffolded project*, so the gate needs a whole scaffolded project
+   * and a spawned compiler to resolve against, and a test inside one such project is the wrong altitude
+   * to check it from. Both end in the same place — the gate is kept, and what it cannot see is written
+   * down beside it.
    */
   | { readonly keptGate: string; readonly why: string }
   /** No seeded gate, and why. A decline with an argument is an answer; a shrug is not. */
@@ -73,16 +80,16 @@ const LEDGER: Record<string, Held> = {
       "Nothing reads anything it declares. Since #394 the mount node is created in src/client.tsx; the id set on it is a styling hook that no code looks up, and there is no second string left to disagree with.",
   },
   "vite.config.ts": {
-    ungated:
-      '#391 item H, filed as #399. `persistState: "../../.wrangler/state"` is a depth, and a wrong one silently gives two workers separate copies of one database. It is not gateable from here: the depth is a fact about where a Worker sits in a scaffolded project, so the gate belongs to the scaffolder\'s suite and not to a unit test over template text.',
+    keptGate: "packages/cli/src/project/scaffoldGates.test.ts",
+    why: '#391 item H, closed by #399, and the second clause in its other shape. `persistState: "../../.wrangler/state"` is a depth: right relative to `apps/<worker>/` and wrong anywhere else, and a wrong one silently gives two Workers separate copies of one database. A unit test over the template can only assert the string reads as written, which a rename of the layout sails through. So the gate resolves it — from a scaffolded project\'s real `apps/<worker>/` against the store `pithy seed` uses — and that needs a scaffolded project, which is not something a seeded `vitest run` has.',
   },
   "tsconfig.client.json": {
-    ungated:
-      "#391 item H, filed as #399. Narrowing `include` makes `tsc -b` pass over nothing while the project's solution file still references the program — the client's whole typecheck, lost in silence. Same gate as vite.config.ts, and outstanding for the same reason: it needs a scaffolded layout to stand in.",
+    keptGate: "packages/cli/src/project/scaffoldGates.test.ts",
+    why: "#391 item H, closed by #399, and the worst of the three. Narrowing `include` past the screens makes `tsc -b` exit 0 over a program holding none of them while the project's solution file still references it — the client's whole typecheck, lost, with no change in output. The gate plants a type error in a scaffolded screen and requires the client build to fail, which needs a spawned compiler and a real layout: neither is available where this file is seeded.",
   },
   "tsconfig.node.json": {
-    ungated:
-      "#391 item H, filed as #399. `tsBuildInfoFile` points under the project's dist/ and is named after the Worker; two composite programs pointing at one file overwrite each other's build state, which costs time and never correctness.",
+    keptGate: "packages/cli/src/project/scaffoldGates.test.ts",
+    why: "#391 item H, closed by #399, and the mild one — it costs time and never correctness, which is why nobody would find it. Two composite programs pointing at one `tsBuildInfoFile` overwrite each other's build state every run. The gate resolves all three programs' declared paths from a scaffolded `apps/<worker>/` and requires them distinct and under the project's `dist/`, which is again a fact about a layout rather than about this file's text.",
   },
   "client-env.d.ts": {
     keptGate: "packages/vite/src/clientEnv.test.ts",
@@ -276,16 +283,18 @@ describe("a seeded gate does not write down the value it is checking", () => {
       ).toBeGreaterThan(80);
       checked += 1;
     }
-    // Three: the ambient declarations, and both halves of the palette.
-    expect(checked, "the kept-gate sweep no longer reads every such gate the ledger names").toBeGreaterThanOrEqual(3);
+    // Seven: the ambient declarations, both halves of the palette, the three build contracts #399
+    // moved to the scaffolder's suite, and the bare home screen #400 made one statement.
+    expect(checked, "the kept-gate sweep no longer reads every such gate the ledger names").toBeGreaterThanOrEqual(7);
   });
 });
 
 describe("the floors", () => {
   test("the tree is the size the ledger was written about", () => {
     // Near-exact rather than comfortable: twenty-one subjects across three groups and two home
-    // variants, held by four seeded gates and three kept ones. A manifest that collapsed under either sweep above would make it
-    // vacuous, and a floor set well below the real population is the shape of a guard rather than one.
+    // variants, held by four seeded gates and seven kept ones. A manifest that collapsed under either
+    // sweep above would make it vacuous, and a floor set well below the real population is the shape of
+    // a guard rather than one.
     expect(SUBJECTS.length).toBeGreaterThanOrEqual(21);
     expect(GATES.length).toBeGreaterThanOrEqual(4);
   });
