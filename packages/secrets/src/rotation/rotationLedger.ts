@@ -84,21 +84,49 @@ export const RotationClosure = z
   .describe("How one rotation row closes in one environment: success, or failed with a reason.");
 export type RotationClosure = z.output<typeof RotationClosure>;
 
+/**
+ * Every code that may close a rotation row `failed` — the domain of the column's fixed text.
+ *
+ * **A superset of {@link RotationFailureReason}, and the two are not the same question.** A *reason* is
+ * how a value rotation's closure ended, and it crosses a process boundary as data, so it is a Zod enum
+ * parsed on arrival. A *code* is what `RotationTracker.markFailure` accepts, and the whole-store at-rest
+ * key rotation closes rows too — under `AT_REST_ROTATION_NAME`, from inside a Worker, never over a wire.
+ * Widening the wire enum to admit a code no closure can produce would let a caller name a rotation it
+ * cannot perform; keeping the code a TypeScript union keeps that impossible and still makes every reason
+ * a code by construction.
+ *
+ * The set is closed on purpose. `#386` is what an open one costs: the at-rest path composed `cause.message`
+ * into this column, and the exceptions reaching that catch come from decryption, envelope decoding and
+ * config parsing — the paths whose message text can carry key material.
+ */
+export type RotationFailureCode = RotationFailureReason | "at-rest-incomplete";
+
 /** The sentence written into a failed row's `error_message`. Fixed text, chosen by a code, never composed from an exception. */
-const FAILURE_TEXT: Record<RotationFailureReason, string> = {
+const FAILURE_TEXT: Record<RotationFailureCode, string> = {
   "roll-failed": "the rotator did not answer, so nothing was recorded here",
   "not-recorded": "rolled at the issuer, and not recorded here",
   "not-rotated": "not rotated: nothing was rolled and nothing was written",
+  "at-rest-incomplete": "the at-rest key rotation did not finish",
 };
 
 /**
- * The failure sentence for a reason.
+ * The failure sentence for a code.
  *
  * It names no environment, because it does not have to: the row lives in that environment's own D1, so
  * *here* is unambiguous and a name copied into the text is a name that can be wrong.
+ *
+ * It names no cause either, and that is the harder half. `at-rest-incomplete` covers a write-back that
+ * failed, a config that would not parse and a batch that would not decrypt, and it says none of them —
+ * the throw still carries that, in a `PithyError`'s `detail`, which the HTTP codec strips. What a caller
+ * wants here is one sentence a row can hold; what it must not be able to write is the exception's own.
  */
-export function rotationFailureText(reason: RotationFailureReason): string {
-  return FAILURE_TEXT[reason];
+export function rotationFailureText(code: RotationFailureCode): string {
+  // **The fallback is not dead code, and it is the half a type cannot do.** `markFailure`'s parameter is
+  // the gate, and a gate in the type system is absent at runtime: a JavaScript consumer, a cast, or a code
+  // some future revision parses off a wire all reach here holding something that is not a member. Such a
+  // caller gets a fixed sentence too. What no caller gets is the string it arrived with — which is the
+  // whole invariant, and the reason it is stated here rather than trusted to the signature alone.
+  return FAILURE_TEXT[code] ?? "the rotation failed";
 }
 
 /**

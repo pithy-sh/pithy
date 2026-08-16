@@ -132,8 +132,15 @@ export async function runAtRestKeyRotation(
     await step.do("mark-success", () => deps.tracker.markSuccess(rotationId));
     return { rotated, failed, newCurrentVersion: Number(newConfig.currentVersion), pruned };
   } catch (cause) {
-    const message = cause instanceof Error ? cause.message : String(cause);
-    await step.do("mark-failure", () => deps.tracker.markFailure(rotationId, message));
+    // **The binding rethrows and does nothing else (`#386`).** It used to become the row's `error_message`
+    // via `cause.message`, and the exceptions that reach here come from decryption, envelope decoding and
+    // config parsing — the paths whose text can carry key material. `markFailure` now takes a code and
+    // renders the sentence itself, so there is no argument this `cause` would fit.
+    //
+    // Rethrown unchanged, which is where the detail belongs: the Workflow logs a `PithyError` whose
+    // `detail` the HTTP codec strips. Nothing about this failure is written to a column, and the column
+    // is still refused for publication — that refusal is defence in depth, not this fix.
+    await step.do("mark-failure", () => deps.tracker.markFailure(rotationId, "at-rest-incomplete"));
     throw cause;
   }
 }

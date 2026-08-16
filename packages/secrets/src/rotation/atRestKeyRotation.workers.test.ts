@@ -104,6 +104,45 @@ describe("runAtRestKeyRotation", () => {
 
     expect((await latestRotation()).status).toBe("failed");
   });
+
+  /**
+   * `#386`, from the site that violated it.
+   *
+   * This catch is reached from decryption, envelope decoding and config parsing, and it used to write
+   * `cause.message` into `error_message`. So the exception is planted to look like what those paths
+   * actually throw: a sentence carrying key material. The row must hold the code's fixed text and no part
+   * of it.
+   *
+   * Asserted over the whole row rather than over `error_message` alone, so a future column that captured
+   * the same text — a `metadata_snapshot` taken "for debugging" — fails here too.
+   */
+  test("a failure writes the code's fixed sentence, and nothing the exception said", async () => {
+    const PLANTED = "decrypt failed: key sk_live_PLANTED_KEY_MATERIAL, iv AAAAAAAAAAAAAAAA";
+    const leakingWriter: ConfigWriter = {
+      write: async () => {
+        throw new Error(PLANTED);
+      },
+    };
+
+    // The exception still travels — unchanged, to the Workflow, where a `PithyError`'s `detail` is the
+    // right place for it and the HTTP codec strips it. What must not travel is the column.
+    await expect(
+      runAtRestKeyRotation(
+        { db: db(), config: v1, configWriter: leakingWriter, tracker: RotationTracker.fromD1(env.SECRETS) },
+        syncStep,
+      ),
+    ).rejects.toThrow(PLANTED);
+
+    const row = await env.SECRETS.prepare(
+      "select status, error_message, metadata_snapshot from pithy_secrets_rotations order by id desc limit 1",
+    ).first<{ status: string; error_message: string | null; metadata_snapshot: string | null }>();
+    expect(row?.status).toBe("failed");
+    expect(row?.error_message).toBe("the at-rest key rotation did not finish");
+    const serialized = JSON.stringify(row);
+    expect(serialized).not.toContain("sk_live_PLANTED_KEY_MATERIAL");
+    expect(serialized).not.toContain("AAAAAAAAAAAAAAAA");
+    expect(serialized).not.toContain("decrypt failed");
+  });
 });
 
 /**

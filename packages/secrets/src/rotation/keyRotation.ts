@@ -51,26 +51,38 @@ export function pruneOldKeys(config: EncryptionConfig): EncryptionConfig | null 
   };
 }
 
-/** One re-encryption batch: rows rolled to the current key, plus any per-row failures. */
+/**
+ * One re-encryption batch: how many rows rolled to the current key, and how many would not.
+ *
+ * **Two counts, and no third field carrying why (`#386`).** This shape used to hold
+ * `errors: Array<{ id, error }>`, filled from a bound `cause.message` in the loop below. Nothing read it
+ * — `runAtRestKeyRotation` sums `failed` and never looks — so it disclosed nothing, and that is exactly
+ * the state worth removing rather than the state worth keeping. The rule is that a catch here takes no
+ * binding; a field waiting to be surfaced is how "let us report why the rotation failed" becomes a
+ * disclosure in one reasonable-looking commit, and every string that could have landed in it came from
+ * decrypting or encrypting a secret.
+ *
+ * What a run needs is whether progress is being made, which `rotated` answers, and whether rows are stuck,
+ * which `failed` answers. Which rows, and why, is a question for the throw site — and it does not throw.
+ */
 export interface ReencryptResult {
   rotated: number;
   failed: number;
-  errors: Array<{ id: number; error: string }>;
 }
 
 /**
  * Re-encrypt one batch of `pithy_secrets_system_secrets` rows that are not on the current key
  * version: decrypt under the row's old key, re-encrypt under the current key, update in place. The
  * plaintext (the `{ currentVersion, versions }` value envelope) is opaque here — only the
- * encryption key changes. Each row is independent; a failure is accumulated, never thrown, so one
- * bad row cannot abort the batch.
+ * encryption key changes. Each row is independent; a failure is counted, never thrown, so one bad row
+ * cannot abort the batch — and never described, so nothing derived from it can travel.
  */
 export async function reencryptBatch(
   db: SecretsDb,
   config: EncryptionConfig,
   batchSize = 100,
 ): Promise<ReencryptResult> {
-  const result: ReencryptResult = { rotated: 0, failed: 0, errors: [] };
+  const result: ReencryptResult = { rotated: 0, failed: 0 };
   const rows = await db
     .selectFrom("pithySecretsSystemSecrets")
     .select(["id", "name", "encryptedValue", "iv", "keyVersion"])
@@ -95,9 +107,12 @@ export async function reencryptBatch(
         .where("id", "=", row.id)
         .execute();
       result.rotated++;
-    } catch (cause) {
+    } catch {
+      // No binding, and that is the point rather than a tidiness (`#386`). A decrypt failure's own text
+      // names the key version it tried; an encrypt failure's names what it was sealing. Neither may reach
+      // a log, a response, or a stored column, and a catch with nothing in scope makes that impossible to
+      // get wrong later rather than merely absent today.
       result.failed++;
-      result.errors.push({ id: row.id, error: cause instanceof Error ? cause.message : String(cause) });
     }
   }
   return result;
