@@ -74,15 +74,15 @@ const LEDGER: Record<string, Held> = {
   },
   "vite.config.ts": {
     ungated:
-      '#391 item H, open and real. `persistState: "../../.wrangler/state"` is a depth, and a wrong one silently gives two workers separate copies of one database. It is not gateable from here: the depth is a fact about where a Worker sits in a scaffolded project, so the gate belongs to the scaffolder\'s suite and not to a unit test over template text.',
+      '#391 item H, filed as #399. `persistState: "../../.wrangler/state"` is a depth, and a wrong one silently gives two workers separate copies of one database. It is not gateable from here: the depth is a fact about where a Worker sits in a scaffolded project, so the gate belongs to the scaffolder\'s suite and not to a unit test over template text.',
   },
   "tsconfig.client.json": {
     ungated:
-      "#391 item H. Narrowing `include` makes `tsc -b` pass over nothing while the project's solution file still references the program — the client's whole typecheck, lost in silence. Same gate as vite.config.ts, and outstanding for the same reason: it needs a scaffolded layout to stand in.",
+      "#391 item H, filed as #399. Narrowing `include` makes `tsc -b` pass over nothing while the project's solution file still references the program — the client's whole typecheck, lost in silence. Same gate as vite.config.ts, and outstanding for the same reason: it needs a scaffolded layout to stand in.",
   },
   "tsconfig.node.json": {
     ungated:
-      "#391 item H. `tsBuildInfoFile` points under the project's dist/ and is named after the Worker; two composite programs pointing at one file overwrite each other's build state, which costs time and never correctness.",
+      "#391 item H, filed as #399. `tsBuildInfoFile` points under the project's dist/ and is named after the Worker; two composite programs pointing at one file overwrite each other's build state, which costs time and never correctness.",
   },
   "client-env.d.ts": {
     keptGate: "packages/vite/src/clientEnv.test.ts",
@@ -140,11 +140,11 @@ const LEDGER: Record<string, Held> = {
   // ── the home screen, in both variants ────────────────────────────────────────────────────────────
   "src/routes/app/home.tsx": {
     ungated:
-      "It is yours from the moment it is written — src/routes/app/ is the one directory Pithy writes once and never inspects again. #391 item G asked for the unstyled report to reach into it; declined, because a report that audits an adopter's own application after scaffold is the kit inspecting somebody's code, and the classes it renders are defined by a stylesheet client.tsx imports for the whole app.",
+      "It is yours from the moment it is written — src/routes/app/ is the one directory Pithy writes once and never inspects again. #391 item G asked for the unstyled report to reach into it; declined, and the rest of that item is #401 — because a report that audits an adopter's own application after scaffold is the kit inspecting somebody's code, and the classes it renders are defined by a stylesheet client.tsx imports for the whole app.",
   },
   "src/routes/app/home.bare.tsx": {
     ungated:
-      '#391 item D, filed separately. It fetches "/health", which @pithy-sh/core mounts and the CLI\'s route allowlist seeds — three copies of one path, and a rename renders "The worker says: unknown." with a 200. The party who can rename it is the kit, so by the clause above the gate stays kit-side, and the fix is one exported statement in @pithy-sh/core rather than a gate over three copies.',
+      '#391 item D, filed as #400. It fetches "/health", which @pithy-sh/core mounts and the CLI\'s route allowlist seeds — three copies of one path, and a rename renders "The worker says: unknown." with a 200. The party who can rename it is the kit, so by the clause above the gate stays kit-side, and the fix is one exported statement in @pithy-sh/core rather than a gate over three copies.',
   },
 };
 

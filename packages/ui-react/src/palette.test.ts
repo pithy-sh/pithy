@@ -28,7 +28,7 @@ import { TEMPLATE_DIR } from "./templates";
  * client program the screens compile in — which has no Node types, deliberately, because `.tsx` is what
  * keeps the browser build out of the Worker's own program. The bundler route is `?raw`, and **Vitest
  * stubs CSS modules to the empty string by default**: `import styles from "./styles.css?raw"` and
- * `import.meta.glob("./styles.css", { query: "?raw" })` both answer `""` in a scaffolded project, under
+ * an eager raw glob over the same file both answer `""` in a scaffolded project, under
  * the plain `vitest run` an adopter already has. Every case in this file would then sweep an empty set
  * and pass. **A gate that passes over nothing is worse than no gate**, because it is read as coverage.
  *
