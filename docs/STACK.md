@@ -1027,26 +1027,44 @@ Revisit both together, the day miniflare 5 has a stable release. Re-checked agai
 `@cloudflare/vitest-pool-workers` from 0.20.0 to 0.21.3 still pins an exact miniflare 5 alpha. The
 top of the 4.x line is `4.20260730.0`, which is what we resolve.
 
-### `@babel/parser` stays on 7.x
+### The kit does not read Babel
 
-`^7.29.8` in `packages/cli`, dev-only, used by one test — the Workflow determinism gate in
-`src/ci/workflowDeterminism.test.ts`. **8.x cannot parse the kit.**
+`@babel/parser` was a dev-only dependency of `packages/cli`, used by one test — the Workflow
+determinism gate in `src/ci/workflowDeterminism.test.ts`. It is gone (#405). Nothing in the kit
+imports Babel.
 
-`@babel/parser@8` fails on an `async` arrow with a return type annotation inside an object literal
-inside a parenthesised expression. Reduced:
+**The gate still parses**, because it still needs to: it resolves scopes, follows a call into a
+module-local function, and judges arity. A regex cannot do that, and #326 finding 4 is the standing
+record of what a gate that only looks like it walks costs. What changed is which parser answers.
+`ParseModule` was already a seam, so the parser is a parameter rather than an import.
 
-```ts
-const o = { ...(d ? { m: async (): Promise<void> => f() } : {}) };
-//                                ^ SyntaxError: Unexpected token, expected "," (1:33)
-```
+**It parses with `rolldown/parseAst`** — oxc, ESTree-shaped and TypeScript-aware — declared as a
+devDependency of `packages/cli` at `^1.2.4`. `vite@8` already depends on `rolldown@~1.2.1`, so
+declaring it added **one line to `bun.lock` and no package at all**: same resolution, same binary,
+same bytes on disk. Declared directly all the same, because a parser reached through somebody else's
+bundler is a build that breaks the day they bump it.
 
-Babel 7.29.8 parses it. 8.0.0 and 8.0.4 both fail, with `plugins: ["typescript"]` alone, so it is not
-a plugin-configuration change. Drop the `async` or drop the return type and 8 parses it; keep both
-inside the parentheses and it does not. The kit hits it at
-`packages/core/src/migrations/batch.ts:207` — one file out of 1018 — and a parser that cannot read the
-tree cannot gate it. 8.x also raises the Node floor to `^22.18.0 || >=24.11.0`.
+Why not `oxc-parser` directly, which is the same parser under a plainer name: it resolves its own
+copy. Nineteen platform-binding entries and roughly 3.6 MB, to remove a declaration that costs
+nothing on disk. That is a swap dressed as a removal.
 
-Filed as #403. Revisit when that reduction parses.
+Two things this is *not*. It is not a way round `@babel/parser@8`, which still fails on an `async`
+arrow with a return type inside a parenthesised object literal — see #403, which this makes moot
+rather than fixes. And it is not a claim that Babel left the tree: `@vitest/coverage-v8` reaches
+`@babel/parser` through `magicast`, and will keep doing so. What went is the kit's own declaration
+and the kit's own use of it.
+
+**The analyser speaks ESTree now.** `MethodDefinition` and `Property` where Babel wrote `ClassMethod`
+and `ObjectMethod`, `Literal` where it wrote `StringLiteral`, a `CallExpression` inside a
+`ChainExpression` where it wrote `OptionalCallExpression`, and a byte offset where it wrote a `loc`.
+The one that bites: a method is a *wrapper* around a `FunctionExpression` in ESTree, so the walked
+scope must be the function, never the method — walk the wrapper and the first node the walk sees is a
+deferred one, and the gate reports every driver in the kit clean without parsing a thing.
+
+Held to the swap by comparison rather than by argument: `analyseDrivers` was run over all 1023
+sources under `packages/` with each parser, and over a second corpus planted with 75 violations
+across 19 of the 21 real driver bodies. Both outputs are byte-identical — the same entrypoints,
+drivers, declared class names, findings, lines and expressions.
 
 ### `undici`: the one advisory we cannot close, and why
 

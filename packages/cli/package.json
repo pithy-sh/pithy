@@ -45,7 +45,6 @@
     "picocolors": "^1.1.1"
   },
   "devDependencies": {
-    "@babel/parser": "^7.29.8",
     "@cloudflare/workers-types": "^5.20260729.1",
     "@pithy-sh/audit": "workspace:*",
     "@pithy-sh/auth": "workspace:*",
@@ -58,6 +57,7 @@
     "@pithy-sh/vector": "workspace:*",
     "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "^4.1.0",
+    "rolldown": "^1.2.4",
     "typescript": "^7.0.2",
     "vitest": "^4.1.0",
     "wrangler": "^4.115.0",
