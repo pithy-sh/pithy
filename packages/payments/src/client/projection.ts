@@ -56,8 +56,10 @@ export type PaymentsClientProduct = {
  * the catalog — the `grants` block and the store-only SKUs, which are omissions of judgement rather than
  * of reach, and so are the ones worth writing down.
  *
- * `@pithy-sh/ui-react`'s `templates/client-env.d.ts` states the same shape for an adopter, and
- * `@pithy-sh/vite`'s `clientEnv.test.ts` holds the two together (#392).
+ * **This is the only statement of the shape.** `@pithy-sh/ui-react`'s `templates/client-env.d.ts` — the
+ * ambient declaration `pithy ui add react` copies into an adopter's Worker — is generated from this type
+ * by `@pithy-sh/vite`'s `clientEnvDeclaration.ts` (#398). The unions and the per-field doc comments below
+ * are emitted verbatim, so what is written here is what a screen author reads.
  */
 export type PaymentsClientProjection =
   | {
@@ -105,8 +107,8 @@ export type PaymentsClientProjection =
          * into a container the screen provides, `hosted` redirects to Paddle's own page.
          *
          * The union is stated, not `string`. A screen switches on this to decide whether to render a
-         * container at all, and the exhaustiveness is the point — `templates/client-env.d.ts` says
-         * `string` here, which is the one place this declaration is stricter than the file it mirrors.
+         * container at all, and the exhaustiveness is the point. It was the one field the hand-written
+         * `templates/client-env.d.ts` widened, and generating that file from here is what closed it.
          */
         checkout: "overlay" | "inline" | "hosted";
       } | null;

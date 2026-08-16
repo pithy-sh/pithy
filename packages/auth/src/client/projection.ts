@@ -15,8 +15,10 @@
  * for a capability nobody composed, and a front end is written against the capabilities it *may* have.
  * It is declared here because it is what a browser reads, and the browser cannot tell the two apart.
  *
- * `@pithy-sh/ui-react`'s `templates/client-env.d.ts` states the same shape for an adopter, and
- * `@pithy-sh/vite`'s `clientEnv.test.ts` holds the two together (#392).
+ * **This is the only statement of the shape.** `@pithy-sh/ui-react`'s `templates/client-env.d.ts` — the
+ * ambient declaration `pithy ui add react` copies into an adopter's Worker — is generated from this type
+ * by `@pithy-sh/vite`'s `clientEnvDeclaration.ts` (#398). The unions and the per-field doc comments below
+ * are emitted verbatim, so what is written here is what a screen author reads.
  */
 export type AuthClientProjection =
   | {

@@ -10,28 +10,56 @@
 //   import turnstile from "virtual:pithy/turnstile";
 //   if (!turnstile.enabled) return null;   // narrowed: sitekey, mode and token exist below this line
 //
-// Nothing is generated to disk. These declarations describe modules the Vite plugin serves.
+// The `virtual:pithy/*` modules are never written to disk. These declarations describe modules the
+// Vite plugin serves, built from the Worker's own pithy.config.ts.
 //
-// **This file is hand-written and gated (#392).** `@pithy-sh/vite`'s `src/clientEnv.test.ts` builds
-// every capability's real client projection, renders it through the plugin's own `renderVirtualModule`,
-// and compiles the result against these exact declarations — so a field a projection stops emitting, one
-// it starts emitting, and one it retypes are each a compile error in the kit rather than an `undefined`
-// in somebody's browser. Editing a shape here without editing its `client:` projection goes red there.
-// Nothing about the declaration may be asserted by substring: a check that reads this file's own text is
-// a check of the file against itself.
+// **Generated, and copied here as it was emitted (#398).** Each declaration below is a capability's
+// declared client projection — `src/client/projection.ts` in @pithy-sh/auth, @pithy-sh/payments,
+// @pithy-sh/support and @pithy-sh/turnstile — written out by @pithy-sh/vite's
+// `src/clientEnvDeclaration.ts` at kit build time. In the kit that is one statement of each shape and
+// nothing to keep in step: a field a projection stops emitting is a compile error where it is
+// projected, and this file moves in the same commit.
+//
+// In your repository it is yours, like every other seeded file. Editing it changes what your compiler
+// believes and nothing about what the plugin serves.
 
 declare module "virtual:pithy/auth" {
-  /** Whether the auth capability is composed on this worker. Also the union's discriminant. */
+  /**
+   * Whether this capability is composed and serving on this worker. Also the union's discriminant.
+   *
+   * The only named export, deliberately. Every other key is reached through the default export and a
+   * narrowing — see the note at the top of this file.
+   */
   export const enabled: boolean;
 
   const config:
-    | { enabled: false }
     | {
+        /** Auth is not composed on this worker. A screen branches rather than rendering a sign-in form. */
+        enabled: false;
+      }
+    | {
+        /** Auth is composed on this worker. */
         enabled: true;
         /** The path the auth handler mounts under, e.g. `/auth`. */
         basePath: string;
-        /** Which social providers are switched on in pithy.config.ts. Credentials never reach the client. */
-        providers: { google: boolean; apple: boolean; facebook: boolean; github: boolean };
+        /**
+         * Which social providers are switched on in pithy.config.ts. Credentials never reach the client —
+         * they are not in the config this projection can see, they are in the secrets store.
+         *
+         * Nested, so a screen iterates the set rather than naming four booleans. A fifth provider is one
+         * key here — and until it is written here, projecting it is a compile error, not a surprise in
+         * somebody's bundle.
+         */
+        providers: {
+          /** Whether Sign in with Google is offered. */
+          google: boolean;
+          /** Whether Sign in with Apple is offered. */
+          apple: boolean;
+          /** Whether Sign in with Facebook is offered. */
+          facebook: boolean;
+          /** Whether Sign in with GitHub is offered. */
+          github: boolean;
+        };
         /** How many digits an email OTP carries. */
         otpLength: number;
         /** Whether signing in may provision a new user. Drives the sign-up copy. */
@@ -41,29 +69,71 @@ declare module "virtual:pithy/auth" {
 }
 
 declare module "virtual:pithy/payments" {
-  /** Whether payments is composed AND has a catalog this environment can render. */
+  /**
+   * Whether this capability is composed and serving on this worker. Also the union's discriminant.
+   *
+   * The only named export, deliberately. Every other key is reached through the default export and a
+   * narrowing — see the note at the top of this file.
+   */
   export const enabled: boolean;
 
   const config:
-    | { enabled: false }
     | {
+        /**
+         * Payments is not composed, or has no catalog this environment can render. Both read the same on
+         * purpose: "composed with nothing to sell" is a paywall with nothing on it, exactly like "not
+         * composed", and a screen branches on one value rather than guarding.
+         */
+        enabled: false;
+      }
+    | {
+        /** Payments is composed AND has a catalog this environment can render. */
         enabled: true;
         /** The environment this bundle was built for. */
         environment: string;
-        /** Which rails this project sells through. Apple and Google are display-only on the web. */
-        rails: { apple: boolean; google: boolean; stripe: boolean; lemonSqueezy: boolean; paddle: boolean };
+        /**
+         * Which rails this project sells through. Apple and Google are display-only on the web — a
+         * paywall shows such a product as owned-elsewhere rather than offering a buy button nothing on
+         * the web can honour.
+         */
+        rails: {
+          /** Whether the App Store rail is on. Display-only in a browser. */
+          apple: boolean;
+          /** Whether the Play Store rail is on. Display-only in a browser. */
+          google: boolean;
+          /** Whether the Stripe rail is on. */
+          stripe: boolean;
+          /** Whether the Lemon Squeezy rail is on. */
+          lemonSqueezy: boolean;
+          /** Whether the Paddle rail is on. */
+          paddle: boolean;
+        };
         /**
          * What Paddle.js needs to initialize, or null when the rail is off. The client token is
          * publishable by design — it is what a browser opens a checkout with — and the API key and the
          * webhook signing secret are neither here nor expressible here.
          */
-        paddle: { clientToken: string; environment: "sandbox" | "production"; checkout: string } | null;
+        paddle: {
+          /** The publishable client token Paddle.js initializes with. */
+          clientToken: string;
+          /** Which Paddle account the token belongs to. */
+          environment: "sandbox" | "production";
+          /**
+           * How checkout is presented: `overlay` opens Paddle.js over your own page, `inline` renders it
+           * into a container the screen provides, `hosted` redirects to Paddle's own page.
+           *
+           * The union is stated, not `string`. A screen switches on this to decide whether to render a
+           * container at all, and the exhaustiveness is the point. It was the one field the hand-written
+           * `templates/client-env.d.ts` widened, and generating that file from here is what closed it.
+           */
+          checkout: "overlay" | "inline" | "hosted";
+        } | null;
         /** Where the payments routes mount, e.g. `/payments`. */
         basePath: string;
         /**
-         * The catalog, browser-safe. A web rail's price id is publishable by design — a checkout names
-         * one. Apple's and Google's SKUs, and anything a purchase fulfils beyond its entitlements, stay
-         * server-side.
+         * The catalog, browser-safe, in the order the adopter wrote it. A web rail's price id is
+         * publishable by design — a checkout names one. Apple's and Google's SKUs, and anything a
+         * purchase fulfils beyond its entitlements, stay server-side.
          */
         products: {
           /** The logical product id — what `/payments/checkout` is asked for. */
@@ -75,9 +145,11 @@ declare module "virtual:pithy/payments" {
           /** The display name a paywall renders. */
           name: string;
           /**
-           * This product's SKU on each web rail, or null where it is not sold. Keyed by rail rather
-           * than one field per rail, so a screen asks `skus[rail]` and a new rail cannot leave a
-           * `purchasable()` check silently out of date.
+           * This product's SKU on each web rail, or null where it is not sold. Keyed by rail rather than one
+           * field per rail, so a screen asks `skus[rail]` and a new rail cannot leave a `purchasable()` check
+           * silently out of date. Every id here is publishable by design — each is what a checkout names.
+           *
+           * Apple's and Google's product ids are deliberately absent: a browser cannot open either store.
            */
           skus: {
             /** The Stripe price id. */
@@ -93,12 +165,24 @@ declare module "virtual:pithy/payments" {
 }
 
 declare module "virtual:pithy/support" {
-  /** Whether support is composed AND serving the in-app submission routes — the only ones a browser calls. */
+  /**
+   * Whether this capability is composed and serving on this worker. Also the union's discriminant.
+   *
+   * The only named export, deliberately. Every other key is reached through the default export and a
+   * narrowing — see the note at the top of this file.
+   */
   export const enabled: boolean;
 
   const config:
-    | { enabled: false }
     | {
+        /**
+         * Support is not composed, or is not serving the in-app submission routes — the only ones a
+         * browser calls. A screen branches rather than rendering a compose form nothing will accept.
+         */
+        enabled: false;
+      }
+    | {
+        /** Support is composed AND serving the in-app submission routes. */
         enabled: true;
         /** Where the support routes mount, e.g. `/support`. `POST {basePath}/feedback` writes in. */
         basePath: string;
@@ -112,7 +196,11 @@ declare module "virtual:pithy/support" {
           maxSubjectChars: number;
           /** The longest report body accepted. */
           maxBodyChars: number;
-          /** What an upload control may offer, or null when attachments are off and it renders none. */
+          /**
+           * What an upload control may offer, or null when attachments are off and it renders none.
+           * Null rather than absent: the projection is inlined with `JSON.stringify`, which drops an
+           * undefined value and leaves a screen reading a key that is simply gone.
+           */
           attachments: {
             /** How many files one submission may carry. */
             maxCount: number;
@@ -127,12 +215,24 @@ declare module "virtual:pithy/support" {
 }
 
 declare module "virtual:pithy/turnstile" {
-  /** Whether turnstile is composed AND has a renderable login widget for this environment. */
+  /**
+   * Whether this capability is composed and serving on this worker. Also the union's discriminant.
+   *
+   * The only named export, deliberately. Every other key is reached through the default export and a
+   * narrowing — see the note at the top of this file.
+   */
   export const enabled: boolean;
 
   const config:
-    | { enabled: false }
     | {
+        /**
+         * Turnstile is not composed, or has no renderable login widget for this environment. A screen
+         * branches rather than mounting a widget that cannot solve.
+         */
+        enabled: false;
+      }
+    | {
+        /** Turnstile is composed AND has a renderable login widget for this environment. */
         enabled: true;
         /** The public sitekey for the build's environment. The widget secret stays in the secrets store. */
         sitekey: string;
@@ -146,7 +246,12 @@ declare module "virtual:pithy/turnstile" {
          */
         action: string;
         /** Where the response token goes: a body field, or a header when one is configured. */
-        token: { field: string; header: string | null };
+        token: {
+          /** The body field the middleware reads the token from. */
+          field: string;
+          /** The header it reads instead, or null when none is configured. */
+          header: string | null;
+        };
       };
   export default config;
 }

@@ -957,6 +957,39 @@ code touches the vulnerable path.
 
 Set before the first release, in #397. The survey and the reasoning are on that issue.
 
+### Audit the floors, not the lockfile
+
+`bun audit` reads the **lockfile** — the versions *we* resolved. An adopter has neither our lockfile
+nor our resolution, and lands wherever their own resolver puts them, which for a caret range can be
+the bottom. So a green `bun audit` in this repo says nothing about what a floor hands out. The two
+questions are different and only one of them was being asked.
+
+**Ask the other one directly.** Take every caret range this repo publishes, strip the caret to pin
+each at its own minimum, install that, and audit it:
+
+```
+# every published floor, pinned to its floor, in a scratch project
+bun install && bun audit
+```
+
+Run before the first release, that check reported **36 vulnerabilities — 2 critical, 16 high, 14
+moderate, 4 low** against a lockfile audit of 5. Four floors accounted for all of the difference,
+and **none of them moved a version we install** — every one was already resolving above its own floor,
+so the fix is a declaration change with no behaviour change at all:
+
+| Floor | Was | Now | What the old floor handed an adopter |
+|---|---|---|---|
+| `handlebars` (`@pithy-sh/email`, runtime) | `^4.7.8` | **`^4.7.9`** | The advisory range is `>=4.0.0 <=4.7.8`. The floor sat exactly on its top: 1 critical and 4 high, including JavaScript injection via AST type confusion. `4.7.9` is the only fixed release. |
+| `js-base64` (`@pithy-sh/cloudflare`, runtime) | `^3.7.0` | **`^3.9.2`** | `js-base64@3.7.0` declares **`mocha` as a runtime dependency** — an upstream packaging fault, fixed later — dragging `nanoid`, `minimatch`, `js-yaml`, `serialize-javascript` and `diff` into an adopter's tree with fourteen advisories between them. `3.9.2` has no dependencies at all. |
+| `@aws-sdk/client-s3`, `@aws-sdk/s3-request-presigner` | `^3.700.0` | **`^3.1111.0`** | `fast-xml-parser <5.7.0` — 1 critical, 2 high — plus `@smithy/config-resolver` and `uuid`. |
+
+At the corrected floors the same check reports **5**: the `undici` set below, which no floor of ours
+can move.
+
+**The rule this leaves behind.** A floor is a security decision, so it is stated as the lowest version
+that is *safe*, not the lowest version that *works*. Where those differ, safety wins and the reason is
+written down. Re-run the floor audit whenever a floor changes — a lockfile audit will not catch it.
+
 ### Hono: the exposure is the floor, not our usage
 
 `hono` is declared in seventeen packages and in the starter template, at **`^4.13.2`**.
@@ -989,7 +1022,31 @@ alpha line at **0.20.0** and has not come back: every version from 0.20.0 to 0.2
 `^0.19.0` caret enforces the exclusion on its own — for a `0.x` package it resolves `<0.20.0` — which
 is why no pin is needed to hold it.
 
-Revisit both together, the day miniflare 5 has a stable release.
+Revisit both together, the day miniflare 5 has a stable release. Re-checked against the registry for
+#402: `miniflare`'s `latest` dist-tag is still `5.20260811.1-alpha`, there is no stable 5.x, and every
+`@cloudflare/vitest-pool-workers` from 0.20.0 to 0.21.3 still pins an exact miniflare 5 alpha. The
+top of the 4.x line is `4.20260730.0`, which is what we resolve.
+
+### `@babel/parser` stays on 7.x
+
+`^7.29.8` in `packages/cli`, dev-only, used by one test — the Workflow determinism gate in
+`src/ci/workflowDeterminism.test.ts`. **8.x cannot parse the kit.**
+
+`@babel/parser@8` fails on an `async` arrow with a return type annotation inside an object literal
+inside a parenthesised expression. Reduced:
+
+```ts
+const o = { ...(d ? { m: async (): Promise<void> => f() } : {}) };
+//                                ^ SyntaxError: Unexpected token, expected "," (1:33)
+```
+
+Babel 7.29.8 parses it. 8.0.0 and 8.0.4 both fail, with `plugins: ["typescript"]` alone, so it is not
+a plugin-configuration change. Drop the `async` or drop the return type and 8 parses it; keep both
+inside the parentheses and it does not. The kit hits it at
+`packages/core/src/migrations/batch.ts:207` — one file out of 1018 — and a parser that cannot read the
+tree cannot gate it. 8.x also raises the Node floor to `^22.18.0 || >=24.11.0`.
+
+Filed as #403. Revisit when that reduction parses.
 
 ### `undici`: the one advisory we cannot close, and why
 
@@ -1012,18 +1069,39 @@ Accepted, not ignored. It closes when miniflare 5 stabilises, which is the same 
 Held by an `overrides` entry in the root `package.json`, while the declared ranges stay `^5.20260729.1`
 so **adopters are not constrained by our tooling problem** — they are not affected by this.
 
-**5.20260816.1 added `declare const Buffer: any;`.** `@types/node` declares `var Buffer:
-BufferConstructor`, and a `var` merges where a block-scoped `const` does not. The redeclaration
-therefore discards `@types/node`'s whole `declare module "node:buffer" { global { … } }` augmentation,
-and every `Buffer` method that takes an encoding stops type-checking:
-`randomBytes(8).toString("hex")` becomes *"Expected 0 arguments, but got 1"*.
+**`5.20260807.2` added `declare const Buffer: any;`** — not `5.20260816.1`, which is where #402 first
+noticed it. **`5.20260804.1` is the last clean release**, and every release since carries the line.
+`@types/node` declares `var Buffer: BufferConstructor`, and a `var` merges where a block-scoped
+`const` does not. With `skipLibCheck` off, TypeScript says it plainly:
+
+```
+@cloudflare/workers-types/index.d.ts(486,15): error TS2451: Cannot redeclare block-scoped variable 'Buffer'.
+@types/node/buffer.buffer.d.ts(356,19):       error TS2451: Cannot redeclare block-scoped variable 'Buffer'.
+```
+
+The redeclaration discards `@types/node`'s `declare global { … }` block in `buffer.buffer.d.ts`, so
+the `Buffer` interface loses its own members and falls back to `Uint8Array`'s: `randomBytes(8).toString`
+resolves to `() => string`, and `randomBytes(8).toString("hex")` becomes *"Expected 0 arguments, but
+got 1"*. `skipLibCheck: true` hides the `TS2451` and leaves only the confusing downstream error, which
+is why this reads as a mystery rather than a redeclaration.
 
 It breaks any project listing both `@cloudflare/workers-types` and `node` in `types` — which
 `packages/cli` must do, because it is a Node program that type-checks against capability packages
-using `D1Database` and `KVNamespace` globals. Reordering `types` does not help.
+using `D1Database` and `KVNamespace` globals. **Reordering `types` does not help**, verified both ways.
+Lifting the override puts three real errors into `packages/cli` (`dev/logging.ts`, `devSecrets/edit.ts`,
+`project/atomic.ts`), so the pin is load-bearing, not defensive.
 
-Adopters are unaffected: a scaffolded Worker's `tsconfig.json` lists `["@cloudflare/workers-types"]`
-alone. Lift the override once upstream declares `Buffer` mergeably, or drops it.
+The same release also added `declare const process: any;`, which collides with `@types/node`'s
+`var process` in exactly the same way. It causes no error only because `any` absorbs every member
+access — it silently degrades `process` to `any` rather than breaking. Worth knowing when the
+override lifts.
+
+**Adopters are unaffected, and this was checked rather than assumed.** A project scaffolded by
+`pithy init` keeps the two `types` arrays disjoint — `apps/api/tsconfig.json` lists
+`["@cloudflare/workers-types"]`, `tsconfig.tools.json` lists `["node"]`, and no project lists both.
+A real scaffold type-checks clean against `5.20260816.1` under both `tsc` 5.9.3 and `tsgo` 7.0.2; add
+`"node"` to the Worker's `types` and it fails immediately with the same `TS2554`. So the split holds:
+**pinned for us, open for them.** Lift the override once upstream declares `Buffer` mergeably, or drops it.
 
 ### `postal-mime` is at `^3.0.0`, and that is a security bump
 

@@ -10,7 +10,8 @@
     "./src/*": "./src/*.ts"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json --noEmit false --outDir dist",
+    "generate": "bun scripts/generateClientEnv.ts",
+    "build": "bun run generate && tsc -p tsconfig.json --noEmit false --outDir dist",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:node": "vitest run --project=node",

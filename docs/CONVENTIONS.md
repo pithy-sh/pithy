@@ -135,11 +135,15 @@ Earned from #383, and they survived #392, #393 and #394 unchanged.
 ### Two questions before you write one
 
 **Who can break it?** A seeded gate is for an invariant the *adopter* can break. When the party who can
-break it is the kit, the gate stays in the kit. `client-env.d.ts` is the worked example: it is 144 lines
-of ambient types over projections three packages away, and the drift that hurts is a capability dropping
-a field. Seeding a gate for that would put the alarm in a repository that did not move the contract and
-cannot fix it. #392 held it kit-side, in `@pithy-sh/vite`'s `clientEnv.test.ts`, against the real
-projections.
+break it is the kit, the gate stays in the kit. `client-env.d.ts` is the worked example: ambient types
+over projections three packages away, where the drift that hurts is a capability dropping a field.
+Seeding a gate for that would put the alarm in a repository that did not move the contract and cannot fix
+it, so #392 held it kit-side against the real projections. Then #398 removed the invariant instead — the
+file is generated from the four declared projections now, so there is one statement of the shape and
+nothing for a gate to compare. **That is the move to reach for first**: a gate watching two things agree
+earns its keep only while there have to be two. What is kept, in `@pithy-sh/vite`'s
+`clientEnvDeclaration.test.ts`, is smaller and different in kind — that the committed artifact is the
+current emit.
 
 **Can the gate run where it would be seeded?** This is the practical half, and it is a wall you find by
 trying rather than a judgement you make in advance. A seeded gate must pass under the plain `vitest run`
