@@ -21,10 +21,10 @@ import { SECRETS_ROTATE_SCOPE, SECRETS_STATUS_READ_SCOPE } from "./guards";
 import {
   type SecretRotateResponse,
   SecretRotationOutcomeView,
-  type SecretRotationsResponse,
+  SecretRotationsResponse,
   SecretRotationView,
   SecretStatusView,
-  type SecretsStatusResponse,
+  SecretsStatusResponse,
 } from "./responses";
 
 /**
@@ -120,10 +120,27 @@ const PUBLISHED_STATUS_KEYS = [
   "kind",
   "issuer",
   "documentation",
+  // #387. The names whose stored rows would not decode, so one bad row costs its own entry instead of the
+  // read. Argued for here, beside the sentence saying why this list is narrow: the array holds registry
+  // names — literals an operator wrote — and this read excludes keyed entries, so no stored
+  // `<keyspace>/<key>` name embedding a tenant identifier can reach it. It carries no reason, because why
+  // a row is malformed is a question about the database and not an answer for a client.
+  "unreadable",
 ];
 
 /** Every key `GET {base}/admin/status/:name/rotations` may carry. Seven. Written out, for the same reason. */
-const PUBLISHED_ROTATIONS_KEYS = ["name", "rotations", "startedAt", "completedAt", "status", "trigger", "rotatedBy"];
+const PUBLISHED_ROTATIONS_KEYS = [
+  "name",
+  "rotations",
+  "startedAt",
+  "completedAt",
+  "status",
+  "trigger",
+  "rotatedBy",
+  // #387. How many rows of this page would not decode — a count, so that a client can say the history is
+  // incomplete rather than render a short list as a whole one. A number is the only thing it can be.
+  "unreadable",
+];
 
 /**
  * Every key `POST {base}/admin/status/:name/rotate` may carry. Ten: the envelope's one, and the outcome's
@@ -493,7 +510,9 @@ describe("GET {base}/admin/status", () => {
     // grants permission, and it is hand-written, so a field the schema gains still has to be typed out
     // below before it may cross. Reading the union here lets the second assertion notice a *removal*.
     const nested = SecretRotation.options.flatMap((member) => Object.keys(member.shape));
-    const declared = ["secrets", ...Object.keys(SecretStatusView.shape), ...nested];
+    // The envelope's own keys are read too, not typed out — `#387` added `unreadable` beside `secrets`,
+    // and an envelope field is exactly as capable of carrying something as a row field is.
+    const declared = [...Object.keys(SecretsStatusResponse.shape), ...Object.keys(SecretStatusView.shape), ...nested];
     expect(declared.filter((key) => !PUBLISHED_STATUS_KEYS.includes(key))).toEqual([]);
     // And in the other direction, so a field removed from the schema leaves no permission behind it.
     expect(PUBLISHED_STATUS_KEYS.filter((key) => !declared.includes(key))).toEqual([]);
@@ -558,13 +577,17 @@ describe("GET {base}/admin/status/:name/rotations", () => {
       SEEDED_AT,
       FAILED_AT,
       null,
+      // #387's count, zero on a history whose rows all decode.
+      0,
     ];
     const escaped = unpublishedIn(raw, { leaves: published, keys: PUBLISHED_ROTATIONS_KEYS });
     expect(escaped, `The rotation history published this:\n  ${escaped.join("\n  ")}`).toEqual([]);
   });
 
   test("the rotations schema declares nothing the hand-written key list does not name", () => {
-    const declared = ["name", "rotations", ...Object.keys(SecretRotationView.shape)];
+    // The envelope read rather than typed out, for the reason the status read's twin states: `#387` put
+    // `unreadable` on it, and an envelope field crosses exactly as far as a row field does.
+    const declared = [...Object.keys(SecretRotationsResponse.shape), ...Object.keys(SecretRotationView.shape)];
     expect(declared.filter((key) => !PUBLISHED_ROTATIONS_KEYS.includes(key))).toEqual([]);
     expect(PUBLISHED_ROTATIONS_KEYS.filter((key) => !declared.includes(key))).toEqual([]);
   });

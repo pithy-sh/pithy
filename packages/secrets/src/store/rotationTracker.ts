@@ -9,6 +9,7 @@ import type { RotationStatus, RotationTrigger } from "../data/secretRotations";
 import { type SecretsTables, secretsTables } from "../data/tables";
 import {
   type OpenRotation,
+  type RotationFailureCode,
   type RotationLedger,
   rotationClosure,
   rotationFailureText,
@@ -72,11 +73,29 @@ export class RotationTracker {
       .execute();
   }
 
-  /** Close a rotation row as `failed`, persisting a redacted reason. */
-  async markFailure(rotationId: number, errorMessage: string): Promise<void> {
+  /**
+   * Close a rotation row as `failed`, under a code that names the failure.
+   *
+   * **It takes a code and not a sentence, and that is the whole of `#386`.** `error_message` is the one
+   * column on this table a failure site writes, `rotationLedger.ts` states that its text is fixed and
+   * chosen by a code, and the at-rest rotation path composed it from `cause.message` anyway — from a catch
+   * reached by decryption, envelope decoding and config parsing, which are the paths whose exception text
+   * can carry key material. Four files already refuse to publish this column; that refusal is defence in
+   * depth and was never the invariant. The invariant is that there is nothing here to publish.
+   *
+   * A comment asking for a code would have been the same comment that was already there. So the signature
+   * asks: {@link RotationFailureCode} is a closed union, `rotationFailureText` maps it here rather than at
+   * the call site, and a caller holding an exception has nowhere to put it. The exception is still raised,
+   * and its context still travels in a `PithyError`'s `detail`, which the HTTP codec strips.
+   */
+  async markFailure(rotationId: number, code: RotationFailureCode): Promise<void> {
     await this.#db
       .updateTable("pithySecretsRotations")
-      .set({ status: "failed" satisfies RotationStatus, completedAt: SQLiteDate.encode(new Date()), errorMessage })
+      .set({
+        status: "failed" satisfies RotationStatus,
+        completedAt: SQLiteDate.encode(new Date()),
+        errorMessage: rotationFailureText(code),
+      })
       .where("id", "=", rotationId)
       .execute();
   }
@@ -160,7 +179,9 @@ export function trackerRotationLedger(tracker: RotationTracker, options: Tracker
         async close(outcome): Promise<void> {
           const closure = rotationClosure(outcome, options.environment);
           if (closure.status === "success") await tracker.markSuccess(rotationId);
-          else await tracker.markFailure(rotationId, rotationFailureText(closure.reason));
+          // The reason, not its sentence. Every reason is a `RotationFailureCode`, and the tracker renders
+          // it — one place composes the text, on both sides of the seam (`#386`).
+          else await tracker.markFailure(rotationId, closure.reason);
         },
       };
     },

@@ -6,7 +6,7 @@ import { currentValue } from "../crypto/versionedValue";
 import { RotationTrigger } from "../data/secretRotations";
 import type { SecretsStoreEnv } from "../env/bindings";
 import { runWriteSecret, WriteSecretOutcome, type WriteSecretParams } from "../management/writeSecret";
-import { RotationClosure, rotationFailureText } from "../rotation/rotationLedger";
+import { RotationClosure, type RotationFailureCode } from "../rotation/rotationLedger";
 import { RotationTracker } from "../store/rotationTracker";
 import { SystemSecretsStore } from "../store/systemSecretsStore";
 
@@ -31,7 +31,7 @@ export type WriteWorkflowPayload =
  * Parsed rather than trusted. The payload crosses the Workflows REST API from another process, which is a
  * boundary like any other — and `rotationId` addresses a row, so an unvalidated one closes somebody else's.
  * The closure carries a **code**, never the failure text: free text is where a value gets pasted by
- * accident, so the sentence is composed in here by `rotationFailureText`.
+ * accident, so the sentence is composed further in, by `RotationTracker.markFailure`.
  */
 export const RotationLedgerCommand = z
   .discriminatedUnion("mode", [
@@ -107,9 +107,12 @@ export type WriteWorkflowResult = z.output<typeof WriteWorkflowResult>;
 /**
  * Open or close a rotation row in this environment's ledger.
  *
- * The failure sentence is composed here, from the closure's own code, and never from anything the caller
- * wrote. `admin/status.ts` refuses to publish `error_message` precisely because it is free text written at
- * a failure site — accepting one over the wire would be that hazard arranged in advance.
+ * The failure sentence is composed by the tracker, from the closure's own code, and never from anything
+ * the caller wrote. `admin/status.ts` refuses to publish `error_message` precisely because it is free text
+ * written at a failure site — accepting one over the wire would be that hazard arranged in advance.
+ *
+ * Since `#386` this path could not do otherwise: `markFailure` takes a {@link RotationFailureCode}, so the
+ * dispatched closure hands over the code it already carries and there is no argument a sentence would fit.
  */
 async function runRotationLedgerCommand(
   env: SecretsStoreEnv,
@@ -121,7 +124,7 @@ async function runRotationLedgerCommand(
     return { outcome: "opened", rotationId };
   }
   if (command.closure.status === "success") await tracker.markSuccess(command.rotationId);
-  else await tracker.markFailure(command.rotationId, rotationFailureText(command.closure.reason));
+  else await tracker.markFailure(command.rotationId, command.closure.reason);
   return { outcome: "closed" };
 }
 

@@ -5,7 +5,7 @@ import { type CapabilityHealth, defineCapabilityHealth } from "@pithy-sh/core/sr
 import { secretsStatusDatabase } from "../data/statusDb";
 import { SECRETS_STATUS_READ_SCOPE } from "../http/guards";
 import type { SecretRegistry } from "../registry";
-import { readSecretStatus, type SecretStatus, type SecretsStatusDb } from "./status";
+import { readSecretStatus, type SecretStatusEntry, type SecretsStatusDb } from "./status";
 
 /**
  * What this capability contributes to its manifest entry: one number, so a management client can say
@@ -38,15 +38,23 @@ import { readSecretStatus, type SecretStatus, type SecretsStatusDb } from "./sta
 export const SECRETS_DUE_FOR_ROTATION = "secretsDueForRotation";
 
 /**
- * How many of these statuses are past their declared cadence — the one definition of "due", read by
+ * How many of these entries are past their declared cadence — the one definition of "due", read by
  * the manifest count here and by the status route's own audit metadata.
  *
  * `overdue === true` and never merely truthy: the third state is null — nobody has said what late means
  * for that secret — and folding it into "not overdue" would be the same mistake as reporting a withheld
  * number as zero.
+ *
+ * **An unreadable entry is not counted, and the count is still a number (`#387`).** Before the per-row
+ * guard, one malformed row threw out of `readSecretStatus` and this capability reported `unavailable` for
+ * the whole manifest key — `#350` working exactly as designed, and still the wrong answer, because the
+ * other secrets' freshness was knowable and went unreported. A secret whose row will not decode is now in
+ * the same position as one that declares no cadence: nobody can say whether it is late, so it is not
+ * asserted to be. That is a smaller lie than counting it either way, and a much smaller one than
+ * withholding the number.
  */
-export function dueForRotation(statuses: readonly SecretStatus[]): number {
-  return statuses.filter((status) => status.overdue === true).length;
+export function dueForRotation(entries: readonly SecretStatusEntry[]): number {
+  return entries.filter((entry) => entry.state === "readable" && entry.status.overdue === true).length;
 }
 
 /** How many declared secrets are past the cadence their registry entry declares. */

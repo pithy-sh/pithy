@@ -204,13 +204,37 @@ interface RotationFacts {
 }
 
 /**
+ * One row of a batch read as the read found it: its facts, or that the row is there and would not decode.
+ *
+ * **The state rides on the value (`#384`, `#387`).** Every read in this file is a batch — a chunk of names
+ * against one statement — so a row that throws is a row that costs every other name in the chunk. Holding
+ * the outcome on the value means a caller cannot reach the facts without narrowing, and forgetting the
+ * unreadable case is a compile error rather than a silent empty.
+ *
+ * **Absent is a third fact and it is not in this union.** A name with no row is simply not a key in the
+ * map, which is what `SecretStatus`'s nulls already mean: declared and never written, or living in
+ * Cloudflare's Secrets Store. *Missing* and *malformed* have different remedies — write it, versus repair
+ * the row — and folding either into the other reports a stored secret as unprovisioned.
+ *
+ * `unreadable` carries nothing, for the reason `#384` gives: there is nothing safe to put on it. What the
+ * decode rejected is a column value from a row about a secret, and the name it is filed under is already
+ * the key.
+ */
+type Decoded<T> = { state: "readable"; facts: T } | { state: "unreadable" };
+
+/**
  * Store metadata per name, in as few statements as D1's bound-parameter cap allows.
  *
  * The column list is the security boundary — `encryptedValue` and `iv` are on this table and are not
  * named, so a status read never pulls a ciphertext into the Worker at all.
+ *
+ * **The date decode is per row since `#387`.** It sat inside `for (const row of rows)` unguarded, which is
+ * easy to miss because it does not read like parsing a row — it reads like converting a field. One corrupt
+ * ms-epoch threw out of the loop and lost the whole chunk, so every secret in it reported nothing on
+ * account of one.
  */
-async function storedFacts(db: SecretsStatusDb, names: string[]): Promise<Map<string, StoredFacts>> {
-  const found = new Map<string, StoredFacts>();
+async function storedFacts(db: SecretsStatusDb, names: string[]): Promise<Map<string, Decoded<StoredFacts>>> {
+  const found = new Map<string, Decoded<StoredFacts>>();
   for (const chunk of chunkByBoundParameters(names, 0)) {
     const rows = await db
       .selectFrom("pithySecretsSystemSecrets")
@@ -220,11 +244,23 @@ async function storedFacts(db: SecretsStatusDb, names: string[]): Promise<Map<st
     for (const row of rows) {
       // Dates decode here rather than at the shape, so every date this module handles is a `Date` and
       // the ms-epoch the column actually holds stops being something a caller could get wrong.
-      found.set(row.name, {
-        keyVersion: row.keyVersion,
-        createdAt: SQLiteDate.parse(row.createdAt),
-        updatedAt: SQLiteDate.parse(row.updatedAt),
-      });
+      //
+      // The `catch` takes no binding. A `SQLiteDate` rejection carries the offending column value as the
+      // issue's `input`, and these rows sit beside `error_message` and `metadata_snapshot` — free text
+      // written where a value was in scope. Nothing derived from the failure may travel, and nothing can,
+      // because there is nothing in scope to attach.
+      try {
+        found.set(row.name, {
+          state: "readable",
+          facts: {
+            keyVersion: row.keyVersion,
+            createdAt: SQLiteDate.parse(row.createdAt),
+            updatedAt: SQLiteDate.parse(row.updatedAt),
+          },
+        });
+      } catch {
+        found.set(row.name, { state: "unreadable" });
+      }
     }
   }
   return found;
@@ -238,9 +274,15 @@ async function storedFacts(db: SecretsStatusDb, names: string[]): Promise<Map<st
  * not rotate. The raw fragment names physical columns because `CamelCasePlugin` transforms identifiers
  * the builder produces and leaves raw SQL alone — the same rule `packages/auth/src/admin/users.ts`
  * follows for its `escape` clause.
+ *
+ * **The third site of `#387`'s shape, and it was not in the issue.** `#387` named `storedFacts` and
+ * `readSecretRotations`; this loop decodes `lastRotatedAt` exactly as `storedFacts` decodes its two, from
+ * the same aggregate over the same table, and was unguarded for the same reason — it reads like a field
+ * conversion. Worth stating plainly: the sweep that produced the issue looked at this file and did not
+ * see it, which is the argument for asking the question again rather than for trusting a list.
  */
-async function rotationFacts(db: SecretsStatusDb, names: string[]): Promise<Map<string, RotationFacts>> {
-  const found = new Map<string, RotationFacts>();
+async function rotationFacts(db: SecretsStatusDb, names: string[]): Promise<Map<string, Decoded<RotationFacts>>> {
+  const found = new Map<string, Decoded<RotationFacts>>();
   for (const chunk of chunkByBoundParameters(names, 0)) {
     const rows = await db
       .selectFrom("pithySecretsRotations")
@@ -253,14 +295,75 @@ async function rotationFacts(db: SecretsStatusDb, names: string[]): Promise<Map<
       .groupBy("name")
       .execute();
     for (const row of rows) {
-      found.set(row.name, {
-        rotationCount: Number(row.rotationCount),
-        lastRotatedAt: row.lastRotatedAt === null ? null : SQLiteDate.parse(row.lastRotatedAt),
-      });
+      // Null is not a failure here and must not become one: it is the aggregate saying this secret has
+      // never rotated successfully, which is the fact `SecretStatus.lastRotatedAt` is documented to carry.
+      // Only a non-null value that will not decode is unreadable.
+      try {
+        found.set(row.name, {
+          state: "readable",
+          facts: {
+            rotationCount: Number(row.rotationCount),
+            lastRotatedAt: row.lastRotatedAt === null ? null : SQLiteDate.parse(row.lastRotatedAt),
+          },
+        });
+      } catch {
+        found.set(row.name, { state: "unreadable" });
+      }
     }
   }
   return found;
 }
+
+/**
+ * One declared secret's place in a status read: its status, or that a row about it would not decode.
+ *
+ * **A bad row is held against its own name (`#170`, `#384`).** The read is registry-driven and every name
+ * in it is one an operator declared, so the whole list still comes back and the one that could not be read
+ * says so under the name it belongs to. `#350` already made a throw here survivable — the capability
+ * reports `unavailable` and its siblings are fine — and that is a different thing from correct: the
+ * information was still lost for every secret because of one row, and the manifest could not say which.
+ *
+ * The name is safe to carry, and that was checked rather than assumed. It comes from
+ * `reportableNames(registry)`, so it is a registry literal an operator wrote. Keyed entries are excluded
+ * from this read, so no `<keyspace>/<key>` — a stored name embedding a tenant identifier from caller input
+ * — can appear here. That is the trap `#384` hit and had to correct.
+ */
+export type SecretStatusEntry =
+  | {
+      /** The row decoded, and this secret's status is below. */
+      state: "readable";
+      /** Its declaration, its store metadata, and whether it is late. */
+      status: SecretStatus;
+    }
+  | {
+      /** A row this secret's status is built from did not decode. Its facts are not knowable from here. */
+      state: "unreadable";
+      /** Which secret. A registry name, never a stored one. */
+      name: string;
+    };
+
+/**
+ * One entry of a secret's rotation history: the record, or that the row would not decode.
+ *
+ * Unlike {@link SecretStatusEntry} this carries no name, and that is not an oversight. Every row in the
+ * page is the *same* secret's — the name is the argument the read was called with, and it is echoed once
+ * by the caller. What distinguishes a row here is its position in a history, which the array preserves: a
+ * bad row costs its own entry and the rows around it still resolve, in order.
+ *
+ * Nothing else rides on the unreadable member. `startedAt` is the field most likely to be the one that
+ * would not decode, so a "when" would be exactly the thing that is missing.
+ */
+export type SecretRotationEntry =
+  | {
+      /** The row decoded. */
+      state: "readable";
+      /** One rotation attempt, in metadata only. */
+      record: SecretRotationRecord;
+    }
+  | {
+      /** The row did not decode, and holds its own place in the history rather than emptying it. */
+      state: "unreadable";
+    };
 
 /** Options for {@link readSecretStatus}. */
 export interface SecretStatusOptions {
@@ -280,24 +383,38 @@ export async function readSecretStatus(
   db: SecretsStatusDb,
   registry: SecretRegistry,
   options: SecretStatusOptions = {},
-): Promise<SecretStatus[]> {
+): Promise<SecretStatusEntry[]> {
   const names = reportableNames(registry);
   if (names.length === 0) return [];
   const now = options.now ?? new Date();
   const [stored, rotations] = await Promise.all([storedFacts(db, names), rotationFacts(db, names)]);
 
-  return names.map((name) => {
+  return names.map((name): SecretStatusEntry => {
     // Present because `reportableNames` derived the list from this registry.
     const entry = registry[name] as SecretRegistry[string];
-    const row = stored.get(name);
-    const rotation = rotations.get(name);
+    const storedEntry = stored.get(name);
+    const rotationEntry = rotations.get(name);
+    // Either table having an undecodable row about this secret makes its status unknowable, and both are
+    // held the same way. **Absent is not that**: `undefined` here is a name with no row, which is the
+    // answer this read exists to give — declared and never written, or stored in Cloudflare's Secrets
+    // Store. Missing and malformed stay separate before either becomes an error.
+    if (storedEntry?.state === "unreadable" || rotationEntry?.state === "unreadable") {
+      return { state: "unreadable", name };
+    }
+    const row = storedEntry?.facts;
+    const rotation = rotationEntry?.facts;
     const lastRotatedAt = rotation?.lastRotatedAt ?? null;
     const rotateEveryDays = entry.rotateEveryDays ?? null;
     // Measured from the last successful rotation, and from first write when there has never been one:
     // a key created two years ago and never rotated is late, and reporting it as unanswerable would
     // hide exactly the secret this read exists for.
     const reference = lastRotatedAt ?? row?.createdAt ?? null;
-    return SecretStatus.parse({
+    // **Left unguarded on purpose, and this is the note saying so.** `#387` was filed naming this parse as
+    // a third site and the claim was withdrawn on checking. It runs over registry declarations
+    // `defineSecretRegistry` already refused at define time, plus facts normalised above — so a throw here
+    // is an author error in a registry, not a bad row in a database. Guarding it would convert a defect
+    // that should be loud into a secret quietly reporting as unreadable.
+    const status = SecretStatus.parse({
       name,
       backend: entry.backend,
       valueType: entry.valueType,
@@ -315,6 +432,7 @@ export async function readSecretStatus(
       rotateEveryDays,
       overdue: overdueAgainst(reference, rotateEveryDays, now),
     });
+    return { state: "readable", status };
   });
 }
 
@@ -324,12 +442,17 @@ export async function readSecretStatus(
  * `id` breaks a tie on `startedAt`: two rotations recorded in the same millisecond would otherwise
  * straddle the cap in an order SQLite is free to change between reads. It is a sort key and is not
  * selected — a surrogate row id is not a fact about a secret.
+ *
+ * **Guarded per row since `#387`.** This ended `rows.map((row) => SecretRotationRecord.parse(row))`, so one
+ * malformed row threw out of the whole read — and the read is a *history*, per secret, so a single bad row
+ * cost every rotation record the caller asked for. A history is the surface an incident review reads, and
+ * losing all of it because the oldest row has a bad timestamp is the failure mode least worth having.
  */
 export async function readSecretRotations(
   db: SecretsStatusDb,
   name: string,
   limit: number,
-): Promise<SecretRotationRecord[]> {
+): Promise<SecretRotationEntry[]> {
   const rows = await db
     .selectFrom("pithySecretsRotations")
     .select(["startedAt", "completedAt", "status", "trigger", "rotatedBy"])
@@ -338,5 +461,15 @@ export async function readSecretRotations(
     .orderBy("id", "desc")
     .limit(limit)
     .execute();
-  return rows.map((row) => SecretRotationRecord.parse(row));
+  return rows.map((row): SecretRotationEntry => {
+    // The `catch` takes no binding. A `ZodError` from this parse carries the offending column value as its
+    // issue `input`, and the row it came from is one whose neighbouring columns are `error_message` and
+    // `metadata_snapshot` — free text written at a failure site. Nothing derived from the rejection may
+    // travel, and with nothing in scope there is nothing that could.
+    try {
+      return { state: "readable", record: SecretRotationRecord.parse(row) };
+    } catch {
+      return { state: "unreadable" };
+    }
+  });
 }

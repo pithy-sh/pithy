@@ -102,8 +102,13 @@ export const SecretsStatusResponse = z
     secrets: z
       .array(SecretStatusView)
       .describe("Every named secret the composed Worker declares, by name. Keyed entries are excluded."),
+    unreadable: z
+      .array(z.string())
+      .describe(
+        "Declared secrets whose stored rows would not decode, by registry name — so one bad row costs its own entry and names itself, instead of costing the read (#387). Registry names only: keyed entries are excluded from this read, so no stored `<keyspace>/<key>` name can appear here. Carries no reason; why a row is malformed is a question for the database, not for a client.",
+      ),
   })
-  .describe("The status of every declared secret.");
+  .describe("The status of every declared secret, and any whose stored rows would not decode.");
 export type SecretsStatusResponse = z.output<typeof SecretsStatusResponse>;
 
 /** `GET {base}/admin/status/:name/rotations` — one secret's history. */
@@ -111,8 +116,15 @@ export const SecretRotationsResponse = z
   .object({
     name: z.string().describe("The secret this history belongs to, echoed so a client can label it."),
     rotations: z.array(SecretRotationView).describe("Its rotation attempts, newest first, capped by `limit`."),
+    unreadable: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe(
+        "How many rows in this page would not decode (#387). A count and not a list, because every row here is the same secret's and what identifies one is its place in the history — which is exactly what a row with an undecodable `startedAt` cannot supply. Reported so a client can say the history is incomplete rather than render a short list as a whole one.",
+      ),
   })
-  .describe("One secret's rotation history.");
+  .describe("One secret's rotation history, and how much of the page would not decode.");
 export type SecretRotationsResponse = z.output<typeof SecretRotationsResponse>;
 
 /**

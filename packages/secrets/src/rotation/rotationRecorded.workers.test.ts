@@ -70,12 +70,20 @@ function inProcessClient(): CloudflareWorkflowsClient {
   } as unknown as CloudflareWorkflowsClient;
 }
 
-/** The status read's own view of one secret. The subject, and never the writer. */
+/**
+ * The status read's own view of one secret. The subject, and never the writer.
+ *
+ * Narrowed here rather than asserted around: since `#387` the read answers per name, and an entry whose
+ * row would not decode has no status to compare a freshness verdict against. This suite is about whether a
+ * rotation was *recorded*, so an unreadable row is a different failure and throws with a different
+ * sentence — it must not read as "not rotated".
+ */
 async function statusOf(now: Date) {
   const rows = await readSecretStatus(createDatabase(env.SECRETS, secretsTables), registry, { now });
-  const row = rows.find((candidate) => candidate.name === NAME);
+  const row = rows.find((candidate) => candidate.state === "readable" && candidate.status.name === NAME);
   if (!row) throw new Error(`no status row for ${NAME}`);
-  return row;
+  if (row.state !== "readable") throw new Error(`status row for ${NAME} did not decode`);
+  return row.status;
 }
 
 /** Every rotation row, oldest first, read in SQL. Physical column names, because this is not a query builder. */
