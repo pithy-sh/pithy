@@ -7,12 +7,12 @@ import {
   type CapabilityComposeContext,
   defineCapability,
 } from "@pithy-sh/core/src/capability/capability";
-import type { ClientProjection } from "@pithy-sh/core/src/capability/client";
 import type { DatabaseSpecMap } from "@pithy-sh/core/src/data/databases";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { KvNamespaceSpecMap } from "@pithy-sh/core/src/kv/namespaces";
 import { workflowBindings } from "@pithy-sh/core/src/workflow/bindings";
 import type { Migration } from "kysely/migration";
+import type { PaymentsClientProduct, PaymentsClientProjection } from "./client/projection";
 import { PaymentsConfig, type PaymentsConfigInput } from "./config/config";
 import { paymentsTables } from "./data/tables";
 import { installEntitlementResolver } from "./entitlement/resolver";
@@ -118,24 +118,35 @@ function checkLedgerGrants({ capabilities }: CapabilityComposeContext, config: P
  * An empty catalog projects `{ enabled: false }`. A screen branches on `enabled` rather than guarding, so
  * "composed with nothing to sell" must read the same as "not composed" — both are a paywall with nothing
  * on it.
+ *
+ * The return type is {@link PaymentsClientProjection}, and the catalog's element type is
+ * {@link PaymentsClientProduct} — **declared, not inferred**. `ClientProjection` is `{ enabled: boolean }`
+ * plus a JSON catchall, which accepts anything this function could return. The declared types are what
+ * make a dropped field a compile error here rather than a browser's problem, and what make a fourth
+ * product kind or a fourth Paddle checkout mode in `PaymentsConfig` a red line here rather than a silent
+ * widening of what every adopter's bundle carries. The element type is annotated
+ * separately because the `.map` is where inference is weakest: it would take the shape of whatever the
+ * first product happened to be.
  */
-function clientProjection(config: PaymentsConfig, environment: string): ClientProjection {
-  const products = Object.entries(config.products).map(([id, product]) => ({
-    id,
-    type: product.type,
-    entitlements: [...product.entitlements],
-    name: product.name,
-    // **Keyed by rail, not one field per rail.** Two flat fields were already one too many, and a third
-    // would have made `purchasable()` a growing chain of `&&`s that a fourth rail silently falls out of.
-    // A screen now asks `skus[rail]`, which is the same question it was already asking and cannot go
-    // stale when a rail is added. Every id here is publishable by design: each is what a checkout names,
-    // so each may reach a browser. The API keys and the signing secrets never do.
-    skus: {
-      stripe: product.stripe?.priceId ?? null,
-      lemonSqueezy: product.lemonSqueezy?.variantId ?? null,
-      paddle: product.paddle?.priceId ?? null,
-    },
-  }));
+function clientProjection(config: PaymentsConfig, environment: string): PaymentsClientProjection {
+  const products = Object.entries(config.products).map(
+    ([id, product]): PaymentsClientProduct => ({
+      id,
+      type: product.type,
+      entitlements: [...product.entitlements],
+      name: product.name,
+      // **Keyed by rail, not one field per rail.** Two flat fields were already one too many, and a third
+      // would have made `purchasable()` a growing chain of `&&`s that a fourth rail silently falls out of.
+      // A screen now asks `skus[rail]`, which is the same question it was already asking and cannot go
+      // stale when a rail is added. Every id here is publishable by design: each is what a checkout names,
+      // so each may reach a browser. The API keys and the signing secrets never do.
+      skus: {
+        stripe: product.stripe?.priceId ?? null,
+        lemonSqueezy: product.lemonSqueezy?.variantId ?? null,
+        paddle: product.paddle?.priceId ?? null,
+      },
+    }),
+  );
   if (products.length === 0) return { enabled: false };
 
   return {
@@ -228,7 +239,7 @@ export function payments(options: PaymentsOptions = {}): PaymentsCapability {
     // currency exists. See `checkLedgerGrants` for why the failure is otherwise invisible.
     compose: (context) => checkLedgerGrants(context, resolved),
     // What a browser may know. See `clientProjection` for why the list is what it is.
-    client: ({ environment }) => clientProjection(resolved, environment),
+    client: ({ environment }): PaymentsClientProjection => clientProjection(resolved, environment),
     requiredBindings,
     config: PaymentsConfig,
     databases: {
