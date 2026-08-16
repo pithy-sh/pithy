@@ -17,9 +17,11 @@ import { ensureEmptyTarget, kitRange, WORKER_NAME, workerNamespace } from "./sca
  * majors. Exported and imported rather than restated, so there is one literal and one test holding it to
  * the template on disk.
  *
- * `@cloudflare/vite-plugin` peers on `wrangler ^4.115.0`; moving this alone will not resolve.
+ * `@cloudflare/vite-plugin` peers on wrangler, so this range is not free to move alone. Checked at
+ * 4.123.0: plugin 1.48.0 peers `^4.115.0` and plugin 1.52.1 peers `^4.123.0`, and the stub's `^1.48.0`
+ * resolves the latter. Both are satisfied. A wrangler **major** still needs the plugin moved with it.
  */
-export const WRANGLER_RANGE = "^4.115.0";
+export const WRANGLER_RANGE = "^4.123.0";
 
 /**
  * The files `scaffoldWorker` stamps into `apps/<name>/`, generated inline (no template dir to resolve).
@@ -119,7 +121,7 @@ ${envStanzas}
         "deploy:staging": "wrangler deploy --env staging",
         "deploy:prod": "wrangler deploy --env prod",
       },
-      dependencies: { ...(kit === null ? {} : { [PACKAGE_NAME]: kit }), hono: "^4.12.0" },
+      dependencies: { ...(kit === null ? {} : { [PACKAGE_NAME]: kit }), hono: "^4.13.2" },
       devDependencies: { "@cloudflare/workers-types": "^5.20260729.1", wrangler: WRANGLER_RANGE },
     },
     null,

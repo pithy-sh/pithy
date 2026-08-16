@@ -502,7 +502,7 @@ describe("the React 19 stub", () => {
     expect(reactStub.dependencies).toMatchObject({ react: "^19.2.8", "react-dom": "^19.2.8" });
     // @vitejs/plugin-react 6.x is the Vite 8 line; 5.1.x does not support Vite 8.
     expect(reactStub.devDependencies["@vitejs/plugin-react"]).toBe("^6.0.4");
-    expect(reactStub.devDependencies.vite).toBe("^8.0.16");
+    expect(reactStub.devDependencies.vite).toBe("^8.2.1");
     expect(reactStub.devDependencies["@cloudflare/vite-plugin"]).toBe("^1.48.0");
   });
 

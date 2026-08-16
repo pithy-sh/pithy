@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.5.6/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.8/schema.json",
   "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
   "files": { "ignoreUnknown": true, "includes": ["**", "!**/*.generated.ts"] },
   // Gate 1 of the route request contract. Scoped to the HTTP layer of the capability packages: those

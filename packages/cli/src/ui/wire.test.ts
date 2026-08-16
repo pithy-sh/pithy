@@ -210,7 +210,7 @@ describe("wire", () => {
     expect(pkg.dependencies.react).toBe("^19.9.9");
     expect(change.dependencies).toEqual(["react-dom"]);
     expect(pkg.dependencies["react-dom"]).toBe("^19.2.8");
-    expect(pkg.devDependencies.vite).toBe("^8.0.16");
+    expect(pkg.devDependencies.vite).toBe("^8.2.1");
     // Every existing key survives.
     expect(pkg.name).toBe("acme-api");
     expect(pkg.dependencies["@pithy-sh/core"]).toBe("^0.0.0");
@@ -252,7 +252,7 @@ describe("wire", () => {
     expect(pkg.devDependencies["@pithy-sh/vite"]).toBeUndefined();
     expect(change.devDependencies).not.toContain("@pithy-sh/vite");
     // Every registry package still lands — the rule is about the unpublished scope, not about hoisting.
-    expect(pkg.devDependencies.vite).toBe("^8.0.16");
+    expect(pkg.devDependencies.vite).toBe("^8.2.1");
     expect(change.devDependencies).toContain("@vitejs/plugin-react");
   });
 

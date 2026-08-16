@@ -13,10 +13,10 @@
   },
   "dependencies": {
     "@pithy-sh/core": "^0.0.0",
-    "hono": "^4.12.0"
+    "hono": "^4.13.2"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260729.1",
-    "wrangler": "^4.115.0"
+    "wrangler": "^4.123.0"
   }
 }
