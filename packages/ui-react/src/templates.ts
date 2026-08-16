@@ -52,6 +52,9 @@ export const TEMPLATE_GROUPS = {
     "src/client.tsx",
     "src/pithy-config.tsx",
     "src/router.tsx",
+    // The router's half of #393: a guard's destination is the path the screen declares, and this is
+    // what keeps it so once `router.tsx` is a file in somebody else's repository.
+    "src/router.test.tsx",
     "src/styles.css",
     // **`src/pithy-screens.css` is base, and it is base for the same reason `pithy-config.tsx` is.**
     // It carries every class name a Pithy screen renders, and it is written whenever it is absent —
@@ -74,6 +77,10 @@ export const TEMPLATE_GROUPS = {
     // likely to hit it with nothing that goes red. So this one is seeded, not kept.
     "src/turnstile.test.tsx",
     "src/routes/pithy/sign-in.tsx",
+    // The magic link's `callbackURL` and `callback.tsx`'s `path` are one statement, and this is the
+    // gate that keeps them one after the screens are yours (#393). Seeded for the same reason the
+    // widget's is: the round trip it protects is the one flow nobody already signed in can test.
+    "src/routes/pithy/sign-in.test.tsx",
     "src/routes/pithy/otp.tsx",
     "src/routes/pithy/callback.tsx",
   ],

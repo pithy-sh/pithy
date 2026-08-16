@@ -5,6 +5,11 @@ import type { AuthFetch } from "@pithy-sh/auth/src/client/api";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, test } from "vitest";
+// The screen the magic link comes back to, read rather than restated. This file used to assert
+// `callbackURL: "…/callback"` — a literal against a literal, both written on the same afternoon, and
+// neither of them the one the router matches. Renaming the screen's path broke the round trip and
+// nothing here noticed (#393).
+import { path as callbackPath } from "../templates/src/routes/pithy/callback";
 import { type AuthProjection, type HumanityCheck, SignInScreen } from "../templates/src/routes/pithy/sign-in";
 
 /**
@@ -145,7 +150,10 @@ describe("one way in", () => {
     await submit(one<HTMLFormElement>(container, "form"));
 
     expect(calls.map((call) => call.url)).toEqual(["/auth/sign-in/magic-link"]);
-    expect(calls[0]?.body).toEqual({ email: "someone@example.com", callbackURL: "https://app.example/callback" });
+    expect(calls[0]?.body).toEqual({
+      email: "someone@example.com",
+      callbackURL: `https://app.example${callbackPath}`,
+    });
   });
 
   test("nothing on the screen offers a second passwordless path", () => {
@@ -207,7 +215,7 @@ describe("the humanity check", () => {
     );
     await click(all(container, ".auth__provider")[0] as Element);
     expect(followed).toEqual(["https://accounts.google.com/o/oauth2/auth?client_id=abc"]);
-    expect(calls[0]?.body).toEqual({ provider: "google", callbackURL: "https://app.example/callback" });
+    expect(calls[0]?.body).toEqual({ provider: "google", callbackURL: `https://app.example${callbackPath}` });
   });
 });
 

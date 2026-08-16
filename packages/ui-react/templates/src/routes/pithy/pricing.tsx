@@ -10,7 +10,7 @@ import {
 import type { ReactNode } from "react";
 import { paddleSetup, paymentsClient, usePriceVisitor } from "../../payments";
 import { paymentsConfig } from "../../pithy-config";
-import { Link, useSignedIn } from "../../router";
+import { Link, useOptionalScreenPath, useScreenPath, useSignedIn } from "../../router";
 import "../../pithy-screens.css";
 
 export const path = "/pricing";
@@ -75,6 +75,19 @@ export interface PricingScreenProps {
    */
   readonly signedIn: boolean | null;
   /**
+   * Where "sign in to buy" points — the path the sign-in screen declares, read through the role it
+   * claims. A prop for the same reason the rest of this screen's world is: nothing here reads a
+   * config a Vite build has to produce. Never a literal `/sign-in`, which survives a rename and lands
+   * a stranger on the not-found screen (#393).
+   *
+   * `null` in a payments-only project, where there is no sign-in screen. Nothing sends an anonymous
+   * visitor anywhere then — `useSignedIn` answers "signed in" with no auth composed — so the branch
+   * this feeds is unreachable there, and a link is not drawn to a screen that does not exist.
+   */
+  readonly signInPath: string | null;
+  /** Where "what do I already have?" points — the subscription screen's declared path, same rule. */
+  readonly subscriptionPath: string;
+  /**
    * What is known about where this visitor is charged from, or null when nothing is.
    *
    * Null is a real answer and the common one: a stranger reading a marketing page has no billing address
@@ -96,7 +109,16 @@ export interface PricingScreenProps {
  * not a file that reads its config: an estimated quote has to look estimated, and an anonymous visitor
  * has to be offered a way in rather than a button that fails.
  */
-export function PricingScreen({ products, setup, signedIn, visitor, client, paddle }: PricingScreenProps): ReactNode {
+export function PricingScreen({
+  products,
+  setup,
+  signedIn,
+  signInPath,
+  subscriptionPath,
+  visitor,
+  client,
+  paddle,
+}: PricingScreenProps): ReactNode {
   /**
    * One quote per product, asked for in one round trip.
    *
@@ -188,7 +210,7 @@ export function PricingScreen({ products, setup, signedIn, visitor, client, padd
                 <p className="muted">We couldn't get a price. You'll see it at checkout.</p>
               )}
               {signedIn === false ? (
-                <Link to="/sign-in">Sign in to buy {product.name}</Link>
+                signInPath && <Link to={signInPath}>Sign in to buy {product.name}</Link>
               ) : (
                 <button
                   type="button"
@@ -211,7 +233,7 @@ export function PricingScreen({ products, setup, signedIn, visitor, client, padd
       {opened.inline && <div className={CHECKOUT_FRAME} />}
 
       <div className="stack">
-        <Link className="muted" to="/subscription">
+        <Link className="muted" to={subscriptionPath}>
           What do I already have?
         </Link>
       </div>
@@ -221,6 +243,10 @@ export function PricingScreen({ products, setup, signedIn, visitor, client, padd
 
 export default function Pricing(): ReactNode {
   const signedIn = useSignedIn();
+  // The two screens this one points at, each named by the job it does rather than by a path copied
+  // into this file (#393).
+  const signInPath = useOptionalScreenPath("sign-in");
+  const subscriptionPath = useScreenPath("subscription");
   // Asked only once there is a session to ask about. A stranger's page makes no round trip for this —
   // there is nothing on file to fetch, and a marketing page should not wait on a request whose answer is
   // known in advance to be "nobody".
@@ -230,6 +256,8 @@ export default function Pricing(): ReactNode {
       products={PADDLE_PRODUCTS}
       setup={paddleSetup}
       signedIn={signedIn}
+      signInPath={signInPath}
+      subscriptionPath={subscriptionPath}
       visitor={visitor}
       client={paymentsClient}
     />

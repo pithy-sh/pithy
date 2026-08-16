@@ -61,9 +61,17 @@ afterEach(() => {
   mounted = null;
 });
 
+/**
+ * Where "see what else there is" is told to point. Not `/paywall`, on purpose: the screen takes the
+ * path, and a real one here would pass against a screen that went back to a literal (#393).
+ */
+const PAYWALL = "/gate-canary-not-the-paywall-path";
+
 /** Render the screen for one project's rails, and hand back the buttons it drew. */
 async function buttons(rails: Record<PaymentsClientRail, boolean>): Promise<string[]> {
-  const container = await mount(<SubscriptionScreen rails={rails} client={{ fetch: answered }} />);
+  const container = await mount(
+    <SubscriptionScreen rails={rails} client={{ fetch: answered }} paywallPath={PAYWALL} />,
+  );
   // The loading branch renders no buttons at all, so a test that never resolved the read would report
   // "no Manage billing" and pass the negative cases for the wrong reason. The heading proves it settled.
   expect(container.querySelector("h1"), "the screen is still loading — the read never resolved").not.toBeNull();
@@ -71,6 +79,18 @@ async function buttons(rails: Record<PaymentsClientRail, boolean>): Promise<stri
 }
 
 describe("the scaffolded subscription screen", () => {
+  test("the way back to the paywall is the path it is handed, not one of its own", async () => {
+    // #393: `<Link to="/paywall">` is the same defect as a redirect written as a literal — it survives
+    // the rename and stops answering. The canary is invented here, so a screen that went back to a
+    // literal fails rather than agreeing with itself.
+    expect(PAYWALL).not.toBe("/paywall");
+    const container = await mount(
+      <SubscriptionScreen rails={NONE} client={{ fetch: answered }} paywallPath={PAYWALL} />,
+    );
+    const links = [...container.querySelectorAll("a")].map((link) => link.getAttribute("href"));
+    expect(links).toContain(PAYWALL);
+  });
+
   test("offers a way to manage billing on every hosted rail, one at a time", async () => {
     // A floor. If `PAYMENTS_HOSTED_RAILS` were ever empty this loop would assert nothing and pass.
     expect(PAYMENTS_HOSTED_RAILS.length).toBeGreaterThanOrEqual(3);

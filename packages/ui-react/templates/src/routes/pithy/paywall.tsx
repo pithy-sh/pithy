@@ -7,10 +7,14 @@ import { useCheckout, usePaddleCheckout, usePurchase } from "@pithy-sh/payments/
 import { useEffect, useState } from "react";
 import { paymentsClient } from "../../payments";
 import { paymentsConfig } from "../../pithy-config";
-import { Link } from "../../router";
+import { Link, useScreenPath } from "../../router";
 import "../../pithy-screens.css";
 
 export const path = "/paywall";
+
+// The screen the router's entitlement guard sends people to. Rename `path` above and the guard follows,
+// because it reads this claim rather than holding a copy of the string (#393).
+export const role = "paywall";
 
 // Buying attaches a purchase to an account, so there has to be one.
 export const session = "required";
@@ -44,6 +48,9 @@ function purchasable(product: { skus: Record<PaymentsHostedRail, string | null> 
 const CHECKOUT_FRAME = "pithy-checkout";
 
 export default function Paywall() {
+  // Read before the early returns, because it is a hook — and read at all, rather than written out as
+  // `/subscription`, because the subscription screen declares its own path (#393).
+  const subscriptionPath = useScreenPath("subscription");
   const checkout = useCheckout(paymentsClient);
   // Paddle's overlay and inline modes never leave this page, so the handoff has to be opened here. Every
   // other hosted rail has already navigated away by the time `start` resolves and this reads null.
@@ -126,7 +133,7 @@ export default function Paywall() {
       {opened.inline && <div className={CHECKOUT_FRAME} />}
 
       <div className="stack">
-        <Link className="muted" to="/subscription">
+        <Link className="muted" to={subscriptionPath}>
           What do I already have?
         </Link>
       </div>
