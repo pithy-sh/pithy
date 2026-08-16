@@ -361,7 +361,51 @@ describe("pithy ui", () => {
     await runUiAdd({ ...options(WITHOUT_AUTH), auth: false });
     const report = await runUiSync({ projectDir, workerDir, config: WITHOUT_AUTH, check: true });
     expect(report.uncovered).toEqual([]);
+    expect(report.unstyled).toEqual([]);
     expect(report.changed).toBe(false);
+  });
+
+  test("sync re-asks whether the screens are styled, and a stylesheet edited later is caught", async () => {
+    // **The defect #401 is about.** The unstyled check ran once, at `pithy ui add`, printed, and did
+    // not affect the exit — and `styles.css` is the adopter's, so the ordinary way a screen loses its
+    // rules is an edit a week later. Nothing asked again. The screen renders with a 200 and no rules.
+    await runUiAdd({ ...options(WITH_AUTH), auth: true });
+    expect((await runUiSync({ projectDir, workerDir, config: WITH_AUTH, check: true })).unstyled).toEqual([]);
+
+    // A tidy-up a week later: `pithy-screens.css` looked generated, so it went.
+    await rm(join(workerDir, "src", "pithy-screens.css"));
+
+    const stale = await runUiSync({ projectDir, workerDir, config: WITH_AUTH, check: true });
+    expect(stale.unstyled).toContain("stack");
+    expect(stale.unstyled).toContain("divider");
+    // The allowlist is untouched by any of this, which is what makes the finding its own gate rather
+    // than a side effect of the route check.
+    expect(stale.uncovered).toEqual([]);
+  });
+
+  test("a class defined in a stylesheet Pithy never wrote is defined", async () => {
+    // The false positive that had to go before a finding could fail a build. The check used to read
+    // only the paths the run planned, so an adopter's own `src/brand.css` was invisible and its rules
+    // counted for nothing — a screen reported unstyled by rules that were on disk the whole time.
+    await runUiAdd({ ...options(WITH_AUTH), auth: true });
+    const screens = await readFile(join(workerDir, "src", "pithy-screens.css"), "utf8");
+    await rm(join(workerDir, "src", "pithy-screens.css"));
+    await writeFile(join(workerDir, "src", "brand.css"), screens);
+
+    const report = await runUiSync({ projectDir, workerDir, config: WITH_AUTH, check: true });
+    expect(report.unstyled).toEqual([]);
+  });
+
+  test("a sync that writes reports the finding too, so the fix command does not hide it", async () => {
+    await runUiAdd({ ...options(WITH_AUTH), auth: true });
+    await rm(join(workerDir, "src", "pithy-screens.css"));
+    const grown: WorkerConfig = { capabilities: [...WITH_AUTH.capabilities, routed("ledger", "/ledger")] };
+    // The writing path, not `--check`: it re-derives the allowlist, and the stylesheets it did not
+    // touch are still missing their rules. A report that only mentioned this under a flag would let the
+    // repair command look like it had put everything right.
+    const written = await runUiSync({ projectDir, workerDir, config: grown });
+    expect(written.changed).toBe(true);
+    expect(written.unstyled).toContain("stack");
   });
 
   test("a sync that writes leaves nothing uncovered", async () => {

@@ -101,6 +101,9 @@ const add = defineCommand({
       if (report.unstyled.length > 0) {
         process.stdout.write(`These screens render classes nothing here defines: ${report.unstyled.join(", ")}.\n`);
         process.stdout.write("Define them in src/styles.css, or restore src/pithy-screens.css.\n");
+        // Said here because this line used to be the only time anyone was told (#401). It printed once,
+        // did not affect the exit, and `pithy ui sync` never asked again.
+        process.stdout.write("pithy ui sync --check asks this again, and fails on it.\n");
       }
       process.stdout.write(`Worker-first: ${report.runWorkerFirst.join(", ")}.\n`);
       // Before the install line, because it is the instruction that would otherwise be wrong. While the
@@ -128,7 +131,7 @@ const sync = defineCommand({
     check: {
       type: "boolean",
       default: false,
-      description: "Report drift and write nothing; exits 1 on a shadowed route",
+      description: "Report drift and write nothing; exits 1 on a shadowed route or an unstyled screen",
     },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
@@ -151,21 +154,36 @@ const sync = defineCommand({
 
       // A shadowed route is a 200 with the wrong body, so the gate is the exit code, not the wording.
       if (report.uncovered.length > 0) process.exitCode = 1;
+      // **And so is a screen with no rules (#401).** Same failure shape — a 200, the wrong output, no
+      // error — and it fails only under `--check`, because that is the flag that means "report, write
+      // nothing, and tell CI". A plain `pithy ui sync` is somebody fixing their allowlist; exiting 1 on
+      // it would break every script that runs the fix.
+      if (args.check && report.unstyled.length > 0) process.exitCode = 1;
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "ui.sync", ...report, ...workerIdentity(target) })}\n`);
         return;
       }
       if (args.check) {
-        if (report.uncovered.length === 0) {
-          process.stdout.write(`${report.worker}: every route reaches the worker.\n`);
-          process.stdout.write(`${formatDone()}\n`);
-          return;
+        if (report.uncovered.length > 0) {
+          process.stdout.write(`${report.worker}: the SPA shell is answering these, not the worker.\n`);
+          for (const route of report.uncovered) process.stdout.write(`  ${route}\n`);
+          process.stdout.write(`Run pithy ui sync --worker ${report.worker}.\n`);
         }
-        process.stdout.write(`${report.worker}: the SPA shell is answering these, not the worker.\n`);
-        for (const route of report.uncovered) process.stdout.write(`  ${route}\n`);
-        process.stdout.write(`Run pithy ui sync --worker ${report.worker}.\n`);
+        if (report.unstyled.length > 0) {
+          process.stdout.write(`${report.worker}: these screens render classes nothing here defines.\n`);
+          for (const name of report.unstyled) process.stdout.write(`  ${name}\n`);
+          process.stdout.write("Define them in src/styles.css, or restore src/pithy-screens.css.\n");
+        }
+        if (report.uncovered.length === 0 && report.unstyled.length === 0) {
+          process.stdout.write(`${report.worker}: every route reaches the worker, and every screen is styled.\n`);
+          process.stdout.write(`${formatDone()}\n`);
+        }
         return;
+      }
+      if (report.unstyled.length > 0) {
+        process.stdout.write(`These screens render classes nothing here defines: ${report.unstyled.join(", ")}.\n`);
+        process.stdout.write("Define them in src/styles.css, or restore src/pithy-screens.css.\n");
       }
       if (!report.changed) {
         process.stdout.write(`${report.worker} is already in sync.\n`);

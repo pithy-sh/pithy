@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { basename, join } from "node:path";
+import { readdir } from "node:fs/promises";
+import { basename, join, sep } from "node:path";
 import { ConflictError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { allCapabilities, projectEnvironments, type WorkerConfig } from "../project/config";
 import { detectPackageManager, type PackageManager } from "../project/packageManager";
@@ -217,15 +218,30 @@ async function planFiles(
 }
 
 /**
- * Whether the screens this run just wrote will render styled, read off the worker as it now stands.
+ * Whether Pithy's screens in this worker render styled, read off the worker exactly as it stands.
  *
- * The template's own files are not the answer. On a backfill the plan still carries Pithy's
- * `src/styles.css`, while the file on disk is the adopter's — so checking the plan would report a
- * screen as styled by rules that exist in this process and nowhere else. Only the disk renders.
+ * The template's own files are not the answer, and neither is the plan. On a backfill the plan still
+ * carries Pithy's `src/styles.css` while the file on disk is the adopter's — so checking the plan would
+ * report a screen as styled by rules that exist in this process and nowhere else. Only the disk renders.
+ *
+ * **The whole of `src/` is swept, not the paths this run happened to plan (#401).** Two reasons, and the
+ * second is the one that matters now the finding can fail a build:
+ *
+ * - `pithy ui sync` plans nothing. A check that could only run over a plan could only run at scaffold,
+ *   which is the defect: the report ran once, printed, and nothing ever asked again.
+ * - A class defined in a stylesheet Pithy did not write is defined. An adopter with `src/brand.css` was
+ *   previously told their screens were unstyled, because that file was in no plan. A false finding is
+ *   affordable in a warning and not in a gate.
  */
-async function unstyledOnDisk(workerDir: string, planned: Record<string, string>): Promise<string[]> {
+async function unstyledOnDisk(workerDir: string): Promise<string[]> {
+  const src = join(workerDir, "src");
+  // `recursive` gives worker-relative paths under `src/`, in whatever separator the platform uses;
+  // normalised to `/` because `PITHY_SCREEN_DIR` is a path *within a scaffolded worker*, and those are
+  // written the way the templates write them. A worker with no `src/` at all answers the empty set.
+  const entries = await readdir(src, { recursive: true }).catch(() => [] as string[]);
   const onDisk: Record<string, string> = {};
-  for (const path of Object.keys(planned)) {
+  for (const entry of entries) {
+    const path = `src/${entry.split(sep).join("/")}`;
     const stylesheet = path.endsWith(".css");
     const screen = path.startsWith(PITHY_SCREEN_DIR) && path.endsWith(".tsx");
     if (!stylesheet && !screen) continue;
@@ -295,7 +311,7 @@ export async function runUiAdd(options: UiAddOptions): Promise<UiAddReport> {
     await wireSolution(options.projectDir, workerName(options.workerDir));
     // Read inside the scope, because it reads the files this block just wrote — outside, a rollback
     // would already have taken them away.
-    const unstyled = await unstyledOnDisk(options.workerDir, plan.files);
+    const unstyled = await unstyledOnDisk(options.workerDir);
     return { written, assets, pkg, unstyled };
   });
 
@@ -332,6 +348,26 @@ export interface UiSyncReport {
    */
   uncovered: string[];
   /**
+   * Class names Pithy's screens render that nothing in this worker's stylesheets defines — read off the
+   * worker as it stands now, not as it stood when it was scaffolded.
+   *
+   * **This is the check that used to run once and never again (#401).** It was written at `pithy ui add`
+   * because that is where the defect it caught happened: a backfill wrote the sign-in screens and
+   * correctly skipped the adopter's `src/styles.css`, and the run reported `created` over a login page
+   * whose `stack`, `divider` and `secondary` nothing defined. But `styles.css` is theirs, and the
+   * ordinary case is an edit a week later — deleting a rule, replacing the file, dropping
+   * `pithy-screens.css` in a tidy-up. None of that errors. The screen renders, unstyled, with a 200.
+   *
+   * So it belongs here too, on the one command that re-checks a front end after scaffold, and under
+   * `--check` it is one of the two findings that fail the exit. The counter-argument is real and worth
+   * stating: a class with no rule is a cosmetic defect, and a build that fails over one teaches people
+   * to write `.stack {}` and move on. What settles it is that the fix anybody actually reaches for is
+   * restoring `pithy-screens.css` or defining the rule they meant to define — and that deleting the
+   * class from the screen is also a fix, because the screen is theirs. A stub rule is available and is
+   * not what the message asks for.
+   */
+  unstyled: string[];
+  /**
    * `assets.not_found_handling` as it stands. Reported because SPA routing depends on it: an adopter
    * who set it to something else has deep links 404ing in Hono rather than serving the app shell, and
    * `ui sync` does not overwrite a value they chose.
@@ -348,6 +384,11 @@ export interface UiSyncReport {
  * adopter writing a route into their own app capability is the other, and that one runs no command at
  * all. So the allowlist has to be re-derivable on demand *and* checkable in CI, because a list that
  * has gone stale does not fail — it returns 200 with the SPA shell.
+ *
+ * **It re-runs the unstyled check too (#401), which is the other thing that goes stale in silence.**
+ * Both findings have the same shape: a 200, the wrong output, and no error anywhere. One is the shell
+ * answering a route; the other is a screen rendering with no rules. This is the command that re-checks a
+ * front end, so it checks both, and `--check` fails on either.
  *
  * Creates no files either way, and re-running changes nothing.
  */
@@ -372,6 +413,10 @@ export async function runUiSync(options: {
 
   const environments = await projectEnvironments(options.projectDir);
   const after = deriveWorkerFirst(options.config, environments);
+  // Read on both paths, and before the write on the one that writes. `wireAssets` touches
+  // `wrangler.jsonc` and no stylesheet, so the answer is the same either side of it — taking it first
+  // means the report is assembled from one reading of the worker rather than two.
+  const unstyled = await unstyledOnDisk(options.workerDir);
   if (options.check) {
     const assets = await readAssets(options.workerDir);
     return {
@@ -380,6 +425,7 @@ export async function runUiSync(options: {
       after,
       changed: assets.runWorkerFirst.join("\n") !== after.join("\n") || assets.notFoundHandling === undefined,
       uncovered: uncoveredRoutes(options.config, assets.runWorkerFirst, environments),
+      unstyled,
       notFoundHandling: assets.notFoundHandling,
     };
   }
@@ -397,6 +443,9 @@ export async function runUiSync(options: {
     changed: before.join("\n") !== change.after.join("\n") || change.wroteNotFoundHandling,
     // The list was just re-derived from this same route table, so nothing is left outside it.
     uncovered: [],
+    // Unlike `uncovered`, this one is not emptied by the write. Nothing here touches a stylesheet, so a
+    // missing rule is still missing — and saying so is the point of re-running the check at all.
+    unstyled,
     notFoundHandling: change.notFoundHandling,
   };
 }

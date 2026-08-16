@@ -107,7 +107,7 @@ const LEDGER: Record<string, Held> = {
   },
   "src/pithy-screens.css": {
     keptGate: "packages/ui-react/src/palette.test.ts",
-    why: "The other half of the same palette, held by the same kept gate for the same wall. What is lost is real: it catches the kit shipping a half-set, which is what happened to `--danger`, and it cannot catch an adopter's later edit.",
+    why: "The other half of the same palette, held by the same kept gate for the same wall. What is lost is real: it catches the kit shipping a half-set, which is what happened to `--danger`, and it cannot catch an adopter's later edit. One narrow slice of that edit is covered from outside since #401 — `pithy ui sync --check` re-reads the stylesheets on disk and fails on a class a Pithy screen renders that none of them defines — but that is class definedness, not the palette being declared as a set, which is the part no fallback can detect.",
   },
 
   // ── auth ────────────────────────────────────────────────────────────────────────────────────────
@@ -147,7 +147,7 @@ const LEDGER: Record<string, Held> = {
   // ── the home screen, in both variants ────────────────────────────────────────────────────────────
   "src/routes/app/home.tsx": {
     ungated:
-      "It is yours from the moment it is written — src/routes/app/ is the one directory Pithy writes once and never inspects again. #391 item G asked for the unstyled report to reach into it; declined, and the rest of that item is #401 — because a report that audits an adopter's own application after scaffold is the kit inspecting somebody's code, and the classes it renders are defined by a stylesheet client.tsx imports for the whole app.",
+      "It is yours from the moment it is written — src/routes/app/ is the one directory Pithy writes once and never inspects again. #391 item G asked for the unstyled report to reach into it, and #401 declined that half outright: a report auditing an adopter's own application after scaffold is the kit inspecting somebody's code, and the classes it renders are defined by a stylesheet client.tsx imports for the whole app. The other half of #401 shipped — the report re-runs at pithy ui sync --check and fails on a finding — and it still stops at src/routes/pithy/.",
   },
   "src/routes/app/home.bare.tsx": {
     keptGate: "packages/cli/src/ui/react.test.ts",
