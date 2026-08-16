@@ -483,12 +483,16 @@ describe("the React 19 stub", () => {
     // screen would not typecheck. Support's is here for the same reason: a screen that posts a feedback
     // form is written later, against a file this run is the only chance to write.
     //
-    // **What the declarations say is deliberately not asserted here (#392).** This file used to check
-    // that the ambient types contained `otpLength: number;` and eleven other strings somebody had once
-    // typed — which confirms the file against itself and stays green for exactly the drift that matters,
-    // a field a capability's `client` projection stopped emitting. `@pithy-sh/vite`'s `clientEnv.test.ts`
-    // compiles the real projections against this exact file instead. What is left here is the CLI's own
-    // claim: the bytes it writes are that file's, unaltered, in every scaffold.
+    // **What the declarations say is deliberately not asserted here (#392, #398).** This file used to
+    // check that the ambient types contained `otpLength: number;` and eleven other strings somebody had
+    // once typed — which confirms the file against itself and stays green for exactly the drift that
+    // matters, a field a capability's `client` projection stopped emitting.
+    //
+    // There is nothing left here to drift from. Since #398 the declarations are **generated** from the
+    // four declared projection types — `@pithy-sh/vite`'s `clientEnvDeclaration.ts` emits the file and
+    // `clientEnvDeclaration.test.ts` holds the generator — so a projection losing a field changes the
+    // template, rather than disagreeing with it. What is left here is the CLI's own claim: the bytes it
+    // writes are that file's, unaltered, in every scaffold.
     const gated = await readFile(join(TEMPLATE_DIR, "client-env.d.ts"), "utf8");
     const modules = [...gated.matchAll(/declare module "virtual:pithy\/([^"]+)"/g)].map((match) => match[1]);
     expect(modules.sort()).toEqual(["auth", "payments", "support", "turnstile"]);
