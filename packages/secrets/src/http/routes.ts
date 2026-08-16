@@ -234,12 +234,18 @@ export function registerSecretsRoutes(options: SecretsRoutesOptions): (app: Hono
 
   return (app) => {
     app.get(`${base}/admin/status`, requireControlPlane(SECRETS_STATUS_READ_SCOPE), async (c) => {
-      const statuses = await readSecretStatus(secretsStatusDatabase(c), options.registry());
+      const entries = await readSecretStatus(secretsStatusDatabase(c), options.registry());
+      // Narrowed, not filtered by shape. An entry whose row would not decode has no `status` to render, so
+      // it cannot reach `secretStatusView` — the union is what makes that a compile error rather than an
+      // `undefined` on the wire (#387).
+      const secrets = entries.flatMap((entry) => (entry.state === "readable" ? [secretStatusView(entry.status)] : []));
+      const unreadable = entries.flatMap((entry) => (entry.state === "unreadable" ? [entry.name] : []));
       await record(c, SecretsAuditActions.statusRead, null, {
-        declared: statuses.length,
-        overdue: dueForRotation(statuses),
+        declared: entries.length,
+        overdue: dueForRotation(entries),
+        unreadable: unreadable.length,
       });
-      return c.json({ secrets: statuses.map(secretStatusView) } satisfies SecretsStatusResponse, 200);
+      return c.json({ secrets, unreadable } satisfies SecretsStatusResponse, 200);
     });
 
     app.get(
@@ -250,13 +256,17 @@ export function registerSecretsRoutes(options: SecretsRoutesOptions): (app: Hono
       async (c) => {
         const { name } = c.req.valid("param");
         declared(options.registry(), name);
-        const rotations = await readSecretRotations(
+        const entries = await readSecretRotations(
           secretsStatusDatabase(c),
           name,
           pageLimit(c.req.valid("query").limit),
         );
-        await record(c, SecretsAuditActions.rotationsRead, name, { name, returned: rotations.length });
-        return c.json({ name, rotations: rotations.map(secretRotationView) } satisfies SecretRotationsResponse, 200);
+        const rotations = entries.flatMap((entry) =>
+          entry.state === "readable" ? [secretRotationView(entry.record)] : [],
+        );
+        const unreadable = entries.length - rotations.length;
+        await record(c, SecretsAuditActions.rotationsRead, name, { name, returned: rotations.length, unreadable });
+        return c.json({ name, rotations, unreadable } satisfies SecretRotationsResponse, 200);
       },
     );
 

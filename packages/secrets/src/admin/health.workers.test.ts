@@ -131,4 +131,31 @@ describe("the count", () => {
   test("a secret declared and never written is not counted, because there is nothing to measure from", async () => {
     expect(await summary()).toEqual({ [SECRETS_DUE_FOR_ROTATION]: 0 });
   });
+
+  /**
+   * `#387`'s third acceptance criterion, and the reason the issue exists rather than being covered by
+   * `#350`.
+   *
+   * `#350` gave a capability's health a fourth state, so a producer that throws costs its own number and
+   * not the manifest. That worked: one malformed row made this read throw, the secrets capability reported
+   * `unavailable`, and its siblings were fine. **It made the blast radius survivable and did not make the
+   * read correct.** The freshness of every *other* secret was knowable and went unreported, and the
+   * manifest could not say which row was the problem — which the dashboard renders as "Could not answer."
+   * against the whole capability.
+   *
+   * So the number comes back, and it counts what is knowable. The unreadable secret is not counted, for
+   * the same reason one with no declared cadence is not: nobody can say whether it is late.
+   */
+  test("one malformed row costs its own secret, and the count is still a number", async () => {
+    await storeSecret("auth-signing-key", daysAgo(400));
+    await storeSecret("stripe-live-key", daysAgo(400));
+    // Both are 400 days old on a 90-day cadence, so both are overdue and the count would be 2.
+    await env.SECRETS.prepare(
+      "update pithy_secrets_system_secrets set created_at = 'not-a-date' where name = 'auth-signing-key'",
+    ).run();
+
+    // A number, not a withheld key and not a throw. One, because the readable overdue secret is still
+    // counted and the unreadable one is no longer assertable either way.
+    expect(await summary()).toEqual({ [SECRETS_DUE_FOR_ROTATION]: 1 });
+  });
 });
