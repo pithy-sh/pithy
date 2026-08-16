@@ -58,7 +58,10 @@ describe("the React template library", () => {
 
     // A capability's screens ride on that capability being composed, so none of them may sit in base.
     const capabilityOwned: Record<string, readonly string[]> = {
-      auth: ["src/session.tsx", "src/turnstile.tsx"],
+      // `src/turnstile.test.tsx` is a helper of the same kind: it is the gate over `turnstile.tsx`, and
+      // it rides on auth being composed for exactly the reason the widget does — there is no widget to
+      // hold to its contract otherwise (#383).
+      auth: ["src/session.tsx", "src/turnstile.tsx", "src/turnstile.test.tsx"],
       payments: ["src/payments.tsx"],
     };
     for (const [group, helpers] of Object.entries(capabilityOwned)) {
