@@ -24,8 +24,11 @@ const PLACEHOLDER_MODULE = "index.js";
 const PLACEHOLDER_BODY =
   "export default { async fetch() { return new Response('Provisioning...', { status: 503 }); } };";
 
-/** The compatibility date a Worker is uploaded at when the caller's metadata does not name one. */
-const DEFAULT_COMPATIBILITY_DATE = "2026-04-07";
+/**
+ * An ISO date, the only spelling a compatibility date has. Refused here so a typo is a `ValidationError`
+ * naming the argument rather than a 400 from Cloudflare naming the request.
+ */
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** The content type every module part carries. ES modules only — see {@link WorkerModule}. */
 const MODULE_CONTENT_TYPE = "application/javascript+module";
@@ -98,7 +101,30 @@ export class CloudflareWorkersManager extends CloudflareManager {
    * Create (upload) a Worker script. With no `module` the placeholder above is uploaded and the real
    * build output replaces it via a later version upload; pass one to upload real source. `metadata`
    * is merged into the upload's metadata — bindings, compatibility flags, tags — and this method
-   * fixes `main_module` and supplies a `compatibility_date` when the caller names none.
+   * fixes `main_module`.
+   *
+   * **`compatibilityDate` is required, and there is no default (#396).** This method used to supply
+   * `2026-04-07` when the caller named none, which is one date below the floor `compatibility.ts`
+   * holds every other Worker in this repository to, and the one date #388's gate could not reach —
+   * because it is TypeScript rather than a `wrangler.jsonc`, and the gate reads manifests.
+   *
+   * Moving it to the floor was the obvious answer and it is the wrong one. **A compatibility date is a
+   * behaviour contract, not a version number** — it is the date workerd pretends it is — and this one
+   * lands on Workers in accounts that are not ours. Re-picking the number changes what an existing
+   * caller's Workers run, silently, for somebody who never asked; and the new number is stale on
+   * exactly the schedule the old one was, with the same gate unable to see it. `compatibility.ts` makes
+   * that argument about `2026-03-03` in as many words: *the minimum that fixes the last bug is exactly
+   * the number `2025-01-01` once was.*
+   *
+   * Requiring the date removes the class instead of re-picking the number, which is the move #377, #366
+   * and #394 each took. It is also the cheaper break: a caller who wanted `2026-04-07` writes
+   * `2026-04-07` and gets precisely what they had, and everyone else finds out at compile time rather
+   * than from a behaviour change in production. `WorkersProvisioner` already promised this — *"it
+   * carries no environment- or product-specific defaults — every name, command, and env var is supplied
+   * by the caller"* — and the manager under it was the one place that was untrue.
+   *
+   * `metadata` may **not** also carry `compatibility_date`. Two ways to state one contract is a
+   * precedence rule to remember, and this method exists to have one statement rather than two.
    *
    * **The multipart request is built here rather than through `workers.scripts.update`, and that is
    * a fix rather than a preference (#373).** The typed SDK's `update` pins
@@ -113,6 +139,7 @@ export class CloudflareWorkersManager extends CloudflareManager {
    */
   async createWorker(
     scriptName: string,
+    compatibilityDate: string,
     metadata: Record<string, unknown> = {},
     module: WorkerModule = PLACEHOLDER,
   ): Promise<Script> {
@@ -124,14 +151,30 @@ export class CloudflareWorkersManager extends CloudflareManager {
       });
     }
 
+    if ("compatibility_date" in metadata) {
+      throw new ValidationError({
+        message: "A Worker's compatibility date is named once, as an argument.",
+        action: "Remove `compatibility_date` from the metadata and pass it as the second argument.",
+        detail: `createWorker('${scriptName}') was given a 'compatibility_date' in metadata as well as an argument. Two statements of one behaviour contract is a precedence rule nobody should have to know.`,
+      });
+    }
+
+    if (!ISO_DATE.test(compatibilityDate)) {
+      throw new ValidationError({
+        message: "A compatibility date is an ISO date, like 2026-06-01.",
+        action: "Pass the date as YYYY-MM-DD.",
+        detail: `createWorker('${scriptName}') was given the compatibility date '${compatibilityDate}'.`,
+      });
+    }
+
     const form = new FormData();
     form.append(
       "metadata",
       new Blob(
         [
           JSON.stringify({
-            compatibility_date: DEFAULT_COMPATIBILITY_DATE,
             ...metadata,
+            compatibility_date: compatibilityDate,
             main_module: module.name,
           }),
         ],

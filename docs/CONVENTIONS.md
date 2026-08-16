@@ -102,6 +102,86 @@ A classification used by two call sites may stay at both. **Three is this reposi
 hoisting a rule out of its call sites — the same threshold `readOptionalFile.ts` states for itself. When
 a third appears, the home is beside the primitive that owns the decision, not in a `utils` file.
 
+## Seeded files
+
+Everything above is about code we keep. This is about code we give away.
+
+> **Every seeded file whose invariant an adopter can break silently ships with the gate that notices.**
+
+A seeded file is one a Pithy command writes into somebody else's repository — the front-end templates in
+`@pithy-sh/ui-react` are the whole population today. From the moment it lands it is theirs: they edit it,
+we never rewrite it, and no release of ours can fix it. So a gate we keep here is a gate that goes silent
+at exactly the moment the file becomes breakable.
+
+`pithy ui add react --auth --payments` used to seed eighteen files and **no test at all**, while ten gates
+over those same files sat in `packages/ui-react/src/`, each stated over the pristine template text.
+
+### The three properties a seeded gate must meet
+
+Earned from #383, and they survived #392, #393 and #394 unchanged.
+
+1. **"Silently" is the test.** A file that breaks loudly on edit — a syntax error, a type error, a failing
+   build — needs nothing. The ones that matter fail into a green build and a wrong runtime.
+2. **The gate cannot pass against the bug.** Its expectation is a **canary invented in the test file**,
+   plus a second assertion refusing a canary that has drifted onto a real value. Asserting the correct
+   string would pass against the exact drift the gate exists to catch. A gate that instead compares two
+   subjects and writes down no expectation of its own satisfies this differently and equally — but note
+   that comparing a file *to itself* is not that, it is the same defect at a higher altitude.
+3. **It is proven able to fail in a scaffolded project**, not only in this repo. Plant the defect in a
+   real `pithy init` output, watch it go red, and put the red in the report. A gate proven here is not
+   evidence about what an adopter gets: the environments differ, and #383 found that the seeded gate had
+   to mock a different module than the kit's own for exactly that reason.
+
+### Two questions before you write one
+
+**Who can break it?** A seeded gate is for an invariant the *adopter* can break. When the party who can
+break it is the kit, the gate stays in the kit. `client-env.d.ts` is the worked example: it is 144 lines
+of ambient types over projections three packages away, and the drift that hurts is a capability dropping
+a field. Seeding a gate for that would put the alarm in a repository that did not move the contract and
+cannot fix it. #392 held it kit-side, in `@pithy-sh/vite`'s `clientEnv.test.ts`, against the real
+projections.
+
+**Can the gate run where it would be seeded?** This is the practical half, and it is a wall you find by
+trying rather than a judgement you make in advance. A seeded gate must pass under the plain `vitest run`
+an adopter already has — which is why the seeded gates stub `pithy-config.tsx` rather than
+`virtual:pithy/*`, and why a gate needing a spawned compiler cannot be one. #391 found the sharper case:
+the palette invariant lives in CSS text, and **Vitest stubs CSS modules to the empty string**, so
+`?raw` and a raw glob both answer `""` in a scaffolded project. A seeded gate would have swept an empty
+set and passed. It is kept in `packages/ui-react/src/palette.test.ts` instead, and the ledger records
+both the wall and what is lost — it catches the kit shipping a half-set, and cannot catch an adopter's
+later edit. **A gate that passes over nothing is worse than no gate**, because it is read as coverage.
+Find this out by planting, not by reasoning: this one passed against its own planted defect first time.
+
+**Can you remove the invariant instead?** Gating is the second answer. #393 made a screen's path and the
+router's redirect one statement; #394 made the mount node one the app creates rather than one an id in
+`index.html` names; #377 and #366 are the same move earlier. Removing the class beats watching it, every
+time.
+
+**Then seed the gate anyway.** This is the part worth writing down, because both of those issues did it
+and neither had to. **A removal is itself an invariant** — *the mount node is created, not found*, *the
+guard reads the screen's declared path* — and it is exactly as silently reversible by the next person to
+edit the file as the shape it replaced. The seeded gate holds the removal.
+
+### Where the decision is recorded
+
+`packages/ui-react/src/seededGates.test.ts` carries the ledger: every seeded file, and one of three
+answers — the gate seeded beside it, the gate the kit kept and why it could not travel, or no gate and
+why none is owed. Adding a path to `TEMPLATE_GROUPS` is red until that line exists,
+which is the whole mechanism — **it is a forcing function, not a detector.**
+
+Be clear about what it cannot do, so nobody trusts it for more. It cannot tell whether a file *has* an
+invariant: an invariant is two things agreeing, and no sweep over text decides whether an agreement is
+meaningful. It cannot tell whether a named gate really gates its subject. It cannot tell whether a
+decline's reason is true. And it cannot check property 3 at all — proving a gate red in a scaffolded
+project is an act a person performs. What it does is make the question due at the one moment it can be
+answered well, and refuse to let the answer rot: a ledger entry for a file that has left the tree, a
+seeded gate nothing claims, or a gate shipped in a different group from its subject are each red.
+
+Property 2 is the one part that mechanises. A seeded gate must declare a canary and refuse one having
+drifted onto a real value, and a kept gate must be a file that exists outside the tree with a reason
+that says which wall it hit — because a ledger entry pointing at a renamed file rots into a subject
+that reads as held.
+
 ## Shared values
 
 Two things every capability handles, and neither may be handled twice.

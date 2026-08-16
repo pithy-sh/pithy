@@ -97,7 +97,7 @@ describe("WorkersProvisioner", () => {
       mockSubdomainCreate.mockResolvedValue(undefined);
       mockSettingsEdit.mockResolvedValue(undefined);
 
-      const id = await provisioner.createWorker("w1", { tag: "x" });
+      const id = await provisioner.createWorker("w1", "2026-06-01", { tag: "x" });
       expect(id).toBe("script-1");
       expect(mockSubdomainCreate).toHaveBeenCalledWith("w1", {
         account_id: "acct-1",
@@ -112,7 +112,7 @@ describe("WorkersProvisioner", () => {
 
     it("throws not_configured when the created script has no id", async () => {
       mockPut.mockResolvedValue({ result: { id: "" } });
-      await expect(provisioner.createWorker("w1")).rejects.toThrowError(
+      await expect(provisioner.createWorker("w1", "2026-06-01")).rejects.toThrowError(
         expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/not_configured" }) }),
       );
     });

@@ -5,6 +5,15 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudflareWorkersManager } from "./workersManager";
 
+/**
+ * The date these cases upload at. Written down rather than imported: `compatibility.ts` sits at the
+ * repository root and `packages/cloudflare`'s `rootDir` is `src`, so no module here can reach it. A
+ * fixture naming a date it then asserts passes through unchanged is right to name any date, which is
+ * what `compatibilityDates.test.ts` says about fixtures in as many words — and after #396 the manager
+ * has no default for a stale one here to hide.
+ */
+const KIT_DATE = "2026-06-01";
+
 const mockScriptsList = vi.fn();
 const mockPut = vi.fn();
 const mockScriptsDelete = vi.fn();
@@ -170,13 +179,13 @@ describe("CloudflareWorkersManager", () => {
     it("PUTs one JSON metadata part and one module part named by main_module", async () => {
       mockPut.mockResolvedValue({ result: { id: "new-1" } });
 
-      const result = await manager.createWorker("w1", { tag: "x" });
+      const result = await manager.createWorker("w1", KIT_DATE, { tag: "x" });
 
       expect(result).toEqual({ id: "new-1" });
       const { path, metadata, parts } = await uploadSent();
       expect(path).toBe("/accounts/acct-1/workers/scripts/w1");
       // One `metadata` part carrying JSON — not the SDK's flattened `metadata[main_module]` fields.
-      expect(metadata).toEqual({ tag: "x", main_module: "index.js", compatibility_date: "2026-04-07" });
+      expect(metadata).toEqual({ tag: "x", main_module: "index.js", compatibility_date: KIT_DATE });
       // The module part is named by its filename, which is what `main_module` points at. Never `files[]`.
       expect([...parts.keys()]).toEqual(["index.js"]);
       expect(parts.get("index.js")?.type).toBe("application/javascript+module");
@@ -189,7 +198,7 @@ describe("CloudflareWorkersManager", () => {
       // multipart body, so Cloudflare parsed the `------WebKit…` boundary as a classic script and
       // answered `10021 … Invalid left-hand side expression in prefix operation at worker.js:1:4`.
       mockPut.mockResolvedValue({ result: { id: "new-1" } });
-      await manager.createWorker("w1");
+      await manager.createWorker("w1", KIT_DATE);
       const headers: unknown = mockPut.mock.calls[0]?.[1]?.headers;
       expect(headers).toBeUndefined();
     });
@@ -199,6 +208,7 @@ describe("CloudflareWorkersManager", () => {
 
       await manager.createWorker(
         "w1",
+        KIT_DATE,
         { bindings: [{ type: "kv_namespace", name: "OBSERVED", namespace_id: "ns-1" }] },
         { name: "worker.mjs", body: "export default { async email() {} };" },
       );
@@ -210,19 +220,36 @@ describe("CloudflareWorkersManager", () => {
       expect(parts.get("worker.mjs")?.filename).toBe("worker.mjs");
     });
 
-    it("lets the caller's metadata pick the compatibility date, but never main_module", async () => {
+    it("takes the compatibility date from the argument, and never main_module from metadata", async () => {
       mockPut.mockResolvedValue({ result: { id: "new-1" } });
 
-      await manager.createWorker("w1", { compatibility_date: "2025-01-01", main_module: "wrong.js" });
+      await manager.createWorker("w1", "2025-01-01", { main_module: "wrong.js" });
 
       const { metadata } = await uploadSent();
+      // Whatever the caller names, uploaded verbatim. There is no default underneath it any more (#396).
       expect(metadata.compatibility_date).toBe("2025-01-01");
       expect(metadata.main_module).toBe("index.js");
     });
 
+    it("refuses a compatibility date stated twice rather than picking a winner", async () => {
+      // The defect #396 removed was a date nobody chose. Admitting a second way to state it would put
+      // one back — a precedence rule, which is a thing to remember rather than a contract to read.
+      await expect(manager.createWorker("w1", KIT_DATE, { compatibility_date: "2025-01-01" })).rejects.toThrowError(
+        expect.objectContaining({ payload: expect.objectContaining({ code: "validation/invalid_input" }) }),
+      );
+      expect(mockPut).not.toHaveBeenCalled();
+    });
+
+    it("refuses a compatibility date that is not one, before Cloudflare has to", async () => {
+      await expect(manager.createWorker("w1", "june")).rejects.toThrowError(
+        expect.objectContaining({ payload: expect.objectContaining({ code: "validation/invalid_input" }) }),
+      );
+      expect(mockPut).not.toHaveBeenCalled();
+    });
+
     it("refuses a classic service-worker script rather than half-supporting one", async () => {
       // The manager uploads ES modules only, and says so. `body_part` is the classic shape.
-      await expect(manager.createWorker("w1", { body_part: "worker.js" })).rejects.toThrowError(
+      await expect(manager.createWorker("w1", KIT_DATE, { body_part: "worker.js" })).rejects.toThrowError(
         expect.objectContaining({ payload: expect.objectContaining({ code: "validation/invalid_input" }) }),
       );
       expect(mockPut).not.toHaveBeenCalled();
@@ -230,7 +257,7 @@ describe("CloudflareWorkersManager", () => {
 
     it("throws invalid_response when Cloudflare returns a success envelope with no script", async () => {
       mockPut.mockResolvedValue({ result: null });
-      await expect(manager.createWorker("w1")).rejects.toThrowError(
+      await expect(manager.createWorker("w1", KIT_DATE)).rejects.toThrowError(
         expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/invalid_response" }) }),
       );
     });
