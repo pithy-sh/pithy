@@ -5,8 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>__PITHY_WORKER__</title>
   </head>
+  <!-- No mount node here, on purpose. `src/client.tsx` creates the one it renders into, so there is no
+       id in this file for a rename to break silently (#394). Anything you add below is left alone; the
+       app mounts after it. -->
   <body>
-    <div id="root"></div>
     <script type="module" src="/src/client.tsx"></script>
   </body>
 </html>

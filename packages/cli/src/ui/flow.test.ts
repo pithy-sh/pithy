@@ -281,6 +281,8 @@ describe("pithy ui", () => {
     expect(second.created.sort()).toEqual([
       "src/routes/pithy/callback.tsx",
       "src/routes/pithy/otp.tsx",
+      // The seeded gate over the callback contract backfills with the screens it protects (#393).
+      "src/routes/pithy/sign-in.test.tsx",
       "src/routes/pithy/sign-in.tsx",
       "src/session.tsx",
       // The widget's gate backfills with the widget (#383). A backfilled front end that got the file

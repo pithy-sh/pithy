@@ -1,5 +1,6 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
+import { COMPATIBILITY_DATE } from "../../compatibility";
 import { UNIT_BUDGETS } from "../../vitest.shared";
 
 /**
@@ -17,7 +18,7 @@ export default defineConfig({
     cloudflareTest({
       main: "./src/session/testWorker.ts",
       miniflare: {
-        compatibilityDate: "2025-01-01",
+        compatibilityDate: COMPATIBILITY_DATE,
         compatibilityFlags: ["nodejs_compat"],
         d1Databases: ["DB"],
         durableObjects: { SESSIONS: "MultiplayerSession" },

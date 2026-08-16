@@ -7,10 +7,14 @@ import { useSubscription } from "@pithy-sh/payments/src/client/hooks";
 import type { ReactNode } from "react";
 import { paymentsClient } from "../../payments";
 import { paymentsConfig } from "../../pithy-config";
-import { Link } from "../../router";
+import { Link, useScreenPath } from "../../router";
 import "../../pithy-screens.css";
 
 export const path = "/subscription";
+
+// What the paywall and the pricing screen link to as "what do I already have?". Rename `path` above and
+// both follow, because they read this claim rather than keeping a copy of the string (#393).
+export const role = "subscription";
 
 // The entitlements shown are the caller's own; the server resolves them from the session.
 export const session = "required";
@@ -43,6 +47,12 @@ export interface SubscriptionScreenProps {
   readonly rails: Readonly<Record<PaymentsClientRail, boolean>>;
   /** Where the payments routes are, and the fetch to reach them with. Injected so a test never navigates. */
   readonly client?: PaymentsClientOptions;
+  /**
+   * Where "see what else there is" points — the path the paywall screen declares, read through the
+   * role it claims rather than written out here. A literal survives the rename and stops answering
+   * (#393).
+   */
+  readonly paywallPath: string;
 }
 
 /**
@@ -53,7 +63,7 @@ export interface SubscriptionScreenProps {
  * this against a Paddle-only project and looks for the button — which is the whole of #336, checked the
  * way a user would check it.
  */
-export function SubscriptionScreen({ rails, client }: SubscriptionScreenProps): ReactNode {
+export function SubscriptionScreen({ rails, client, paywallPath }: SubscriptionScreenProps): ReactNode {
   const { entitlements, subscribed, loading, manage, manageStore, managing, failure, readFailure } =
     useSubscription(client);
 
@@ -107,7 +117,7 @@ export function SubscriptionScreen({ rails, client }: SubscriptionScreenProps): 
             Bought on Google Play
           </button>
         )}
-        <Link className="muted" to="/paywall">
+        <Link className="muted" to={paywallPath}>
           See what else there is
         </Link>
       </div>
@@ -116,5 +126,7 @@ export function SubscriptionScreen({ rails, client }: SubscriptionScreenProps): 
 }
 
 export default function Subscription(): ReactNode {
-  return <SubscriptionScreen rails={paymentsConfig.rails} client={paymentsClient} />;
+  // The paywall names itself; this reads the path it declared rather than keeping a copy (#393).
+  const paywallPath = useScreenPath("paywall");
+  return <SubscriptionScreen rails={paymentsConfig.rails} client={paymentsClient} paywallPath={paywallPath} />;
 }

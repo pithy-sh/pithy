@@ -38,8 +38,10 @@ apps/api/
   client-env.d.ts            new   ambient declarations for virtual:pithy/*
   src/
     index.ts                       the Worker entry — untouched
-    client.tsx               new   SPA entry: mounts the router
+    client.tsx               new   SPA entry: creates the mount node, mounts the router
+    client.test.tsx          new   the gate that fails if the mount point becomes two strings
     router.tsx               new   the two-glob router and its route guard
+    router.test.tsx          new   the gate that fails if a redirect target becomes a literal
     styles.css               new   yours: the palette tokens, the reset, body
     pithy-screens.css        new   Pithy's: every class Pithy's own screens render
     pithy-config.tsx         new   the one module that imports virtual:pithy/*
@@ -49,6 +51,7 @@ apps/api/
     payments.tsx             new   --payments  the client bound to the base path, and the guard's data
     routes/
       pithy/sign-in.tsx      new   --auth  and otp.tsx, callback.tsx — Pithy's screens
+      pithy/sign-in.test.tsx new   --auth  the gate over the magic link's callback URL
       pithy/paywall.tsx      new   --payments  and pricing.tsx, subscription.tsx
       app/home.tsx           new   yours, written once and never again
   wrangler.jsonc             edited  assets stanza
@@ -116,6 +119,10 @@ Two consequences worth stating plainly.
 
 **Replacing a Pithy screen needs no fork.** Write `src/routes/app/sign-in.tsx` with `export const path = "/sign-in"` and yours wins. Pithy's file stays on disk, unmodified and inert — delete it whenever you like.
 
+**A screen names its own path, and a guard reads it.** The router sends a signed-out visitor to the screen that declares `export const role = "sign-in"`, and a visitor short an entitlement to the one that declares `export const role = "paywall"` — at whatever `path` that screen declares. So renaming `/sign-in` to `/login` is one edit, in one file, and the redirect follows it. Claim a role from `src/routes/app/` to take the job over, exactly as you take a path over; a role nothing claims throws rather than sending anyone nowhere.
+
+**The callback screen's path is the magic link's callback URL.** `sign-in.tsx` reads it from `callback.tsx`, so that rename is one edit too. This is the one round trip you cannot check by being signed in, which is why it is not left as two strings that agree today.
+
 **A test beside a screen is still just a test.** Co-locate `home.test.tsx` next to `home.tsx`, as the kit asks you to everywhere else. Both globs negate `*.test.tsx` and `*.spec.tsx` — the test runner's own names for its own files — so a co-located test is registered as nothing and reaches no bundle. That negation is the one filename rule the router has, and it earns its place: without it the file is a route, and everything in it — fixtures, stub tokens, the shape of an endpoint and how it fails — is served to anyone who asks. A companion file under another tool's convention, a `.stories.tsx` say, is not covered; give it its own negation, or keep it outside `src/routes/`.
 
 ### Path parameters
@@ -173,6 +180,8 @@ Four things make this work the way it does.
 **Nothing is generated to disk.** No `pithy-client.ts`, no `.generated/` folder, no file to gitignore, commit, or find stale. The plugin resolves the module in memory from the composed config at dev-server start and at build. There is no artifact to drift because there is no artifact.
 
 **The types are ambient.** `client-env.d.ts` declares the `virtual:pithy/*` modules for the client tsconfig, which is why the import above type-checks with no path mapping.
+
+That file is the one thing here that *is* an artifact, and it is hand-written — so it is the one thing that can drift. It cannot drift silently: `@pithy-sh/vite`'s `src/clientEnv.test.ts` builds every capability's real projection, renders it through the plugin's own renderer, and compiles the result against that exact file. A field a projection stops emitting — the drift that would otherwise leave a screen reading `undefined` in production with nothing red anywhere in between — is a compile error in the kit. Change a shape in `client-env.d.ts` and you must change the `client:` projection that produces it, and the other way round. #392.
 
 ## The sign-in screen
 

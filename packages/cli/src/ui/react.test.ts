@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
+import { TEMPLATE_DIR } from "@pithy-sh/ui-react/src/templates";
 import { beforeAll, describe, expect, test } from "vitest";
 import { kitRange } from "../project/scaffold";
 import { reactStub } from "./react";
@@ -38,7 +39,9 @@ beforeAll(async () => {
 
 /** Every route module the stub writes, by path. */
 function routeModules(files: Record<string, string>): [string, string][] {
-  return Object.entries(files).filter(([path]) => path.startsWith("src/routes/"));
+  // A co-located test is not a route module. `router.tsx`'s globs negate `*.test.tsx` and `*.spec.tsx`
+  // for exactly that reason (#245), so this reads the same line the router does.
+  return Object.entries(files).filter(([path]) => path.startsWith("src/routes/") && !path.includes(".test."));
 }
 
 describe("the React 19 stub", () => {
@@ -88,11 +91,16 @@ describe("the React 19 stub", () => {
     expect(Object.keys(BARE).sort()).toEqual([
       "client-env.d.ts",
       "index.html",
+      // The two gates base seeds. `client.tsx` mounts into a node it creates rather than one an id in
+      // `index.html` names (#394), and `router.tsx` sends a guard to the path the screen declares
+      // rather than to a copy of it (#393). Both breaks were silent, so both gates travel (#391).
+      "src/client.test.tsx",
       "src/client.tsx",
       // Base for the same reason `pithy-config.tsx` is: it is written whenever it is absent, which is
       // what makes a later `--auth` backfill produce screens whose classes something defines.
       "src/pithy-config.tsx",
       "src/pithy-screens.css",
+      "src/router.test.tsx",
       "src/router.tsx",
       "src/routes/app/home.tsx",
       "src/styles.css",
@@ -115,6 +123,9 @@ describe("the React 19 stub", () => {
     expect(added.sort()).toEqual([
       "src/routes/pithy/callback.tsx",
       "src/routes/pithy/otp.tsx",
+      // The magic link's `callbackURL` is built from `callback.tsx`'s `path`, and this is what keeps
+      // them one statement once both files are the adopter's (#393).
+      "src/routes/pithy/sign-in.test.tsx",
       "src/routes/pithy/sign-in.tsx",
       "src/session.tsx",
       // The one test the kit seeds. `turnstile.tsx` becomes the adopter's the moment it lands and its
@@ -180,11 +191,34 @@ describe("the React 19 stub", () => {
   test("the entitlement route guard is a redirect, and says it is not a security boundary", () => {
     const router = PAY["src/router.tsx"] ?? "";
     expect(router).toContain("import.meta.glob<{ holdsEntitlement:");
-    expect(router).toContain('const PAYWALL_PATH = "/paywall"');
+    // Where it sends them is the paywall screen's own `path`, read through the role it claims — never
+    // a literal here, which is what made a rename redirect to the not-found screen (#393).
+    expect(router).toContain('screenPath(table, "paywall")');
+    expect(router).not.toMatch(/PAYWALL_PATH/);
+    expect(PAY["src/routes/pithy/paywall.tsx"]).toContain('export const role = "paywall"');
     expect(router).toContain("never a security boundary");
     // The bridge answers it, and refuses to lock a screen when payments is not composed at all.
     expect(PAY["src/payments.tsx"]).toContain("export async function holdsEntitlement");
     expect(PAY["src/payments.tsx"]).toContain("if (!paymentsConfig.enabled) return true;");
+  });
+
+  test("no template writes another screen's path — a declared path is read, never restated", () => {
+    // #393. Every one of these was two literals nothing compared: the router's `SIGN_IN_PATH`, the
+    // magic link's `${origin}/callback`, `signOut`'s redirect, and two `<Link to="…">`. A rename
+    // typechecked, built, and left the other end pointing at the not-found screen.
+    //
+    // The declaration itself is the one permitted mention, so the check is stated against it: a path
+    // string may appear on the line that exports it and nowhere else in the scaffolded front end.
+    for (const [path, contents] of Object.entries(BOTH)) {
+      if (!path.endsWith(".tsx") || path.includes(".test.")) continue;
+      const code = contents.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
+      const declared = code.match(/^export const path = "(\/[^"]+)";$/m)?.[1];
+      for (const screenPath of ["/sign-in", "/paywall", "/callback", "/otp", "/pricing", "/subscription"]) {
+        if (screenPath === declared) continue;
+        expect(code, `${path} writes ${screenPath} as a literal`).not.toContain(`"${screenPath}"`);
+        expect(code, `${path} interpolates ${screenPath} as a literal`).not.toContain(`${screenPath}\``);
+      }
+    }
   });
 
   test("the guard machinery is in base, so the router is byte-identical in every template", () => {
@@ -205,7 +239,10 @@ describe("the React 19 stub", () => {
       expect(router).toContain(`"!./routes/${directory}/**/*.spec.tsx"`);
     }
     // Pithy first, app second, into a Map — the later set() wins.
-    expect(router.indexOf("pithyRoutes, appRoutes")).toBeGreaterThan(-1);
+    expect(router.indexOf("...Object.values(pithyRoutes)")).toBeGreaterThan(-1);
+    expect(router.indexOf("...Object.values(appRoutes)")).toBeGreaterThan(
+      router.indexOf("...Object.values(pithyRoutes)"),
+    );
     expect(router).toContain("Do not edit them.");
     expect(router).toContain("lazy(load)");
   });
@@ -254,6 +291,10 @@ describe("the React 19 stub", () => {
 
   test("the client calls its API same-origin — no CORS config and no origin variable", () => {
     for (const [path, contents] of Object.entries(BOTH)) {
+      // A co-located test is not part of the client: nothing imports it, the route globs negate it,
+      // and `routeGlob.test.ts` builds to prove it ships in no asset. An origin a gate renders a
+      // screen against is a fixture, not a host anything reaches.
+      if (path.includes(".test.")) continue;
       // **Comments are stripped first, and that is the invariant rather than a loophole.** What must
       // not appear is a host the running client *reaches*; a comment citing GitHub's or Google's brand
       // terms beside the mark they govern is documentation, and the rule beside the asset is exactly
@@ -356,7 +397,10 @@ describe("the React 19 stub", () => {
     expect(callbacks.length).toBeGreaterThan(0);
     // Interpolated from `origin`, whose only default is the page's own — never a value from config or
     // from a response. The prop exists so a test can render the screen without a window, nothing more.
-    for (const callback of callbacks) expect(callback).toMatch(/callbackURL: `\$\{origin\}\/callback`/);
+    // The path half is `callback.tsx`'s own export, not a literal of the same shape — #393. Two
+    // strings that agree today is precisely what broke the round trip nobody signed in can test.
+    for (const callback of callbacks) expect(callback).toMatch(/callbackURL: `\$\{origin\}\$\{callbackPath\}`/);
+    expect(signIn).toContain('import { path as callbackPath } from "./callback";');
     expect(signIn).toContain("props.origin ?? window.location.origin");
   });
 
@@ -417,30 +461,22 @@ describe("the React 19 stub", () => {
     expect(otp).toContain("Array.from({ length: authConfig.otpLength }");
   });
 
-  test("client-env.d.ts declares every virtual module in every template", () => {
-    // Create-never-overwrite means a later `pithy ui add --payments` cannot come back and add them,
-    // so the bare scaffold has to carry all three or the backfilled screens would not typecheck.
-    for (const files of [BARE, AUTH, PAY, BOTH]) {
-      const ambient = files["client-env.d.ts"] ?? "";
-      expect(ambient).toContain('declare module "virtual:pithy/auth"');
-      expect(ambient).toContain('declare module "virtual:pithy/turnstile"');
-      expect(ambient).toContain('declare module "virtual:pithy/payments"');
-      // Support's is the fourth, and it is here for the same create-never-overwrite reason: a screen
-      // that posts a feedback form is written later, against a file this run is the only chance to write.
-      expect(ambient).toContain('declare module "virtual:pithy/support"');
-      // Each module is a union discriminated on `enabled`, exported as the default — the shape that
-      // makes an uncomposed capability narrow instead of breaking the build.
-      expect(ambient).toContain("export default config;");
-      expect(ambient).toContain("{ enabled: false }");
-      expect(ambient).toContain("otpLength: number;");
-      expect(ambient).toContain("signUpEnabled: boolean;");
-      // Keyed by rail, so a screen asks `skus[rail]` and a fifth rail cannot leave a `purchasable()`
-      // check silently out of date. All three web rails are named, and the Paddle block beside them.
-      expect(ambient).toContain("stripe: string | null;");
-      expect(ambient).toContain("lemonSqueezy: string | null;");
-      expect(ambient).toContain("paddle: string | null;");
-      expect(ambient).toContain('environment: "sandbox" | "production"');
-    }
+  test("client-env.d.ts is seeded verbatim, and every template carries all four modules", async () => {
+    // Create-never-overwrite means a later `pithy ui add --payments` cannot come back and add the
+    // modules a payments screen reads, so the bare scaffold has to carry all four or a backfilled
+    // screen would not typecheck. Support's is here for the same reason: a screen that posts a feedback
+    // form is written later, against a file this run is the only chance to write.
+    //
+    // **What the declarations say is deliberately not asserted here (#392).** This file used to check
+    // that the ambient types contained `otpLength: number;` and eleven other strings somebody had once
+    // typed — which confirms the file against itself and stays green for exactly the drift that matters,
+    // a field a capability's `client` projection stopped emitting. `@pithy-sh/vite`'s `clientEnv.test.ts`
+    // compiles the real projections against this exact file instead. What is left here is the CLI's own
+    // claim: the bytes it writes are that file's, unaltered, in every scaffold.
+    const gated = await readFile(join(TEMPLATE_DIR, "client-env.d.ts"), "utf8");
+    const modules = [...gated.matchAll(/declare module "virtual:pithy\/([^"]+)"/g)].map((match) => match[1]);
+    expect(modules.sort()).toEqual(["auth", "payments", "support", "turnstile"]);
+    for (const files of [BARE, AUTH, PAY, BOTH]) expect(files["client-env.d.ts"]).toBe(gated);
   });
 
   test("the payments projection declares no credential, in the ambient types or anywhere else", () => {

@@ -3,9 +3,17 @@ import { sendMagicLink, startSocialSignIn } from "@pithy-sh/auth/src/client/api"
 import { type FormEvent, type ReactNode, useCallback, useMemo, useState } from "react";
 import { authConfig } from "../../pithy-config";
 import { Turnstile, turnstilePending, turnstileRequest } from "../../turnstile";
+// The magic link's callback URL is built from this, never from a literal of the same shape. The two are
+// one statement for the reason #393 gives: renaming `callback.tsx`'s path is an edit that typechecks,
+// builds, and breaks the one round trip nobody signed in can test.
+import { path as callbackPath } from "./callback";
 import "../../pithy-screens.css";
 
 export const path = "/sign-in";
+
+// The screen the router's signed-out guard sends people to. Rename `path` above and the guard follows,
+// because it reads this claim rather than holding a copy of the string (#393).
+export const role = "sign-in";
 
 // Pithy's screen. Yours to override: put your own file at this path under src/routes/app/ and it wins.
 // (Guarding your home screen is one line — see `export const session` in src/routes/app/home.tsx.)
@@ -302,7 +310,7 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
   async function sendLink(event: FormEvent): Promise<void> {
     event.preventDefault();
     setBusy(true);
-    await sendMagicLink({ email, callbackURL: `${origin}/callback` }, { ...client, gate: check.attach });
+    await sendMagicLink({ email, callbackURL: `${origin}${callbackPath}` }, { ...client, gate: check.attach });
     setBusy(false);
     // Always the same answer, whether or not the address is registered. Telling the two apart is an
     // enumeration oracle, so neither the copy nor the timing of it confirms either way.
@@ -313,7 +321,7 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
     setRefusal(null);
     // No humanity check here, deliberately: the redirect carries no token and the provider runs its own
     // bot defense. `startSocialSignIn` drops one even if it is passed, so this cannot be forgotten.
-    const started = await startSocialSignIn({ provider: provider.id, callbackURL: `${origin}/callback` }, client);
+    const started = await startSocialSignIn({ provider: provider.id, callbackURL: `${origin}${callbackPath}` }, client);
     if (started.kind === "authorize") {
       redirect(started.url);
       return;

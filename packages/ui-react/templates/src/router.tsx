@@ -43,11 +43,21 @@ const appRoutes = import.meta.glob<RouteModule>([
 const sessionModules = import.meta.glob<{ getSession: () => Promise<unknown> }>("./session.tsx");
 const paymentsModules = import.meta.glob<{ holdsEntitlement: (key: string) => Promise<boolean> }>("./payments.tsx");
 
-/** Where the guard sends a signed-out visitor. */
-const SIGN_IN_PATH = "/sign-in";
-
-/** Where the entitlement guard sends a visitor who does not hold what a screen asks for. */
-const PAYWALL_PATH = "/paywall";
+/**
+ * The jobs one screen has to be able to name another screen for.
+ *
+ * **A role is how a redirect target — or a link — stays one statement.** The guard needs somewhere to
+ * send a signed-out visitor, and the only honest source for that is the screen itself: it claims the
+ * job (`export const role = "sign-in"`) and everything pointing at it looks the path up. Renaming
+ * `/sign-in` to `/login` is an ordinary rebrand, and before this the router kept its own copy of the
+ * old string — it typechecked, it built, and it redirected to the not-found screen (#393).
+ *
+ * A `<Link to="/paywall">` in another screen was the same defect with a quieter symptom, so the same
+ * three names cover both.
+ *
+ * Claim one from `src/routes/app/` to take the job over — the same shadowing rule as a path.
+ */
+export type ScreenRole = "sign-in" | "paywall" | "subscription";
 
 /**
  * The parameter names a pattern declares. `"/invitations/:token"` gives `"token"`; a pattern with no
@@ -103,6 +113,8 @@ export interface RouteModule {
   session?: "required";
   /** Set to an entitlement key to send visitors who do not hold it to the paywall. */
   entitlement?: string;
+  /** The job this screen does for a guard, if it does one. See {@link ScreenRole}. */
+  role?: ScreenRole;
 }
 
 /** One resolved entry in the route table. */
@@ -113,13 +125,30 @@ interface Route {
 }
 
 /** The resolved route table: every declared pattern, and the route each one names. */
-interface RouteTable {
+export interface RouteTable {
   /**
    * Every declared pattern, in no significant order. {@link matchPath} does not depend on one — see
    * the note there about why the winner is chosen rather than stumbled into.
    */
   readonly patterns: readonly string[];
   readonly byPattern: ReadonlyMap<string, Route>;
+  /** The path of the screen claiming each {@link ScreenRole}. Read by {@link screenPath}. */
+  readonly byRole: ReadonlyMap<ScreenRole, string>;
+}
+
+/**
+ * Where a guard sends a visitor for `role` — the path the screen claiming that job declares.
+ *
+ * **It throws rather than falling back.** A guard with nowhere to send someone is a screen that never
+ * resolves, and the whole point of #393 is that this class of break must not be silent. The message
+ * names the export to add and the file to add it to.
+ */
+export function screenPath(table: RouteTable, role: ScreenRole): string {
+  const path = table.byRole.get(role);
+  if (path === undefined) {
+    throw new Error(`No screen claims the "${role}" role. Add \`export const role = "${role}"\` to the one that does.`);
+  }
+  return path;
 }
 
 /**
@@ -130,20 +159,66 @@ interface RouteTable {
  * Shadowing is by pattern equality, which is why the map is keyed on the declared string rather than
  * on anything derived: `/invitations/:token` in `app/` replaces `/invitations/:token` in `pithy/`,
  * and `/invitations/:id` is a different route that happens to match the same paths.
+ *
+ * **The loaders are a parameter rather than the two globs read directly, so a gate can drive this with
+ * a screen it names.** That is the whole of what `src/router.test.tsx` needs to prove a redirect target
+ * comes from the screen and not from a copy the router keeps.
  */
-async function buildRoutes(): Promise<RouteTable> {
+export async function buildRoutes(loaders: Iterable<() => Promise<RouteModule>>): Promise<RouteTable> {
   const byPattern = new Map<string, Route>();
-  for (const group of [pithyRoutes, appRoutes]) {
-    for (const load of Object.values(group)) {
-      const module = await load();
-      if (typeof module.path !== "string") continue;
-      byPattern.set(module.path, { component: lazy(load), session: module.session, entitlement: module.entitlement });
-    }
+  const byRole = new Map<ScreenRole, string>();
+  for (const load of loaders) {
+    const module = await load();
+    if (typeof module.path !== "string") continue;
+    byPattern.set(module.path, { component: lazy(load), session: module.session, entitlement: module.entitlement });
+    // A role is registered against the path the module declares, in the same order as the patterns, so
+    // a screen in `app/` takes the job over exactly as it takes a pattern over.
+    if (module.role) byRole.set(module.role, module.path);
   }
-  return { patterns: [...byPattern.keys()], byPattern };
+  return { patterns: [...byPattern.keys()], byPattern, byRole };
 }
 
-const routes = buildRoutes();
+let resolved: Promise<RouteTable> | null = null;
+
+/**
+ * The route table, resolved once, on first use.
+ *
+ * **A function rather than a module-scope constant, because resolving it loads every screen.** As a
+ * constant, importing this file for `navigate` alone pulled the whole route graph in and started a
+ * promise nothing was awaiting yet — a screen that failed to load became an unhandled rejection at
+ * page load, outside any error boundary, rather than an error `use()` hands to React. It also made a
+ * co-located test of the router drag every screen in the project into its own module graph.
+ *
+ * Exported so a gate can read what the guards read, rather than restating it. `screenPath` is the
+ * whole of what a guard asks of it.
+ */
+export function routeTable(): Promise<RouteTable> {
+  resolved ??= buildRoutes([...Object.values(pithyRoutes), ...Object.values(appRoutes)]);
+  return resolved;
+}
+
+/**
+ * The path of the screen claiming `role`, for a screen that has to point at the same place a guard
+ * would send someone — a "sign in to buy" link, a "see what else there is" link.
+ *
+ * Suspends until the route table resolves, which inside `Router` it already has. A `<Link to="…">`
+ * written as a literal is the same defect as a redirect written as one: it survives the rename and
+ * lands on the not-found screen.
+ */
+export function useScreenPath(role: ScreenRole): string {
+  return screenPath(use(routeTable()), role);
+}
+
+/**
+ * The same, for a link that crosses a capability boundary — `null` when no screen claims the role.
+ *
+ * The pricing screen is the case: it ships in a payments-only project, where there is no sign-in screen
+ * to offer a stranger and nothing to link to. Throwing there would be wrong, and a literal `/sign-in`
+ * would point at nothing. So the link is rendered when there is somewhere for it to go.
+ */
+export function useOptionalScreenPath(role: ScreenRole): string | null {
+  return use(routeTable()).byRole.get(role) ?? null;
+}
 
 // ── history ──────────────────────────────────────────────────────────────────
 
@@ -234,11 +309,12 @@ export function useSignedIn(): boolean | null {
 
 /** Renders its children only for a signed-in visitor; everyone else is sent to the sign-in screen. */
 function Guarded(props: { children: ReactNode }): ReactNode {
+  const table = use(routeTable());
   const signedIn = useSignedIn();
 
   useEffect(() => {
-    if (signedIn === false) navigate(SIGN_IN_PATH);
-  }, [signedIn]);
+    if (signedIn === false) navigate(screenPath(table, "sign-in"));
+  }, [signedIn, table]);
 
   if (signedIn === true) return props.children;
   return <p className="muted">One moment.</p>;
@@ -259,6 +335,7 @@ async function holdsEntitlement(key: string): Promise<boolean> {
  * arrives at the paywall instead of watching a screen fill with 403s.
  */
 function Entitled(props: { entitlement: string; children: ReactNode }): ReactNode {
+  const table = use(routeTable());
   const [state, setState] = useState<"checking" | "in" | "out">("checking");
 
   useEffect(() => {
@@ -272,8 +349,8 @@ function Entitled(props: { entitlement: string; children: ReactNode }): ReactNod
   }, [props.entitlement]);
 
   useEffect(() => {
-    if (state === "out") navigate(PAYWALL_PATH);
-  }, [state]);
+    if (state === "out") navigate(screenPath(table, "paywall"));
+  }, [state, table]);
 
   if (state === "in") return props.children;
   return <p className="muted">One moment.</p>;
@@ -382,7 +459,7 @@ export function matchPath(
 // ── router ───────────────────────────────────────────────────────────────────
 
 function Screen(): ReactNode {
-  const table = use(routes);
+  const table = use(routeTable());
   const path = usePath();
   const match = matchPath(table.patterns, path);
   const route = match ? table.byPattern.get(match.pattern) : undefined;
