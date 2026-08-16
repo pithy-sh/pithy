@@ -9,6 +9,7 @@ import { isEmailCapability } from "@pithy-sh/email/src/capability";
 import { isTurnstileCapability } from "@pithy-sh/turnstile/src/capability";
 import { TURNSTILE_LOGIN_ACTION, type TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
 import { z } from "zod";
+import type { AuthClientProjection } from "./client/projection";
 import { authTables } from "./data/tables";
 import { publishSameOrigin } from "./http/csrf";
 import { registerDevLoginRoute } from "./http/devLoginRoute";
@@ -248,8 +249,13 @@ export function auth(config: AuthConfigInput): AuthCapability {
      * OAuth credentials cannot leak here because they are not in this config at all: they live in the
      * secrets store (`authSecretsRegistry`), read only inside the Worker. That is what makes this
      * projection provably safe — the sensitive values are not in reach of the function.
+     *
+     * The return type is {@link AuthClientProjection} — **declared, not inferred**. `Capability.client`
+     * types this as `{ enabled: boolean }` plus a JSON catchall, which accepts anything this literal
+     * could say. The declared type is what makes a dropped field — and a grown one, `baseURL` projected
+     * "just for a redirect" — a compile error here rather than a browser's problem.
      */
-    client: () => ({
+    client: (): AuthClientProjection => ({
       enabled: true,
       basePath: resolved.basePath,
       // Nested, so a screen can iterate the set rather than naming four booleans — and so adding a
