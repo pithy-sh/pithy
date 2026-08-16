@@ -1,6 +1,7 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { devEncryptionKeys } from "@pithy-sh/secrets/src/test-utils/devEncryptionKeys";
 import { defineConfig } from "vitest/config";
+import { COMPATIBILITY_DATE } from "../../compatibility";
 import { UNIT_BUDGETS } from "../../vitest.shared";
 
 /**
@@ -11,7 +12,7 @@ import { UNIT_BUDGETS } from "../../vitest.shared";
  * encrypted row here exactly as in a deployed worker (#153): its own database, its own master key,
  * never a plaintext binding. `seedSecrets` writes the rows and `devEncryptionKeys` mints the key.
  *
- * ## `unhandled_rejection_after_microtask_checkpoint`, and why a flag rather than a date (#385)
+ * ## `unhandled_rejection_after_microtask_checkpoint`, now carried by the date (#385, #388)
  *
  * Before workerd's 2026-03-03 behaviour change, an `async` function that **returned** a rejected
  * promise instead of awaiting it fired `unhandledrejection` even when the caller awaited the result and
@@ -21,23 +22,22 @@ import { UNIT_BUDGETS } from "../../vitest.shared";
  * left two phantom rejections behind, and vitest counted them against the run. #381 gave up a live
  * assertion to avoid them.
  *
- * **This is not a workaround, and there is nothing here to remove when something lands upstream.** The
- * flag names a workerd fix that is already shipped and already default-on from compatibility date
- * 2026-03-03. `pithy init` scaffolds adopters at `2026-06-01` and `workersManager` defaults to
- * `2026-04-07`, so a deployed Pithy Worker has had the fixed behaviour all along — this suite was the
- * only place still running the old one, fifteen months behind the runtime it is evidence about.
+ * #385 named the flag here rather than moving the date, so that one behaviour was adopted on its own
+ * and said which, and wrote down that the entry would become redundant when the date moved. **It has,
+ * and it is: {@link COMPATIBILITY_DATE} is 2026-06-01, three months past the date the flag is default-on
+ * from, so the flag is gone from the list below rather than left as a line nobody can date.**
  *
- * **The flag rather than a newer `compatibilityDate`, deliberately.** Moving the date adopts every other
- * behaviour change in those fifteen months at the same time, in one commit, with auth's evidence riding
- * on it. The flag adopts exactly the one behaviour this suite was wrong about, and says which. When the
- * date does move, this entry becomes redundant rather than wrong.
+ * **That removal is the check, not a tidy-up.** A compatibility date that had not really taken effect
+ * would show as this suite going red the moment the explicit flag stopped propping it up. It stayed
+ * green — 14 files, 145 tests, no rejection counted — and the control was run the other way too:
+ * with the flag removed and the date set to 2026-03-02, the phantom rejections come straight back.
  */
 export default defineConfig({
   plugins: [
     cloudflareTest({
       miniflare: {
-        compatibilityDate: "2025-01-01",
-        compatibilityFlags: ["nodejs_compat", "unhandled_rejection_after_microtask_checkpoint"],
+        compatibilityDate: COMPATIBILITY_DATE,
+        compatibilityFlags: ["nodejs_compat"],
         d1Databases: ["DB", "SECRETS"],
         bindings: { SECRETS_ENCRYPTION_KEYS: devEncryptionKeys() },
       },
