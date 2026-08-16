@@ -110,13 +110,17 @@ describe("the React 19 stub", () => {
     expect(BARE["src/routes/app/home.tsx"]).toContain('fetch("/health"');
   });
 
-  test("the auth template adds exactly the screens, the session hook, and the widget", () => {
+  test("the auth template adds exactly the screens, the session hook, the widget, and the widget's gate", () => {
     const added = Object.keys(AUTH).filter((path) => !(path in BARE));
     expect(added.sort()).toEqual([
       "src/routes/pithy/callback.tsx",
       "src/routes/pithy/otp.tsx",
       "src/routes/pithy/sign-in.tsx",
       "src/session.tsx",
+      // The one test the kit seeds. `turnstile.tsx` becomes the adopter's the moment it lands and its
+      // whole risk is that the action can be retyped into it — a drift no environment before production
+      // can see (#374), so the gate travels with the file rather than staying here (#383).
+      "src/turnstile.test.tsx",
       "src/turnstile.tsx",
     ]);
     // Only home differs between the two templates; it gains the guard.
@@ -375,6 +379,28 @@ describe("the React 19 stub", () => {
       .replace(/^\s*\/\/.*$/gm, " ");
     expect(social).not.toContain("check.attach");
     expect(AUTH["src/routes/pithy/otp.tsx"]).toContain("<Turnstile");
+  });
+
+  test("the widget's gate ships with it, and cannot pass against the literal it exists to catch", () => {
+    // #383. Everything else about the action binding is proven by running the gate — here and, once
+    // scaffolded, there. What running it cannot prove is that it was *shipped*, and that nothing has
+    // since sanded off the two properties it depends on for its whole value.
+    const gate = AUTH["src/turnstile.test.tsx"] ?? "";
+    expect(gate).not.toBe("");
+    // The expectation is a constant invented in the gate, and the mock is authored from that same
+    // constant. Assert the real action instead and it passes against a widget that typed one out.
+    expect(gate).toMatch(/const CANARY_ACTION = "(?!login")[^"]+";/);
+    expect(gate).toContain("action: CANARY_ACTION");
+    expect(gate).toContain("expect(rendered?.action).toBe(CANARY_ACTION)");
+    // Nothing about the widget's real action may reach it, or it only agrees with itself. The one
+    // permitted mention of `login` is the assertion refusing the canary from degenerating onto it.
+    expect(gate.match(/"login"/g) ?? []).toEqual(['"login"']);
+    expect(gate).toContain('expect(CANARY_ACTION).not.toBe("login")');
+    // It runs under the `vitest run` a scaffolded project already has: the starter's node project
+    // collects co-located `.tsx` (#245) but gives them no `document`, so the gate names its own
+    // environment and the stub installs the package that name resolves to.
+    expect(gate).toContain("@vitest-environment happy-dom");
+    expect(reactStub.devDependencies["happy-dom"]).toBeTruthy();
   });
 
   test("the widget is asked to fill the column the stylesheet gives it", () => {
