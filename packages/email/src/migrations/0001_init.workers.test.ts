@@ -119,6 +119,48 @@ describe("email_0001_init (app database: jobs + events)", () => {
     }
   });
 
+  /**
+   * The read `correlation` exists for, planned rather than measured.
+   *
+   * `sentSince` asks *what has been said about this thing, since an instant, newest first* — against a
+   * table holding every email the project ever queued, on the path that decides whether another letter
+   * goes out. Without the index that is a full scan, and it stays *correct* while getting slower for
+   * years, which is why no assertion about results can catch it.
+   *
+   * `pithy-sh/pithy#382`. Six account notices ride one `operationalNotice` template to the same
+   * addresses, so `(recipient_key, template)` cannot separate them; this column is what does, and the
+   * index leads with it because a correlation names one subject and is selective by construction.
+   */
+  test("the correlation question is answered from its own index, not by scanning the send log", async () => {
+    await runMigrations(env.DB, provider("app"));
+
+    expect(await columnsOf("pithy_email_jobs")).toContain("correlation");
+
+    const plan = await env.DB.prepare(
+      "explain query plan select id, status, created_at, sent_at from pithy_email_jobs where correlation = ? and created_at >= ? order by created_at desc, id desc limit ?",
+    )
+      .bind("plan_ending:org-42", 0, 26)
+      .all<{ detail: string }>();
+    const detail = plan.results.map((row) => row.detail).join(" | ");
+
+    expect(detail).toContain("pithy_email_jobs_correlation_idx");
+    expect(detail).not.toContain("SCAN pithy_email_jobs");
+  });
+
+  /** Null, never a default: a job whose template already says what it is states no subject, truthfully. */
+  test("a job stating no subject holds null there, rather than a fabricated one", async () => {
+    await runMigrations(env.DB, provider("app"));
+
+    await env.DB.prepare(
+      "insert into pithy_email_jobs (id, to_address, recipient_key, from_address, from_name, subject, template, category, payload, status, mode, attempts, send_at, open_tracking, click_tracking, created_at, updated_at) values ('job-2', 'u@example.com', 'u@example.com', 'noreply@pithy.sh', 'Pithy', 'Hi', 'magicLink', 'transactional', '{}', 'sent', 'immediate', 1, 1000, 0, 0, 1000, 1000)",
+    ).run();
+
+    const row = await env.DB.prepare("select correlation from pithy_email_jobs where id = 'job-2'").first<{
+      correlation: string | null;
+    }>();
+    expect(row?.correlation).toBeNull();
+  });
+
   test("down drops the app tables and indexes", async () => {
     const p = provider("app");
     await runMigrations(env.DB, p);

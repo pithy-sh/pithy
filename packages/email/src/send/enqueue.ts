@@ -68,6 +68,21 @@ export interface EnqueueInput {
   timezone?: string;
   /** The marketing campaign id, for attribution. */
   campaignId?: string;
+  /**
+   * What this message is *about*, when the template id does not say it on its own.
+   *
+   * The discriminator for a template that carries more than one kind of message (pithy-sh/pithy#382).
+   * `sentSince` matches on it, so a caller deciding whether to send — or whether to send a *correction* —
+   * can tell two messages apart that share a template and a recipient. Opaque: nothing here parses it,
+   * renders it, or puts it on a header or a link.
+   *
+   * **Not `campaignId`.** That one is marketing attribution and it leaves this row — onto every event,
+   * into `campaignStats`, and signed into the tracking token that travels in a delivered email's URLs.
+   * See the column's own note on `EmailJob`.
+   *
+   * Omit it where the template id already answers "what is this", which is most templates.
+   */
+  correlation?: string;
   /** Override click-link rewriting (defaults on for marketing, off for transactional). */
   clickTracking?: boolean;
   /** Override open-pixel injection (defaults on for marketing, off for transactional). */
@@ -217,6 +232,7 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
     timezone: input.timezone ?? null,
     localTime: input.localTime ?? null,
     campaignId: input.campaignId ?? null,
+    correlation: input.correlation ?? null,
     openTracking: input.openTracking ?? marketing,
     clickTracking: input.clickTracking ?? marketing,
     messageId: null,

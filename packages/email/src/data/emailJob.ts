@@ -80,6 +80,12 @@ export const EmailJob = z
       .string()
       .nullish()
       .describe("The marketing campaign this job belongs to, for click/open attribution; null for transactional."),
+    correlation: z
+      .string()
+      .nullish()
+      .describe(
+        "What this message was *about*, as the caller names it — the discriminator for a template that carries more than one kind of message. Opaque here: this capability never parses it, never renders it, and never puts it on a header or a link. Set at enqueue, matched by `sentSince`, indexed with `createdAt`. **Not `campaignId`**, which is documented marketing-only and is not merely a naming preference: `campaignId` is copied onto every `pithy_email_events` row, grouped by `campaignStats`, and signed into the click/open tracking token that travels in the URL of a delivered email — so a transactional discriminator put there would land in campaign analytics and in a string the recipient's mail client fetches. This column goes nowhere but this row. Null for a template whose id already says everything about what the message is, which is most of them.",
+      ),
     openTracking: SQLiteBoolean.describe("Whether an open-tracking pixel was injected into the rendered HTML."),
     clickTracking: SQLiteBoolean.describe("Whether links were rewritten to tracked click-callback URLs."),
     messageId: z

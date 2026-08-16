@@ -12,6 +12,25 @@ import type { Migration } from "kysely/migration";
  * Identifiers are declared in **camelCase**: the runner installs `CamelCasePlugin`, which snake-cases
  * every identifier in the emitted DDL (CLAUDE.md §Data layer). `down` is the tested inverse — indexes
  * then tables, in reverse creation order (D1 has no transactional DDL).
+ *
+ * **This is the capability's whole schema for this database, in one migration, and that is the rule
+ * while nothing is published.** CONTRIBUTING.md §Migrations states it and
+ * `packages/cli/src/migrations/oneMigration.test.ts` enforces it: a chain buys exactly one thing —
+ * walking a database that already holds rows from an old shape to a new one — and there is no such
+ * database, so a `0002` would be a step from a shape that never ran to a shape that never shipped.
+ *
+ * **Amended in place on 2026-08-16** for `correlation` (pithy-sh/pithy#382), and the condition was
+ * checked rather than assumed, because CONTRIBUTING.md asks a later reader to check it:
+ *
+ * - `@pithy-sh/email` is at `0.0.0` and `npm view @pithy-sh/email version` is a 404. Nothing has been
+ *   released, so no `0200_email_0001_init` has run anywhere a chain would be replayed against.
+ * - The only adopter is `pithy-sh/dashboard`, and `GET /accounts/602df2e6ce74e98b4c7ac5e90a3af5c8/d1/database`
+ *   — the account `apps/board/pithy.config.ts` pins, not whatever wrangler is logged in to — returns an
+ *   **empty list**. There is no deployed D1 at all, so none holds a `pithy_email_jobs` row.
+ *
+ * **The moment either stops being true this file is history, and the chain is append-only.** A version
+ * cut, or one database on that account, and the next column is a `0002`. Nothing about a tidy `0001`
+ * tells a reader which side of that line they are on — re-run the two checks, do not infer them.
  */
 export const email_0001_init: Migration = {
   up: async (db: Kysely<unknown>): Promise<void> => {
@@ -45,6 +64,20 @@ export const email_0001_init: Migration = {
       .addColumn("timezone", "text")
       .addColumn("localTime", "text")
       .addColumn("campaignId", "text")
+      // What the message was *about*, as the caller names it — the discriminator for a template that
+      // carries more than one kind of message (pithy-sh/pithy#382). Six of the dashboard's account
+      // notices ride one `operationalNotice` to the same addresses, so `(recipient_key, template)`
+      // cannot separate them and `sentSince` could not answer the question it was built for. And the
+      // failure was not a duplicate: that caller uses the answer *positively* — the correction letter
+      // goes out only when the letter it corrects already did — so an under-report withholds the
+      // correction from somebody holding a letter that has stopped being true.
+      //
+      // Nullable with no default, the shape `pithy_audit_events.tenant` takes for an action that was
+      // not tenant-scoped: most templates say what they are by their id alone, and null is the true
+      // statement about those. Deliberately **not** `campaign_id`, which is marketing attribution and
+      // leaves this row — onto every event, into `campaignStats`, and signed into the tracking token
+      // that travels in a delivered email's URLs. This column goes nowhere but here.
+      .addColumn("correlation", "text")
       .addColumn("openTracking", "integer", (c) => c.notNull().defaultTo(0))
       .addColumn("clickTracking", "integer", (c) => c.notNull().defaultTo(0))
       .addColumn("messageId", "text")
@@ -103,8 +136,20 @@ export const email_0001_init: Migration = {
       .on("pithyEmailJobs")
       .columns(["recipientKey", "template", "createdAt"])
       .execute();
+
+    // The other axis of the same read, and the same argument. `sentSince` also asks *what has been said
+    // about this thing since an instant* — the question a template carrying six different messages needs
+    // — and without an index that is the same full scan on the same decision path. It leads with
+    // `correlation` because a correlation names one subject and is selective by construction, where a
+    // template id is one of a handful a project has.
+    await db.schema
+      .createIndex("pithyEmailJobsCorrelationIdx")
+      .on("pithyEmailJobs")
+      .columns(["correlation", "createdAt"])
+      .execute();
   },
   down: async (db: Kysely<unknown>): Promise<void> => {
+    await db.schema.dropIndex("pithyEmailJobsCorrelationIdx").execute();
     await db.schema.dropIndex("pithyEmailJobsRecipientTemplateIdx").execute();
     await db.schema.dropIndex("pithyEmailJobsCreatedIdx").execute();
     await db.schema.dropIndex("pithyEmailJobsStatusCreatedIdx").execute();
