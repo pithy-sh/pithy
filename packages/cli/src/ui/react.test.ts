@@ -90,13 +90,15 @@ describe("the React 19 stub", () => {
     expect(Object.keys(BARE).sort()).toEqual([
       "client-env.d.ts",
       "index.html",
+      // The two gates base seeds. `client.tsx` mounts into a node it creates rather than one an id in
+      // `index.html` names (#394), and `router.tsx` sends a guard to the path the screen declares
+      // rather than to a copy of it (#393). Both breaks were silent, so both gates travel (#391).
+      "src/client.test.tsx",
       "src/client.tsx",
       // Base for the same reason `pithy-config.tsx` is: it is written whenever it is absent, which is
       // what makes a later `--auth` backfill produce screens whose classes something defines.
       "src/pithy-config.tsx",
       "src/pithy-screens.css",
-      // The gate base seeds: `router.tsx` sends a guard to the path the screen declares rather than to
-      // a copy of it, and that break was silent, so the gate travels with the file (#393, #391).
       "src/router.test.tsx",
       "src/router.tsx",
       "src/routes/app/home.tsx",

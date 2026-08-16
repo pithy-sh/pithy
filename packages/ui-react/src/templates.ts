@@ -50,6 +50,11 @@ export const TEMPLATE_GROUPS = {
     "tsconfig.node.json",
     "client-env.d.ts",
     "src/client.tsx",
+    // **The gate travels with the file it protects (#383, #391).** `src/client.tsx` used to find its
+    // mount node by an id declared in `index.html`, and renaming that div rendered an empty page with
+    // no error at all (#394). The node is created in code now, and this is what keeps it that way in a
+    // repository Pithy will never see again.
+    "src/client.test.tsx",
     "src/pithy-config.tsx",
     "src/router.tsx",
     // The router's half of #393: a guard's destination is the path the screen declares, and this is

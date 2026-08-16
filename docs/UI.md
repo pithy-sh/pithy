@@ -38,7 +38,8 @@ apps/api/
   client-env.d.ts            new   ambient declarations for virtual:pithy/*
   src/
     index.ts                       the Worker entry — untouched
-    client.tsx               new   SPA entry: mounts the router
+    client.tsx               new   SPA entry: creates the mount node, mounts the router
+    client.test.tsx          new   the gate that fails if the mount point becomes two strings
     router.tsx               new   the two-glob router and its route guard
     router.test.tsx          new   the gate that fails if a redirect target becomes a literal
     styles.css               new   yours: the palette tokens, the reset, body
