@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
+import { TEMPLATE_DIR } from "@pithy-sh/ui-react/src/templates";
 import { beforeAll, describe, expect, test } from "vitest";
 import { kitRange } from "../project/scaffold";
 import { reactStub } from "./react";
@@ -460,30 +461,22 @@ describe("the React 19 stub", () => {
     expect(otp).toContain("Array.from({ length: authConfig.otpLength }");
   });
 
-  test("client-env.d.ts declares every virtual module in every template", () => {
-    // Create-never-overwrite means a later `pithy ui add --payments` cannot come back and add them,
-    // so the bare scaffold has to carry all three or the backfilled screens would not typecheck.
-    for (const files of [BARE, AUTH, PAY, BOTH]) {
-      const ambient = files["client-env.d.ts"] ?? "";
-      expect(ambient).toContain('declare module "virtual:pithy/auth"');
-      expect(ambient).toContain('declare module "virtual:pithy/turnstile"');
-      expect(ambient).toContain('declare module "virtual:pithy/payments"');
-      // Support's is the fourth, and it is here for the same create-never-overwrite reason: a screen
-      // that posts a feedback form is written later, against a file this run is the only chance to write.
-      expect(ambient).toContain('declare module "virtual:pithy/support"');
-      // Each module is a union discriminated on `enabled`, exported as the default — the shape that
-      // makes an uncomposed capability narrow instead of breaking the build.
-      expect(ambient).toContain("export default config;");
-      expect(ambient).toContain("{ enabled: false }");
-      expect(ambient).toContain("otpLength: number;");
-      expect(ambient).toContain("signUpEnabled: boolean;");
-      // Keyed by rail, so a screen asks `skus[rail]` and a fifth rail cannot leave a `purchasable()`
-      // check silently out of date. All three web rails are named, and the Paddle block beside them.
-      expect(ambient).toContain("stripe: string | null;");
-      expect(ambient).toContain("lemonSqueezy: string | null;");
-      expect(ambient).toContain("paddle: string | null;");
-      expect(ambient).toContain('environment: "sandbox" | "production"');
-    }
+  test("client-env.d.ts is seeded verbatim, and every template carries all four modules", async () => {
+    // Create-never-overwrite means a later `pithy ui add --payments` cannot come back and add the
+    // modules a payments screen reads, so the bare scaffold has to carry all four or a backfilled
+    // screen would not typecheck. Support's is here for the same reason: a screen that posts a feedback
+    // form is written later, against a file this run is the only chance to write.
+    //
+    // **What the declarations say is deliberately not asserted here (#392).** This file used to check
+    // that the ambient types contained `otpLength: number;` and eleven other strings somebody had once
+    // typed — which confirms the file against itself and stays green for exactly the drift that matters,
+    // a field a capability's `client` projection stopped emitting. `@pithy-sh/vite`'s `clientEnv.test.ts`
+    // compiles the real projections against this exact file instead. What is left here is the CLI's own
+    // claim: the bytes it writes are that file's, unaltered, in every scaffold.
+    const gated = await readFile(join(TEMPLATE_DIR, "client-env.d.ts"), "utf8");
+    const modules = [...gated.matchAll(/declare module "virtual:pithy\/([^"]+)"/g)].map((match) => match[1]);
+    expect(modules.sort()).toEqual(["auth", "payments", "support", "turnstile"]);
+    for (const files of [BARE, AUTH, PAY, BOTH]) expect(files["client-env.d.ts"]).toBe(gated);
   });
 
   test("the payments projection declares no credential, in the ambient types or anywhere else", () => {
