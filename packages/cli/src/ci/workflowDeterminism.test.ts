@@ -3,7 +3,7 @@
 
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parse } from "@babel/parser";
+import { parseAst } from "rolldown/parseAst";
 import { describe, expect, test } from "vitest";
 import { sourceFiles } from "./sourceFiles";
 import { analyseDrivers, type DriverSource, type Node } from "./workflowDrivers";
@@ -30,12 +30,15 @@ import { analyseDrivers, type DriverSource, type Node } from "./workflowDrivers"
 /** `packages/cli/src/ci` → the repository. */
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
-/** The parser, supplied here rather than imported by the analyser — see `ParseModule`. */
-const parseModule = (text: string): Node =>
-  parse(text, {
-    sourceType: "module",
-    plugins: ["typescript", "decorators-legacy", "explicitResourceManagement"],
-  }).program as unknown as Node;
+/**
+ * The parser, supplied here rather than imported by the analyser — see `ParseModule`.
+ *
+ * Rolldown's, which is oxc: ESTree-shaped and TypeScript-aware. It is the parser `vite` already downloads
+ * for this repository's own test runner, so the gate costs no package and no byte that was not here anyway.
+ * Declared as a direct devDependency all the same — a parser reached through somebody else's bundler is a
+ * build that breaks the day they bump it.
+ */
+const parseModule = (text: string): Node => parseAst(text, { lang: "ts" }, "source.ts") as unknown as Node;
 
 /** Every shipped `.ts` under `packages/`, repo-relative and POSIX, so a finding names a path a human can open. */
 function packageSources(): DriverSource[] {

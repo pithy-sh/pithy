@@ -91,10 +91,16 @@ export interface DriverAnalysis {
   readonly parsed: number;
 }
 
-/** An AST node, structurally. The walk needs a discriminant and children; it needs nothing else. */
+/**
+ * An AST node, structurally. The walk needs a discriminant, a position and children; it needs nothing else.
+ *
+ * **ESTree.** The names below — `MethodDefinition`, `Property`, `Literal` — are the standard ones, not any
+ * one parser's dialect, which is what lets the parser behind `ParseModule` be replaced without touching this.
+ */
 export interface Node {
   readonly type: string;
-  readonly loc?: { readonly start: { readonly line: number } };
+  /** Byte offset of the node in the source text. Turned into a line by `lineIndex`. */
+  readonly start?: number;
   readonly [key: string]: unknown;
 }
 
@@ -105,6 +111,8 @@ export interface Node {
  * module ships. Taking it as a parameter keeps a published `@pithy-sh/cli` free of a module that imports
  * something an installer never gets — and lets the fixture cases in the gate's own suite run through exactly
  * the code path the tree scan does.
+ *
+ * It must yield an ESTree program. Everything this module knows about a tree is written in ESTree's names.
  */
 export type ParseModule = (text: string) => Node;
 
@@ -114,15 +122,12 @@ export type ParseModule = (text: string) => Node;
  * This is a fact about the language rather than a policy: a function body runs where the function is called,
  * so nothing written inside one is evaluated at the point it appears. It is what makes `() => new Date()`
  * handed to a step legal and `new Date()` beside it not.
+ *
+ * Three entries, and that is the whole of it in ESTree: a method is a `MethodDefinition` or a `Property`
+ * *wrapping* a `FunctionExpression`, so the wrapper is walked — its computed key is evaluated where it is
+ * written — and the function inside it is not.
  */
-const DEFERRED = new Set([
-  "FunctionDeclaration",
-  "FunctionExpression",
-  "ArrowFunctionExpression",
-  "ObjectMethod",
-  "ClassMethod",
-  "ClassPrivateMethod",
-]);
+const DEFERRED = new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
 
 /** The superclass every Cloudflare Workflow extends. The platform's name for the seam, not ours. */
 const WORKFLOW_BASE = "WorkflowEntrypoint";
@@ -135,12 +140,32 @@ function isNode(value: unknown): value is Node {
 function children(node: Node): Node[] {
   const found: Node[] = [];
   for (const key of Object.keys(node)) {
-    if (key === "loc" || key === "leadingComments" || key === "trailingComments") continue;
     const value = node[key];
     if (isNode(value)) found.push(value);
     else if (Array.isArray(value)) for (const item of value) if (isNode(item)) found.push(item);
   }
   return found;
+}
+
+/**
+ * Offsets to 1-indexed lines.
+ *
+ * An ESTree node carries a byte offset, not a line, so the line a finding prints is derived here from the
+ * same text the parser read. Built once per file and searched, rather than counted per finding.
+ */
+function lineIndex(text: string): (offset: number) => number {
+  const starts = [0];
+  for (let index = 0; index < text.length; index += 1) if (text.charCodeAt(index) === 10) starts.push(index + 1);
+  return (offset) => {
+    let low = 0;
+    let high = starts.length - 1;
+    while (low < high) {
+      const middle = (low + high + 1) >> 1;
+      if ((starts[middle] as number) <= offset) low = middle;
+      else high = middle - 1;
+    }
+    return low + 1;
+  };
 }
 
 function nameOf(node: unknown): string | undefined {
@@ -172,7 +197,7 @@ function isStepRunnerInterface(node: Node): boolean {
   if (members.length !== 1) return false;
   const member = members[0] as Node;
   if (member.type !== "TSMethodSignature") return false;
-  return nameOf(member.key) === "do" && Array.isArray(member.parameters ?? member.params);
+  return nameOf(member.key) === "do" && Array.isArray(member.params);
 }
 
 /** The type name a parameter is annotated with, if it is a plain reference. */
@@ -251,14 +276,22 @@ function localValues(scope: Node): Set<string> {
  */
 function walkScope(
   scope: Node,
-  context: { driver: WorkflowDriver; functions: Map<string, Node>; via: string; seen: Set<string> },
+  context: {
+    driver: WorkflowDriver;
+    functions: Map<string, Node>;
+    via: string;
+    seen: Set<string>;
+    lineAt: (offset: number) => number;
+  },
   findings: DriverFinding[],
 ): void {
   const locals = localValues(scope);
   const visit = (node: Node): void => {
     if (node !== scope && DEFERRED.has(node.type)) return;
 
-    if (node.type === "CallExpression" || node.type === "NewExpression" || node.type === "OptionalCallExpression") {
+    // `a?.b()` is a `CallExpression` inside a `ChainExpression` in ESTree, so the two kinds below are the
+    // whole population of evaluations. The chain wrapper needs no case: it is walked like any other node.
+    if (node.type === "CallExpression" || node.type === "NewExpression") {
       const args = Array.isArray(node.arguments) ? node.arguments : [];
       const callee = isNode(node.callee) ? node.callee : undefined;
       const path = callee ? memberPath(callee) : undefined;
@@ -269,18 +302,14 @@ function walkScope(
       if (path !== undefined && context.functions.has(path) && !context.seen.has(path)) {
         context.seen.add(path);
         const target = context.functions.get(path) as Node;
-        walkScope(
-          target,
-          { driver: context.driver, functions: context.functions, via: path, seen: context.seen },
-          findings,
-        );
+        walkScope(target, { ...context, via: path }, findings);
       } else if (args.length === 0 && (root === undefined || !locals.has(root))) {
         // Nullary, on something this scope does not already hold. It takes no input and its receiver is not a
         // value the body computed, so whatever it answers came from outside the program.
         const written = path === undefined ? node.type : path;
         findings.push({
           ...context.driver,
-          line: node.loc?.start.line ?? 0,
+          line: node.start === undefined ? 0 : context.lineAt(node.start),
           expression: node.type === "NewExpression" ? `new ${written}()` : `${written}()`,
           via: context.via,
         });
@@ -336,10 +365,15 @@ export function analyseDrivers(sources: readonly DriverSource[], parseModule: Pa
         entrypoints.push(`${source.path}#${className}`);
         const members = isNode(node.body) && Array.isArray(node.body.body) ? node.body.body.filter(isNode) : [];
         for (const member of members) {
-          if (member.type !== "ClassMethod" || nameOf(member.key) !== "run") continue;
+          if (member.type !== "MethodDefinition" || nameOf(member.key) !== "run") continue;
+          // The scope is the `FunctionExpression`, never the `MethodDefinition` that holds it. A method is a
+          // wrapper in ESTree, and a wrapper's first child is a deferred node — so walking the wrapper walks
+          // exactly nothing, silently, and reports every driver in the kit clean.
+          const body = member.value;
+          if (!isNode(body)) continue;
           bodies.push({
             driver: { file: source.path, name: `${className}.run`, kind: "entrypoint" },
-            scope: member,
+            scope: body,
           });
         }
       }
@@ -372,7 +406,7 @@ export function analyseDrivers(sources: readonly DriverSource[], parseModule: Pa
         if (keys.has("binding") && keys.has("params") && keys.has("className")) {
           const declared = properties.find((property) => nameOf(property.key) === "className");
           const value = declared !== undefined && isNode(declared.value) ? declared.value : undefined;
-          if (value?.type === "StringLiteral" && typeof value.value === "string") declaredClassNames.add(value.value);
+          if (value?.type === "Literal" && typeof value.value === "string") declaredClassNames.add(value.value);
         }
       }
 
@@ -380,9 +414,12 @@ export function analyseDrivers(sources: readonly DriverSource[], parseModule: Pa
     };
     visit(program);
 
-    for (const { driver, scope } of bodies) {
-      drivers.push(driver);
-      walkScope(scope, { driver, functions, via: driver.name, seen: new Set([driver.name]) }, findings);
+    if (bodies.length > 0) {
+      const lineAt = lineIndex(source.text);
+      for (const { driver, scope } of bodies) {
+        drivers.push(driver);
+        walkScope(scope, { driver, functions, via: driver.name, seen: new Set([driver.name]), lineAt }, findings);
+      }
     }
   }
 
