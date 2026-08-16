@@ -16,7 +16,10 @@
   // that checkpoint a keyset cursor. See `worker.entry.ts`.
   "name": "pithy-leaderboard-rank", // resolved per env → pithy-leaderboard-rank-staging / -production
   "main": "./worker.entry.ts",
-  "compatibility_date": "2025-01-01",
+  // The compatibility date every Worker in this repository runs on. Stated once in the repository
+  // root's `compatibility.ts` and copied here because JSONC cannot import it —
+  // `cli/src/ci/compatibilityDates.test.ts` fails on any Worker older than it.
+  "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
 
   // No public URL. This worker has no HTTP routes — it is reached only by its cron. `workers_dev: false`
