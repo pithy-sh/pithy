@@ -52,6 +52,8 @@
  * deploy, and the address that did not answer is the fact worth printing.
  */
 
+import { HEALTH_PATH } from "@pithy-sh/core/src/worker/health";
+
 /** What a probe concluded. */
 export type DeployVerification =
   | "verified" // the version just shipped answered at the declared domain
@@ -123,7 +125,9 @@ interface Probe {
 /** One probe. Reports whether anything answered, and the version it named. */
 async function probe(url: string, fetchImpl: typeof fetch, timeoutMs: number): Promise<Probe> {
   try {
-    const response = await fetchImpl(`${url.replace(/\/+$/, "")}/health`, {
+    // `HEALTH_PATH` rather than a literal: `createBackend` mounts the route, and a probe that writes
+    // its own copy of the path is a deploy check that goes inconclusive the day the route moves (#400).
+    const response = await fetchImpl(`${url.replace(/\/+$/, "")}${HEALTH_PATH}`, {
       method: "GET",
       headers: { accept: "application/json" },
       // An abort lands in the same `catch` as a DNS or TLS failure, which is right: all three mean nothing

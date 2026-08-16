@@ -4,6 +4,7 @@
 import { createBackend } from "@pithy-sh/core/src/createBackend";
 import { CI_ENV } from "@pithy-sh/core/src/env/ci";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import { HEALTH_PATH } from "@pithy-sh/core/src/worker/health";
 import { ENVIRONMENT_VAR } from "@pithy-sh/core/src/worker/identity";
 import type { WorkerConfig } from "../project/config";
 
@@ -68,13 +69,17 @@ export function firstSegment(path: string): string | null {
 
 /**
  * The `run_worker_first` patterns for a route table: `"/<segment>"` and `"/<segment>/*"` for each
- * distinct first segment, sorted so the written config is stable run to run. `/health` is always
+ * distinct first segment, sorted so the written config is stable run to run. The health route is always
  * present — `createBackend` serves it for every Worker, and it is the one route an adopter is most
  * likely to check first.
+ *
+ * Seeded from `HEALTH_PATH` through the same `firstSegment` every other route goes through, rather than
+ * from a `"health"` written here (#400). One statement in `@pithy-sh/core`, and the allowlist follows a
+ * rename instead of quietly leaving the renamed route shadowed by the SPA shell.
  */
 export function workerFirstPatterns(paths: readonly string[]): string[] {
-  const segments = new Set<string>(["health"]);
-  for (const path of paths) {
+  const segments = new Set<string>();
+  for (const path of [HEALTH_PATH, ...paths]) {
     const segment = firstSegment(path);
     if (segment) segments.add(segment);
   }

@@ -143,8 +143,8 @@ const LEDGER: Record<string, Held> = {
       "It is yours from the moment it is written — src/routes/app/ is the one directory Pithy writes once and never inspects again. #391 item G asked for the unstyled report to reach into it; declined, and the rest of that item is #401 — because a report that audits an adopter's own application after scaffold is the kit inspecting somebody's code, and the classes it renders are defined by a stylesheet client.tsx imports for the whole app.",
   },
   "src/routes/app/home.bare.tsx": {
-    ungated:
-      '#391 item D, filed as #400. It fetches "/health", which @pithy-sh/core mounts and the CLI\'s route allowlist seeds — three copies of one path, and a rename renders "The worker says: unknown." with a 200. The party who can rename it is the kit, so by the clause above the gate stays kit-side, and the fix is one exported statement in @pithy-sh/core rather than a gate over three copies.',
+    keptGate: "packages/cli/src/ui/react.test.ts",
+    why: '#391 item D, closed by #400 — and closed by removal rather than by watching. The path was written in three places: @pithy-sh/core mounted "/health", the CLI\'s route allowlist seeded it, this screen fetched it, and a rename in the first renders "The worker says: unknown." with a 200 and nothing in a log. All three now read HEALTH_PATH from @pithy-sh/core/src/worker/health, so a rename moves the screen with it. What is left to hold is the reversal — someone retyping a literal here — and the party who would do that is the kit, editing the template, which is where the gate is.',
   },
 };
 

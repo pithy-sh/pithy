@@ -114,8 +114,19 @@ describe("the React 19 stub", () => {
       if (path === "client-env.d.ts" || path === "src/pithy-config.tsx") continue;
       expect(contents, path).not.toMatch(/from ["']virtual:pithy\//);
     }
-    // Home does one typed fetch and nothing else.
-    expect(BARE["src/routes/app/home.tsx"]).toContain('fetch("/health"');
+    // Home does one typed fetch and nothing else — and it does not write down where.
+    //
+    // **This used to be `toContain('fetch("/health"')`, a literal compared to a literal inside the CLI
+    // (#400).** It proved the two strings, not the contract: `createBackend` mounts the route, and a
+    // rename there left this assertion green while the only screen a no-auth scaffold ships rendered
+    // "The worker says: unknown." — a 200, no error, nothing in a log. So the path became one statement
+    // in `@pithy-sh/core`, and what is held here is that the screen reads it rather than restating it.
+    const home = BARE["src/routes/app/home.tsx"] ?? "";
+    expect(home).toContain('import { HEALTH_PATH } from "@pithy-sh/core/src/worker/health"');
+    expect(home).toContain("fetch(HEALTH_PATH)");
+    // The reversal, refused in the only direction that stays honest: no `fetch` in this screen takes a
+    // string at all. Asserting the *absence* of core's value cannot pass by having drifted onto it.
+    expect(home, "the bare home screen fetches a literal path again").not.toMatch(/fetch\(\s*["'`]/);
   });
 
   test("the auth template adds exactly the screens, the session hook, the widget, and the widget's gate", () => {
