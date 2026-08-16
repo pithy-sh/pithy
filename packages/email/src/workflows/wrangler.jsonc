@@ -9,7 +9,10 @@
   // overwriting this one's running worker instead of colliding with it.
   "name": "pithy-email",
   "main": "./worker.ts",
-  "compatibility_date": "2025-01-01",
+  // The compatibility date every Worker in this repository runs on. Stated once in the repository
+  // root's `compatibility.ts` and copied here because JSONC cannot import it —
+  // `cli/src/ci/compatibilityDates.test.ts` fails on any Worker older than it.
+  "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
 
   // No public URL. The callback routes (click/open/unsubscribe) and the inbound bounce handler live in
