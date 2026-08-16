@@ -4,11 +4,12 @@
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "comment-json";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { runAdd } from "../capabilities/flow";
+import { localDevStorePath } from "../devSecrets/store";
 import { runUiAdd } from "../ui/flow";
 import { scaffoldProject } from "./scaffold";
 import { resolveSingleWorker } from "./workerScope";
@@ -300,4 +301,96 @@ describe("after pithy ui add react", () => {
     const { code, output } = await run(dir, biome(dir), ["check", "."]);
     expect({ code, output }).toMatchObject({ code: 0 });
   }, 60_000);
+
+  /**
+   * **#399's three contracts, each a relative path frozen into a file the adopter owns.**
+   *
+   * They were declined in #391's sweep, and the reason was the same for all three: the invariant is a
+   * fact about *where the Worker sits in a scaffolded project*, not a fact about the template's text.
+   * `../../` is right relative to `apps/<worker>/` and wrong anywhere else, and a unit test over the
+   * template can only assert the string reads `"../../.wrangler/state"` — which is what a rename of the
+   * layout sails straight through. So the gate belongs here, where a real layout exists to resolve
+   * against, and the ledger in `packages/ui-react/src/seededGates.test.ts` names this file.
+   */
+
+  test("the client's local state resolves to the project's store, not this worker's", async () => {
+    // `persistState` is a depth, and a wrong one is silent in the worst way: each Worker gets its own
+    // Miniflare directory, so two Workers sharing a D1 binding read two separate copies of it. Nothing
+    // errors. Rows written through one are simply not there in the other.
+    const config = await readFile(join(dir, "apps", WORKER, "vite.config.ts"), "utf8");
+    const declared = /persistState:\s*\{\s*path:\s*"([^"]+)"\s*\}/.exec(config)?.[1];
+    expect(declared, "vite.config.ts no longer declares a persistState path").toBeTypeOf("string");
+    // Resolved from the Worker's real directory in a real scaffold — the whole point, and the thing a
+    // literal-presence assertion cannot do.
+    const resolved = resolve(join(dir, "apps", WORKER), declared ?? "");
+    // The other subject, and this test writes down no expectation of its own: `localDevStorePath` is
+    // where `pithy seed` and `pithy migrate` put a project's local D1, `v3/d1` under the store root.
+    // Two independent statements about one directory, made to agree from a scaffolded layout.
+    //
+    // A third statement exists — `dev/orchestrator.ts` builds the same root for `wrangler dev
+    // --persist-to` — and is not reachable from here without exporting it. Filed as #404.
+    expect(resolved).toBe(dirname(dirname(localDevStorePath(dir))));
+  });
+
+  test("each composite program writes its own build state, under the project's dist/", async () => {
+    // The mild one of the three: two composite programs pointing at one `.tsbuildinfo` overwrite each
+    // other's state on every build. It costs time and never correctness — which is exactly why nobody
+    // would ever find it, and why it is worth one assertion rather than an argument.
+    const programs = ["tsconfig.json", "tsconfig.client.json", "tsconfig.node.json"];
+    const declared = new Map<string, string>();
+    for (const program of programs) {
+      const config = parse(await readFile(join(dir, "apps", WORKER, program), "utf8")) as unknown as {
+        compilerOptions: { tsBuildInfoFile?: string };
+      };
+      const path = config.compilerOptions.tsBuildInfoFile;
+      expect(path, `${program} is composite and names no tsBuildInfoFile`).toBeTypeOf("string");
+      declared.set(program, resolve(join(dir, "apps", WORKER), path ?? ""));
+    }
+    for (const [program, path] of declared) {
+      // Resolved, not matched. The project's `dist/`, which `.gitignore` covers — never this Worker's,
+      // because Vite empties `apps/<worker>/dist` on every client build and would throw the state away.
+      expect(dirname(path), `${program}'s build state lands outside the project's dist/`).toBe(join(dir, "dist"));
+    }
+    expect(new Set(declared.values()).size, "two programs share one .tsbuildinfo").toBe(programs.length);
+    // And the declared path is where tsc actually wrote. The client program was built above, so its
+    // state is on disk now — which is what turns a resolution into a fact.
+    const built = await readdir(join(dir, "dist"));
+    expect(built).toContain(basename(declared.get("tsconfig.client.json") ?? ""));
+  });
+
+  test("a screen with a type error fails the client build — the program is not empty", async () => {
+    // **The worst of the three, and the only one whose failure mode is a green build that checked
+    // nothing.** Narrow `tsconfig.client.json`'s `include` and `tsc -b` reports success over a program
+    // that resolved no files, while the project's solution file still references it. `bun run
+    // typecheck` stays green and the client's whole typecheck is gone. No output changes.
+    //
+    // So the gate plants a defect rather than reading the `include` array: a client file with a type
+    // error must fail the client build. A program compiling nothing cannot fail, which is the point,
+    // and it is the one shape no assertion about the template's text can take.
+    //
+    // Under `routes/app/`, deliberately, and the location is the whole gate. `composite` makes tsc
+    // refuse a file imported but not listed (TS6307), so most narrowings are *loud* — planting
+    // `include: ["src/client.tsx", "client-env.d.ts"]` fails the build with an error naming
+    // `client.tsx`. The router reaches screens through `import.meta.glob` instead, so no static import
+    // pulls them in and TS6307 never fires: `include: ["src/*.tsx", "client-env.d.ts"]` exits 0 with
+    // empty output while every screen in the project goes unchecked. That is the silent one, and a
+    // probe anywhere else would not see it.
+    const probe = join(dir, "apps", WORKER, "src", "routes", "app", "probe.tsx");
+    await writeFile(probe, 'export const probe: number = "not a number";\n');
+    try {
+      const { code, output } = await run(dir, tsc(dir), ["-b", "--force", `apps/${WORKER}/tsconfig.client.json`]);
+      expect({ code, output }).not.toMatchObject({ code: 0 });
+      expect(output).toContain("probe.tsx");
+    } finally {
+      await rm(probe, { force: true });
+    }
+  }, 120_000);
+
+  test("and the client build is green again once it is removed", async () => {
+    // The other half of the reading above. Without it, a client build failing for some unrelated
+    // reason — a broken link farm, a compiler that will not start — would satisfy the planted defect
+    // and the gate would report a defect it never actually planted.
+    const { code, output } = await run(dir, tsc(dir), ["-b", "--force", `apps/${WORKER}/tsconfig.client.json`]);
+    expect({ code, output }).toMatchObject({ code: 0 });
+  }, 120_000);
 });

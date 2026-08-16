@@ -100,7 +100,25 @@ Two properties make Pithy's file safe to keep:
 - **Everything in it sits in a `@layer pithy` cascade layer.** Unlayered CSS beats layered CSS regardless of order or specificity, so any rule you write wins over one of Pithy's with no `!important` and no regard for import order. Give `.screen` a different `max-width` in your own stylesheet and it takes.
 - **Its palette is seven tokens read with fallbacks** — `--bg`, `--surface`, `--fg`, `--fg-muted`, `--border`, `--accent`, `--danger`. Declare them on `:root` and Pithy's screens adopt your colours; declare none and they stand up on their own, following `prefers-color-scheme`. **Declare them as a set**: a screen whose background is yours and whose text is Pithy's is the one way this can still read badly, and no fallback can detect it.
 
-`pithy ui add` checks the result rather than assuming it. After writing, it reads the stylesheets actually on disk and names any class the screens render that none of them defines — under `--json` as `unstyled`. Empty is the ordinary answer; anything else is the exact list to fix.
+#### The check that a screen is styled, and when it runs
+
+`pithy ui add` checks the result rather than assuming it. After writing, it reads the stylesheets actually on disk — Pithy's, yours, and any other `.css` under `src/` — and names any class a Pithy screen renders that none of them defines. Empty is the ordinary answer; anything else is the exact list to fix.
+
+**`pithy ui sync` asks the same question again, and `--check` fails on it.** That matters more than the scaffold-time run does. `styles.css` is yours, so the ordinary way a screen goes unstyled is not a bad scaffold — it is an edit a week later. A rule deleted in a tidy-up, a `pithy-screens.css` removed because it looked generated, a redesign that renamed a token. None of that errors: the screen renders, unstyled, with a 200, and nothing anywhere says so.
+
+So it is the same species of failure as a shadowed route, and it is gated the same way:
+
+| Command | What it does with a finding |
+|---|---|
+| `pithy ui add` | Names the classes. Does not fail — the run wrote the files, and that part succeeded. |
+| `pithy ui sync` | Names the classes. Does not fail — you are fixing an allowlist, not a stylesheet. |
+| `pithy ui sync --check` | Names the classes and **exits 1**. This is the CI gate. |
+
+Under `--json`, all three report the list as `unstyled`.
+
+Two things it deliberately does not do. It does not look at `src/routes/app/` — that is your application, and a report auditing your own screens' class names is Pithy inspecting your code. And it reads only class names written as **literals**: `className="stack"` and `className={busy ? "a" : "b"}` are read, `className={SOME_CONSTANT}` is not. If you want a name checked, write it as a literal.
+
+The fix is a rule, not a stub. `.stack {}` will pass this and change nothing on the page — restoring `src/pithy-screens.css`, or defining what you meant to define, is what the message is asking for. Deleting the class from the screen is also a fix; the screen is yours.
 
 ### Where the templates live
 

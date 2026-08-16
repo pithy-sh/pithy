@@ -21,6 +21,7 @@ import { ValidationError } from "./error/pithyError";
 import { buildKvRegistry, composeKv, type KvRegistry } from "./kv/namespaces";
 import type { Logger } from "./logger/logger";
 import { bindRequestContext, createWorkerLogger } from "./logger/worker";
+import { HEALTH_PATH } from "./worker/health";
 import { workerVersion } from "./worker/identity";
 import { registeredWorkflowBinding } from "./workflow/bindings";
 import { buildWorkflowDispatcher, type WorkflowDispatcher } from "./workflow/dispatch";
@@ -221,7 +222,12 @@ export function createBackend<
   });
 
   /**
-   * `GET /health` — liveness, and **which build is answering**.
+   * `GET {@link HEALTH_PATH}` — liveness, and **which build is answering**.
+   *
+   * The path is `worker/health.ts`'s, not a literal here. Three other sites need the same string — the
+   * CLI's route allowlist, `pithy deploy`'s post-deploy probe, and the bare home screen a no-auth
+   * scaffold seeds — and that last one is in somebody else's repository, rendering nothing but this
+   * request's answer (#400).
    *
    * The version is what turns `pithy deploy`'s post-deploy check from a liveness probe into an
    * assertion. `status: "ok"` at the declared domain proves *a* Worker is there; it does not prove it is
@@ -238,7 +244,7 @@ export function createBackend<
    * before `version_metadata` was declared reports "I cannot tell you", and `deploy` reports the check
    * as inconclusive instead of failing it.
    */
-  app.get("/health", (c) => c.json({ status: "ok", version: workerVersion(c.env) }));
+  app.get(HEALTH_PATH, (c) => c.json({ status: "ok", version: workerVersion(c.env) }));
 
   for (const cap of all) {
     for (const middleware of cap.middleware ?? []) middleware(app);

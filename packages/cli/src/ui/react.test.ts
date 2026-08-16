@@ -114,8 +114,19 @@ describe("the React 19 stub", () => {
       if (path === "client-env.d.ts" || path === "src/pithy-config.tsx") continue;
       expect(contents, path).not.toMatch(/from ["']virtual:pithy\//);
     }
-    // Home does one typed fetch and nothing else.
-    expect(BARE["src/routes/app/home.tsx"]).toContain('fetch("/health"');
+    // Home does one typed fetch and nothing else — and it does not write down where.
+    //
+    // **This used to be `toContain('fetch("/health"')`, a literal compared to a literal inside the CLI
+    // (#400).** It proved the two strings, not the contract: `createBackend` mounts the route, and a
+    // rename there left this assertion green while the only screen a no-auth scaffold ships rendered
+    // "The worker says: unknown." — a 200, no error, nothing in a log. So the path became one statement
+    // in `@pithy-sh/core`, and what is held here is that the screen reads it rather than restating it.
+    const home = BARE["src/routes/app/home.tsx"] ?? "";
+    expect(home).toContain('import { HEALTH_PATH } from "@pithy-sh/core/src/worker/health"');
+    expect(home).toContain("fetch(HEALTH_PATH)");
+    // The reversal, refused in the only direction that stays honest: no `fetch` in this screen takes a
+    // string at all. Asserting the *absence* of core's value cannot pass by having drifted onto it.
+    expect(home, "the bare home screen fetches a literal path again").not.toMatch(/fetch\(\s*["'`]/);
   });
 
   test("the auth template adds exactly the screens, the session hook, the widget, and the widget's gate", () => {
@@ -263,6 +274,11 @@ describe("the React 19 stub", () => {
     expect(config).toContain('import react from "@vitejs/plugin-react"');
     expect(config).toContain('import { pithy } from "@pithy-sh/vite/src/plugin"');
     // Project-root state, so a database shared with a sibling worker stays shared locally.
+    //
+    // **This asserts the string is there, and that is all it can assert.** The contract is a depth —
+    // right relative to `apps/<worker>/`, wrong anywhere else — and a rename of the scaffolded layout
+    // reads identically here. `scaffoldGates.test.ts` resolves it against a real project instead
+    // (#399); keep this line as the cheap read, not as the gate.
     expect(config).toContain('persistState: { path: "../../.wrangler/state" }');
     // Pinned off: the inspector silently advances off 9229 on a collision.
     expect(config).toContain("inspectorPort: false");
@@ -467,12 +483,16 @@ describe("the React 19 stub", () => {
     // screen would not typecheck. Support's is here for the same reason: a screen that posts a feedback
     // form is written later, against a file this run is the only chance to write.
     //
-    // **What the declarations say is deliberately not asserted here (#392).** This file used to check
-    // that the ambient types contained `otpLength: number;` and eleven other strings somebody had once
-    // typed — which confirms the file against itself and stays green for exactly the drift that matters,
-    // a field a capability's `client` projection stopped emitting. `@pithy-sh/vite`'s `clientEnv.test.ts`
-    // compiles the real projections against this exact file instead. What is left here is the CLI's own
-    // claim: the bytes it writes are that file's, unaltered, in every scaffold.
+    // **What the declarations say is deliberately not asserted here (#392, #398).** This file used to
+    // check that the ambient types contained `otpLength: number;` and eleven other strings somebody had
+    // once typed — which confirms the file against itself and stays green for exactly the drift that
+    // matters, a field a capability's `client` projection stopped emitting.
+    //
+    // There is nothing left here to drift from. Since #398 the declarations are **generated** from the
+    // four declared projection types — `@pithy-sh/vite`'s `clientEnvDeclaration.ts` emits the file and
+    // `clientEnvDeclaration.test.ts` holds the generator — so a projection losing a field changes the
+    // template, rather than disagreeing with it. What is left here is the CLI's own claim: the bytes it
+    // writes are that file's, unaltered, in every scaffold.
     const gated = await readFile(join(TEMPLATE_DIR, "client-env.d.ts"), "utf8");
     const modules = [...gated.matchAll(/declare module "virtual:pithy\/([^"]+)"/g)].map((match) => match[1]);
     expect(modules.sort()).toEqual(["auth", "payments", "support", "turnstile"]);
