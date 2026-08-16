@@ -25,7 +25,7 @@
     "@pithy-sh/email": "workspace:*",
     "@pithy-sh/secrets": "workspace:*",
     "@pithy-sh/turnstile": "workspace:*",
-    "better-auth": "^1.6.19",
+    "better-auth": "^1.6.29",
     "hono": "^4.12.0",
     "kysely": "^0.29.0",
     "zod": "^4.0.0"
