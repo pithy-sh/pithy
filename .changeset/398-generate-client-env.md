@@ -14,3 +14,5 @@
 Three things are written as fixed text rather than derived, because they are policy and not shape: the `/// <reference types="vite/client" />` preamble, the prose explaining why each default export is a union, and `export const enabled: boolean` as the **only** named export — a named import of any other key must fail the build on the absent-capability case, and deriving the named exports from a projection's keys would take that refusal away.
 
 **No adopter build step.** The kit generates and commits; `pithy ui add react` still writes one static `.d.ts` and a scaffolded project typechecks with nothing new to run.
+
+**#392's gate is retired, in its own commit and after it was shown green against the emitted file.** It spawned a compiler to hold two statements of the shape together; there is one now, so there is nothing to hold. What replaces it is smaller and different in kind: that the committed artifact is the current emit, and that the emit follows its input — proven by planting projections this repository does not contain. The declaration is still compiled, in `@pithy-sh/ui-react`'s templates program, alongside the screens that read through it.

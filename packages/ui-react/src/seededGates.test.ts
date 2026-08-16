@@ -85,8 +85,8 @@ const LEDGER: Record<string, Held> = {
       "#391 item H, filed as #399. `tsBuildInfoFile` points under the project's dist/ and is named after the Worker; two composite programs pointing at one file overwrite each other's build state, which costs time and never correctness.",
   },
   "client-env.d.ts": {
-    keptGate: "packages/vite/src/clientEnv.test.ts",
-    why: "#392, and the first clause it earned. The party who can break this is the kit, not the adopter: a capability stops emitting a field, the declaration still says it exists, and it is `undefined` in their browser. A gate seeded into their repository would go red about a contract they never moved and cannot fix — and it needs the real projections and a spawned compiler, neither of which a scaffolded project has.",
+    keptGate: "packages/vite/src/clientEnvDeclaration.test.ts",
+    why: "#392, and the first clause it earned; #398 did better than the clause. The declaration is generated from the four declared client projections now, so the shape has one statement and there is no second one for an adopter's copy to disagree with — the invariant was removed rather than gated. What is kept is smaller and different in kind: that the committed artifact is the current emit. It needs the kit's projection sources, which a scaffolded project has not got, and the party who could break it is still the kit.",
   },
   "src/client.tsx": { gate: "src/client.test.tsx", expectation: "canary" },
   "src/pithy-config.tsx": {
