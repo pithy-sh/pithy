@@ -61,10 +61,10 @@ export type BootstrapVars = z.output<typeof BootstrapVars>;
  * `catchall` rather than a closed object, because a write here must not delete the dev-login preferences
  * sitting beside it. Two tenants in one file is the whole reason the key exists.
  *
- * **Exported for `pithy adopt`, which plans a write into this file (#222).** Its planning read goes
- * through `readMergeBase` against this schema, so the plan it prints is computed against a `dev.json`
- * that was actually read rather than against a `{}` a lenient read invented. One schema, because two
- * would be two answers to "what is in that file" and the migration's report is what an adopter acts on.
+ * **Exported so a caller planning a write into this file reads it through one schema (#222).** A
+ * planning read goes through `readMergeBase` against this schema, so what it computes is a `dev.json`
+ * that was actually read rather than a `{}` a lenient read invented. One schema, because two would be
+ * two answers to "what is in that file", and a plan is what somebody deletes a line on the strength of.
  */
 export const DevJson = z
   .object({

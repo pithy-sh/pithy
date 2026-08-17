@@ -39,7 +39,7 @@ import { isTestFile, readSource, sourcePaths } from "./sourceFiles";
  * populations asserted — and it is kept, not deleted, because the next unguarded sweep needs a place to
  * be named.
  *
- * The guard itself is *near-exact*, not a comfortable floor: `toBeGreaterThan(5)` against twenty-seven
+ * The guard itself is *near-exact*, not a comfortable floor: `toBeGreaterThan(5)` against twenty-six
  * real subcommands is not a guard, it is the shape of one.
  */
 

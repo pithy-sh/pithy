@@ -284,6 +284,7 @@ describe("the root .dev.vars — is anything reading it", () => {
         minted: [],
         devJsonSecrets: [],
         devConfigPath: "/config/replay/dev.json",
+        mintedTokensPath: "/config/replay/tokens.json",
         // Stated, because `unclassified` only exists when one is — and the sentence it earns names it.
         unresolvable: [{ name: "replay-board", dir: "/p/apps/board", reason: "pithy.config.ts would not import." }],
       });

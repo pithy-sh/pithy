@@ -12,13 +12,16 @@ import { describe, expect, test } from "vitest";
  * `docs/CLI.md` §4 pastes the CLI's help text, and CLAUDE.md makes that document binding rather than
  * advisory. Nothing checked those blocks, and they did not merely rot — they described a help format the
  * CLI has never produced: a hand-drawn `Usage:` / `Commands:` / `Options:` layout with eight commands, a
- * `Capabilities:` block under `pithy add`, and a `Docs:` footer. Pithy renders help with **citty**, which
- * emits `USAGE` / `ARGUMENTS` / `OPTIONS` / `COMMANDS` and owns every byte of it.
+ * `Capabilities:` block under `pithy add`, and a `Docs:` footer. Help emits `USAGE` / `ARGUMENTS` /
+ * `OPTIONS` / `COMMANDS`, and below the root **citty** owns every byte of it.
  *
- * So the transcripts are pinned to the real binary, the way `commands/doctorDocs.test.ts` pins §5.6 to the
- * real renderer. There is no pure function to call here — citty formats from the resolved command tree —
- * so the pin spawns `bin.ts` exactly as `bin.test.ts` does and compares its stdout to the document. When
- * the two disagree, the document is what changes; a custom usage renderer is not on the table.
+ * Since #407 the root screen is Pithy's own — `help/rootUsage.ts`, which groups the commands under
+ * headings — and every screen below it is still citty's `renderUsage`. §4.1 pins the first and §4.2 pins
+ * the second, by the same mechanism and with the same force: both are captured from the real binary, the
+ * way `commands/doctorDocs.test.ts` pins §5.6 to the real renderer. The pin spawns `bin.ts` exactly as
+ * `bin.test.ts` does and compares its stdout to the document. When the two disagree, the document is what
+ * changes — for §4.2 always, because those bytes are citty's, and for §4.1 unless the renderer is what
+ * was meant to change.
  *
  * Determinism, since this compares spawned output byte for byte:
  *
@@ -33,7 +36,9 @@ import { describe, expect, test } from "vitest";
  *   own `package.json`, so a release bump moves the pin with it instead of breaking it.
  * - **Width.** citty pads its columns to the widest cell (`formatLineColumns`), never to the terminal —
  *   there is no `COLUMNS` or `process.stdout.columns` in its layout — so the alignment is a pure function
- *   of the command tree and identical in every terminal.
+ *   of the command tree and identical in every terminal. `rootUsage.ts` copies that rule for the same
+ *   reason, and `help/rootUsage.test.ts` asserts it directly: a width-aware renderer would pass on the
+ *   author's terminal and flake in CI, which is the one failure a byte-for-byte pin cannot survive.
  * - **Trailing space.** That padding leaves trailing spaces on every short row, and trailing spaces in a
  *   markdown file are whitespace an editor or formatter silently eats. Both sides are right-trimmed per
  *   line, and trailing blank lines (citty appends one, `console.log` another) are dropped. What that

@@ -246,7 +246,7 @@ And one more, from the neighbouring `Dev secrets:` lines: **a project with no `S
 
 Reported, never fixed, and it never fails the exit. Every project that predates the generated file is in this state by definition, and an upgrade that turns a green `pithy doctor` red in CI over a file that still worked yesterday is a surprise rather than a diagnosis — and rewriting somebody's `.dev.vars` for them is worse than either. It does make the report verbose: a Worker that cannot start is worth the ink.
 
-Each of those lines names the command that performs the move — `pithy adopt` (`docs/commands/adopt.md`). Doctor still never performs it: `adopt` is asked for, prints its plan first, and deletes nothing.
+No command performs the move. Each line names the destination file and the shape to write into it; `pithy secrets edit` opens the dev secrets file for the two states that belong there. Doctor reports, and deletes nothing from anywhere.
 
 The two name lines appear in the verbose report only, with the one exception above — a split credential pair prints its `Cloudflare:` line without making the rest of the report verbose. A clean pass on each is otherwise a precondition of the terse form, so their absence below is the report saying they passed.
 

@@ -3,6 +3,9 @@
 // SPDX-License-Identifier: MIT
 
 import { readFileSync } from "node:fs";
+// Type-only, so it is erased and does not reach citty at runtime — the import discipline below the
+// `NO_COLOR` line is about evaluation order, and an erased import has none.
+import type { ArgsDef, CommandDef } from "citty";
 import { wantsVersion } from "./rootFlags";
 import { colorEnabled } from "./terminal/style";
 
@@ -55,6 +58,7 @@ if (wantsVersion(argv)) {
   const { runMain, showUsage } = await import("citty");
   const { main } = await import("./main");
   const { ownNamesOnly, usageTarget } = await import("./dispatch");
+  const { showRootUsage } = await import("./help/rootUsage");
 
   /**
    * One tree, for the walk and for citty, answering only to the names it declares.
@@ -67,6 +71,18 @@ if (wantsVersion(argv)) {
   const root = ownNamesOnly(main);
 
   /**
+   * Ours at the root, citty's everywhere below it — and handed to *both* places a root screen comes from.
+   *
+   * `usageTarget` is one of them. The other is citty itself: `runMain` catches every `CLIError` into
+   * `showUsage(...await resolveSubCommand(cmd, rawArgs))`, and `resolveSubCommand` answers `[root,
+   * undefined]` for a name it cannot resolve — so `pithy nonsense` prints the *root* screen. Wire only
+   * the first and the CLI ships two root screens that drift, one of them reachable only by making a
+   * mistake. `parent === undefined` is exactly the root at both call sites (`dispatch.ts`).
+   */
+  const usageFor = async <T extends ArgsDef = ArgsDef>(cmd: CommandDef<T>, parent?: CommandDef<T>): Promise<void> =>
+    parent === undefined ? showRootUsage(cmd) : showUsage(cmd, parent);
+
+  /**
    * A command that names no action is asking what it can do, so it is answered and the run succeeds.
    *
    * Before citty, because citty cannot be told otherwise: `runCommand` throws `E_NO_COMMAND` for the
@@ -77,8 +93,8 @@ if (wantsVersion(argv)) {
    * is still refused: an unrecognised name is a mistake, not a question. See `dispatch.ts`.
    */
   const usage = await usageTarget(root, argv);
-  if (usage) await showUsage(usage.cmd, usage.parent);
-  else await runMain(root);
+  if (usage) await usageFor(usage.cmd, usage.parent);
+  else await runMain(root, { showUsage: usageFor });
 }
 
 /**

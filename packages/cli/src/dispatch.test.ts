@@ -42,11 +42,11 @@ async function pithy(...args: string[]): Promise<{ code: number; stdout: string;
  * How many subcommands the root declares, and how many of those are groups.
  *
  * Exact, and stated here rather than left to a floor. The population guard was
- * `expect(names.length).toBeGreaterThan(5)` against a root declaring twenty-seven — so a regression that
+ * `expect(names.length).toBeGreaterThan(5)` against a root declaring twenty-six — so a regression that
  * lost twenty groups was a passing test. A number a new command forces somebody to look at is the point:
  * the module's own prose had already drifted to "thirteen groups" while the tree held fourteen.
  */
-const DECLARED = 27;
+const DECLARED = 26;
 const GROUPS = 14;
 
 /**
@@ -59,18 +59,18 @@ const GROUPS = 14;
  * subcommands and has no way to act on its own, which is what a reader of `main.ts` and the group files
  * sees. Nothing below consults the walk to decide what the walk should have done.
  *
- * **The twenty-seven loads are overlapped, and that is the fix for #361, not a tidy-up.** This function
+ * **The twenty-six loads are overlapped, and that is the fix for #361, not a tidy-up.** This function
  * is the whole body of the first case in this file — the sum of its `load()` calls and that case's
  * reported duration agree to within 3ms — and each `load()` is a dynamic import that pulls a command
  * module and its transitive half of the CLI through vite. Awaited one at a time, the case paid twenty-
- * seven independent trips through the scheduler, so machine contention did not add to its cost, it
+ * six independent trips through the scheduler, so machine contention did not add to its cost, it
  * *multiplied* into it: measured on this box under a real parallel load (load average 12–17), the serial
  * loop ran **4,039 / 4,701 / 12,215 / 15,622 ms** — a **3.9x spread on identical code**, against the
  * config's 30,000ms default. A case whose tail is 15.6s under a 30s budget is not flaky; it is
  * arithmetic, and `bun run test` runs twenty-three packages at `--concurrency=50%`, which is a heavier
  * load than any of those four samples.
  *
- * Overlapped into one `Promise.all`, the same work waits once instead of twenty-seven times: **3,235 /
+ * Overlapped into one `Promise.all`, the same work waits once instead of twenty-six times: **3,235 /
  * 3,521 / 3,690 / 3,735 ms** under the same load — a **1.15x spread**, and an 8x margin. Nothing about
  * what is asserted changed. The loads are independent, each command is classified from its own module
  * alone, and `Promise.all` preserves declaration order, so `groups` and `acting` come back in the order

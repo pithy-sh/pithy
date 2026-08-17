@@ -48,7 +48,6 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy upgrade [--worker <name>]` | Reconcile package-served capabilities with current manifests, per Worker — **skips ejected capabilities** (a forked, local-import capability is never reconciled) |
 | `pithy alias` | Install or remove the shell shortcut (see Section 3) |
 | `pithy doctor [--worker <name>]` | Report toolchain state and update status, plus — inside a project — each Worker's config, binding, and migration health (exits non-zero when any Worker fails a check, so CI can gate on it) |
-| `pithy adopt [--apply]` | Copy every dev value `doctor` reports as misplaced to where the current layout keeps it — the account's Cloudflare credentials, registry secrets, dev bindings, minted tokens. A dry run by default; **never deletes from a source file** (see [`commands/adopt.md`](commands/adopt.md)) |
 | `pithy --help` / `pithy -h` | Show help for any command |
 | `pithy --version` / `pithy -v` | Print the installed version |
 
@@ -117,7 +116,6 @@ One page per command, under [`docs/commands/`](commands/). Every page carries th
 | Command | Page |
 |---|---|
 | `pithy add` | [`commands/add.md`](commands/add.md) — Install a capability into a Worker |
-| `pithy adopt` | [`commands/adopt.md`](commands/adopt.md) — Copy stray dev values to where the layout keeps them |
 | `pithy alias` | [`commands/alias.md`](commands/alias.md) — Install or remove the `p.` shortcut |
 | `pithy dashboard` | [`commands/dashboard.md`](commands/dashboard.md) — Register and revoke a management client's access |
 | `pithy deploy` | [`commands/deploy.md`](commands/deploy.md) — Deploy to Cloudflare Workers |
@@ -470,7 +468,7 @@ The CLI runs in many terminals — light themes, dark themes, custom themes, tra
 
 | Tier | ANSI mechanism | Behavior |
 |---|---|---|
-| Terminal-themed attributes | `\033[2m` (dim) | The user's terminal renders dim text against any theme correctly; no override of their colors |
+| Terminal-themed attributes | `\033[2m` (dim), `\033[1m` (bold) | The user's terminal renders dim and bold correctly against any theme; no override of their colors |
 | Terminal-themed basic-16 | `\033[31m`, `\033[33m`, etc. | The user's terminal defines what "red" looks like; works on light and dark themes equally |
 | Truecolor (24-bit RGB) | `\033[38;2;R;G;Bm` | Exact color; used only when Pithy's brand color must remain constant |
 
@@ -479,15 +477,15 @@ Element-to-tier mapping:
 | Element | Tier | Reason |
 |---|---|---|
 | Status arrow `▸`, primary text | None (default foreground) | Inherits terminal foreground; readable in any theme |
-| Muted text (descriptions, paths, package names, section labels) | Dim attribute | Reads as secondary against any background |
+| Muted text (descriptions, paths, package names, section labels in command output) | Dim attribute | Reads as secondary against any background |
 | Error text | Basic-16 red | User's terminal defines red; respects their theme |
 | Warning text | Basic-16 yellow | Same reasoning |
+| Help group headings, and `USAGE` / `COMMANDS` on the root screen (§4.3) | Basic-16 magenta + bold, and bold | The one help screen Pithy renders; bold marks the break, the user's terminal defines magenta |
 | Saffron brand accent | Truecolor `\033[38;2;212;160;23m` (#D4A017); fall back to 256-color 178; fall back to no color | Brand mark; must be the same color everywhere it renders |
 
 Where saffron appears (and only here):
 
 - The `.` in `Done.` after successful operations
-- The period before `sh` in the docs URL footer of help output
 - Loading spinner glyphs during long operations
 - Update notification "available" indicator
 - Nowhere else — saffron earns its place by carrying meaning
@@ -501,11 +499,6 @@ Color is automatically **disabled** when:
 Color is **forced on** when:
 
 - `FORCE_COLOR` env var is set
-- The `--color` flag is passed to any command
-
-Color is **forced off** when:
-
-- The `--no-color` flag is passed (overrides everything else)
 
 **Implementation:** `picocolors` carries the terminal-themed tiers (zero-dep, ~1KB), but **not its detection** — picocolors reads any `CI` env as color-capable, and our output is parsed, so a CI runner or a piped consumer would find ANSI in `--json`. The seam decides for itself, once, from `NO_COLOR` / `FORCE_COLOR` / `isTTY`, and every colored character in the CLI flows through it — no raw ANSI anywhere else. Truecolor saffron is not exposed by `picocolors`, so it is written here directly.
 
@@ -555,11 +548,11 @@ export function saffron(text: string): string {
 }
 ```
 
-**Help is citty's, and citty decides color for itself.** It renders `--help` from its own private flag, latched at import from `NO_COLOR === "1" || TERM === "dumb" || TEST || CI` — not `isTTY`, not `NO_COLOR` set to any other value, not `FORCE_COLOR`. Left alone, `pithy --help | cat` writes escape codes into a pipe while every other surface goes plain. So `bin.ts` reads `colorEnabled()` and, when it is false, sets `NO_COLOR=1` before citty is loaded. That translation runs one way only: Pithy never deletes `CI` to force citty's color back on, because that would rewrite the environment of every child process the CLI spawns. Plain help in a CI log is harmless; ANSI in a pipe is not.
+**Help is citty's below the root, and citty decides color for itself.** The root screen is Pithy's and obeys the table above (§4.3). Every screen under it — `pithy add --help`, `pithy secrets`, the screen shown after an unknown name — is citty's `renderUsage`, from its own private flag, latched at import from `NO_COLOR === "1" || TERM === "dumb" || TEST || CI` — not `isTTY`, not `NO_COLOR` set to any other value, not `FORCE_COLOR`. Left alone, `pithy --help | cat` writes escape codes into a pipe while every other surface goes plain. So `bin.ts` reads `colorEnabled()` and, when it is false, sets `NO_COLOR=1` before citty is loaded. That translation runs one way only: Pithy never deletes `CI` to force citty's color back on, because that would rewrite the environment of every child process the CLI spawns. Plain help in a CI log is harmless; ANSI in a pipe is not.
 
 ### 3.5 Tables and lists
 
-For multi-row output (e.g., `pithy add --list`), use clean aligned columns with two spaces between, no border characters:
+For multi-row output (e.g., `pithy add --list`), use clean aligned columns with two spaces between, no border characters. The root help screen is the one exception, and a deliberate one: it keeps citty's right-aligned name column and four-space gutter so that it and every subcommand screen — which are citty's and cannot be changed — read as one program (§4.3).
 
 ```
 auth          Authentication and session management
@@ -614,7 +607,7 @@ Name it for the Worker, not for the capability that asked first. The first proje
 
 ## 4. Help text
 
-Help is **citty's**, not ours. `pithy --help` and every `<command> --help` are rendered by citty's own `renderUsage` from the command tree in `packages/cli/src/main.ts`: the description line, the `USAGE` line, the `ARGUMENTS` / `OPTIONS` / `COMMANDS` blocks, the column alignment, and the closing pointer. Pithy writes the copy; citty writes the layout. So the brevity rules bind where we actually hold the pen — each command's `meta.description` and each argument's `description` is one line, sentence case, no period unless it is a full sentence.
+Help is **citty's everywhere but the root**. `pithy add --help` and every screen below it are rendered by citty's own `renderUsage` from the command tree in `packages/cli/src/main.ts`: the description line, the `USAGE` line, the `ARGUMENTS` / `OPTIONS` / `COMMANDS` blocks, the column alignment, and the closing pointer. The root screen — bare `pithy`, `pithy -h`, `pithy --help`, and the screen after an unrecognised name — is `packages/cli/src/help/rootUsage.ts`, because it groups its commands under headings and a heading is a thing we style (§4.3). Below the root, Pithy writes the copy and citty writes the layout. So the brevity rules bind where we actually hold the pen — each command's `meta.description` and each argument's `description` is one line, sentence case, no period unless it is a full sentence.
 
 The two transcripts below are captured from the real binary and pinned by `packages/cli/src/binDocs.test.ts`. Reword a description in `main.ts`, add a command, or add a flag, and that test fails until this section is recaptured. `v<version>` stands in for the installed version — the one part of the output that varies.
 
@@ -628,43 +621,51 @@ The rule lives in `packages/cli/src/dispatch.ts`, once, and is applied before ci
 
 ### 4.1 Top-level help
 
-`-h` / `--help` is a citty builtin; `-v` / `--version` is answered by `bin.ts` before dispatch, because citty's builtin only fires when the flag is the sole argument (§1.2). Both work, citty lists neither under `OPTIONS`, and `--version` prints the bare version and nothing else. There is no `Docs:` footer; citty closes with its own pointer at per-command help. Bare `pithy` prints this same screen and exits 0.
+`-h` / `--help` resolves to the root, and `bin.ts` answers it with the screen below before citty parses; a `--help` one level down is still citty's builtin. `-v` / `--version` is answered by `bin.ts` too, because citty's builtin only fires when the flag is the sole argument (§1.2). Both work, neither is listed under `OPTIONS`, and `--version` prints the bare version and nothing else. There is no `Docs:` footer; the screen closes with a pointer at per-command help. Bare `pithy` prints this same screen and exits 0, and so does `pithy nonsense` — with the name it did not recognise on stderr, and a non-zero exit.
 
 ```
 $ pithy --help
 A backend kit for Cloudflare Workers. (pithy v<version>)
 
-USAGE pithy init|add|remove|worker|ui|dev|migrate|seed|provision|feature|env|deploy|upgrade|token|dashboard|secrets|email|media|payments|support|storage|testers|vector|turnstile|alias|doctor|adopt
+USAGE pithy <command> [OPTIONS]
 
 COMMANDS
 
+  Project
        init    Scaffold a new project
         add    Add a capability
      remove    Remove a capability — the manual, interactive inverse of add
      worker    Manage the project's Workers under apps/ (the dev/deploy registry)
          ui    Scaffold and wire a front end served by one of the project's Workers
+    upgrade    Reconcile each worker's installed capabilities with its pithy.config.ts and wrangler.jsonc
+
+  Develop
         dev    Run every worker locally under one supervisor
     migrate    Run migrations for an environment
        seed    Seed an environment from your Zod-typed fixtures
-  provision    Create an environment's own Cloudflare resources, wire them into each Worker, then migrate
     feature    Set up and tear down an isolated, fully-provisioned feature environment
-        env    Inventory every worker's environments: bindings, ids, provisioned state, dashboard links
+
+  Operate
+  provision    Create an environment's own Cloudflare resources, wire them into each Worker, then migrate
      deploy    Deploy to Cloudflare Workers
-    upgrade    Reconcile each worker's installed capabilities with its pithy.config.ts and wrangler.jsonc
+        env    Inventory every worker's environments: bindings, ids, provisioned state, dashboard links
       token    Mint and manage scoped Cloudflare API tokens
   dashboard    Connect, rotate, revoke, and inspect a management client (control-plane seam)
+
+  Capabilities
     secrets    Manage encrypted secrets
       email    Provision and manage the email infrastructure
       media    Provision and manage the media infrastructure
    payments    Provision the reconciliation Workflow, and run a pass on demand
-    support    Provision and manage the support inbox infrastructure
     storage    Provision and manage the storage infrastructure
+    support    Provision and manage the support inbox infrastructure
     testers    Run a closed test: cohorts, roster, the clock, and the daily pass
-     vector    Provision, reset, and re-embed the vector indexes
   turnstile    Provision and manage Turnstile widgets
-      alias    Install the `p.` shortcut for `pithy`
+     vector    Provision, reset, and re-embed the vector indexes
+
+  Toolchain
      doctor    Check the toolchain, project, and for a new CLI version
-      adopt    Copy stray dev values to where the current layout keeps them
+      alias    Install the `p.` shortcut for `pithy`
 
 Use pithy <command> --help for more information about a command.
 ```
@@ -696,26 +697,43 @@ OPTIONS
 
 ### 4.3 Color in help
 
-**citty colors its own help, and Pithy does not touch it.** `src/terminal/style.ts` — the seam every other colored character in the CLI flows through (§3.4) — is not on this path, and there is no hook that would put it there short of replacing `renderUsage`. So this table describes what citty emits rather than specifying what we render:
+**The root screen is ours. Every screen below it is citty's.** Bare `pithy`, `pithy -h`, `pithy --help` and the screen after an unrecognised name all resolve to the root, and `bin.ts` renders that one itself through `help/rootUsage.ts` — the group headings are the reason, and a heading is a thing we style. Nothing else moved: `pithy add --help`, `pithy secrets`, and every group screen are still citty's `renderUsage`, byte for byte.
+
+So the table splits in two.
+
+The root screen, rendered through `src/terminal/style.ts` and therefore bound by §3.4:
+
+| Element | Tier | Whose choice |
+|---|---|---|
+| Group headings | Basic-16 magenta + bold | Pithy |
+| Section labels (`USAGE`, `COMMANDS`) | Bold | Pithy |
+| Command names (left column) | Basic-16 cyan | Pithy |
+| Descriptions (right column) | Default foreground | Pithy |
+| The description line, `(pithy v<version>)` included | Dim attribute | Pithy |
+| `pithy <command> --help` in the closing line | Basic-16 cyan | Pithy |
+
+Every subcommand screen, rendered by citty, which consults none of that:
 
 | Element | Rendered as | Whose choice |
 |---|---|---|
-| The description line, `(pithy v<version>)` included | Gray | citty |
+| The description line, `(pithy add v<version>)` included | Gray | citty |
 | Section labels (`USAGE`, `ARGUMENTS`, `OPTIONS`, `COMMANDS`) | Bold + underline | citty |
 | The usage line after `USAGE` | Cyan | citty |
-| Command names, argument names, flag names (left column) | Cyan | citty |
+| Argument names, flag names, command names (left column) | Cyan | citty |
 | Descriptions (right column) | Default foreground | citty |
 | The `(Default: …)` and `(Required)` hints | Gray | citty |
 | `pithy <command> --help` in the closing line | Cyan | citty |
 | Every word of copy inside those columns | — | Pithy |
 
-Help therefore does **not** obey §3.4, and the divergence is worth knowing before anyone files it as a bug. citty drops color for `NO_COLOR=1` **exactly** (not any value), `TERM=dumb`, or any `TEST` or `CI` variable, and consults nothing else — not `isTTY`, not `FORCE_COLOR`, not `--color` / `--no-color`. Piped help still carries ANSI; every other Pithy surface goes plain the moment it is piped.
+The root screen keeps citty's shapes on purpose — the same right-aligned name column, the same four-space gutter, the same closing pointer — because the two screens sit one keystroke apart and a root screen that repainted itself would read as a different program. That is also why §3.5's two-space rule does not reach it. One difference is deliberate: citty's gray is our dim, which is §3.4's tier for muted text and renders correctly against a light theme where gray does not.
 
-Column alignment is citty's too, and it is a pure function of the command tree — each column is padded to its widest cell, never to the terminal — so help looks identical at any width, and the left column is right-aligned.
+**Piped, both go plain — and that is a translation, not an agreement.** The root screen reads §3.4: `NO_COLOR` at any value off, `FORCE_COLOR` on, otherwise `isTTY`. citty reads a private flag latched at import from `NO_COLOR === "1" || TERM === "dumb" || TEST || CI`, and consults nothing else — not `isTTY`, not `FORCE_COLOR`, not `NO_COLOR=0`. `bin.ts` bridges the two in one direction: when Pithy's rule says color is off, it sets `NO_COLOR=1` before citty is loaded. So `pithy --help | cat` and `pithy add --help | cat` are both plain, and neither writes an escape code into something being parsed.
 
-There is no saffron in help, and no brand moment. The period in `pithy.sh` earns its keep in copy we write; help is a surface we host rather than author, and one accent dropped into someone else's layout would mean owning the renderer.
+**The reverse is left alone, and that is where the two screens diverge.** With `CI` set, or `TERM=dumb`, on a terminal Pithy calls color-capable, Pithy says on and citty says off: the root screen carries color and every subcommand screen does not. Closing it would mean deleting `CI` from the environment of this process and of every wrangler and bun the CLI spawns — a far larger lie than an uncolored screen in a CI log. The divergence stays, in the direction that cannot corrupt anyone's output.
 
-No banners. No ASCII logos. The wordmark belongs on the website, not in the terminal.
+Column alignment is citty's, and the root screen copies it: each column pads to its widest cell, never to the terminal, so help looks identical at any width and the left column is right-aligned. Nothing in either renderer reads `process.stdout.columns`, which is what lets `binDocs.test.ts` pin both screens byte for byte and get the same answer on every machine.
+
+There is still no saffron in help, and no banner. Group headings carry the structure; saffron carries meaning, and "which section is this" is structure. The wordmark belongs on the website, not in the terminal.
 
 ---
 
@@ -902,11 +920,7 @@ $ pithy add --list --json
 {"command":"add","capabilities":[{"name":"auth","package":"@pithy-sh/auth","whenToEnable":"Authentication and session management.","installed":true}],"manifestFaults":[{"package":"@pithy-sh/leaderboard","reason":"configOptions[0].key: not a bare identifier"}]}
 ```
 
-### 5.8 The `pithy adopt` command
-
-Moved to [`docs/commands/adopt.md`](commands/adopt.md).
-
-### 5.9 Testing checklist
+### 5.8 Testing checklist
 
 - [ ] Update check never blocks command execution
 - [ ] Network failure during check is silent; cached value continues to be used
