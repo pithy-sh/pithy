@@ -45,7 +45,25 @@ export const SECRETS_D1_BINDING = "SECRETS";
  * a remote D1 cannot name this path and mean it.
  */
 export function localDevStorePath(projectDir: string): string {
-  return join(projectDir, ".wrangler", "state", "v3", "d1");
+  return join(localDevStateRoot(projectDir), "v3", "d1");
+}
+
+/**
+ * The one local state root a project has, and the only statement of where it is.
+ *
+ * **One store for the whole project, at its root.** Each Worker runs in its own `apps/<name>/`, where
+ * wrangler would otherwise create a private `.wrangler/` — so two Workers sharing a binding would not
+ * share the data. Every worktree gets its own, which is the point: state follows the checkout.
+ *
+ * Exported because `dev`'s orchestrator hands it to wrangler as `--persist-to`, and the scaffolded
+ * `vite.config.ts` names the same directory as a **relative** path from `apps/<worker>/`. Those two must
+ * agree, and only one of them can be checked by reading it: a wrong depth in the relative one resolves
+ * silently to `apps/.wrangler/state`, and the failure is a Worker reading an empty database rather than
+ * an error. `packages/cli/src/project/scaffoldGates.test.ts` holds the template against this function —
+ * see `pithy-sh/pithy#404`.
+ */
+export function localDevStateRoot(projectDir: string): string {
+  return join(projectDir, ".wrangler", "state");
 }
 
 /** An open local store, or the reason there is none. `dispose` is safe to call either way. */

@@ -12,6 +12,7 @@ import { findEntitlementGap } from "../capabilities/entitlementGap";
 import { type GenerateDevVarsResult, generateDevVars } from "../devSecrets/generate";
 import { renderDevSecretsNotes, renderDevVarsNotes } from "../devSecrets/report";
 import { type DevSecretsSeedReport, seedProjectDevSecrets } from "../devSecrets/seed";
+import { localDevStateRoot } from "../devSecrets/store";
 import {
   buildDevConfig,
   type DevConfig,
@@ -412,9 +413,9 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       ? await resolveDevLoginTargets(started.map((s) => ({ name: s.worker.name, dir: s.worker.dir, origin: s.origin })))
       : [];
   const childEnv = buildWorkerEnv(config, baseEnv);
-  // One local store for the whole project. Each worker runs in its own apps/<name>/, where wrangler would
-  // otherwise create a private `.wrangler/` — so two workers sharing a binding would not share the data.
-  const persistTo = join(projectDir, ".wrangler", "state");
+  // One local store for the whole project, named in one place — `localDevStateRoot`. This used to compose
+  // the path itself, which made three independent statements of one directory (#404).
+  const persistTo = localDevStateRoot(projectDir);
 
   const children: { name: string; child: ChildLike }[] = [];
   const pipes: Promise<void>[] = [];

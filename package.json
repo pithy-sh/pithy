@@ -37,14 +37,15 @@
     "A block-scoped const cannot merge with @types/node's `var Buffer`, so the node:buffer global",
     "augmentation is dropped and `randomBytes(8).toString('hex')` stops type-checking. It breaks any",
     "tsconfig listing both @cloudflare/workers-types and node in `types` — packages/cli does.",
-    "5.20260804.1 is the last clean release. See #402 and docs/STACK.md §17.",
+    "5.20260804.1 is the last clean release, and is what this pins — verified by unpacking both tarballs.",
+    "Still unfixed as of 5.20260817.1. See #402 and docs/STACK.md §17.",
     "REMOVE THIS PIN when a workers-types release declares Buffer as a `var`, or drops it: bump the",
     "override to that version, run `bun run typecheck`, and if packages/cli is clean, delete this",
     "block and the override with it. The declared ranges stay `^5.20260729.1` — adopters are not",
     "affected, and a real scaffold was checked against 5.20260816.1 to confirm it."
   ],
   "overrides": {
-    "@cloudflare/workers-types": "5.20260729.1"
+    "@cloudflare/workers-types": "5.20260804.1"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",

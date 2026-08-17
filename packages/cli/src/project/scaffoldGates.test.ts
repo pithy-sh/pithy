@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { parse } from "comment-json";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { runAdd } from "../capabilities/flow";
-import { localDevStorePath } from "../devSecrets/store";
+import { localDevStateRoot, localDevStorePath } from "../devSecrets/store";
 import { runUiAdd } from "../ui/flow";
 import { scaffoldProject } from "./scaffold";
 import { resolveSingleWorker } from "./workerScope";
@@ -330,6 +330,11 @@ describe("after pithy ui add react", () => {
     // A third statement exists — `dev/orchestrator.ts` builds the same root for `wrangler dev
     // --persist-to` — and is not reachable from here without exporting it. Filed as #404.
     expect(resolved).toBe(dirname(dirname(localDevStorePath(dir))));
+    // And the same directory, from the function that is now its only statement. `#404` closed the third
+    // derivation — `dev/orchestrator.ts` composed `join(projectDir, ".wrangler", "state")` itself — so
+    // this asserts the template against the root rather than against a path two `dirname`s away from a
+    // deeper one. A composed copy reappearing anywhere fails here without also having to guess where.
+    expect(resolved).toBe(localDevStateRoot(dir));
   });
 
   test("each composite program writes its own build state, under the project's dist/", async () => {
