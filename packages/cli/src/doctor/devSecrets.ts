@@ -5,7 +5,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { sentenceOf } from "@pithy-sh/core/src/error/pithyError";
-import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
+import { type DevSecretsFile, ENVELOPE_SHAPE } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
 import { devSecretPayload, keyedSecretRefusal } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
@@ -378,7 +378,7 @@ function describeMisplaced(name: string, state: MisplacedDevSecretState, path: s
     case "duplicate":
       return `${name} is in .dev.vars as well as ${path}. Nothing reads the .dev.vars one — delete that line.`;
     case "unmoved":
-      return `${name} is in .dev.vars, which dev no longer reads. Run pithy adopt, or move it into ${path} as { "currentVersion": "1", "versions": { "1": <value> } }.`;
+      return `${name} is in .dev.vars, which dev no longer reads. Run pithy secrets edit, and write it into ${path} as ${ENVELOPE_SHAPE}.`;
   }
 }
 

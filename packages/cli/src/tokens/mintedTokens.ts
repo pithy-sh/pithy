@@ -164,9 +164,9 @@ async function mintedTokensBase(path: string): Promise<MergeBase<MintedTokens>> 
  * **The reporting read**, for a caller that wants to know what has been minted and will rewrite nothing.
  *
  * **It has no production caller today, and that is a true statement about this file rather than dead
- * code left behind.** `pithy adopt` was the one, until #222 routed its planning pass through
- * {@link mintedTokensBase} — because a plan computed against a file it could not read is a plan that
- * may tell an adopter a value is safe to delete. Nothing else reads `tokens.json` at all: #224
+ * code left behind.** The one caller it had routed its planning pass through {@link mintedTokensBase}
+ * in #222 — because a plan computed against a file it could not read is a plan that may tell somebody a
+ * value is safe to delete — and was itself removed in #406. Nothing else reads `tokens.json` at all: #224
  * established that the `dev-vars` sink's consumer is a person, who opens the file and pastes the
  * `ci-system` token into CI.
  *

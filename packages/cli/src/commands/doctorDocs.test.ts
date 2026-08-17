@@ -818,7 +818,6 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   changed: ["secrets", "ui"],
   command: [
     "add",
-    "adopt",
     "alias",
     "dashboard",
     "deploy",
@@ -856,7 +855,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   manifestFaults: ["add", "upgrade"],
   name: ["secrets", "token"],
   packageManager: ["add", "ui"],
-  project: ["adopt", "doctor", "migrate"],
+  project: ["doctor", "migrate"],
   removed: ["alias", "dashboard"],
   routing: ["email", "support"],
   runs: ["vector", "worker"],
@@ -922,7 +921,7 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
  *
  * - **`alias`** — `pithy alias` emits the alias line itself, a `string`. `pithy doctor` emits a block:
  *   `{state, rcPath, reason}`.
- * - **`project`** — `adopt` and `migrate` emit the project's name, a `string`. `doctor` emits a block.
+ * - **`project`** — `migrate` emits the project's name, a `string`. `doctor` emits a block.
  * - **`workers`** — an `object[]` in seven commands, and an `object` keyed by worker name in `pithy dev`.
  *   The one where the shapes are closest and the misread is worst: both are truthy, both enumerate
  *   workers, and only one answers to `.length`.

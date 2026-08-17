@@ -56,11 +56,27 @@ export function saffron(text: string): string {
 // seam. Built from our own `enabled` flag (not picocolors' detection) so they
 // honor the same TTY-gated rule as `saffron`. This is the documented exception
 // to the no-re-export rule; further tiers join as commands need them.
-export const { red, yellow, cyan, dim } = pc.createColors(enabled);
+export const { red, yellow, cyan, dim, magenta, bold } = pc.createColors(enabled);
+
+/**
+ * A group heading on the root help screen: bold + basic-16 magenta (docs/CLI.md §3.4).
+ *
+ * One symbol rather than a nesting each call site repeats, because "bold + magenta" is a tier decision
+ * and a tier decision lives here. A second call site that reached for half the pair would be a heading
+ * that looks styled and is not, which is the failure a reader cannot see.
+ *
+ * Magenta rather than saffron deliberately: §3.4 lists the places saffron appears and a heading is not
+ * one of them. A heading carries structure; saffron carries meaning.
+ */
+export function heading(text: string): string {
+  return bold(magenta(text));
+}
 
 // A stable, TTY-gated palette for per-worker labels in `pithy dev`. Built from the one seam so no
 // raw ANSI leaks. Cyan/red/yellow/dim are reserved for meaning elsewhere, so the palette leans on the
 // remaining hues and their bright variants; it cycles when a project has more workers than colors.
+// Magenta is in both this palette and `heading` on purpose: `pithy dev` and the help screen never share
+// an output stream, and dropping an entry would silently reassign every worker's color from index 1 on.
 const palette = pc.createColors(enabled);
 const WORKER_PALETTE: readonly ((text: string) => string)[] = [
   palette.green,

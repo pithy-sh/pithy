@@ -10,7 +10,9 @@ import { bootstrapVarsPath, readBootstrapVars } from "../devSecrets/bootstrapVar
 import { isGeneratedDevVars } from "../devSecrets/generate";
 import { type DevSecretsTarget, resolveDevSecretsTargets, type UnresolvableWorker } from "../devSecrets/targets";
 import type { StatePathOptions } from "../notifier/state";
+import { loadProject, requireProjectName } from "../project/config";
 import { resolveWorkers } from "../project/workerScope";
+import { mintedTokensPath } from "../tokens/mintedTokens";
 import { declaredVars } from "./wranglerVars";
 
 /**
@@ -122,6 +124,15 @@ export interface DevVarsCheck {
    * path in the report declines under.
    */
   devConfigPath: string | null;
+  /**
+   * Where a minted credential belongs — `<config>/<project>/tokens.json`. `null` when the project has
+   * no name to key one on, which is the same condition {@link devConfigPath} declines under.
+   *
+   * Carried because the sentence has to name it. Nothing copies an existing token into that file —
+   * `writeMintedToken` is reached only on a *fresh* mint — so the remedy is a person moving a line, and
+   * a remedy that cannot say where is not one.
+   */
+  mintedTokensPath: string | null;
   /**
    * Minted-credential files left in the project by the old `dev-vars` token sink — `.dev.vars.<env>`,
    * one per environment, each holding that environment's live Cloudflare token (#182). Sorted.
@@ -235,10 +246,26 @@ export async function checkDevVars(options: CheckDevVarsOptions): Promise<DevVar
     root,
     empty: empty.sort((a, b) => a.worker.localeCompare(b.worker)),
     devConfigPath: await bootstrapVarsPath(options.projectDir, options.paths ?? {}).catch(() => null),
+    mintedTokensPath: await tokensPath(options.projectDir, options.paths ?? {}),
     minted: await mintedDevVarsFiles(options.projectDir),
     devJsonSecrets: devJsonSecrets.sort(),
     unresolvable,
   };
+}
+
+/**
+ * `<config>/<project>/tokens.json` for a project root, or `null` when the project has no name.
+ *
+ * Composed through `mintedTokensPath` rather than assembled beside `devConfigPath`'s directory: the two
+ * files are siblings today, and a path built from that fact would be a second producer of a name this
+ * repo keeps in one place.
+ */
+async function tokensPath(projectDir: string, options: StatePathOptions): Promise<string | null> {
+  try {
+    return mintedTokensPath(requireProjectName(await loadProject(projectDir)), options);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -311,14 +338,15 @@ export function describeDevVars(check: DevVarsCheck): string[] {
     );
   }
   for (const { file, env } of check.minted) {
+    const home = check.mintedTokensPath === null ? "this project's config directory" : check.mintedTokensPath;
     lines.push(
-      `${file} holds a credential minted for ${env}, inside the checkout. Nothing writes one there now — run pithy adopt to copy it out, then delete the file. Gitignored is not enough: npm pack does not read .gitignore.`,
+      `${file} holds a credential minted for ${env}, inside the checkout. Nothing writes one there now — move each line into ${home} as { "${env}": { "<NAME>": "<value>" } }, chmod 600 it and 700 its directory, then delete the file. Gitignored is not enough: npm pack does not read .gitignore.`,
     );
   }
   if (check.devJsonSecrets.length > 0) {
     const home = check.devConfigPath === null ? "this machine's dev config" : check.devConfigPath;
     lines.push(
-      `${check.devJsonSecrets.join(", ")} ${check.devJsonSecrets.length === 1 ? "is" : "are"} in ${home} under "vars". Nothing reads that copy — the value belongs in the dev secrets file. Run pithy adopt, or pithy secrets edit.`,
+      `${check.devJsonSecrets.join(", ")} ${check.devJsonSecrets.length === 1 ? "is" : "are"} in ${home} under "vars". Nothing reads that copy — the value belongs in the dev secrets file. Run pithy secrets edit to put it there, then delete the copy.`,
     );
   }
   for (const { worker, file } of check.empty) {
@@ -348,16 +376,18 @@ function describeRootDevVar(
     case "credential":
       // Named, not deleted for them. The value is real and it is a live Cloudflare credential — the one
       // class of value in this file that is worth naming twice rather than removing on somebody's behalf.
-      return `${entry.key} is in .dev.vars, which nothing reads now. It is account-scoped — run pithy adopt to put it in ${cloudflareConfigPath({ account: null })}, or export it.`;
+      return `${entry.key} is in .dev.vars, which nothing reads now. It is account-scoped — copy it into ${cloudflareConfigPath({ account: null })} as { "${entry.key}": "<value>" }, chmod 600, or export it.`;
     case "secret":
       return null; // `describeDevSecrets` names it, and says which file it belongs in.
     case "binding": {
-      // Named as "which file is this in, and what wants it" rather than as a migration recipe: where a
-      // bootstrap value is kept is plumbing, and plumbing moves. What does not move is that no Worker
-      // reads the project root's file, and that this one needs the value as a binding.
+      // The shape and the mode are stated because nothing else will write that file. No `pithy` subcommand
+      // takes a name and a value for `dev.json`'s `vars` — `writeBootstrapVars` is reached only from
+      // provisioning and mint paths — so the remedy is a person editing JSON. Every writer of these files
+      // creates them `0600` in a `0700` directory (#182); a hand-written one lands at the umask default
+      // and nothing here checks it afterwards, so the mode belongs in the sentence.
       const wanted = entry.workers.length > 0 ? entry.workers.join(", ") : "this project";
       const home = devConfigPath === null ? "this machine's dev config" : devConfigPath;
-      return `${entry.key} is in .dev.vars, which no Worker reads. ${wanted} needs it as a binding — its dev value belongs in ${home} under "vars". Run pithy adopt.`;
+      return `${entry.key} is in .dev.vars, which no Worker reads. ${wanted} needs it as a binding — its dev value belongs in ${home}, as { "vars": { "${entry.key}": "<value>" } }, chmod 600.`;
     }
     case "unclassified": {
       // Named, never advised on. The one thing this line must not do is repeat what `unread` says: the

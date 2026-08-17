@@ -60,7 +60,7 @@ async function resolve(value: SubCommand): Promise<CommandDef> {
  *
  * Copying each record onto a null prototype is the whole fix: an inherited name resolves to nothing, and
  * citty's `E_UNKNOWN_COMMAND` names it and exits non-zero exactly as it does for a typo. Done here, once,
- * rather than at the twenty-seven `defineCommand` calls — the same reason the usage rule is: a group
+ * rather than at the twenty-six `defineCommand` calls — the same reason the usage rule is: a group
  * added next year inherits it with nothing to remember. **Laziness survives**: a thunk is wrapped, never
  * called, so the imports this tree defers stay deferred until a name is actually walked into.
  */

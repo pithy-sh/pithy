@@ -50,8 +50,6 @@ describe("a null account is a claim, and every claim is written down", () => {
    * whose account this could have asked for?** An answer of "no" is what makes `null` safe.
    */
   const NO_ACCOUNT_ON_PURPOSE: Record<string, string> = {
-    "cli/src/adopt/adopt.ts":
-      "`pithy adopt` moves credentials that predate the account-named file out of a checkout and into the unnamed one, and it runs in projects whose config may not load at all — sorting values is what it does *before* a project is in a fit state to be asked. Writing them into a named file would put an inherited `.dev.vars` token under a nickname nobody chose.",
     "cli/src/doctor/devVars.ts":
       "One sentence in the `Dev secrets:` block, about the *root* `.dev.vars` — a file that predates all of this and is not account-scoped. It names where those keys belong now, which is the unnamed file; a project that has since named an account is told by the `Cloudflare:` line instead.",
     "cli/src/commands/init.ts":

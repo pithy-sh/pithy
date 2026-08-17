@@ -1314,6 +1314,7 @@ describe("dev vars", () => {
       minted: [],
       devJsonSecrets: [],
       devConfigPath: "/home/u/.config/pithy/acme/dev.json",
+      mintedTokensPath: "/home/u/.config/pithy/acme/tokens.json",
       unresolvable: [],
       ...over,
     });
@@ -1798,6 +1799,7 @@ describe("a Worker nobody could ask, in the report (#208)", () => {
         minted: [],
         devJsonSecrets: [],
         devConfigPath: "/home/u/.config/pithy/acme/dev.json",
+        mintedTokensPath: "/home/u/.config/pithy/acme/tokens.json",
         unresolvable: broken,
       }),
       checkDevSecrets: async () => ({

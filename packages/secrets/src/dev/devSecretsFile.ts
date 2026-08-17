@@ -158,8 +158,8 @@ export type DevSecretsFile = z.output<typeof DevSecretsFile>;
  * over the file's wider version type. For a `bootstrap` secret it is the value, because the value is
  * what its binding carries.
  *
- * **Every writer goes through here.** `pithy add secrets`, `pithy adopt`, the provisioners and the
- * seeder's own mint all call it, so there is one statement of what a fresh entry looks like. A second
+ * **Every writer goes through here.** `pithy add secrets`, the provisioners and the seeder's own mint
+ * all call it, so there is one statement of what a fresh entry looks like. A second
  * writer composing the envelope inline is how #323 got two shapes for one file.
  */
 export function initialDevSecret(entry: { bootstrap?: boolean }, value: unknown): unknown {

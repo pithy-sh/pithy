@@ -2,11 +2,7 @@
 "@pithy-sh/cli": patch
 ---
 
-`pithy adopt` refuses before it plans, and the last reader that cast now checks (#222).
-
-**The plan was computed against files the command had not managed to read.** `adopt`'s `load` read `tokens.json` and `dev.json` leniently, planned every value against what it got, and only then wrote through the two writers. Nothing was lost — #219 made those writers refuse — so a broken `tokens.json` was planned as *"the destination is empty"*, the adopter was shown that plan, some entries copied, and the run stopped part-way through the loop.
-
-For this command that is worse than a late failure. Its whole contract is *show the plan, copy, then say what is safe to delete*, and a plan built against a base nothing read can call a value safe to remove when the destination does not hold what the plan claimed. It refuses per key on a conflict precisely so the report can be trusted. So the planning read is `readMergeBase` now, in this command's own words: unopenable, not JSON, not a record, not the document — four refusals, before `onPlan` is called, on a dry run exactly as with `--apply`. Nothing is copied and nothing is named as safe to remove. It still deletes nothing from a source file, which is the constraint every other decision here is downstream of.
+The last reader that cast now checks, and a write that writes nothing stops refusing (#222).
 
 **`readManifestDocument` validates instead of asserting.** `ui/workerUi.ts` was #204's original instance and the one reader in this family that could take the merge-base read and did not. It refused on a parse failure and then *cast* to `ManifestDocument` — a type claiming `dev` and `ui` are objects — so a `pithy.worker.jsonc` whose `ui` is the string `"react"` reached the merge as if valid and `stringify` renamed the result over the adopter's file. A cast is the assertion no test can fail. It takes the read now, and the cast is a schema.
 
