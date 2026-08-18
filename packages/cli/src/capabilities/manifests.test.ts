@@ -1,9 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { availableManifests, loadManifest } from "./manifests";
@@ -27,6 +30,38 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
+});
+
+/**
+ * The shipped payments manifest, read from the package rather than from `node_modules`, so a mistake in
+ * it fails the moment it is written.
+ *
+ * `billingSubject` is the first **required** option the kit ships — no default, a closed set of two — and
+ * it is the whole reason a manifest can express one (#412). Asserted here as well as in the repo-wide
+ * parse, because "it still validates" and "it is still required" are different claims and only the second
+ * one is the feature.
+ */
+describe("the payments manifest", () => {
+  const raw = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "payments", "pithy.manifest.json"),
+    "utf8",
+  );
+
+  test("validates, and declares billingSubject with no default and both choices", () => {
+    const manifest = CapabilityManifest.parse(JSON.parse(raw));
+    const option = manifest.configOptions.find((each) => each.key === "billingSubject");
+    expect(option).toBeDefined();
+    expect(option?.default).toBeUndefined();
+    expect(option?.choices).toEqual(["user", "organization"]);
+  });
+
+  test("every other option still carries a default — nothing about their behaviour moved", () => {
+    const manifest = CapabilityManifest.parse(JSON.parse(raw));
+    for (const option of manifest.configOptions) {
+      if (option.key === "billingSubject") continue;
+      expect(option.default, `${option.key} lost its default`).toBeDefined();
+    }
+  });
 });
 
 describe("loadManifest", () => {

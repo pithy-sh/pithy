@@ -473,6 +473,48 @@ describe("addCapability", () => {
       expect(await readFile(join(worker, "pithy.config.ts"), "utf8")).toBe(once);
     });
 
+    /**
+     * The writer's own precondition.
+     *
+     * `runAdd` refuses a required option before it ever calls this, so reaching here with no value is a
+     * bug one step upstream — and `addCapability` is reachable from more than one place. It fails loudly
+     * rather than rendering the word `undefined` into an adopter's config, which is the failure they
+     * would find later and somewhere else (#412).
+     */
+    const withRequired = CapabilityManifest.parse({
+      name: "payments",
+      package: "@pithy-sh/payments",
+      requiredBindings: [],
+      configOptions: [
+        { key: "basePath", default: "/payments", describe: "Where the payments routes mount." },
+        { key: "billingSubject", choices: ["user", "organization"], describe: "Who holds a subscription." },
+      ],
+    });
+
+    test("a required option with no value is refused, not rendered as undefined", async () => {
+      const before = await readFile(join(worker, "pithy.config.ts"), "utf8");
+      const error = (await addCapability({ workerDir: worker, manifest: withRequired }).catch(
+        (thrown: unknown) => thrown,
+      )) as PithyError;
+
+      expect(error).toBeInstanceOf(PithyError);
+      expect(error.message).toContain("billingSubject");
+      expect(error.payload.action).toContain("--set billingSubject=user");
+      expect(await readFile(join(worker, "pithy.config.ts"), "utf8")).toBe(before);
+    });
+
+    test("given a value, the required option renders like any other", async () => {
+      await addCapability({
+        workerDir: worker,
+        manifest: withRequired,
+        configValues: { billingSubject: "organization" },
+      });
+
+      const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
+      expect(config).toContain('billingSubject: "organization",');
+      expect(config).toContain('basePath: "/payments",');
+    });
+
     test("seeds an empty object or array for an option whose value is the adopter's to write", async () => {
       // The option a manifest cannot fill in. `@pithy-sh/secrets` requires a `registry` and `add` cannot
       // invent one, so it wrote every option but that — and left a `pithy.config.ts` that does not

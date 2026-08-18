@@ -3,6 +3,7 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { encodeSubjectReference, type PaymentsSubject } from "../data/subject";
 
 /**
  * The single point of contact between `@pithy-sh/payments` and `@pithy-sh/ledger`.
@@ -27,12 +28,71 @@ import { InternalError } from "@pithy-sh/core/src/error/pithyError";
  * package would put that package on the typecheck path of every module that touches fulfillment. Holds,
  * captures, and transfers are absent because a purchase is not a wager — money arrives from a store and, on a
  * refund, leaves again.
+ *
+ * The leading parameter is `@pithy-sh/ledger`'s own `userId`, named `accountId` here because payments never
+ * hands it one — see {@link ledgerAccountId}.
  */
 export interface PaymentsLedger {
   /** Add funds. Idempotent on `ref`, which is `UNIQUE` across the whole ledger. */
-  credit(userId: string, currency: string, amount: number, ref: string, options?: { memo?: string }): Promise<unknown>;
+  credit(
+    accountId: string,
+    currency: string,
+    amount: number,
+    ref: string,
+    options?: { memo?: string },
+  ): Promise<unknown>;
   /** Remove funds. Refuses with `ledger/insufficient_funds` rather than letting a balance go negative. */
-  debit(userId: string, currency: string, amount: number, ref: string, options?: { memo?: string }): Promise<unknown>;
+  debit(
+    accountId: string,
+    currency: string,
+    amount: number,
+    ref: string,
+    options?: { memo?: string },
+  ): Promise<unknown>;
+}
+
+/**
+ * The ledger account a subject's balance lives in — **the pair, encoded, and the only derivation of it**.
+ *
+ * `@pithy-sh/ledger` keys an account on `(userId, currency)`: one flat id namespace, with no column saying
+ * what kind of thing the id names. Nothing in the kit keeps a user id and an organization id disjoint — they
+ * are minted by different systems, and under `billingSubject: "organization"` the id belongs to a membership
+ * model this package knows nothing about. So handing the ledger a bare `subjectId` would let an organization
+ * called `acme` and a user called `acme` share one balance: coins the company bought spendable by the person,
+ * and a refund of either debiting whatever the other had left.
+ *
+ * **`@pithy-sh/ledger` is a per-user model, deliberately**, and this function's whole job is to respect that.
+ * It keys an account `(userId, currency)`, and every route it serves addresses a user: the authenticated
+ * balance read, the `:userId` segment on its management routes, its own seeds. So a user's ledger account id
+ * **is** their user id — the identity on `subjectId`, nothing composed.
+ *
+ * It briefly encoded both halves, and that was a bug rather than a stylistic choice: a grant credited to
+ * `user:ada` landed in an account nothing reads. The player's balance stayed empty, the grant was invisible
+ * from both sides, and no test in either package could see it, because each package was internally
+ * consistent while the two disagreed.
+ *
+ * **An organization never reaches here.** `checkLedgerGrants` in `capability.ts` refuses a catalog carrying a
+ * `grants.ledger` clause under `billingSubject: "organization"`, at assembly — there is no account in a
+ * per-user ledger for a company's credit to land in, and inventing one would write a non-user into a column
+ * that means user. The throw below is the backstop for a path that composition already closed.
+ *
+ * **One derivation, called by `apply.ts` and `clawback.ts` alike.** A credit and its clawback must address the
+ * identical account or the reversal misses, silently, leaving a refunded buyer holding the currency. Keeping
+ * that in one function makes it a property of the code rather than of two edits staying in step.
+ */
+export function ledgerAccountId(subject: PaymentsSubject): string {
+  if (subject.subjectType !== "user") {
+    // Unreachable through composition: `checkLedgerGrants` refuses a catalog with a `grants.ledger` clause
+    // under organization billing, at assembly. Thrown rather than encoded anyway, because the alternative is
+    // a row in `pithy_ledger_accounts` whose `userId` is not a user — invisible to every route the ledger
+    // serves, and impossible to tell from a balance nobody funded.
+    throw new InternalError({
+      message: "A balance cannot be credited to an organization.",
+      action: 'Set `billingSubject: "user"`, or drop the `grants` clause from the products that credit one.',
+      detail: `@pithy-sh/ledger keys every account on a user id. Refused an account for ${encodeSubjectReference(subject)}.`,
+    });
+  }
+  return subject.subjectId;
 }
 
 /** How the ledger module is reached. Injectable so the absent-package path is a test rather than a hope. */

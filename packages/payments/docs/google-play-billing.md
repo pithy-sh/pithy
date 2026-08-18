@@ -102,15 +102,15 @@ Before launching Play's purchase flow, set the obfuscated account id:
 ```kotlin
 BillingFlowParams.newBuilder()
   .setProductDetailsParamsList(params)
-  .setObfuscatedAccountId(accountIdFromYourServer)   // a random per-user value your server minted and stored
+  .setObfuscatedAccountId(accountIdFromYourServer)   // a random per-subject value your server minted and stored
   .build()
 ```
 
-**Make it a random value your server minted for that user, and never a value anybody else can derive.** Not the user id, not a hash of an email — mint a random per-user value, store it beside the user, and hand it to the app. The identifier is what attributes a notification that arrives before the app has submitted anything, so a *guessable* one is a way to aim at a specific account: someone who can work out your user's identifier could make one real purchase carrying it and claim the link first.
+**Make it a random value your server minted for the subject that will hold the purchase, and never a value anybody else can derive.** The subject is your user under `billingSubject: "user"` and the organization the buyer is acting for under `"organization"` — one identifier per subject either way, minted once and stored beside it. Not the subject's id, not a hash of an email or a domain. The identifier is what attributes a notification that arrives before the app has submitted anything, so a *guessable* one is a way to aim at a specific account: someone who can work out that subject's identifier could make one real purchase carrying it and claim the link first. Under organization billing the target is a whole company rather than one person, so a derivable identifier is worth more to an attacker, not less.
 
-Payments narrows that in three ways, and none of them substitutes for an unguessable value. The identifier is set by the *app*, so it is never treated as an owner on its own — it ranks **below** both a purchase already projected for an authenticated caller and the subscription family a renewal descends from. A binding is only written once a purchase has actually projected, so claiming one costs a real purchase rather than a free test one. And a binding is never rebound: the first pairing wins, and a collision is audited as `payments/provider_account_contested`.
+Payments narrows that in three ways, and none of them substitutes for an unguessable value. The identifier is set by the *app*, so it is never treated as a holder on its own — it ranks **below** both a purchase already projected for the subject an authenticated caller was acting for and the subscription family a renewal descends from. A binding is only written once a purchase has actually projected, so claiming one costs a real purchase rather than a free test one. And a binding is never rebound: the first pairing wins, and a collision is audited as `payments/provider_account_contested`.
 
-An app that never sets it and never submits a receipt produces notifications with nobody to project them against, which payments records with a reason rather than guessing.
+An app that never sets it and never submits a receipt produces notifications with no subject to project them against, which payments records with a reason rather than guessing.
 
 Payments does **not** acknowledge purchases. Your app does, through Play Billing, and it must: Play auto-refunds a purchase left unacknowledged for three days. Payments records the acknowledgement state and never acts on it, because acknowledging from a server would race the client that owns the purchase flow.
 
@@ -143,7 +143,7 @@ Worth knowing, because it explains the failure modes:
 
 So: a Play outage is a 503 and Pub/Sub redelivers. A purchase Play does not recognize is a 200 with the reason recorded, because retrying will not change the answer. Subscription refunds arrive as `SUBSCRIPTION_REVOKED` and project immediately.
 
-A refunded **one-time** purchase takes a different route, because Play's voided-purchase notification names no product and Play's one-time lookup needs one as a path segment — so there is no call the rail can make. It does not need one: an order id is exactly what a Google purchase is keyed by here, so the notification's `orderId` finds the stored row, which already knows its product and its owner. The refund is projected from that, and the entitlement goes with it. A void naming an order that was never projected — a purchase from before you installed payments — is recorded as orphaned with its order id rather than dropped.
+A refunded **one-time** purchase takes a different route, because Play's voided-purchase notification names no product and Play's one-time lookup needs one as a path segment — so there is no call the rail can make. It does not need one: an order id is exactly what a Google purchase is keyed by here, so the notification's `orderId` finds the stored row, which already knows its product and the subject holding it. The refund is projected from that, and the entitlement goes with it. A void naming an order that was never projected — a purchase from before you installed payments — is recorded as orphaned with its order id rather than dropped.
 
 ## Testing without spending money
 
@@ -161,7 +161,7 @@ Point a staging deployment at the same Play app with its own Pub/Sub subscriptio
 - [ ] Pub/Sub topic created, with `google-play-developer-notifications@system.gserviceaccount.com` as a Publisher on it.
 - [ ] Topic's resource name pasted into Monetization setup; test notification sent and answered 200.
 - [ ] Push subscription created per environment: authentication on, the step-3 service account, and the **audience set to the endpoint URL exactly**.
-- [ ] `setObfuscatedAccountId` set in the app's billing flow, from a **random per-user value your server minted** — never the user id or anything derivable from it.
+- [ ] `setObfuscatedAccountId` set in the app's billing flow, from a **random per-subject value your server minted** — never the subject's id or anything derivable from it.
 - [ ] The app acknowledges purchases through Play Billing.
 - [ ] `packageName` + `serviceAccountEmail` + `privateKey` + `pubsubAudience` stored together via `pithy secrets create payments-provider-credentials`; `rails: { google: true }` in config.
 - [ ] Licence testers added, and a staging deployment with its own subscription and audience to project their purchases.

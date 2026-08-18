@@ -9,6 +9,7 @@ import { PaymentsPurchase, type PurchaseEnvironment } from "../data/purchase";
 import type { PaymentsRail } from "../data/rail";
 import { PaymentsReconcileRun } from "../data/reconcileRun";
 import type { PurchaseStatus } from "../data/status";
+import type { PaymentsSubject } from "../data/subject";
 import {
   PAYMENTS_ENTITLEMENTS_TABLE,
   PAYMENTS_PURCHASES_TABLE,
@@ -20,7 +21,7 @@ import {
  * The management read model — the queries behind the control-plane reads, and nothing else.
  *
  * **It lives beside the projection rather than inside it.** Everything in `projection/` writes or reads
- * one account's own rows; these read across *every* account, which is a different operation with a
+ * one subject's own rows; these read across *every* subject, which is a different operation with a
  * different blast radius. Keeping it out of the projection means no in-process caller reaches it by
  * accident, and it is the same arrangement `@pithy-sh/ledger`'s `admin/read.ts` makes for the same
  * reason.
@@ -34,11 +35,19 @@ import {
  * afterwards would be one refactor away from leaking it; a `SELECT` that never asks for it is not.
  *
  * That is also the honest answer to the masking question `@pithy-sh/email` answers by masking a
- * recipient. Payments stores **no** direct personal identifier of its own — the only identity column on
- * either table is `userId`, the opaque id the adopter's auth capability issued, which is already the
- * address a management client must name to ask about a person. The single field that would have carried
- * an email address into a purchases list is `payload`, and the control is stronger than a mask: it is
- * never read.
+ * recipient. Payments stores **no** direct personal identifier of its own — the only identity on either
+ * table is the **subject pair**, `(subjectType, subjectId)`, opaque ids the adopter's auth capability and
+ * the adopter's own membership model issued, and already the address a management client must name to ask
+ * about a holder. The single field that would have carried an email address into a purchases list is
+ * `payload`, and the control is stronger than a mask: it is never read.
+ *
+ * ## A subject filter is the pair or it is nothing
+ *
+ * Every query below takes its owner filter as one {@link PaymentsSubject}, never as a loose id. Nothing in
+ * the kit keeps an organization id from equalling some user's id, so a `WHERE subject_id = ?` alone would
+ * hand a management client asking about a person the rows of an organization that happens to share the id.
+ * The object is what makes the two halves inseparable at every call site — `data/subject.ts` states the
+ * argument once.
  *
  * ## Keyset, never offset
  *
@@ -74,7 +83,8 @@ export interface PaymentsPage<T> {
  */
 export const PaymentsPurchaseRecord = PaymentsPurchase.pick({
   id: true,
-  userId: true,
+  subjectType: true,
+  subjectId: true,
   rail: true,
   providerTransactionId: true,
   originalTransactionId: true,
@@ -97,8 +107,8 @@ const PURCHASE_COLUMNS = Object.keys(PaymentsPurchaseRecord.shape) as (keyof Pay
 
 /** What {@link listPurchases} accepts. Every filter is optional; together they are an AND. */
 export interface PurchasesQuery {
-  /** Restrict to one account's purchases. */
-  userId?: string;
+  /** Restrict to one subject's purchases — the pair, so an id shared across kinds cannot cross. */
+  subject?: PaymentsSubject;
   /** Restrict to one store. */
   rail?: PaymentsRail;
   /** Restrict to one normalized status. */
@@ -113,8 +123,8 @@ export interface PurchasesQuery {
 
 /** What {@link listSubscriptions} accepts. No `rail`: a subscription is read forwards, not by store. */
 export interface SubscriptionsQuery {
-  /** Restrict to one account's subscriptions. */
-  userId?: string;
+  /** Restrict to one subject's subscriptions — the pair, never an id on its own. */
+  subject?: PaymentsSubject;
   /** Restrict to one normalized status — `active`, `in_grace`, `canceled`. */
   status?: PurchaseStatus;
   /** Where to resume, from a previous page's `nextCursor`. A malformed one is a first page. */
@@ -125,8 +135,8 @@ export interface SubscriptionsQuery {
 
 /** What {@link listEntitlements} accepts. */
 export interface EntitlementsQuery {
-  /** Restrict to one account. */
-  userId?: string;
+  /** Restrict to one subject — the pair, never an id on its own. */
+  subject?: PaymentsSubject;
   /** Restrict to one entitlement key — "who holds `pro`". */
   entitlement?: string;
   /** Where to resume, from a previous page's `nextCursor`. A malformed one is a first page. */
@@ -198,7 +208,12 @@ async function purchasePage(
     .limit(limit + 1);
 
   if (type !== undefined) selection = selection.where("type", "=", type);
-  if (query.userId !== undefined) selection = selection.where("userId", "=", query.userId);
+  if (query.subject !== undefined) {
+    // Both halves or neither. One column of the pair is not a narrower filter, it is a different question.
+    selection = selection
+      .where("subjectType", "=", query.subject.subjectType)
+      .where("subjectId", "=", query.subject.subjectId);
+  }
   if (query.rail !== undefined) selection = selection.where("rail", "=", query.rail);
   if (query.status !== undefined) selection = selection.where("status", "=", query.status);
   if (query.environment !== undefined) selection = selection.where("environment", "=", query.environment);
@@ -225,7 +240,7 @@ async function purchasePage(
  * Sorted on `createdAt` rather than `updatedAt`, and the difference matters on this table: the
  * projection re-derives every affected row on every purchase write, so `updatedAt` moves constantly for
  * reasons that have nothing to do with the grant. Ordering on it would shuffle rows under a reader. When
- * a key first appeared for an account never moves.
+ * a key first appeared for a subject never moves.
  *
  * A lapsed row is returned rather than filtered out. Whether it still grants is the projection's question
  * in `http/view.ts`, resolved against `expiresAt` at read time exactly as the hot path resolves it — and an
@@ -245,7 +260,11 @@ export async function listEntitlements(
     .orderBy("id", "desc")
     .limit(limit + 1);
 
-  if (query.userId !== undefined) selection = selection.where("userId", "=", query.userId);
+  if (query.subject !== undefined) {
+    selection = selection
+      .where("subjectType", "=", query.subject.subjectType)
+      .where("subjectId", "=", query.subject.subjectId);
+  }
   if (query.entitlement !== undefined) selection = selection.where("entitlement", "=", query.entitlement);
   if (after) {
     selection = selection.where((eb) =>
@@ -262,21 +281,26 @@ export async function listEntitlements(
 }
 
 /**
- * Every entitlement one account holds, ordered by key.
+ * Every entitlement one subject holds, ordered by key.
  *
  * Unpaginated on purpose, and for the reason `@pithy-sh/ledger`'s `readAccounts` is: the table is keyed
- * `UNIQUE (userId, entitlement)`, so this returns at most one row per key the catalog sells plus
- * whatever has been comped by hand. A cursor over a list that short would be ceremony.
+ * `UNIQUE (subjectType, subjectId, entitlement)`, so this returns at most one row per key the catalog
+ * sells plus whatever has been comped by hand. A cursor over a list that short would be ceremony.
  *
- * An account holding nothing is an empty list, not a 404. An entitlement row appears with the first
- * purchase that grants one, so its absence is not a missing person — and answering 404 would make this
- * surface an existence oracle for user ids.
+ * The subject is one argument because it is one fact. Two positional strings would typecheck transposed,
+ * and the pair leads the unique index in that order — so this read is a covering prefix scan rather than
+ * a filter over every holder of the key.
+ *
+ * A subject holding nothing is an empty list, not a 404. An entitlement row appears with the first
+ * purchase that grants one, so its absence is not a missing holder — and answering 404 would make this
+ * surface an existence oracle for user and organization ids alike.
  */
-export async function readEntitlements(d1: D1Database, userId: string): Promise<PaymentsEntitlement[]> {
+export async function readEntitlements(d1: D1Database, subject: PaymentsSubject): Promise<PaymentsEntitlement[]> {
   const rows = await paymentsDatabase(d1)
     .selectFrom(PAYMENTS_ENTITLEMENTS_TABLE)
     .selectAll()
-    .where("userId", "=", userId)
+    .where("subjectType", "=", subject.subjectType)
+    .where("subjectId", "=", subject.subjectId)
     .orderBy("entitlement", "asc")
     .execute();
   return rows.map((row) => PaymentsEntitlement.parse(row));

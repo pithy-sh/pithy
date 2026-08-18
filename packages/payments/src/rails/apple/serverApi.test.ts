@@ -97,7 +97,8 @@ async function statusResponse(
 function stored(overrides: Partial<PaymentsPurchase> = {}): PaymentsPurchase {
   return {
     id: "11111111-1111-4111-8111-111111111111",
-    userId: "ada",
+    subjectType: "user",
+    subjectId: "ada",
     rail: "apple",
     role: "charge",
     providerTransactionId: "2000000731004811",

@@ -131,12 +131,13 @@ describe("main", () => {
   });
 
   test("payments reconcile can be driven headlessly — every narrowing is a flag", async () => {
-    // The support path is "reconcile one user in production and tell me what changed", and an agent has to be
-    // able to run it with no prompt. Every field of the pass's params that a human would want is a flag here.
+    // The support path is "reconcile one holder in production and tell me what changed", and an agent has to
+    // be able to run it with no prompt. Every field of the pass's params that a human would want is a flag
+    // here. `--subject` is one flag rather than a type/id pair because half a holder names nobody (#412).
     const payments = await subcommand("payments");
     const reconcile = (payments.subCommands as Record<string, CommandDef>).reconcile;
     expect(Object.keys(reconcile?.args ?? {})).toEqual(
-      expect.arrayContaining(["env", "user", "rail", "dry-run", "json"]),
+      expect.arrayContaining(["env", "subject", "rail", "dry-run", "json"]),
     );
   });
 

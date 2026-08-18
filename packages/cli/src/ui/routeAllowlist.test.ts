@@ -193,12 +193,12 @@ describe("uncoveredRoutes", () => {
         name: "api",
         requiredBindings: [],
         routes: (app) => {
-          app.get("/api/organisations", (c) => c.json({}));
+          app.get("/api/organizations", (c) => c.json({}));
           app.post("/api/cli/device/start", (c) => c.json({}));
         },
       }),
     };
-    expect(uncoveredRoutes(config, scaffoldTime, DECLARED)).toEqual(["/api/cli/device/start", "/api/organisations"]);
+    expect(uncoveredRoutes(config, scaffoldTime, DECLARED)).toEqual(["/api/cli/device/start", "/api/organizations"]);
   });
 
   test("a list that covers the route table reports nothing", () => {

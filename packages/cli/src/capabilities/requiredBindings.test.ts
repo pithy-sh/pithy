@@ -12,7 +12,7 @@ import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { DEFAULT_WORKER, scaffoldProject } from "../project/scaffold";
-import { addCapability } from "./add";
+import { addCapability, type ConfigValue } from "./add";
 import { applyReconcilePlan, buildReconcilePlan } from "./reconcile";
 
 /**
@@ -265,10 +265,25 @@ describe("what pithy add claims to write, it writes", () => {
     }
   }
 
+  /**
+   * An answer for every option the manifest states no default for — the first of its choices.
+   *
+   * A required option has no value the writer may invent, so `addCapability` refuses rather than render
+   * one (#412). This suite is about *bindings*; it settles the question the way an adopter would so the
+   * wiring it is really asserting still runs.
+   */
+  function answers(manifest: CapabilityManifest): Record<string, ConfigValue> {
+    const values: Record<string, ConfigValue> = {};
+    for (const option of manifest.configOptions) {
+      if (option.default === undefined && option.choices?.[0] !== undefined) values[option.key] = option.choices[0];
+    }
+    return values;
+  }
+
   test.each(MANIFESTS.map(({ pkg, manifest }) => [pkg, manifest] as const))(
     "%s: every written binding lands in every environment",
     async (_pkg, manifest) => {
-      await addCapability({ workerDir: worker, manifest, project: "bindings" });
+      await addCapability({ workerDir: worker, manifest, configValues: answers(manifest), project: "bindings" });
       const config = parse(await readFile(join(worker, "wrangler.jsonc"), "utf8")) as unknown as Record<
         string,
         unknown

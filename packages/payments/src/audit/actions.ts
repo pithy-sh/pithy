@@ -29,11 +29,12 @@ export const PaymentsAuditActions = {
   /** A notification failed its authenticity check. Always `denied`, and the reason a forgery is visible at all. */
   webhookUnverified: "payments/webhook_unverified",
   /**
-   * A caller submitted a purchase whose store-account identifier is already bound to a different Pithy user.
+   * A caller submitted a purchase whose store-account identifier is already bound to a different subject.
    *
-   * On Apple and Google that identifier is a value the *app* chose, so one account legitimately reaching two
-   * Pithy users is possible — a shared device, a reinstall against a new account. It is also exactly what
-   * squatting on another user's identifier looks like, and the two are indistinguishable from one request.
+   * On Apple and Google that identifier is a value the *app* chose, so one store account legitimately
+   * reaching two subjects is possible — a shared device, a reinstall against a new account, one person
+   * buying for two organizations. It is also exactly what squatting on another holder's identifier looks
+   * like, and the two are indistinguishable from one request.
    * So the binding is left alone (the first one stands) and the attempt is recorded at `warning`: one is
    * noise, a pattern of them against different identifiers is somebody enumerating.
    */

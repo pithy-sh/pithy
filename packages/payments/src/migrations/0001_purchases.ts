@@ -12,9 +12,17 @@ import type { Migration } from "kysely/migration";
  *
  * Two constraints carry the design. `UNIQUE (rail, providerTransactionId)` on purchases is what makes
  * three write paths converge on one row — a replayed webhook violates it and the write becomes a
- * no-op update rather than a second purchase. `UNIQUE (userId, entitlement)` on entitlements is what
- * makes the read model a read model: one row per user per entitlement, whichever purchase currently
- * grants it. Correctness lives in the schema, not in a hopeful application-level check a race could skip.
+ * no-op update rather than a second purchase. `UNIQUE (subjectType, subjectId, entitlement)` on
+ * entitlements is what makes the read model a read model: one row per subject per entitlement, whichever
+ * purchase currently grants it. Correctness lives in the schema, not in a hopeful application-level check
+ * a race could skip.
+ *
+ * The holder of a purchase is a **pair** — a kind and an id — and both columns are in that key, ahead of
+ * the entitlement, so the per-subject read is a covering prefix of it. Keying on the id alone would let an
+ * organization whose id equalled some user's read that user's grants, and nothing anywhere makes those two
+ * namespaces disjoint. The kind is closed at the database with a CHECK on all three subject-bearing
+ * tables, for the reason `environment` is: a value the whole schema is keyed on is not something to trust
+ * from whatever wrote the row.
  *
  * The indexes come in two families. Three serve the questions the capability asks of itself — a buyer's
  * own purchases, the reconciliation sweep, the pending-delivery queue. Three serve the control-plane
@@ -34,7 +42,9 @@ export const payments_0001_purchases: Migration = {
       .createTable("pithyPaymentsPurchases")
       // Text UUID: these surface in API responses, and sequential ids would leak order volume.
       .addColumn("id", "text", (c) => c.primaryKey())
-      .addColumn("userId", "text", (c) => c.notNull())
+      // The owner, as a pair. Adjacent and both not-null, because half a subject identifies nobody.
+      .addColumn("subjectType", "text", (c) => c.notNull())
+      .addColumn("subjectId", "text", (c) => c.notNull())
       .addColumn("rail", "text", (c) => c.notNull())
       .addColumn("providerTransactionId", "text", (c) => c.notNull())
       .addColumn("productId", "text", (c) => c.notNull())
@@ -74,13 +84,19 @@ export const payments_0001_purchases: Migration = {
       // everywhere else it is "not paused" — two facts a consumer has to tell apart, and a rail that wrote
       // a renewal date or a period end into it would silently collapse them.
       .addCheckConstraint("pithyPaymentsPurchasesResumes", sql`resumes_at is null or status = 'paused'`)
+      // The subject kind is closed, and closed here rather than only in Zod: every ownership check in the
+      // capability compares both halves, and a third spelling of "organization" would be a holder no gate
+      // ever matches. snake_case in the raw fragment — `CamelCasePlugin` does not reach inside one.
+      .addCheckConstraint("pithyPaymentsPurchasesSubjectType", sql`subject_type in ('user', 'organization')`)
       .execute();
 
-    // The owner read: a user's purchases, newest first.
+    // The owner read: one subject's purchases, newest first. Both halves lead, in the order they are
+    // always known in — the kind comes from config, the id from the caller — so the index answers the
+    // whole question rather than filtering a kind out afterwards.
     await db.schema
       .createIndex("pithyPaymentsPurchasesOwnerIdx")
       .on("pithyPaymentsPurchases")
-      .columns(["userId", "purchasedAt"])
+      .columns(["subjectType", "subjectId", "purchasedAt"])
       .execute();
 
     // The reconciliation read: subscriptions near expiry, oldest verification first.
@@ -112,7 +128,9 @@ export const payments_0001_purchases: Migration = {
     await db.schema
       .createTable("pithyPaymentsEntitlements")
       .addColumn("id", "text", (c) => c.primaryKey())
-      .addColumn("userId", "text", (c) => c.notNull())
+      // The holder, as a pair, exactly as the purchase carries it.
+      .addColumn("subjectType", "text", (c) => c.notNull())
+      .addColumn("subjectId", "text", (c) => c.notNull())
       .addColumn("entitlement", "text", (c) => c.notNull())
       .addColumn("active", "integer", (c) => c.notNull().defaultTo(0))
       .addColumn("expiresAt", "integer")
@@ -123,16 +141,20 @@ export const payments_0001_purchases: Migration = {
       .addColumn("manual", "integer", (c) => c.notNull().defaultTo(0))
       .addColumn("createdAt", "integer", (c) => c.notNull())
       .addColumn("updatedAt", "integer", (c) => c.notNull())
-      // One row per user per entitlement — the upsert conflict target that makes this a read model.
-      .addUniqueConstraint("pithyPaymentsEntitlementsOwnerIdx", ["userId", "entitlement"])
+      // One row per subject per entitlement — the upsert conflict target that makes this a read model.
+      // Both subject columns lead the key: a user and an organization may hold the same key at once, and
+      // they are two rows, while one subject holding it twice is the thing this refuses.
+      .addUniqueConstraint("pithyPaymentsEntitlementsOwnerIdx", ["subjectType", "subjectId", "entitlement"])
       .addCheckConstraint("pithyPaymentsEntitlementsActive", sql`active in (0, 1)`)
       .addCheckConstraint("pithyPaymentsEntitlementsManual", sql`manual in (0, 1)`)
+      .addCheckConstraint("pithyPaymentsEntitlementsSubjectType", sql`subject_type in ('user', 'organization')`)
       .execute();
 
     // The entitlement listing: `GET {base}/admin/entitlements`. `createdAt` rather than `updatedAt`,
     // because the projection re-derives every affected row on every purchase write — ordering on
     // `updatedAt` would shuffle rows under a reader for reasons that have nothing to do with the grant.
-    // The per-account read needs no index of its own: `UNIQUE (userId, entitlement)` already serves it.
+    // The per-holder read needs no index of its own: `UNIQUE (subjectType, subjectId, entitlement)`
+    // already serves it, because the subject columns lead.
     await db.schema
       .createIndex("pithyPaymentsEntitlementsCreatedIdx")
       .on("pithyPaymentsEntitlements")
@@ -144,11 +166,18 @@ export const payments_0001_purchases: Migration = {
       .addColumn("id", "text", (c) => c.primaryKey())
       .addColumn("rail", "text", (c) => c.notNull())
       .addColumn("providerAccountId", "text", (c) => c.notNull())
-      .addColumn("userId", "text", (c) => c.notNull())
+      // What the identity maps back to: the subject pair, not a user id.
+      .addColumn("subjectType", "text", (c) => c.notNull())
+      .addColumn("subjectId", "text", (c) => c.notNull())
       .addColumn("createdAt", "integer", (c) => c.notNull())
-      // A webhook arrives carrying `cus_123`, not a Pithy user id. This is the only mapping back, so it
+      // A webhook arrives carrying `cus_123`, and names no holder of ours. This is the only mapping back, so it
       // must be one-to-one per rail.
+      //
+      // **Deliberately not widened by the subject.** Adding the pair to this key would make a rebind a
+      // legal insert, and the second row would collect the first subject's renewals. One provider
+      // identity, one holder, until somebody deletes the row on purpose.
       .addUniqueConstraint("pithyPaymentsProviderAccountsIdx", ["rail", "providerAccountId"])
+      .addCheckConstraint("pithyPaymentsProviderAccountsSubjectType", sql`subject_type in ('user', 'organization')`)
       .execute();
 
     await db.schema

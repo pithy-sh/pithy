@@ -1140,6 +1140,18 @@ const PaymentsEntitlementNotInCatalogPublic = z
   })
   .describe("A manual grant named an entitlement key the catalog does not define (400).");
 
+const PaymentsSubjectUnresolvedPublic = z
+  .object({
+    code: z
+      .literal("payments/subject_unresolved")
+      .describe(
+        "A payments write path — submitting a purchase, restoring, opening checkout, opening the billing portal — reached the capability with no answer to which subject the caller acts for. Under organization billing that answer comes from the adopter's own resolver, because the capability never learns what an organization is. 403 rather than 400 or 500: the caller is authenticated and the request is well-formed, and an operator reading our logs cannot fix a seam of the adopter's that returned nothing. On a read an unanswered seam holds nothing and the gate denies, which needs no code; on a write there is nothing to write the row against, and doing nothing quietly is a purchase that disappears.",
+      ),
+    status: z.literal(403).describe("Forbidden — the caller is known, but who they are acting for is not."),
+    ...publicFields,
+  })
+  .describe("A write path could not resolve which subject the caller acts for (403).");
+
 // --- @pithy-sh/core: the `control-plane` verification strategy ---
 //
 // NOT Cloudflare's control plane. Everywhere else in this repo "control plane" means the Cloudflare
@@ -1499,6 +1511,7 @@ export const KitPublicErrorPayload = z
     PaymentsClawbackFailedPublic,
     PaymentsDiscountInvalidPublic,
     PaymentsEntitlementNotInCatalogPublic,
+    PaymentsSubjectUnresolvedPublic,
     ControlPlaneNotConnectedPublic,
     ControlPlaneInvalidCredentialPublic,
     ControlPlaneInsufficientScopePublic,
@@ -1784,6 +1797,9 @@ const PaymentsDiscountInvalid = PaymentsDiscountInvalidPublic.extend(internalFie
 const PaymentsEntitlementNotInCatalog = PaymentsEntitlementNotInCatalogPublic.extend(internalFields).describe(
   PaymentsEntitlementNotInCatalogPublic.description ?? "",
 );
+const PaymentsSubjectUnresolved = PaymentsSubjectUnresolvedPublic.extend(internalFields).describe(
+  PaymentsSubjectUnresolvedPublic.description ?? "",
+);
 const ControlPlaneNotConnected = ControlPlaneNotConnectedPublic.extend(internalFields).describe(
   ControlPlaneNotConnectedPublic.description ?? "",
 );
@@ -1952,6 +1968,7 @@ export const KitErrorPayload = z
     PaymentsClawbackFailed,
     PaymentsDiscountInvalid,
     PaymentsEntitlementNotInCatalog,
+    PaymentsSubjectUnresolved,
     ControlPlaneNotConnected,
     ControlPlaneInvalidCredential,
     ControlPlaneInsufficientScope,

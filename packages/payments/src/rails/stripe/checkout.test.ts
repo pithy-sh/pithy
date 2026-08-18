@@ -3,6 +3,7 @@
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
+import { decodeSubjectReference } from "../../data/subject";
 import type { PaymentsStripeCredentials } from "../../secret/registry";
 import type { CheckoutSessionInput } from "../contract";
 import { createStripeCheckoutSession } from "./checkout";
@@ -22,7 +23,7 @@ const CREDENTIALS: PaymentsStripeCredentials = {
 const INPUT: CheckoutSessionInput = {
   providerProductId: "price_1Abc",
   subscription: true,
-  userId: "ada",
+  subject: { subjectType: "user", subjectId: "ada" },
   successUrl: "https://acme.example/thanks?session={CHECKOUT_SESSION_ID}",
   cancelUrl: "https://acme.example/pricing",
 };
@@ -63,12 +64,35 @@ describe("createStripeCheckoutSession", () => {
     expect(url).toBe("https://api.stripe.com/v1/checkout/sessions");
   });
 
-  test("names the purchaser in client_reference_id, which is the only hook back to a Pithy user", async () => {
+  test("names the subject in client_reference_id, which is the only hook back to a holder", async () => {
     // A Stripe purchase is only ever heard about through a webhook, and that webhook carries `cus_…` and nothing
-    // else. This value is what pairs the two, so it comes from the authenticated caller and from nowhere else.
+    // else. This value is what pairs the two, so it comes from the resolved subject and from nowhere else.
     const { sent } = await create();
-    expect(sent).toContain("client_reference_id=ada");
-    expect(sent).toContain("metadata[pithy_account_reference]=ada");
+    expect(sent).toContain("client_reference_id=user:ada");
+    expect(sent).toContain("metadata[pithy_account_reference]=user:ada");
+  });
+
+  test("an organization stamps its own kind, not the id alone", async () => {
+    // Nothing keeps an organization id from equalling some user's, so the kind travels with the id or the
+    // webhook that follows would grant one holder's subscription to the other.
+    const { sent } = await create({ subject: { subjectType: "organization", subjectId: "ada" } });
+    expect(sent).toContain("client_reference_id=organization:ada");
+    expect(sent).toContain("metadata[pithy_account_reference]=organization:ada");
+  });
+
+  test("what checkout stamps is what the decoder reads back — the whole loop, in one assertion", async () => {
+    // The stamp and the read are one contract with Stripe, and this is the only place both ends are visible.
+    const subject = { subjectType: "organization", subjectId: "acme" } as const;
+    const { sent } = await create({ subject });
+    const stamped = /client_reference_id=([^&]+)/.exec(sent)?.[1];
+    expect(decodeSubjectReference(stamped ?? "")).toEqual(subject);
+  });
+
+  test("a bare id — what this rail stamped before subjects — decodes to nobody", async () => {
+    // The strict decoder is what keeps a pre-subject reference from being read as a user, so a rail that kept
+    // stamping one would orphan every purchase rather than quietly attribute it. This is that guarantee, stated
+    // where the stamping happens.
+    expect(decodeSubjectReference("ada")).toBeUndefined();
   });
 
   test("stamps the reference onto the subscription too, so every later event carries it", async () => {
@@ -76,7 +100,7 @@ describe("createStripeCheckoutSession", () => {
     // may be delivered before `checkout.session.completed`. Without this, a first renewal could arrive before the
     // pairing existed.
     const { sent } = await create();
-    expect(sent).toContain("subscription_data[metadata][pithy_account_reference]=ada");
+    expect(sent).toContain("subscription_data[metadata][pithy_account_reference]=user:ada");
     // A subscription-mode session may not carry payment-intent parameters at all.
     expect(sent).not.toContain("payment_intent_data");
   });

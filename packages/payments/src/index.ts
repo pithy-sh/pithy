@@ -7,6 +7,14 @@
  * writer and read path other capabilities and the Workflow host call. Every other module is reached by deep
  * path (`@pithy-sh/payments/src/...`); this is the documented contract, not a barrel over the package.
  *
+ * The subject surface is here for one reason, and it is the narrowness rule rather than an exception to it:
+ * under `billingSubject: "organization"` an adopter **must** write a `resolveSubject`, and it is the only
+ * thing this package asks them to author. A function they cannot name the type of is a function they write
+ * against inference and get subtly wrong — so `PaymentsSubjectResolver`, the pair it returns, and the two
+ * helpers that answer the same question on a route (`resolvePaymentsSubject`, `requirePaymentsSubject`) sit
+ * beside the factory that takes it. `sameSubject` and the reference codec come with it because a resolver's
+ * output is compared and encoded by the adopter's own code as often as by ours.
+ *
  * The client modules are **not** here, and must not be. `src/client/hooks.ts` imports `react`, and
  * re-exporting it would drag React into every Worker bundle that composes payments; `src/client/api.ts` is
  * its framework-free half and belongs to the same browser surface. Both are reached by their own deep
@@ -62,6 +70,13 @@ export {
 } from "./data/reconcileRun";
 export { ACCESS_GRANTING_STATUSES, grantingStatuses, PurchaseStatus, statusGrantsAccess } from "./data/status";
 export {
+  decodeSubjectReference,
+  encodeSubjectReference,
+  PaymentsSubject,
+  PaymentsSubjectType,
+  sameSubject,
+} from "./data/subject";
+export {
   PAYMENTS_ENTITLEMENTS_TABLE,
   PAYMENTS_PROVIDER_ACCOUNTS_TABLE,
   PAYMENTS_PURCHASES_TABLE,
@@ -83,6 +98,13 @@ export {
   installEntitlementResolver,
   PAYMENTS_ENTITLEMENT_PROVIDER,
 } from "./entitlement/resolver";
+export {
+  authenticatedUserSubject,
+  type PaymentsSubjectResolver,
+  type PaymentsSubjectSeam,
+  requirePaymentsSubject,
+  resolvePaymentsSubject,
+} from "./entitlement/subjectSeam";
 export {
   type AppliedGrant,
   applyGrants,
@@ -131,7 +153,7 @@ export {
   type LinkProviderAccountOptions,
   linkProviderAccount,
   type OwnerHints,
-  providerAccountForUser,
+  providerAccountForSubject,
   resolveNotificationOwner,
 } from "./projection/owner";
 export { resolveEntitlements } from "./projection/resolve";

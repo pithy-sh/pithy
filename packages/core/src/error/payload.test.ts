@@ -188,7 +188,14 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * all the way down to empty. Both unions are measured against this number and never against each
  * other's length. Changing the taxonomy's size is a deliberate act; changing this line is part of it.
  *
- * Verified 2026-08-15: 119 members in each union, no duplicates, sorted lists identical.
+ * Verified 2026-08-18: 120 members in each union, no duplicates, sorted lists identical.
+ *
+ * `payments/subject_unresolved` (#412) — a payments write path that could not learn which subject the
+ * caller acts for. It needs its own code because it is the one refusal in the domain the *adopter*
+ * causes and only the adopter can repair: under organization billing the subject comes from their
+ * resolver, and an unanswered seam is neither a denial about entitlement nor a fault in our code. On a
+ * read the gate simply holds nothing and denies; on a write there is no row to write, and silence there
+ * is a purchase that vanishes.
  *
  * `auth/provider_unavailable` (#381) — a social sign-in provider the deployment enables whose credential
  * would not resolve. It needs its own code because the instance now builds *without* that provider, and
@@ -213,7 +220,7 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * rolled at its issuer whose successor the store never took, the one secrets failure a retry cannot
  * repair.
  */
-const KIT_ERROR_CODE_COUNT = 119;
+const KIT_ERROR_CODE_COUNT = 120;
 
 /** One member of either kit union — the public projection or its `action`/`detail` twin. */
 type KitUnionMember = (typeof KitErrorPayload | typeof KitPublicErrorPayload)["options"][number];

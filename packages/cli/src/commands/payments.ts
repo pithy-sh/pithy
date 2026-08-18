@@ -37,7 +37,7 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
  * before the secrets are set still succeeds; the first pass is what reports the missing rail.
  *
  * `reconcile` runs the same pass on demand, in a deployed environment, and waits for its report. It is the
- * support tool the issue names — "my subscription isn't showing up" is answered by `--user`, through exactly
+ * support tool the issue names — "my subscription isn't showing up" is answered by `--subject`, through exactly
  * the steps the cron runs, so an answer here is an answer about production behaviour rather than about a
  * script somebody wrote for the occasion.
  */
@@ -252,7 +252,14 @@ const reconcile = defineCommand({
   meta: { name: "reconcile", description: "Run a reconciliation pass now and report the drift it found" },
   args: {
     env: { ...envArg("Target environment"), default: "staging" },
-    user: { type: "string", description: "Reconcile one user's purchases only — the support path" },
+    // One flag, not a `--subject-type`/`--subject-id` pair. A holder is `(kind, id)` and half of one names
+    // nobody, so two flags would need a cross-arg rule to say what a single flag says by existing. The
+    // spelling is `encodeSubjectReference`'s — the same string the rails stamp into a store — so an operator
+    // reading a provider dashboard can paste what they see.
+    subject: {
+      type: "string",
+      description: "Reconcile one holder only, as `user:<id>` or `organization:<id>` — the support path",
+    },
     // Every rail is named, in the spelling the parse accepts — `lemonSqueezy`, camelCase, the same
     // identifier the config and the credential bundle key on. A help line that lists three of four rails
     // is why somebody types the fourth as a guess.
@@ -274,7 +281,19 @@ const reconcile = defineCommand({
       requireProjectName(config);
       const env = requireManagedEnvironment(args.env, loadProjectEnvironments(config));
       const { provisioner } = await buildProvisioner(projectDir);
-      const { PaymentsReconcileParams } = await loadPayments();
+      const { PaymentsReconcileParams, decodeSubjectReference } = await loadPayments();
+
+      // Decoded through payments' own strict decoder, never split here. `--subject ada` is the shape
+      // somebody types from memory, and a lenient read of it would narrow the pass to whichever user *or*
+      // organization carries that id — a support tool answering about the wrong holder, silently. The
+      // refusal names the format instead.
+      const subject = args.subject === undefined ? undefined : decodeSubjectReference(args.subject);
+      if (args.subject !== undefined && subject === undefined) {
+        throw new ValidationError({
+          message: `"${args.subject}" does not name a holder.`,
+          action: "Pass --subject user:<id> or --subject organization:<id>.",
+        });
+      }
 
       // Parsed here rather than sent raw: a mistyped rail is a message in this terminal instead of a Workflow
       // instance that starts, fails a step, and burns its retry budget where nobody is watching.
@@ -284,7 +303,7 @@ const reconcile = defineCommand({
       // one. The rails are not listed again here: Zod's own message names the accepted set, so the list
       // stays in one place and gains the next rail on the day the schema does.
       const parsed = PaymentsReconcileParams.safeParse({
-        ...(args.user === undefined ? {} : { userId: args.user }),
+        ...(subject ?? {}),
         ...(args.rail === undefined ? {} : { rail: args.rail }),
         ...(args["dry-run"] ? { dryRun: true } : {}),
       });

@@ -4,6 +4,7 @@
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { describe, expect, test } from "vitest";
 import { PAYMENTS_RAILS } from "../data/rail";
+import { PaymentsSubjectType } from "../data/subject";
 import { PAYMENTS_CAPABILITY, PaymentsReconcileParams, paymentsWorkflowRegistry, paymentsWorkflows } from "./specs";
 
 describe("payments workflow specs", () => {
@@ -46,10 +47,11 @@ describe("payments workflow specs", () => {
     }
   });
 
-  test("a manual run may narrow to a user, a rail, the windows, and a dry run", () => {
+  test("a manual run may narrow to a holder, a rail, the windows, and a dry run", () => {
     expect(
       PaymentsReconcileParams.parse({
-        userId: "ada",
+        subjectType: "organization",
+        subjectId: "acme",
         rail: "apple",
         expiringWithinSeconds: 60,
         staleAfterSeconds: 120,
@@ -58,7 +60,8 @@ describe("payments workflow specs", () => {
         dryRun: true,
       }),
     ).toEqual({
-      userId: "ada",
+      subjectType: "organization",
+      subjectId: "acme",
       rail: "apple",
       expiringWithinSeconds: 60,
       staleAfterSeconds: 120,
@@ -66,6 +69,40 @@ describe("payments workflow specs", () => {
       maxPages: 2,
       dryRun: true,
     });
+  });
+
+  test("the holder narrowing is the pair — both halves, or neither", () => {
+    // Neither is the cron, and it is legal. Both is the support pass. One half is neither, and it is the
+    // shape that has to be refused rather than ignored: `subjectId` alone would narrow to whichever user
+    // *or* organization happens to carry that id, which is a different catalog from the one asked for.
+    expect(PaymentsReconcileParams.safeParse({}).success).toBe(true);
+    expect(PaymentsReconcileParams.safeParse({ subjectType: "user", subjectId: "ada" }).success).toBe(true);
+    expect(PaymentsReconcileParams.safeParse({ subjectId: "ada" }).success).toBe(false);
+    expect(PaymentsReconcileParams.safeParse({ subjectType: "user" }).success).toBe(false);
+  });
+
+  test("half a holder is refused with the other half named, because the other half is the remedy", () => {
+    const refused = PaymentsReconcileParams.safeParse({ subjectId: "ada" });
+    expect(refused.success).toBe(false);
+    expect(refused.error?.issues.map((issue) => issue.message).join(" ")).toContain("subjectType");
+  });
+
+  test("a kind nobody models is refused at dispatch, so a typo never reaches a running instance", () => {
+    // The same reason `--rail lemon-squeezy` is refused one test down: these params come off CLI flags.
+    expect(PaymentsReconcileParams.safeParse({ subjectType: "org", subjectId: "acme" }).success).toBe(false);
+    // Anti-vacuity: every kind this build models *is* accepted, so the refusal above is about the spelling.
+    for (const subjectType of PaymentsSubjectType.options) {
+      expect(PaymentsReconcileParams.safeParse({ subjectType, subjectId: "acme" }).success, subjectType).toBe(true);
+    }
+  });
+
+  test("a bare user id — the shape every pre-subject caller sent — narrows nothing", () => {
+    // Not a compatibility shim, deliberately. `userId` is stripped as an unknown key, and the pass runs over
+    // the whole catalog rather than one holder's purchases: wide, slow, and correct. Reading it as
+    // `{ subjectType: "user" }` would be the guess `decodeSubjectReference` refuses for the same reason —
+    // under organization billing that id names an organization, and the support pass would answer about
+    // whoever happens to hold it.
+    expect(PaymentsReconcileParams.parse({ userId: "ada" })).toEqual({});
   });
 
   test("a nonsense window or page size is refused at dispatch, not inside a running instance", () => {

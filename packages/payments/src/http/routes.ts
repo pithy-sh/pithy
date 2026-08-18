@@ -26,9 +26,17 @@ import type { PaymentsEntitlement } from "../data/entitlement";
 import type { PurchaseEnvironment } from "../data/purchase";
 import { PaymentsPurchase } from "../data/purchase";
 import { PAYMENTS_HOSTED_RAILS, type PaymentsRail } from "../data/rail";
+import {
+  decodeSubjectReference,
+  encodeSubjectReference,
+  type PaymentsSubject,
+  type PaymentsSubjectType,
+  sameSubject,
+} from "../data/subject";
 import { PAYMENTS_PURCHASES_TABLE, paymentsDatabase } from "../data/tables";
 import { WEBHOOK_EVENT_ORPHANED } from "../data/webhookEvent";
 import { grantEntitlement, revokeEntitlement } from "../entitlement/manual";
+import { type PaymentsSubjectSeam, requirePaymentsSubject, resolvePaymentsSubject } from "../entitlement/subjectSeam";
 import {
   PaymentsEntitlementNotInCatalogError,
   PaymentsProductNotFoundError,
@@ -37,7 +45,7 @@ import {
 } from "../error/errors";
 import { fulfillPurchase } from "../grants/apply";
 import { repairOrphanedEvents } from "../projection/orphans";
-import { linkProviderAccount, providerAccountForUser, resolveNotificationOwner } from "../projection/owner";
+import { linkProviderAccount, providerAccountForSubject, resolveNotificationOwner } from "../projection/owner";
 import { resolveEntitlements } from "../projection/resolve";
 import { type PurchaseProjection, projectPurchase } from "../projection/writer";
 import {
@@ -57,8 +65,8 @@ import type {
   PaymentsAdminEntitlementsResponse,
   PaymentsAdminPurchasesResponse,
   PaymentsAdminReconcileRunsResponse,
+  PaymentsAdminSubjectEntitlementsResponse,
   PaymentsAdminSubscriptionsResponse,
-  PaymentsAdminUserEntitlementsResponse,
   PaymentsCheckoutHandoffResponse,
   PaymentsDiscountResponse,
   PaymentsEntitlementResponse,
@@ -75,8 +83,8 @@ import {
   AdminEntitlementsQuery,
   AdminPurchasesQuery,
   AdminReconcileRunsQuery,
+  AdminSubjectParam,
   AdminSubscriptionsQuery,
-  AdminUserParam,
   AppleWebhookNotification,
   CheckoutRequest,
   DiscountCreateRequest,
@@ -128,7 +136,8 @@ import { completeWebhook, requireSignedWebhook, verifiedWebhook } from "./webhoo
  *   GET  /payments/admin/purchases              → the purchase log, paged        (control-plane: payments:purchases:read)      query: AdminPurchasesQuery
  *   GET  /payments/admin/subscriptions          → the purchases that renew       (control-plane: payments:subscriptions:read)  query: AdminSubscriptionsQuery
  *   GET  /payments/admin/entitlements           → the entitlement model, paged   (control-plane: payments:entitlements:read)   query: AdminEntitlementsQuery
- *   GET  /payments/admin/entitlements/:userId   → one account's entitlements     (control-plane: payments:entitlements:read)   param: AdminUserParam
+ *   GET  /payments/admin/entitlements/:subjectType/:subjectId
+ *                                              → one subject's entitlements     (control-plane: payments:entitlements:read)   param: AdminSubjectParam
  *   GET  /payments/admin/reconcile-runs         → the reconciliation run log     (control-plane: payments:reconcile:read)     query: AdminReconcileRunsQuery
  *
  * **The reads exist because the writes did.** Payments shipped `entitlements/grant` and
@@ -186,10 +195,33 @@ import { completeWebhook, requireSignedWebhook, verifiedWebhook } from "./webhoo
  * ## What the handlers never trust
  *
  * The **product** comes from the verified payload's SKU, never from the request. A client-supplied product id
- * would let a caller present a cheap receipt as an expensive product. The **owner** comes from the
- * `AuthContext` seam on the authed routes and from the provider-account map on the webhook, never from a body.
- * The **environment** comes from this deployment's own `ENVIRONMENT` var, never from the payload: inferring it
+ * would let a caller present a cheap receipt as an expensive product. The **owner** comes from the subject
+ * seam on the authed routes and from the provider-account map on the webhook, never from a body. The
+ * **environment** comes from this deployment's own `ENVIRONMENT` var, never from the payload: inferring it
  * from what the store said is exactly what lets a sandbox purchase grant a real entitlement.
+ *
+ * ## Who a request is about: one question, one implementation
+ *
+ * Every route here that touches a holder asks the subject seam, and asks it in one of exactly two ways.
+ * A **read** calls {@link resolvePaymentsSubject}: nobody resolved is an empty or denied read, never a 500 and
+ * never a guess, because a gate that resolved *something* when it could not tell who was asking would hand one
+ * holder's plan to whoever asked next. A **write** calls {@link requirePaymentsSubject}, which refuses with
+ * `payments/subject_unresolved` (403): a purchase, a restore, a checkout and a portal session each need a row
+ * key, and a guessed key attributes real money to the wrong holder.
+ *
+ * **Nothing here falls back to `c.var.auth.userId`, in either mode.** Under `billingSubject: "user"` the
+ * fallback would be identical to the seam's own default and would therefore look harmless; under
+ * `"organization"` it would silently key a company's subscription to whichever employee happened to be signed
+ * in. One expression, in `entitlement/subjectSeam.ts`, is what keeps the gate and the routes answering the
+ * same question — a second copy is a second policy, and the two disagree the day one of them is edited.
+ *
+ * **No player-facing request names a subject, and no player-facing response publishes one.** A body or a query
+ * that could name a holder is a body that could name somebody else's, and this capability has nothing to check
+ * that claim against: it has no members table, by design. The control-plane surfaces are the deliberate
+ * exception, and the exception is the feature — support acting on another holder's account is what they are
+ * for, which is why each sits behind a default-denied scoped credential and is audited. `schemas.ts` states
+ * the same rule from the request side, and `routeContract.test.ts` asserts it as a property over every schema
+ * and every response this capability declares, rather than route by route.
  */
 export interface PaymentsRoutesOptions {
   /** The resolved catalog. */
@@ -203,6 +235,30 @@ export interface PaymentsRoutesOptions {
    * only — no caller can narrow the trust set. See {@link RailTrustOptions} for the two callers that need it.
    */
   trust?: RailTrustOptions;
+  /**
+   * Which subject a caller is acting for: the mode, and the adopter's resolver. See
+   * `entitlement/subjectSeam.ts`.
+   *
+   * **Handed in whole rather than assembled here**, because `payments()` builds exactly one of these and
+   * gives the same object to the entitlement middleware and to these routes. Two constructions are two
+   * policies, and the two disagree the day one of them is edited.
+   *
+   * **The resolver rides on this rather than on `PaymentsConfig`, and that is a hard constraint rather than a
+   * preference.** `provision/resolvePaymentsConfig.ts` serializes the resolved config into the
+   * `PAYMENTS_CONFIG` var and `workflows/worker.ts` parses it back, so a function cannot survive the round
+   * trip. The serializable half of the decision — `billingSubject`, which mode this project bills in — is
+   * config; the callable half is a composition-time option.
+   *
+   * The consequence is worth stating out loud: **a Workflow runs with no adopter resolver.** The reconcile and
+   * Paddle sweep hosts parse the config and never see this, so anything in them needing a holder reads it from
+   * the stored row that already carries the pair, and never from the seam.
+   *
+   * Omitted means the config's own mode with no adopter resolver — the authenticated caller under
+   * `billingSubject: "user"`, and nobody at all under `"organization"`. The default is the *same* derivation
+   * `payments()` makes for a project that supplies none, never a different one, and `payments()` refuses to
+   * compose organization billing without a resolver rather than reaching this state.
+   */
+  subject?: PaymentsSubjectSeam;
 }
 
 /** The app `DB` binding, or a wiring failure. Payments cannot resolve anything without it. */
@@ -246,13 +302,19 @@ function deploymentName(c: Context<PithyHonoEnv>): string | undefined {
 }
 
 /**
- * The caller's own id. `requireAuth()` has run on every route that calls this, so a null `auth` is a wiring
- * mistake rather than an unauthenticated request — hence `InternalError`, not a 401.
+ * The subject filter on a management listing: the pair, or nothing at all.
+ *
+ * `AdminPurchasesQuery` and its siblings carry the two halves as two optional query fields with a both-or-
+ * neither refinement, because a query string is flat. This is the one place that pair is reassembled, and the
+ * `&&` is what makes an id with no kind resolve to *no filter* rather than to half of one. The refinement has
+ * already refused that request with a 400 — a listing narrowed on `subject_id` alone would hand a client
+ * asking about a person the rows of an organization that happens to share the id — so this is belt and braces
+ * on the one narrowing where being wrong discloses somebody else's commerce.
  */
-function callerId(c: Context<PithyHonoEnv>): string {
-  const auth = c.var.auth;
-  if (!auth) throw new InternalError({ detail: "requireAuth() must run before a payments handler reads the caller." });
-  return auth.userId;
+function subjectFilter(query: { subjectType?: PaymentsSubjectType; subjectId?: string }): PaymentsSubject | undefined {
+  return query.subjectType !== undefined && query.subjectId !== undefined
+    ? { subjectType: query.subjectType, subjectId: query.subjectId }
+    : undefined;
 }
 
 /**
@@ -260,9 +322,9 @@ function callerId(c: Context<PithyHonoEnv>): string {
  * that calls this, so a null context is a wiring mistake rather than an unverified request — hence
  * `InternalError`, not a 401.
  *
- * Deliberately not {@link callerId}. A management client has no user row and no session, so there is nothing
- * here to read off `c.var.auth`; keeping the two accessors apart is what stops a control-plane caller from
- * being recorded as, or mistaken for, a user of this app.
+ * Deliberately not the subject seam. A management client has no user row and no session, so there is nothing
+ * here to read off `c.var.auth` and nothing for a resolver to answer; keeping the two apart is what stops a
+ * control-plane caller from being recorded as, or mistaken for, a user of this app.
  */
 function controlPlaneCaller(c: Context<PithyHonoEnv>): ControlPlaneContext {
   const caller = c.var.controlPlane;
@@ -328,6 +390,8 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
   const base = options.basePath ?? config.basePath;
   const clock = options.now ?? (() => new Date());
   const trust = options.trust ?? {};
+  /** The seam `payments()` built, or the resolver-less one this config implies. See {@link PaymentsRoutesOptions.subject}. */
+  const seam: PaymentsSubjectSeam = options.subject ?? { billingSubject: config.billingSubject };
 
   /**
    * Stripe's hosted-flow return URLs, or the 404 that says the rail is off.
@@ -449,10 +513,10 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
   /**
    * The store's own subscription ids this caller holds on a rail — the family keys of their own rows.
    *
-   * Read from the projection rather than from the store, and always for the authenticated caller. What it
-   * feeds is a portal request for authenticated cancel links, so the set has to be exactly what this user
-   * owns: a wider one would mint somebody else's cancel button, and there is no request field that could
-   * widen it.
+   * Read from the projection rather than from the store, and always for the subject the seam resolved. What
+   * it feeds is a portal request for authenticated cancel links, so the set has to be exactly what this
+   * holder owns: a wider one would mint somebody else's cancel button, and there is no request field that
+   * could widen it.
    *
    * `originalTransactionId` rather than `providerTransactionId`, because a subscription's money rows name
    * the family there and the state row names itself there too — so one column answers for both.
@@ -460,12 +524,15 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
   async function ownSubscriptionIds(
     c: Context<PithyHonoEnv>,
     rail: PaymentsRail,
-    userId: string,
+    subject: PaymentsSubject,
   ): Promise<readonly string[]> {
     const rows = await paymentsDatabase(database(c))
       .selectFrom(PAYMENTS_PURCHASES_TABLE)
       .select(["originalTransactionId"])
-      .where("userId", "=", userId)
+      // Both halves, as everywhere: an id-only predicate would mint `user:acme` a cancel link for whatever
+      // `organization:acme` is paying for.
+      .where("subjectType", "=", subject.subjectType)
+      .where("subjectId", "=", subject.subjectId)
       .where("rail", "=", rail)
       .where("type", "=", "subscription")
       .orderBy("providerEventAt", "desc")
@@ -475,13 +542,28 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
     return [...ids];
   }
 
-  /** The caller's store account on a rail, or null. What keeps one buyer to one Stripe customer. */
-  async function accountFor(c: Context<PithyHonoEnv>, rail: PaymentsRail, userId: string): Promise<string | null> {
-    return (await providerAccountForUser(paymentsDatabase(database(c)), rail, userId)) ?? null;
+  /** The subject's store account on a rail, or null. What keeps one buyer to one Stripe customer. */
+  async function accountFor(
+    c: Context<PithyHonoEnv>,
+    rail: PaymentsRail,
+    subject: PaymentsSubject,
+  ): Promise<string | null> {
+    return (await providerAccountForSubject(paymentsDatabase(database(c)), rail, subject)) ?? null;
   }
 
-  /** Verify one receipt through its rail and project it against the caller. Shared by submit and restore. */
-  async function submit(c: Context<PithyHonoEnv>, rail: PaymentsRail, receipt: string): Promise<PurchaseProjection> {
+  /**
+   * Verify one receipt through its rail and project it against the subject. Shared by submit and restore.
+   *
+   * **The subject is a parameter, not resolved here**, and that is deliberate: `/restore` submits a batch, and
+   * a seam call per receipt would ask the adopter's resolver the same question fifty times — and would let the
+   * answer change halfway through a batch, filing one client's history under two holders.
+   */
+  async function submit(
+    c: Context<PithyHonoEnv>,
+    subject: PaymentsSubject,
+    rail: PaymentsRail,
+    receipt: string,
+  ): Promise<PurchaseProjection> {
     const now = clock();
     const d1 = database(c);
     const provider = resolveRailProvider(rail, config, await credentials(c), trust);
@@ -490,15 +572,23 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
     // deployment's own secret verifies beside it — and the environment is *inside* that MAC's message, so a
     // rail handed no deployment can prove nothing and refuses every submission. The other rails ignore it.
     const verified = await provider.verify(receipt, { now, deployment: deploymentName(c) });
-    const userId = callerId(c);
 
     // A purchase this deployment initiated names its own purchaser, and a submission from anyone else is refused
-    // before it is projected. Only Stripe sets this — see `VerifiedPurchase.accountReference` for why an
-    // app-supplied identifier like Apple's `appAccountToken` deliberately does not.
-    if (verified.accountReference && verified.accountReference !== userId) {
-      throw new PaymentsReceiptAlreadyOwnedError({
-        detail: `${rail} purchase ${verified.event.providerTransactionId} was started for ${verified.accountReference}; ${userId} submitted it.`,
-      });
+    // before it is projected. Only Stripe and Paddle set this — see `VerifiedPurchase.accountReference` for why
+    // an app-supplied identifier like Apple's `appAccountToken` deliberately does not.
+    //
+    // **A reference that does not decode is refused, not ignored.** It is bytes from a store, so it may be a
+    // bare id — the shape every pre-subject client sent — or a kind this build does not know, and neither names
+    // this caller. `sameSubject` answers false for `undefined` against anything, so the one comparison covers
+    // the malformed case and the wrong-holder case together, and covers both halves of the pair: `user:acme`
+    // submitting `organization:acme`'s purchase is refused exactly as a stranger's is.
+    if (verified.accountReference) {
+      const stamped = decodeSubjectReference(verified.accountReference);
+      if (!sameSubject(stamped, subject)) {
+        throw new PaymentsReceiptAlreadyOwnedError({
+          detail: `${rail} purchase ${verified.event.providerTransactionId} was started for ${stamped === undefined ? "a reference this build cannot read" : encodeSubjectReference(stamped)}; ${encodeSubjectReference(subject)} submitted it.`,
+        });
+      }
     }
 
     // `return await`, not `return`. Returning a promise from an async function makes this frame *adopt* the
@@ -507,7 +597,9 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
     // traffic — a stale receipt, a sandbox transaction — so it must not read as a runtime fault in a log.
     const projection = await projectPurchase(
       d1,
-      { ...verified.event, userId },
+      // Both halves, off the one resolved subject. The event carries them flat because a row does, and
+      // spreading the pair is what keeps a kind from one place beside an id from another.
+      { ...verified.event, ...subject },
       { config, environment: deploymentEnvironment(c), now },
     );
 
@@ -520,7 +612,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
     // notifications of whoever those identifiers really belonged to. Requiring a projected purchase first means
     // a binding costs a real purchase on the deployment's own environment, and leaves a row naming who made it.
     if (verified.providerAccountId) {
-      const bound = await linkProviderAccount(d1, rail, verified.providerAccountId, userId, { now });
+      const bound = await linkProviderAccount(d1, rail, verified.providerAccountId, subject, { now });
       // The binding never rebinds, so a disagreement means somebody else claimed this store account first.
       // That is legitimate often enough (a shared device, a reinstall against a new Pithy account) that
       // refusing would hand an attacker a way to lock the real owner out — so the first binding stands, this
@@ -529,16 +621,28 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       // the *only* link event there is — no webhook on those rails carries an account reference — so a rail
       // that cannot replay its own recorded payload is answered by a no-op here rather than by an omission.
       await repairOrphans(c, rail, now);
-      if (bound !== userId) {
+      if (!sameSubject(bound, subject)) {
         await c.var.emit({
           action: PaymentsAuditActions.providerAccountContested,
           outcome: "denied",
           severity: "warning",
+          // The **person** who submitted, not the holder they act for. An organization does not press a
+          // button; somebody at it does, and a trail that recorded the company here would answer "who did
+          // this" with a name nobody can be asked about it.
           actorType: "user",
-          actorId: userId,
+          actorId: c.var.auth?.userId,
           resourceType: "provider_account",
           resourceId: `${rail}:${verified.providerAccountId}`,
-          metadata: { rail, boundTo: bound, claimedBy: userId },
+          // Two keys per subject, never one joined string. A trail is queried by equality on a column, and a
+          // `user:ada` that has to be split before it can be compared is a column nobody filters correctly
+          // twice. `encodeSubjectReference` is for the single-field slots a *store* gives us; this is ours.
+          metadata: {
+            rail,
+            boundToType: bound.subjectType,
+            boundToId: bound.subjectId,
+            claimedByType: subject.subjectType,
+            claimedById: subject.subjectId,
+          },
         });
       }
     }
@@ -634,17 +738,27 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       zValidator("query", AdminPurchasesQuery, validationHook),
       async (c) => {
         const query = c.req.valid("query");
-        const page = await listPurchases(database(c), query);
-        await recordRead(c, PaymentsAuditActions.purchasesRead, query.userId ?? null, {
-          returned: page.items.length,
-          resumed: query.cursor !== undefined,
-          filters: {
-            userId: query.userId ?? null,
-            rail: query.rail ?? null,
-            status: query.status ?? null,
-            environment: query.environment ?? null,
+        const subject = subjectFilter(query);
+        const page = await listPurchases(database(c), { ...query, subject });
+        // The audit row's `resourceId` is one column, so the pair is encoded for it — the same encoding a
+        // store's single-field slot gets, and the only place in this file one is written. The **filters** stay
+        // two keys, because those are what a trail is queried by.
+        await recordRead(
+          c,
+          PaymentsAuditActions.purchasesRead,
+          subject === undefined ? null : encodeSubjectReference(subject),
+          {
+            returned: page.items.length,
+            resumed: query.cursor !== undefined,
+            filters: {
+              subjectType: subject?.subjectType ?? null,
+              subjectId: subject?.subjectId ?? null,
+              rail: query.rail ?? null,
+              status: query.status ?? null,
+              environment: query.environment ?? null,
+            },
           },
-        });
+        );
         return c.json(
           {
             purchases: page.items.map(adminPurchaseView),
@@ -670,12 +784,22 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       zValidator("query", AdminSubscriptionsQuery, validationHook),
       async (c) => {
         const query = c.req.valid("query");
-        const page = await listSubscriptions(database(c), query);
-        await recordRead(c, PaymentsAuditActions.subscriptionsRead, query.userId ?? null, {
-          returned: page.items.length,
-          resumed: query.cursor !== undefined,
-          filters: { userId: query.userId ?? null, status: query.status ?? null },
-        });
+        const subject = subjectFilter(query);
+        const page = await listSubscriptions(database(c), { ...query, subject });
+        await recordRead(
+          c,
+          PaymentsAuditActions.subscriptionsRead,
+          subject === undefined ? null : encodeSubjectReference(subject),
+          {
+            returned: page.items.length,
+            resumed: query.cursor !== undefined,
+            filters: {
+              subjectType: subject?.subjectType ?? null,
+              subjectId: subject?.subjectId ?? null,
+              status: query.status ?? null,
+            },
+          },
+        );
         return c.json(
           {
             subscriptions: page.items.map(adminPurchaseView),
@@ -700,12 +824,22 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       async (c) => {
         const query = c.req.valid("query");
         const now = clock();
-        const page = await listEntitlements(database(c), query);
-        await recordRead(c, PaymentsAuditActions.entitlementsRead, query.userId ?? null, {
-          returned: page.items.length,
-          resumed: query.cursor !== undefined,
-          filters: { userId: query.userId ?? null, entitlement: query.entitlement ?? null },
-        });
+        const subject = subjectFilter(query);
+        const page = await listEntitlements(database(c), { ...query, subject });
+        await recordRead(
+          c,
+          PaymentsAuditActions.entitlementsRead,
+          subject === undefined ? null : encodeSubjectReference(subject),
+          {
+            returned: page.items.length,
+            resumed: query.cursor !== undefined,
+            filters: {
+              subjectType: subject?.subjectType ?? null,
+              subjectId: subject?.subjectId ?? null,
+              entitlement: query.entitlement ?? null,
+            },
+          },
+        );
         return c.json(
           {
             entitlements: page.items.map((row) => adminEntitlementView(row, now)),
@@ -717,27 +851,38 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
     );
 
     /**
-     * CONTROL PLANE. Everything one account is entitled to, resolved now.
+     * CONTROL PLANE. Everything one subject is entitled to, resolved now.
      *
-     * Unpaginated, because the table is keyed `UNIQUE (userId, entitlement)` and this is at most one row
-     * per key. An account holding nothing is an empty list rather than a 404: an entitlement row appears
-     * with the first purchase that grants one, so its absence is not a missing person — and a 404 would
-     * make this surface an existence oracle for user ids.
+     * **Two path segments, because the address is a pair.** The table is keyed
+     * `UNIQUE (subjectType, subjectId, entitlement)`, and nothing in the kit keeps an organization id from
+     * equalling some user's — so a route addressed by the id alone would answer about whichever holder
+     * happened to carry it. Both segments are validated: an unknown kind is a 400 naming the two that exist,
+     * which is what a malformed address deserves, where the encoded-reference form would have been a 404
+     * reading as a holder who is simply not here.
+     *
+     * Unpaginated, because the key above admits at most one row per entitlement. A subject holding nothing is
+     * an empty list rather than a 404: an entitlement row appears with the first purchase that grants one, so
+     * its absence is not a missing holder — and a 404 would make this surface an existence oracle for user and
+     * organization ids alike.
      */
     app.get(
-      `${base}/admin/entitlements/:userId`,
+      `${base}/admin/entitlements/:subjectType/:subjectId`,
       requireControlPlane(PAYMENTS_ENTITLEMENTS_READ_SCOPE),
-      zValidator("param", AdminUserParam, validationHook),
+      zValidator("param", AdminSubjectParam, validationHook),
       async (c) => {
-        const { userId } = c.req.valid("param");
+        const subject = c.req.valid("param");
         const now = clock();
-        const rows = await readEntitlements(database(c), userId);
-        await recordRead(c, PaymentsAuditActions.entitlementsRead, userId, { userId, returned: rows.length });
+        const rows = await readEntitlements(database(c), subject);
+        await recordRead(c, PaymentsAuditActions.entitlementsRead, encodeSubjectReference(subject), {
+          subjectType: subject.subjectType,
+          subjectId: subject.subjectId,
+          returned: rows.length,
+        });
         return c.json(
           {
-            userId,
+            ...subject,
             entitlements: rows.map((row) => adminEntitlementView(row, now)),
-          } satisfies PaymentsAdminUserEntitlementsResponse,
+          } satisfies PaymentsAdminSubjectEntitlementsResponse,
           200,
         );
       },
@@ -783,20 +928,28 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      */
     app.post(`${base}/purchases`, requireAuth(), zValidator("json", PurchaseSubmission, validationHook), async (c) => {
       const input = c.req.valid("json");
+      // Resolved before the store is called: a caller acting for nobody has no row to write, so refusing here
+      // costs no round trip and cannot leave a charged customer with an unattributed purchase.
+      const subject = await requirePaymentsSubject(c, seam);
       try {
-        const projection = await submit(c, input.rail, input.receipt);
+        const projection = await submit(c, subject, input.rail, input.receipt);
         await c.var.emit({
           action: PaymentsAuditActions.purchaseVerified,
           outcome: "success",
+          // The person who submitted, always — the subject they act for rides in the metadata below. Under
+          // organization billing the two differ, and collapsing them would answer "who did this" with a
+          // company rather than with somebody who can be asked.
           actorType: "user",
-          actorId: callerId(c),
+          actorId: c.var.auth?.userId,
           sessionId: c.var.auth?.sessionId,
           resourceType: "purchase",
           resourceId: projection.purchase.id,
           // Identifiers and outcomes only. Never the receipt: the trail is long-lived and queryable, and a
-          // receipt is a bearer artifact.
+          // receipt is a bearer artifact. The holder is two keys, never one joined string.
           metadata: {
             rail: input.rail,
+            subjectType: subject.subjectType,
+            subjectId: subject.subjectId,
             productId: projection.product.id,
             status: projection.purchase.status,
             outcome: projection.outcome,
@@ -820,19 +973,33 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
           actorType: "user",
           actorId: c.var.auth?.userId,
           sessionId: c.var.auth?.sessionId,
-          metadata: { rail: input.rail, reason: cause instanceof PithyError ? cause.payload.code : "unknown" },
+          metadata: {
+            rail: input.rail,
+            subjectType: subject.subjectType,
+            subjectId: subject.subjectId,
+            reason: cause instanceof PithyError ? cause.payload.code : "unknown",
+          },
         });
         throw cause;
       }
     });
 
     /**
-     * AUTHED READ. Always the caller's own — the id comes from the seam, never the request, so there is no
-     * shape of this route that reads somebody else's entitlements. A pure read: repairing a stale row is the
-     * reconciliation Workflow's job, and `expiresAt` is rechecked here on every request.
+     * AUTHED READ. Always the caller's own holder — the subject comes from the seam, never the request, so
+     * there is no shape of this route that reads somebody else's entitlements. A pure read: repairing a stale
+     * row is the reconciliation Workflow's job, and `expiresAt` is rechecked here on every request.
+     *
+     * **Nobody resolved is an empty list, not a refusal**, and that is the read half of the seam's rule. A
+     * signed-in person with no organization selected holds nothing, which is what every gate in the kit
+     * already answers for somebody who has bought nothing — and a 403 here would make a paywall render an
+     * error where it should render the paywall.
      */
     app.get(`${base}/entitlements`, requireAuth(), async (c) => {
-      const entitlements = await resolveEntitlements(paymentsDatabase(database(c)), callerId(c), clock());
+      const subject = await resolvePaymentsSubject(c, seam);
+      if (subject === undefined) {
+        return c.json({ entitlements: [] } satisfies PaymentsEntitlementsResponse, 200);
+      }
+      const entitlements = await resolveEntitlements(paymentsDatabase(database(c)), subject, clock());
       return c.json({ entitlements: entitlements.map(entitlementView) } satisfies PaymentsEntitlementsResponse, 200);
     });
 
@@ -847,17 +1014,26 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      */
     app.post(`${base}/restore`, requireAuth(), zValidator("json", RestoreRequest, validationHook), async (c) => {
       const input = c.req.valid("json");
+      // One resolution for the whole batch. A client submits *its own* history, so every receipt in it is
+      // filed against one holder or the request is refused — asking the seam per receipt would let the answer
+      // change mid-batch and split one store account across two.
+      const subject = await requirePaymentsSubject(c, seam);
       const purchases: ReturnType<typeof purchaseView>[] = [];
-      for (const receipt of input.receipts) purchases.push(purchaseView(await submit(c, input.rail, receipt)));
+      for (const receipt of input.receipts) purchases.push(purchaseView(await submit(c, subject, input.rail, receipt)));
 
-      const entitlements = await resolveEntitlements(paymentsDatabase(database(c)), callerId(c), clock());
+      const entitlements = await resolveEntitlements(paymentsDatabase(database(c)), subject, clock());
       await c.var.emit({
         action: PaymentsAuditActions.purchaseRestored,
         outcome: "success",
         actorType: "user",
-        actorId: callerId(c),
+        actorId: c.var.auth?.userId,
         sessionId: c.var.auth?.sessionId,
-        metadata: { rail: input.rail, restored: purchases.length },
+        metadata: {
+          rail: input.rail,
+          subjectType: subject.subjectType,
+          subjectId: subject.subjectId,
+          restored: purchases.length,
+        },
       });
       return c.json(
         { purchases, entitlements: entitlements.map(entitlementView) } satisfies PaymentsRestoreResponse,
@@ -951,12 +1127,17 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      *
      * Everything that decides what is bought and where the buyer is returned to comes from config or from the
      * seam, never from the body: the **price** from the catalog entry the product id resolves to, the **return
-     * URLs** from `config.stripe`, and the **purchaser** from `c.var.auth`. A client that could name a price
+     * URLs** from `config.stripe`, and the **purchaser** from the subject seam. A client that could name a price
      * could buy Pro for the price of a coin pack; one that could name a return URL could send a paying customer
      * to a page it controls; one that could name a purchaser could attach its purchase to another account.
+     *
+     * The subject is resolved first, ahead of the catalog lookup: a caller acting for no holder has nothing to
+     * be charged as, and refusing before the 404 keeps this from answering what a project sells to somebody it
+     * cannot bill.
      */
     app.post(`${base}/checkout`, requireAuth(), zValidator("json", CheckoutRequest, validationHook), async (c) => {
       const input = c.req.valid("json");
+      const subject = await requirePaymentsSubject(c, seam);
       const entry = product(config, input.productId);
       const rail = checkoutRailFor(entry, input.rail);
       const settings = returnUrls(rail);
@@ -969,16 +1150,17 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         });
       }
 
-      const userId = callerId(c);
       const provider = await checkoutRail(c, rail);
       const handoff = await provider.createCheckoutSession(
         {
           providerProductId: sku,
           subscription: entry.product.type === "subscription",
-          userId,
+          // The pair, so the rail stamps `encodeSubjectReference(subject)` into the checkout it creates and
+          // the webhook that follows already names a holder this server chose.
+          subject,
           // Reuse the buyer's existing store customer, so one buyer keeps one account and their billing portal
           // shows every purchase rather than only the last one's.
-          providerAccountId: await accountFor(c, rail, userId),
+          providerAccountId: await accountFor(c, rail, subject),
           successUrl: settings.successUrl,
           cancelUrl: settings.cancelUrl,
           // Passed to the store unchanged. Pithy never computes a discounted amount and never checks a code
@@ -992,12 +1174,14 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         action: PaymentsAuditActions.checkoutStarted,
         outcome: "success",
         actorType: "user",
-        actorId: userId,
+        actorId: c.var.auth?.userId,
         sessionId: c.var.auth?.sessionId,
         resourceType: "product",
         resourceId: entry.id,
         metadata: {
           rail,
+          subjectType: subject.subjectType,
+          subjectId: subject.subjectId,
           productId: entry.id,
           subscription: entry.product.type === "subscription",
           // Whether one was used, never which. The trail is long-lived and a code is a commercial fact.
@@ -1017,7 +1201,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * any signed-in caller could open a session against somebody else's billing history and cancel it.
      */
     app.post(`${base}/portal`, requireAuth(), async (c) => {
-      const userId = callerId(c);
+      const subject = await requirePaymentsSubject(c, seam);
 
       // Which rail this caller actually bought on, found by asking the account map rather than by taking it
       // from the request. Still no body: the caller names neither the customer nor the rail, so there is
@@ -1035,7 +1219,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
 
       let found: { rail: PaymentsRail; providerAccountId: string } | undefined;
       for (const rail of enabled) {
-        const providerAccountId = await accountFor(c, rail, userId);
+        const providerAccountId = await accountFor(c, rail, subject);
         if (providerAccountId !== null) {
           found = { rail, providerAccountId };
           break;
@@ -1049,7 +1233,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         throw new NotFoundError({
           message: "No billing account yet.",
           action: "Buy a subscription first, then manage it here.",
-          detail: `No hosted-rail provider account is linked to ${userId}.`,
+          detail: `No hosted-rail provider account is linked to ${encodeSubjectReference(subject)}.`,
         });
       }
 
@@ -1064,7 +1248,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
           // **From the caller's own rows, never from a body.** A store that mints per-subscription deep
           // links mints authenticated ones, so naming a subscription is naming somebody's cancel button.
           // There is still no request field: the route reads what this caller owns.
-          subscriptionIds: await ownSubscriptionIds(c, found.rail, userId),
+          subscriptionIds: await ownSubscriptionIds(c, found.rail, subject),
         },
         { now: clock(), deployment: deploymentName(c) },
       );
@@ -1073,11 +1257,11 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         action: PaymentsAuditActions.portalOpened,
         outcome: "success",
         actorType: "user",
-        actorId: userId,
+        actorId: c.var.auth?.userId,
         sessionId: c.var.auth?.sessionId,
         resourceType: "provider_account",
         resourceId: found.providerAccountId,
-        metadata: { rail: found.rail },
+        metadata: { rail: found.rail, subjectType: subject.subjectType, subjectId: subject.subjectId },
       });
       return c.json(
         {
@@ -1110,9 +1294,9 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * is, from a customer's seat, indistinguishable from a billing error — so a screen offering a
      * twelve-month rate has to be able to say when the twelve months end.
      *
-     * The caller's own, always: the subscription is found from the provider-account map keyed on the
-     * authenticated user, and there is no request field naming one. Answers `null` when this caller has no
-     * subscription a rail can price, which is a fact rather than a failure.
+     * The caller's own holder, always: the subscription is found from rows keyed on the subject the seam
+     * resolved, and there is no request field naming one. Answers `null` when that holder has no subscription
+     * a rail can price, which is a fact rather than a failure.
      *
      * **`quotedFrom` rides here because a browser cannot price a customer it cannot name.** Paddle quotes
      * in the browser — `PricePreview` runs from the visitor's own page — and with no customer id it
@@ -1127,12 +1311,17 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
      * both. Nesting one in the other would make the common case unreachable.
      */
     app.get(`${base}/pricing`, requireAuth(), async (c) => {
-      const userId = callerId(c);
+      const subject = await resolvePaymentsSubject(c, seam);
+      // A read, so nobody resolved is the empty answer rather than a refusal — the same direction
+      // `GET {base}/entitlements` takes, and for the same reason: a screen with no billing account selected
+      // is quoting from nothing, which is a fact rather than a failure.
+      if (subject === undefined)
+        return c.json({ pricing: null, quotedFrom: null } satisfies PaymentsPricingEnvelope, 200);
       const db = paymentsDatabase(database(c));
 
       // The one read, shared with `/checkout`. `accountFor` is what that route calls to decide who is
       // charged, so a screen quoting from this answer is quoting from the row that will be billed.
-      const paddleCustomer = await accountFor(c, "paddle", userId);
+      const paddleCustomer = await accountFor(c, "paddle", subject);
       const quotedFrom: PaymentsQuotedFrom | null =
         paddleCustomer === null ? null : { rail: "paddle", providerAccountId: paddleCustomer };
       /** The envelope, so every exit below carries both facts rather than three of them carrying one. */
@@ -1144,7 +1333,8 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       const rows = await db
         .selectFrom(PAYMENTS_PURCHASES_TABLE)
         .selectAll()
-        .where("userId", "=", userId)
+        .where("subjectType", "=", subject.subjectType)
+        .where("subjectId", "=", subject.subjectId)
         .where("type", "=", "subscription")
         .orderBy("providerEventAt", "desc")
         .execute();
@@ -1279,6 +1469,26 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       async (c) => {
         const input = c.req.valid("json");
         const caller = controlPlaneCaller(c);
+        // **A grant under the kind this project does not bill is refused here**, and this is the one check
+        // that genuinely belongs at the edge rather than at the write. `grantEntitlement` reads a config to
+        // check the entitlement key against the catalog; the kind is a different question with a different
+        // answer, and `revokeEntitlement` takes no config at all — so pushing this down would either grow a
+        // parameter the revoke must never have, or apply to both. The asymmetry is deliberate and is the
+        // same one the catalog check makes: a grant is constrained, a revoke stays legal forever, because a
+        // revoke that a config edit made impossible would strand whoever still holds the row.
+        //
+        // The failure it prevents is the invisible kind #300 exists for. A comp written as `user:ada` in a
+        // project that bills organizations lands in the table, answers 200, and is read by nothing: every
+        // gate resolves the caller's *organization*, so the person is still locked out and the row says
+        // otherwise. Not audited as a denial, unlike the catalog miss — there is nothing to enumerate here,
+        // because `billingSubject` is one bit, fixed at deploy, and the message names it outright.
+        if (input.subjectType !== config.billingSubject) {
+          throw new ValidationError({
+            message: `This project bills ${config.billingSubject}s, not ${input.subjectType}s.`,
+            action: "Send `subjectType` as the kind this project bills, or change `billingSubject` in pithy.config.ts.",
+            detail: `A grant to a ${input.subjectType} here writes a row keyed on a kind no read path resolves, so the holder stays unentitled and the table says otherwise.`,
+          });
+        }
         // The catalog check lives in `grantEntitlement`, at the write (#305). This route no longer decides
         // whether a key means something — it reports the refusal, which is a different job and the only one
         // an edge should have. Anything else here would be a second copy of the rule, and a second copy is
@@ -1288,7 +1498,12 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
           granted = await grantEntitlement(
             database(c),
             config,
-            { userId: input.userId, entitlement: input.entitlement, expiresAt: input.expiresAt ?? null },
+            {
+              subjectType: input.subjectType,
+              subjectId: input.subjectId,
+              entitlement: input.entitlement,
+              expiresAt: input.expiresAt ?? null,
+            },
             { now: clock() },
           );
         } catch (cause) {
@@ -1335,12 +1550,15 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
           actorId: caller.subject,
           resourceType: "entitlement",
           resourceId: granted.id,
-          // The subject account is the queryable fact — "what has been comped to this account" is the question
-          // the trail gets asked. The connection joins it to *which* management client, per adopter and per
+          // The holder is the queryable fact — "what has been comped to this subject" is the question the
+          // trail gets asked. The connection joins it to *which* management client, per adopter and per
           // environment, which the actor's own id space cannot answer on its own.
           metadata: {
             connectionId: caller.connectionId,
-            userId: input.userId,
+            // Two keys, never one joined string: "what has been comped to this holder" is a query, and a
+            // trail is queried by equality on a column.
+            subjectType: input.subjectType,
+            subjectId: input.subjectId,
             entitlement: input.entitlement,
             expiresAt: granted.expiresAt?.toISOString() ?? null,
           },
@@ -1376,9 +1594,14 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       async (c) => {
         const input = c.req.valid("json");
         const caller = controlPlaneCaller(c);
+        // **No billing-mode check here, and its absence is the design.** `revokeEntitlement` takes no config,
+        // deliberately — see `entitlement/manual.ts` — so it has nothing to check a kind against, and giving
+        // it one would make a `billingSubject` change as irreversible as a catalog edit: every row written
+        // under the old kind would become unrevokable, on accounts that still hold it. A grant is
+        // constrained and a revoke is not, exactly as with the catalog key.
         const revoked = await revokeEntitlement(
           database(c),
-          { userId: input.userId, entitlement: input.entitlement },
+          { subjectType: input.subjectType, subjectId: input.subjectId, entitlement: input.entitlement },
           { now: clock() },
         );
         await c.var.emit({
@@ -1391,7 +1614,12 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
           actorId: caller.subject,
           resourceType: "entitlement",
           resourceId: revoked.id,
-          metadata: { connectionId: caller.connectionId, userId: input.userId, entitlement: input.entitlement },
+          metadata: {
+            connectionId: caller.connectionId,
+            subjectType: input.subjectType,
+            subjectId: input.subjectId,
+            entitlement: input.entitlement,
+          },
         });
         return c.json(
           {
@@ -1473,8 +1701,18 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       // initiates, this is the *only* place the map is ever written: a Stripe webhook arrives carrying `cus_…`,
       // and the `client_reference_id` beside it is the reference `/checkout` set from the authenticated buyer.
       // `linkProviderAccount` never rebinds, so the first pairing wins and a later session cannot steal it.
-      if (notification.providerAccountId && notification.accountReference) {
-        await linkProviderAccount(d1, rail, notification.providerAccountId, notification.accountReference, { now });
+      //
+      // **The reference decodes or it names nobody.** It is a string that made a round trip through somebody
+      // else's system, so a bare id — the shape every pre-subject client sent — and a kind this build does
+      // not know both answer `undefined`, and `undefined` writes no link at all. Reading a bare id as a user
+      // would bind a store account to whoever happens to hold that id, which is the one guess this whole
+      // design exists to refuse.
+      const stamped =
+        notification.accountReference === null || notification.accountReference === undefined
+          ? undefined
+          : decodeSubjectReference(notification.accountReference);
+      if (notification.providerAccountId && stamped) {
+        await linkProviderAccount(d1, rail, notification.providerAccountId, stamped, { now });
         await repairOrphans(c, rail, now);
         // And the pairing is worth acting on, not only keeping. An orphan is a purchase that arrived before
         // its owner was knowable, and this link is the event that makes it knowable — the one signal no
@@ -1563,18 +1801,20 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
           : await acknowledge({ error: note.read, reason: "unresolvable", severity: "warning" });
       }
 
-      const userId = await resolveNotificationOwner(paymentsDatabase(d1), rail, {
+      const subject = await resolveNotificationOwner(paymentsDatabase(d1), rail, {
         providerAccountId: notification.providerAccountId,
         providerTransactionId: notification.event.providerTransactionId,
         originalTransactionId: notification.event.originalTransactionId,
       });
-      if (!userId) {
-        // Orphaned: the app set no account identifier and no purchase in this subscription's family has ever
-        // been submitted. No number of retries will conjure a link, so the row is what makes it repairable.
+      if (!subject) {
+        // Orphaned: nothing this server established names a holder, and no reference the store echoed back
+        // decoded to one. No number of retries will conjure a link, so the row is what makes it repairable —
+        // and nothing is projected, because the alternative to knowing is guessing, and a guess here grants
+        // one customer's subscription to another.
         return await acknowledge({
           // The marker, not prose. An account linking has to be able to find exactly the rows that were
           // waiting on it, and this is the one condition it repairs — see `WEBHOOK_EVENT_ORPHANED`.
-          error: `${WEBHOOK_EVENT_ORPHANED} no Pithy user could be resolved for this notification`,
+          error: `${WEBHOOK_EVENT_ORPHANED} no subject could be resolved for this notification`,
           reason: "orphaned",
           severity: "warning",
         });
@@ -1584,7 +1824,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       try {
         projection = await projectPurchase(
           d1,
-          { ...notification.event, userId },
+          { ...notification.event, ...subject },
           { config, environment: deploymentEnvironment(c), now },
         );
       } catch (cause) {
@@ -1609,7 +1849,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       if (notification.stateEvent) {
         await projectPurchase(
           d1,
-          { ...notification.stateEvent, userId },
+          { ...notification.stateEvent, ...subject },
           { config, environment: deploymentEnvironment(c), now },
         );
       }

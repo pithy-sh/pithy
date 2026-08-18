@@ -69,7 +69,7 @@ interface SecretRegistryEntryBase {
    * to be looking at decides whether they are told.
    *
    * **It is independent of {@link rotatable}, deliberately.** `rotatable` says what automation may do;
-   * this says what the *organisation* expects, whoever performs it. A `rotatable: false` third-party
+   * this says what the *organization* expects, whoever performs it. A `rotatable: false` third-party
    * key — a Stripe key, an OAuth client secret — is exactly the case where no tooling will ever help
    * and a stated expectation is the only thing that surfaces the drift. Refusing this field on a
    * non-rotatable secret would silence the secrets that most need saying.

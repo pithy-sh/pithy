@@ -3,12 +3,19 @@
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
+import { encodeSubjectReference } from "../../data/subject";
 import type { PaymentsPaddleCredentials } from "../../secret/registry";
 import type { CheckoutSessionInput, PortalSessionInput } from "../contract";
 import type { PaddleHttpFetch, PaddleHttpRequest } from "./api";
 import { createPaddleCheckoutSession, type PaddleCheckoutOptions } from "./checkout";
 import { createPaddleDiscount, listPaddleDiscounts, PADDLE_DISCOUNT_CODE } from "./discounts";
-import { accountReferenceOf, PADDLE_CUSTOM_ACCOUNT, PADDLE_CUSTOM_ENV, PADDLE_CUSTOM_PROOF } from "./objects";
+import {
+  accountReferenceOf,
+  accountReferenceProof,
+  PADDLE_CUSTOM_ACCOUNT,
+  PADDLE_CUSTOM_ENV,
+  PADDLE_CUSTOM_PROOF,
+} from "./objects";
 import { createPaddlePortalSession } from "./portal";
 import { verifyPaddleTransaction } from "./verify";
 
@@ -24,7 +31,7 @@ const NOW = new Date("2026-08-12T09:00:00Z");
 const INPUT: CheckoutSessionInput = {
   providerProductId: PRICE,
   subscription: true,
-  userId: "ada",
+  subject: { subjectType: "user", subjectId: "ada" },
   successUrl: "https://acme.example/thanks",
 };
 
@@ -146,10 +153,55 @@ describe("createPaddleCheckoutSession", () => {
     const custom = sent(transport).custom_data as Record<string, string>;
     expect(Object.keys(custom).sort()).toEqual([PADDLE_CUSTOM_ACCOUNT, PADDLE_CUSTOM_ENV, PADDLE_CUSTOM_PROOF].sort());
 
-    // The reader accepts exactly what the writer wrote, with no edit in between.
-    expect(await accountReferenceOf(custom, "prod", CREDENTIALS.webhookSecret)).toBe("ada");
+    // The reader accepts exactly what the writer wrote, with no edit in between — and what the writer
+    // wrote is the encoded pair, not the id.
+    expect(custom[PADDLE_CUSTOM_ACCOUNT]).toBe("user:ada");
+    expect(await accountReferenceOf(custom, "prod", CREDENTIALS.webhookSecret)).toBe("user:ada");
     // And refuses it for another deployment, because the environment is inside the MAC.
     expect(await accountReferenceOf(custom, "staging", CREDENTIALS.webhookSecret)).toBeNull();
+  });
+
+  test("an organization stamps its own kind, so an id shared with a user cannot be confused for one", async () => {
+    const transport = stub({ "/transactions": CREATED });
+    await createPaddleCheckoutSession(
+      { ...INPUT, subject: { subjectType: "organization", subjectId: "ada" } },
+      options({ transport }),
+    );
+    const custom = sent(transport).custom_data as Record<string, string>;
+    expect(custom[PADDLE_CUSTOM_ACCOUNT]).toBe("organization:ada");
+    expect(await accountReferenceOf(custom, "prod", CREDENTIALS.webhookSecret)).toBe("organization:ada");
+  });
+
+  test("a bare id binds nobody, proof and all — the shape a pre-subject build stamped", async () => {
+    // The dangerous case, and the reason the decoder is strict. This stamp is authentic: the MAC is one
+    // this deployment's own secret produced. It still names nobody, because a bare id read as a user is how
+    // one holder's purchase lands on whoever else holds that id.
+    const bare = {
+      [PADDLE_CUSTOM_ACCOUNT]: "ada",
+      [PADDLE_CUSTOM_ENV]: "prod",
+      [PADDLE_CUSTOM_PROOF]: await accountReferenceProof("ada", "prod", CREDENTIALS.webhookSecret),
+    };
+    expect(await accountReferenceOf(bare, "prod", CREDENTIALS.webhookSecret)).toBeNull();
+
+    // Anti-vacuity: the same value encoded, proven the same way, does bind.
+    const encoded = encodeSubjectReference({ subjectType: "user", subjectId: "ada" });
+    const paired = {
+      [PADDLE_CUSTOM_ACCOUNT]: encoded,
+      [PADDLE_CUSTOM_ENV]: "prod",
+      [PADDLE_CUSTOM_PROOF]: await accountReferenceProof(encoded, "prod", CREDENTIALS.webhookSecret),
+    };
+    expect(await accountReferenceOf(paired, "prod", CREDENTIALS.webhookSecret)).toBe(encoded);
+  });
+
+  test("a kind this build does not know binds nobody either", async () => {
+    // A stamp from a build that shipped a third subject kind. It decodes to nothing here, which leaves the
+    // purchase an orphan rather than a guess.
+    const unknown = {
+      [PADDLE_CUSTOM_ACCOUNT]: "team:ada",
+      [PADDLE_CUSTOM_ENV]: "prod",
+      [PADDLE_CUSTOM_PROOF]: await accountReferenceProof("team:ada", "prod", CREDENTIALS.webhookSecret),
+    };
+    expect(await accountReferenceOf(unknown, "prod", CREDENTIALS.webhookSecret)).toBeNull();
   });
 
   test("a deployment that does not know its own environment stamps no proof and binds nobody", async () => {
@@ -175,8 +227,21 @@ describe("createPaddleCheckoutSession", () => {
 
     // …and a different buyer, or a different price, does not — or one would suppress the other's checkout.
     const other = stub({ "/transactions": CREATED });
-    await createPaddleCheckoutSession({ ...INPUT, userId: "bob" }, options({ transport: other }));
+    await createPaddleCheckoutSession(
+      { ...INPUT, subject: { subjectType: "user", subjectId: "bob" } },
+      options({ transport: other }),
+    );
     expect(other.calls.at(-1)?.init?.headers?.["paddle-idempotency-key"]).not.toBe(key);
+
+    // **And the kind is in the key, not only the id.** An organization that happens to share an id with a
+    // user is a different buyer, and a key derived from the id alone would hand the second one back the
+    // first one's transaction — a checkout suppressed by an idempotency key doing exactly as it was told.
+    const organization = stub({ "/transactions": CREATED });
+    await createPaddleCheckoutSession(
+      { ...INPUT, subject: { subjectType: "organization", subjectId: "ada" } },
+      options({ transport: organization }),
+    );
+    expect(organization.calls.at(-1)?.init?.headers?.["paddle-idempotency-key"]).not.toBe(key);
 
     const otherPrice = stub({ "/transactions": CREATED });
     await createPaddleCheckoutSession({ ...INPUT, providerProductId: "pri_other" }, options({ transport: otherPrice }));
@@ -457,8 +522,7 @@ describe("verifyPaddleTransaction", () => {
   const base = { credentials: CREDENTIALS, environment: "sandbox" as const, deployment: "prod", now: NOW };
 
   /** A transaction as the API returns it, with a proof this deployment could have written. */
-  async function transaction(userId: string | null): Promise<Record<string, unknown>> {
-    const { accountReferenceProof } = await import("./objects");
+  async function transaction(reference: string | null): Promise<Record<string, unknown>> {
     return {
       id: TXN,
       status: "completed",
@@ -467,21 +531,21 @@ describe("verifyPaddleTransaction", () => {
       items: [{ price: { id: PRICE } }],
       details: { totals: { grand_total: "999", currency_code: "USD" } },
       custom_data:
-        userId === null
+        reference === null
           ? {}
           : {
-              pithy_user: userId,
+              pithy_user: reference,
               pithy_env: "prod",
-              pithy_ref_proof: await accountReferenceProof(userId, "prod", CREDENTIALS.webhookSecret),
+              pithy_ref_proof: await accountReferenceProof(reference, "prod", CREDENTIALS.webhookSecret),
             },
       created_at: NOW.toISOString(),
     };
   }
 
   test("reads the transaction and reports the reference it can prove this server wrote", async () => {
-    const transport = stub({ "/transactions/": await transaction("ada") });
+    const transport = stub({ "/transactions/": await transaction("user:ada") });
     const verified = await verifyPaddleTransaction(TXN, { ...base, transport });
-    expect(verified.accountReference).toBe("ada");
+    expect(verified.accountReference).toBe("user:ada");
     expect(verified.providerAccountId).toBe(CUSTOMER);
     // The clock, not the transaction's timestamp: a verify is a read of the state now, and dating it
     // earlier would let a webhook that arrived first discard it.
@@ -508,7 +572,7 @@ describe("verifyPaddleTransaction", () => {
   });
 
   test("refuses a malformed id without paying for a round trip", async () => {
-    const transport = stub({ "/transactions/": await transaction("ada") });
+    const transport = stub({ "/transactions/": await transaction("user:ada") });
     const thrown = await refusal(() => verifyPaddleTransaction("sub_01", { ...base, transport }));
     expect(thrown.payload.code).toBe("payments/invalid_receipt");
     expect(transport.calls).toHaveLength(0);
@@ -524,7 +588,7 @@ describe("verifyPaddleTransaction", () => {
   test("a deployment that does not know its own environment accepts nothing", async () => {
     // The safe direction: an unbound purchase is repairable from the trail; an unauthenticated write into
     // the account map is not, because `linkProviderAccount` never rebinds.
-    const transport = stub({ "/transactions/": await transaction("ada") });
+    const transport = stub({ "/transactions/": await transaction("user:ada") });
     expect(
       (await refusal(() => verifyPaddleTransaction(TXN, { ...base, deployment: undefined, transport }))).payload.code,
     ).toBe("payments/verification_failed");

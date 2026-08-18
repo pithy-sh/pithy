@@ -3,12 +3,9 @@
 
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
-import type { D1Database } from "@cloudflare/workers-types";
 import { bindWorkflowContext, createWorkerLogger } from "@pithy-sh/core/src/logger/worker";
 import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
-import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { configureSharedSecrets, sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
-import { PaymentsConfig } from "../config/config";
 import type { PurchaseEnvironment } from "../data/purchase";
 import { triggerPaymentsReconcile } from "../http/dispatch";
 import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry, railCredentials } from "../secret/registry";
@@ -18,6 +15,7 @@ import { type ReconcileReport, reconcilePayments } from "./reconcile";
 import { auditLogEmit, logReconcileReport } from "./report";
 import { paymentsWorkflowRetry } from "./retryPolicy";
 import { PaymentsReconcileParams } from "./specs";
+import { type PaymentsWorkerEnv, reconcileWorkerConfig } from "./workerConfig";
 
 /**
  * The prebuilt payments reconcile worker. `pithy payments provision` deploys one per environment; the adopter
@@ -31,19 +29,31 @@ import { PaymentsReconcileParams } from "./specs";
  * thousand subscriptions is a hundred pages against rate-limited third-party APIs, and that is work you want
  * journalled rather than restarted.
  *
+ * ## A Workflow here runs with **no subject seam**, and that is structural
+ *
+ * Read this before adding the next Workflow to this worker. Payments splits the "who holds a purchase"
+ * decision in two: `billingSubject` is a two-value enum in `PaymentsConfig`, and `resolveSubject` is a
+ * **function** on `PaymentsOptions`, the non-config argument to the `payments()` factory. The split follows
+ * the round trip this file sits at the end of — `provision/resolvePaymentsConfig.ts` `JSON.stringify`s the
+ * config into the `PAYMENTS_CONFIG` var and {@link reconcileWorkerConfig} parses it back, and a function
+ * does not survive that.
+ *
+ * So this worker **always** runs with no adopter resolver, on every project, in every environment. There is
+ * nothing to run one against either: `resolvePaymentsSubject` takes a Hono context, and a cron fire has no
+ * request, no session, and no caller.
+ *
+ * **Every subject anything in here touches therefore comes off a row it read** — the pair stored on a
+ * purchase, the pair on a provider-account link, or the reference a checkout stamped and the store echoed
+ * back. That is not a gap waiting to be closed; it is what a durable repair pass has to do regardless, since
+ * the holder of a subscription bought eleven months ago is not whoever happens to be signed in tonight.
+ * A Workflow added here that wants to know who holds something reads the row, and if the row cannot say,
+ * the honest outcome is an orphan: recorded, replayable, granting nothing.
+ *
  * This module imports `cloudflare:workers`, so it runs only in the Workers runtime and is excluded from the
  * node `.describe()` meta-test.
  */
 
-/** The reconcile worker's env: the app database, the secrets database, the master key, and its config. */
-export interface PaymentsWorkerEnv extends SecretsStoreEnv {
-  /** The app database the `pithy_payments_*` tables live in. */
-  DB: D1Database;
-  /** The resolved payments config as a JSON string, filled at provision. Absent falls back to defaults. */
-  PAYMENTS_CONFIG?: string;
-  /** This worker's own Workflow binding — how `scheduled()` starts an instance. */
-  PAYMENTS_RECONCILE?: { create(options?: { id?: string; params?: unknown }): Promise<unknown> };
-}
+export type { PaymentsWorkerEnv } from "./workerConfig";
 
 // A standalone worker, not assembled by `createBackend`, so wire the shared secrets accessor directly. Without
 // this the `secrets` capability's `compose` hook never runs and every rail's credential read throws.
@@ -72,7 +82,10 @@ export class PaymentsReconcileWorkflow extends WorkflowEntrypoint<PaymentsWorker
     // Parse rather than trust: an instance can be started by the cron, by `triggerPaymentsReconcile`, or by an
     // operator through the Cloudflare dashboard, and only the first two have already been validated.
     const params = PaymentsReconcileParams.parse(event.payload ?? {});
-    const config = PaymentsConfig.parse(this.env.PAYMENTS_CONFIG ? JSON.parse(this.env.PAYMENTS_CONFIG) : {});
+    // Before anything else in the run: a config the build cannot read makes every step below meaningless,
+    // and failing on the first line is what puts the refusal at the top of the instance rather than six
+    // journalled steps in.
+    const config = reconcileWorkerConfig(this.env);
 
     // A run has no request, so there is no `c.var.log` to inherit: the Workflow builds its own and binds the
     // instance onto it. The instance id is what the dashboard and `wrangler workflows` key on, so binding it

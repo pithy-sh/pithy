@@ -545,7 +545,8 @@ describe("refreshPlayPurchase", () => {
   function stored(overrides: Partial<PaymentsPurchase> = {}): PaymentsPurchase {
     return {
       id: "33333333-3333-4333-8333-333333333333",
-      userId: "ada",
+      subjectType: "user",
+      subjectId: "ada",
       rail: "google",
       role: "charge",
       providerTransactionId: "GPA.3300-1234-5678-90123",

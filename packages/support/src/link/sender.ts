@@ -24,6 +24,21 @@ import type { Entitlement } from "@pithy-sh/core/src/entitlement/entitlement";
  * Every function here is **best-effort by contract**: it returns nothing rather than throwing, and
  * the caller stores the message either way. Linkage is context, and context is never worth losing a
  * customer's support request over.
+ *
+ * ## The billing half links people, and only people
+ *
+ * `@pithy-sh/payments` keys a purchase on a **subject pair** — a user or an organization, plus an id —
+ * and which of the two a project uses is its `billingSubject` config. Support cannot honour that choice.
+ * It starts from a `From:` header, resolves it to a *person*, and does its billing lookup at thread-read
+ * time, where there is no Hono `Context` to hand the adopter's subject resolver: the seam's whole job is
+ * to answer "which organization is *this caller* acting for", and a support thread has no caller.
+ *
+ * So this file reads `user`-subject rows, and {@link SUPPORT_BILLING_SCOPE} says so on every response.
+ * Under organization billing the panel is empty, and it must not be *silently* empty — the lookups below
+ * are guarded dynamic imports whose `catch` already returns `[]`, so an empty panel is indistinguishable
+ * between "bought nothing", "`@pithy-sh/payments` is not installed" and "billed to an organization".
+ * An operator reads the first of those and decides a refund on it. A declared scope is what turns the
+ * third case from a silence into a limitation somebody can see.
  */
 
 /** The account a sender resolves to, and what the app knows about them. */
@@ -41,9 +56,16 @@ export interface SenderContext {
   name?: string;
   /** Whether the account has verified this address. A useful signal beside an unverified claim in a header. */
   emailVerified?: boolean;
-  /** Their purchase history, newest first. Empty when payments is absent or they have bought nothing. */
+  /**
+   * Their purchase history, newest first — **individually billed purchases only**. Empty when payments
+   * is absent, when they have bought nothing, and when their billing is held by an organization this
+   * seam cannot resolve. `SenderContextView.billingScope` is what tells a console those apart.
+   */
   purchases: readonly SenderPurchase[];
-  /** Their entitlements, lapsed ones included and marked inactive — a paywall wants to say when Pro ended. */
+  /**
+   * Their entitlements, lapsed ones included and marked inactive — a paywall wants to say when Pro
+   * ended. Same scope as {@link SenderContext.purchases}: `user` subjects, nothing organization-held.
+   */
   entitlements: readonly Entitlement[];
 }
 
@@ -69,6 +91,18 @@ export interface SenderPurchase {
 
 /** How many purchases a thread view carries. Enough to see the pattern, bounded so a whale is not a slow page. */
 export const MAX_LINKED_PURCHASES = 25;
+
+/**
+ * The one payments subject kind this seam reads — see the module doc for why it is pinned rather than
+ * resolved.
+ *
+ * **Declared once, here, and consumed by both the query and the wire.** `http/responses.ts` builds
+ * `SenderBillingScope` from this constant, so the value a console is told and the value the `WHERE`
+ * clause filters on cannot drift apart. Widening it is therefore one edit that breaks every consumer
+ * that has not decided what an organization's panel should render, which is the correct amount of
+ * friction for that change.
+ */
+export const SUPPORT_BILLING_SCOPE = "user" as const;
 
 /**
  * Resolve a sender address to a user id.
@@ -174,7 +208,14 @@ async function resolveAccount(
   }
 }
 
-/** Read what the account bought, when payments is composed. */
+/**
+ * Read what the account bought, when payments is composed — **`user`-subject rows only**.
+ *
+ * Both halves of the pair, deliberately. Nothing in the kit keeps an organization id from equalling some
+ * user's, so a filter on the id alone would eventually hand one holder's purchases to the other — which
+ * is the whole reason payments made the holder a pair. See {@link SUPPORT_BILLING_SCOPE} for why the
+ * type half is pinned to `user` rather than resolved.
+ */
 async function resolvePurchases(d1: D1Database, userId: string): Promise<readonly SenderPurchase[]> {
   try {
     const { PAYMENTS_PURCHASES_TABLE, paymentsDatabase } = await import("@pithy-sh/payments/src/data/tables");
@@ -182,7 +223,8 @@ async function resolvePurchases(d1: D1Database, userId: string): Promise<readonl
     const rows = await paymentsDatabase(d1)
       .selectFrom(PAYMENTS_PURCHASES_TABLE)
       .selectAll()
-      .where("userId", "=", userId)
+      .where("subjectType", "=", SUPPORT_BILLING_SCOPE)
+      .where("subjectId", "=", userId)
       .orderBy("purchasedAt", "desc")
       .limit(MAX_LINKED_PURCHASES)
       .execute();
@@ -204,12 +246,16 @@ async function resolvePurchases(d1: D1Database, userId: string): Promise<readonl
   }
 }
 
-/** Read what the account is entitled to, when payments is composed. */
+/** Read what the account is entitled to, when payments is composed — **`user`-subject rows only**. */
 async function resolveLinkedEntitlements(d1: D1Database, userId: string, now: Date): Promise<readonly Entitlement[]> {
   try {
     const { paymentsDatabase } = await import("@pithy-sh/payments/src/data/tables");
     const { resolveEntitlements } = await import("@pithy-sh/payments/src/projection/resolve");
-    return await resolveEntitlements(paymentsDatabase(d1), userId, now);
+    return await resolveEntitlements(
+      paymentsDatabase(d1),
+      { subjectType: SUPPORT_BILLING_SCOPE, subjectId: userId },
+      now,
+    );
   } catch {
     return [];
   }

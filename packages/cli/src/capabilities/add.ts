@@ -23,6 +23,7 @@ import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { optionValue } from "./configConstants";
 import { capabilityImportSpecifier, findNamedImport, importOrigin } from "./configImports";
 import { ejectImportPath } from "./eject";
+import { requiredOptionRefusal } from "./requiredOptions";
 
 /** A config option's value: the JSON scalars a manifest default can be. */
 export type ConfigValue = string | number | boolean;
@@ -114,6 +115,11 @@ function renderRegistration(
     // The scaffold's `PUBLIC_ORIGIN` where the option names it and this config declares it, the
     // manifest's literal otherwise, and the adopter's own value over both. See `configConstants.ts`.
     const value = optionValue(option, source, configValues[option.key]);
+    // A required option with no value reaching here is a bug one step upstream — `runAdd` refuses before
+    // it calls this — so it fails loudly rather than rendering the word `undefined` into somebody's
+    // config. `addCapability` is called directly too, and a writer that can be reached from more than
+    // one place states its own preconditions.
+    if (value === undefined) throw requiredOptionRefusal({ capability: manifest.name, missing: [option] });
     // The same two lines `pithy upgrade` writes, from the same two functions. Two renderers of one line
     // is how `add` and `upgrade` came to disagree about a nested default in the first place (#171), and
     // the comment was still built here and there separately until the manifest text going into it got a

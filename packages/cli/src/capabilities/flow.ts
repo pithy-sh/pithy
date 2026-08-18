@@ -18,6 +18,8 @@ import { capabilityPackageName } from "./catalog";
 import { type EjectCapabilityOptions, type EjectResult, ejectCapability } from "./eject";
 import { availableManifests, loadManifest } from "./manifests";
 import { isRegistered, prerequisiteClosure, prerequisiteRefusal } from "./prerequisites";
+import { locateRegistration } from "./reconcile";
+import { requiredOptionRefusal, unsettledOptions } from "./requiredOptions";
 
 /**
  * Whether this option's value is one only the adopter can write — a registry of secrets, a set of
@@ -29,6 +31,10 @@ import { isRegistered, prerequisiteClosure, prerequisiteRefusal } from "./prereq
  * config that merely failed to typecheck and turn it into one that composed a string as a registry.
  */
 export function isHandWritten(option: ConfigOption): boolean {
+  // An **absent** default is not this. `typeof undefined` is `"undefined"`, so it falls out correctly
+  // already, and it must: an option with no default is a question to ask, not a registry to leave empty.
+  // The two look alike from a distance and want opposite treatment — this one is skipped by the prompt,
+  // that one is the only thing the prompt is for.
   return typeof option.default === "object";
 }
 
@@ -39,6 +45,17 @@ export function coerceConfigValue(option: ConfigOption, raw: string, capability:
       message: `${capability} option "${option.key}" is not settable from the command line.`,
       action: `Edit ${option.key} in the worker's pithy.config.ts — pithy add scaffolds it empty.`,
       detail: `${option.key} takes an object or an array; --set and the prompt both carry strings.`,
+    });
+  }
+  // Checked ahead of the type branches, because it is the type branch for an option with no default: a
+  // closed set is stated as strings, so `choices` is what says this value is a string and which strings.
+  // It applies to an option that has a default too — a manifest offering three values does not stop
+  // meaning it because it also picked one.
+  if (option.choices) {
+    if (option.choices.includes(raw)) return raw;
+    throw new ValidationError({
+      message: `${capability} option "${option.key}" does not take "${raw}".`,
+      action: `Pass one of: ${option.choices.join(", ")}.`,
     });
   }
   if (typeof option.default === "boolean") {
@@ -384,6 +401,21 @@ async function composePrerequisites(
 }
 
 /**
+ * The config keys a Worker's `pithy.config.ts` already states for one capability, or none when it does not
+ * compose it yet.
+ *
+ * Reads through {@link locateRegistration}, the same locator `pithy upgrade` uses to decide which keys are
+ * missing — one answer to "what does this registration already carry", so `add` and `upgrade` cannot
+ * disagree about it. A config that cannot be read is treated as stating nothing: the capability is about to
+ * be written into it, and a read failure here must not become a refusal about a required option.
+ */
+async function answeredConfigKeys(workerDir: string, capability: string): Promise<string[]> {
+  const outcome = await readFileOutcome(join(workerDir, "pithy.config.ts"));
+  if (outcome.state !== "read") return [];
+  return locateRegistration(outcome.text, capability)?.presentKeys ?? [];
+}
+
+/**
  * The whole of `pithy add <capability> [--worker <name>]`: install the package, read its real
  * manifest, wire **one Worker's** config + bindings, scaffold its config options, and run that
  * Worker's dev migrations. Handler logic stays in the package (principle 3) — only the thin
@@ -418,10 +450,28 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
     // around an absent peer is the state #273 is about.
     const prerequisites = await composePrerequisites({ ...options, worker, manifest });
 
+    // What the Worker's own config already states for this capability, read once. A key present in the
+    // registration is a settled question whatever this run was given.
+    const alreadyAnswered = await answeredConfigKeys(workerDir, manifest.name);
+
     let configValues = coerceSetFlags(manifest, options.setFlags ?? []);
     if (options.prompt && manifest.configOptions.length > 0) {
       configValues = await options.prompt(manifest, configValues);
     }
+
+    // The seam, and it is after both input paths on purpose: `--set` and a prompt are two ways of
+    // settling the same question, and a run with a human attached has already been asked. What is left
+    // here is a run that could not be asked and did not say — and the one thing it must not do is pick.
+    // An option with no default is a decision the capability declared too expensive to guess at; before
+    // this, `pithy add payments --json` picked a billing model and exited 0 (#412).
+    // Minus whatever this Worker's config already answers. `runAdd` is idempotent by contract — CI re-runs
+    // it, and a script re-applying a manifest runs it over a project that already composes the capability —
+    // and a re-run has no `--set` because the answer is already committed to `pithy.config.ts`. Asking for
+    // it again, after `install()` has run, would make the second run fail where the first succeeded.
+    const unsettled = unsettledOptions(manifest.configOptions, configValues).filter(
+      (option) => !alreadyAnswered.includes(option.key),
+    );
+    if (unsettled.length > 0) throw requiredOptionRefusal({ capability: manifest.name, missing: unsettled });
 
     const { kvNamespaces } = await addCapability({
       workerDir,

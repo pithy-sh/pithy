@@ -142,6 +142,9 @@ export function senderView(sender: SenderContext): SenderContextView {
   return {
     authenticated: sender.authenticated,
     userId: sender.userId,
+    // Constant, and stated on every response rather than carried on `SenderContext`: it describes what
+    // this seam can reach, not what a lookup found. `link/sender.ts` reads `user`-subject rows only.
+    billingScope: "user",
     // Spread rather than set to null: both are absent for an unproven sender, and an explicit null
     // would read as "we looked and there is none" rather than "we did not look".
     ...(sender.name === undefined ? {} : { name: sender.name }),

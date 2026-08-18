@@ -50,15 +50,30 @@ const EXPECTED_CATALOG = [
 
 /** A complete purchase row, so a constraint test varies exactly one column. */
 const PURCHASE_COLUMNS =
-  "id, user_id, rail, provider_transaction_id, product_id, provider_product_id, type, status, environment, purchased_at, expires_at, revoked_at, original_transaction_id, amount_minor, currency, provider_event_at, payload, created_at, updated_at";
+  "id, subject_type, subject_id, rail, provider_transaction_id, product_id, provider_product_id, type, status, environment, purchased_at, expires_at, revoked_at, original_transaction_id, amount_minor, currency, provider_event_at, payload, created_at, updated_at";
 
-function purchaseValues(overrides: { id?: string; transaction?: string; environment?: string; amount?: string } = {}) {
+function purchaseValues(
+  overrides: { id?: string; transaction?: string; environment?: string; amount?: string; subjectType?: string } = {},
+) {
   const id = overrides.id ?? "p1";
   const transaction = overrides.transaction ?? "t1";
   const environment = overrides.environment ?? "production";
   const amount = overrides.amount ?? "999";
-  return `('${id}', 'u1', 'apple', '${transaction}', 'pro_monthly', 'com.acme.pro.monthly', 'subscription', 'active', '${environment}', 0, null, null, null, ${amount}, 'USD', 0, '{}', 0, 0)`;
+  const subjectType = overrides.subjectType ?? "user";
+  return `('${id}', '${subjectType}', 'ada', 'apple', '${transaction}', 'pro_monthly', 'com.acme.pro.monthly', 'subscription', 'active', '${environment}', 0, null, null, null, ${amount}, 'USD', 0, '{}', 0, 0)`;
 }
+
+/** An entitlement row, varying only the holder and the key. `manual` is defaulted, as a writer leaves it. */
+const insertEntitlement = (id: string, subjectType: string, subjectId: string, entitlement = "pro") =>
+  env.DB.prepare(
+    `INSERT INTO pithy_payments_entitlements (id, subject_type, subject_id, entitlement, active, expires_at, source_purchase_id, created_at, updated_at) VALUES ('${id}', '${subjectType}', '${subjectId}', '${entitlement}', 1, null, null, 0, 0)`,
+  ).run();
+
+/** A provider-identity link, varying only the holder. */
+const insertProviderAccount = (id: string, subjectType: string, subjectId: string, providerAccountId = "cus_123") =>
+  env.DB.prepare(
+    `INSERT INTO pithy_payments_provider_accounts (id, rail, provider_account_id, subject_type, subject_id, created_at) VALUES ('${id}', 'stripe', '${providerAccountId}', '${subjectType}', '${subjectId}', 0)`,
+  ).run();
 
 const insertPurchase = (overrides?: Parameters<typeof purchaseValues>[0]) =>
   env.DB.prepare(
@@ -87,7 +102,7 @@ describe("payments_0001_purchases", () => {
     await expect(insertPurchase({ id: "p2" })).rejects.toThrow(/UNIQUE constraint failed/i);
     // A different rail may carry the same transaction id — the ids are each rail's own namespace.
     await env.DB.prepare(
-      `INSERT INTO pithy_payments_purchases (${PURCHASE_COLUMNS}) VALUES ('p3', 'u1', 'google', 't1', 'pro_monthly', 'pro_monthly', 'subscription', 'active', 'production', 0, null, null, null, 999, 'USD', 0, '{}', 0, 0)`,
+      `INSERT INTO pithy_payments_purchases (${PURCHASE_COLUMNS}) VALUES ('p3', 'user', 'ada', 'google', 't1', 'pro_monthly', 'pro_monthly', 'subscription', 'active', 'production', 0, null, null, null, 999, 'USD', 0, '{}', 0, 0)`,
     ).run();
   });
 
@@ -100,32 +115,57 @@ describe("payments_0001_purchases", () => {
     await insertPurchase({ id: "p4", transaction: "t4", amount: "null" });
   });
 
-  test("UNIQUE (userId, entitlement) refuses a second row for one user's entitlement", async () => {
-    const insert = (id: string) =>
-      env.DB.prepare(
-        `INSERT INTO pithy_payments_entitlements (id, user_id, entitlement, active, expires_at, source_purchase_id, created_at, updated_at) VALUES ('${id}', 'u1', 'pro', 1, null, null, 0, 0)`,
-      ).run();
-    await insert("e1");
+  test("UNIQUE (subjectType, subjectId, entitlement) refuses a second row for one subject's entitlement", async () => {
+    await insertEntitlement("e1", "user", "ada");
     // This is what makes the table a read model rather than a log — the upsert conflict target.
-    await expect(insert("e2")).rejects.toThrow(/UNIQUE constraint failed/i);
+    await expect(insertEntitlement("e2", "user", "ada")).rejects.toThrow(/UNIQUE constraint failed/i);
+  });
+
+  test("the entitlement key is per subject, so a user and an organization sharing an id are two holders", async () => {
+    // Nothing in the kit makes the two id namespaces disjoint, and an adopter whose organization ids come
+    // from its own model may well mint `acme` for both. Keyed on the id alone, the organization's grant
+    // would *be* the user's — one of them silently reading what the other paid for.
+    await insertEntitlement("e1", "user", "acme");
+    await insertEntitlement("e2", "organization", "acme");
+    expect(
+      await env.DB.prepare("SELECT count(*) as n FROM pithy_payments_entitlements").first<{ n: number }>(),
+    ).toEqual({ n: 2 });
+    // And one holder still holds a key once. The kind widened the key; it did not loosen it.
+    await expect(insertEntitlement("e3", "organization", "acme")).rejects.toThrow(/UNIQUE constraint failed/i);
   });
 
   test("the entitlement active CHECK refuses anything but 0 or 1", async () => {
     await expect(
       env.DB.prepare(
-        "INSERT INTO pithy_payments_entitlements (id, user_id, entitlement, active, expires_at, source_purchase_id, created_at, updated_at) VALUES ('e3', 'u2', 'pro', 2, null, null, 0, 0)",
+        "INSERT INTO pithy_payments_entitlements (id, subject_type, subject_id, entitlement, active, expires_at, source_purchase_id, created_at, updated_at) VALUES ('e3', 'user', 'grace', 'pro', 2, null, null, 0, 0)",
       ).run(),
     ).rejects.toThrow(/CHECK constraint failed/i);
   });
 
-  test("UNIQUE (rail, providerAccountId) refuses mapping one provider identity to two users", async () => {
-    const insert = (id: string, userId: string) =>
-      env.DB.prepare(
-        `INSERT INTO pithy_payments_provider_accounts (id, rail, provider_account_id, user_id, created_at) VALUES ('${id}', 'stripe', 'cus_123', '${userId}', 0)`,
-      ).run();
-    await insert("a1", "u1");
-    // A webhook resolves a user through this row, so two of them would make the answer a coin flip.
-    await expect(insert("a2", "u2")).rejects.toThrow(/UNIQUE constraint failed/i);
+  test("every subject_type CHECK refuses a spelling no gate would ever match", async () => {
+    // `organisation` is the British spelling and `team` is the plausible invention. Both are rows nobody
+    // is entitled by: every ownership check compares the pair, so a third spelling is a holder that
+    // matches nothing and a purchase that grants nothing. The column is closed at the database for the
+    // same reason `environment` is — the writer is not the place to trust it.
+    for (const bad of ["organisation", "team"]) {
+      await expect(insertPurchase({ id: `p_${bad}`, transaction: `t_${bad}`, subjectType: bad })).rejects.toThrow(
+        /CHECK constraint failed/i,
+      );
+      await expect(insertEntitlement(`e_${bad}`, bad, "ada")).rejects.toThrow(/CHECK constraint failed/i);
+      await expect(insertProviderAccount(`a_${bad}`, bad, "ada", `cus_${bad}`)).rejects.toThrow(
+        /CHECK constraint failed/i,
+      );
+    }
+  });
+
+  test("UNIQUE (rail, providerAccountId) refuses mapping one provider identity to two subjects", async () => {
+    await insertProviderAccount("a1", "user", "ada");
+    // A webhook resolves a holder through this row, so two of them would make the answer a coin flip.
+    await expect(insertProviderAccount("a2", "user", "grace")).rejects.toThrow(/UNIQUE constraint failed/i);
+    // And the subject did **not** widen this key. A different kind is still the same provider identity, so
+    // an organization cannot claim `cus_123` alongside the user who already holds it and collect the
+    // renewals. Rebinding is a deliberate delete, never an insert a purchase flow can make.
+    await expect(insertProviderAccount("a3", "organization", "acme")).rejects.toThrow(/UNIQUE constraint failed/i);
   });
 
   test("UNIQUE (rail, providerEventId) refuses recording one delivery twice", async () => {
@@ -194,6 +234,29 @@ describe("payments_0001_purchases", () => {
     ).all<{ detail: string }>();
     const plan = results.map((row) => row.detail).join(" | ");
     expect(plan).toContain("pithy_payments_purchases_type_purchased_idx");
+    expect(plan).not.toContain("TEMP B-TREE");
+  });
+
+  test("one subject's entitlements read off the unique's leading columns, with no scan", async () => {
+    // The per-holder read has no index of its own, on purpose: the unique starts with both subject
+    // columns, so this is a range scan of it — SQLite's own automatic index for the constraint, which is
+    // why the name here is `sqlite_autoindex_…` and not one of ours. Put the entitlement first and this
+    // read becomes a full scan of every holder's grants, so the plan is asserted rather than assumed.
+    const { results } = await env.DB.prepare(
+      "EXPLAIN QUERY PLAN SELECT entitlement FROM pithy_payments_entitlements WHERE subject_type = 'user' AND subject_id = 'ada'",
+    ).all<{ detail: string }>();
+    const plan = results.map((row) => row.detail).join(" | ");
+    expect(plan).toContain("USING COVERING INDEX sqlite_autoindex_pithy_payments_entitlements");
+    expect(plan).toContain("(subject_type=? AND subject_id=?)");
+    expect(plan).not.toContain("SCAN pithy_payments_entitlements");
+  });
+
+  test("one subject's purchases read off the owner index, newest first and without a sort", async () => {
+    const { results } = await env.DB.prepare(
+      "EXPLAIN QUERY PLAN SELECT id FROM pithy_payments_purchases WHERE subject_type = 'user' AND subject_id = 'ada' ORDER BY purchased_at DESC",
+    ).all<{ detail: string }>();
+    const plan = results.map((row) => row.detail).join(" | ");
+    expect(plan).toContain("pithy_payments_purchases_owner_idx");
     expect(plan).not.toContain("TEMP B-TREE");
   });
 

@@ -143,18 +143,20 @@ Paddle re-signs each retry with a fresh `ts`, so the window does not silently re
 
 ```json
 {
-  "pithy_user": "<the authenticated buyer>",
+  "pithy_user": "user:<id>",
   "pithy_env": "<this deployment's ENVIRONMENT>",
-  "pithy_ref_proof": "<HMAC-SHA256 over (env, user), keyed with the webhook secret>"
+  "pithy_ref_proof": "<HMAC-SHA256 over (env, reference), keyed with the webhook secret>"
 }
 ```
+
+**The first key says `user` and its value is no longer always one.** What travels there is the subject this purchase belongs to, encoded as one string — `user:<id>` under `billingSubject: "user"`, `organization:<id>` under `"organization"`. The key name is frozen on purpose: it is a wire contract with Paddle, not an identifier of ours. A checkout stamped today is a transaction open in somebody's browser and a `custom_data` object Paddle stores verbatim for the life of the customer, so renaming the key would make every in-flight purchase come back naming nobody, permanently. The name stayed; the meaning moved.
 
 The third is the only one that means anything, and here is why. `custom_data` is **client-writable**, on both forms of `Paddle.Checkout.open`, needing nothing but the publishable client token — the token this rail ships to every browser that loads your paywall. Both of these were driven against the live sandbox and paid with a test card:
 
 - `Paddle.Checkout.open({ items: [{ priceId, quantity }], customData: {…} })` completes with no server involved at any point, and Paddle stores the page's object verbatim.
-- `Paddle.Checkout.open({ transactionId, customData: {…} })` **replaces** the `custom_data` your server wrote when it created that transaction. Same id, `origin` still `api`, owner now whoever the page said. It is not refused and it does not throw.
+- `Paddle.Checkout.open({ transactionId, customData: {…} })` **replaces** the `custom_data` your server wrote when it created that transaction. Same id, `origin` still `api`, holder now whoever the page said. It is not refused and it does not throw.
 
-The overwrite lands when the checkout is **opened**, not when it is paid: a transaction left in `draft` had its `custom_data` replaced by a checkout nobody completed. So a stranger can write `pithy_user` and `pithy_env` — the key names are exported constants in an open-source package and the environment is one of three values — and creating the transaction server-side does not protect them.
+The overwrite lands when the checkout is **opened**, not when it is paid: a transaction left in `draft` had its `custom_data` replaced by a checkout nobody completed. So a stranger can write `pithy_user` and `pithy_env` — the key names are exported constants in an open-source package, the environment is one of three values, and under organization billing the reference is guessable from a company id the attacker may already know — and creating the transaction server-side does not protect them.
 
 What they cannot write is a MAC keyed on your notification destination's secret. So the rail honours a stamped reference only when the proof verifies, and refuses it otherwise. A delivery with no stamp at all — a transaction you created by hand in the dashboard — is not fenced out; it simply binds nobody.
 
@@ -164,7 +166,7 @@ What they cannot write is a MAC keyed on your notification destination's secret.
 
 Each instance checks every delivery against its own `ENVIRONMENT`. One stamped for somebody else is authentic, is recorded in `pithy_payments_webhook_events`, projects nothing, grants nothing, **emits no audit warning**, and returns 200. No warning deliberately: on a shared sandbox it would fire on most deliveries and train you to ignore the channel.
 
-So a dev purchase reaches your database through `verify` rather than through a webhook. The overlay's `checkout.completed` callback hands the browser a `txn_…`; your screen posts it to `POST /payments/purchases`; the rail reads the transaction and binds it — refusing when the transaction's own proven `custom_data.pithy_user` names somebody other than the authenticated caller. That is why `verify` exists on this rail where Lemon Squeezy refuses one: the id is a pointer, and the stamp is the authorization.
+So a dev purchase reaches your database through `verify` rather than through a webhook. The overlay's `checkout.completed` callback hands the browser a `txn_…`; your screen posts it to `POST /payments/purchases`; the rail reads the transaction and binds it — refusing when the transaction's own proven `custom_data.pithy_user` names a subject other than **the one the caller is acting for**. That is the comparison, and it is not the caller's own user id: under organization billing every legitimate purchase is stamped `organization:<id>`, so checking it against the person who submitted it would refuse all of them. Both halves of the pair are compared, because nothing keeps an organization id from equalling some user's id. That is why `verify` exists on this rail where Lemon Squeezy refuses one: the id is a pointer, and the stamp is the authorization.
 
 ## 10. Paddle.js and your Content Security Policy
 
@@ -324,7 +326,7 @@ Three things Paddle does differently:
 
 ## 15. The customer portal
 
-`POST /payments/portal` takes **no body at all**. There is exactly one Paddle customer this caller may manage, resolved from the provider-account map, and the subscriptions asked about are read from that caller's own rows. A field naming either would let any signed-in caller mint authenticated cancel links against somebody else's subscription.
+`POST /payments/portal` takes **no body at all**. There is exactly one Paddle customer this caller may manage — the one on the provider-account row for the subject they are acting for — and the subscriptions asked about are read from that subject's own rows. A field naming either would let any signed-in caller mint authenticated cancel links against somebody else's subscription.
 
 The response carries the overview page plus, per subscription, a cancel link and an update-payment-method link.
 

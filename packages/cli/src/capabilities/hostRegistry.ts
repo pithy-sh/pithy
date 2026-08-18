@@ -240,13 +240,30 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     entry: "@pithy-sh/payments/src/workflows/worker",
     package: "@pithy-sh/payments",
     async resolve(template, context) {
-      const [{ resolvePaymentsConfig }, { PaymentsConfig }] = await load("payments", "@pithy-sh/payments", () =>
-        Promise.all([
-          import("@pithy-sh/payments/src/provision/resolvePaymentsConfig"),
-          import("@pithy-sh/payments/src/config/config"),
-        ]),
+      const [{ resolvePaymentsConfig }, { PaymentsConfig }, { isPaymentsCapability }] = await load(
+        "payments",
+        "@pithy-sh/payments",
+        () =>
+          Promise.all([
+            import("@pithy-sh/payments/src/provision/resolvePaymentsConfig"),
+            import("@pithy-sh/payments/src/config/config"),
+            import("@pithy-sh/payments/src/capability"),
+          ]),
       );
-      return resolvePaymentsConfig(template, { ...shared(context), paymentsConfig: PaymentsConfig.parse({}) });
+      // Payments hands its resolved config to whoever composed it, the way email does — so the local
+      // reconcile host runs the adopter's own catalog and their own `billingSubject`, and a dev pass
+      // narrows to the holder kind the project actually bills.
+      //
+      // The fallback is a project that composes no payments capability at all. It cannot be
+      // `PaymentsConfig.parse({})` any more: `billingSubject` is required precisely because nothing may
+      // pick it silently (#412), and an empty catalog has nobody to ask. `user` is stated here as what it
+      // is — a placeholder for a local host with no catalog behind it, which reaches no deployed Worker,
+      // because `pithy payments provision` resolves the deployed one from the adopter's config object.
+      const composed = context.capability && isPaymentsCapability(context.capability) ? context.capability : undefined;
+      return resolvePaymentsConfig(template, {
+        ...shared(context),
+        paymentsConfig: composed?.paymentsConfig ?? PaymentsConfig.parse({ billingSubject: "user" }),
+      });
     },
   },
   {

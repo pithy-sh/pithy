@@ -6,6 +6,7 @@ import { PaymentsProductType } from "../config/config";
 import { PurchaseEnvironment } from "../data/purchase";
 import { PaymentsRail } from "../data/rail";
 import { PurchaseStatus } from "../data/status";
+import { PaymentsSubject } from "../data/subject";
 
 /**
  * What the payments routes return, as Zod objects a client can validate against.
@@ -24,6 +25,13 @@ import { PurchaseStatus } from "../data/status";
  * and a bearer artifact; the purchase view is the normalized projection of it, and there is no field
  * that carries the original. The webhook responses are deliberately absent from this file too — they
  * are acknowledgements addressed to Apple, Google and Stripe, not a contract offered to any client.
+ *
+ * **A client's own views name no subject; the management views name both halves of one.** A player reads
+ * its own rows, and who holds them is the answer the request already carried — echoing it back teaches a
+ * client that the holder is a value in the protocol, which is the first step towards one sending it. A
+ * management client reads everybody's, so every row it sees has to say whose it is, and says it as the
+ * pair: nothing keeps an organization id from equalling some user's id, so a view carrying the id alone
+ * would render one holder's subscription under the other's name.
  */
 
 /** One entitlement as a client reads it. */
@@ -198,8 +206,8 @@ export type PaymentsPricingResponse = z.output<typeof PaymentsPricingResponse>;
  * Who a store prices this caller as — the identity a quote and a charge must both resolve from.
  *
  * **The point of it is agreement, not disclosure.** `POST /payments/checkout` hands this exact value to
- * the rail as the customer being charged, read from the provider-account map keyed on the authenticated
- * caller. A browser quoting a price without it reads an IP-derived estimate and is then charged from a
+ * the rail as the customer being charged, read from the provider-account map keyed on the subject the
+ * authenticated caller acts for. A browser quoting a price without it reads an IP-derived estimate and is then charged from a
  * billing address, and the two can differ by up to 15% in the United States alone. So the same row is
  * published here, and the screen asks Paddle about the customer rather than about the network.
  *
@@ -381,7 +389,7 @@ const NextCursor = z
  * One purchase, as a management client sees it.
  *
  * Wider than {@link PaymentsPurchaseView} in the two ways an operator needs and a buyer does not: it
- * names the **owner**, and it names the **money**. Narrower in one: there is no `outcome`, because
+ * names the **owner** — as the pair, always — and it names the **money**. Narrower in one: there is no `outcome`, because
  * `outcome` says what a *write* did — projected, replayed, ignored — and a read of the log has no write
  * to report.
  *
@@ -393,11 +401,12 @@ const NextCursor = z
 export const PaymentsAdminPurchaseView = z
   .object({
     id: z.string().describe("The purchase's UUID — its stable identifier on this Worker."),
-    userId: z
-      .string()
-      .describe(
-        "The account that bought it — the opaque id the adopter's auth capability issued. The only identity field payments stores, and the join key to `auth:users:read`, which is granted separately.",
-      ),
+    subjectType: PaymentsSubject.shape.subjectType.describe(
+      "Whether `subjectId` names a user or an organization. Half the owner: read the two together or a row is attributed to whoever else holds that id.",
+    ),
+    subjectId: PaymentsSubject.shape.subjectId.describe(
+      "The subject that bought it — the opaque id the adopter's auth capability issued, or the one its own membership model did. The only identity payments stores, and the join key to `auth:users:read`, which is granted separately.",
+    ),
     rail: PaymentsRail.describe("Which store this transaction came from."),
     providerTransactionId: z
       .string()
@@ -450,11 +459,18 @@ export type PaymentsAdminPurchaseView = z.output<typeof PaymentsAdminPurchaseVie
  * Wider than {@link PaymentsEntitlementView} by the two facts a buyer has no use for and an operator
  * cannot work without: **whose** it is, and **why** they have it. `manual` is the difference between an
  * entitlement somebody paid for and one somebody decided; `source` is the purchase currently granting
- * it, which answers "why is this account entitled" without a scan.
+ * it, which answers "why is this subject entitled" without a scan.
+ *
+ * Whose it is crosses as the pair the row is keyed on, `UNIQUE (subjectType, subjectId, entitlement)`. A
+ * dashboard that read only the id would show an organization's `pro` beside a person's name the moment
+ * an adopter's two id spaces met on a value.
  */
 export const PaymentsAdminEntitlementView = z
   .object({
-    userId: z.string().describe("The account holding it — the opaque id the adopter's auth capability issued."),
+    subjectType: PaymentsSubject.shape.subjectType.describe("Whether `subjectId` names a user or an organization."),
+    subjectId: PaymentsSubject.shape.subjectId.describe(
+      "The subject holding it — the opaque id the adopter's auth capability issued, or its own organization id.",
+    ),
     key: z.string().describe("The entitlement key the adopter's gating code names — `pro`, `beta`."),
     granted: z
       .boolean()
@@ -465,7 +481,7 @@ export const PaymentsAdminEntitlementView = z
     manual: z
       .boolean()
       .describe(
-        "Whether a human wrote this row through the control plane rather than a purchase producing it. A manual grant is held against the projection, so it survives the account's next renewal.",
+        "Whether a human wrote this row through the control plane rather than a purchase producing it. A manual grant is held against the projection, so it survives the subject's next renewal.",
       ),
     source: z
       .string()
@@ -557,23 +573,30 @@ export const PaymentsAdminEntitlementsResponse = z
     entitlements: z.array(PaymentsAdminEntitlementView).describe("The page, most recently first granted first."),
     nextCursor: NextCursor,
   })
-  .describe("A page of the entitlement model, across every account.");
+  .describe("A page of the entitlement model, across every subject.");
 export type PaymentsAdminEntitlementsResponse = z.output<typeof PaymentsAdminEntitlementsResponse>;
 
 /**
- * `GET {base}/admin/entitlements/:userId`.
+ * `GET {base}/admin/entitlements/:subjectType/:subjectId`.
  *
- * No cursor, because there is no page: the table is keyed `UNIQUE (userId, entitlement)`, so this is at
- * most one row per key. An account holding nothing answers an empty list rather than a 404 — an
- * entitlement row appears with the first purchase that grants one, so its absence is not a missing
- * person, and a 404 would make this an existence oracle for user ids.
+ * No cursor, because there is no page: the table is keyed `UNIQUE (subjectType, subjectId, entitlement)`,
+ * so this is at most one row per key. A subject holding nothing answers an empty list rather than a 404 —
+ * an entitlement row appears with the first purchase that grants one, so its absence is not a missing
+ * holder, and a 404 would make this an existence oracle for ids.
+ *
+ * Both halves are echoed, and that is the reason this response can stand on its own: a body carrying one
+ * id and a list is a body a client has to remember it asked about an organization. The pair it asked with
+ * comes back verbatim, so what it renders is what it requested.
  */
-export const PaymentsAdminUserEntitlementsResponse = z
+export const PaymentsAdminSubjectEntitlementsResponse = z
   .object({
-    userId: z.string().describe("The account asked after, echoed so a response stands on its own."),
+    subjectType: PaymentsSubject.shape.subjectType.describe(
+      "Which kind of holder was asked after, echoed back. Half of the address — the id alone named nothing.",
+    ),
+    subjectId: PaymentsSubject.shape.subjectId.describe("The id asked after, echoed so a response stands on its own."),
     entitlements: z
       .array(PaymentsAdminEntitlementView)
-      .describe("Every entitlement this account holds, by key. Empty when it holds none."),
+      .describe("Every entitlement this subject holds, by key. Empty when it holds none."),
   })
-  .describe("One account's entitlements, resolved now.");
-export type PaymentsAdminUserEntitlementsResponse = z.output<typeof PaymentsAdminUserEntitlementsResponse>;
+  .describe("One subject's entitlements, resolved now.");
+export type PaymentsAdminSubjectEntitlementsResponse = z.output<typeof PaymentsAdminSubjectEntitlementsResponse>;

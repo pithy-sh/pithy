@@ -4,18 +4,20 @@
 import { env } from "cloudflare:test";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { openLedger } from "@pithy-sh/ledger/src/ledger";
 import { ledger_0001_accounts } from "@pithy-sh/ledger/src/migrations/0001_accounts";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { PaymentsAuditActions } from "../audit/actions";
 import { PaymentsConfig } from "../config/config";
+import type { PaymentsSubject } from "../data/subject";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
 import type { ProviderEventInput } from "../projection/event";
 import { type PurchaseProjection, projectPurchase } from "../projection/writer";
 import { fulfillPurchase } from "./apply";
 import { clawbackGrants, clawbackRef } from "./clawback";
-import type { PaymentsLedger } from "./ledgerSeam";
+import { ledgerAccountId, type PaymentsLedger } from "./ledgerSeam";
 
 /**
  * The refund clawback, against a real ledger's `CHECK (balance >= 0)`.
@@ -29,7 +31,11 @@ import type { PaymentsLedger } from "./ledgerSeam";
 const SECOND = 1000;
 const T0 = 1_700_000_000_000;
 
+/** The buyer, as a pair. The ledger never sees the id half alone. */
+const ADA: PaymentsSubject = { subjectType: "user", subjectId: "ada" };
+
 const CONFIG = PaymentsConfig.parse({
+  billingSubject: "user",
   rails: { apple: true },
   products: {
     coins_100: {
@@ -84,7 +90,7 @@ function event(overrides: Partial<ProviderEventInput> = {}): ProviderEventInput 
     rail: "apple",
     providerTransactionId: "txn-1",
     providerProductId: "com.acme.coins100",
-    userId: "ada",
+    ...ADA,
     status: "active",
     environment: "production",
     purchasedAt: new Date(T0),
@@ -98,7 +104,8 @@ const project = (input: ProviderEventInput = event()): Promise<PurchaseProjectio
   projectPurchase(env.DB, input, { config: CONFIG, environment: "production", now: new Date(T0 + SECOND) });
 
 const ledger = () => openLedger(env.DB, () => T0 + SECOND);
-const balance = (userId: string, currency = "coins") => ledger().balance(userId, currency);
+/** A subject's balance, addressed through the one derivation the grant and the clawback both use. */
+const balance = (subject: PaymentsSubject, currency = "coins") => ledger().balance(ledgerAccountId(subject), currency);
 
 /** Buy, then refund: the two projections a refunded purchase produces, in order. */
 async function boughtThenRefunded(overrides: Partial<ProviderEventInput> = {}): Promise<PurchaseProjection> {
@@ -118,7 +125,7 @@ describe("clawbackGrants", () => {
   test("reverses the credit when the catalog opts in and the balance covers it", async () => {
     const purchase = await project();
     await fulfillPurchase(env.DB, purchase, { config: CONFIG, emit });
-    expect((await balance("ada")).balance).toBe(100);
+    expect((await balance(ADA)).balance).toBe(100);
 
     const refund = await boughtThenRefunded();
     const outcomes = await clawbackGrants(ledger(), refund, { config: CONFIG });
@@ -126,7 +133,7 @@ describe("clawbackGrants", () => {
     expect(outcomes).toEqual([
       { outcome: "reversed", currency: "coins", amount: 100, ref: clawbackRef(refund.purchase.id, "coins") },
     ]);
-    expect((await balance("ada")).balance).toBe(0);
+    expect((await balance(ADA)).balance).toBe(0);
   });
 
   test("is off by default — a refunded product that never opted in keeps its balance", async () => {
@@ -137,7 +144,7 @@ describe("clawbackGrants", () => {
     const refund = await boughtThenRefunded({ providerProductId: "com.acme.coins500" });
 
     expect(await clawbackGrants(ledger(), refund, { config: CONFIG })).toEqual([]);
-    expect((await balance("ada")).balance).toBe(500);
+    expect((await balance(ADA)).balance).toBe(500);
   });
 
   test("does nothing for a purchase that still stands", async () => {
@@ -155,20 +162,20 @@ describe("clawbackGrants", () => {
     const revoked = await project(event({ status: "revoked", providerEventAt: new Date(T0 + 2 * SECOND) }));
 
     expect((await clawbackGrants(ledger(), revoked, { config: CONFIG }))[0]?.outcome).toBe("reversed");
-    expect((await balance("ada")).balance).toBe(0);
+    expect((await balance(ADA)).balance).toBe(0);
   });
 
   test("reverses once however many times the refund is delivered", async () => {
     await fulfillPurchase(env.DB, await project(), { config: CONFIG, emit });
     const refund = await boughtThenRefunded();
     for (let i = 0; i < 3; i++) await clawbackGrants(ledger(), refund, { config: CONFIG });
-    expect((await balance("ada")).balance).toBe(0);
+    expect((await balance(ADA)).balance).toBe(0);
   });
 
   test("a spent balance refuses the reversal, and the refusal is the outcome rather than an exception", async () => {
     await fulfillPurchase(env.DB, await project(), { config: CONFIG, emit });
     // The player spent it. The refund arrives anyway, as refunds do.
-    await ledger().debit("ada", "coins", 60, "game:spend:1");
+    await ledger().debit(ledgerAccountId(ADA), "coins", 60, "game:spend:1");
     const refund = await boughtThenRefunded();
 
     const [outcome] = await clawbackGrants(ledger(), refund, { config: CONFIG });
@@ -177,7 +184,7 @@ describe("clawbackGrants", () => {
     expect(outcome.error.payload.code).toBe("payments/clawback_failed");
     expect(outcome.error.payload.status).toBe(409);
     // Neither a negative balance nor a partial write-off. The ledger is exactly where it was.
-    expect((await balance("ada")).balance).toBe(40);
+    expect((await balance(ADA)).balance).toBe(40);
   });
 
   test("a failure that is not the ledger's refusal is an unknown outcome, and propagates", async () => {
@@ -194,7 +201,7 @@ describe("clawbackGrants", () => {
 describe("fulfillPurchase — the recorded state a refused clawback becomes", () => {
   test("emits a critical audit event naming the code, the account, and the shortfall", async () => {
     await fulfillPurchase(env.DB, await project(), { config: CONFIG, emit });
-    await ledger().debit("ada", "coins", 100, "game:spend:1");
+    await ledger().debit(ledgerAccountId(ADA), "coins", 100, "game:spend:1");
     emitted = [];
 
     const report = await fulfillPurchase(env.DB, await boughtThenRefunded(), { config: CONFIG, emit });
@@ -208,7 +215,10 @@ describe("fulfillPurchase — the recorded state a refused clawback becomes", ()
     expect(recorded?.metadata).toMatchObject({
       currency: "coins",
       amount: 100,
-      userId: "ada",
+      // Both halves. Whoever answers this alert has to know whether the shortfall is a person's balance or a
+      // company's, and an id alone does not say.
+      subjectType: "user",
+      subjectId: "ada",
       productId: "coins_100",
       reason: "payments/clawback_failed",
     });
@@ -225,7 +235,7 @@ describe("fulfillPurchase — the recorded state a refused clawback becomes", ()
 
   test("the refund still stands, whatever the clawback did", async () => {
     await fulfillPurchase(env.DB, await project(), { config: CONFIG, emit });
-    await ledger().debit("ada", "coins", 100, "game:spend:1");
+    await ledger().debit(ledgerAccountId(ADA), "coins", 100, "game:spend:1");
     await fulfillPurchase(env.DB, await boughtThenRefunded(), { config: CONFIG, emit });
 
     const { results } = await env.DB.prepare("SELECT status FROM pithy_payments_purchases").all<{ status: string }>();
@@ -234,8 +244,31 @@ describe("fulfillPurchase — the recorded state a refused clawback becomes", ()
 
   test("needs no audit recorder composed — the seam defaults to core's no-op", async () => {
     await fulfillPurchase(env.DB, await project(), { config: CONFIG });
-    await ledger().debit("ada", "coins", 100, "game:spend:1");
+    await ledger().debit(ledgerAccountId(ADA), "coins", 100, "game:spend:1");
     const report = await fulfillPurchase(env.DB, await boughtThenRefunded(), { config: CONFIG });
     expect(report.clawedBack[0]?.outcome).toBe("refused");
+  });
+});
+/**
+ * The reversal under organization billing, and the invariant the account derivation exists for.
+ *
+ * A clawback that composed the ledger account any other way than the credit did would debit an account
+ * nothing was ever credited to. The ledger would answer that with `insufficient_funds` — the same refusal a
+ * genuinely spent balance produces — so the miss would be recorded as a shortfall and the company would keep
+ * the currency for a purchase it was refunded. Hence: reverse *exactly* the account the grant credited.
+ */
+describe("a clawback under organization billing", () => {
+  /**
+   * There is none, and the reversal is the reason it matters most.
+   *
+   * `@pithy-sh/ledger` is a per-user model, so `checkLedgerGrants` refuses a balance-crediting catalog under
+   * organization billing at composition — see `capability.test.ts`. That refusal is what keeps this file's
+   * central property intact: a credit and its clawback address one account. Had an organization been given a
+   * namespaced account instead, the credit would have landed somewhere the ledger's own routes cannot read,
+   * and the reversal would have been a debit against a balance nobody could see either.
+   */
+
+  test("an organization never reaches the clawback path, because it never reaches the credit", () => {
+    expect(() => ledgerAccountId({ subjectType: "organization", subjectId: "acme" })).toThrow(PithyError);
   });
 });

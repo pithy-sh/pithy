@@ -3,6 +3,7 @@
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
+import { encodeSubjectReference } from "../../data/subject";
 import { PaymentsDiscountInvalidError, PaymentsProviderUnavailableError } from "../../error/errors";
 import type { PaymentsLemonSqueezyCredentials } from "../../secret/registry";
 import type { CheckoutHandoff, CheckoutSessionInput } from "../contract";
@@ -24,11 +25,18 @@ import {
  *
  * ## What this call stamps, and why each of them
  *
- * **The authenticated purchaser, in `checkout_data.custom`.** A Lemon Squeezy purchase is only ever heard
- * about through a webhook, and that webhook carries a `customer_id` and no Pithy user. This is the pairing,
- * and it is why the `/checkout` route takes the purchaser from `c.var.auth` and never from a request body: a
- * client that could name it could attach its purchase to somebody else's account, or somebody else's
+ * **The resolved subject, in `checkout_data.custom`.** A Lemon Squeezy purchase is only ever heard about
+ * through a webhook, and that webhook carries a `customer_id` and no Pithy holder. This is the pairing, and it
+ * is why the `/checkout` route resolves the subject through the configured seam and never from a request body:
+ * a client that could name it could attach its purchase to somebody else's account, or somebody else's
  * purchase to its own.
+ *
+ * The value is `encodeSubjectReference`'s output — `user:ada`, `organization:acme` — and **both halves travel
+ * or neither does**. Nothing keeps an organization id from equalling some user's, so a bare id read back at
+ * the far end would eventually hand one holder's purchase to the other. A bare id is also exactly what this
+ * rail stamped before subjects existed, and `decodeSubjectReference` refuses one on purpose: the purchase
+ * orphans, replayable, rather than being attributed to a stranger. The key name is unchanged through all of
+ * that — see `objects.ts`.
  *
  * **This deployment's environment, in the same place.** A Lemon Squeezy store is one namespace across every
  * environment — test mode is a flag on an object, not a separate store — so `dev` and `staging` pointed at
@@ -75,14 +83,18 @@ export async function createLemonSqueezyCheckoutSession(
   input: CheckoutSessionInput,
   options: LemonSqueezyCheckoutOptions,
 ): Promise<CheckoutHandoff> {
-  const custom: Record<string, string> = { [LEMON_SQUEEZY_CUSTOM_ACCOUNT]: input.userId };
+  // One encoding, from the one function. The webhook reads it back through `decodeSubjectReference`, and a
+  // second spelling anywhere is a purchase stamped by one code path and read by another.
+  const accountReference = encodeSubjectReference(input.subject);
+
+  const custom: Record<string, string> = { [LEMON_SQUEEZY_CUSTOM_ACCOUNT]: accountReference };
   if (options.deployment !== undefined) {
     custom[LEMON_SQUEEZY_CUSTOM_ENV] = options.deployment;
     // The proof, without which the two values above are worth nothing: a stranger can set them from a
     // public storefront buy link, and both key names are exported constants. This is the part they cannot
     // produce. See `accountReferenceProof`.
     custom[LEMON_SQUEEZY_CUSTOM_PROOF] = await accountReferenceProof(
-      input.userId,
+      accountReference,
       options.deployment,
       options.credentials.webhookSecret,
     );
@@ -97,7 +109,7 @@ export async function createLemonSqueezyCheckoutSession(
           type: "checkouts",
           attributes: {
             checkout_data: {
-              // The authenticated purchaser, echoed back on every webhook this purchase produces.
+              // The resolved subject, echoed back on every webhook this purchase produces.
               custom,
               // The code, handed over exactly as the caller typed it. Lemon Squeezy resolves it and computes
               // the price; nothing here validates it or multiplies anything. Unlike Stripe there is no id to

@@ -27,7 +27,7 @@ pithy payments provision          # deploys the reconciliation Workflow and writ
 
 `provision` is the step that needs credentials. The `PAYMENTS_RECONCILE` binding arrives with it rather than with `add`, because wrangler requires a `name` and a `class_name` on every `workflows` entry and the deployed name is per project and environment (`<project>-<env>-payments-reconcile`) — an entry short of either field does not degrade, wrangler refuses to load the config at all. The binding is **optional**: an unprovisioned project still verifies receipts, accepts webhooks, and resolves entitlements.
 
-`@pithy-sh/secrets` is **required** — every rail's credentials are read through it, so payments will not compose without it. `@pithy-sh/auth` is optional and strongly implied: purchases scope to the caller from the core `AuthContext` seam, so with no auth capability composed `c.var.auth` is null and every route denies. That is the right default and not a useful one. `@pithy-sh/ledger` is optional and only reached by products whose catalog entry declares `grants`.
+`@pithy-sh/secrets` is **required** — every rail's credentials are read through it, so payments will not compose without it. `@pithy-sh/auth` is optional and strongly implied: every route resolves the subject its caller is acting for, and under either billing mode that resolution starts at the core `AuthContext` seam — so with no auth capability composed `c.var.auth` is null and every route denies. That is the right default and not a useful one. `@pithy-sh/ledger` is optional and only reached by products whose catalog entry declares `grants`.
 
 Then set up the stores. That is the part nobody can do for you, and it has its own docs:
 
@@ -43,6 +43,7 @@ Then set up the stores. That is the part nobody can do for you, and it has its o
 
 ```ts
 payments({
+  billingSubject: "user",          // or "organization" — see below. There is no default
   rails: { apple: true, google: true, stripe: true },
   stripe: {
     successUrl: "https://acme.example/thanks?session={CHECKOUT_SESSION_ID}",
@@ -82,11 +83,76 @@ The catalog is parsed at assembly, and it refuses more than it accepts. A SKU fo
 
 `basePath` (`/payments`) moves the mount, webhooks included. `graceGrantsAccess` defaults to true, because that is the point of grace: a failed card should not lock a paying subscriber out mid-period.
 
+### Who holds a purchase
+
+**`billingSubject` says whether a purchase belongs to a person or to a company, and it has no default.** A consumer app answers `"user"`: one buyer, one holder, and the authenticated caller is the whole answer. A business selling to businesses answers `"organization"`: the company signs, the company is invoiced, and everybody in it holds what it bought.
+
+It is one answer per project, not per route. A codebase that could grant to a user on one route and an organization on the next is one where the two eventually disagree about who is entitled, and the disagreement surfaces as somebody being refused something they paid for. So it is a required field: `payments({})` does not parse, and there is no quiet default to inherit the wrong one from.
+
+Every row carries the pair — `subjectType` and `subjectId` — and every comparison reads both halves. Nothing in the kit keeps an organization id from equalling some user's id, so a check that read only the id would let one hold the other's subscription.
+
+#### Wiring the resolver under `"organization"`
+
+**This capability never learns what an organization is.** It has no members table, no roles, and no business acquiring either. Under organization billing it asks one question — *which subject is this caller acting for* — and you answer it from your own session:
+
+```ts
+payments({
+  billingSubject: "organization",
+  resolveSubject: async (c) => {
+    const session = await readSession(c);           // your own session read
+    return session?.activeOrganizationId
+      ? { subjectType: "organization", subjectId: session.activeOrganizationId }
+      : undefined;
+  },
+  // …rails, stripe, products as above
+});
+```
+
+`activeOrganizationId` is Better Auth's `organization()` plugin, which `@pithy-sh/auth` composes verbatim: it writes that column onto the session row, and the value goes straight through — which is also why the type is spelled `"organization"`, with a `z`, to match. Core's `c.var.auth` carries the user and session ids and nothing else, deliberately, so the read of that session is yours. Anything else your session already knows works the same way: a KV lookup, a query against your own membership table. The resolver is `async` because the answer usually is one of those.
+
+**`resolveSubject` is passed to `payments()` and is deliberately not part of the config schema.** The config is serialized into the `PAYMENTS_CONFIG` var and re-parsed inside the Workflow host, and a function does not survive that round trip. So the serializable half — `billingSubject` — is config, and the callable half is a composition-time option. The consequence is worth stating rather than discovering: **the reconciliation and Paddle-sweep Workflows always run with no resolver.** They are batch jobs with no request and no caller, so anything they need about a holder they read from the rows they are repairing, never from the seam.
+
+**Unanswered is unentitled, in both directions.** A read holds nothing, so the gate denies — exactly as it does for somebody who never bought anything, and for the same reason: resolving *something* when we cannot tell who is asking would grant one holder's plan to whoever asked next. A write refuses outright with `payments/subject_unresolved` (403), because a write needs a row key and a guessed key attributes real money to the wrong company.
+
+**Nothing ever falls back to the caller's own user id under organization billing.** There is no default resolver for `"organization"`, and omitting yours is refused at assembly — `payments({ billingSubject: "organization" })` with no `resolveSubject` throws on deploy, naming the two ways out. The fallback that would look helpful here is the half-migrated state this whole design exists to prevent: a company's subscription silently becoming one employee's, and transferable when they leave.
+
+#### The seam answers *who*, not *whether* — role checks are yours
+
+`resolveSubject` is an identity question. It has no opinion about what the caller may then do, and it must not: an owner and a new hire acting for the same company are the same subject, and their plan is the same plan.
+
+That matters most at `POST {base}/portal`, which opens the billing portal for whatever subject the seam returned. Under organization billing there is no per-person card left to lean on — `providerAccountForSubject` keys the store customer to `organization:acme`, so the payment method belongs to the company's billing account rather than to whoever first entered it. **Any caller your resolver maps to that organization can therefore open the portal and cancel the subscription or change the card.** `POST {base}/checkout` is the same shape in the other direction: a member can start a subscription the company is billed for.
+
+If your membership model has roles, gate the routes in your own `app` capability's middleware, exactly as `@pithy-sh/support` documents for act-on-behalf-of submissions:
+
+```ts
+defineCapability({
+  name: "app",
+  middleware: [
+    (app) => {
+      for (const path of ["/payments/portal", "/payments/checkout"]) {
+        app.use(path, async (c, next) => {
+          // Signed out? Pass it through — the route's own gate answers 401. A 403 here would tell
+          // somebody who was never signed in that they are forbidden.
+          if (c.var.auth && !(await mayManageBilling(c))) {
+            throw new ForbiddenError({ message: "An owner or an admin manages billing." });
+          }
+          await next();
+        });
+      }
+    },
+  ],
+  // …
+});
+```
+
+**Do not enforce the role inside `resolveSubject` by returning `undefined`.** It is the obvious shortcut and it breaks the read: unanswered is unentitled, so a plain member would stop seeing the Pro features their employer is paying for. A member should hold the plan and be refused the cancel button, and only two separate seams say that. The resolver stays truthful; the middleware is what restricts.
+
+
 ## One writer, three triggers
 
 Every write converges on a single idempotent projection keyed on `UNIQUE (rail, providerTransactionId)`.
 
-- **Client submission** — the buying user's app posts its receipt. Exists only so the purchaser sees their entitlement immediately.
+- **Client submission** — the buyer's app posts its receipt. Exists only so the purchaser sees their entitlement immediately.
 - **Provider webhook** — authoritative. Produces the identical row.
 - **Reconciliation Workflow** — repairs drift from missed deliveries.
 
@@ -110,13 +176,13 @@ The row is written only by the projection. What is never stored independently of
 
 Lapsed rows are returned with `active` false rather than filtered out, so a paywall can say "your Pro ended on the 4th".
 
-A user is entitled when some purchase granting that key sits in `active`, `in_grace`, or `canceled` and `now < expiresAt`. **`canceled` does not mean unentitled** — turning off auto-renew forfeits the next period, not the one already paid for.
+A subject is entitled when some purchase granting that key sits in `active`, `in_grace`, or `canceled` and `now < expiresAt`. **`canceled` does not mean unentitled** — turning off auto-renew forfeits the next period, not the one already paid for.
 
 ### A catalog edit is a write the read model has to follow
 
 The derivation reads the catalog, so editing the catalog changes what an entitlement row should say — with no event to trigger it.
 
-Drop `beta` from a product's `entitlements` and ship, and every user holding `beta` holds it with nothing behind it. No purchase for that key will ever arrive again, the read path only lapses a row carrying a dated expiry, and reconciliation re-asks about subscriptions — so nothing repairs it. The projection therefore re-derives more than the keys the event's product grants: it also clears **every non-manual key this user holds that no current product grants**, on that user's next purchase event, whatever the event was about. A support comp is held and survives, because a key the catalog never sold is a human's decision and not a derivation's.
+Drop `beta` from a product's `entitlements` and ship, and every subject holding `beta` holds it with nothing behind it. No purchase for that key will ever arrive again, the read path only lapses a row carrying a dated expiry, and reconciliation re-asks about subscriptions — so nothing repairs it. The projection therefore re-derives more than the keys the event's product grants: it also clears **every non-manual key that subject holds that no current product grants**, on its next purchase event, whatever the event was about. A support comp is held and survives, because a key the catalog never sold is a human's decision and not a derivation's.
 
 The other half of a wide catalog is D1's hundred-parameter ceiling. The derivation names its candidate products **once**, as a CTE, and binds them as a single JSON parameter that SQLite's `json_each` expands back into rows — so two hundred products granting `pro` bind exactly what one does. Not a tuning detail: the derivation shares the purchase write's batch, so a statement over the cap meant no purchase touching that key could be recorded at all.
 
@@ -171,7 +237,7 @@ A sandbox StoreKit transaction granting a real entitlement is the most common in
 | `GET /payments/admin/purchases` | The purchase log, paged | control-plane: `payments:purchases:read` |
 | `GET /payments/admin/subscriptions` | The purchases that renew | control-plane: `payments:subscriptions:read` |
 | `GET /payments/admin/entitlements` | The entitlement model, paged | control-plane: `payments:entitlements:read` |
-| `GET /payments/admin/entitlements/:userId` | One account's entitlements | control-plane: `payments:entitlements:read` |
+| `GET /payments/admin/entitlements/:subjectType/:subjectId` | One subject's entitlements | control-plane: `payments:entitlements:read` |
 | `GET /payments/admin/reconcile-runs` | The reconciliation passes this deployment has run | control-plane: `payments:reconcile:read` |
 
 **Every route this capability registers is in that table, and a test holds it there.** The management reads shipped without rows for long enough that the next person to add one withheld theirs too — a table missing four peers reads as complete, so one more row would have read as a lie. `routeContract.test.ts` now parses this table and compares it against the real registrations in both directions, which makes the omission a failing build rather than a judgement call.
@@ -229,17 +295,17 @@ A browser reads three states off it, and they are not the same answer:
 
 **`currentAmountMinor` and `listAmountMinor` are not divisible by 100.** They are the store's own integers in the currency's smallest unit, and how many decimal places that unit has is a property of the currency rather than a constant: `500` is $5.00 in USD and ¥500 in JPY, and Korean won and Chilean pesos are the same story. **Read them beside `currency` or not at all.** Where the store hands you a rendered total — `PricePreview`'s `formattedTotals` and `formattedUnitTotals` — pass it through byte for byte; it already carries the currency's decimals, symbol and separators. Where you must work from the integers, take the scale from the currency (`Intl.NumberFormat(locale, { style: "currency", currency }).resolvedOptions().minimumFractionDigits`) and never from a literal. A `/ 100` in a consumer is wrong in every zero-decimal market it reaches, and wrong silently.
 
-**No `public` routes.** Every caller is either an authenticated user acting on their own purchases or a machine proving authenticity. Turnstile has nothing to gate here.
+**No `public` routes.** Every caller is either an authenticated person acting on the purchases of the subject they are acting for, or a machine proving authenticity. Turnstile has nothing to gate here.
 
 **`signed-webhook` is one strategy over three unrelated mechanisms.** Apple signs a JWS against a certificate chain pinned in the package; Google's Pub/Sub push carries an OIDC token verified against Google's published keys with an audience check; Stripe sends an HMAC in `Stripe-Signature` inside a timestamp tolerance. Each covers the **exact received bytes**, which is why these are ten literal paths rather than one `:rail` — a single route line could not carry three verifiers, and the rail a caller *claims* is not something to route on.
 
 Nothing is recorded for a delivery that fails verification, so a forger cannot fill the table. A delivery that verifies is recorded before it is processed, keyed on the store's own event id, and a redelivery already processed short-circuits with 200 — which is what makes at-least-once retries free and "why didn't this renew" answerable.
 
-**What the handlers never trust.** The product comes from the verified payload's SKU, never the request — a client-supplied product id would let a caller present a cheap receipt as an expensive product. The owner comes from the auth seam or the provider-account map, never a body. The return URLs come from config, because a client that could name one could send a paying customer to a page it controls. The purchaser on a Checkout Session comes from `c.var.auth`, so no caller can attach a purchase to another account.
+**What the handlers never trust.** The product comes from the verified payload's SKU, never the request — a client-supplied product id would let a caller present a cheap receipt as an expensive product. The holder comes from the subject seam or the provider-account map, never a body — a caller naming its own `subjectId` would be a caller choosing whose subscription to top up. The return URLs come from config, because a client that could name one could send a paying customer to a page it controls. The purchaser on a Checkout Session is the resolved subject, so no caller can attach a purchase to another account.
 
 **Manual grant and revoke** are `control-plane`, default-denied until you provision a scoped credential, and audited on both paths — they are the only way an entitlement appears without money moving.
 
-A grant is **held** against the projection. Every other row in the entitlements table is recomputed from the purchases table whenever a write touches its key, which is what keeps the read model from disagreeing with the money — and it is also what would have erased a comp of `pro` the moment the user's next renewal arrived. So a grant sets a flag the derivation skips, and a comp lasts whether or not the catalog also sells the key.
+A grant is **held** against the projection. Every other row in the entitlements table is recomputed from the purchases table whenever a write touches its key, which is what keeps the read model from disagreeing with the money — and it is also what would have erased a comp of `pro` the moment the holder's next renewal arrived. So a grant sets a flag the derivation skips, and a comp lasts whether or not the catalog also sells the key.
 
 **A grant must name a key this project defines.** `GET /payments/admin/catalog` is the read behind it, on its own scope — `payments:catalog:read` — and it publishes each product's id, kind, display name, and entitlement keys. Strictly less than the client projection a browser already gets: no price, no store SKU, no rail identifier, because a management client is filling a list of things that can be comped and a comp names a key. An empty catalog answers `{ enabled: false }`, the same modelled state the client projection uses, so "nothing to sell" reads as itself rather than as a dropdown that came back broken.
 
@@ -249,7 +315,7 @@ The read makes a good control possible; the check on the grant makes a bad one i
 
 Gating on a key nothing sells is legitimate, and the escape is **declared** rather than achieved by not checking: put it in `manualEntitlements`, and it is grantable and offered on the catalog read beside the products. Only grants are constrained. A revoke of a key the catalog has since dropped stays legal, or a catalog edit would be irreversible for every account still holding it — which is why `revokeEntitlement` takes no config at all.
 
-A revoke **releases** the hold rather than setting it. That asymmetry is deliberate: it makes a revoke the exact inverse of a grant, and it stops a revoke becoming a permanent block on a user who later pays. An entitlement the purchases still support is re-derived on the next event, so revoking a paid subscription here holds only until the store next says something about it. To end a paid entitlement, refund it through the store — that is the record the projection reads, and the only one that keeps the read model and the money agreeing.
+A revoke **releases** the hold rather than setting it. That asymmetry is deliberate: it makes a revoke the exact inverse of a grant, and it stops a revoke becoming a permanent block on a subject who later pays. An entitlement the purchases still support is re-derived on the next event, so revoking a paid subscription here holds only until the store next says something about it. To end a paid entitlement, refund it through the store — that is the record the projection reads, and the only one that keeps the read model and the money agreeing.
 
 ## Errors
 
@@ -263,10 +329,11 @@ Runtime code throws `PithyError` with `payments/*` codes. Internal detail never 
 | `payments/rail_not_configured` | 404 | The rail is off, unprovisioned, or not implemented in this build. |
 | `payments/product_not_found` | 404 | No catalog product maps that SKU or that id. |
 | `payments/environment_mismatch` | 400 | A sandbox purchase reached production, or the reverse. |
-| `payments/receipt_already_owned` | 409 | The transaction is already projected against another user. |
+| `payments/receipt_already_owned` | 409 | The transaction is already projected against another subject. |
 | `payments/provider_unavailable` | 503 | The store could not be reached. Retry; reconciliation repairs it either way. |
 | `payments/clawback_failed` | 409 | A refund's debit was refused by the ledger. |
 | `payments/entitlement_required` | 403 | The caller does not hold an entitlement the route requires. Raised by core's gate. |
+| `payments/subject_unresolved` | 403 | A write path could not resolve which subject the caller is acting for. A read holds nothing instead, and the gate denies. |
 | `payments/entitlement_not_in_catalog` | 400 | A manual grant named an entitlement key no product grants and `manualEntitlements` does not declare. |
 
 **`payments/webhook_unverified` is 401 on purpose, not by oversight.** 401 says "you did not prove who you are", which is exactly a failed signature; 403 says "you are known and not allowed", which a forged notification is not. It reads oddly next to the other webhook responses, so it is written down here — please do not "fix" it.
@@ -299,11 +366,11 @@ Steps: select subscriptions near expiry or not recently verified, re-fetch curre
 
 A repair also **fulfils**. A renewal the webhook never delivered is the case this pass exists to find, and a `grants` product's coins have to be credited by whoever finds the period or they are never credited at all. Fulfillment runs on drift only: every rail dates a refresh `now`, so the writer reports a write for every row a pass touches, and keying on that would mean one ledger call per scanned row per pass against a ref that already exists. The credit is safe to attempt twice regardless — the ref is a pure function of the purchase and the currency, and the ledger's `UNIQUE (ref)` makes the second one a no-op.
 
-The same steps run for one user on demand, which is the support tool for "my subscription isn't showing up":
+The same steps run for one holder on demand, which is the support tool for "my subscription isn't showing up":
 
 ```
 pithy payments provision [--json]
-pithy payments reconcile --env staging [--user <id>] [--rail apple|google|stripe] [--dry-run] [--json]
+pithy payments reconcile --env staging [--subject user:<id>|organization:<id>] [--rail apple|google|stripe|lemonSqueezy|paddle] [--dry-run] [--json]
 ```
 
 Both prompt for nothing, are safe to re-run, and take `--json` — an agent and a human drive the same command.
@@ -343,7 +410,7 @@ No test reaches a live store. Rails are tested against recorded, redacted provid
 
 `bun run test` runs both projects. The **node** project covers the pure logic: the catalog, the status mappings, the JWS and HMAC verifiers, the client API. The **workers** project runs under Miniflare against a real D1, which is where the migration's `up` and `down`, every UNIQUE and CHECK constraint, and the projection's idempotency properties are proved.
 
-The idempotency battery is the highest-value suite in the package, since "one writer, three triggers" is the claim the design rests on: apply the same event repeatedly, interleave a client submission with its webhook and a reconciliation pass, vary the order. The terminal state is one purchase row, one entitlement, one ledger credit, every time. Four cases are non-negotiable and each is the defect this capability attracts — out-of-order delivery, sandbox isolation, a fail-closed gate with no provider composed, and a cross-user receipt replay.
+The idempotency battery is the highest-value suite in the package, since "one writer, three triggers" is the claim the design rests on: apply the same event repeatedly, interleave a client submission with its webhook and a reconciliation pass, vary the order. The terminal state is one purchase row, one entitlement, one ledger credit, every time. Four cases are non-negotiable and each is the defect this capability attracts — out-of-order delivery, sandbox isolation, a fail-closed gate with no provider composed, and a cross-subject receipt replay.
 
 `pithy seed` writes three example purchases for the shared cast in `docs/SEED.md`: Ada holds a live Apple subscription, Grace a Stripe non-consumable she owns forever, Alan a refunded Google consumable. One row per rail, one per product type, and the three states anything reading this table has to handle. `dev` and `staging` only.
 

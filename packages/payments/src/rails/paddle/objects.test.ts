@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
+import { encodeSubjectReference } from "../../data/subject";
 import { PaymentsVerificationFailedError } from "../../error/errors";
 import { BROWSER_ITEMS_FORGERY, BROWSER_OVERWROTE_SERVER_STAMP } from "./fixtures/browserForged";
 import {
@@ -61,8 +62,19 @@ describe("a stamp a browser wrote binds nobody", () => {
 
       // And with the one value they could not produce, the identical object is honoured. So the field
       // that decides is the proof, and every other field in these fixtures is already right.
-      const reference = String(forged[PADDLE_CUSTOM_ACCOUNT]);
-      const proven = { ...forged, [PADDLE_CUSTOM_PROOF]: await accountReferenceProof(reference, "prod", SECRET) };
+      //
+      // The owner the fixtures carry is a bare id — they were recorded before subjects existed, and a
+      // browser writes whatever it likes anyway — so the honoured form encodes it. That is the shape our
+      // own checkout stamps, and the only shape the reader honours.
+      const reference = encodeSubjectReference({
+        subjectType: "user",
+        subjectId: String(forged[PADDLE_CUSTOM_ACCOUNT]),
+      });
+      const proven = {
+        ...forged,
+        [PADDLE_CUSTOM_ACCOUNT]: reference,
+        [PADDLE_CUSTOM_PROOF]: await accountReferenceProof(reference, "prod", SECRET),
+      };
       expect(await accountReferenceOf(proven, "prod", SECRET)).toBe(reference);
     }
   });
@@ -77,12 +89,31 @@ describe("a stamp a browser wrote binds nobody", () => {
   });
 
   test("a deployment that does not know its own environment trusts neither, and no proof helps", async () => {
-    const reference = String(BROWSER_ITEMS_FORGERY[PADDLE_CUSTOM_ACCOUNT]);
+    const reference = encodeSubjectReference({
+      subjectType: "user",
+      subjectId: String(BROWSER_ITEMS_FORGERY[PADDLE_CUSTOM_ACCOUNT]),
+    });
     const proven = {
       ...BROWSER_ITEMS_FORGERY,
+      [PADDLE_CUSTOM_ACCOUNT]: reference,
       [PADDLE_CUSTOM_PROOF]: await accountReferenceProof(reference, "prod", SECRET),
     };
     expect(await accountReferenceOf(proven, undefined, SECRET)).toBeNull();
+  });
+
+  test("a proven stamp that is not the subject encoding names nobody", async () => {
+    // The second gate, and it is not the MAC. A stamp can be authentic — minted with this deployment's own
+    // secret, for this deployment's own environment — and still name nobody, because a bare id is what
+    // every pre-subject build wrote and reading one as a user attributes a purchase to whoever holds that
+    // id. Both halves or neither. See `data/subject.ts`.
+    for (const bare of ["ada", "team:ada", ":ada", "user:"]) {
+      const stamp = {
+        [PADDLE_CUSTOM_ACCOUNT]: bare,
+        [PADDLE_CUSTOM_ENV]: "prod",
+        [PADDLE_CUSTOM_PROOF]: await accountReferenceProof(bare, "prod", SECRET),
+      };
+      expect(await accountReferenceOf(stamp, "prod", SECRET), bare).toBeNull();
+    }
   });
 });
 

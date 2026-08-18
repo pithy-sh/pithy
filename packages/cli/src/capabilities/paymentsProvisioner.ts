@@ -36,12 +36,16 @@ import { capabilityLoadError } from "./loadFailure";
 type PaymentsResolveModule = typeof import("@pithy-sh/payments/src/provision/resolvePaymentsConfig");
 type PaymentsCapabilityModule = typeof import("@pithy-sh/payments/src/capability");
 type PaymentsSpecsModule = typeof import("@pithy-sh/payments/src/workflows/specs");
+type PaymentsSubjectModule = typeof import("@pithy-sh/payments/src/data/subject");
 
 /** The config type, referenced by type only so the CLI gains no dependency on the package. */
 type PaymentsConfig = import("@pithy-sh/payments/src/config/config").PaymentsConfig;
 
 /** Everything `pithy payments` loads out of the optional package, in one guarded import. */
-export type PaymentsModule = PaymentsResolveModule & PaymentsCapabilityModule & PaymentsSpecsModule;
+export type PaymentsModule = PaymentsResolveModule &
+  PaymentsCapabilityModule &
+  PaymentsSpecsModule &
+  PaymentsSubjectModule;
 
 /**
  * Load `@pithy-sh/payments` from the project's own install. The one place the optional dependency is
@@ -50,12 +54,15 @@ export type PaymentsModule = PaymentsResolveModule & PaymentsCapabilityModule & 
  */
 export async function loadPayments(): Promise<PaymentsModule> {
   try {
-    const [resolve, capability, specs] = await Promise.all([
+    const [resolve, capability, specs, subject] = await Promise.all([
       import("@pithy-sh/payments/src/provision/resolvePaymentsConfig"),
       import("@pithy-sh/payments/src/capability"),
       import("@pithy-sh/payments/src/workflows/specs"),
+      // `decodeSubjectReference`, so `pithy payments reconcile --subject` reads a holder through the same
+      // strict decoder the rails do rather than a split of its own (#412).
+      import("@pithy-sh/payments/src/data/subject"),
     ]);
-    return { ...resolve, ...capability, ...specs };
+    return { ...resolve, ...capability, ...specs, ...subject };
   } catch (error) {
     throw capabilityLoadError("payments", "@pithy-sh/payments", error);
   }

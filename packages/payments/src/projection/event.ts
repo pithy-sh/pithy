@@ -5,6 +5,7 @@ import { z } from "zod";
 import { PurchaseEnvironment, PurchaseRole } from "../data/purchase";
 import { PaymentsRail } from "../data/rail";
 import { PurchaseStatus } from "../data/status";
+import { PaymentsSubject } from "../data/subject";
 
 /**
  * A provider event, normalized. This is the writer's whole input, and the seam between "how a rail talks"
@@ -17,6 +18,12 @@ import { PurchaseStatus } from "../data/status";
  *
  * `providerEventAt` is the field the whole design leans on. It is the provider's own timestamp, not ours,
  * because ours would record delivery order and delivery order is exactly what providers do not guarantee.
+ *
+ * **This is the owner-bound half of a two-part shape.** A rail produces an `UnboundProviderEvent` — this
+ * object with the subject pair omitted, declared in `rails/contract.ts` — and the route binds an owner onto
+ * it to make one of these. The split is the whole reason a store's bytes cannot decide who is entitled: a
+ * rail parses a payload and knows the transaction completely and the holder not at all, so the field it
+ * would have to fill in does not exist for it to fill in wrongly.
  */
 export const ProviderEvent = z
   .object({
@@ -31,12 +38,12 @@ export const ProviderEvent = z
       .string()
       .min(1)
       .describe("The rail's own SKU or price id. The writer resolves the logical product from it."),
-    userId: z
-      .string()
-      .min(1)
-      .describe(
-        "The Pithy user the transaction belongs to. A client submission takes it from the authenticated caller; a webhook resolves it through the provider-account map.",
-      ),
+    subjectType: PaymentsSubject.shape.subjectType.describe(
+      "Whether `subjectId` names a user or an organization. Half the owner, and never separable from the other half — the route binds both together or neither.",
+    ),
+    subjectId: PaymentsSubject.shape.subjectId.describe(
+      "The subject the transaction belongs to. A client submission takes it from the authenticated caller through the configured subject seam; a webhook resolves it through the provider-account map or a decoded account reference.",
+    ),
     status: PurchaseStatus.describe("The transaction's current normalized state, as the rail reports it."),
     role: PurchaseRole.default("charge").describe(
       "Whether this event records money moving or a subscription's standing. Omitted by every rail but Lemon Squeezy, which reports the two separately because its store does.",
@@ -87,6 +94,8 @@ export const ProviderEvent = z
       .record(z.string(), z.unknown())
       .describe("The verified provider payload, stored as received. The reconciliation and audit record."),
   })
-  .describe("One provider event, normalized — the projection writer's input, and the rails' only output.");
+  .describe(
+    "One provider event, normalized and bound to its owner — the projection writer's input. A rail produces this shape less the subject pair; the route adds it.",
+  );
 export type ProviderEvent = z.output<typeof ProviderEvent>;
 export type ProviderEventInput = z.input<typeof ProviderEvent>;

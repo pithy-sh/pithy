@@ -61,6 +61,8 @@ What is left out is left out because wrangler would refuse the file: a `vectoriz
 
 **Scaffold the config options.** Values come from `--set` first, then from a prompt when a human is attached. An option whose default is an object or an array is left as the manifest scaffolds it — a secrets registry is not something anyone types at a prompt.
 
+**An option with no default is required.** That is the whole declaration: a capability that states a default has an answer the kit is willing to pick, and one that states none has an answer only you can give. A prompt asks it with nothing to accept by pressing enter, and a run with no human is refused unless it carries `--set key=value`. `payments.billingSubject` is the first — whether an entitlement is held by a person or a company, which lands in a column and a UNIQUE index — and nothing guesses it. An option that also states its choices is asked as a list, and `--set` refuses anything outside them.
+
 **Eject, if asked.** Before the migrations, because eject repoints the config import at the local copy and promotes the capability's runtime dependencies into your project, and the migrate step has to load the config with everything it imports present.
 
 **Run that Worker's dev migrations.** The config is re-read after wiring, so the migration that just arrived is in the registry. Local Miniflare state lives at the project root, shared with `wrangler dev`.
@@ -186,6 +188,21 @@ Pass --set key=value.
 $ pithy add secrets --set registry=x
 secrets option "registry" is not settable from the command line.
 Edit registry in the worker's pithy.config.ts — pithy add scaffolds it empty.
+```
+
+**A required option nobody answered**, in a run that cannot be asked. Exit 1, and the action names the flag and every value it takes.
+
+```
+$ pithy add payments --json
+{"error":{"code":"validation/invalid_input","status":400,"issues":[],"message":"payments needs a value for billingSubject, and nothing in this run names one.","action":"Pass --set billingSubject=user or --set billingSubject=organization."}}
+```
+
+**A `--set` outside an option's choices.**
+
+```
+$ pithy add payments --set billingSubject=team
+payments option "billingSubject" does not take "team".
+Pass one of: user, organization.
 ```
 
 **A prerequisite this Worker does not compose**, in a run that cannot be asked. Exit 1, and the commands come back in dependency order.

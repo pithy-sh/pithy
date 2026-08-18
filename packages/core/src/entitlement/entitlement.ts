@@ -42,8 +42,15 @@ export const EntitlementKey = z
 export type EntitlementKey = z.output<typeof EntitlementKey>;
 
 /**
- * One entitlement a user holds, as the seam exposes it. This is the resolved read model, not a table:
- * `@pithy-sh/payments` materializes a row per `(userId, entitlement)` and decodes it into this shape.
+ * One entitlement the caller holds, as the seam exposes it. This is the resolved read model, not a table:
+ * `@pithy-sh/payments` materializes a row per `(holder, entitlement)` and decodes it into this shape.
+ *
+ * **Who the holder is stays out of this shape, deliberately.** A payments project bills either a person or
+ * an organization, and its rows are keyed on that pair — but the seam resolves for *one* caller acting for
+ * *one* holder, so the pair is constant across a single `list()` and every element of the result would
+ * repeat it. Carrying it here would put a comparison within reach of {@link requireEntitlement} that the
+ * gate has no correct way to make (see {@link EntitlementResolver}), and would hand every non-payments
+ * provider two fields it cannot fill.
  *
  * `active` and `expiresAt` are both present, and both matter. The flag is an optimization written by
  * the projection; the timestamp is the truth. {@link entitlementGrantsAccess} applies both, so a
@@ -71,7 +78,7 @@ export const Entitlement = z
         "Provenance — an opaque reference to whatever currently grants this entitlement (a purchase id, or a support grant). Opaque to core; the provider decides what it means.",
       ),
   })
-  .describe("One entitlement a user holds, as the core seam exposes it — the resolved read model.");
+  .describe("One entitlement the current caller holds, as the core seam exposes it — the resolved read model.");
 export type Entitlement = z.infer<typeof Entitlement>;
 
 /**
@@ -99,7 +106,15 @@ export function grantedEntitlementKeys(entitlements: readonly Entitlement[], now
 /**
  * The resolver seam on the request context (`c.var.entitlements`). One method: every entitlement the
  * **current caller** holds. The resolver is built per request by the provider's middleware, so it
- * already knows who is asking — a gate never passes a user id, and so can never gate on the wrong one.
+ * already knows who is asking — a gate never passes a holder, and so can never gate on the wrong one.
+ *
+ * **That property is why the seam still takes no argument, now that a provider's holder can be an
+ * organization rather than a person.** `@pithy-sh/payments` decides which subject the caller is acting
+ * for *before* it constructs the resolver: the resolution happens once, in its middleware, against the
+ * adopter's own membership model, and the resolver closes over the answer. So a gate cannot pass the
+ * wrong holder because it passes none, and the alternative — a `list(holder)` — would put that choice at
+ * every call site, where a route reaching for `c.var.auth.userId` under organization billing looks
+ * exactly like correct code and quietly checks a company's plan against one employee.
  *
  * `provider` names the capability answering, or is `null` when none is composed. It exists so a denial
  * can say *which* of the two reasons it was — genuinely unentitled, or nothing wired — in `detail`,
@@ -110,6 +125,52 @@ export interface EntitlementResolver {
   readonly provider: string | null;
   /** Every entitlement the current caller holds, granting or not. The gate applies the read-time rule. */
   list(): Promise<readonly Entitlement[]>;
+  /**
+   * Who {@link list} answered for, **for the log and the audit trail only**. Optional: a resolver that
+   * cannot say omits it, and every gate behaves exactly as it did before this existed.
+   *
+   * See {@link EntitlementHolder} for why this is a label and a tenant rather than the holder itself.
+   */
+  holder?(): Promise<EntitlementHolder | undefined>;
+}
+
+/**
+ * How a resolver's holder appears in a denial's `detail` and on the denial's audit row — and **nothing a
+ * gate may compare**.
+ *
+ * A provider's holder stopped being a person when `@pithy-sh/payments` learned to bill organizations, and
+ * that left a denial unable to say which of two things had happened: a company that has bought nothing,
+ * and a caller acting for **no** company at all — the ordinary state of somebody signed in with no
+ * organization selected. Both produced `payments resolved []`. They are different problems: one is a sale,
+ * the other is a subject resolver returning nothing. The same gap left the denial's audit row with no
+ * `tenant`, so a trail could not answer "which of our customers is hitting the paywall" — `actorId` cannot,
+ * because one person acts in two tenants.
+ *
+ * **So why not put the holder on the seam?** Because {@link EntitlementResolver} deliberately takes no
+ * holder and returns none: the provider decides who the caller acts for *once*, in its own middleware,
+ * before it builds the resolver, and a gate that never receives a holder can never check the wrong one.
+ * A field carrying the holder itself would put that choice back within reach — a route comparing a resolved
+ * subject against `c.var.auth.userId` looks like careful code and quietly checks a company's plan against
+ * one employee.
+ *
+ * The shape is what keeps that from happening. Neither field is the holder:
+ *
+ * - **`label`** is display text for one log line. It is not parsed, not matched, and has no format this
+ *   package defines — a provider renders it however reads best (`@pithy-sh/payments` uses `user:ada` and
+ *   `organization:acme`, its own encoding).
+ * - **`tenant`** is the audit dimension and nothing else, opaque exactly as `AuditEvent.tenant` is. `null`
+ *   means *the holder is not a tenant* — which is the honest answer under per-person billing, where the
+ *   holder is the actor and a tenant echoing `actorId` would be a dimension the app does not have.
+ *
+ * There is nothing here to compare a caller against, because there is no caller-shaped value: `label` is
+ * prose and `tenant` is a dimension. `require.test.ts` pins the property directly — the gate's decision is
+ * identical for every holder, including none.
+ */
+export interface EntitlementHolder {
+  /** Display text naming the holder, for a denial's `detail`. Never parsed, never matched. */
+  readonly label: string;
+  /** The tenant this was resolved for, or null when the holder is not a tenant. `AuditEvent.tenant`. */
+  readonly tenant: string | null;
 }
 
 /**

@@ -6,7 +6,7 @@ Deploy the reconciliation Workflow that keeps stored purchases agreeing with the
 
 ```
 pithy payments provision [--json]
-pithy payments reconcile [--env <environment>] [--user <id>] [--rail <rail>] [--dry-run] [--json]
+pithy payments reconcile [--env <environment>] [--subject <holder>] [--rail <rail>] [--dry-run] [--json]
 ```
 
 **Both subcommands need a Cloudflare account.** `provision` deploys a Worker per managed environment; `reconcile` dispatches a Workflow into an already-deployed one. Neither has a local path — `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are checked before anything runs, and `provision` additionally requires `SECRETS_STORE_ID`.
@@ -16,7 +16,7 @@ pithy payments reconcile [--env <environment>] [--user <id>] [--rail <rail>] [--
 | Flag | Applies to | Default | Purpose |
 |---|---|---|---|
 | `--env <environment>` | `reconcile` | `staging` | Which deployed environment to run the pass in. `staging` or `prod` — `dev` is local-only and is refused by name |
-| `--user <id>` | `reconcile` | every user | Reconcile one user's purchases. The support path: the same steps the cron runs, narrowed |
+| `--subject <holder>` | `reconcile` | every holder | Reconcile one holder's purchases, as `user:<id>` or `organization:<id>`. The support path: the same steps the cron runs, narrowed. An id on its own is refused — it names whichever user *or* organization carries it |
 | `--rail <rail>` | `reconcile` | every rail | Reconcile one rail: `apple`, `google`, `stripe`, `lemonSqueezy`, or `paddle`. Parsed here, so a mistyped rail is a sentence in this terminal rather than a Workflow that burns its retry budget unwatched |
 | `--dry-run` | `reconcile` | `false` | Report the drift and write nothing |
 | `--json` | both | `false` | One line of machine-readable output |
@@ -141,7 +141,7 @@ Done.
 Answer "my subscription isn't showing up" for one person, through the steps the cron runs.
 
 ```
-$ pithy payments reconcile --env prod --user usr_a1b2c3
+$ pithy payments reconcile --env prod --subject user:usr_a1b2c3
 ```
 
 See what a pass would repair, without repairing it.

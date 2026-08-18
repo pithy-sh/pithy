@@ -9,7 +9,7 @@ import type { PaymentsPurchase } from "../data/purchase";
 import type { PurchaseStatus } from "../data/status";
 import type { PurchaseProjection } from "../projection/writer";
 import { type ClawbackOutcome, clawbackGrants } from "./clawback";
-import { openPaymentsLedger, type PaymentsLedger } from "./ledgerSeam";
+import { ledgerAccountId, openPaymentsLedger, type PaymentsLedger } from "./ledgerSeam";
 
 /**
  * Fulfillment: turning a projected purchase into the balance a `grants` clause promised.
@@ -141,9 +141,12 @@ export async function applyGrants(
   if (grant === undefined || !purchaseIsPaid(purchase)) return [];
 
   const ref = grantRef(purchase.id, grant.currency);
-  // Identifiers only. The memo lands in a queryable ledger row beside a player's balance, so it names what
-  // was bought and on which store, and never the artifact that proved it.
-  await ledger.credit(purchase.userId, grant.currency, grant.amount, ref, {
+  // The account is derived from the purchase's subject pair, never from its id alone — `ledgerAccountId`
+  // says why, and the clawback derives it the same way so a reversal cannot miss.
+  //
+  // Identifiers only in the memo. It lands in a queryable ledger row beside a player's balance, so it names
+  // what was bought and on which store, and never the artifact that proved it.
+  await ledger.credit(ledgerAccountId(purchase), grant.currency, grant.amount, ref, {
     memo: `payments ${purchase.rail} ${purchase.productId}`,
   });
   return [{ currency: grant.currency, amount: grant.amount, ref }];
@@ -188,7 +191,10 @@ export async function fulfillPurchase(
       metadata: {
         rail: purchase.rail,
         productId: purchase.productId,
-        userId: purchase.userId,
+        // Both halves, as every record of an owner carries them. An id alone would leave whoever answers the
+        // alert unable to say whether the shortfall is a person's balance or a company's.
+        subjectType: purchase.subjectType,
+        subjectId: purchase.subjectId,
         currency: attempt.currency,
         amount: attempt.amount,
         ref: attempt.ref,
