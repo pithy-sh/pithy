@@ -53,7 +53,7 @@ This single SVG is the canonical mark asset. The same file works at every size f
 
 **Shape and color are non-negotiable.** The mark is a saffron (#D4A017) **square**. Never a circle. Never an outline. Never a gradient. Never any other color. The square shape matches the period as Geist Medium renders it — the brand mark and the typographic period are visually identical, which is the point.
 
-This section is about marks. The square is not only about marks: it governs the corners of controls too. That rule is [Section 10](#10-interface-geometry), and it is the one to cite when the subject is an interface rather than a mark.
+This section is about marks, and only about marks. Pithy briefly had a rule about the corners of controls too — Section 10, ruled 2026-08-15 on `pithy-sh/dashboard#72`. **It was retracted on 2026-08-18, and nothing replaced it.** It began as a product decision about one toggle in one application and was written down as a law binding every interface built on Pithy, which is a reach this document does not have: composing `@pithy-sh/auth` gives us no say in somebody else's control geometry. So there is no rule here about corners, pills, circles or radii. The mark is a square, by this section. Every other shape in your product is yours.
 
 **Apple touch icon and other branded home-screen contexts.** iOS applies its own corner radius to `apple-touch-icon` automatically. Use `pithy-social.svg` rendered at 180×180 — the "p." version with its ink background — not the bare favicon. When someone pins your site to their home screen, they want to see the brand, not a colored block.
 
@@ -452,10 +452,6 @@ Logo
   Min size      80px screen / 1in print
   Mark min      16px
 
-Geometry
-  Corners       squared off — small radii, never a pill, never a circle
-  Banned        999px, 9999px, 50% (see Section 10)
-
 Voice
   Short sentences. Confident. No fluff. The period earns its keep.
 ```
@@ -478,36 +474,3 @@ The canonical identity. Use these exactly; do not invent variants.
 **The dot rule across handles.** The brand is the period, so prefer the dotted form
 (`pithy.sh`, `@pithy.sh`) wherever a platform allows it. Where the dot is disallowed (npm,
 X), fall back to the hyphen or underscore form — but the dotted form is the canonical one.
-
----
-
-## 10. Interface geometry
-
-Section 2.2 says the mark is a square. This section says the square is not only the mark's.
-
-**Squared corners are a product-wide rule, not a rule about the mark.** Interfaces built on Pithy —
-the CLI's own surfaces, the docs site, the hosted dashboard — draw corners from a small radius scale
-that stops well short of round. **Never a pill. Never a circle.** In CSS terms that is a ban on
-`border-radius: 999px`, `9999px` and `50%`, on any element, not only on the ones that render a mark.
-A toggle, a chip, an avatar and a status dot are all in scope.
-
-The reason is that the square is the brand's geometric argument rather than one asset's shape. A
-product full of pills reads as a different product however square the wordmark stays. So a test that
-sweeps a whole stylesheet for round corners is enforcing this section, and it should cite this
-section.
-
-**Ruled 2026-08-15. Provisional, and recorded as such.** The call was taken on
-`pithy-sh/dashboard#72`, which asked whether the square governs the mark alone or every corner. The
-answer was the broad one, in these words: *"let's try the sharp edge corners on the toggles for now
-and if I don't like them, we can change them later."* So it is a decision that was taken, not a law
-that was discovered. It can be revisited — here, with a date and a reason, in one place. What it must
-not do is erode a control at a time, which is the failure mode this section exists to stop.
-
-**What it overrules.** The dashboard's design prototype draws the notifications toggle as a pill: a
-fully rounded track with a circular knob. This section overrules that pill. Nothing else about that
-control is in dispute — the saffron track when on, the muted fill when off, the knob crossing left to
-right, and the chip in place of a disabled button are all the prototype's and all still correct. The
-disagreement is the shape of two corners, and it is settled squared off.
-
-**Squared off is not zero.** The rule ends the radius scale before anything round; it does not set
-every corner to `0`. Products keep whatever small radius their design system already defines.
