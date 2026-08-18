@@ -37,7 +37,7 @@ The binary is always `pithy`. The alias system (Section 3) ships a shorter short
 | `pithy remove <capability> [--worker <name>]` | The manual, interactive inverse of `add` (and `add --eject`): unwires that Worker's config + bindings and uninstalls the package (or deletes the ejected source), leaving your data untouched unless you pass `--drop`. **Manual-only — `--json` is rejected** (see below) |
 | `pithy worker <add\|list\|remove\|rename\|sync> [name]` | Manage the project's Workers under `apps/<name>/`; `apps/` is the registry every command discovers (see [`commands/dev.md`](commands/dev.md)). `rename` moves the directory and the two other places a Worker's name is stamped (see Section 6.6). `sync` writes the Worker's **app-declared** Workflows and cron triggers into its `wrangler.jsonc`, for every environment it declares — the app's equivalent of what `pithy <capability> provision` writes for a library capability's (see Section 6.5) |
 | `pithy ui <add\|sync\|list> [--worker <name>]` | Scaffold a front end into an existing Worker and wire it end to end — Vite, the SPA entry, the routes, the `assets` stanza, the dev command. `sync` re-derives the asset routing after the Worker's capabilities change; `list` reports which Workers carry a UI (see [`commands/ui.md`](commands/ui.md) and `docs/UI.md`) |
-| `pithy dev` | Start the local development environment (multi-worker, per-feature ports — see [`commands/dev.md`](commands/dev.md)) |
+| `pithy dev` | Start the local development environment — app Workers plus each composed capability's host Worker, on per-feature ports (see [`commands/dev.md`](commands/dev.md)) |
 | `pithy migrate [--worker <name>]` | Run each Worker's migration registry against an `--env` (`--rollback` to downgrade). Fans out over every Worker; Workers sharing a database migrate it once |
 | `pithy seed [--worker <name>]` | Load seed/test data (same Zod schemas/codecs) for local dev or ephemeral CI — see [`commands/seed.md`](commands/seed.md) and `docs/SEED.md` |
 | `pithy provision <--env <name> \| --feature>` | Create an environment's own Cloudflare resources — one per binding name across every Worker — write their ids into each Worker's config, and migrate. **One job, two spellings, exactly one of them required:** `--env` for an environment the project declares, `--feature` for the one this branch gets. Idempotent and adopting: a resource of the right name is taken up rather than duplicated. Every run states the file it wrote and whether that file is committed — `--env`'s ids are source in the tracked `wrangler.jsonc`, `--feature`'s are a build artifact under the already-ignored `.wrangler/`. `deploy` refuses and names this command when a binding has no id; production takes a type-to-confirm phrase that `--yes` never replaces (see [`commands/provision.md`](commands/provision.md)) |
@@ -119,7 +119,7 @@ One page per command, under [`docs/commands/`](commands/). Every page carries th
 | `pithy alias` | [`commands/alias.md`](commands/alias.md) — Install or remove the `p.` shortcut |
 | `pithy dashboard` | [`commands/dashboard.md`](commands/dashboard.md) — Register and revoke a management client's access |
 | `pithy deploy` | [`commands/deploy.md`](commands/deploy.md) — Deploy to Cloudflare Workers |
-| `pithy dev` | [`commands/dev.md`](commands/dev.md) — Run every Worker locally under one supervisor |
+| `pithy dev` | [`commands/dev.md`](commands/dev.md) — Run every Worker the project composes locally under one supervisor |
 | `pithy doctor` | [`commands/doctor.md`](commands/doctor.md) — Check the toolchain, the project, and for a new CLI version |
 | `pithy email` | [`commands/email.md`](commands/email.md) — Send, template, and inspect transactional mail |
 | `pithy env` | [`commands/env.md`](commands/env.md) — Report every Worker's environments, bindings, and ids |
@@ -887,6 +887,19 @@ The corresponding `pithy doctor --enable-notifier` re-enables it.
 ### 5.6 The `pithy doctor` command
 
 Moved to [`docs/commands/doctor.md`](commands/doctor.md).
+
+**One block of it is specified here because it is a contract other packages implement: `Settings:`.** Every other check doctor runs asks whether something is *present* — the option key, the binding, the migration. None of them looks at the value, so a project stays green while `fromAddress` names a domain nobody onboarded and `BASE_URL` points at a host nothing serves.
+
+A capability declares its own settings check on its `Capability` object, beside `health`. **Discovery keys on the composed instance and never on `pithy.manifest.json`** — two published capability packages ship no manifest, and a manifest-keyed rule skips both in silence. Doctor runs it for every capability every Worker under `apps/` composes, with no capability named on the command line; `--worker <name>` narrows it exactly as it narrows the health block. A capability that declares nothing is skipped, silently, and that is not a fault.
+
+Two tiers, because they cost different things:
+
+| Tier | Asks | Cost |
+|---|---|---|
+| `local` | Does the value parse, is it the right shape, is it right for this environment. Validated through **the same Zod object the capability's host Worker validates at boot** — one schema, two readers. | Free, offline, always run. |
+| `account` | Is the domain a zone here, does the secret have a value, is the database there. | One Cloudflare call, on the credentials this report already resolved. |
+
+**What makes `doctor` fail:** a finding from either tier. A local finding is established from the project's own files. An account finding is established from an account that answered — so the exit gate reads the findings, never the tier's state. When the account cannot be reached (offline, no credentials, no answer) the tier is reported as **skipped**, with the reason, and gates nothing; a capability whose check threw is reported as **unchecked**, with the tier that failed. Neither is ever rendered as a pass. Every finding renders as a problem line and an action line naming the `pithy` command, config key, or one-time account action that resolves it, and every finding and every skip appears in `--json`. The check never writes anything.
 
 ### 5.7 Project capability updates
 

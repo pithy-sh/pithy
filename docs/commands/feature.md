@@ -56,7 +56,7 @@ One line, one object, one shape per subcommand. The `command` field is the subco
 
 ```
 $ pithy feature create media-cli --issue 69 --json
-{"command":"feature.create","branch":"feature/69-media-cli","worktree":"/repo/.worktrees/69-media-cli","worktreeCreated":true,"dev":{"version":1,"branch":"feature/69-media-cli","ports":{"index":1,"base":8797,"size":10},"workers":{"api":{"port":8797,"origin":"http://localhost:8797"}}}}
+{"command":"feature.create","branch":"feature/69-media-cli","worktree":"/repo/.worktrees/69-media-cli","worktreeCreated":true,"dev":{"version":1,"branch":"feature/69-media-cli","ports":{"index":1,"base":8807,"size":20},"workers":{"api":{"port":8807,"origin":"http://localhost:8807"}}}}
 ```
 
 | key | type | meaning |
@@ -78,7 +78,7 @@ $ pithy feature create media-cli --issue 69 --json
 
 ```
 $ pithy feature sync --json
-{"command":"feature.sync","branch":"feature/69-media-cli","block":{"block":1,"base":8797,"size":10},"dev":{…},"addedWorkers":["web"],"removedWorkers":[],"data":true}
+{"command":"feature.sync","branch":"feature/69-media-cli","block":{"block":1,"base":8807,"size":20},"dev":{…},"addedWorkers":["web"],"removedWorkers":[],"data":true}
 ```
 
 | key | type | meaning |
@@ -159,7 +159,7 @@ Cut a feature environment from the main checkout.
 $ pithy feature create media-cli --issue 69
 Worktree /repo/.worktrees/69-media-cli.
 Branch feature/69-media-cli.
-api: http://localhost:8797
+api: http://localhost:8807
 Local backend migrated and seeded.
 Done.
 ```

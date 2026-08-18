@@ -19,6 +19,7 @@ import type { SeedSet } from "../seed/seed";
 import type { WorkflowSpecMap } from "../workflow/spec";
 import { BindingSpec, type BindingSpecInput } from "./bindings";
 import type { ClientProjection, ClientProjectionContext } from "./client";
+import type { CapabilitySettings } from "./settings";
 
 /** Hono `Variables` every capability's routes are typed against. `createBackend` seeds these per request. */
 export interface PithyVars {
@@ -306,6 +307,22 @@ export interface Capability<
    * anything else could never be granted. `capabilityHealthSources` refuses that at assembly.
    */
   health?: CapabilityHealth;
+  /**
+   * How this capability checks that its own **settings work**, as opposed to being merely present — the
+   * seam `pithy doctor` runs for every capability every Worker composes (#411). Omit it when a capability
+   * has nothing worth checking, which is the normal case and is silent rather than a fault.
+   *
+   * Declared here, on the instance, and **never keyed off `pithy.manifest.json`**: `@pithy-sh/matchmaking`
+   * and `@pithy-sh/rating` are published capability packages that ship no manifest, so a manifest-keyed
+   * rule would skip both without saying so — the same trap the version stamper documents.
+   *
+   * Beside {@link Capability.health} and deliberately not part of it. That one is a bounded scalar summary
+   * a **deployed** Worker reports into `GET /control-plane/manifest` for a dashboard; this one reads local
+   * config **before** anything is deployed, which is where a wrong `fromAddress` or a `BASE_URL` from the
+   * other environment is cheapest to find. See `capability/settings.ts` for the two tiers and why an
+   * unreachable account is *skipped* rather than passed.
+   */
+  settings?: CapabilitySettings;
   /**
    * The npm version of the package that supplies this capability, or `null` where there is none.
    *

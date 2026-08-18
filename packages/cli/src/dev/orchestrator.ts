@@ -22,14 +22,24 @@ import {
   writeDevConfig,
 } from "../feature/devConfig";
 import { allocatePortBlock, type PortBlock, reclaimPortBlocks, resolvePortsRegistryPath } from "../feature/ports";
-import { allCapabilities, loadWorkerConfig } from "../project/config";
+import { allCapabilities, loadProject, loadWorkerConfig, requireProjectName } from "../project/config";
 import { detectPackageManager, execArgs } from "../project/packageManager";
 import { defaultWorkerDev } from "../project/workerManifest";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "../project/workers";
 import { dim, workerColor } from "../terminal/style";
+import { hasCloudflareLogin as defaultHasCloudflareLogin, deliveryFailureNote, deliveryPreflight } from "./delivery";
 import { type DevLoginTarget, devLoginKeyAction, devLoginLines, readDevLogin as readDevLoginDefault } from "./devLogin";
 import { devLoginTargets as devLoginTargetsDefault } from "./devLoginTargets";
 import { buildWorkerEnv, startCommand, type WranglerLauncher } from "./env";
+import {
+  discoverHostWorkers as discoverHostWorkersDefault,
+  type HostMaterialization,
+  type HostWorker,
+  type HostWorkerDiscovery,
+  hostDeliveryIdentity,
+  type MaterializeHostConfigsOptions,
+  materializeHostConfigs as materializeHostConfigsDefault,
+} from "./hostWorkers";
 import { type KeyReader, readKeys as readKeysDefault } from "./keys";
 import { type DataStream, teeStream } from "./logging";
 import { openUrl as openUrlDefault } from "./openUrl";
@@ -80,6 +90,22 @@ const defaultCheckEntitlements = async (workerDir: string): Promise<string[]> =>
   }
 };
 
+/**
+ * The project name every host's derived names lead with, or `null` when the project states none.
+ *
+ * `requireProjectName` rather than `resolveProjectName`: a guessed name differs between checkouts,
+ * and this one is stamped into a Worker script name. A project that states none gets no hosts and
+ * one line saying why — the alternative is a host running under a name nothing else in the project
+ * would reproduce.
+ */
+const defaultProjectName = async (projectDir: string): Promise<string | null> => {
+  try {
+    return requireProjectName(await loadProject(projectDir));
+  } catch {
+    return null;
+  }
+};
+
 export interface StartDevOptions {
   projectDir: string;
   json?: boolean;
@@ -90,6 +116,17 @@ export interface StartDevOptions {
   /** Seam: generate each Worker's `.dev.vars` before anything reads one. */
   generateDevVars?: (projectDir: string, workerDirs: string[]) => Promise<GenerateDevVarsResult>;
   discoverWorkers?: (projectDir: string) => Promise<WorkerTarget[]>;
+  /** Seam: the host Worker of every capability the project's Workers compose. */
+  discoverHostWorkers?: (options: {
+    projectDir: string;
+    workers: readonly WorkerTarget[];
+  }) => Promise<HostWorkerDiscovery>;
+  /** Seam: resolve and write each host's local `wrangler.jsonc`. */
+  materializeHostConfigs?: (options: MaterializeHostConfigsOptions) => Promise<HostMaterialization>;
+  /** Seam: the project name every host's derived names lead with. `null` skips the hosts, loudly. */
+  projectName?: (projectDir: string) => Promise<string | null>;
+  /** Seam: whether Cloudflare credentials resolve at all — the cheap half of the delivery preflight. */
+  hasCloudflareLogin?: (projectDir: string, env: NodeJS.ProcessEnv) => Promise<boolean>;
   loadDevConfig?: (projectDir: string) => Promise<DevConfig | null>;
   /** Bootstrap seam: assign and persist pinned ports when the project has none yet. */
   ensureDevConfig?: (options: EnsureDevConfigOptions) => Promise<DevConfig>;
@@ -294,7 +331,35 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
 
   // 1. Discover the autostart set. apps/ is the registry; no hand-kept list.
   const discovered = await discoverWorkers(projectDir);
-  const autostart = discovered.filter((w) => (w.dev ?? defaultWorkerDev()).autostart);
+
+  //    …plus the host Worker of every capability those Workers compose (pithy-sh/pithy#410). Nine
+  //    capabilities ship a prebuilt host that `pithy <capability> provision` deploys, none of them
+  //    lives in `apps/`, and until now not one had ever run under `pithy dev` — which is why every
+  //    email enqueued locally sat `pending` forever while the UI reported success. A host joins as an
+  //    ordinary member: its own pinned port, label, colour, state entry, and teardown. Discovery is
+  //    through the shared registry, so the dev command names no capability.
+  //
+  //    The project name is settled first, and `requireProjectName` rather than a guess: it is stamped
+  //    into a Worker script name, and a guessed one differs between checkouts. A project that states
+  //    none gets no hosts and one line saying so, rather than hosts running under a name nothing else
+  //    in the project would reproduce.
+  const project = await (options.projectName ?? defaultProjectName)(projectDir);
+  const findHosts = options.discoverHostWorkers ?? discoverHostWorkersDefault;
+  const hostFinding =
+    project === null
+      ? {
+          hosts: [],
+          notes: [
+            "No project name in pithy.config.ts, so no capability host can be named — none will run.",
+            dim('  set: export default { name: "<project>" }'),
+          ],
+        }
+      : await findHosts({ projectDir, workers: discovered });
+  for (const line of hostFinding.notes) emitLine(line);
+  const hosts = hostFinding.hosts;
+  const hostNames = new Set(hosts.map((host) => host.worker.name));
+  const members = [...discovered, ...hosts.map((host) => host.worker)];
+  const autostart = members.filter((w) => (w.dev ?? defaultWorkerDev()).autostart);
   if (autostart.length === 0) {
     throw new ValidationError({
       message: "No autostart workers to run.",
@@ -323,6 +388,11 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   const generate =
     options.generateDevVars ??
     ((dir: string, dirs: string[]) => generateDevVars({ projectDir: dir, workerDirs: dirs }));
+  const generateInto = async (dirs: string[]): Promise<void> => {
+    const devVars = await generate(projectDir, dirs);
+    for (const line of renderDevVarsNotes(devVars)) emitLine(line);
+    for (const line of devVars.unresolvable) emitLine(line);
+  };
   try {
     const devVars = await generate(
       projectDir,
@@ -349,7 +419,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   const config =
     unpinned.length === 0 && existing
       ? existing
-      : await ensure({ projectDir, workers: discovered, existing, ...(options.ensureDeps ?? {}) });
+      : await ensure({ projectDir, workers: members, existing, ...(options.ensureDeps ?? {}) });
 
   const started: { worker: WorkerTarget; port: number; origin: string }[] = [];
   for (const worker of autostart) {
@@ -361,6 +431,86 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       });
     }
     started.push({ worker, port: pinned.port, origin: pinned.origin });
+  }
+
+  // 3b. Resolve and write each host's local `wrangler.jsonc`, now that the app Worker's own address
+  //     is known — a message sent from here builds its callback links against it.
+  //
+  //     The delivery preflight runs first and *decides*. `remote: true` on the email host's send
+  //     binding runs the Worker locally and delivers through Cloudflare Email Service for real, which
+  //     is what makes a magic link triggered from localhost actually arrive; that needs a Cloudflare
+  //     login and an onboarded sending domain, neither of which the kit owns. Where the cheap check
+  //     can already see one of them is missing, the host is resolved for its local simulator instead
+  //     of for a binding that would fail at startup — and it says so, before anyone is waiting on an
+  //     inbox. The preflight is not the guarantee: `deliveryFailureNote` watches the host's own
+  //     output for the failures it cannot see from here.
+  const hostPorts: Record<string, number> = {};
+  for (const host of hosts) {
+    const pinned = config.workers[host.worker.name];
+    if (pinned) hostPorts[host.worker.name] = pinned.port;
+  }
+  // The delivery verdict, said **once** — in the ready banner, which is where a developer looks, and
+  // pre-spawn only under `--json`, where there is no banner and the reader is a script. Saying it in
+  // both places was two copies of one sentence in every interactive session.
+  let deliveryLines: readonly string[] = [];
+  // The hosts that actually have a config on disk, the seam that wrote it, and the address it wrote
+  // them against — all three needed after the block below: only these are started, and a delivery
+  // failure at runtime rewrites one of them for its simulator.
+  let liveHosts: HostWorker[] = hosts;
+  let materializeHosts: ((options: MaterializeHostConfigsOptions) => Promise<HostMaterialization>) | undefined;
+  let hostBaseUrl = "http://localhost";
+  let deliveryIsLive = false;
+  if (project !== null && hosts.length > 0) {
+    // The app's address: the first started Worker that is not a host. Callback links point at the
+    // app, never at the host — the host holds no public route of its own.
+    const app = started.find((s) => !hostNames.has(s.worker.name));
+    const identity = await hostDeliveryIdentity(hosts);
+    const preflight = deliveryPreflight({
+      composed: identity !== undefined,
+      requested: identity?.requested ?? "remote",
+      fromAddress: identity?.fromAddress,
+      hasCloudflareLogin: await (options.hasCloudflareLogin ?? defaultHasCloudflareLogin)(
+        projectDir,
+        options.baseEnv ?? process.env,
+      ),
+    });
+    deliveryLines = preflight.lines;
+    deliveryIsLive = preflight.live;
+    if (options.json) for (const line of preflight.lines) emitLine(line);
+    hostBaseUrl = app?.origin ?? started[0]?.origin ?? "http://localhost";
+    const materialize = options.materializeHostConfigs ?? materializeHostConfigsDefault;
+    materializeHosts = materialize;
+    const materialized = await materialize({
+      projectDir,
+      project,
+      baseUrl: hostBaseUrl,
+      hosts,
+      simulateDelivery: !preflight.live,
+    });
+    for (const line of materialized.notes) emitLine(line);
+    // A host with no config on disk leaves the set here, and that is the whole point of the second
+    // list. Its directory was never created, so `wrangler dev` in it fails on the spawn itself — Node
+    // raises `error`, the handler below tears the session down, and every Worker that was running fine
+    // dies for one capability nobody could resolve. The note said "it will not run"; this is what makes
+    // that true. Its siblings' `<STEM>_ORIGIN` goes with it, because an address nothing listens on is
+    // worse than none: the loopback dispatcher prefers a published origin over the binding.
+    const dropped = new Set(materialized.failed);
+    if (dropped.size > 0) {
+      for (let index = started.length - 1; index >= 0; index -= 1) {
+        if (dropped.has(started[index]?.worker.name ?? "")) started.splice(index, 1);
+      }
+      for (const name of dropped) delete hostPorts[name];
+    }
+    liveHosts = hosts.filter((host) => !dropped.has(host.worker.name));
+    // A host's `.dev.vars` is generated once its directory exists, from the same project-wide
+    // bootstrap set every Worker gets — the master key above all, since a local host has no Secrets
+    // Store for the resolved template's entries to point at (which is why that block is dropped).
+    // Through the one generator, so a `.dev.vars` value is never written by a second hand.
+    try {
+      await generateInto(liveHosts.map((host) => host.worker.dir));
+    } catch (error) {
+      emitLine(`Capability hosts start without secrets. ${messageOf(error)}`);
+    }
   }
 
   // 4. Stop a previous session, then reap orphaned workerd/wrangler still holding the pinned ports. This runs
@@ -410,7 +560,11 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   // there is a session to open, so a project with no dev login never loads a Worker config for this.
   const devLoginWorkers: DevLoginTarget[] =
     devLogin && !ci
-      ? await resolveDevLoginTargets(started.map((s) => ({ name: s.worker.name, dir: s.worker.dir, origin: s.origin })))
+      ? await resolveDevLoginTargets(
+          started
+            .filter((s) => !hostNames.has(s.worker.name))
+            .map((s) => ({ name: s.worker.name, dir: s.worker.dir, origin: s.origin })),
+        )
       : [];
   const childEnv = buildWorkerEnv(config, baseEnv);
   // One local store for the whole project, named in one place — `localDevStateRoot`. This used to compose
@@ -444,6 +598,11 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       startKeys();
       emitLine("Ready.");
       for (const s of started) emitLine(`${s.worker.name}: ${s.origin}`);
+      // Said once, where a developer actually looks. Real delivery or the simulator is the difference
+      // between a magic link arriving and a rendered file on disk, and nobody should learn it from an
+      // inbox that stays empty. Every line of the verdict, action included — a sentence naming the
+      // problem without the sentence naming the fix is half a report.
+      for (const line of deliveryLines) emitLine(line);
       // The banner is the discovery mechanism. A seeded session nobody finds has removed no friction, and
       // the line below is the only place a developer reliably looks after `pithy dev`. It says that there
       // is a session and how to reach it — never what the session *is*.
@@ -547,16 +706,68 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     emitLine(`Secrets not seeded. ${messageOf(error)}`);
   }
 
+  /**
+   * The runtime half of the delivery fallback (pithy-sh/pithy#410).
+   *
+   * The preflight decides what it can see from outside the process; a remote `send_email` binding that
+   * will not stand up, and a send Cloudflare refuses, appear only in the host's own output. Reporting
+   * that and stopping there leaves the session in the one state the issue forbids — every subsequent
+   * magic link failing, quietly, for the rest of the afternoon. So the host is re-resolved for its
+   * local simulator, which sends nothing and logs the recipient, subject and URL.
+   *
+   * **Rewriting the config is the whole restart.** `wrangler dev` watches the `wrangler.jsonc` it was
+   * started with and reloads the Worker when it changes, so the fallback needs no second spawn path,
+   * no kill that the exit handler would read as a crash, and no port to re-verify.
+   *
+   * Once per host. A failing binding usually says so more than once, and a rewrite loop would reload
+   * the Worker on every line it printed.
+   */
+  const simulated = new Set<string>();
+  const fallBackToSimulator = async (capability: string): Promise<void> => {
+    // Nothing to fall back to when this session was never sending for real: the host already holds the
+    // simulator, and rewriting an identical config would reload a Worker for no change.
+    if (!deliveryIsLive || simulated.has(capability) || !materializeHosts || project === null) return;
+    const host = liveHosts.find((candidate) => candidate.worker.name === capability);
+    if (!host) return;
+    simulated.add(capability);
+    try {
+      const again = await materializeHosts({
+        projectDir,
+        project,
+        baseUrl: hostBaseUrl,
+        hosts: [host],
+        simulateDelivery: true,
+      });
+      for (const line of again.notes) emitLine(line);
+      emitLine(`${capability}: using the simulator from here. Messages are logged and written to disk, never sent.`);
+    } catch (error) {
+      emitLine(`${capability}: the simulator fallback could not be written. ${messageOf(error)}`);
+    }
+  };
+
   emitLine(`Starting ${started.map((s) => s.worker.name).join(", ")}.`);
 
   for (const { worker, port } of started) {
     readyState.set(worker.name, false);
     readyRegex.set(worker.name, readyRegexFor(worker));
-    const { command, args } = startCommand(worker, port, launchWrangler, persistTo, baseEnv);
+    const { command, args } = startCommand(worker, port, launchWrangler, persistTo, baseEnv, hostPorts);
     const child = spawn(command, args, { cwd: worker.dir, env: childEnv, detached: hasSetsid });
     children.push({ name: worker.name, child });
 
+    const isHost = hostNames.has(worker.name);
     const onLine = (line: string) => {
+      // A remote send binding that will not stand up, or a send Cloudflare refuses, appears here and
+      // nowhere else — the preflight above cannot see either from outside the process. Caught where it
+      // appears, rendered with the action that fixes it, then the host is dropped to its simulator so
+      // the rest of the session still sends something. Never fatal: `pithy dev` supervises Workers, and
+      // a message that did not send is a reason for a sentence, not for a teardown.
+      if (isHost) {
+        const note = deliveryFailureNote(line);
+        if (note) {
+          for (const text of note.split("\n")) emitLine(text);
+          void fallBackToSimulator(worker.name);
+        }
+      }
       if (bannerShown || readyState.get(worker.name)) return;
       if (readyRegex.get(worker.name)?.test(line)) {
         readyState.set(worker.name, true);

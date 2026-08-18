@@ -10,7 +10,7 @@ import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
 import { describe, expect, test, vi } from "vitest";
 import { GENERATED_MARKER, generateDevVars } from "../devSecrets/generate";
 import { type DevConfig, devConfigPath, readDevConfig } from "../feature/devConfig";
-import type { PortsRegistry } from "../feature/ports";
+import { BLOCK_SIZE, type PortsRegistry } from "../feature/ports";
 import type { WorkerTarget } from "../project/workers";
 import {
   type ChildLike,
@@ -114,6 +114,12 @@ function harness(overrides: Partial<StartDevOptions> = {}) {
       unresolvable: [],
     }),
     loadDevConfig: async () => config,
+    // Stubbed: which capability hosts a project composes is `hostWorkers.test.ts`'s subject, and these
+    // fixtures have no `pithy.config.ts` on disk. The cases below that care hand over their own.
+    projectName: async () => "acme",
+    discoverHostWorkers: async () => ({ hosts: [], notes: [] }),
+    materializeHostConfigs: async () => ({ notes: [], failed: [] }),
+    hasCloudflareLogin: async () => true,
     // Stubbed for the same reason: which worker composes auth is read off a real `pithy.config.ts`, and
     // `devLoginTargets.test.ts` owns that question. `api` is the wrangler worker in this fixture set.
     devLoginTargets: async (started) =>
@@ -259,7 +265,7 @@ describe("ensureDevConfig", () => {
       expect(dev.workers.web).toEqual({ port: 8788, origin: "http://localhost:8788" });
       expect(await readDevConfig(devConfigPath(p.dir))).toEqual(dev);
       // Off a branch the checkout path is the registry key — one block per checkout, still centrally locked.
-      expect((await p.registry())[`local:${p.dir}`]).toEqual({ block: 0, base: 8787, size: 10 });
+      expect((await p.registry())[`local:${p.dir}`]).toEqual({ block: 0, base: 8787, size: BLOCK_SIZE });
     } finally {
       await p.cleanup();
     }
@@ -942,5 +948,268 @@ describe("startDev — a Worker whose config will not import", () => {
     // Reported, never fatal. One Worker's broken config is not a reason to refuse to run the project —
     // and refusing would take away the dev loop they are using to fix it.
     expect(h.spawned.length).toBeGreaterThan(0);
+  });
+});
+
+describe("startDev — capability hosts", () => {
+  /**
+   * `apps/` is the app-Worker registry, and nine capabilities ship a prebuilt host Worker that lives
+   * nowhere near it. None of them had ever run under `pithy dev`, which is why every email enqueued
+   * locally sat `pending` forever while the sign-in screen said "Check your inbox"
+   * (pithy-sh/pithy#410). A host is an ordinary member of the dev set, and these pin that it is one.
+   */
+
+  /** The dev config a project with an email host gets: the two apps plus the host, all pinned. */
+  const withHost: DevConfig = {
+    ...config,
+    workers: { ...config.workers, email: { port: 8789, origin: "http://localhost:8789" } },
+  };
+
+  /** The host as discovery hands it over: a plain `WorkerTarget` with a generated config directory. */
+  const emailHost = {
+    capability: "email",
+    sourceDir: "/proj/apps/api",
+    spec: { capability: "email", entry: "@pithy-sh/email/src/workflows/worker", package: "@pithy-sh/email" },
+    worker: {
+      name: "email",
+      dir: "/proj/.wrangler/pithy/hosts/email",
+      hasWrangler: true,
+      dev: { autostart: true, readySignal: "Ready on https?://" },
+    },
+  };
+
+  /** A harness whose project composes email, so the dev set is `api`, `web` and the email host. */
+  function hosted(overrides: Partial<StartDevOptions> = {}) {
+    return harness({
+      loadDevConfig: async () => withHost,
+      discoverHostWorkers: async () => ({ hosts: [emailHost as never], notes: [] }),
+      ...overrides,
+    });
+  }
+
+  test("starts the host of every capability the project's Workers compose", async () => {
+    const h = hosted();
+    const handle = await startDev(h.options);
+    expect(handle.workers.map((w) => w.name)).toEqual(["api", "web", "email"]);
+    expect(h.spawned.map((s) => s.opts.cwd)).toContain("/proj/.wrangler/pithy/hosts/email");
+  });
+
+  test("the host is an ordinary member: a pinned port, a state entry, and the same teardown", async () => {
+    const h = hosted();
+    const handle = await startDev(h.options);
+    expect(handle.workers).toContainEqual({ name: "email", port: 8789, origin: "http://localhost:8789" });
+    expect(h.written[0]?.workers.email?.port).toBe(8789);
+    // Every child, host included, is signalled on shutdown — no orphaned workerd after a session.
+    await handle.shutdown("done");
+    const hostPid = h.spawned[2]?.child.pid ?? 0;
+    expect(h.killCalls.map((k) => k.pid)).toContain(-hostPid);
+  });
+
+  test("its port is verified on both loopback families before anything spawns, like every other", async () => {
+    const h = hosted();
+    const bind = vi.fn().mockResolvedValue(true);
+    await startDev({ ...h.options, tryBind: bind });
+    expect(bind).toHaveBeenCalledWith(8789, "127.0.0.1");
+    expect(bind).toHaveBeenCalledWith(8789, "::1");
+  });
+
+  test("adding a capability reconciles the port block exactly as adding a Worker does", async () => {
+    // The bootstrap seam is called with every member — apps *and* hosts — so a host that is not yet
+    // pinned gets a port from the feature's own block rather than the `no port in .dev.config.json`
+    // refusal.
+    const h = hosted({ loadDevConfig: async () => config });
+    const seen: EnsureDevConfigOptions[] = [];
+    await startDev({
+      ...h.options,
+      ensureDevConfig: async (o) => {
+        seen.push(o);
+        return withHost;
+      },
+    });
+    expect(seen[0]?.workers.map((w) => w.name)).toEqual(["api", "web", "email"]);
+  });
+
+  test("every app Worker is told the host's address, because the host env never crosses into workerd", async () => {
+    // `<STEM>_ORIGIN` is in the child process env already; a Worker's own `process.env` is its vars and
+    // nothing else. This `--var` is what lets core's loopback dispatcher find the host at all.
+    const h = hosted();
+    await startDev(h.options);
+    const api = h.spawned.find((s) => s.opts.cwd === "/proj/apps/api");
+    expect(api?.args).toContain("EMAIL_ORIGIN:http://localhost:8789");
+    // And it is in the process env too, for every member of the set.
+    expect(api?.opts.env.EMAIL_ORIGIN).toBe("http://localhost:8789");
+  });
+
+  test("the host is never handed its own address", async () => {
+    const h = hosted();
+    await startDev(h.options);
+    const host = h.spawned.find((s) => s.opts.cwd === "/proj/.wrangler/pithy/hosts/email");
+    expect(host?.args).not.toContain("EMAIL_ORIGIN:http://localhost:8789");
+  });
+
+  test("its config is resolved against the app's own local origin, not the host's", async () => {
+    const h = hosted();
+    const calls: { project: string; baseUrl: string; simulateDelivery?: boolean }[] = [];
+    await startDev({
+      ...h.options,
+      materializeHostConfigs: async (o) => {
+        calls.push({ project: o.project, baseUrl: o.baseUrl, simulateDelivery: o.simulateDelivery });
+        return { notes: [], failed: [] };
+      },
+    });
+    // `simulateDelivery` is `true` here because this fixture host declares no `delivery` at all: a
+    // set with nothing that sends has nothing to send for real, and the flag is inert for every
+    // capability but the one holding a send binding.
+    expect(calls[0]).toEqual({ project: "acme", baseUrl: "http://localhost:8787", simulateDelivery: true });
+  });
+
+  /** The host as discovery hands it over when the capability does put messages on the wire. */
+  const sender = (requested: "remote" | "simulator", fromAddress: string) => ({
+    ...emailHost,
+    spec: { ...emailHost.spec, delivery: async () => ({ requested, fromAddress }) },
+  });
+
+  test("a login and a real sending address mean the session sends for real, and the banner says so", async () => {
+    const h = hosted({
+      discoverHostWorkers: async () => ({ hosts: [sender("remote", "hi@acme.dev") as never], notes: [] }),
+    });
+    const calls: boolean[] = [];
+    const handle = await startDev({
+      ...h.options,
+      materializeHostConfigs: async (o) => {
+        calls.push(o.simulateDelivery === true);
+        return { notes: [], failed: [] };
+      },
+    });
+    for (const s of h.spawned) s.child.stdout.write("Ready on http://localhost — ready in 12ms\n");
+    await flush();
+    await handle.ready;
+    expect(calls).toEqual([false]);
+    expect(h.stdoutLines.join("\n")).toContain("sending for real from hi@acme.dev");
+  });
+
+  /**
+   * The preflight *decides*. A session with no Cloudflare login cannot deliver, so the host is
+   * resolved for its simulator rather than for a binding that would fail at startup — said before
+   * anybody is waiting on an inbox, and said again in the banner, which is where people look.
+   */
+  test("no Cloudflare login falls back to the simulator rather than to a binding that would fail", async () => {
+    const h = hosted({
+      discoverHostWorkers: async () => ({ hosts: [sender("remote", "hi@acme.dev") as never], notes: [] }),
+      hasCloudflareLogin: async () => false,
+    });
+    const calls: boolean[] = [];
+    const handle = await startDev({
+      ...h.options,
+      materializeHostConfigs: async (o) => {
+        calls.push(o.simulateDelivery === true);
+        return { notes: [], failed: [] };
+      },
+    });
+    for (const s of h.spawned) s.child.stdout.write("Ready on http://localhost — ready in 12ms\n");
+    await flush();
+    await handle.ready;
+    expect(calls).toEqual([true]);
+    expect(h.stdoutLines.join("\n")).toContain("using the simulator");
+    expect(h.stdoutLines.join("\n")).toContain("pithy init");
+  });
+
+  test("its output is labelled and tee'd like every other worker's", async () => {
+    const h = hosted();
+    await startDev(h.options);
+    h.spawned[2]?.child.stdout.write("workflow started\n");
+    await flush();
+    expect(h.logLines.some((l) => l.startsWith("[email] workflow started"))).toBe(true);
+  });
+
+  test("a delivery failure in the host's output is rendered, and the session survives it", async () => {
+    const h = hosted();
+    const handle = await startDev(h.options);
+    h.spawned[2]?.child.stdout.write("✘ [ERROR] could not establish remote binding for send_email\n");
+    await flush();
+    expect(h.stdoutLines.join("\n")).toContain("nothing will be delivered");
+    expect(h.removed).toEqual([]);
+    await handle.shutdown("done");
+  });
+
+  /**
+   * The preflight is not the guarantee. A remote send binding is established when the Worker starts,
+   * so a domain nobody onboarded most often fails there — after every decision this command made.
+   * Reporting it and stopping leaves the one state the issue forbids: every magic link from here on
+   * failing, quietly. So the host is re-resolved for its simulator, which sends nothing and logs the
+   * recipient, subject and URL. `wrangler dev` watches its own config file, so the rewrite is the
+   * reload.
+   */
+  test("a delivery failure at runtime falls the host back to the simulator", async () => {
+    const h = hosted({
+      discoverHostWorkers: async () => ({ hosts: [sender("remote", "hi@acme.dev") as never], notes: [] }),
+    });
+    const calls: { simulate: boolean; hosts: string[] }[] = [];
+    const handle = await startDev({
+      ...h.options,
+      materializeHostConfigs: async (o) => {
+        calls.push({ simulate: o.simulateDelivery === true, hosts: o.hosts.map((host) => host.worker.name) });
+        return { notes: [], failed: [] };
+      },
+    });
+    h.spawned[2]?.child.stdout.write("✘ [ERROR] could not establish remote binding for send_email\n");
+    await flush();
+    expect(calls).toEqual([
+      { simulate: false, hosts: ["email"] },
+      { simulate: true, hosts: ["email"] },
+    ]);
+    expect(h.stdoutLines.join("\n")).toContain("email: using the simulator from here");
+    // Once, however many lines the failing binding prints — a rewrite per line would reload the
+    // Worker on every one of them.
+    h.spawned[2]?.child.stdout.write("✘ [ERROR] could not establish remote binding for send_email\n");
+    await flush();
+    expect(calls).toHaveLength(2);
+    await handle.shutdown("done");
+  });
+
+  test("the delivery verdict is said once, in the banner", async () => {
+    const h = hosted({
+      discoverHostWorkers: async () => ({ hosts: [sender("remote", "hi@acme.dev") as never], notes: [] }),
+      hasCloudflareLogin: async () => false,
+    });
+    const handle = await startDev(h.options);
+    // Nothing before the banner: the pre-spawn copy and the banner copy were one sentence twice.
+    expect(h.stdoutLines.filter((line) => line.includes("using the simulator"))).toEqual([]);
+    for (const s of h.spawned) s.child.stdout.write("Ready on http://localhost — ready in 12ms\n");
+    await flush();
+    await handle.ready;
+    expect(h.stdoutLines.filter((line) => line.includes("using the simulator"))).toHaveLength(1);
+    // And the action line comes with it, because a problem without its remedy is half a report.
+    expect(h.stdoutLines.join("\n")).toContain("pithy init");
+  });
+
+  test("a host whose config could not be resolved is not spawned, and the session still runs", async () => {
+    // The note says "it will not run", and until now that sentence was false: the host stayed in the
+    // started set and `wrangler dev` was spawned in a directory materialisation never created. Node
+    // answered ENOENT on the spawn, the `error` handler tore the whole session down, and the two app
+    // Workers that were fine went with it.
+    const h = hosted({
+      materializeHostConfigs: async () => ({
+        notes: ["email: its host worker could not be resolved, so it will not run."],
+        failed: ["email"],
+      }),
+    });
+    const handle = await startDev(h.options);
+    expect(handle.workers.map((w) => w.name)).toEqual(["api", "web"]);
+    expect(h.spawned.map((s) => s.opts.cwd)).not.toContain("/proj/.wrangler/pithy/hosts/email");
+    // And no app Worker is told an address nothing is listening on.
+    const api = h.spawned.find((s) => s.opts.cwd === "/proj/apps/api");
+    expect(api?.args).not.toContain("EMAIL_ORIGIN:http://localhost:8789");
+    // The banner still fires for the Workers that did start.
+    for (const s of h.spawned) s.child.stdout.write("Ready on http://localhost — ready in 12ms\n");
+    await flush();
+    await handle.ready;
+  });
+
+  test("a project stating no name runs no host, and says why", async () => {
+    const h = hosted({ projectName: async () => null });
+    await startDev(h.options);
+    expect(h.spawned.map((s) => s.opts.cwd)).not.toContain("/proj/.wrangler/pithy/hosts/email");
+    expect(h.stdoutLines.join("\n")).toContain("No project name in pithy.config.ts");
   });
 });

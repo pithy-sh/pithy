@@ -13,8 +13,9 @@ import { workflowKey } from "@pithy-sh/core/src/workflow/naming";
 import type { WorkflowRegistry } from "@pithy-sh/core/src/workflow/spec";
 import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
-import { z } from "zod";
 import type { EmailTheme } from "../templates/theme";
+import { EmailScheduleParams, EmailSendParams } from "../workflows/params";
+import { type DevMailDelivery, emailRemoteBindings } from "./devDelivery";
 import { EMAIL_CAPABILITY, suppressionDatabaseName } from "./provisionEmail";
 
 /**
@@ -44,19 +45,29 @@ export interface EmailWorkerWranglerTemplate extends WorkflowHostTemplate {
  * the way every later capability does — it predates that convention. The host resolver needs a registry
  * and cannot reach into a capability instance (building one requires an adopter's config), so the two
  * jobs are mirrored here, and `resolveEmailConfig.test.ts` asserts the bindings and class names match
- * the committed template byte for byte. `params` is unused on this path: the registry field exists for
- * the dispatcher, and the host only ever reads `binding`, `className`, and `schedule`.
+ * the committed template byte for byte.
+ *
+ * **`params` is no longer a placeholder** (pithy-sh/pithy#410). The host mounts the shared dispatch
+ * route, and that route validates an arriving loopback payload against the declaring spec's own
+ * schema before it starts anything — so the registry's `params` is the request contract of a real
+ * HTTP surface. Both sides therefore read the one schema out of `workflows/params.ts`; a `z.unknown()`
+ * here would let a malformed dispatch through to fail inside a durable instance instead.
  */
 const EMAIL_HOST_JOBS = {
-  send: { binding: "EMAIL_SENDER", className: "EmailSendWorkflow" },
-  schedule: { binding: "EMAIL_SCHEDULER", className: "EmailSchedulerWorkflow", schedule: "* * * * *" },
+  send: { binding: "EMAIL_SENDER", className: "EmailSendWorkflow", params: EmailSendParams },
+  schedule: {
+    binding: "EMAIL_SCHEDULER",
+    className: "EmailSchedulerWorkflow",
+    params: EmailScheduleParams,
+    schedule: "* * * * *",
+  },
 } as const;
 
-/** The registry the host resolver derives its `workflows` array from. */
+/** The registry the host resolver derives its `workflows` array from, and the host's app dispatches on. */
 export const emailWorkflowRegistry: WorkflowRegistry = Object.fromEntries(
   Object.entries(EMAIL_HOST_JOBS).map(([job, spec]) => {
     const key = workflowKey(EMAIL_CAPABILITY, job);
-    return [key, { key, capability: EMAIL_CAPABILITY, job, spec: { ...spec, params: z.unknown() } }];
+    return [key, { key, capability: EMAIL_CAPABILITY, job, spec }];
   }),
 );
 
@@ -69,7 +80,12 @@ export interface EmailConfigParams {
    * overwrites another project's running email host.
    */
   project: string;
-  env: ManagedEnvironment;
+  /**
+   * The environment being resolved. `dev` as well as a deployed one: `pithy dev` resolves this same
+   * template into the local host config it runs, which is what {@link EmailConfigParams.devDelivery}
+   * governs.
+   */
+  env: ManagedEnvironment | "dev";
   /** The app database id for this environment — where jobs/events live. */
   appDatabaseId: string;
   /** The shared suppression database id (same in every environment). */
@@ -82,6 +98,11 @@ export interface EmailConfigParams {
   baseUrl: string;
   /** The resolved brand theme — serialized into the worker's `EMAIL_THEME` var. */
   theme: EmailTheme;
+  /**
+   * What the host's `send_email` binding does under `pithy dev` — the adopter's `email({ devDelivery })`.
+   * Defaults to `remote`, which sends real mail from the developer's machine. Ignored outside `dev`.
+   */
+  devDelivery?: DevMailDelivery;
   // No `schedulerEnabled`. `EmailConfig.schedulerEnabled` is parsed and exposed but never arrives
   // here, so the template's hardcoded SCHEDULER_ENABLED="true" always wins — a known defect, filed
   // rather than fixed, because closing it changes this signature and the provisioner's option bag,
@@ -97,6 +118,10 @@ export interface EmailConfigParams {
  * genuinely email's — which binding takes which database id, and the `@pithy-sh/secrets` import that
  * names the env-scoped master key. Core must never depend on `@pithy-sh/secrets`, so the resolved
  * string is passed in rather than the naming rule being hoisted.
+ *
+ * `send_email`'s `remote` flag is the one thing here that is a *decision* rather than a fill: real
+ * delivery is the default in every environment, and `dev` alone may choose the local simulator
+ * instead (`devDelivery.ts`).
  *
  * Only `EMAIL_SUPPRESSIONS`'s `database_name` is rewritten. That database is email's own, and its name
  * now carries the project — leaving the template's `pithy-email-suppressions` in place would print a
@@ -122,6 +147,10 @@ export function resolveEmailConfig(
     // The master key entry is project- and env-scoped, matching what the secrets manager wrote.
     masterKeySecretName: masterKeySecretName(project, env),
     vars: { EMAIL_THEME: JSON.stringify(theme), BASE_URL: baseUrl },
+    // The `send_email` binding's `remote` flag, which the committed template deliberately no longer
+    // carries: the resolver only ever *adds* `remote`, so a hardcoded `true` could never be turned
+    // off and the documented simulator flag would have had nothing to act on. See `devDelivery.ts`.
+    remoteBindings: emailRemoteBindings(env, params.devDelivery ?? "remote"),
     // Both Workflows, derived from the registry. A Workflow name is account-scoped, so the deployed
     // name has to carry the project — the template's `pithy-email-send` cannot be suffixed into one.
     workflows: hostWorkflowsFor(emailWorkflowRegistry, { project, capability: EMAIL_CAPABILITY, env }).workflows,

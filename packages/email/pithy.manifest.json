@@ -63,6 +63,11 @@
       "key": "schedulerEnabled",
       "default": true,
       "describe": "Whether the every-minute scheduler Workflow runs. It finds due scheduled and per-timezone sends and fans them out. Disable only if you send exclusively immediate email."
+    },
+    {
+      "key": "devDelivery",
+      "default": "remote",
+      "describe": "What the prebuilt email worker does with a message under `pithy dev`. The default, `remote`, SENDS REAL MAIL from your machine: the Worker runs locally and delivers through Cloudflare Email Service, so a magic link you trigger from localhost arrives in the real inbox — same DKIM, same delivery logs as production. It needs a Cloudflare login `wrangler dev` can use and a sending domain already onboarded. Set `simulator` to send nothing: wrangler logs the sender, recipient and subject and writes the rendered bodies to disk, which is what an offline machine and CI want. Local development only — every deployed environment always sends for real."
     }
   ]
 }

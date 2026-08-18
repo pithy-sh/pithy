@@ -62,8 +62,17 @@ function gitResolveAction(cause: unknown): string {
 
 /** First port of block 0. */
 export const BASE_PORT = 8787;
-/** Ports per feature block. */
-export const BLOCK_SIZE = 10;
+/**
+ * Ports per feature block — one port per member of the dev set, so the width is a ceiling on what
+ * `pithy dev` can start.
+ *
+ * **Sized for `apps/*` plus every composed capability host** (pithy-sh/pithy#410). A host Worker is an
+ * ordinary member of the dev set and takes a pinned port like any other, and the kit ships eight of
+ * them. Ten covered a default two-Worker scaffold composing all of them *exactly*, so a third Worker
+ * turned `pithy dev` into a refusal to start anything. `ports.test.ts` pins the width against the host
+ * registry, so a ninth capability host fails there rather than in somebody's session.
+ */
+export const BLOCK_SIZE = 20;
 
 /** How many times `withLock` retries acquiring the lock before giving up. */
 export const LOCK_MAX_ATTEMPTS = 50;
@@ -262,10 +271,20 @@ async function writeRegistry(registryPath: string, registry: PortsRegistry): Pro
   await writeFileAtomic(registryPath, `${JSON.stringify(registry, null, 2)}\n`);
 }
 
-/** The lowest non-negative integer not present in `taken`. */
-function lowestFreeBlock(taken: ReadonlySet<number>): number {
+/**
+ * The lowest block index that is neither taken nor overlapping a block already in the registry.
+ *
+ * The index alone is not enough, and that is the whole reason this takes the ranges. A block's ports
+ * are `BASE_PORT + index × size`, so two allocations of the *same* width can never overlap and the
+ * index is the whole answer — but a registry written before {@link BLOCK_SIZE} changed keeps its own
+ * entries verbatim, and a wide block 2 lands straight through a narrow block 4's ports. Two features
+ * would then bind one port, which is the collision this whole registry exists to prevent.
+ */
+function lowestFreeBlock(taken: ReadonlySet<number>, size: number, held: readonly PortBlock[]): number {
+  const clashes = (base: number): boolean =>
+    held.some((block) => base < block.base + block.size && base + size > block.base);
   let i = 0;
-  while (taken.has(i)) {
+  while (taken.has(i) || clashes(BASE_PORT + i * size)) {
     i++;
   }
   return i;
@@ -290,8 +309,9 @@ export async function allocatePortBlock(options: AllocateOptions): Promise<PortB
         return existing;
       }
 
-      const taken = new Set(Object.values(registry).map((entry) => entry.block));
-      const block = lowestFreeBlock(taken);
+      const held = Object.values(registry);
+      const taken = new Set(held.map((entry) => entry.block));
+      const block = lowestFreeBlock(taken, size, held);
       const allocated: PortBlock = { block, base: BASE_PORT + block * size, size };
 
       registry[branch] = allocated;

@@ -78,7 +78,10 @@ beforeEach(async () => {
 });
 
 describe("enqueue", () => {
-  test("an immediate transactional job is stored pending and validated", async () => {
+  // This harness composes no send Workflow binding, so an immediate job is born `undispatched` —
+  // nothing is coming for it (pithy-sh/pithy#410). Everything below is about what the write path
+  // *stored*, which is unchanged.
+  test("an immediate transactional job is stored undispatched and validated", async () => {
     const jobId = await enqueue({
       to: "u@example.com",
       template: "welcome",
@@ -87,7 +90,12 @@ describe("enqueue", () => {
     const row = await env.DB.prepare("select status, mode, subject, click_tracking from pithy_email_jobs where id = ?")
       .bind(jobId)
       .first<{ status: string; mode: string; subject: string; click_tracking: number }>();
-    expect(row).toMatchObject({ status: "pending", mode: "immediate", subject: "Welcome to Acme", click_tracking: 0 });
+    expect(row).toMatchObject({
+      status: "undispatched",
+      mode: "immediate",
+      subject: "Welcome to Acme",
+      click_tracking: 0,
+    });
   });
 
   test("a bad payload is rejected at enqueue, before any row is written", async () => {

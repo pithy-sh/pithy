@@ -1,7 +1,7 @@
 import { sendOtp, signInWithOtp } from "@pithy-sh/auth/src/client/api";
 import { useCallback, useRef, useState } from "react";
 import { authConfig } from "../../pithy-config";
-import { navigate } from "../../router";
+import { navigate, useSearchParam } from "../../router";
 import { Turnstile, turnstilePending, turnstileRequest } from "../../turnstile";
 import "../../pithy-screens.css";
 
@@ -24,7 +24,7 @@ export const path = "/otp";
 // way: the same argument that favours the path for a token, pointing the other way for an email.
 
 export default function Otp() {
-  const email = new URLSearchParams(window.location.search).get("email") ?? "";
+  const email = useSearchParam("email") ?? "";
   const [digits, setDigits] = useState<string[]>(() => Array.from({ length: authConfig.otpLength }, () => ""));
   const [captcha, setCaptcha] = useState<string | null>(null);
   const [error, setError] = useState(false);

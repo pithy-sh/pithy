@@ -2,21 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import { CI_ENV, isContinuousIntegration } from "@pithy-sh/core/src/env/ci";
+import { envStem } from "@pithy-sh/core/src/env/stem";
 import type { DevConfig } from "../feature/devConfig";
 import { DEV_PORT_TOKEN } from "../project/workerManifest";
 import type { WorkerTarget } from "../project/workers";
-
-/**
- * The env-var stem for a worker: uppercased, every non-alphanumeric run collapsed to `_`. `media-cli` →
- * `MEDIA_CLI`, so its siblings read `MEDIA_CLI_PORT` / `MEDIA_CLI_ORIGIN`. Deterministic across the run
- * so the name a worker publishes matches the name every sibling looks up.
- */
-export function envStem(workerName: string): string {
-  return workerName
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
 
 /**
  * Build the environment every child inherits: the parent env plus, for **every** worker in the feature's
@@ -71,6 +60,7 @@ export function startCommand(
   launchWrangler: WranglerLauncher,
   persistTo: string,
   baseEnv: NodeJS.ProcessEnv = process.env,
+  hostPorts: Readonly<Record<string, number>> = {},
 ): StartCommand {
   const custom = worker.dev?.command;
   if (custom && custom.length > 0) {
@@ -90,7 +80,35 @@ export function startCommand(
     "--persist-to",
     persistTo,
     ...ciVarArgs(baseEnv),
+    ...hostVarArgs(worker.name, hostPorts),
   ]);
+}
+
+/**
+ * Forward each capability host's address into the Worker as vars.
+ *
+ * Same reason as {@link ciVarArgs}, and the same mechanism: `buildWorkerEnv` publishes
+ * `<STEM>_ORIGIN` and `<STEM>_PORT` into every child *process*, and the host environment does not
+ * cross into workerd. So an app Worker asking for `EMAIL_ORIGIN` — the address core's loopback
+ * dispatcher posts a Workflow dispatch to, in place of the cross-script binding a deployed
+ * environment has — would read nothing at all. One `--var` per host is what makes the read truthful.
+ *
+ * Only the hosts, not every sibling. An `apps/*` Worker reaches another over `<STEM>_ORIGIN` in the
+ * *process* env today, and widening this to all of them is a change to what every Worker sees rather
+ * than the one wire this issue is about (pithy-sh/pithy#410).
+ *
+ * A host is never handed its own address: it *is* the thing at that origin, and a self-dispatch
+ * loop is a request that answers itself forever.
+ */
+function hostVarArgs(workerName: string, hostPorts: Readonly<Record<string, number>>): string[] {
+  const args: string[] = [];
+  for (const [name, port] of Object.entries(hostPorts)) {
+    if (name === workerName) continue;
+    const stem = envStem(name);
+    // wrangler splits a `--var` at its first colon, so the `http://` in the value survives intact.
+    args.push("--var", `${stem}_ORIGIN:http://localhost:${port}`, "--var", `${stem}_PORT:${port}`);
+  }
+  return args;
 }
 
 /**

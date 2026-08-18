@@ -6,9 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { HOST_WORKERS } from "../capabilities/hostRegistry";
 import {
   allocatePortBlock,
   BASE_PORT,
+  BLOCK_SIZE,
   freePortBlock,
   LOCK_MAX_ATTEMPTS,
   LOCK_RETRY_DELAY_MS,
@@ -33,7 +35,7 @@ describe("ports", () => {
 
   it("allocates block 0 for the first branch", async () => {
     const block = await allocatePortBlock({ registryPath, branch: "feature/1-a" });
-    expect(block).toEqual({ block: 0, base: BASE_PORT, size: 10 });
+    expect(block).toEqual({ block: 0, base: BASE_PORT, size: BLOCK_SIZE });
 
     const registry = JSON.parse(await readFile(registryPath, "utf8")) as PortsRegistry;
     expect(registry["feature/1-a"]).toEqual(block);
@@ -42,7 +44,7 @@ describe("ports", () => {
   it("allocates the next block for a second branch", async () => {
     await allocatePortBlock({ registryPath, branch: "feature/1-a" });
     const block = await allocatePortBlock({ registryPath, branch: "feature/2-b" });
-    expect(block).toEqual({ block: 1, base: BASE_PORT + 10, size: 10 });
+    expect(block).toEqual({ block: 1, base: BASE_PORT + BLOCK_SIZE, size: BLOCK_SIZE });
   });
 
   it("is idempotent: re-allocating an existing branch returns the same block", async () => {
@@ -63,7 +65,7 @@ describe("ports", () => {
     await freePortBlock({ registryPath, branch: "feature/1-a" });
 
     const block = await allocatePortBlock({ registryPath, branch: "feature/3-c" });
-    expect(block).toEqual({ block: 0, base: BASE_PORT, size: 10 });
+    expect(block).toEqual({ block: 0, base: BASE_PORT, size: BLOCK_SIZE });
 
     const registry = JSON.parse(await readFile(registryPath, "utf8")) as PortsRegistry;
     expect(registry["feature/1-a"]).toBeUndefined();
@@ -88,6 +90,39 @@ describe("ports", () => {
 
     expect(first).toEqual({ block: 0, base: BASE_PORT, size: 25 });
     expect(second).toEqual({ block: 1, base: BASE_PORT + 25, size: 25 });
+  });
+
+  /**
+   * The block is not sized for `apps/*` alone. `pithy dev` starts each composed capability's host
+   * Worker beside them (pithy-sh/pithy#410), each with its own pinned port out of this block, so the
+   * width has to cover the whole host registry and still leave a project room for its own Workers.
+   * It was ten, which a default two-Worker scaffold composing the kit filled exactly — and one more
+   * Worker refused to start the session at all.
+   */
+  it("is wide enough for every capability host plus a project's own Workers", () => {
+    expect(BLOCK_SIZE).toBeGreaterThanOrEqual(HOST_WORKERS.length + 4);
+  });
+
+  it("never overlaps a block of a different width already in the registry", async () => {
+    // A registry written before the width changed keeps its own entries verbatim, so one allocation
+    // can meet another of a different size. Index arithmetic alone would put a wide block 2 straight
+    // through a narrow block 4's ports, and two features would bind the same port.
+    await writeFile(
+      registryPath,
+      JSON.stringify({
+        "feature/1-a": { block: 0, base: BASE_PORT, size: 5 },
+        "feature/2-b": { block: 2, base: BASE_PORT + 10, size: 5 },
+      }),
+      "utf8",
+    );
+    const block = await allocatePortBlock({ registryPath, branch: "feature/3-c", size: 8 });
+    const taken = [
+      { low: BASE_PORT, high: BASE_PORT + 5 },
+      { low: BASE_PORT + 10, high: BASE_PORT + 15 },
+    ];
+    for (const range of taken) {
+      expect(block.base < range.high && block.base + block.size > range.low).toBe(false);
+    }
   });
 
   it("throws a PithyError when the registry file is not valid JSON", async () => {
@@ -115,7 +150,7 @@ describe("ports", () => {
       await utimes(lockPath(), staleTime, staleTime);
 
       const block = await allocatePortBlock({ registryPath, branch: "feature/1-a" });
-      expect(block).toEqual({ block: 0, base: BASE_PORT, size: 10 });
+      expect(block).toEqual({ block: 0, base: BASE_PORT, size: BLOCK_SIZE });
     });
 
     it("does NOT reclaim a fresh lock — allocation still fails", async () => {
@@ -175,7 +210,7 @@ describe("ports", () => {
       // The registry was deleted while feature/1-a's worktree (block 0) lived on.
       const reclaimed = await reclaimPortBlocks({
         registryPath,
-        reservations: [{ branch: "feature/1-a", block: { block: 0, base: BASE_PORT, size: 10 } }],
+        reservations: [{ branch: "feature/1-a", block: { block: 0, base: BASE_PORT, size: BLOCK_SIZE } }],
       });
       expect(reclaimed).toEqual(["feature/1-a"]);
 

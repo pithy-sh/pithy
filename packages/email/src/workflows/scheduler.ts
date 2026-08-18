@@ -7,9 +7,9 @@ import type { EmailDatabase } from "../data/tables";
 
 /**
  * The every-minute scheduler. It finds due rows — `scheduled`/`timezone` jobs whose `sendAt` has
- * arrived, plus the safety net of `pending` immediate jobs that never dispatched and `sending` jobs
- * left stale by a dead dispatch — claims them (status → `sending`, so the next tick won't repick them),
- * and fans them out into sender batches. **The fan-out scales with volume:** the more rows are due, the
+ * arrived, plus the safety net of `pending` and `undispatched` immediate jobs that never dispatched and
+ * `sending` jobs left stale by a dead dispatch — claims them (status → `sending`, so the next tick won't
+ * repick them), and fans them out into sender batches. **The fan-out scales with volume:** the more rows are due, the
  * more batches are dispatched, each its own durable send Workflow. Cron is cheap; this runs every
  * minute and does nothing when nothing is due.
  *
@@ -28,7 +28,7 @@ import type { EmailDatabase } from "../data/tables";
 export interface SchedulerDeps {
   db: EmailDatabase;
   now: Date;
-  /** How stale (ms) a `pending` immediate job must be before the safety net re-drives it. */
+  /** How stale (ms) a `pending`/`undispatched` immediate job must be before the safety net re-drives it. */
   graceMs: number;
   /**
    * How stale (ms) a job must be before this tick will *consider* re-driving it.
@@ -176,7 +176,13 @@ export async function runScheduler(deps: SchedulerDeps): Promise<SchedulerResult
     .where((eb) =>
       eb.or([
         eb.and([eb("status", "=", "scheduled"), eb("sendAt", "<=", nowMs)]),
-        eb.and([eb("status", "=", "pending"), eb("createdAt", "<=", graceCutoff)]),
+        // `undispatched` beside `pending`, and it is the whole recovery path for one
+        // (pithy-sh/pithy#410). A row born `undispatched` was enqueued by a composition that binds no
+        // send Workflow — deployed before `pithy <capability> provision`, or a plain `wrangler dev` —
+        // and the tick reading this query is running on the host that composition was missing. So the
+        // first tick after the host exists is what drains that backlog; without this line the row is a
+        // dead end, because `retryJob` takes only `failed` and no command moves it.
+        eb.and([eb("status", "in", ["pending", "undispatched"]), eb("createdAt", "<=", graceCutoff)]),
         eb.and([eb("status", "=", "sending"), eb("updatedAt", "<=", stuckCutoff)]),
       ]),
     )

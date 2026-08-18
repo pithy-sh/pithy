@@ -139,6 +139,16 @@ export interface EnqueueDeps {
 /** The result of enqueuing: the new job id and its initial status. */
 export interface EnqueueResult {
   jobId: string;
+  /**
+   * What the row was born as — and, for the caller, whether anything is coming for it.
+   *
+   * `pending` and `scheduled` both mean a send is on its way. `suppressed` means the address is
+   * blocked. **`undispatched` means this composition binds no send Workflow**, so nothing was started
+   * and nothing is coming while it stays that way (pithy-sh/pithy#410): a caller that renders "check
+   * your inbox" off it is reporting a delivery that cannot happen. It is the one status here that
+   * describes the *deployment* rather than the message — and the scheduler drains those rows once a
+   * host exists, so it is not the end of the job.
+   */
   status: EmailJobStatus;
   /**
    * Why nothing was queued, when the recipient is on the suppression list.
@@ -182,7 +192,6 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
   const blocked: SuppressionReason | null = deps.suppressionDb
     ? await blockingSuppression(deps.suppressionDb, input.to, deps.now, templateKind(input.template))
     : null;
-  const status = blocked ? "suppressed" : scheduled;
   // The match key, on the same normalisation the suppression list is written and read under. The row
   // keeps the address as the caller typed it in `toAddress` — an operator diagnosing a send needs the
   // string that was actually addressed — and carries this beside it as `recipientKey`, which is what
@@ -194,6 +203,28 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
   // exists to start one on, and never for a recipient the list withholds this message from. Everything
   // else is left for the scheduler to claim.
   const sender = !blocked && mode === "immediate" ? deps.sender : undefined;
+  /**
+   * An immediate job with nothing to dispatch it on (pithy-sh/pithy#410).
+   *
+   * A missing binding is a **configuration fact known at compose time**, not a transient failure, and
+   * the two used to be recorded identically: both left the row `pending` and told the caller "on its
+   * way". That reads as deferral because of the scheduler's safety net — but the net is the
+   * every-minute cron on the host worker, and a composition with no send Workflow binding has no host
+   * worker either. So there is nothing to defer to *yet*, and `pending` was a promise the deployment
+   * could not keep. A magic link enqueued under `pithy dev` sat in that state forever while the sign-in
+   * screen said "check your inbox".
+   *
+   * It is a truthful status, never a grave. The day a host is deployed, its first tick claims these
+   * rows exactly as it claims a stranded `pending` one — a tick running at all is the host existing —
+   * so mail enqueued before `pithy email provision` is delayed and not lost.
+   *
+   * A `scheduled` or `timezone` job is deliberately not this: the scheduler claims it by `sendAt` and
+   * never needed a binding at enqueue. Nor is a suppressed recipient, which has its own status and its
+   * own event. This is only the case where the caller asked for a send now and nothing exists to make
+   * one.
+   */
+  const undispatchable = !blocked && mode === "immediate" && !deps.sender;
+  const status: EmailJobStatus = blocked ? "suppressed" : undispatchable ? "undispatched" : scheduled;
   /**
    * The batch this enqueue is about to start — named here, before the row exists, because the row has to
    * carry it (pithy-sh/pithy#342).
@@ -237,8 +268,13 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
     clickTracking: input.clickTracking ?? marketing,
     messageId: null,
     // The same sentence `runSend` writes when it skips one, so the send log reads the same whichever
-    // pass caught it.
-    error: blocked ? `recipient suppressed: ${blocked}` : null,
+    // pass caught it — and, for the undispatchable row, the one sentence that says why it stopped
+    // here. The status is the state; this column is what an operator reads next to it.
+    error: blocked
+      ? `recipient suppressed: ${blocked}`
+      : undispatchable
+        ? "no EMAIL_SENDER binding: this composition can start no send Workflow"
+        : null,
     bounceCode: null,
     bounceType: null,
     replyTo: input.replyTo ?? null,
