@@ -17,7 +17,7 @@ const template: EmailWorkerWranglerTemplate = {
     { binding: "EMAIL_SUPPRESSIONS", database_name: "pithy-email-suppressions", database_id: "<filled>" },
     { binding: "SECRETS", database_name: "pithy-secrets", database_id: "<filled>" },
   ],
-  send_email: [{ name: "EMAIL", remote: true }],
+  send_email: [{ name: "EMAIL" }],
   secrets_store_secrets: [
     { binding: "SECRETS_ENCRYPTION_KEYS", store_id: "<filled>", secret_name: "SECRETS_ENCRYPTION_KEYS" },
   ],
@@ -61,6 +61,8 @@ describe("resolveEmailConfig", () => {
     expect(config.vars).toMatchObject({ BASE_URL: "https://api.staging.example.com", ENVIRONMENT: "staging" });
     // Static fields pass through untouched.
     expect(config.triggers.crons).toEqual(["* * * * *"]);
+    // Not static: the resolver decides `remote`, because the template cannot un-decide it. Real mail
+    // is the default, and a deployed environment ignores the flag anyway.
     expect(config.send_email).toEqual([{ name: "EMAIL", remote: true }]);
   });
 
@@ -92,5 +94,43 @@ describe("resolveEmailConfig", () => {
     });
     expect(template.name).toBe("pithy-email");
     expect(template.d1_databases[0]?.database_id).toBe("<filled>");
+  });
+});
+
+/**
+ * Real delivery is the default, and the simulator is the deliberate choice (pithy-sh/pithy#410).
+ *
+ * The template used to carry `"remote": true` itself, which read as a decision and was in fact a
+ * dead end: `resolveWorkflowHost` only ever *adds* the flag, so nothing downstream could ever turn it
+ * off. Moving it here is what makes a documented config flag possible at all.
+ */
+describe("how mail leaves the host under pithy dev", () => {
+  const base = {
+    project: "acme",
+    appDatabaseId: "app-123",
+    suppressionDatabaseId: "sup-456",
+    secretsDatabaseId: "sec-789",
+    storeId: "store-abc",
+    baseUrl: "http://localhost:8787",
+    theme: defaultTheme,
+  };
+
+  test("dev sends real mail by default — the local loop ends in an inbox", () => {
+    const config = resolveEmailConfig(template, { ...base, env: "dev" });
+    expect(config.send_email).toEqual([{ name: "EMAIL", remote: true }]);
+  });
+
+  test("the simulator is selectable, and then nothing leaves the machine", () => {
+    const config = resolveEmailConfig(template, { ...base, env: "dev", devDelivery: "simulator" });
+    // No `remote`, so `wrangler dev` logs the message and writes the rendered bodies to disk.
+    expect(config.send_email).toEqual([{ name: "EMAIL" }]);
+  });
+
+  test("a deployed environment ignores the flag — its config is the same either way", () => {
+    const remote = resolveEmailConfig(template, { ...base, env: "prod" });
+    const simulated = resolveEmailConfig(template, { ...base, env: "prod", devDelivery: "simulator" });
+
+    expect(remote.send_email).toEqual([{ name: "EMAIL", remote: true }]);
+    expect(simulated).toEqual(remote);
   });
 });

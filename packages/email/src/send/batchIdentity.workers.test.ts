@@ -11,7 +11,7 @@ import { defaultTheme, type EmailTheme } from "../templates/theme";
 import { isLiveInstanceStatus } from "../workflows/instanceLiveness";
 import { runScheduler } from "../workflows/scheduler";
 import { runSendBatch, type SendBatchStep } from "../workflows/sendBatch";
-import { enqueueEmail } from "./enqueue";
+import { type EnqueueResult, enqueueEmail } from "./enqueue";
 import type { EmailSender } from "./sender";
 
 /**
@@ -123,11 +123,12 @@ async function tick(at: Date, workflows: Workflows): Promise<string[][]> {
   return dispatched;
 }
 
+/** What the caller is handed back — the half of the claim that is not in the row. */
+type EnqueueOptions = { workflows?: Workflows; batchId?: string; mode?: "immediate" | "scheduled"; at?: Date };
+
 /** Enqueue one immediate magic link, dispatching against `workflows` when one is given. */
-async function enqueue(
-  opts: { workflows?: Workflows; batchId?: string; mode?: "immediate" | "scheduled"; at?: Date } = {},
-): Promise<string> {
-  const result = await enqueueEmail(
+async function enqueueResult(opts: EnqueueOptions = {}): Promise<EnqueueResult> {
+  return await enqueueEmail(
     {
       db: emailDatabase(env.DB),
       fromAddress: "noreply@pithy.sh",
@@ -147,7 +148,11 @@ async function enqueue(
         : {}),
     },
   );
-  return result.jobId;
+}
+
+/** The same enqueue, keeping only the job id — what most of this file is about. */
+async function enqueue(opts: EnqueueOptions = {}): Promise<string> {
+  return (await enqueueResult(opts)).jobId;
 }
 
 /** A sender that always fails retryably — the state a step in backoff leaves the row in. */
@@ -259,7 +264,53 @@ describe("enqueueEmail names the batch it starts", () => {
 
     await env.DB.prepare("delete from pithy_email_jobs").run();
     const unbound = await enqueue({});
-    expect(await rowOf(unbound)).toEqual({ status: "pending", batch_id: null });
+    expect(await rowOf(unbound)).toEqual({ status: "undispatched", batch_id: null });
+  });
+});
+
+/**
+ * A dispatcher that is missing and a dispatcher that threw are two different facts, and until #410 the
+ * row said the same thing about both (pithy-sh/pithy#410).
+ *
+ * The swallow below the `create` is right *because* the scheduler re-drives a stranded `pending` row a
+ * minute later. That safety net is the every-minute cron on the host worker. Where no dispatcher was
+ * composed at all, there is no host worker either — so `pending` was not deferral, it was a promise
+ * nothing in the deployment could keep, and a caller was told "on its way" about mail that would never
+ * move. `undispatched` says the true thing instead, in the row and in the result.
+ *
+ * It is a truthful status, not a grave. The day the host is deployed its first tick claims those rows,
+ * because a tick running at all is the host existing — so the caller was told the truth and the mail
+ * still goes.
+ *
+ * The two halves are driven separately here on purpose: one change that made an absent dispatcher
+ * honest could as easily have made a *failed* dispatch terminal, and that would delete the safety net
+ * this whole file exists to protect.
+ */
+describe("an absent dispatcher and a failing one are different facts", () => {
+  test("with nothing to dispatch on, the row and the result both say nobody is coming", async () => {
+    const result = await enqueueResult({});
+
+    expect(result).toEqual({ jobId: "job-1", status: "undispatched" });
+    expect(await rowOf("job-1")).toEqual({ status: "undispatched", batch_id: null });
+    // **And it is still recoverable.** The status is the truth at enqueue time — nobody is coming for
+    // it, and a caller rendering "check your inbox" off it is reporting a delivery that cannot happen.
+    // It is not a terminal state: a tick is the host's every-minute cron, so a tick running at all
+    // means the host the composition was missing now exists, and the row is the backlog it drains.
+    // Without this the mail enqueued before `pithy email provision` would be unsendable forever —
+    // `retryJob` takes `failed` rows, and no command moves this one.
+    expect(await tick(LATER, new Workflows())).toEqual([["job-1"]]);
+  });
+
+  test("with a dispatcher present and its create throwing, everything is exactly as it was", async () => {
+    const workflows = new Workflows();
+    workflows.failNextCreate = "before";
+
+    const result = await enqueueResult({ workflows });
+
+    // The safety net is real here — the host worker exists, its cron runs — so the row waits for it.
+    expect(result).toEqual({ jobId: "job-1", status: "pending" });
+    expect(await rowOf("job-1")).toEqual({ status: "pending", batch_id: "enqueue-batch" });
+    expect(await tick(LATER, workflows)).toEqual([["job-1"]]);
   });
 });
 
@@ -368,6 +419,10 @@ describe("a retry does not inherit the batch that failed it", () => {
     // The `sender`-less path resets the row and leaves the scheduler to claim it. Leaving the old id
     // here would be the same lie without even a Workflow behind it: the next tick would ask about a
     // batch that has nothing to do with this row and, while it happened to be alive, hold the job.
+    //
+    // The status is `undispatched`, which is what `enqueueEmail` writes for the very same env: one
+    // deployment, one word for "this composition binds no send Workflow". It is claimed by the tick
+    // exactly as a `pending` row is, so the retry is deferred rather than dropped.
     const workflows = new Workflows();
     const jobId = await enqueue({});
     await markFailed(jobId, "failed-batch");
@@ -375,7 +430,7 @@ describe("a retry does not inherit the batch that failed it", () => {
 
     await retry(jobId, {});
 
-    expect(await rowOf(jobId)).toEqual({ status: "pending", batch_id: null });
+    expect(await rowOf(jobId)).toEqual({ status: "undispatched", batch_id: null });
     expect(await tick(LATER, workflows)).toEqual([[jobId]]);
   });
 });

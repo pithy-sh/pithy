@@ -86,7 +86,9 @@ export function buildDevConfig(args: {
   if (args.workers.length > args.block.size) {
     throw new InternalError({
       message: `This feature has ${args.workers.length} workers but its port block holds only ${args.block.size}.`,
-      action: "Reduce the worker count, or widen the feature port-block size.",
+      // The count includes each composed capability's host Worker, which `pithy dev` starts beside the
+      // `apps/*` set — so removing a capability is as much a fix here as removing a Worker.
+      action: "Remove a worker or a capability, or widen the feature port-block size.",
     });
   }
 

@@ -181,6 +181,29 @@ Identifier-in-path is the ordinary shape for anything arriving by link: an invit
 
 **Prefer a path over a query string for anything link-addressed.** A query string lands in referrer headers and access logs more readily than a path segment. It is not a large difference — a token in a URL is a token in a URL — but it is the wrong thing to be forced into. Pithy's own `/otp` screen keeps its `?email=`, and says why in the file: that URL points at the code-entry screen, the address is a prefill rather than the resource, and `/otp` with no email is a valid screen.
 
+### The query string
+
+Everything above is the part of the URL that chooses a screen. The query string is the part that does not, and the router has four exports for it — because every screen that hand-rolled this met the same trap, and `/otp` was one of them.
+
+```tsx
+import { updateSearch, useSearchParam } from "../../router";
+
+export const path = "/inbox";
+
+export default function Inbox() {
+  const open = useSearchParam("message");
+  return <button onClick={() => updateSearch({ message: "42" })}>Open</button>;
+}
+```
+
+**`useSearchParam(name)` reads one value, decoded, or `null`.** `useSearch()` hands back the whole query string verbatim instead — `"?message=42"`, or `""` when there is none. Both re-render on every navigation, including the browser's own Back and Forward. The raw string rather than a `URLSearchParams` is deliberate: a params object is a new object every render, so every `useMemo` and `useEffect` downstream of one re-runs forever.
+
+**`updateSearch(patch)` writes.** A `string` sets a key, `null` clears it, and anything unmentioned is left where it was; the pathname and the hash come across untouched. It pushes a history entry, so Back closes what a click opened — pass `{ replace: true }` for a correction the reader did not make, which is what `replace(to)` is for generally.
+
+**Use it rather than assembling the URL yourself.** `window.location.search` is `""` and never `"?"`, so a writer that appends a bare `?` after clearing its last parameter produces a URL that never equals the current one: every repeat call pushes another entry, and Back then walks through them one at a time without the page ever changing. Carrying the hash across is the other half nobody remembers.
+
+A query value is a string from a stranger, exactly like a path parameter. A screen wanting a number, or a member of a set, validates it — the router types neither.
+
 ## `virtual:pithy/<capability>`
 
 Your screens need to know things about the backend: which social providers are enabled, whether a Turnstile widget must render and with which public sitekey, what the auth base path is. That knowledge lives in `pithy.config.ts`, which is server-side. The bridge is a set of virtual modules served by the `pithy()` Vite plugin in `@pithy-sh/vite`.

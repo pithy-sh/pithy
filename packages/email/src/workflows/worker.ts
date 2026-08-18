@@ -5,6 +5,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import { NonRetryableError } from "cloudflare:workflows";
 import type { D1Database } from "@cloudflare/workers-types";
 import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
+import { requireHostEnv } from "@pithy-sh/core/src/workflow/hostEnv";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { configureSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { emailSigningRegistry, resolveSigningKeys } from "../crypto/signingKey";
@@ -13,8 +14,10 @@ import { mintBatchId } from "../send/batchIdentity";
 import type { SendWorkflowBinding } from "../send/enqueue";
 import { emailWorkflowRetry } from "../send/retryPolicy";
 import type { EmailSender } from "../send/sender";
-import { defaultTheme, EmailTheme } from "../templates/theme";
+import { createEmailHostApp } from "./hostApp";
+import { type EmailHostEnv, emailHostEnv } from "./hostEnv";
 import { isLiveInstanceStatus } from "./instanceLiveness";
+import type { SendWorkflowInstances } from "./instances";
 import { runScheduler, type SchedulerDeps } from "./scheduler";
 import { type BatchSendReport, runSendBatch, type SendBatchDeps } from "./sendBatch";
 
@@ -26,25 +29,28 @@ import { type BatchSendReport, runSendBatch, type SendBatchDeps } from "./sendBa
  *     the scheduler's fan-out).
  *   - `EmailSchedulerWorkflow` — finds due jobs and fans them out into send batches.
  *   - `scheduled()` — the every-minute cron that fires the scheduler Workflow.
+ *   - `fetch()` — the loopback dispatch door, served only in `dev` (see {@link createEmailHostApp}).
  *
  * The bodies (`runSendBatch`, `runScheduler`, `runSend`) are tested against Miniflare; these classes are
  * the thin durable shells. This module imports `cloudflare:workers`, so it runs only in the Workers
  * runtime (excluded from the node meta-test).
+ *
+ * **Every entry validates the env first** (pithy-sh/pithy#410). Fourteen settings arrived here from a
+ * provisioning run and none of them was checked: a missing `BASE_URL` became a magic link to
+ * `undefined/…`, an unparseable `EMAIL_THEME` threw inside a render step, and a `SCHEDULER_BATCH_SIZE`
+ * of `"fifty"` became `NaN` and the scheduler claimed nothing, forever, in silence. Now
+ * {@link emailHostEnv} is parsed before anything reads a value, the coercions and defaults live in
+ * that one schema rather than at each reader, and a host that cannot work says so in one block and
+ * refuses.
  */
 
 /**
- * The half of the Workflows binding that answers about an instance already created.
+ * The email worker's env as the runtime hands it over — bindings as objects, every var as a string.
  *
- * Declared here rather than taken from `cloudflare:workers` because the scheduler must not depend on the
- * platform types — it takes a question as a function, and this is the only place that answers it with a
- * real Workflow.
+ * The *shape the host runs on* is {@link EmailHostEnv}, which is this parsed: numbers as numbers, the
+ * theme as a validated `EmailTheme`, `SCHEDULER_ENABLED` as a boolean. This type stays because it is
+ * what a `WorkflowEntrypoint` is generic over and what the platform actually binds.
  */
-export interface SendWorkflowInstances {
-  /** Look an instance up by the id it was created with. Rejects when no such instance exists. */
-  get(id: string): Promise<{ status(): Promise<{ status: string }> }>;
-}
-
-/** The email worker's env: the app + secrets databases, the send binding, the Workflow bindings, theme/config vars. */
 export interface EmailWorkerEnv extends SecretsStoreEnv {
   /** The app database the per-environment jobs/events tables live in. */
   DB: D1Database;
@@ -69,46 +75,51 @@ export interface EmailWorkerEnv extends SecretsStoreEnv {
   SCHEDULER_STUCK_MS?: string;
 }
 
-const MINUTE_MS = 60_000;
-
 // This is a standalone worker, not assembled by `createBackend`, so the secrets capability's `compose`
 // hook never runs here. Configure the shared per-invocation accessor directly from email's own slice so
 // `resolveSigningKeys` reads the signing key through the one cached path.
 configureSharedSecrets({ registry: emailSigningRegistry });
 
-/** Parse the brand theme from the single `EMAIL_THEME` JSON var, validated against the schema; default if unset. */
-function buildTheme(env: EmailWorkerEnv): EmailTheme {
-  if (!env.EMAIL_THEME) return defaultTheme;
-  return EmailTheme.parse(JSON.parse(env.EMAIL_THEME));
+/** The dispatch door. Built once per isolate; the environment gate reads its answer per request. */
+const app = createEmailHostApp();
+
+/**
+ * The env, parsed — or one legible block naming every unusable setting and what fills it, then a
+ * refusal. Called at the top of every entry, and the block is written once per env object.
+ */
+function hostConfig(env: EmailWorkerEnv): EmailHostEnv {
+  return requireHostEnv(emailHostEnv, env);
 }
 
 /** Assemble the send dependencies, resolving the current signing key from the secrets store. */
 async function buildSendDeps(env: EmailWorkerEnv): Promise<SendBatchDeps> {
+  const config = hostConfig(env);
   const keys = await resolveSigningKeys(env);
   const key = keys.versions[keys.currentVersion];
   return {
     db: emailDatabase(env.DB),
     suppressionDb: emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS),
     sender: env.EMAIL,
-    theme: buildTheme(env),
-    baseUrl: env.BASE_URL,
+    theme: config.EMAIL_THEME,
+    baseUrl: config.BASE_URL,
     signing: key ? { key, kid: keys.currentVersion } : undefined,
-    linkTtlDays: Number(env.LINK_TTL_DAYS ?? 90),
-    maxAttempts: Number(env.MAX_ATTEMPTS ?? 5),
-    environment: env.ENVIRONMENT,
+    linkTtlDays: config.LINK_TTL_DAYS,
+    maxAttempts: config.MAX_ATTEMPTS,
+    environment: config.ENVIRONMENT,
     heartbeatAt: () => new Date(),
   };
 }
 
 /** Assemble the scheduler dependencies, dispatching each batch as a send Workflow. */
 function buildSchedulerDeps(env: EmailWorkerEnv): SchedulerDeps {
+  const config = hostConfig(env);
   return {
     db: emailDatabase(env.DB),
     now: new Date(),
-    graceMs: Number(env.SCHEDULER_GRACE_MS ?? 2 * MINUTE_MS),
-    stuckMs: Number(env.SCHEDULER_STUCK_MS ?? 15 * MINUTE_MS),
-    batchSize: Number(env.SCHEDULER_BATCH_SIZE ?? 50),
-    maxJobs: Number(env.SCHEDULER_MAX_JOBS ?? 500),
+    graceMs: config.SCHEDULER_GRACE_MS,
+    stuckMs: config.SCHEDULER_STUCK_MS,
+    batchSize: config.SCHEDULER_BATCH_SIZE,
+    maxJobs: config.SCHEDULER_MAX_JOBS,
     // The same mint as the other two dispatchers, so the three cannot drift into three id schemes.
     newBatchId: mintBatchId,
     // The batch's id is the instance's id, so this is the whole of the lookup. A rejection means the
@@ -162,8 +173,22 @@ export class EmailSchedulerWorkflow extends WorkflowEntrypoint<EmailWorkerEnv, u
 export default {
   /** Cron entry: fire the scheduler Workflow every minute, unless disabled. */
   async scheduled(_controller: unknown, env: EmailWorkerEnv): Promise<void> {
-    if ((env.SCHEDULER_ENABLED ?? "true") !== "false") {
+    if (hostConfig(env).SCHEDULER_ENABLED) {
       await env.EMAIL_SCHEDULER.create();
     }
+  },
+
+  /**
+   * The loopback dispatch door — how a sibling worker under `pithy dev` starts a send batch on this
+   * host's own same-script Workflow binding (pithy-sh/pithy#410). Refused in every other environment,
+   * where the cross-script binding is the only path in.
+   *
+   * The env is validated before the router sees the request: a host that cannot work must not accept
+   * a dispatch and then lose it. The refusal is `core/internal` and the block is already in the log,
+   * which is what its action line points the operator at.
+   */
+  async fetch(request: Request, env: EmailWorkerEnv, ctx: ExecutionContext): Promise<Response> {
+    hostConfig(env);
+    return await app.fetch(request, env, ctx);
   },
 };

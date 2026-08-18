@@ -84,6 +84,29 @@ flowchart TB
 
 So non-production environments get their full open/click/unsubscribe funnel (those callbacks hit the *sending* env's own worker) plus the **synchronous** `permanent_bounces` captured at send time, but not *asynchronously*-routed bounce events. Production — where batch analytics actually matter — gets everything.
 
+## Local development
+
+`pithy dev` runs the prebuilt email host beside your app Workers, and mail sent from localhost is delivered for real.
+
+**A magic link you trigger from localhost arrives in a real inbox.** The host's `send_email` binding is resolved with `remote: true` under `dev`, so the Worker runs on your machine and delivers through Cloudflare Email Service — the same pipeline, the same DKIM, the same delivery logs as production. That needs two things this kit does not own: a Cloudflare login `wrangler dev` can use, and a sending domain already onboarded onto Email Service.
+
+**One flag chooses otherwise.** `email({ devDelivery: "simulator" })` sends nothing: `wrangler dev` logs the sender, recipient and subject, and writes the rendered HTML and text bodies to disk. That is what an offline machine and CI want, and it is the setting to reach for if you would rather a test sign-in did not really reach whatever address it was given. It changes local development only — every deployed environment always sends for real.
+
+**How the dispatch travels.** A deployed app Worker starts a send through a cross-script Workflow binding naming `<project>-<env>-email`. Locally there is no such script: each Worker is its own `wrangler dev`. So the host mounts one route, `POST /__pithy/workflows/:binding`, and `pithy dev` composes a loopback dispatcher pointed at `EMAIL_ORIGIN` in its place. The route starts the instance on the host's *own* same-script binding, under the id the row already carries, and it answers only in a `dev` composition — `staging` and `prod` are refused, where the binding is the only path in.
+
+**A send nothing can carry says so.** An immediate job enqueued by a composition that binds no send Workflow is born `undispatched`, not `pending`, and the `EnqueueResult` says the same:
+
+```ts
+const { status } = await emailCapability.enqueue(env, { to, template: "magicLink", payload });
+// status === "undispatched" — nothing was started, and nothing is coming yet.
+```
+
+A missing binding is a configuration fact, not a transient error. The safety net that justifies swallowing a *failed* dispatch is the every-minute cron on the host worker, and a deployment with no dispatcher has no host worker either — so `pending` there was a promise nothing could keep, and "check your inbox" was a lie the row agreed with. A dispatcher that is present and throws still behaves exactly as it always did: the row stays `pending`, and the scheduler re-drives it within the minute.
+
+It is a truthful status, never a grave. The day the host is deployed, its first tick claims those rows exactly as it claims a stranded `pending` one — a tick running at all is the host existing — so mail enqueued before `pithy email provision` is delayed, not lost. `POST /email/jobs/:id/retry` on a composition with no binding writes the same word for the same reason: one deployment, one name for one fact.
+
+**The host says what it is missing, before it serves anything.** Its fourteen settings are one Zod object with a `.describe()` per field (`workflows/hostEnv.ts`), parsed at every entry. A missing `BASE_URL`, an `EMAIL_THEME` that will not parse, a `SCHEDULER_BATCH_SIZE` somebody typed as `"fifty"` — each is one line naming the field, why it is unusable, and the binding, var, config key or `pithy` command that fills it. `pithy doctor` reads the same object, so the check you run and the check the host runs cannot disagree.
+
 ## Where the data lives
 
 **Jobs and events are per-environment.** `pithy_email_jobs` and `pithy_email_events` live in the app `DB` — the same database as the app's own data, scoped to the environment that sent them. A feature branch's sends, history, and tracking are its own.
@@ -146,7 +169,7 @@ So a delivered job's payload is emptied and stamped with `payloadRedactedAt`, in
 | `sent` | **dropped** | The message is out. It is also the one status a retry is already refused for — retrying a delivered job is a duplicate email to a real person — so nothing can ever need those inputs again. |
 | `failed` | kept | `POST /email/jobs/:id/retry` exists for exactly this row, and it re-renders from the payload. |
 | `suppressed` / `bounced` | kept | Nothing was delivered. A manual block can be lifted. |
-| `pending` / `scheduled` / `sending` | kept | The send has not happened yet. |
+| `pending` / `scheduled` / `sending` / `undispatched` | kept | The send has not happened yet — and for `undispatched`, not until a host worker exists to claim it. |
 
 **It is the default for transactional templates, and the line is the category rather than the kind.** The kind answers "may this be refused"; this question is "are these inputs a one-time credential". `testerNudge` is the template that proves they are different axes — it is *elective*, because somebody may say stop chasing me, and its CTA is an opt-in URL that authenticates a tester. Keying on the kind would have left exactly that one live. A marketing payload is copy authored for a batch, carries no per-recipient credential, and answers the real question "what did those forty thousand people receive", so `newsletter` and `marketingCampaign` keep theirs. There is no per-template override: no template needs one today, and an escape hatch nobody uses is where the bug comes back.
 

@@ -24,8 +24,16 @@ import { checkDevVars, type DevVarsCheck, describeDevVars, devVarsHealthy } from
 import { checkDevVarsLocal, type DevVarsLocalCheck, describeDevVarsLocal } from "../doctor/devVarsLocal";
 import { checkEnvironments, describeEnvironmentDrift, type EnvironmentsCheck } from "../doctor/environments";
 import { buildProjectHealth, type MigrationHealth, type ProjectHealth, type WorkerChecks } from "../doctor/health";
+import { checkLocalDelivery, describeLocalDelivery, type LocalDeliveryCheck } from "../doctor/localDelivery";
 import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
 import { checkSecretBindings, describeSecretBindings, type SecretBindingsCheck } from "../doctor/secretBindings";
+import {
+  describeSettingsAccount,
+  describeSettingsFinding,
+  type SettingsCheck,
+  type SettingsFindingEntry,
+} from "../doctor/settings";
+import { doctorSettingsCheck } from "../doctor/settingsSources";
 import { checkWorkerNames, describeWorkerName, type WorkerNameCheck } from "../doctor/workerName";
 import { describeUndeclared, undeclaredRemedy } from "../migrations/ledger";
 import { type FetchLike, fetchLatestVersion } from "../notifier/check";
@@ -253,6 +261,32 @@ export interface DoctorReport {
    * missing binding was the Worker's own 500 on its first request.
    */
   secretBindings: SecretBindingsCheck | null;
+  /**
+   * Whether each composed capability's **settings work**, as opposed to being merely present (#411).
+   * `null` when no capability any Worker composes declares a check — the ordinary case, and silent.
+   *
+   * Every other project check in this report asks a presence question, and all of them pass while
+   * `fromAddress` names a domain nobody onboarded, the link-signing key was never created, and
+   * `BASE_URL` points at a host nothing serves. Only the capability knows what its own values must be,
+   * so the capability declares the check and this runs it — keyed on the composed instance, never on a
+   * `pithy.manifest.json`, because two published capability packages ship none.
+   *
+   * **It fails the exit on a finding, from either tier.** A local finding is established from the
+   * project's own files; an account finding is established from an account that was actually reached.
+   * An account that could *not* be reached is reported as skipped and gates nothing, which is why the
+   * account tier's state is carried rather than inferred from an empty finding list.
+   */
+  settings: SettingsCheck | null;
+  /**
+   * Whether local email delivery is **live** — whether a magic link triggered from localhost leaves this
+   * machine or is written to disk (#410). `null` when nothing composed puts a message on the wire.
+   *
+   * Not a fault, and it never fails the exit: the simulator is a legitimate choice, and an offline
+   * machine has no other. It prints because silence would be read as "of course it sends", which is the
+   * assumption that had developers waiting on an inbox for mail no local process could ever have posted.
+   * The verdict is {@link deliveryPreflight}'s own, so this and `pithy dev` cannot disagree.
+   */
+  localDelivery: LocalDeliveryCheck | null;
   /**
    * What is in a `.dev.vars.local` that nothing else in the project knows about — a key that exists only
    * in dev, and a key that shadows a registry secret. `null` when there is nothing to say, which is every
@@ -518,6 +552,25 @@ export interface DoctorReportOptions {
    */
   checkDevVars?: (projectDir: string) => Promise<DevVarsCheck | null>;
   /**
+   * Settings-check seam; defaults to {@link doctorSettingsCheck} bound to this run's account and offline
+   * mode. It takes the resolved Workers rather than a directory, because the checks hang off the composed
+   * `Capability` instances this report already holds — nothing here re-enumerates `apps/`, so
+   * `--worker <name>` narrows this block exactly as it narrows the health block.
+   */
+  checkSettings?: (options: {
+    projectDir: string;
+    workers: readonly ResolvedWorker[];
+  }) => Promise<SettingsCheck | null>;
+  /**
+   * Local-delivery seam; defaults to {@link checkLocalDelivery} over the same resolved Workers. Like the
+   * settings probe it takes the composition rather than a directory, so nothing here re-enumerates
+   * `apps/` and `--worker <name>` narrows it the same way.
+   */
+  checkLocalDelivery?: (options: {
+    projectDir: string;
+    workers: readonly ResolvedWorker[];
+  }) => Promise<LocalDeliveryCheck | null>;
+  /**
    * Dev-secrets location seam; defaults to {@link checkDevSecretsLocation} resolved against the same
    * `homedir` and `env` the config directory is, so the line can never name a path this report did not
    * resolve — the defect #131 fixed for `dev.json`, in the file beside it.
@@ -549,6 +602,25 @@ export async function installedCapabilityVersions(projectDir: string): Promise<{
 }
 
 /** Build the full structured report — always querying the registry fresh (doctor bypasses the notifier cache). */
+/**
+ * The settings verdict when the probe itself never ran — the root config states no name, a Worker's
+ * `pithy.config.ts` would not import, the seam threw.
+ *
+ * Not `null`, which is the documented shape for "no composed capability declares a check": an agent
+ * reading that after a config that would not load concludes this project has no settings questions.
+ * And the account tier is `not-declared` rather than `unreachable`, because nothing here reached for an
+ * account — a local failure rendered as one Cloudflare caused sends the reader to the wrong machine.
+ */
+function settingsNotRun(): SettingsCheck {
+  return {
+    state: "could-not-check",
+    account: { state: "skipped", reason: "not-declared" },
+    checked: [],
+    findings: [],
+    unchecked: [],
+  };
+}
+
 export async function buildDoctorReport(options: DoctorReportOptions): Promise<DoctorReport> {
   const installed = options.installedVersion ?? VERSION;
   const env = options.env ?? process.env;
@@ -589,6 +661,22 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
         projectDir: dir,
         paths: { ...(options.homedir ? { homedir: options.homedir } : {}), env },
       }));
+  const probeSettings =
+    options.checkSettings ??
+    ((scope: { projectDir: string; workers: readonly ResolvedWorker[] }) =>
+      doctorSettingsCheck({
+        ...scope,
+        // The same account and the same offline decision the `Cloudflare:` block above reports on,
+        // resolved once at the top of this function. A settings check that asked a second account would
+        // be a second report inside this one.
+        account,
+        offline,
+        ...(options.homedir ? { homedir: options.homedir } : {}),
+        env,
+      }));
+  const probeLocalDelivery =
+    options.checkLocalDelivery ??
+    ((scope: { projectDir: string; workers: readonly ResolvedWorker[] }) => checkLocalDelivery({ ...scope, env }));
   const probeDevSecretsFile =
     options.checkDevSecretsFile ??
     ((dir: string) => checkDevSecretsLocation(dir, { ...(options.homedir ? { homedir: options.homedir } : {}), env }));
@@ -639,6 +727,16 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // Filled from the resolved Workers below, where the composed capabilities are already in hand — this
   // check needs no file of its own and reaches nothing.
   let extensions: ExtensionsCheck | null = null;
+  // Held out of the `try` so the guarded probe below still has the composition to run, even when a later
+  // step of the project block threw. The settings checks are adopter code reached through a live
+  // `import()`, so they are guarded like every other probe rather than run inside the block.
+  let resolvedWorkers: readonly ResolvedWorker[] = [];
+  // Whether that list is the project's composition or merely the value it was initialised to. An empty
+  // list is a legitimate answer and an unresolved one is not, and the settings probe is the one reader
+  // that cannot tell them apart on its own: over `[]` it answers `null`, which the JSON contract defines
+  // as "no composed capability declares a check". A project whose `pithy.config.ts` would not import
+  // would read as one with no settings questions.
+  let workersResolved = false;
   const load = options.loadProject ?? loadProject;
   const resolve = options.resolveWorkers ?? resolveWorkers;
   // Set the moment the root config loads, so a `core/not_found` raised *later* (no workers under apps/)
@@ -663,6 +761,8 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
       projectDir: options.projectDir,
       ...(options.worker !== undefined ? { worker: options.worker } : {}),
     });
+    resolvedWorkers = workers;
+    workersResolved = true;
     extensions = checkExtensions(workers.map((worker) => ({ name: worker.name, capabilities: worker.capabilities })));
     const health = await buildProjectHealth({
       projectDir: options.projectDir,
@@ -773,6 +873,30 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // No account, no store, no seed run — which matters here more than anywhere, because the state it
   // reports is a project whose Workers cannot start.
   const devVars = inProject ? await checkedProbe(() => probeDevVars(options.projectDir)) : null;
+  // The one project check that runs the capabilities' own code. Gated on `inProject` like the rest, and
+  // guarded like the rest — a capability's check that throws must cost this report that capability's
+  // verdict and nothing else. `could-not-check` here is the whole-probe failure; a single capability's is
+  // carried inside the value, as `unchecked`.
+  const settings = !inProject
+    ? null
+    : workersResolved
+      ? await probed<SettingsCheck | null>(
+          () => probeSettings({ projectDir: options.projectDir, workers: resolvedWorkers }),
+          settingsNotRun(),
+        )
+      : settingsNotRun();
+
+  // The same composition the settings probe runs over, asked the one question `Settings:` does not: not
+  // whether the values work, but whether anything this machine sends would actually leave it. Guarded
+  // like every other probe, and `null` on a failure — an unanswered delivery question is exactly as
+  // silent as a project that composes nothing which sends.
+  const localDelivery =
+    inProject && workersResolved
+      ? await probed<LocalDeliveryCheck | null>(
+          () => probeLocalDelivery({ projectDir: options.projectDir, workers: resolvedWorkers }),
+          null,
+        )
+      : null;
 
   return {
     cli,
@@ -794,6 +918,8 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     devPreferences,
     devSecrets,
     secretBindings,
+    settings,
+    localDelivery,
     devSecretsFile,
     devVarsLocal,
     devVars,
@@ -873,6 +999,12 @@ export function doctorExitCode(report: DoctorReport): number {
   // developer whose dev login stopped working, which is the audience the whole check exists for.
   const preferences = report.devPreferences?.state;
   if (preferences === "unparseable" || preferences === "no-user") return 1;
+  // The same standard as everything above it, and **both tiers meet it** (#411). A local finding is
+  // established from the project's own config through the capability's own schema. An account finding is
+  // established from an account that answered — which is exactly why the list is what gates and the
+  // tier's state is not: an account nobody reached contributes no findings, so a run that skipped it
+  // cannot fail here. `could-not-check` and `unchecked` establish nothing and never reach this line.
+  if (report.settings && report.settings.findings.length > 0) return 1;
   return report.project && !report.project.health.ok ? 1 : 0;
 }
 
@@ -1142,6 +1274,67 @@ function extensionsBlock(check: ExtensionsCheck): string {
  * project: that block is the machine-local file, this is the stanza a *deployed* Worker boots against.
  * A single command answers every line in it, which is why the lines group per Worker-and-environment.
  */
+/**
+ * The `Settings:` lines — whether each composed capability's settings work, grouped per Worker on the
+ * health block's shape (#411).
+ *
+ * **It prints on a healthy project too, and in the terse form.** Every other finding block here is the
+ * finding, so silence means nothing is wrong; this one has a third answer that silence cannot carry. An
+ * account tier nobody could reach established nothing, and a report that said nothing about it would be
+ * read as a pass — which is the one thing this check must never be. So a clean run collapses to one line
+ * that says the checks ran, and any run that skipped the account says so out loud.
+ *
+ * A capability whose own check threw is named with the tier that failed, never folded into the findings:
+ * "could not be run" is not "nothing to fix", and the exit gate reads only the findings.
+ */
+function settingsBlock(check: SettingsCheck): string {
+  // "The account was never asked" is a pass only when nothing wanted to ask it.
+  const accountSettled = check.account.state === "checked" || check.account.reason === "not-declared";
+  if (check.state === "ok" && accountSettled) return "Settings: every composed capability's settings work ✓";
+
+  const lines = ["Settings:"];
+  const workers = [...new Set([...check.findings, ...check.unchecked].map((entry) => entry.worker))];
+  // Nothing was established about anything, because the probe itself did not run. Said as exactly that:
+  // the account line below would blame Cloudflare for a project that never got as far as asking it.
+  if (workers.length === 0 && check.state === "could-not-check") {
+    lines.push(`${HEALTH_INDENT}the checks could not be run, so nothing here was established`);
+    return lines.join("\n");
+  }
+  for (const worker of workers) {
+    lines.push(`  ${worker}:`);
+    for (const finding of check.findings.filter((entry) => entry.worker === worker)) {
+      lines.push(healthLine(finding.capability, settingsProblem(finding)));
+      // The action on its own line beneath the problem, which is the shape every PithyError renders in.
+      lines.push(`${HEALTH_CONT}${finding.action}`);
+    }
+    for (const entry of check.unchecked.filter((candidate) => candidate.worker === worker)) {
+      lines.push(healthLine(entry.capability, `${entry.tier} checks couldn't be run`));
+    }
+  }
+  if (!accountSettled) lines.push(`${HEALTH_INDENT}${describeSettingsAccount(check.account)}.`);
+  return lines.join("\n");
+}
+
+/**
+ * The `Local delivery:` lines — whether a message sent from this machine leaves it (#410).
+ *
+ * Every line is {@link deliveryPreflight}'s own, verbatim, because `pithy dev` decides with the same
+ * call and the two must not word one verdict twice. Doctor adds the heading and nothing else.
+ *
+ * It prints in the terse report as well, and never fails the exit. The simulator is a legitimate
+ * choice rather than a fault — but a report that said nothing would be read as "of course it sends",
+ * which is the assumption that had people waiting on an inbox no local process could have posted to.
+ */
+function localDeliveryBlock(check: LocalDeliveryCheck): string {
+  return ["Local delivery:", ...check.lines.map((line) => `  ${line}`)].join("\n");
+}
+
+/** One finding's problem line: what is wrong, where, and why — the action follows it. */
+function settingsProblem(finding: SettingsFindingEntry): string {
+  const where = finding.environment === null ? "" : ` (${finding.environment})`;
+  return `${finding.setting}${where} — ${finding.problem}`;
+}
+
 function secretBindingsBlock(check: SecretBindingsCheck): string {
   return ["Secret bindings:", ...describeSecretBindings(check).map((line) => `  ${line}`)].join("\n");
 }
@@ -1235,6 +1428,12 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // the same reason, and it does not fail the exit for the same reason either — see
   // {@link DoctorReport.secretBindings}.
   const secretBindingsOk = !report.secretBindings || report.secretBindings.missing.length === 0;
+  // A setting that does not work keeps the report verbose, and a check nobody could run does too — the
+  // rule `Alias: unknown` follows. `state` carries both, and it carries the third case the two lists
+  // cannot: a whole probe that threw establishes nothing while listing nothing. A *skipped account tier* deliberately does not: that line prints in
+  // both forms, like `Secrets:` and `Cloudflare:`, so the terse report can stay terse without ever
+  // implying the account was checked.
+  const settingsOk = !report.settings || report.settings.state === "ok";
   // A Worker that would start with no bindings at all is worth the ink for exactly the same reason a
   // misplaced secret is, and more so. It does not fail the exit — see {@link DoctorReport.devVars} —
   // but a report that called this project healthy is what #178 was reported about.
@@ -1258,6 +1457,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     devPreferencesOk &&
     devSecretsOk &&
     secretBindingsOk &&
+    settingsOk &&
     devVarsOk &&
     aliasOk &&
     !report.projectLoadError;
@@ -1448,6 +1648,15 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     blocks.push(secretBindingsBlock(report.secretBindings));
   }
 
+  // And whether the values in all of that actually work. Last of the project blocks because it is the
+  // only one that reaches past the checkout — it asks the account the block above it only asks a file
+  // about — and it prints in both forms of the report, for the reason {@link settingsBlock} states.
+  if (report.settings) blocks.push(settingsBlock(report.settings));
+
+  // And whether anything this project sends would leave this machine at all — the question `Settings:`
+  // does not ask, because it is about the machine rather than about a value.
+  if (report.localDelivery) blocks.push(localDeliveryBlock(report.localDelivery));
+
   // OS / runtime. Named explicitly, because under Bun `report.node` is an emulated compatibility level
   // rather than the interpreter — reporting it alone would name a runtime that is not running.
   const runtime =
@@ -1575,6 +1784,31 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           state: report.secretBindings.state,
           missing: report.secretBindings.missing,
           detail: describeSecretBindings(report.secretBindings),
+        }
+      : null,
+    // Every finding carries its own sentence, and **every skip is a key rather than an absence**: a
+    // script asking "do this project's settings work" has to be able to tell a clean pass from a check
+    // that never ran, and only `account.state` and `unchecked` say which (#411).
+    settings: report.settings
+      ? {
+          state: report.settings.state,
+          account: report.settings.account,
+          checked: report.settings.checked,
+          findings: report.settings.findings.map((finding) => ({
+            ...finding,
+            detail: describeSettingsFinding(finding),
+          })),
+          unchecked: report.settings.unchecked,
+          detail: describeSettingsAccount(report.settings.account),
+        }
+      : null,
+    // Not a verdict a script gates on — the simulator is a choice — so `live` is the field and the
+    // `detail` is the run's own sentence about why.
+    localDelivery: report.localDelivery
+      ? {
+          live: report.localDelivery.live,
+          capability: report.localDelivery.capability,
+          detail: describeLocalDelivery(report.localDelivery),
         }
       : null,
     devVarsLocal: reported(report.devVarsLocal)

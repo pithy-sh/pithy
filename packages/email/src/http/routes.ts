@@ -22,6 +22,7 @@ import {
 import { getJob, listJobs } from "../jobs/read";
 import { retryJob } from "../jobs/retry";
 import type { SendWorkflowBinding } from "../send/enqueue";
+import { emailSenderBinding } from "../send/senderBinding";
 import { listSuppressions, suppress, unsuppress } from "../send/suppression";
 import {
   EMAIL_JOBS_READ_SCOPE,
@@ -111,6 +112,10 @@ interface AdminEnv {
   DB?: D1Database;
   EMAIL_SUPPRESSIONS?: D1Database;
   EMAIL_SENDER?: SendWorkflowBinding;
+  /** Stamped by `pithy init`. Read only to decide whether a local host may stand in for the binding. */
+  ENVIRONMENT?: string;
+  /** The local email host's address under `pithy dev`. See {@link emailSenderBinding}. */
+  EMAIL_ORIGIN?: string;
 }
 
 /** How the email management sub-router is built. */
@@ -260,7 +265,7 @@ export function registerEmailAdminRoutes(options: EmailAdminRoutesOptions): (app
         // out of, and after the update there is nothing left to ask.
         const before = await getJob(db, id);
         const result = await retryJob(
-          { db, suppressionDb: suppressions(c), sender: (c.env as AdminEnv).EMAIL_SENDER, now },
+          { db, suppressionDb: suppressions(c), sender: emailSenderBinding(c.env as AdminEnv), now },
           id,
         );
 

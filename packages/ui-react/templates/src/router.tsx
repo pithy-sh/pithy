@@ -237,18 +237,113 @@ export function navigate(to: string): void {
   notify();
 }
 
-/** The current pathname, re-rendering the subscriber on every navigation. */
-export function usePath(): string {
-  const [path, setPath] = useState(() => window.location.pathname);
+/**
+ * Go to `to`, replacing the current history entry rather than pushing one.
+ *
+ * **For a correction the reader did not make** — a selection clamped back to nothing, a record that is
+ * no longer there. Pushing one of those puts a state nobody chose into the back stack, and Back then
+ * lands on it and it is corrected again, forever. A place the reader *chose* to go is a push, which is
+ * why `<Link>` has no `replace` and always goes through `navigate`.
+ *
+ * The identical-URL guard is `navigate`'s, for the same reason: swapping an entry for itself is a
+ * re-render nothing asked for.
+ */
+export function replace(to: string): void {
+  if (to === window.location.pathname + window.location.search) return;
+  window.history.replaceState(null, "", to);
+  notify();
+}
+
+/**
+ * Set or clear query parameters on the current URL, leaving the rest of it alone. Pushes by default;
+ * pass `{ replace: true }` for a correction, as {@link replace} describes.
+ *
+ * State that belongs in the address bar but not in the route is what this is for — which record a shell
+ * has open, which filter a list is under. Back closes the record, and the URL is shareable, without any
+ * of it being a pattern a screen module had to declare.
+ *
+ * **It exists because the hand-rolled version has a trap, and every call site meets it separately.**
+ * Writing one parameter means reading the query, parsing it, setting a key, serialising it, and joining
+ * it back onto the path — and the join is where it goes wrong. `window.location.search` is `""` and
+ * never `"?"`, so a writer that appends a bare `?` after clearing its last parameter produces a URL
+ * that never equals the current one: every repeat call pushes another entry, and Back then walks
+ * through them one at a time without the page ever changing. Carrying the hash across is the other half
+ * nobody remembers.
+ *
+ * The no-op check is on the query rather than on the whole URL, because the query is the part this
+ * edits — and the guard downstream compares `pathname + search`, which a URL carrying a hash can never
+ * equal.
+ */
+export function updateSearch(patch: Record<string, string | null>, options?: { replace?: boolean }): void {
+  const params = new URLSearchParams(window.location.search);
+  for (const [name, value] of Object.entries(patch)) {
+    if (value === null) params.delete(name);
+    else params.set(name, value);
+  }
+  const query = params.toString();
+  const search = query === "" ? "" : `?${query}`;
+  if (search === window.location.search) return;
+  const to = window.location.pathname + search + window.location.hash;
+  if (options?.replace) replace(to);
+  else navigate(to);
+}
+
+/**
+ * Subscribe to every navigation, reading one string out of `window.location`.
+ *
+ * The readers below differ only in what they read; the subscription is the part that is easy to get
+ * wrong. One listener per subscriber, added on mount, called once immediately because a navigation can
+ * land between the first render and the effect, and removed on unmount. Written once, so a new reader
+ * is a `read` function rather than another copy of all that — and so every reader wakes on the same
+ * `notify()`, which is what makes `navigate`, `replace`, `updateSearch` and the browser's own Back one
+ * event rather than four.
+ *
+ * `read` is a module-level function in each case, so the effect subscribes once and not on every render.
+ */
+function useLocationValue(read: () => string): string {
+  const [value, setValue] = useState(read);
   useEffect(() => {
-    const listener = () => setPath(window.location.pathname);
+    const listener = () => setValue(read());
     listeners.add(listener);
     listener();
     return () => {
       listeners.delete(listener);
     };
-  }, []);
-  return path;
+  }, [read]);
+  return value;
+}
+
+const readPathname = (): string => window.location.pathname;
+const readSearch = (): string => window.location.search;
+
+/** The current pathname, re-rendering the subscriber on every navigation. */
+export function usePath(): string {
+  return useLocationValue(readPathname);
+}
+
+/**
+ * The current query string, verbatim — `"?email=ada"`, or `""` when there is none. Re-renders the
+ * subscriber on every navigation.
+ *
+ * The raw string rather than a `URLSearchParams`, and that is the decision: a params object is a new
+ * object every render, so every `useMemo`, `useEffect` and `useCallback` downstream of one re-runs
+ * forever. This hands back what `window.location.search` is, and a screen wanting one value asks
+ * {@link useSearchParam} for it.
+ */
+export function useSearch(): string {
+  return useLocationValue(readSearch);
+}
+
+/**
+ * One query parameter, decoded — `null` when the key is absent. Re-renders on every navigation.
+ *
+ * A value is what call sites actually ask for: the OTP screen wants `email`, a shell wants which record
+ * is open. It is a string from a stranger, exactly like a path parameter, so a screen wanting a number
+ * or a member of a set validates it — this router types neither.
+ */
+export function useSearchParam(name: string): string | null {
+  const search = useSearch();
+  return new URLSearchParams(search).get(name);
 }
 
 /** An in-app link. Modifier-clicks and middle-clicks fall through to the browser, so a new tab works. */
