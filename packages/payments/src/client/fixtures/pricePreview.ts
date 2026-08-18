@@ -34,21 +34,34 @@ import usNewYork from "./price-preview-us-new-york.json" with { type: "json" };
  * returned ¥797 then ¥798 — Paddle's FX rate moved between the calls. Nothing may assert an exact
  * converted figure against a live account; that is what a recording is for.
  *
+ * **They carry the envelope, because that is what `PricePreview()` resolves.** Each JSON file below
+ * holds a recorded `data` payload; the exported value wraps it as `{ data }`, which is the shape the
+ * reader is actually handed. That wrapping is not cosmetic and it is the whole of `#416`: these five
+ * were originally exported unwrapped, `readPricePreview` was written to match them, and the reader
+ * therefore refused every real answer while this suite stayed green. A recording saved at the wrong
+ * depth is a gate that cannot fail. The envelope was verified against a live sandbox call on
+ * 2026-08-18 — top-level keys `data` and `meta`.
+ *
+ * `meta` is not recorded here. The live envelope carries `{ requestId: "715c7a82-…" }` — verified, not
+ * assumed — and nothing in this package reads it. It is left out because a fixture carrying a field no
+ * reader consults is an invitation to start consulting it, and because a per-call id pinned in a
+ * checked-in file is a value that was never true twice.
+ *
  * Typed `unknown` on purpose. These are the input to {@link readPricePreview}, which is a trust
  * boundary, and handing it a value TypeScript already believes would test the guard against itself.
  */
 
 /** New York, 10001. 8.875% added on top of a $5.00 listed price. */
-export const US_NEW_YORK: unknown = usNewYork;
+export const US_NEW_YORK: unknown = { data: usNewYork };
 
 /** The United States with no postal code. Tax resolves to zero, and the buyer will still pay $5.44. */
-export const US_COUNTRY_ONLY: unknown = usCountryOnly;
+export const US_COUNTRY_ONLY: unknown = { data: usCountryOnly };
 
 /** London, SW1A 1AA. 20% VAT taken out of an inclusive $5.00. */
-export const GB: unknown = gb;
+export const GB: unknown = { data: gb };
 
 /** Berlin, 10115. 19% VAT, same inclusive convention, different rate. */
-export const DE: unknown = de;
+export const DE: unknown = { data: de };
 
 /** Tokyo, with `currencyCode: "JPY"` forced. Whole yen — ¥725, not ¥72500. */
-export const JP_YEN: unknown = jpYen;
+export const JP_YEN: unknown = { data: jpYen };

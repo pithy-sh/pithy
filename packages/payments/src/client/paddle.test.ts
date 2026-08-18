@@ -296,6 +296,42 @@ describe("readPricePreview, against five recorded sandbox answers", () => {
   });
 });
 
+describe("readPricePreview reads the envelope Paddle actually resolves", () => {
+  /**
+   * **`PricePreview()` resolves `{ data, meta }`, and everything a price is made of is under `data`.**
+   *
+   * This is the shape recorded from a live sandbox call on 2026-08-18 — top-level keys `data` and
+   * `meta`, with `currencyCode`, `address` and `details` inside `data`. The reader used to look for
+   * `currencyCode` at the top level, found `undefined` on every real answer, and refused every one of
+   * them. `previewPrices` turned that into `PAYMENTS_UNREADABLE`, which a screen renders as no price
+   * at all — so the rail was silently dead in the browser while this suite was green.
+   *
+   * It was green because the five recordings were saved one level in, at `response.data`, and the
+   * reader was written to match the recordings. A fixture is evidence about somebody else's API and it
+   * stops being evidence the moment it is shaped to fit. This test is the one that could not have
+   * passed before, and the fixtures below now carry the envelope for the same reason.
+   */
+  test("a price is read from under `data`", () => {
+    const preview = readPricePreview(US_NEW_YORK);
+    expect(preview).not.toBeNull();
+    expect(preview?.currencyCode).toBe("USD");
+    expect(preview?.postalCode).toBe("10001");
+    expect(preview?.lines).toHaveLength(1);
+  });
+
+  test("`meta` beside `data` is carried and ignored, not refused", () => {
+    // Paddle sends a request id there. Nothing here reads it, and an answer that carries it must not
+    // be refused for carrying it.
+    const enveloped = { data: (US_NEW_YORK as { data: unknown }).data, meta: { requestId: "req_01" } };
+    expect(readPricePreview(enveloped)).not.toBeNull();
+  });
+
+  test("an already-unwrapped answer is still read, so an adopter who unwraps is not broken", () => {
+    const inner = (US_NEW_YORK as { data: unknown }).data;
+    expect(readPricePreview(inner)).not.toBeNull();
+  });
+});
+
 describe("readPricePreview refuses what it cannot read", () => {
   test("a non-object is not a preview", () => {
     for (const value of [null, undefined, "", 0, [], "a price"]) {
@@ -313,9 +349,9 @@ describe("readPricePreview refuses what it cannot read", () => {
 
   test("one unreadable line refuses the whole answer — half a price is worse than none", () => {
     const damaged = structuredClone(US_NEW_YORK) as {
-      details: { lineItems: { formattedTotals?: unknown }[] };
+      data: { details: { lineItems: { formattedTotals?: unknown }[] } };
     };
-    const first = damaged.details.lineItems[0];
+    const first = damaged.data.details.lineItems[0];
     if (!first) throw new Error("unreachable");
     first.formattedTotals = undefined;
     expect(readPricePreview(damaged)).toBeNull();
@@ -325,9 +361,9 @@ describe("readPricePreview refuses what it cannot read", () => {
     // Paddle sends every amount as a string. A number here means the shape changed, and rendering
     // `String(544)` as a price would be the wrong kind of resilience.
     const damaged = structuredClone(US_NEW_YORK) as {
-      details: { lineItems: { formattedUnitTotals: { total: unknown } }[] };
+      data: { details: { lineItems: { formattedUnitTotals: { total: unknown } }[] } };
     };
-    const first = damaged.details.lineItems[0];
+    const first = damaged.data.details.lineItems[0];
     if (!first) throw new Error("unreachable");
     first.formattedUnitTotals.total = 544;
     expect(readPricePreview(damaged)).toBeNull();

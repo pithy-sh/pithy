@@ -514,8 +514,17 @@ function readLine(value: unknown, currencyCode: string, countryCode: string | nu
  * Hand-written guards rather than Zod, for the reason `api.ts` gives: this compiles into a browser
  * bundle and must not drag the server's schema graph in behind it.
  */
-export function readPricePreview(value: unknown): PricePreview | null {
-  if (!isRecord(value)) return null;
+export function readPricePreview(answer: unknown): PricePreview | null {
+  if (!isRecord(answer)) return null;
+  // **`PricePreview()` resolves `{ data, meta }`.** Everything a price is made of is under `data`;
+  // `meta` carries a request id nothing here reads. Reading the top level found `undefined` on every
+  // real answer and refused all of them — `#416`, and it was invisible because `previewPrices` turns a
+  // refusal into the absence of a number, which a screen renders as a price slot that looks deliberate.
+  //
+  // A bare record is still accepted, because an adopter who unwrapped before calling this was working
+  // and must not be broken by the repair. That is a deliberate second shape rather than an accident:
+  // the envelope is what this package is handed, and the inner object is what somebody else may hand it.
+  const value = isRecord(answer.data) ? answer.data : answer;
   if (typeof value.currencyCode !== "string") return null;
   const details = value.details;
   if (!isRecord(details) || !Array.isArray(details.lineItems)) return null;
