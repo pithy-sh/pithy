@@ -93,7 +93,7 @@ describe("the two readers", () => {
  * row it walked past for want of an owner are `abandoned`, and a link repairs exactly one of them.
  */
 describe("the reader for the relink repair", () => {
-  const orphaned = `${WEBHOOK_EVENT_ORPHANED} no Pithy user could be resolved`;
+  const orphaned = `${WEBHOOK_EVENT_ORPHANED} no subject could be resolved`;
 
   test("a row waiting on an owner is one, whether the sweep or the webhook left it", () => {
     // Both writers, both states. The sweep abandons so its stream advances; the webhook leaves its own

@@ -56,9 +56,14 @@ import { type PurchaseProjection, projectPurchase } from "./writer";
  *
  * It never *invents* an owner. Every row goes back through {@link resolveNotificationOwner}, against the same
  * table in the same trust order, so a link that resolves nothing changes nothing — and a row for a different
- * customer that happens to be in the same page is left exactly as it stood. Passing the freshly linked user
+ * holder that happens to be in the same page is left exactly as it stood. Passing the freshly linked subject
  * straight to the writer would be the shortcut, and it would project one customer's purchase onto another's
  * account the first time two orphans shared a page.
+ *
+ * **Per row, and both halves per row.** The subject is resolved inside the loop, from the row's own hints, so
+ * a page of orphans is a page of independent questions rather than one answer applied to all of them. There
+ * is no subject computed before the loop for the same reason there is no `subjectType` taken from config: a
+ * kind that outlived the row it came from is how an organization's purchase lands on a user with the same id.
  */
 
 /**
@@ -155,12 +160,14 @@ export async function repairOrphanedEvents(
       continue;
     }
 
-    const userId = await resolveNotificationOwner(db, rail, {
+    // This row's own subject, resolved from this row's own hints. Both halves come back together or neither
+    // does — `projection/owner.ts` reads them from one row for exactly this reason.
+    const subject = await resolveNotificationOwner(db, rail, {
       providerAccountId: notification.providerAccountId,
       providerTransactionId: notification.event.providerTransactionId,
       originalTransactionId: notification.event.originalTransactionId,
     });
-    if (!userId) {
+    if (subject === undefined) {
       // Still nobody. The link that just landed was somebody else's, and this row waits for its own.
       waiting += 1;
       continue;
@@ -170,13 +177,13 @@ export async function repairOrphanedEvents(
     try {
       projection = await projectPurchase(
         d1,
-        { ...notification.event, userId },
+        { ...notification.event, ...subject },
         { config: options.config, environment: options.environment, now: options.now },
       );
       if (notification.stateEvent) {
         await projectPurchase(
           d1,
-          { ...notification.stateEvent, userId },
+          { ...notification.stateEvent, ...subject },
           { config: options.config, environment: options.environment, now: options.now },
         );
       }
@@ -200,7 +207,7 @@ export async function repairOrphanedEvents(
  * Mark a repaired row finished, and clear the reason it carried.
  *
  * `processedAt` because it now genuinely is finished — the purchase is projected, and a redelivery has
- * nothing left to add. The `error` goes with it: it said "no Pithy user could be resolved", which stopped
+ * nothing left to add. The `error` goes with it: it said "no subject could be resolved", which stopped
  * being true, and a stale reason beside a finished timestamp is the contradiction `data/webhookEvent.ts`
  * refuses to store.
  *

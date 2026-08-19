@@ -181,6 +181,28 @@ describe("support response schemas", () => {
     expect(unproven).not.toHaveProperty("emailVerified");
   });
 
+  test("the billing panel declares whose purchases it covers, so an empty one is not a silence", () => {
+    // `pithy-sh/pithy#412`. Payments now key purchases on a subject pair, and support resolves a
+    // *person* from an address — there is no Hono context at thread-read time, so it cannot ask the
+    // adopter's subject seam which organization this caller acts for. It therefore links `user`-subject
+    // rows and nothing else. Without this field an organization-billed customer's panel is empty, and
+    // empty already means three different things: nothing bought, `@pithy-sh/payments` not installed
+    // (the guarded import's `catch` returns `[]`), or billing this seam cannot see. An operator reading
+    // "no purchases" would conclude the first. So the scope is stated on the wire.
+    expect(senderView(SENDER).billingScope).toBe("user");
+    // Declared even when there is nothing to qualify: the unproven panel is empty for a different
+    // reason, and a field that appeared only sometimes would be read as a warning rather than a scope.
+    const unproven = senderView({ authenticated: false, userId: null, purchases: [], entitlements: [] });
+    expect(unproven.billingScope).toBe("user");
+  });
+
+  test("`billingScope` is a closed literal, so a second subject kind cannot land unnoticed", () => {
+    // A `z.string()` here would let support quietly start returning organization rows with no client
+    // ever branching. The literal makes widening it a compile error at every consumer, which is the
+    // point: the day this seam can resolve an organization, every panel has to decide what to render.
+    expect(SenderContextView.safeParse({ ...senderView(SENDER), billingScope: "organization" }).success).toBe(false);
+  });
+
   test("the threading internals and the raw object key leave the Worker in nothing", () => {
     // `rawKey` names the R2 object holding the message exactly as it arrived — the one copy of this
     // data that has had nothing done to it. The schema must not tell a client it is on offer.

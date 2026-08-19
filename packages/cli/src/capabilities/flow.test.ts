@@ -38,6 +38,24 @@ const handWrittenManifest = CapabilityManifest.parse({
   ],
 });
 
+/**
+ * A capability with a **required** option: no default, a closed set of choices.
+ *
+ * The shape #412 landed. `billingSubject` decides whether an entitlement is held by a person or a
+ * company, it lands in a column and a UNIQUE index, and there is no answer the kit is entitled to pick
+ * on an adopter's behalf — so the manifest states none, and every path that could write a config has to
+ * get one from the caller or refuse.
+ */
+const requiredManifest = CapabilityManifest.parse({
+  name: "payments",
+  package: "@pithy-sh/payments",
+  requiredBindings: [],
+  configOptions: [
+    { key: "basePath", default: "/payments", describe: "Where the payments routes mount." },
+    { key: "billingSubject", choices: ["user", "organization"], describe: "Who holds a subscription." },
+  ],
+});
+
 describe("coerceSetFlags", () => {
   test("coerces values to each option's type", () => {
     expect(coerceSetFlags(optionManifest, ["basePath=/api/auth", "sessionDays=7", "cookies=false"])).toEqual({
@@ -69,6 +87,35 @@ describe("coerceSetFlags", () => {
     const error = coerceSetFlags.bind(null, handWrittenManifest, ["registry=d1"]);
     expect(error).toThrow(PithyError);
     expect(error).toThrow(/not settable from the command line/);
+  });
+});
+
+describe("a required option — one the manifest states no default for", () => {
+  test("--set carries one of its choices through", () => {
+    expect(coerceSetFlags(requiredManifest, ["billingSubject=organization"])).toEqual({
+      billingSubject: "organization",
+    });
+  });
+
+  test("a value outside the choices is refused, naming the option and the legal set", () => {
+    let caught: unknown;
+    try {
+      coerceSetFlags(requiredManifest, ["billingSubject=nonsense"]);
+    } catch (thrown) {
+      caught = thrown;
+    }
+    expect(caught).toBeInstanceOf(PithyError);
+    const error = caught as PithyError;
+    expect(error.message).toContain("billingSubject");
+    // The legal set is the operator's line, so it is on the action — the half an agent corrects from.
+    expect(error.payload.action).toContain("user");
+    expect(error.payload.action).toContain("organization");
+  });
+
+  test("it is not hand-written — an absent default is a question, not a registry", () => {
+    const option = requiredManifest.configOptions[1] as ConfigOption;
+    expect(option.key).toBe("billingSubject");
+    expect(isHandWritten(option)).toBe(false);
   });
 });
 
@@ -200,6 +247,94 @@ describe("runAdd", () => {
     // Not merely different — the directory is read from `workerDir`, never derived by stripping a
     // project prefix off the deployed name. A `wrangler.jsonc` may name the Worker anything.
     expect(result.worker).not.toBe(result.deployedAs);
+  });
+
+  /**
+   * The acceptance criterion of #412.
+   *
+   * `pithy add payments --json` used to pick a billing model. The manifest had no concept of a required
+   * option — `default` was a required field — so a non-interactive run attached no prompt, fell straight
+   * through to whatever the manifest happened to state, wrote it into a column and a UNIQUE index, and
+   * exited 0. A project that meant `organization` found out when it had subscriptions.
+   *
+   * So the refusal is asserted on its **action string**, not on the fact that something threw. The action
+   * is the operator's, and the only thing that makes an agent-driven run recoverable is that it names the
+   * exact flag and the values that flag takes.
+   */
+  test("a non-interactive run that names no value for a required option is refused, naming the flag and the choices", async () => {
+    const error = (await runAdd({
+      account: null,
+      projectDir: dir,
+      workerDir: worker,
+      project: "acme",
+      capability: "payments",
+      install: installManifest(requiredManifest),
+      // A local stub: `migrateStub` is shared, and a later test asserts it was never called.
+      migrate: async () => noMigrations,
+    }).catch((thrown: unknown) => thrown)) as PithyError;
+
+    expect(error).toBeInstanceOf(PithyError);
+    expect(error.message).toContain("billingSubject");
+    const action = error.payload.action ?? "";
+    expect(action).toContain("--set billingSubject=user");
+    expect(action).toContain("--set billingSubject=organization");
+    // Nothing was written. A refusal that half-wired the config would be the defect one step along.
+    const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
+    expect(config).not.toContain("payments(");
+  });
+
+  test("the same run with --set billingSubject=organization succeeds and renders it", async () => {
+    await runAdd({
+      account: null,
+      projectDir: dir,
+      workerDir: worker,
+      project: "acme",
+      capability: "payments",
+      setFlags: ["billingSubject=organization"],
+      install: installManifest(requiredManifest),
+      // A local stub: `migrateStub` is shared, and a later test asserts it was never called.
+      migrate: async () => noMigrations,
+    });
+
+    const config = await readFile(join(worker, "pithy.config.ts"), "utf8");
+    expect(config).toContain('billingSubject: "organization",');
+    // The option that does have a default still takes it — nothing about the other options moved.
+    expect(config).toContain('basePath: "/payments",');
+  });
+
+  test("--set billingSubject=nonsense is refused before anything is installed into the config", async () => {
+    const error = (await runAdd({
+      account: null,
+      projectDir: dir,
+      workerDir: worker,
+      project: "acme",
+      capability: "payments",
+      setFlags: ["billingSubject=nonsense"],
+      install: installManifest(requiredManifest),
+      // A local stub: `migrateStub` is shared, and a later test asserts it was never called.
+      migrate: async () => noMigrations,
+    }).catch((thrown: unknown) => thrown)) as PithyError;
+
+    expect(error).toBeInstanceOf(PithyError);
+    expect(error.message).toContain("billingSubject");
+    expect(`${error.message} ${error.payload.action ?? ""}`).toContain("organization");
+    expect(await readFile(join(worker, "pithy.config.ts"), "utf8")).not.toContain("payments(");
+  });
+
+  test("a prompt that answers it is enough — the refusal is about a value, not about a flag", async () => {
+    await runAdd({
+      account: null,
+      projectDir: dir,
+      workerDir: worker,
+      project: "acme",
+      capability: "payments",
+      install: installManifest(requiredManifest),
+      // A local stub: `migrateStub` is shared, and a later test asserts it was never called.
+      migrate: async () => noMigrations,
+      prompt: async (_manifest, provided) => ({ ...provided, billingSubject: "user" }),
+    });
+
+    expect(await readFile(join(worker, "pithy.config.ts"), "utf8")).toContain('billingSubject: "user",');
   });
 
   test("mints the secrets dev master key and reports it — `pithy dev` serves the moment add finishes", async () => {

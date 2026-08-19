@@ -56,6 +56,16 @@ export type PaymentsClientProduct = {
  * the catalog — the `grants` block and the store-only SKUs, which are omissions of judgement rather than
  * of reach, and so are the ones worth writing down.
  *
+ * **`billingSubject` is a third omission of judgement, and it is deliberate.** The subject *id* obviously
+ * never crosses — it is a fact about one caller, and this projection is inlined into a bundle every caller
+ * receives, so there is no request here to be right about. But the mode is not a secret and is left out
+ * anyway, on the plainer ground that nothing in a browser can use it. A paywall renders products and buy
+ * buttons; who holds what it buys is decided on the server, on the request, by the subject seam, and a
+ * screen that branched on the mode would be a second copy of that decision drifting from the first. The
+ * shape is also not free: this type is what `@pithy-sh/vite` generates `templates/client-env.d.ts` from, so
+ * a key added here is a key added to every adopter's ambient declaration. It goes in the day something in
+ * a browser genuinely cannot be written without it, and not before.
+ *
  * **This is the only statement of the shape.** `@pithy-sh/ui-react`'s `templates/client-env.d.ts` — the
  * ambient declaration `pithy ui add react` copies into an adopter's Worker — is generated from this type
  * by `@pithy-sh/vite`'s `clientEnvDeclaration.ts` (#398). The unions and the per-field doc comments below

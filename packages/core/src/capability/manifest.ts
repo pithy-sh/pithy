@@ -448,9 +448,18 @@ export const ConfigOption = z
           `A config option key must be a bare identifier, and ${JSON.stringify(issue.input)} is not — it is written bare into pithy.config.ts.`,
       })
       .describe('Option name passed to the capability factory (e.g. "basePath"); a bare identifier.'),
-    default: ConfigOptionValue.describe("Default value rendered into pithy.config.ts when no override is given."),
+    default: ConfigOptionValue.optional().describe(
+      "The value rendered into pithy.config.ts when no override is given — and **its absence is what makes an option required**. There is no flag beside it saying so: an option that states a default has an answer the kit is willing to pick, and an option that states none has one only the adopter can. A required option is settled before a byte is written — a prompt asks it with nothing to accept by pressing enter, `--set key=value` answers it non-interactively, and a run carrying neither is refused naming the flag. Nothing is guessed, because a decision worth refusing over is one that is expensive to reverse: payments' `billingSubject` decides whether an entitlement is held by a person or a company, and it lands in a column and a UNIQUE index.",
+    ),
+    choices: z
+      .array(PrintableString)
+      .min(1)
+      .optional()
+      .describe(
+        "The values this option accepts, when they are a closed set. Three things follow from stating them, and none of them can be had without: the prompt is a select rather than free text, `--set` refuses a value outside them instead of writing it into the config, and a refusal can name what is legal — which is the whole of what a caller needs in order to answer a required option. Held to the same printable-string rule as a default, because a choice becomes the value written into the adopter's TypeScript.",
+      ),
     constant: ConfigConstant.optional().describe(
-      "A constant the scaffolded pithy.config.ts defines, rendered *unquoted* in place of `default` when the target config declares it. The one that exists is `publicOrigin` — `PUBLIC_ORIGIN`, this Worker's address for the environment it composes in. An option whose value is an origin must name it rather than state a URL, because a URL written down is production's URL written into staging: it is what mailed staging's testers magic links into production and unsubscribed them there (#256). `default` is still required and is what a config with no such constant gets, so an older project is never handed an identifier it does not define.",
+      "A constant the scaffolded pithy.config.ts defines, rendered *unquoted* in place of `default` when the target config declares it. The one that exists is `publicOrigin` — `PUBLIC_ORIGIN`, this Worker's address for the environment it composes in. An option whose value is an origin must name it rather than state a URL, because a URL written down is production's URL written into staging: it is what mailed staging's testers magic links into production and unsubscribed them there (#256). `default` is still required *for such an option* and is what a config with no such constant gets, so an older project is never handed an identifier it does not define — the one place the absent-default rule does not reach, and it is checked rather than trusted.",
     ),
     describe: z
       .string()
@@ -461,7 +470,31 @@ export const ConfigOption = z
       })
       .describe("Rationale rendered as the comment above this option in pithy.config.ts; one line."),
   })
-  .describe("A configurable option a capability exposes (key, default, rationale).");
+  // Self-consistency, checked where manifests are validated rather than at an adopter's prompt. Both of
+  // these are manifest bugs — a capability author's mistake, not an adopter's — and each of them surfaces
+  // hours later and somewhere else if it is not caught here: a default outside its own choices renders a
+  // value the capability's config then refuses, and a `constant` with no default hands a project that
+  // predates the scaffolded identifier a name nothing declares.
+  .check((ctx) => {
+    const option = ctx.value;
+    if (option.choices && option.default !== undefined && !option.choices.includes(option.default as string)) {
+      ctx.issues.push({
+        code: "custom",
+        input: option.default,
+        path: ["default"],
+        message: `A config option's default must be one of its choices, and ${JSON.stringify(option.default)} is not — ${option.key} offers ${JSON.stringify(option.choices)}.`,
+      });
+    }
+    if (option.constant !== undefined && option.default === undefined) {
+      ctx.issues.push({
+        code: "custom",
+        input: option.constant,
+        path: ["default"],
+        message: `A config option naming a constant must still carry a default, and ${option.key} names ${JSON.stringify(option.constant)} with none — a project whose pithy.config.ts predates the constant gets the default instead, so an option with no default would hand it an identifier nothing declares.`,
+      });
+    }
+  })
+  .describe("A configurable option a capability exposes (key, default, choices, rationale).");
 export type ConfigOption = z.infer<typeof ConfigOption>;
 
 /**

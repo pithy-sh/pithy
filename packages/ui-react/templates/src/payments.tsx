@@ -59,6 +59,11 @@ export const paddleSetup = paymentsConfig.paddle;
 /**
  * Whether the visitor holds `key` right now.
  *
+ * "The visitor" is shorthand for whoever the server says this session holds entitlements for — the person
+ * under a project that bills users, the organization they are acting for under one that bills
+ * organizations. Nothing here names either, and nothing here should: the read carries the session and the
+ * server decides the holder, so no argument this file could pass would be one it was entitled to choose.
+ *
  * `true` when payments is not composed, which is the same direction the session guard takes when there is
  * no auth: a guard that arrives with a capability must not lock a screen when the capability is gone. The
  * server is what protects the feature.
@@ -75,6 +80,9 @@ export async function holdsEntitlement(key: string): Promise<boolean> {
 
 /**
  * Who Paddle prices this visitor as, once there is a session to ask about.
+ *
+ * The customer it answers is the store customer for whoever the session holds purchases for — a person, or
+ * the organization they buy on behalf of — read on the server from that session and never named here.
  *
  * **Two renders, and that is the design rather than a flicker to hide.** A pricing screen paints before
  * the session resolves, so the first figure is the IP estimate — labelled `Estimated.`, because it is —

@@ -78,7 +78,7 @@ describe("a plugin's tables through pithy migrate", () => {
       ["0300_auth_0002_plugin_organization", "Success"],
     ]);
     expect(await tables()).toEqual([...KIT_TABLES, "invitation", "member", "organization"].sort());
-    // The half that is not a table: the plugin writes the active organisation onto the session.
+    // The half that is not a table: the plugin writes the active organization onto the session.
     expect(await columns("pithy_auth_sessions")).toContain("active_organization_id");
     expect(await indexes()).toContain("organization_slug_idx");
   });

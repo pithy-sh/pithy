@@ -11,6 +11,7 @@ import {
   SupportSentiment,
 } from "../data/enums";
 import { SupportSubmissionContext } from "../data/message";
+import { SUPPORT_BILLING_SCOPE } from "../link/sender";
 
 /**
  * What the support routes return, as Zod objects a management client can validate against.
@@ -201,11 +202,37 @@ export const SenderEntitlementView = z
 export type SenderEntitlementView = z.output<typeof SenderEntitlementView>;
 
 /**
+ * Which billing subject the purchase and entitlement lists cover — always `user`, and said out loud.
+ *
+ * `@pithy-sh/payments` keys a purchase on a **subject pair**, a user or an organization. Support starts
+ * from a `From:` header and resolves a *person*; at thread-read time it holds no Hono `Context`, so it
+ * cannot ask the adopter's subject seam which organization this caller is acting for. It therefore reads
+ * `user`-subject rows and nothing else.
+ *
+ * **A field rather than a footnote, because empty already means too many things.** The purchase and
+ * entitlement lookups are guarded dynamic imports whose `catch` returns `[]`, so an empty panel is
+ * indistinguishable between "bought nothing", "`@pithy-sh/payments` is not installed" and "billed to an
+ * organization this seam cannot see" — and an operator looking at a customer with a live subscription
+ * reads it as the first. That is the actual hazard, and it is a wrong refund decision away from costing
+ * something. Declaring the scope on the wire lets a console say *why* the panel is thin.
+ *
+ * **A closed literal, not a string.** Widening it is then a compile error at every consumer, which is
+ * correct: the day support can resolve an organization, every panel has to decide what to render.
+ */
+export const SenderBillingScope = z
+  .literal(SUPPORT_BILLING_SCOPE)
+  .describe(
+    "Which billing subject the purchase and entitlement lists cover. Always `user`: support resolves a person from an address and cannot reach the adopter's subject seam, so an organization-billed customer's purchases are not shown here.",
+  );
+export type SenderBillingScope = z.output<typeof SenderBillingScope>;
+
+/**
  * What the app already knows about the sender. Derived at read time, so it is always current.
  *
- * **Everything but `authenticated` is empty when the sender is unproven.** The whole value of the
- * panel is that an operator trusts it, so it must not be populated from an address anybody could have
- * written — that is what turns a spoofed message into support-driven account takeover.
+ * **Everything but `authenticated` and `billingScope` is empty when the sender is unproven.** The whole
+ * value of the panel is that an operator trusts it, so it must not be populated from an address anybody
+ * could have written — that is what turns a spoofed message into support-driven account takeover. The
+ * scope is declared either way: it describes what this seam *can* see, not what it found.
  */
 export const SenderContextView = z
   .object({
@@ -213,6 +240,7 @@ export const SenderContextView = z
     userId: z.string().nullable().describe("The linked user id, or null when this address belongs to nobody."),
     name: z.string().optional().describe("The account's display name, when auth is composed and the sender is known."),
     emailVerified: z.boolean().optional().describe("Whether the account has verified this address."),
+    billingScope: SenderBillingScope,
     purchases: z.array(SenderPurchaseView).describe("Their purchase history, newest first, bounded. Empty when none."),
     entitlements: z.array(SenderEntitlementView).describe("Their entitlements, lapsed ones marked inactive."),
   })

@@ -34,9 +34,13 @@
     { "binding": "SECRETS", "database_name": "pithy-secrets", "database_id": "<filled-at-provision>" }
   ],
 
-  // The Cloudflare Email Service send binding. `remote: true` lets `wrangler dev` send real email
-  // through the service during local development; in a deployed worker the flag is ignored.
-  "send_email": [{ "name": "EMAIL", "remote": true }],
+  // The Cloudflare Email Service send binding — the only thing in the kit that puts a message on the
+  // wire. `remote` is deliberately NOT written here: `resolveEmailConfig` adds it, because the
+  // resolver can only ever add the flag and a hardcoded `true` could never be turned off again. Real
+  // delivery is the default in every environment, including `dev`, where `remote: true` runs the
+  // Worker locally and sends through the service for real. `email({ devDelivery: "simulator" })`
+  // selects the local simulator instead; a deployed worker ignores the flag either way.
+  "send_email": [{ "name": "EMAIL" }],
 
   // The master key for decrypting the link-signing secret, read through the secretsStore accessor.
   "secrets_store_secrets": [

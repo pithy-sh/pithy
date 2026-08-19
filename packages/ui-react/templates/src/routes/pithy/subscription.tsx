@@ -16,7 +16,9 @@ export const path = "/subscription";
 // both follow, because they read this claim rather than keeping a copy of the string (#393).
 export const role = "subscription";
 
-// The entitlements shown are the caller's own; the server resolves them from the session.
+// The entitlements shown are the caller's own; the server resolves them from the session. Under a project
+// that bills organizations they are the organization's, resolved from that same session — either way this
+// screen names no holder and cannot, which is what stops it becoming a way to read somebody else's.
 export const session = "required";
 
 // Pithy's screen. Yours to override: put your own file at this path under src/routes/app/ and it wins.
@@ -27,7 +29,7 @@ export const session = "required";
  * `granted` comes first, and that ordering is the whole point: the server applies the expiry itself on every
  * read, so a row can come back `granted: false` while its own `expiresAt` still says nothing is wrong — a
  * refunded non-consumable is `{ granted: false, expiresAt: null }`, and reading only the date printed
- * "Yours to keep." over a purchase the user no longer has.
+ * "Yours to keep." over a purchase the holder no longer has.
  */
 function holding(entitlement: { granted: boolean; expiresAt: string | null }): string {
   if (!entitlement.granted) return entitlement.expiresAt === null ? "Ended." : "Ended, and not renewing.";

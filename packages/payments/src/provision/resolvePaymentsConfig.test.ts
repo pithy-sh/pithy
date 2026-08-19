@@ -37,6 +37,7 @@ function template(): WorkflowHostTemplate {
 }
 
 const CATALOG = PaymentsConfig.parse({
+  billingSubject: "organization",
   rails: { apple: true },
   products: {
     pro_monthly: {
@@ -94,6 +95,41 @@ describe("resolvePaymentsConfig", () => {
     const resolved = resolvePaymentsConfig(template(), params);
     expect(resolved.vars?.ENVIRONMENT).toBe("staging");
     expect(JSON.parse(resolved.vars?.PAYMENTS_CONFIG ?? "{}")).toEqual(CATALOG);
+  });
+
+  test("billingSubject survives the round trip, so the pass reads the same mode the app worker composed", () => {
+    // The var is the reconcile worker's *only* view of the catalog, and `billingSubject` decides what a
+    // stored row's holder means. `organization` on the fixture rather than `user` on purpose: the default
+    // half of an enum round-trips even when the field was dropped, so a test that pinned `user` would pass
+    // against a var that carried nothing.
+    const resolved = resolvePaymentsConfig(template(), params);
+    const reparsed = PaymentsConfig.parse(JSON.parse(resolved.vars?.PAYMENTS_CONFIG ?? "{}"));
+    expect(reparsed.billingSubject).toBe("organization");
+  });
+
+  test("nothing in the var is a function — the callable half of the subject decision is not config", () => {
+    // Why `resolveSubject` is a `payments()` option and not a `PaymentsConfig` field: this is the round trip
+    // it would have to survive, and `JSON.stringify` drops a function silently. This walks the serialized
+    // var rather than the object, because that is exactly what the deployed worker parses back.
+    const resolved = resolvePaymentsConfig(template(), params);
+    const walk = (value: unknown): void => {
+      expect(typeof value).not.toBe("function");
+      if (value && typeof value === "object") for (const entry of Object.values(value)) walk(entry);
+    };
+    walk(JSON.parse(resolved.vars?.PAYMENTS_CONFIG ?? "{}"));
+  });
+
+  test("a var missing billingSubject refuses to parse — the reconcile worker fails at boot, not at a row", () => {
+    // `workflows/worker.ts` runs `PaymentsConfig.parse(this.env.PAYMENTS_CONFIG ? JSON.parse(...) : {})`, and
+    // `billingSubject` has no default, so both an unprovisioned worker and one deployed before the field
+    // existed now throw where a Workflow's own error reporting can see it. That is a deliberate behaviour
+    // change: the alternative is a pass that reconciles every row against a guessed holder, which rewrites
+    // real entitlements and is invisible until somebody is refused what they paid for.
+    expect(() => PaymentsConfig.parse({})).toThrow();
+    const { billingSubject: _dropped, ...stale } = JSON.parse(
+      resolvePaymentsConfig(template(), params).vars?.PAYMENTS_CONFIG ?? "{}",
+    );
+    expect(() => PaymentsConfig.parse(stale)).toThrow();
   });
 
   test("no credential can reach the worker's vars — they are not in the config to begin with", () => {

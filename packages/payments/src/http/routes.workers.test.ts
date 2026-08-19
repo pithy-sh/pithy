@@ -23,7 +23,10 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest
 import type { z } from "zod";
 import { PaymentsAuditActions } from "../audit/actions";
 import { PaymentsConfig, type PaymentsConfigInput } from "../config/config";
+import { encodeSubjectReference, type PaymentsSubject } from "../data/subject";
 import { paymentsDatabase } from "../data/tables";
+import type { PaymentsSubjectSeam } from "../entitlement/subjectSeam";
+import { ledgerAccountId } from "../grants/ledgerSeam";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
 import { linkProviderAccount } from "../projection/owner";
 import { projectPurchase } from "../projection/writer";
@@ -73,17 +76,15 @@ import { BROWSER_OVERWROTE_SERVER_STAMP } from "../rails/paddle/fixtures/browser
 import { accountReferenceProof } from "../rails/paddle/objects";
 import { signPaddleBody } from "../rails/paddle/signature";
 import type { StripeHttpFetch } from "../rails/stripe/api";
-import chargeRefunded from "../rails/stripe/fixtures/event-charge-refunded.json" with { type: "json" };
+import rawChargeRefunded from "../rails/stripe/fixtures/event-charge-refunded.json" with { type: "json" };
 import stripeInvoicePaid from "../rails/stripe/fixtures/event-invoice-paid.json" with { type: "json" };
-import stripeSessionPayment from "../rails/stripe/fixtures/event-session-completed-payment.json" with { type: "json" };
-import stripeSessionSubscription from "../rails/stripe/fixtures/event-session-completed-subscription.json" with {
+import rawSessionPayment from "../rails/stripe/fixtures/event-session-completed-payment.json" with { type: "json" };
+import rawSessionSubscription from "../rails/stripe/fixtures/event-session-completed-subscription.json" with {
   type: "json",
 };
-import stripeSubscriptionCanceled from "../rails/stripe/fixtures/event-subscription-canceled.json" with {
-  type: "json",
-};
-import stripeSubscriptionCreated from "../rails/stripe/fixtures/event-subscription-created.json" with { type: "json" };
-import stripeSubscriptionDeleted from "../rails/stripe/fixtures/event-subscription-deleted.json" with { type: "json" };
+import rawSubscriptionCanceled from "../rails/stripe/fixtures/event-subscription-canceled.json" with { type: "json" };
+import rawSubscriptionCreated from "../rails/stripe/fixtures/event-subscription-created.json" with { type: "json" };
+import rawSubscriptionDeleted from "../rails/stripe/fixtures/event-subscription-deleted.json" with { type: "json" };
 import {
   STRIPE_TEST_SECRET_KEY,
   STRIPE_TEST_WEBHOOK_SECRET,
@@ -139,7 +140,22 @@ const STRIPE_RETURN_URLS = {
   portalReturnUrl: "https://acme.example/account",
 };
 
+/**
+ * A user subject, spelled the way every fixture below names a holder.
+ *
+ * **Both halves, always.** The `user:` prefix is not decoration: it is half the address every row is keyed
+ * on, half of what `encodeSubjectReference` stamps into a store's single-field slot, and the difference
+ * between `user:ada` and `organization:ada` — two holders nothing in the kit keeps apart.
+ */
+const user = (id: string): PaymentsSubject => ({ subjectType: "user", subjectId: id });
+
+/** The other kind, for the cases that prove a shared id does not cross between them. */
+const organization = (id: string): PaymentsSubject => ({ subjectType: "organization", subjectId: id });
+
 const CATALOG: PaymentsConfigInput = {
+  // Required, and every catalog in this file states it: what a project bills is a decision, and
+  // `PaymentsConfig` has no default for it. These fixtures bill people, so every row lands as `user:<id>`.
+  billingSubject: "user",
   rails: { apple: true, google: true, stripe: true },
   stripe: STRIPE_RETURN_URLS,
   products: {
@@ -347,6 +363,14 @@ interface AppOptions {
    * where `createBackend` seeds the verifier as null and every admin route must therefore deny.
    */
   controlPlane?: readonly ControlPlaneScope[] | null;
+  /**
+   * The subject seam this app composes, as `payments()` would have built it.
+   *
+   * Absent means the config's own mode with no adopter resolver — the authenticated caller under
+   * `billingSubject: "user"`, which is what every case above wants. A case about organization billing hands
+   * one in, because that is the only way a holder that is not the caller can ever be named.
+   */
+  subject?: PaymentsSubjectSeam;
 }
 
 /** Every call the Stripe rail made, so a test can assert what left the Worker and not only what came back. */
@@ -447,9 +471,11 @@ function makeApp(input: PaymentsConfigInput = CATALOG, options: AppOptions = {})
   const verifier =
     options.controlPlane === null ? null : controlPlaneVerifier(options.controlPlane ?? PAYMENTS_CONTROL_PLANE_SCOPES);
   app.use("*", async (c, next) => {
-    const user = c.req.header("x-user");
+    // `signedIn`, not `user`: the module-level `user()` builds a subject, and the two are different facts.
+    // Who is signed in is a person; who they act for is what the seam answers.
+    const signedIn = c.req.header("x-user");
     const scopes = c.req.header("x-scopes")?.split(",").filter(Boolean) ?? [];
-    c.set("auth", user ? { userId: user, sessionId: "s1", scopes } : null);
+    c.set("auth", signedIn ? { userId: signedIn, sessionId: "s1", scopes } : null);
     // Null, not absent, when the seam is not composed — the shape `createBackend` seeds either way.
     c.set("controlPlaneVerifier", verifier);
     c.set("emit", async (event) => {
@@ -461,6 +487,7 @@ function makeApp(input: PaymentsConfigInput = CATALOG, options: AppOptions = {})
   registerPaymentsRoutes({
     config: PaymentsConfig.parse(input),
     now: () => NOW,
+    ...(options.subject === undefined ? {} : { subject: options.subject }),
     trust: {
       ...(options.trustedApple === false ? {} : { appleTrustedRoots: [chain.root] }),
       ...(options.trustedGoogle === false ? {} : { googleTrustedKeys: [googleKey.jwk] }),
@@ -475,6 +502,8 @@ function makeApp(input: PaymentsConfigInput = CATALOG, options: AppOptions = {})
 
 interface RequestOptions {
   user?: string;
+  /** The organization this caller is acting for, as the fixture resolver below reads it off the request. */
+  organization?: string;
   scopes?: string;
   body?: unknown;
   /** A raw body, for the unparseable-JSON cases. */
@@ -504,6 +533,7 @@ interface RequestOptions {
 async function request(app: Hono<PithyHonoEnv>, method: string, path: string, options: RequestOptions = {}) {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (options.user) headers["x-user"] = options.user;
+  if (options.organization) headers["x-org"] = options.organization;
   if (options.scopes) headers["x-scopes"] = options.scopes;
   if (options.authorization) headers.authorization = options.authorization;
   const body =
@@ -634,7 +664,7 @@ describe("POST /payments/purchases", () => {
     });
     const links = await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute();
     expect(links).toHaveLength(1);
-    expect(links[0]).toMatchObject({ rail: "apple", providerAccountId: APPLE_ACCOUNT, userId: "ada" });
+    expect(links[0]).toMatchObject({ rail: "apple", providerAccountId: APPLE_ACCOUNT, ...user("ada") });
   });
 
   test("a replay by the same owner is a 200 with the existing purchase, not an error", async () => {
@@ -659,7 +689,7 @@ describe("POST /payments/purchases", () => {
     expect(await errorCode(stolen)).toBe("payments/receipt_already_owned");
     const rows = await purchases();
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.userId).toBe("ada");
+    expect(rows[0]?.subjectId).toBe("ada");
     // Grace holds nothing, and the refusal is on the trail next to Ada's success.
     expect(await entitlements()).toHaveLength(1);
     expect(actions()).toEqual(["payments/purchase_verified:success", "payments/purchase_verified:denied"]);
@@ -667,7 +697,7 @@ describe("POST /payments/purchases", () => {
     // her, and `UNIQUE (rail, providerAccountId)` is what stops that capturing Ada's future notifications.
     const links = await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute();
     expect(links).toHaveLength(1);
-    expect(links[0]?.userId).toBe("ada");
+    expect(links[0]?.subjectId).toBe("ada");
   });
 
   test("a refused receipt mints no account link — squatting an identifier costs a real purchase", async () => {
@@ -723,7 +753,7 @@ describe("POST /payments/purchases", () => {
     expect(renewal.status).toBe(200);
 
     const renewed = (await purchases()).find((purchase) => purchase.providerTransactionId === "txn-ada-renewal");
-    expect(renewed?.userId).toBe("ada");
+    expect(renewed?.subjectId).toBe("ada");
   });
 
   test("a sandbox receipt against a production deployment is a 400 and grants nothing", async () => {
@@ -909,7 +939,7 @@ describe("the guards, and their order relative to the validators", () => {
 
 describe("the rail, and what a client is told about it", () => {
   test("a rail that is off in config is a 404", async () => {
-    const app = makeApp({ rails: {}, products: {} });
+    const app = makeApp({ billingSubject: "user", rails: {}, products: {} });
     const response = await request(app, "POST", "/payments/purchases", {
       user: "ada",
       body: { rail: "apple", receipt: await receipt() },
@@ -974,7 +1004,7 @@ describe("GET /payments/entitlements", () => {
       .insertInto("pithyPaymentsEntitlements")
       .values({
         id: "e1",
-        userId: "ada",
+        ...user("ada"),
         entitlement: "pro",
         active: 1,
         expiresAt: NOW.getTime() - 1,
@@ -1041,13 +1071,13 @@ describe("POST /payments/restore", () => {
     expect(await errorCode(response)).toBe("payments/receipt_already_owned");
     // Grace's own consumable landed; Ada's subscription stayed Ada's.
     const rows = await purchases();
-    expect(rows.map((row) => row.userId).sort()).toEqual(["ada", "grace"]);
+    expect(rows.map((row) => row.subjectId).sort()).toEqual(["ada", "grace"]);
   });
 });
 
 describe("POST /payments/webhooks/apple", () => {
   test("verifies, records, projects, and reports what changed", async () => {
-    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, user("ada"), { now: NOW });
     const response = await request(makeApp(), "POST", "/payments/webhooks/apple", {
       body: { signedPayload: await notification() },
     });
@@ -1056,8 +1086,8 @@ describe("POST /payments/webhooks/apple", () => {
 
     const rows = await purchases();
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ userId: "ada", productId: "pro_monthly", status: "active" });
-    expect((await entitlements())[0]).toMatchObject({ userId: "ada", entitlement: "pro", active: 1 });
+    expect(rows[0]).toMatchObject({ ...user("ada"), productId: "pro_monthly", status: "active" });
+    expect((await entitlements())[0]).toMatchObject({ ...user("ada"), entitlement: "pro", active: 1 });
 
     const events = await webhookEvents();
     expect(events).toHaveLength(1);
@@ -1084,11 +1114,11 @@ describe("POST /payments/webhooks/apple", () => {
       body: { signedPayload: await notification() },
     });
     expect(response.status).toBe(200);
-    expect((await purchases()).every((row) => row.userId === "ada")).toBe(true);
+    expect((await purchases()).every((row) => row.subjectId === "ada")).toBe(true);
   });
 
   test("a redelivery is recognized rather than reprocessed", async () => {
-    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, user("ada"), { now: NOW });
     const app = makeApp();
     const signed = await notification();
     expect(
@@ -1109,7 +1139,7 @@ describe("POST /payments/webhooks/apple", () => {
   test("a stale event arriving after a newer one does not revoke a paying subscriber", async () => {
     // Out-of-order delivery, end to end through the route. Apple does not guarantee delivery order, and
     // last-write-wins here would expire a subscription that had just renewed.
-    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, user("ada"), { now: NOW });
     const app = makeApp();
     await request(app, "POST", "/payments/webhooks/apple", { body: { signedPayload: await notification() } });
 
@@ -1138,7 +1168,7 @@ describe("POST /payments/webhooks/apple", () => {
     // Apple is retrying the card, so the entitlement must stand — and the date it stands to is on the renewal
     // info, not on the transaction. A projection reading only the transaction records the grace period and
     // clears the entitlement in the same commit.
-    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, user("ada"), { now: NOW });
     const lapsed = NOW.getTime() - 86_400_000;
     const graceEnd = NOW.getTime() + 5 * 86_400_000;
     const response = await request(makeApp(), "POST", "/payments/webhooks/apple", {
@@ -1158,7 +1188,7 @@ describe("POST /payments/webhooks/apple", () => {
   });
 
   test("a refund revokes the entitlement", async () => {
-    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, user("ada"), { now: NOW });
     const app = makeApp();
     await request(app, "POST", "/payments/webhooks/apple", { body: { signedPayload: await notification() } });
     await request(app, "POST", "/payments/webhooks/apple", {
@@ -1171,7 +1201,7 @@ describe("POST /payments/webhooks/apple", () => {
   test("a sandbox notification against a production deployment is acknowledged, recorded, and grants nothing", async () => {
     // Authentic but inapplicable. Answering 5xx would make Apple retry something that refuses identically every
     // time; the recorded error is what makes it visible instead.
-    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, user("ada"), { now: NOW });
     const response = await request(makeApp(), "POST", "/payments/webhooks/apple", {
       body: { signedPayload: await notification(subscribedSandbox) },
     });
@@ -1191,7 +1221,7 @@ describe("POST /payments/webhooks/apple", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ received: true, projected: false });
     expect(await purchases()).toEqual([]);
-    expect((await webhookEvents())[0]?.error).toContain("no Pithy user");
+    expect((await webhookEvents())[0]?.error).toContain("no subject could be resolved");
     expect(actions()).toEqual(["payments/webhook_received:failure"]);
   });
 
@@ -1282,14 +1312,14 @@ describe("POST /payments/webhooks/apple", () => {
 
   test("the webhook needs no session — proving authenticity is the strategy", async () => {
     // Not a `bearer` route: Apple has no Pithy session. An authenticated caller gets no more and no less.
-    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, user("ada"), { now: NOW });
     const response = await request(makeApp(), "POST", "/payments/webhooks/apple", {
       user: "grace",
       body: { signedPayload: await notification() },
     });
     expect(response.status).toBe(200);
     // The purchase belongs to the account link, not to whoever happened to be signed in.
-    expect((await purchases())[0]?.userId).toBe("ada");
+    expect((await purchases())[0]?.subjectId).toBe("ada");
   });
 
   test("a rail with no provisioned credentials is 404 before any signature work", async () => {
@@ -1305,7 +1335,7 @@ describe("POST /payments/webhooks/apple", () => {
     // The guard reads the exact received bytes to check the signature. Reading them off `c.req.raw` would
     // consume the stream and leave the validator with nothing, which would surface as a 400 on a valid
     // notification — so a 200 here is the assertion.
-    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, user("ada"), { now: NOW });
     const response = await request(makeApp(), "POST", "/payments/webhooks/apple", {
       body: { signedPayload: await notification() },
     });
@@ -1313,7 +1343,7 @@ describe("POST /payments/webhooks/apple", () => {
   });
 
   test("no webhook response carries a credential", async () => {
-    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, user("ada"), { now: NOW });
     const response = await request(makeApp(), "POST", "/payments/webhooks/apple", {
       body: { signedPayload: await notification() },
     });
@@ -1349,7 +1379,7 @@ describe("POST /payments/webhooks/google", () => {
   test("verifies the push token, resolves the pointer at Play, and projects what Play said", async () => {
     // The whole rail end to end: an OIDC token in the header, a base64 pointer in the body, a Play lookup, and a
     // purchase row that says what Play reported rather than what the notification implied.
-    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, user("ada"), { now: NOW });
     const response = await push(withSubscription(), rtdnRenewed);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ received: true, projected: true, outcome: "created" });
@@ -1358,7 +1388,7 @@ describe("POST /payments/webhooks/google", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       rail: "google",
-      userId: "ada",
+      ...user("ada"),
       productId: "pro_monthly",
       status: "active",
       environment: "production",
@@ -1366,13 +1396,13 @@ describe("POST /payments/webhooks/google", () => {
       providerTransactionId: "GPA.3311-8452-9910-77301..0",
       originalTransactionId: rtdnRenewed.subscriptionNotification.purchaseToken,
     });
-    expect((await entitlements())[0]).toMatchObject({ userId: "ada", entitlement: "pro", active: 1 });
+    expect((await entitlements())[0]).toMatchObject({ ...user("ada"), entitlement: "pro", active: 1 });
     expect(actions()).toEqual(["payments/webhook_received:success"]);
   });
 
   test("the provider event time is Google's, not ours", async () => {
     // The monotonic write rule compares provider clocks, and Pub/Sub does not deliver in order.
-    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, user("ada"), { now: NOW });
     await push(withSubscription(), rtdnRenewed);
     expect((await purchases())[0]?.providerEventAt).toBe(Number(rtdnRenewed.eventTimeMillis));
   });
@@ -1435,7 +1465,7 @@ describe("POST /payments/webhooks/google", () => {
   test("a redelivery is recognized rather than reprocessed", async () => {
     // Pub/Sub delivers at-least-once and keeps the message id across redeliveries, which is what makes it the
     // dedupe key.
-    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, user("ada"), { now: NOW });
     const app = withSubscription();
     expect(await (await push(app, rtdnRenewed, { messageId: "m-42" })).json()).toEqual({
       received: true,
@@ -1452,7 +1482,7 @@ describe("POST /payments/webhooks/google", () => {
   test("a revoked subscription is projected as revoked, not as a lapse", async () => {
     // Play reports a revoked subscription as EXPIRED, so without the notification type this refund would read as
     // an ordinary expiry and nothing downstream could tell that money went back.
-    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, user("ada"), { now: NOW });
     const app = makeApp(CATALOG, {
       play: { subscription: { ...playSubscription, subscriptionState: "SUBSCRIPTION_STATE_EXPIRED" } },
     });
@@ -1464,7 +1494,7 @@ describe("POST /payments/webhooks/google", () => {
   });
 
   test("a one-time notification resolves through the products endpoint", async () => {
-    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, user("ada"), { now: NOW });
     const response = await push(makeApp(CATALOG, { play: { product: playProduct } }), rtdnOneTime);
     expect(response.status).toBe(200);
     expect((await purchases())[0]).toMatchObject({
@@ -1479,7 +1509,7 @@ describe("POST /payments/webhooks/google", () => {
   test("a test purchase against a production deployment is acknowledged and grants nothing", async () => {
     // Sandbox isolation for the Google rail. Play marks a licence-test subscription with `testPurchase`, and the
     // writer refuses it — a 5xx would only make Pub/Sub retry something that refuses identically every time.
-    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, user("ada"), { now: NOW });
     const response = await push(withSubscription({ ...playSubscription, testPurchase: {} }), rtdnRenewed);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ received: true, projected: false });
@@ -1525,7 +1555,7 @@ describe("POST /payments/webhooks/google", () => {
         rail: "google",
         providerTransactionId: order,
         providerProductId: "remove_ads",
-        userId: "ada",
+        ...user("ada"),
         status: "active",
         environment: "production",
         purchasedAt: new Date(NOW.getTime() - 86_400_000),
@@ -1565,7 +1595,7 @@ describe("POST /payments/webhooks/google", () => {
   test("an unreachable Play API is a 503, so Pub/Sub redelivers", async () => {
     // The one failure that must not be acknowledged. Answering 200 to a Play outage would drop a renewal for
     // good; a 503 leaves the delivery outstanding and Pub/Sub brings it back.
-    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, user("ada"), { now: NOW });
     const response = await push(makeApp(CATALOG, { play: { status: 503 } }), rtdnRenewed);
     expect(response.status).toBe(503);
     expect(await errorCode(response)).toBe("payments/provider_unavailable");
@@ -1584,7 +1614,7 @@ describe("POST /payments/webhooks/google", () => {
     const response = await push(withSubscription(), rtdnRenewed);
     expect(response.status).toBe(200);
     expect(await purchases()).toEqual([]);
-    expect((await webhookEvents())[0]?.error).toContain("no Pithy user");
+    expect((await webhookEvents())[0]?.error).toContain("no subject could be resolved");
   });
 
   test("resolves the owner through a purchase already projected, with no account link", async () => {
@@ -1597,7 +1627,7 @@ describe("POST /payments/webhooks/google", () => {
     });
     await db().deleteFrom("pithyPaymentsProviderAccounts").execute();
     await push(app, rtdnRenewed);
-    expect((await purchases()).every((row) => row.userId === "ada")).toBe(true);
+    expect((await purchases()).every((row) => row.subjectId === "ada")).toBe(true);
   });
 
   test("a body that is not a Pub/Sub push is 401 — the guard decodes it before the validator", async () => {
@@ -1610,7 +1640,7 @@ describe("POST /payments/webhooks/google", () => {
   });
 
   test("no response carries a credential or a purchase token", async () => {
-    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, user("ada"), { now: NOW });
     const response = await push(withSubscription(), rtdnRenewed);
     const body = JSON.stringify(await response.json());
     expect(body).not.toContain(serviceAccountKey.pem);
@@ -1620,6 +1650,7 @@ describe("POST /payments/webhooks/google", () => {
   test("a rail that is off in config is a 404 before any token work", async () => {
     const app = makeApp(
       {
+        billingSubject: "user",
         rails: { apple: true },
         products: {
           pro_monthly: {
@@ -1657,7 +1688,7 @@ describe("POST /payments/purchases, on the Google rail", () => {
     });
     // The account link is written from Play's own identifier, so the next notification is not orphaned.
     const links = await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute();
-    expect(links[0]).toMatchObject({ rail: "google", providerAccountId: GOOGLE_ACCOUNT, userId: "ada" });
+    expect(links[0]).toMatchObject({ rail: "google", providerAccountId: GOOGLE_ACCOUNT, ...user("ada") });
   });
 
   test("a product id the token does not belong to is refused by Play, not believed", async () => {
@@ -1698,7 +1729,7 @@ describe("POST /payments/purchases, on the Google rail", () => {
     const stolen = await request(app, "POST", "/payments/purchases", { user: "grace", body });
     expect(stolen.status).toBe(409);
     expect(await errorCode(stolen)).toBe("payments/receipt_already_owned");
-    expect((await purchases())[0]?.userId).toBe("ada");
+    expect((await purchases())[0]?.subjectId).toBe("ada");
   });
 
   test("no audit event carries the purchase token", async () => {
@@ -1719,6 +1750,38 @@ const PORTAL_SESSION = { id: "bps_1Pithy", object: "billing_portal.session", url
 
 /** JSON imports are shared and frozen; a case that bends a nested field works on its own copy. */
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+/**
+ * One Stripe event carrying the account reference this deployment would really have stamped.
+ *
+ * **The reference is stated here rather than read out of the fixture**, and the reason is what this suite
+ * is for. A route test asks what the *route* does with a reference a store echoed back; the fixture's own
+ * spelling is the rail suite's subject, in `rails/stripe/objects.test.ts`. Stating it means these cases
+ * cannot pass or fail on somebody else's JSON, and it means the value is visible beside the assertion that
+ * depends on it — `encodeSubjectReference(user("ada"))`, the pair, exactly as `POST {base}/checkout` writes
+ * it into `client_reference_id` and into the metadata copy Stripe returns when it drops that field.
+ *
+ * A bare id is a different shape and has its own case: it decodes to nobody, and the delivery orphans.
+ */
+function withReference<T extends { data: { object: object } }>(event: T, subject: PaymentsSubject = user("ada")): T {
+  const cloned = copy(event);
+  const object = cloned.data.object as Record<string, unknown>;
+  const reference = encodeSubjectReference(subject);
+  if ("client_reference_id" in object) object.client_reference_id = reference;
+  const metadata = object.metadata;
+  if (metadata !== null && typeof metadata === "object" && "pithy_account_reference" in metadata) {
+    (metadata as Record<string, unknown>).pithy_account_reference = reference;
+  }
+  return cloned;
+}
+
+/** The Stripe fixtures, each carrying the encoded subject a Pithy checkout stamps. See {@link withReference}. */
+const stripeSessionSubscription = withReference(rawSessionSubscription);
+const stripeSessionPayment = withReference(rawSessionPayment);
+const stripeSubscriptionCreated = withReference(rawSubscriptionCreated);
+const stripeSubscriptionCanceled = withReference(rawSubscriptionCanceled);
+const stripeSubscriptionDeleted = withReference(rawSubscriptionDeleted);
+const chargeRefunded = withReference(rawChargeRefunded);
 
 /** One event fixture with fields of its object replaced — the shape every negative Stripe case needs. */
 function withObject<T extends { data: { object: object } }>(event: T, overrides: Record<string, unknown>) {
@@ -1761,7 +1824,7 @@ describe("POST /payments/webhooks/stripe", () => {
     const rows = await purchases();
     expect(rows[0]).toMatchObject({
       rail: "stripe",
-      userId: "ada",
+      ...user("ada"),
       productId: "pro_monthly",
       status: "active",
       environment: "production",
@@ -1771,9 +1834,42 @@ describe("POST /payments/webhooks/stripe", () => {
       amountMinor: 999,
       currency: "usd",
     });
-    expect((await entitlements())[0]).toMatchObject({ userId: "ada", entitlement: "pro", active: 1 });
+    expect((await entitlements())[0]).toMatchObject({ ...user("ada"), entitlement: "pro", active: 1 });
     const links = await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute();
-    expect(links[0]).toMatchObject({ rail: "stripe", providerAccountId: STRIPE_CUSTOMER, userId: "ada" });
+    expect(links[0]).toMatchObject({ rail: "stripe", providerAccountId: STRIPE_CUSTOMER, ...user("ada") });
+  });
+
+  test("a bare id where the reference should be orphans the delivery, and binds nobody", async () => {
+    // **The shape every pre-subject client sent**, and the one guess this whole design exists to refuse. A
+    // lenient decoder would read `ada` as a user, attribute the purchase to whoever holds that id, and
+    // write a permanent `(rail, providerAccountId)` link naming them — which never rebinds, so there would
+    // be nothing to undo it with. The value is bytes from a store: it decodes or it names nobody.
+    //
+    // Orphaned rather than refused, because the delivery is authentic and Stripe would redeliver a non-2xx
+    // for days to no purpose. The row is what makes it visible and replayable once a link arrives.
+    const bare = withObject(stripeSubscriptionCreated, { metadata: { pithy_account_reference: "ada" } });
+    const response = await stripeHook(makeApp(), bare);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ received: true, projected: false });
+    expect(await purchases()).toEqual([]);
+    expect(await entitlements()).toEqual([]);
+    // No link, which is the half that would have been permanent.
+    expect(await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute()).toEqual([]);
+    // And the marker the repair sweep looks for, so this is repairable rather than merely lost.
+    expect((await webhookEvents())[0]?.error).toContain("no subject could be resolved");
+  });
+
+  test("a reference naming a kind this build does not know orphans in the same way", async () => {
+    // The other half of a strict decoder. `tenant:acme` is well-formed and means nothing here, so it is
+    // treated exactly as the bare id is — never trimmed to its id half, which would attribute the purchase
+    // to whichever user or organization happens to be called `acme`.
+    const unknown = withObject(stripeSubscriptionCreated, { metadata: { pithy_account_reference: "tenant:acme" } });
+    const response = await stripeHook(makeApp(), unknown);
+
+    expect(await response.json()).toEqual({ received: true, projected: false });
+    expect(await purchases()).toEqual([]);
+    expect(await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute()).toEqual([]);
   });
 
   test("a completed checkout binds the customer even though it projects nothing", async () => {
@@ -1791,7 +1887,7 @@ describe("POST /payments/webhooks/stripe", () => {
       projected: true,
       outcome: "created",
     });
-    expect((await purchases())[0]?.userId).toBe("ada");
+    expect((await purchases())[0]?.subjectId).toBe("ada");
   });
 
   test("a one-time purchase is keyed on its payment intent, and a refund lands on the same row", async () => {
@@ -1903,6 +1999,7 @@ describe("POST /payments/webhooks/stripe", () => {
 
   test("a rail that is off in config is a 404 before any signature work", async () => {
     const app = makeApp({
+      billingSubject: "user",
       rails: { apple: true },
       products: {
         pro_monthly: {
@@ -1947,7 +2044,7 @@ describe("POST /payments/checkout", () => {
     // account; a client-named price could buy Pro for the price of a coin pack.
     await request(app(), "POST", "/payments/checkout", { user: "ada", body: { productId: "pro_monthly" } });
     const sent = lastStripeForm();
-    expect(sent).toContain("client_reference_id=ada");
+    expect(sent).toContain(`client_reference_id=${encodeSubjectReference(user("ada"))}`);
     expect(sent).toContain("line_items[0][price]=price_1Abc");
     expect(sent).toContain("mode=subscription");
     expect(sent).toContain("success_url=https://acme.example/thanks?session={CHECKOUT_SESSION_ID}");
@@ -1961,14 +2058,19 @@ describe("POST /payments/checkout", () => {
       body: {
         productId: "coins_100",
         priceId: "price_1Abc",
+        // The two shapes a caller would reach for to name somebody else: the old id field, and the pair.
+        // Neither is on `CheckoutRequest`, so both are dropped before the handler sees them — and the
+        // reference Stripe is handed is the one the seam resolved.
         userId: "grace",
+        subjectType: "organization",
+        subjectId: "grace",
         successUrl: "https://evil.example/thanks",
         client_reference_id: "grace",
       },
     });
     const sent = lastStripeForm();
     expect(sent).toContain("line_items[0][price]=price_1Coins");
-    expect(sent).toContain("client_reference_id=ada");
+    expect(sent).toContain(`client_reference_id=${encodeSubjectReference(user("ada"))}`);
     expect(sent).not.toContain("evil.example");
     expect(sent).not.toContain("grace");
   });
@@ -1981,7 +2083,7 @@ describe("POST /payments/checkout", () => {
 
   test("reuses the Stripe customer this buyer already has", async () => {
     // One buyer, one customer — otherwise their billing portal would show only the purchase that made it.
-    await linkProviderAccount(env.DB, "stripe", STRIPE_CUSTOMER, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "stripe", STRIPE_CUSTOMER, user("ada"), { now: NOW });
     await request(app(), "POST", "/payments/checkout", { user: "ada", body: { productId: "pro_monthly" } });
     expect(lastStripeForm()).toContain(`customer=${STRIPE_CUSTOMER}`);
   });
@@ -2027,6 +2129,7 @@ describe("POST /payments/checkout", () => {
   test("Stripe off in config reads as absent, not as broken", async () => {
     const noStripe = makeApp(
       {
+        billingSubject: "user",
         rails: { apple: true },
         products: {
           pro_monthly: {
@@ -2070,7 +2173,7 @@ describe("POST /payments/portal", () => {
   const app = () => makeApp(CATALOG, { stripe: { portal: PORTAL_SESSION } });
 
   test("opens a portal for the caller's own store account", async () => {
-    await linkProviderAccount(env.DB, "stripe", STRIPE_CUSTOMER, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "stripe", STRIPE_CUSTOMER, user("ada"), { now: NOW });
     const response = await request(app(), "POST", "/payments/portal", { user: "ada" });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ url: PORTAL_SESSION.url });
@@ -2082,8 +2185,8 @@ describe("POST /payments/portal", () => {
   test("the customer comes from the account map, so nobody can open somebody else's billing", async () => {
     // The route takes no body at all. There is exactly one customer a caller may manage, and it is the one their
     // own purchases are filed under.
-    await linkProviderAccount(env.DB, "stripe", STRIPE_CUSTOMER, "ada", { now: NOW });
-    await linkProviderAccount(env.DB, "stripe", "cus_PithyGrace", "grace", { now: NOW });
+    await linkProviderAccount(env.DB, "stripe", STRIPE_CUSTOMER, user("ada"), { now: NOW });
+    await linkProviderAccount(env.DB, "stripe", "cus_PithyGrace", user("grace"), { now: NOW });
     await request(app(), "POST", "/payments/portal", { user: "grace", body: { customer: STRIPE_CUSTOMER } });
     expect(lastStripeForm()).toContain("customer=cus_PithyGrace");
     expect(lastStripeForm()).not.toContain(STRIPE_CUSTOMER);
@@ -2101,7 +2204,7 @@ describe("POST /payments/portal", () => {
   });
 
   test("an unconfigured Billing Portal reaches the caller as an unavailable payment method", async () => {
-    await linkProviderAccount(env.DB, "stripe", STRIPE_CUSTOMER, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "stripe", STRIPE_CUSTOMER, user("ada"), { now: NOW });
     const response = await request(makeApp(CATALOG, { stripe: { status: 400 } }), "POST", "/payments/portal", {
       user: "ada",
     });
@@ -2133,7 +2236,7 @@ describe("POST /payments/purchases, on the Stripe rail", () => {
       entitlements: [{ key: "pro", granted: true }],
     });
     const links = await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute();
-    expect(links[0]).toMatchObject({ providerAccountId: STRIPE_CUSTOMER, userId: "ada" });
+    expect(links[0]).toMatchObject({ providerAccountId: STRIPE_CUSTOMER, ...user("ada") });
   });
 
   test("another user submitting the same session is a 409, and the row does not move", async () => {
@@ -2145,7 +2248,7 @@ describe("POST /payments/purchases, on the Stripe rail", () => {
     const stolen = await request(app, "POST", "/payments/purchases", { user: "grace", body });
     expect(stolen.status).toBe(409);
     expect(await errorCode(stolen)).toBe("payments/receipt_already_owned");
-    expect((await purchases())[0]?.userId).toBe("ada");
+    expect((await purchases())[0]?.subjectId).toBe("ada");
     expect(actions()).toEqual(["payments/purchase_verified:success", "payments/purchase_verified:denied"]);
   });
 
@@ -2295,7 +2398,15 @@ const CLAWBACK_CATALOG: PaymentsConfigInput = {
 };
 
 const ledger = () => openLedger(env.DB, () => NOW.getTime());
-const coinBalance = async (userId: string) => (await ledger().balance(userId, "coins")).balance;
+/**
+ * The coin balance one holder carries.
+ *
+ * Through `ledgerAccountId`, never a bare id: a ledger account is addressed by the encoded subject, so a
+ * user and an organization sharing an id keep separate balances — and a test that read the bare id would
+ * pass against the one arrangement that must never happen.
+ */
+const coinBalance = async (subject: PaymentsSubject) =>
+  (await ledger().balance(ledgerAccountId(subject), "coins")).balance;
 
 /** A signed Apple refund for the coin pack, dated after the charge so the projection accepts it. */
 const coinsRefund = () =>
@@ -2321,7 +2432,7 @@ describe("ledger fulfillment", () => {
       body: { rail: "apple", receipt: await signJws(oneTimeCharge.transaction, chain) },
     });
     expect(response.status).toBe(200);
-    expect(await coinBalance("ada")).toBe(100);
+    expect(await coinBalance(user("ada"))).toBe(100);
   });
 
   test("the same purchase submitted twice credits once", async () => {
@@ -2329,12 +2440,12 @@ describe("ledger fulfillment", () => {
     const signed = await signJws(oneTimeCharge.transaction, chain);
     await request(app, "POST", "/payments/purchases", { user: "ada", body: { rail: "apple", receipt: signed } });
     await request(app, "POST", "/payments/purchases", { user: "ada", body: { rail: "apple", receipt: signed } });
-    expect(await coinBalance("ada")).toBe(100);
+    expect(await coinBalance(user("ada"))).toBe(100);
   });
 
   test("the webhook path credits too, and interleaving it with the submission still credits once", async () => {
     const app = makeApp();
-    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, user("ada"), { now: NOW });
     await request(app, "POST", "/payments/webhooks/apple", {
       body: { signedPayload: await signNotification(oneTimeCharge, chain) },
     });
@@ -2342,7 +2453,7 @@ describe("ledger fulfillment", () => {
       user: "ada",
       body: { rail: "apple", receipt: await signJws(oneTimeCharge.transaction, chain) },
     });
-    expect(await coinBalance("ada")).toBe(100);
+    expect(await coinBalance(user("ada"))).toBe(100);
   });
 
   test("a product that grants no balance never opens the ledger", async () => {
@@ -2369,7 +2480,7 @@ describe("ledger fulfillment", () => {
     expect(response.status).toBe(200);
     expect((await purchases())[0]?.status).toBe("refunded");
     // Default off. The user may have spent it, and a store's refund is not automatically a fraud finding.
-    expect(await coinBalance("ada")).toBe(100);
+    expect(await coinBalance(user("ada"))).toBe(100);
   });
 
   test("a clawback-enabled catalog reverses the credit on the refund", async () => {
@@ -2378,13 +2489,13 @@ describe("ledger fulfillment", () => {
       user: "ada",
       body: { rail: "apple", receipt: await signJws(oneTimeCharge.transaction, chain) },
     });
-    expect(await coinBalance("ada")).toBe(100);
+    expect(await coinBalance(user("ada"))).toBe(100);
 
     const response = await request(app, "POST", "/payments/webhooks/apple", {
       body: { signedPayload: await coinsRefund() },
     });
     expect(response.status).toBe(200);
-    expect(await coinBalance("ada")).toBe(0);
+    expect(await coinBalance(user("ada"))).toBe(0);
   });
 
   test("a spent balance refuses the clawback, the refund still lands, and the shortfall is recorded", async () => {
@@ -2393,7 +2504,7 @@ describe("ledger fulfillment", () => {
       user: "ada",
       body: { rail: "apple", receipt: await signJws(oneTimeCharge.transaction, chain) },
     });
-    await ledger().debit("ada", "coins", 70, "game:spend:1");
+    await ledger().debit(ledgerAccountId(user("ada")), "coins", 70, "game:spend:1");
     emitted = [];
 
     const response = await request(app, "POST", "/payments/webhooks/apple", {
@@ -2404,11 +2515,11 @@ describe("ledger fulfillment", () => {
     expect(response.status).toBe(200);
     expect((await purchases())[0]?.status).toBe("refunded");
     // Neither a negative balance nor a silent write-off.
-    expect(await coinBalance("ada")).toBe(30);
+    expect(await coinBalance(user("ada"))).toBe(30);
     const failure = emitted.find((event) => event.action === PaymentsAuditActions.clawbackFailed);
     expect(failure?.severity).toBe("critical");
     expect(failure?.metadata).toMatchObject({
-      userId: "ada",
+      ...user("ada"),
       currency: "coins",
       amount: 100,
       reason: "payments/clawback_failed",
@@ -2426,7 +2537,7 @@ describe("ledger fulfillment", () => {
  */
 describe("POST /payments/entitlements/grant", () => {
   const path = "/payments/entitlements/grant";
-  const body = { userId: "grace", entitlement: "pro" };
+  const body = { ...user("grace"), entitlement: "pro" };
   /** A token minted for this route's own operation, by the support tool. */
   const granting = { controlPlane: { scope: PAYMENTS_ENTITLEMENT_GRANT_SCOPE, subject: "support-1" } };
 
@@ -2493,7 +2604,7 @@ describe("POST /payments/entitlements/grant", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ entitlement: { key: "pro", granted: true, expiresAt: null } });
     expect(await entitlements()).toMatchObject([
-      { userId: "grace", entitlement: "pro", active: 1, sourcePurchaseId: null },
+      { ...user("grace"), entitlement: "pro", active: 1, sourcePurchaseId: null },
     ]);
 
     const recorded = emitted.find((event) => event.action === PaymentsAuditActions.entitlementGranted);
@@ -2506,7 +2617,9 @@ describe("POST /payments/entitlements/grant", () => {
     expect(recorded?.sessionId).toBeUndefined();
     expect(recorded?.metadata).toMatchObject({
       connectionId: CONNECTION_ID,
-      userId: "grace",
+      // Two keys, never a joined reference: a trail is queried by equality on a column.
+      subjectType: "user",
+      subjectId: "grace",
       entitlement: "pro",
       expiresAt: null,
     });
@@ -2525,7 +2638,7 @@ describe("POST /payments/entitlements/grant", () => {
   test("refuses an entitlement key the seam would never accept", async () => {
     const response = await request(makeApp(), "POST", path, {
       ...granting,
-      body: { userId: "grace", entitlement: "Pro Monthly!" },
+      body: { ...user("grace"), entitlement: "Pro Monthly!" },
     });
     expect(response.status).toBe(400);
     expect(await errorCode(response)).toBe("validation/invalid_input");
@@ -2537,7 +2650,7 @@ describe("POST /payments/entitlements/grant", () => {
     // caller sent it; the *defined set* is not, because reading what a project sells is its own scope.
     const response = await request(makeApp(), "POST", path, {
       ...granting,
-      body: { userId: "grace", entitlement: "pr" },
+      body: { ...user("grace"), entitlement: "pr" },
     });
     expect(response.status).toBe(400);
     expect(await errorCode(response)).toBe("payments/entitlement_not_in_catalog");
@@ -2548,7 +2661,7 @@ describe("POST /payments/entitlements/grant", () => {
     // The benign path was recorded and the suspicious one was not. A credential scoped only to grant could
     // otherwise enumerate the entitlement vocabulary one key at a time — 400 for a miss, 200 for a hit —
     // and leave the customer nothing to read afterwards.
-    await request(makeApp(), "POST", path, { ...granting, body: { userId: "grace", entitlement: "pr" } });
+    await request(makeApp(), "POST", path, { ...granting, body: { ...user("grace"), entitlement: "pr" } });
 
     const denied = emitted.filter(
       (event) => event.action === "payments/entitlement_granted" && event.outcome === "denied",
@@ -2562,7 +2675,7 @@ describe("POST /payments/entitlements/grant", () => {
     // The key is safe: `EntitlementKey` bounded it before the handler ran, and it is the only field that
     // makes a run of refusals legible. The defined set is a separate disclosure behind its own scope, and
     // it must not be copied into a queryable, long-lived trail.
-    await request(makeApp(), "POST", path, { ...granting, body: { userId: "grace", entitlement: "pr" } });
+    await request(makeApp(), "POST", path, { ...granting, body: { ...user("grace"), entitlement: "pr" } });
 
     const denied = emitted.find(
       (event) => event.action === "payments/entitlement_granted" && event.outcome === "denied",
@@ -2576,7 +2689,7 @@ describe("POST /payments/entitlements/grant", () => {
     const app = makeApp(CATALOG, { emit: () => Promise.reject(new Error("audit store down")) });
     const response = await request(app, "POST", path, {
       ...granting,
-      body: { userId: "grace", entitlement: "pr" },
+      body: { ...user("grace"), entitlement: "pr" },
     });
     expect(response.status).toBe(400);
     expect(await errorCode(response)).toBe("payments/entitlement_not_in_catalog");
@@ -2586,7 +2699,7 @@ describe("POST /payments/entitlements/grant", () => {
   test("the refusal names the key and does not enumerate the catalog", async () => {
     const response = await request(makeApp(), "POST", path, {
       ...granting,
-      body: { userId: "grace", entitlement: "pr" },
+      body: { ...user("grace"), entitlement: "pr" },
     });
     const body = await response.json<{ error: { message: string; action?: string; detail?: string } }>();
     expect(body.error.message).toContain("pr");
@@ -2602,7 +2715,7 @@ describe("POST /payments/entitlements/grant", () => {
     const app = makeApp({ ...CATALOG, manualEntitlements: ["founder"] });
     const response = await request(app, "POST", path, {
       ...granting,
-      body: { userId: "grace", entitlement: "founder" },
+      body: { ...user("grace"), entitlement: "founder" },
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ entitlement: { key: "founder", granted: true, expiresAt: null } });
@@ -2612,7 +2725,7 @@ describe("POST /payments/entitlements/grant", () => {
     const app = makeApp({ ...CATALOG, manualEntitlements: ["founder"] });
     const response = await request(app, "POST", path, {
       ...granting,
-      body: { userId: "grace", entitlement: "foudner" },
+      body: { ...user("grace"), entitlement: "foudner" },
     });
     expect(response.status).toBe(400);
     expect(await entitlements()).toEqual([]);
@@ -2621,9 +2734,9 @@ describe("POST /payments/entitlements/grant", () => {
   test("an empty catalog grants nothing at all", async () => {
     // Nothing is sold and nothing is declared, so there is no key this project defines. A grant that
     // succeeded here would be writing a row against a vocabulary that does not exist.
-    const response = await request(makeApp({}), "POST", path, {
+    const response = await request(makeApp({ billingSubject: "user" }), "POST", path, {
       ...granting,
-      body: { userId: "grace", entitlement: "pro" },
+      body: { ...user("grace"), entitlement: "pro" },
     });
     expect(response.status).toBe(400);
     expect(await errorCode(response)).toBe("payments/entitlement_not_in_catalog");
@@ -2651,7 +2764,7 @@ describe("POST /payments/entitlements/grant", () => {
 
 describe("POST /payments/entitlements/revoke", () => {
   const path = "/payments/entitlements/revoke";
-  const body = { userId: "ada", entitlement: "pro" };
+  const body = { ...user("ada"), entitlement: "pro" };
   const revoking = { controlPlane: { scope: PAYMENTS_ENTITLEMENT_REVOKE_SCOPE, subject: "support-1" } };
 
   test("401 with no credential, 403 with the seam uncomposed", async () => {
@@ -2701,7 +2814,8 @@ describe("POST /payments/entitlements/revoke", () => {
     expect(recorded?.actorId).toBe("support-1");
     expect(recorded?.metadata).toMatchObject({
       connectionId: CONNECTION_ID,
-      userId: "ada",
+      subjectType: "user",
+      subjectId: "ada",
       entitlement: "pro",
     });
   });
@@ -2712,7 +2826,7 @@ describe("POST /payments/entitlements/revoke", () => {
     // catalog edit irreversible for every account that already held it.
     const response = await request(makeApp(), "POST", path, {
       ...revoking,
-      body: { userId: "ada", entitlement: "retired_tier" },
+      body: { ...user("ada"), entitlement: "retired_tier" },
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ entitlement: { key: "retired_tier", granted: false, expiresAt: null } });
@@ -2720,10 +2834,194 @@ describe("POST /payments/entitlements/revoke", () => {
 
   test("is idempotent, and legal against an account that never held the key", async () => {
     const app = makeApp();
-    const options = { ...revoking, body: { userId: "grace", entitlement: "pro" } };
+    const options = { ...revoking, body: { ...user("grace"), entitlement: "pro" } };
     expect((await request(app, "POST", path, options)).status).toBe(200);
     expect((await request(app, "POST", path, options)).status).toBe(200);
     expect(await entitlements()).toHaveLength(1);
+  });
+});
+
+/**
+ * Organization billing, end to end — the mode this whole change exists for.
+ *
+ * **The capability never learns what an organization is.** It has no members table, no roles, and no
+ * business acquiring either: the adopter answers *which subject is this caller acting for* from its own
+ * session, and payments takes the pair and keys everything on it. So the fixture below is the whole of the
+ * integration — one function reading a header, standing in for the `session.activeOrganizationId` an
+ * adopter running Better Auth's `organization()` plugin would read.
+ *
+ * What has to be true, and is asserted rather than described: a purchase one employee submits belongs to
+ * the **company**, a colleague who bought nothing holds what the company bought, and a caller acting for
+ * nobody writes nothing and reads nothing — the read empty, the write refused, and neither of them quietly
+ * falling back to the person who happens to be signed in. That fallback is the half-migrated state the
+ * design exists to prevent: it turns a company's subscription into one employee's, invisibly, and the
+ * employee who leaves takes it with them.
+ */
+describe("billingSubject: organization", () => {
+  /** The catalog, billing companies. Everything else is this suite's Apple fixture, unchanged. */
+  const ORGANIZATION_CATALOG: PaymentsConfigInput = { ...CATALOG, billingSubject: "organization" };
+
+  /**
+   * The adopter's seam: one header, standing in for their session's active organization.
+   *
+   * `undefined` is a legitimate answer and not an error — a signed-in person with no company selected is
+   * exactly that, and it is the case the two refusals below are about.
+   */
+  const seam: PaymentsSubjectSeam = {
+    billingSubject: "organization",
+    resolveSubject: async (c) => {
+      const id = c.req.header("x-org");
+      return id === undefined || id === "" ? undefined : organization(id);
+    },
+  };
+
+  /** The same catalog with no resolver at all — what an adopter gets if they wire nothing. */
+  const unwired = (): ReturnType<typeof makeApp> => makeApp(ORGANIZATION_CATALOG);
+
+  const app = () => makeApp(ORGANIZATION_CATALOG, { subject: seam });
+
+  test("a purchase one employee submits belongs to the company, and their colleague holds it", async () => {
+    const composed = app();
+    const response = await request(composed, "POST", "/payments/purchases", {
+      user: "ada",
+      organization: "acme",
+      body: { rail: "apple", receipt: await receipt() },
+    });
+    expect(response.status).toBe(200);
+
+    // The row is the company's. Never Ada's — she pressed the button, she does not hold the plan.
+    expect((await purchases())[0]).toMatchObject(organization("acme"));
+    expect((await entitlements())[0]).toMatchObject({ ...organization("acme"), entitlement: "pro", active: 1 });
+
+    // The colleague who bought nothing, acting for the same company, holds what it bought. This is the
+    // whole point: no row was rewritten when he joined, and none will be when he leaves.
+    const colleague = await request(composed, "GET", "/payments/entitlements", { user: "grace", organization: "acme" });
+    expect(await colleague.json()).toEqual({
+      entitlements: [
+        { key: "pro", granted: true, expiresAt: new Date(didRenew.transaction.expiresDate).toISOString() },
+      ],
+    });
+
+    // And somebody at another company holds nothing, however signed in they are.
+    const stranger = await request(composed, "GET", "/payments/entitlements", { user: "ada", organization: "other" });
+    expect(await stranger.json()).toEqual({ entitlements: [] });
+  });
+
+  test("the person is the actor and the company is the holder, and the trail says both", async () => {
+    // `actorId` is who acted, because an organization does not press a button — somebody at it does, and
+    // "who did this" must answer with a name that can be asked about it. The holder rides in the metadata,
+    // as two keys rather than one joined string, because a trail is queried by equality on a column.
+    await request(app(), "POST", "/payments/purchases", {
+      user: "ada",
+      organization: "acme",
+      body: { rail: "apple", receipt: await receipt() },
+    });
+    const recorded = emitted.find((event) => event.action === PaymentsAuditActions.purchaseVerified);
+    expect(recorded?.actorType).toBe("user");
+    expect(recorded?.actorId).toBe("ada");
+    expect(recorded?.metadata).toMatchObject({ subjectType: "organization", subjectId: "acme" });
+  });
+
+  test("a caller acting for nobody is refused on a write, and never falls back to the signed-in user", async () => {
+    // 403 rather than 401: the caller is perfectly well authenticated and is simply not acting for any
+    // subject this project bills. The alternative — keying the row to `user:ada` — is the defect: the store
+    // charges, the webhook arrives for a holder nobody stamped, and the money is real while the entitlement
+    // is not.
+    const response = await request(app(), "POST", "/payments/purchases", {
+      user: "ada",
+      body: { rail: "apple", receipt: await receipt() },
+    });
+    expect(response.status).toBe(403);
+    expect(await errorCode(response)).toBe("payments/subject_unresolved");
+    expect(await purchases()).toEqual([]);
+    expect(await entitlements()).toEqual([]);
+  });
+
+  test("every write refuses the same way, and the reads answer empty rather than failing", async () => {
+    const composed = app();
+    for (const [path, body] of [
+      ["/payments/purchases", { rail: "apple", receipt: await receipt() }],
+      ["/payments/restore", { rail: "apple", receipts: [await receipt()] }],
+      ["/payments/checkout", { productId: "pro_monthly" }],
+      ["/payments/portal", undefined],
+    ] as const) {
+      const response = await request(composed, "POST", path, { user: "ada", ...(body ? { body } : {}) });
+      expect(response.status, path).toBe(403);
+      expect(await errorCode(response), path).toBe("payments/subject_unresolved");
+    }
+
+    // The reads take the other direction, deliberately. Holding nothing is what every gate in the kit
+    // already answers for somebody who has bought nothing, and a paywall must render the paywall rather
+    // than an error.
+    const entitled = await request(composed, "GET", "/payments/entitlements", { user: "ada" });
+    expect(entitled.status).toBe(200);
+    expect(await entitled.json()).toEqual({ entitlements: [] });
+    const pricing = await request(composed, "GET", "/payments/pricing", { user: "ada" });
+    expect(pricing.status).toBe(200);
+    expect(await pricing.json()).toEqual({ pricing: null, quotedFrom: null });
+  });
+
+  test("with no resolver wired at all, nothing resolves — loudly on a write, emptily on a read", async () => {
+    // There is deliberately no default under organization billing: a capability that guessed would key the
+    // company's plan to whoever logged in first. `payments()` refuses to compose this state at all; these
+    // routes still have to fail closed if anything ever reaches them.
+    const composed = unwired();
+    const write = await request(composed, "POST", "/payments/purchases", {
+      user: "ada",
+      organization: "acme",
+      body: { rail: "apple", receipt: await receipt() },
+    });
+    expect(write.status).toBe(403);
+    expect(await errorCode(write)).toBe("payments/subject_unresolved");
+    expect(await (await request(composed, "GET", "/payments/entitlements", { user: "ada" })).json()).toEqual({
+      entitlements: [],
+    });
+  });
+
+  test("a resolver answering the wrong kind resolves nobody — it is never half-trusted", async () => {
+    // One mode per project is the decision this capability is built on. A `user` subject under organization
+    // billing would write rows no read path returns and read rows no write path writes, and both halves are
+    // invisible until somebody is refused what they paid for. So it is refused, which leaves the caller
+    // unentitled — the direction every gate in the kit already fails.
+    const composed = makeApp(ORGANIZATION_CATALOG, {
+      subject: { billingSubject: "organization", resolveSubject: async () => user("ada") },
+    });
+    const response = await request(composed, "POST", "/payments/purchases", {
+      user: "ada",
+      body: { rail: "apple", receipt: await receipt() },
+    });
+    expect(response.status).toBe(403);
+    expect(await errorCode(response)).toBe("payments/subject_unresolved");
+    expect(await purchases()).toEqual([]);
+  });
+
+  test("a grant naming the kind this project does not bill is refused, and a revoke is not", async () => {
+    // The asymmetry is the same one the catalog check makes, and for the same reason. A comp written under
+    // the wrong kind is a row every read path steps straight past: the holder stays locked out and the
+    // table says otherwise, which is exactly the invisible failure #300 exists to prevent. A revoke stays
+    // legal under either kind, because `revokeEntitlement` takes no config — a `billingSubject` change must
+    // not strand rows somebody is still holding.
+    const composed = app();
+    const refused = await request(composed, "POST", "/payments/entitlements/grant", {
+      controlPlane: { scope: PAYMENTS_ENTITLEMENT_GRANT_SCOPE, subject: "support-1" },
+      body: { ...user("grace"), entitlement: "pro" },
+    });
+    expect(refused.status).toBe(400);
+    expect(await errorCode(refused)).toBe("validation/invalid_input");
+    expect(await entitlements()).toEqual([]);
+
+    const granted = await request(composed, "POST", "/payments/entitlements/grant", {
+      controlPlane: { scope: PAYMENTS_ENTITLEMENT_GRANT_SCOPE, subject: "support-1" },
+      body: { ...organization("acme"), entitlement: "pro" },
+    });
+    expect(granted.status).toBe(200);
+    expect((await entitlements())[0]).toMatchObject({ ...organization("acme"), entitlement: "pro", manual: 1 });
+
+    const revoked = await request(composed, "POST", "/payments/entitlements/revoke", {
+      controlPlane: { scope: PAYMENTS_ENTITLEMENT_REVOKE_SCOPE, subject: "support-1" },
+      body: { ...user("grace"), entitlement: "pro" },
+    });
+    expect(revoked.status).toBe(200);
   });
 });
 
@@ -2771,7 +3069,7 @@ describe("the exported response schemas against the live routes", () => {
       PaymentsEntitlementResponse,
       await request(app, "POST", "/payments/entitlements/grant", {
         controlPlane: { scope: PAYMENTS_ENTITLEMENT_GRANT_SCOPE },
-        body: { userId: "grace", entitlement: "pro", expiresAt: "2026-12-01T00:00:00.000Z" },
+        body: { ...user("grace"), entitlement: "pro", expiresAt: "2026-12-01T00:00:00.000Z" },
       }),
     );
     expect(granted.entitlement).toEqual({ key: "pro", granted: true, expiresAt: "2026-12-01T00:00:00.000Z" });
@@ -2782,7 +3080,7 @@ describe("the exported response schemas against the live routes", () => {
       PaymentsEntitlementResponse,
       await request(app, "POST", "/payments/entitlements/revoke", {
         controlPlane: { scope: PAYMENTS_ENTITLEMENT_REVOKE_SCOPE },
-        body: { userId: "grace", entitlement: "pro" },
+        body: { ...user("grace"), entitlement: "pro" },
       }),
     );
     expect(revoked.entitlement.granted).toBe(false);
@@ -2805,6 +3103,7 @@ describe("the exported response schemas against the live routes", () => {
  * Both are proved by constructing the case rather than by asserting the code would handle it.
  */
 const PADDLE_CATALOG: PaymentsConfigInput = {
+  billingSubject: "user",
   rails: { paddle: true },
   paddle: {
     clientToken: "test_1234567890abcdefghij",
@@ -2824,12 +3123,19 @@ const PADDLE_CATALOG: PaymentsConfigInput = {
   },
 };
 
-/** The `custom_data` a checkout this deployment created would carry, proof and all. */
-async function paddleStamp(userId: string, deployment: string): Promise<Record<string, string>> {
+/**
+ * The `custom_data` a checkout this deployment created would carry, proof and all.
+ *
+ * The stamped value is the **encoded subject**, because that is what `/payments/checkout` writes: one
+ * string for the store's one field, decoded on the way back by the same function. A bare id is a different
+ * shape, it decodes to nobody, and the case below proves what that costs.
+ */
+async function paddleStamp(subject: PaymentsSubject, deployment: string): Promise<Record<string, string>> {
+  const reference = encodeSubjectReference(subject);
   return {
-    pithy_user: userId,
+    pithy_user: reference,
     pithy_env: deployment,
-    pithy_ref_proof: await accountReferenceProof(userId, deployment, PADDLE_TEST_WEBHOOK_SECRET),
+    pithy_ref_proof: await accountReferenceProof(reference, deployment, PADDLE_TEST_WEBHOOK_SECRET),
   };
 }
 
@@ -2858,7 +3164,8 @@ async function paddleSubscriptionEvent(
       customer_id: overrides.customerId ?? PADDLE_CUSTOMER,
       items: [{ price: { id: PADDLE_PRICE }, status: "active" }],
       current_billing_period: { starts_at: "2026-08-12T09:00:00Z", ends_at: "2026-09-12T09:00:00Z" },
-      custom_data: overrides.custom ?? (await paddleStamp(overrides.user ?? "ada", overrides.deployment ?? "prod")),
+      custom_data:
+        overrides.custom ?? (await paddleStamp(user(overrides.user ?? "ada"), overrides.deployment ?? "prod")),
       created_at: "2026-08-12T09:00:00Z",
       updated_at: "2026-08-12T09:00:00Z",
     },
@@ -2902,7 +3209,7 @@ describe("POST /payments/webhooks/paddle", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       rail: "paddle",
-      userId: "ada",
+      ...user("ada"),
       productId: "pro_monthly",
       status: "active",
       // The account, not a payload field: Paddle Billing has no `mode` on a transaction, so a
@@ -2913,9 +3220,9 @@ describe("POST /payments/webhooks/paddle", () => {
       originalTransactionId: PADDLE_SUBSCRIPTION,
       role: "state",
     });
-    expect((await entitlements())[0]).toMatchObject({ userId: "ada", entitlement: "pro", active: 1 });
+    expect((await entitlements())[0]).toMatchObject({ ...user("ada"), entitlement: "pro", active: 1 });
     const links = await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute();
-    expect(links[0]).toMatchObject({ rail: "paddle", providerAccountId: PADDLE_CUSTOMER, userId: "ada" });
+    expect(links[0]).toMatchObject({ rail: "paddle", providerAccountId: PADDLE_CUSTOMER, ...user("ada") });
   });
 
   test("the same event delivered twice projects once — Paddle retries sixty times over three days", async () => {
@@ -3053,7 +3360,7 @@ describe("POST /payments/webhooks/paddle", () => {
     expect(genuine.status).toBe(200);
     const links = await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute();
     expect(links).toHaveLength(1);
-    expect(links[0]).toMatchObject({ userId: "ada" });
+    expect(links[0]).toMatchObject(user("ada"));
   });
 
   test("a credential-bearing delivery is recorded as its envelope, and the token never reaches D1", async () => {
@@ -3124,8 +3431,9 @@ describe("POST /payments/webhooks/paddle", () => {
 });
 
 describe("POST /payments/purchases — Paddle", () => {
-  /** The transaction Paddle answers a read with, stamped for a given user and deployment. */
-  async function transaction(userId: string, deployment = "prod") {
+  /** The transaction Paddle answers a read with, stamped for a given holder and deployment. */
+  async function transaction(subject: PaymentsSubject, deployment = "prod") {
+    const reference = encodeSubjectReference(subject);
     return {
       id: PADDLE_TRANSACTION,
       status: "completed",
@@ -3134,9 +3442,9 @@ describe("POST /payments/purchases — Paddle", () => {
       items: [{ price: { id: PADDLE_PRICE } }],
       details: { totals: { grand_total: "999", currency_code: "USD" } },
       custom_data: {
-        pithy_user: userId,
+        pithy_user: reference,
         pithy_env: deployment,
-        pithy_ref_proof: await accountReferenceProof(userId, deployment, PADDLE_TEST_WEBHOOK_SECRET),
+        pithy_ref_proof: await accountReferenceProof(reference, deployment, PADDLE_TEST_WEBHOOK_SECRET),
       },
       created_at: NOW.toISOString(),
     };
@@ -3163,7 +3471,7 @@ describe("POST /payments/purchases — Paddle", () => {
     // It also pins a seam that was silently missing: `verify` is handed the deployment alongside the
     // clock, because the ownership proof is keyed on it. A rail handed no deployment can prove nothing and
     // refuses every submission — which looked exactly like a working rail until somebody submitted one.
-    const app = makeApp(ONE_OFF, { paddle: { transaction: await transaction("ada") } });
+    const app = makeApp(ONE_OFF, { paddle: { transaction: await transaction(user("ada")) } });
     const response = await request(app, "POST", "/payments/purchases", {
       user: "ada",
       body: { rail: "paddle", receipt: PADDLE_TRANSACTION },
@@ -3172,14 +3480,14 @@ describe("POST /payments/purchases — Paddle", () => {
 
     const rows = await purchases();
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ rail: "paddle", userId: "ada", providerTransactionId: PADDLE_TRANSACTION });
+    expect(rows[0]).toMatchObject({ rail: "paddle", ...user("ada"), providerTransactionId: PADDLE_TRANSACTION });
     expect((await entitlements())[0]).toMatchObject({ entitlement: "pro", active: 1 });
   });
 
   test("a submission whose proven stamp names somebody else is refused before it projects", async () => {
     // The id is a pointer; the stamp is the authorization. A caller holding a `txn_…` that is not theirs
     // learns nothing and writes nothing.
-    const app = makeApp(ONE_OFF, { paddle: { transaction: await transaction("ada") } });
+    const app = makeApp(ONE_OFF, { paddle: { transaction: await transaction(user("ada")) } });
     const response = await request(app, "POST", "/payments/purchases", {
       user: "mallory",
       body: { rail: "paddle", receipt: PADDLE_TRANSACTION },
@@ -3190,7 +3498,10 @@ describe("POST /payments/purchases — Paddle", () => {
 
   test("a transaction carrying an unproven stamp is refused, however plausible it looks", async () => {
     // What `Paddle.Checkout.open` lets a browser write: the two values, and not the MAC.
-    const forged = { ...(await transaction("mallory")), custom_data: { pithy_user: "mallory", pithy_env: "prod" } };
+    const forged = {
+      ...(await transaction(user("mallory"))),
+      custom_data: { pithy_user: "user:mallory", pithy_env: "prod" },
+    };
     const app = makeApp(ONE_OFF, { paddle: { transaction: forged } });
     const response = await request(app, "POST", "/payments/purchases", {
       user: "mallory",
@@ -3200,11 +3511,11 @@ describe("POST /payments/purchases — Paddle", () => {
     expect(await purchases()).toHaveLength(0);
   });
 
-  /** The same transaction, stamped for `userId` with whatever proof a case wants beside it. */
-  async function stamped(userId: string, proof: string) {
+  /** The same transaction, stamped for one subject with whatever proof a case wants beside it. */
+  async function stamped(subject: PaymentsSubject, proof: string) {
     return {
-      ...(await transaction(userId)),
-      custom_data: { pithy_user: userId, pithy_env: "prod", pithy_ref_proof: proof },
+      ...(await transaction(subject)),
+      custom_data: { pithy_user: encodeSubjectReference(subject), pithy_env: "prod", pithy_ref_proof: proof },
     };
   }
 
@@ -3217,7 +3528,7 @@ describe("POST /payments/purchases — Paddle", () => {
     // It is here rather than only in `objects.test.ts` because the route is where the damage would be:
     // `linkProviderAccount` never rebinds, so one honoured overwrite squats a Paddle customer against an
     // account of the attacker's choosing, permanently, with nothing to undo it with.
-    const overwritten = { ...(await transaction("ignored")), custom_data: BROWSER_OVERWROTE_SERVER_STAMP };
+    const overwritten = { ...(await transaction(user("ignored"))), custom_data: BROWSER_OVERWROTE_SERVER_STAMP };
     const app = makeApp(ONE_OFF, { paddle: { transaction: overwritten } });
     const response = await request(app, "POST", "/payments/purchases", {
       user: "attacker",
@@ -3238,25 +3549,33 @@ describe("POST /payments/purchases — Paddle", () => {
     // So every forgery here carries a present, well-formed proof, and every one names **mallory** while
     // mallory is the caller — which takes the route's own caller-vs-reference refusal off the board. Only
     // the MAC can refuse these, and each is constructed rather than described.
-    const genuine = await accountReferenceProof("mallory", "prod", PADDLE_TEST_WEBHOOK_SECRET);
+    const genuine = await accountReferenceProof(
+      encodeSubjectReference(user("mallory")),
+      "prod",
+      PADDLE_TEST_WEBHOOK_SECRET,
+    );
 
     const forgeries: Record<string, string> = {
       // The realistic one: an attacker holding *a* Paddle signing secret, just not this destination's.
       "minted under another destination's secret": await accountReferenceProof(
-        "mallory",
+        encodeSubjectReference(user("mallory")),
         "prod",
         "pdl_ntfset_01someone_elses_destination",
       ),
       // A proof this deployment really did mint — for staging. The environment is inside the MAC's message
       // rather than beside it, so it cannot be replayed here by editing `pithy_env` next to it.
       "this deployment's own proof, minted for staging": await accountReferenceProof(
-        "mallory",
+        encodeSubjectReference(user("mallory")),
         "staging",
         PADDLE_TEST_WEBHOOK_SECRET,
       ),
       // A genuine proof lifted off somebody else's stamp. The reference is inside the message too, so a
       // proof cannot be moved from the user it was minted for to the user submitting it.
-      "a genuine proof for another reference": await accountReferenceProof("ada", "prod", PADDLE_TEST_WEBHOOK_SECRET),
+      "a genuine proof for another reference": await accountReferenceProof(
+        encodeSubjectReference(user("ada")),
+        "prod",
+        PADDLE_TEST_WEBHOOK_SECRET,
+      ),
       // The nearest miss there is: the right proof with one hex digit changed.
       "the genuine proof, one digit off": `${genuine.slice(0, -1)}${genuine.endsWith("0") ? "1" : "0"}`,
       // Well-formed hex of exactly the right length that nobody minted.
@@ -3266,7 +3585,7 @@ describe("POST /payments/purchases — Paddle", () => {
     };
 
     for (const [name, proof] of Object.entries(forgeries)) {
-      const app = makeApp(ONE_OFF, { paddle: { transaction: await stamped("mallory", proof) } });
+      const app = makeApp(ONE_OFF, { paddle: { transaction: await stamped(user("mallory"), proof) } });
       const response = await request(app, "POST", "/payments/purchases", {
         user: "mallory",
         body: { rail: "paddle", receipt: PADDLE_TRANSACTION },
@@ -3282,13 +3601,13 @@ describe("POST /payments/purchases — Paddle", () => {
 
     // Anti-vacuity, and the point of the whole case: change the proof and nothing else, and it projects.
     // So the six refusals above are the MAC failing — not the catalogue, not the caller, not the id.
-    const app = makeApp(ONE_OFF, { paddle: { transaction: await stamped("mallory", genuine) } });
+    const app = makeApp(ONE_OFF, { paddle: { transaction: await stamped(user("mallory"), genuine) } });
     const accepted = await request(app, "POST", "/payments/purchases", {
       user: "mallory",
       body: { rail: "paddle", receipt: PADDLE_TRANSACTION },
     });
     expect(accepted.status).toBe(200);
-    expect((await purchases())[0]).toMatchObject({ userId: "mallory", providerTransactionId: PADDLE_TRANSACTION });
+    expect((await purchases())[0]).toMatchObject({ ...user("mallory"), providerTransactionId: PADDLE_TRANSACTION });
     expect(await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute()).toHaveLength(1);
   });
 });
@@ -3422,7 +3741,7 @@ describe("GET /payments/pricing — who the quote is for", () => {
   }
 
   test("the customer a screen quotes from is the customer the checkout charges", async () => {
-    await linkProviderAccount(env.DB, "paddle", PADDLE_CUSTOMER, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "paddle", PADDLE_CUSTOMER, user("ada"), { now: NOW });
     const instance = app();
 
     const quoted = await request(instance, "GET", "/payments/pricing", { user: "ada" });
@@ -3448,7 +3767,7 @@ describe("GET /payments/pricing — who the quote is for", () => {
   test("a caller learns their own customer and nobody else's", async () => {
     // The route names no user, and the map is keyed on the authenticated caller. Grace holding a customer
     // must not put it on Ada's page — that would be one visitor priced from another's billing address.
-    await linkProviderAccount(env.DB, "paddle", PADDLE_CUSTOMER, "grace", { now: NOW });
+    await linkProviderAccount(env.DB, "paddle", PADDLE_CUSTOMER, user("grace"), { now: NOW });
     const response = await request(app(), "GET", "/payments/pricing", { user: "ada" });
     const envelope = PaymentsPricingEnvelope.parse(await response.json());
     expect(envelope.quotedFrom).toBeNull();
@@ -3456,7 +3775,7 @@ describe("GET /payments/pricing — who the quote is for", () => {
   });
 
   test("an unauthenticated caller is 401 and learns nothing", async () => {
-    await linkProviderAccount(env.DB, "paddle", PADDLE_CUSTOMER, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "paddle", PADDLE_CUSTOMER, user("ada"), { now: NOW });
     const response = await request(app(), "GET", "/payments/pricing");
     expect(response.status).toBe(401);
     expect(await response.text()).not.toContain(PADDLE_CUSTOMER);
@@ -3557,7 +3876,7 @@ describe("POST /payments/portal — Paddle", () => {
     // The boundary the widening crosses first. Ada is a Paddle customer — she has an account link — and owns
     // no subscription. Grace owns one. A route that read the table rather than the caller would hand Ada a
     // cancel link for Grace's subscription, and it would look like a working portal.
-    await linkProviderAccount(env.DB, "paddle", PADDLE_CUSTOMER, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "paddle", PADDLE_CUSTOMER, user("ada"), { now: NOW });
     await buy({ user: "grace", customerId: GRACE_CUSTOMER, subscriptionId: GRACE_SUBSCRIPTION, eventId: "evt_grace" });
     expect(await purchases()).toHaveLength(1);
 
@@ -3596,6 +3915,7 @@ describe("POST /payments/portal — Paddle", () => {
  * or an operator's replay projects the purchase that was stuck.
  */
 const LEMON_CATALOG: PaymentsConfigInput = {
+  billingSubject: "user",
   rails: { lemonSqueezy: true },
   lemonSqueezy: { successUrl: "https://acme.example/thanks" },
   products: {
@@ -3638,13 +3958,13 @@ const ORPHANED: ReadonlyArray<{
     app: () => makeApp(),
     send: async (app) =>
       await request(app, "POST", "/payments/webhooks/apple", { body: { signedPayload: await notification() } }),
-    link: () => linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, "ada", { now: NOW }),
+    link: () => linkProviderAccount(env.DB, "apple", APPLE_ACCOUNT, user("ada"), { now: NOW }),
   },
   {
     rail: "google",
     app: () => makeApp(CATALOG, { play: { subscription: playSubscription } }),
     send: async (app) => await push(app, rtdnRenewed),
-    link: () => linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, "ada", { now: NOW }),
+    link: () => linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, user("ada"), { now: NOW }),
   },
   {
     rail: "stripe",
@@ -3652,20 +3972,20 @@ const ORPHANED: ReadonlyArray<{
     // The reference `/checkout` stamps, removed: an authentic subscription event about a customer nothing
     // here has ever bound to a user.
     send: async (app) => await stripeHook(app, withObject(stripeSubscriptionCreated, { metadata: {} })),
-    link: () => linkProviderAccount(env.DB, "stripe", STRIPE_CUSTOMER, "ada", { now: NOW }),
+    link: () => linkProviderAccount(env.DB, "stripe", STRIPE_CUSTOMER, user("ada"), { now: NOW }),
   },
   {
     rail: "lemonSqueezy",
     app: () => makeApp(LEMON_CATALOG),
     send: async (app) =>
       await lemonHook(app, await subscriptionDelivery("subscription_created", {}, { stamped: false })),
-    link: () => linkProviderAccount(env.DB, "lemonSqueezy", String(LEMON_CUSTOMER), "ada", { now: NOW }),
+    link: () => linkProviderAccount(env.DB, "lemonSqueezy", String(LEMON_CUSTOMER), user("ada"), { now: NOW }),
   },
   {
     rail: "paddle",
     app: () => makeApp(PADDLE_CATALOG),
     send: async (app) => await paddleHook(app, await paddleSubscriptionEvent({ custom: {} })),
-    link: () => linkProviderAccount(env.DB, "paddle", PADDLE_CUSTOMER, "ada", { now: NOW }),
+    link: () => linkProviderAccount(env.DB, "paddle", PADDLE_CUSTOMER, user("ada"), { now: NOW }),
   },
 ];
 
@@ -3690,7 +4010,7 @@ describe("an orphan and the link that arrives after it", () => {
     const orphan = withObject(stripeSubscriptionCreated, { metadata: {} });
     expect((await stripeHook(app, orphan)).status).toBe(200);
     expect(await purchases()).toEqual([]);
-    expect((await webhookEvents())[0]?.error).toContain("no Pithy user");
+    expect((await webhookEvents())[0]?.error).toContain("no subject could be resolved");
 
     // A second, different event for the same Stripe customer, this one carrying the reference — a checkout
     // this deployment initiated. Its own purchase projects, and the link it writes is the repair signal.
@@ -3705,7 +4025,7 @@ describe("an orphan and the link that arrives after it", () => {
     const rows = await purchases();
     // Stripe keys a purchase on the invoice, not the subscription: each billing period is its own row.
     expect(rows.map((row) => row.providerTransactionId).sort()).toEqual(["in_1PithyAdaFeb", "in_1PithyAdaJan"]);
-    expect(rows.every((row) => row.userId === "ada")).toBe(true);
+    expect(rows.every((row) => row.subjectId === "ada")).toBe(true);
 
     const repaired = (await webhookEvents()).find((row) => row.providerEventId === "evt_stripeSubscriptionCreated");
     expect(repaired?.processedAt, "the purchase is projected, so the event is finished").not.toBeNull();
@@ -3734,7 +4054,7 @@ describe("an orphan and the link that arrives after it", () => {
     expect((await purchases()).map((row) => row.providerTransactionId)).toEqual(["in_1PithyAdaFeb"]);
     const still = (await webhookEvents()).find((row) => row.providerEventId === "evt_stripeSubscriptionCreated");
     expect(still?.processedAt, "nobody linked this customer, so its orphan is still waiting").toBeNull();
-    expect(still?.error).toContain("no Pithy user");
+    expect(still?.error).toContain("no subject could be resolved");
   });
 });
 
@@ -3752,7 +4072,7 @@ describe("a delivery that arrived and did not project", () => {
       // state reader, so this says what is in the row instead of restating the function that classifies it.
       const failed = await webhookEvents();
       expect(failed).toHaveLength(1);
-      expect(failed[0]?.error).toContain("no Pithy user");
+      expect(failed[0]?.error).toContain("no subject could be resolved");
       expect(failed[0]?.processedAt, "a failed delivery must not look finished").toBeNull();
       expect(failed[0]?.abandonedAt).toBeNull();
 
@@ -3767,8 +4087,8 @@ describe("a delivery that arrived and did not project", () => {
 
       const rows = await purchases();
       expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({ userId: "ada", productId: "pro_monthly" });
-      expect((await entitlements())[0]).toMatchObject({ userId: "ada", entitlement: "pro", active: 1 });
+      expect(rows[0]).toMatchObject({ ...user("ada"), productId: "pro_monthly" });
+      expect((await entitlements())[0]).toMatchObject({ ...user("ada"), entitlement: "pro", active: 1 });
 
       // One row throughout: the redelivery repaired the record it found, it did not write a second.
       const settled = await webhookEvents();
@@ -3873,7 +4193,7 @@ describe("a sweep that gave up, and the delivery that arrives afterwards", () =>
 
     const rows = await purchases();
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ rail: "paddle", userId: "ada", productId: "pro_monthly", status: "active" });
+    expect(rows[0]).toMatchObject({ rail: "paddle", ...user("ada"), productId: "pro_monthly", status: "active" });
 
     // One row still, now finished — and `abandonedAt` kept, because how close this came to being lost is
     // worth having on the record.
@@ -3950,7 +4270,7 @@ describe("an orphan the sweep reached first", () => {
     expect(swept?.error).toContain("orphaned");
 
     // The repair: the link arrives — a checkout, a client submission, an operator.
-    await linkProviderAccount(env.DB, "paddle", PADDLE_CUSTOMER, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "paddle", PADDLE_CUSTOMER, user("ada"), { now: NOW });
 
     // Paddle's ordinary retry, or an operator's replay. The same `event_id`, so it is the same row, and
     // this is the question the defect answered `duplicate`.
@@ -3960,8 +4280,8 @@ describe("an orphan the sweep reached first", () => {
 
     const rows = await purchases();
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ rail: "paddle", userId: "ada", productId: "pro_monthly", status: "active" });
-    expect((await entitlements())[0]).toMatchObject({ userId: "ada", entitlement: "pro", active: 1 });
+    expect(rows[0]).toMatchObject({ rail: "paddle", ...user("ada"), productId: "pro_monthly", status: "active" });
+    expect((await entitlements())[0]).toMatchObject({ ...user("ada"), entitlement: "pro", active: 1 });
 
     // One row throughout: the delivery repaired the record it found rather than writing a second. Finished
     // now, with `abandonedAt` kept — how close this sale came to being lost is worth having on the record.
@@ -4049,8 +4369,8 @@ describe("an orphan the sweep reached first", () => {
       "sub_01hv8wptq8987qeep44cylinked",
       "sub_01hv8wptq8987qeep44cyorphan",
     ]);
-    expect(rows.every((row) => row.userId === "ada")).toBe(true);
-    expect((await entitlements())[0]).toMatchObject({ userId: "ada", entitlement: "pro", active: 1 });
+    expect(rows.every((row) => row.subjectId === "ada")).toBe(true);
+    expect((await entitlements())[0]).toMatchObject({ ...user("ada"), entitlement: "pro", active: 1 });
 
     // The repaired row is finished, and keeps the record that a sweep once gave up on it.
     const repaired = (await webhookEvents()).find((row) => row.providerEventId === "evt_orphan");
@@ -4116,7 +4436,7 @@ describe("a delivery with nothing to project, and a reason", () => {
    * like. A build that finishes on the first answer projects nothing on the second.
    */
   test("google: a note Play's own read produced leaves the row repairable, and the retry projects", async () => {
-    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, user("ada"), { now: NOW });
 
     // Play has not caught up with the purchase its own notification is about.
     const raced = await push(makeApp(CATALOG, { play: {} }), rtdnRenewed);
@@ -4130,12 +4450,12 @@ describe("a delivery with nothing to project, and a reason", () => {
     // Pub/Sub's next attempt, against a Play that now answers. Same notification, same event id.
     const settled = await push(makeApp(CATALOG, { play: { subscription: playSubscription } }), rtdnRenewed);
     expect(await settled.json()).toEqual({ received: true, projected: true, outcome: "created" });
-    expect((await purchases())[0]).toMatchObject({ rail: "google", userId: "ada", productId: "pro_monthly" });
+    expect((await purchases())[0]).toMatchObject({ rail: "google", ...user("ada"), productId: "pro_monthly" });
     expect(await webhookEvents()).toHaveLength(1);
   });
 
   test("lemonSqueezy: the same, on the second of the three rails that read", async () => {
-    await linkProviderAccount(env.DB, "lemonSqueezy", String(LEMON_CUSTOMER), "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "lemonSqueezy", String(LEMON_CUSTOMER), user("ada"), { now: NOW });
     // Unstamped, so the owner comes from the link above rather than from a reference — and the delivery is
     // not fenced out of a `prod` app by a fixture stamped for `staging`.
     const delivery = await invoiceDelivery("subscription_payment_success", undefined, {}, { stamped: false });
@@ -4155,7 +4475,7 @@ describe("a delivery with nothing to project, and a reason", () => {
       delivery,
     );
     expect(await settled.json()).toEqual({ received: true, projected: true, outcome: "created" });
-    expect((await purchases())[0]).toMatchObject({ rail: "lemonSqueezy", userId: "ada" });
+    expect((await purchases())[0]).toMatchObject({ rail: "lemonSqueezy", ...user("ada") });
     expect(await webhookEvents()).toHaveLength(1);
   });
 
@@ -4167,10 +4487,10 @@ describe("a delivery with nothing to project, and a reason", () => {
     expect((await push(app, rtdnRenewed)).status).toBe(200);
 
     const [orphaned] = await webhookEvents();
-    expect(orphaned?.error).toContain("no Pithy user");
+    expect(orphaned?.error).toContain("no subject could be resolved");
     expect(orphaned?.processedAt, "a purchase with nobody to project it against is not finished").toBeNull();
 
-    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, "ada", { now: NOW });
+    await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, user("ada"), { now: NOW });
     const again = await push(app, rtdnRenewed);
     expect(await again.json()).toEqual({ received: true, projected: true, outcome: "created" });
     expect(await purchases()).toHaveLength(1);

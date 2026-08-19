@@ -189,7 +189,7 @@ describe("docs/commands/doctor.md", () => {
   test("pastes exactly the blocks pinned below, and nothing else", () => {
     // An unclassified block, a fourth transcript, or a second sample would be an unpinned example. The
     // page total counts the synopsis too, so a worked example added anywhere lands in one of these.
-    expect(WHAT_BLOCKS).toHaveLength(8);
+    expect(WHAT_BLOCKS).toHaveLength(10);
     expect(EXAMPLE_BLOCKS).toHaveLength(2);
     expect(JSON_SAMPLES).toHaveLength(1);
     expect(fencedBlocks(PAGE)).toHaveLength(WHAT_BLOCKS.length + EXAMPLE_BLOCKS.length + JSON_SAMPLES.length + 1);
@@ -447,6 +447,78 @@ describe("docs/commands/doctor.md", () => {
     );
     const fragment = FRAGMENTS[6];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the offline fragment.`);
+    expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  /**
+   * The settings fragment (#411), pinned against a project whose email settings do not work.
+   *
+   * One finding from each tier, because the two are what the block exists to hold apart: the local one is
+   * established from the project's own config through the capability's own schema, the account one only
+   * because the account answered. A run that could not reach the account carries neither — it carries the
+   * skip line, which is the state this fragment must not be mistaken for.
+   */
+  test("the settings fragment is what the renderer prints for a capability whose settings do not work", async () => {
+    const report = await buildDoctorReport(
+      docOptions(
+        harness.healthyOptions({
+          checkSettings: async () => ({
+            state: "faults",
+            account: { state: "checked", reason: null },
+            checked: [{ worker: "api", capability: "email" }],
+            unchecked: [],
+            findings: [
+              {
+                worker: "api",
+                capability: "email",
+                tier: "local",
+                setting: "BASE_URL",
+                environment: null,
+                problem:
+                  "Links are built against http://localhost:8787, and no environment this project declares answers on it.",
+                action: "Set `email({ baseUrl })` to an origin this project serves: https://api.acme.dev.",
+              },
+              {
+                worker: "api",
+                capability: "email",
+                tier: "account",
+                setting: "fromAddress",
+                environment: null,
+                problem:
+                  "acme.dev is not a zone on this Cloudflare account, so it cannot be onboarded onto Email Service.",
+                action: "Add acme.dev to this Cloudflare account, then onboard it onto Email Service in the dashboard.",
+              },
+            ],
+          }),
+        }),
+      ),
+    );
+    const fragment = FRAGMENTS[7];
+    if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the settings fragment.`);
+    expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  /**
+   * The local-delivery fragment: a machine with no Cloudflare login, which is the state a developer most
+   * often starts a session in and the one where nothing they send can leave the laptop.
+   */
+  test("the local delivery block is what the renderer prints for a machine with no login", async () => {
+    const report = await buildDoctorReport(
+      docOptions(
+        harness.healthyOptions({
+          checkLocalDelivery: async () => ({
+            live: false,
+            capability: "email",
+            lines: [
+              "Email: no Cloudflare credentials, so real delivery is not possible here — using the simulator.",
+              "  run: pithy init, or set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN",
+            ],
+          }),
+        }),
+      ),
+    );
+    const fragment = FRAGMENTS[8];
+    if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the local delivery fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
 });

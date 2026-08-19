@@ -128,6 +128,7 @@ describe("client-env.d.ts is emitted from the declared projections", () => {
       resolveClientProjection(auth({ baseURL: "https://api.example.com" }), { environment: "prod" }),
       resolveClientProjection(
         payments({
+          billingSubject: "user",
           rails: { stripe: true },
           stripe: {
             successUrl: "https://acme.example/thanks",

@@ -88,7 +88,7 @@ import {
  * invented would make one adopter's account model a condition on everybody's ability to report a bug.
  *
  * But an adopter whose *own* model makes some submissions act-on-behalf-of — `pithy-sh/dashboard#10`'s
- * discount application is made for an organisation, and a member may not make one — needs somewhere to
+ * discount application is made for an organization, and a member may not make one — needs somewhere to
  * put that check, and it must not be the client. **The seam for it already exists, in the composition
  * contract rather than in this capability's config**, and it is documented here because it was not
  * discoverable rather than because it was missing:
@@ -102,7 +102,7 @@ import {
  *       app.use("/support/feedback", async (c, next) => {
  *         // c.var.auth is already populated — @pithy-sh/auth's session middleware is a library's, and
  *         // every capability's middleware mounts before any capability's routes.
- *         if (c.var.auth && !(await mayWriteOnBehalfOfTheOrganisation(c))) throw new ForbiddenError({ … });
+ *         if (c.var.auth && !(await mayWriteOnBehalfOfTheOrganization(c))) throw new ForbiddenError({ … });
  *         await next();
  *       });
  *     },

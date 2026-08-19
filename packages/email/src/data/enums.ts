@@ -30,9 +30,9 @@ export const SendMode = z
 export type SendMode = z.output<typeof SendMode>;
 
 export const EmailJobStatus = z
-  .enum(["pending", "scheduled", "sending", "sent", "failed", "suppressed", "bounced", "cancelled"])
+  .enum(["pending", "scheduled", "sending", "sent", "failed", "suppressed", "bounced", "undispatched", "cancelled"])
   .describe(
-    "The lifecycle state of an email job. `pending` (immediate, awaiting dispatch) and `scheduled` (future sendAt) are pre-send; `sending` is in-flight; `sent` succeeded; `failed` exhausted retries; `suppressed` was skipped because the address is on the suppression list; `bounced` was reported undeliverable; `cancelled` was withdrawn before sending.",
+    "The lifecycle state of an email job. `pending` (immediate, awaiting dispatch) and `scheduled` (future sendAt) are pre-send; `sending` is in-flight; `sent` succeeded; `failed` exhausted retries; `suppressed` was skipped because the address is on the suppression list; `bounced` was reported undeliverable; `undispatched` means this composition binds no send Workflow, so nothing was started and nothing is coming while that holds — a configuration fact, not a transient one, and the scheduler claims those rows once a host worker exists; `cancelled` was withdrawn before sending.",
   );
 export type EmailJobStatus = z.output<typeof EmailJobStatus>;
 

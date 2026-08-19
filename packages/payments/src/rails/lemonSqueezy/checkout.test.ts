@@ -3,11 +3,19 @@
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
+import { encodeSubjectReference } from "../../data/subject";
 import type { PaymentsLemonSqueezyCredentials } from "../../secret/registry";
 import type { CheckoutSessionInput } from "../contract";
 import type { LemonSqueezyHttpFetch, LemonSqueezyHttpRequest } from "./api";
 import { createLemonSqueezyCheckoutSession } from "./checkout";
-import { LEMON_SQUEEZY_CUSTOM_ACCOUNT, LEMON_SQUEEZY_CUSTOM_ENV } from "./objects";
+import {
+  accountReferenceOf,
+  accountReferenceProof,
+  LEMON_SQUEEZY_CUSTOM_ACCOUNT,
+  LEMON_SQUEEZY_CUSTOM_ENV,
+  LEMON_SQUEEZY_CUSTOM_PROOF,
+  type LemonSqueezyWebhook,
+} from "./objects";
 
 const CREDENTIALS: PaymentsLemonSqueezyCredentials = {
   apiKey: "ls_api_test",
@@ -18,7 +26,7 @@ const CREDENTIALS: PaymentsLemonSqueezyCredentials = {
 const INPUT: CheckoutSessionInput = {
   providerProductId: "55555",
   subscription: true,
-  userId: "user-ada",
+  subject: { subjectType: "user", subjectId: "ada" },
   providerAccountId: null,
   successUrl: "https://acme.test/thanks",
 };
@@ -56,6 +64,11 @@ function stamped(transport: { calls: Call[] }): Record<string, unknown> {
   return data.attributes.checkout_data.custom;
 }
 
+/** A delivery envelope carrying nothing but the `custom_data` under test — all `accountReferenceOf` reads. */
+function webhookCarrying(custom: Record<string, unknown>): LemonSqueezyWebhook {
+  return { meta: { event_name: "order_created", custom_data: custom }, data: { id: "1", attributes: {} } };
+}
+
 describe("createLemonSqueezyCheckoutSession", () => {
   test("returns the hosted page to send the browser to", async () => {
     const transport = stub();
@@ -75,10 +88,60 @@ describe("createLemonSqueezyCheckoutSession", () => {
     expect(data.relationships.store.data.id).toBe("42");
   });
 
-  test("stamps the authenticated purchaser, so the webhook arrives already bound to a user", async () => {
+  test("stamps the resolved subject, so the webhook arrives already naming a holder", async () => {
     const transport = stub();
     await createLemonSqueezyCheckoutSession(INPUT, { credentials: CREDENTIALS, transport });
-    expect(stamped(transport)[LEMON_SQUEEZY_CUSTOM_ACCOUNT]).toBe("user-ada");
+    // Both halves, as `encodeSubjectReference` writes them. Never the id alone — nothing keeps an
+    // organization id from equalling some user's, and the far end would have to guess which it had.
+    expect(stamped(transport)[LEMON_SQUEEZY_CUSTOM_ACCOUNT]).toBe("user:ada");
+  });
+
+  test("an organization stamps its own kind", async () => {
+    const transport = stub();
+    await createLemonSqueezyCheckoutSession(
+      { ...INPUT, subject: { subjectType: "organization", subjectId: "ada" } },
+      { credentials: CREDENTIALS, transport },
+    );
+    expect(stamped(transport)[LEMON_SQUEEZY_CUSTOM_ACCOUNT]).toBe("organization:ada");
+  });
+
+  test("what checkout stamps is what the webhook reader honours — the loop, both ends visible", async () => {
+    const transport = stub();
+    await createLemonSqueezyCheckoutSession(INPUT, { credentials: CREDENTIALS, deployment: "prod", transport });
+    const custom = stamped(transport) as Record<string, string>;
+    expect(await accountReferenceOf(webhookCarrying(custom), "prod", CREDENTIALS.webhookSecret)).toBe("user:ada");
+  });
+
+  test("a bare id binds nobody, proof and all — the shape a pre-subject build stamped", async () => {
+    // Authentic and still nobody: the MAC is one this deployment's own secret produced, and the reference
+    // is what every checkout wrote before subjects. Reading it as a user is how one holder's purchase
+    // lands on whoever else holds that id, so the strict decoder refuses it and the purchase orphans.
+    const reference = "ada";
+    const bare = {
+      [LEMON_SQUEEZY_CUSTOM_ACCOUNT]: reference,
+      [LEMON_SQUEEZY_CUSTOM_ENV]: "prod",
+      [LEMON_SQUEEZY_CUSTOM_PROOF]: await accountReferenceProof(reference, "prod", CREDENTIALS.webhookSecret),
+    };
+    expect(await accountReferenceOf(webhookCarrying(bare), "prod", CREDENTIALS.webhookSecret)).toBeNull();
+
+    // Anti-vacuity: the same id encoded, proven the same way, does bind.
+    const encoded = encodeSubjectReference({ subjectType: "user", subjectId: reference });
+    const paired = {
+      [LEMON_SQUEEZY_CUSTOM_ACCOUNT]: encoded,
+      [LEMON_SQUEEZY_CUSTOM_ENV]: "prod",
+      [LEMON_SQUEEZY_CUSTOM_PROOF]: await accountReferenceProof(encoded, "prod", CREDENTIALS.webhookSecret),
+    };
+    expect(await accountReferenceOf(webhookCarrying(paired), "prod", CREDENTIALS.webhookSecret)).toBe(encoded);
+  });
+
+  test("a kind this build does not know binds nobody either", async () => {
+    const reference = "team:ada";
+    const unknown = {
+      [LEMON_SQUEEZY_CUSTOM_ACCOUNT]: reference,
+      [LEMON_SQUEEZY_CUSTOM_ENV]: "prod",
+      [LEMON_SQUEEZY_CUSTOM_PROOF]: await accountReferenceProof(reference, "prod", CREDENTIALS.webhookSecret),
+    };
+    expect(await accountReferenceOf(webhookCarrying(unknown), "prod", CREDENTIALS.webhookSecret)).toBeNull();
   });
 
   test("stamps this deployment, so a store shared across environments can be told apart", async () => {

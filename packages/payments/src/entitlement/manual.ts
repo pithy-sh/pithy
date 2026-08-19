@@ -6,6 +6,7 @@ import { withD1Retry } from "@pithy-sh/core/src/data/withD1Retry";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { grantableEntitlements, type PaymentsConfig } from "../config/config";
 import { PaymentsEntitlement } from "../data/entitlement";
+import { encodeSubjectReference, type PaymentsSubject } from "../data/subject";
 import { PAYMENTS_ENTITLEMENTS_TABLE, paymentsDatabase } from "../data/tables";
 import { PaymentsEntitlementNotInCatalogError } from "../error/errors";
 
@@ -55,15 +56,28 @@ import { PaymentsEntitlementNotInCatalogError } from "../error/errors";
  * next says something about it. To end a paid entitlement, refund it through the store; that is the record
  * the projection reads, and the only one that keeps the read model and the money agreeing.
  *
- * A revoke writes an inactive row even when the user held nothing, because support tooling should not have to
- * know whether a row exists, and because the row is itself the record that somebody decided this account is
+ * A revoke writes an inactive row even when the subject held nothing, because support tooling should not have
+ * to know whether a row exists, and because the row is itself the record that somebody decided this account is
  * not entitled.
+ *
+ * ## The holder is a subject, and both halves are named
+ *
+ * A comp is a contract somebody signed, and under organization billing the party to it is the company rather
+ * than whoever at the company asked. So these take a {@link PaymentsSubject} — the pair, never an id on its
+ * own. The pair is the upsert's conflict target, the read-back's predicate and the row's identity, and it is
+ * the same pair the read path filters on, so a grant and the gate that honours it cannot disagree about who
+ * was meant. `user:acme` and `organization:acme` are two holders: nothing in the kit makes those id spaces
+ * disjoint, and support revoking the right id under the wrong kind must take nothing away from the other.
  */
 
-/** Who, and to what. The caller has already been through `requireControlPlane`. */
-export interface ManualEntitlementInput {
-  /** The user whose read model is being written. Never the caller — this is support acting on somebody else. */
-  userId: string;
+/**
+ * Who, and to what. The caller has already been through `requireControlPlane`.
+ *
+ * It **extends** {@link PaymentsSubject} rather than restating two strings, so a caller cannot supply half a
+ * holder and the type is the same one every other subject-bearing surface takes. Never the caller's own
+ * subject — this is support acting on somebody else's account.
+ */
+export interface ManualEntitlementInput extends PaymentsSubject {
   /** The entitlement key, as gating code names it. */
   entitlement: string;
   /** When a grant lapses. Absent or null never lapses; ignored on a revoke. */
@@ -121,8 +135,13 @@ export function revokeEntitlement(
 }
 
 /**
- * The upsert both directions share. One statement, on the `UNIQUE (userId, entitlement)` conflict target, so
- * a concurrent write cannot produce a second row for one key.
+ * The upsert both directions share. One statement, on the `UNIQUE (subjectType, subjectId, entitlement)`
+ * conflict target, so a concurrent write cannot produce a second row for one key.
+ *
+ * The target is all three columns because that is the index the table really has. A two-column target names
+ * no unique constraint and SQLite refuses the statement outright — which is the loud failure worth having
+ * here, rather than an upsert that quietly inserts a second row per holder and leaves two answers to one
+ * gate. The read-back's predicate is the same three columns for the same reason.
  *
  * `sourcePurchaseId` is set to null on both paths, and that is the honest answer: no purchase supports this
  * row. `manual` is the half that differs — set by a grant, cleared by a revoke — and it is what the
@@ -139,7 +158,9 @@ async function writeEntitlement(
   const db = paymentsDatabase(d1);
   const row = PaymentsEntitlement.encode({
     id: newId(),
-    userId: input.userId,
+    // Both halves off the one input, together. Nothing here pairs a kind from config with an id from a row.
+    subjectType: input.subjectType,
+    subjectId: input.subjectId,
     entitlement: input.entitlement,
     active,
     // An expiry only means anything on a grant. A revoke that carried one would describe a row that stops
@@ -158,7 +179,7 @@ async function writeEntitlement(
       // biome-ignore lint/suspicious/noExplicitAny: the row is the schema's z.input side; Kysely's insert type derives from it.
       .values(row as any)
       .onConflict((oc) =>
-        oc.columns(["userId", "entitlement"]).doUpdateSet({
+        oc.columns(["subjectType", "subjectId", "entitlement"]).doUpdateSet({
           active: row.active,
           expiresAt: row.expiresAt,
           sourcePurchaseId: null,
@@ -173,14 +194,15 @@ async function writeEntitlement(
   const written = await db
     .selectFrom(PAYMENTS_ENTITLEMENTS_TABLE)
     .selectAll()
-    .where("userId", "=", input.userId)
+    .where("subjectType", "=", input.subjectType)
+    .where("subjectId", "=", input.subjectId)
     .where("entitlement", "=", input.entitlement)
     .executeTakeFirst();
   if (written === undefined) {
     throw new InternalError({
       message: "The entitlement could not be recorded.",
       action: "Retry. If it persists, check the app database for the pithy_payments_* tables.",
-      detail: `Wrote entitlement "${input.entitlement}" for ${input.userId} but could not read it back.`,
+      detail: `Wrote entitlement "${input.entitlement}" for ${encodeSubjectReference(input)} but could not read it back.`,
     });
   }
   return PaymentsEntitlement.parse(written);

@@ -119,7 +119,7 @@ The array form of `run_worker_first` is what sets `has_static_routing`, and that
 $ pithy ui sync --check --worker api
 api: the SPA shell is answering these, not the worker.
   /api/cli/device/start
-  /api/organisations
+  /api/organizations
 Run pithy ui sync --worker api.
 ```
 

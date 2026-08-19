@@ -59,8 +59,8 @@ async function tick(): Promise<number> {
     stuckMs: STUCK_MS,
     batchSize: 50,
     maxJobs: 500,
-    // Both cases below hold `pending` rows, which carry no batch and so are never asked about
-    // (pithy-sh/pithy#342). `false` is therefore the answer that reproduces the behaviour this seam was
+    // Both cases below hold `undispatched` rows, which carry no batch and so are never asked about
+    // (pithy-sh/pithy#342, pithy-sh/pithy#410 for the status). `false` is therefore the answer that reproduces the behaviour this seam was
     // written against: a liveness answer may only veto a re-drive, never cause one.
     newBatchId: () => "batch-nudge",
     batchIsAlive: async () => false,
@@ -91,7 +91,14 @@ describe("buildNudgeEnqueue", () => {
       status: string;
     }>();
     expect(row?.created_at).toBe(NOW.getTime());
-    expect(row?.status).toBe("pending");
+    // `undispatched` rather than `pending`, and that is this deployment's own shape rather than a
+    // detail of the fixture (pithy-sh/pithy#410). Nothing in testers' host binds a send Workflow —
+    // `EMAIL_SENDER` is absent from its `wrangler.jsonc`, its resolver and its worker — so every nudge
+    // it enqueues has always been left for the email scheduler to claim. The row now says so instead
+    // of claiming a dispatch is on its way. What it does not change is what happens next: the
+    // scheduler claims `undispatched` beside `pending` under the same grace window, which is what the
+    // tick below and the one in the next test measure between them.
+    expect(row?.status).toBe("undispatched");
     // Nothing due: the job was born inside the grace window, which is what tells the scheduler its
     // dispatch is still in flight.
     expect(await tick()).toBe(0);

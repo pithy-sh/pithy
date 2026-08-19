@@ -7,6 +7,7 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { PaymentsConfig } from "../config/config";
 import { railEnabled } from "../config/config";
 import type { PurchaseEnvironment } from "../data/purchase";
+import { decodeSubjectReference } from "../data/subject";
 import { PADDLE_EVENTS_CURSOR, PaymentsSyncCursor } from "../data/syncCursor";
 import { PAYMENTS_SYNC_CURSORS_TABLE, PAYMENTS_WEBHOOK_EVENTS_TABLE, paymentsDatabase } from "../data/tables";
 import {
@@ -81,9 +82,11 @@ import type { PaymentsPaddleCredentials } from "../secret/registry";
  *
  * ## An orphan is abandoned, not finished (#339)
  *
- * An orphan is an event whose `custom_data` carries no `pithy_user` stamp, for a customer with no
- * `provider_accounts` row. This sweep used to call {@link complete} on one — the same `processedAt` that
- * means *finished with*.
+ * An orphan is an event whose `custom_data` carries no usable `pithy_user` stamp, for a customer with no
+ * `provider_accounts` row. "No usable stamp" now includes a stamp that does not **decode**: the value is an
+ * encoded subject reference (`user:ada`, `organization:acme`), and a bare id — the shape every pre-subject
+ * checkout wrote — names nobody however well it is proven. This sweep used to call {@link complete} on an
+ * orphan — the same `processedAt` that means *finished with*.
  *
  * That was wrong, and it was wrong in the one way that costs a purchase. The webhook path treats its own
  * orphans as outstanding, and both paths write the **same row** under `UNIQUE (rail, providerEventId)`, so
@@ -395,7 +398,7 @@ async function orphan(d1: D1Database, id: string, now: Date): Promise<void> {
     d1,
     id,
     now,
-    `${ORPHANED} no Pithy user could be resolved for this swept event, so the sweep has moved past it. It is not finished — the account linking re-examines it (see \`projection/orphans.ts\`), and any later delivery of this event id projects it too, including a replay from Paddle.`,
+    `${ORPHANED} no subject could be resolved for this swept event, so the sweep has moved past it. It is not finished — the account linking re-examines it (see \`projection/orphans.ts\`), and any later delivery of this event id projects it too, including a replay from Paddle.`,
   );
 }
 
@@ -588,12 +591,23 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
         continue;
       }
 
-      // The pairing is worth keeping even for an event that projects nothing, and it is proven — the rail
-      // returns a reference only when a MAC this deployment's secret produced sits beside it.
-      if (notification.providerAccountId && notification.accountReference) {
-        await linkProviderAccount(deps.d1, "paddle", notification.providerAccountId, notification.accountReference, {
-          now: at,
-        });
+      /**
+       * The pairing is worth keeping even for an event that projects nothing, and it is proven — the rail
+       * returns a reference only when a MAC this deployment's secret produced sits beside it.
+       *
+       * **Decoded, never split by hand, and never read as a bare id.** `accountReference` is the one
+       * single-field slot Paddle gives us, so it carries the subject as one string, and
+       * `decodeSubjectReference` is the only reader of that format. It answers `undefined` for anything
+       * that is not exactly the encoding — including `ada`, the shape every pre-subject checkout stamped —
+       * and `undefined` here means no link is written at all. That is the safe direction: a permanent
+       * binding is what `linkProviderAccount` writes and it never rebinds, so a guessed holder is a
+       * customer's renewals delivered to a stranger for as long as the deployment lives.
+       */
+      const referenced = notification.accountReference
+        ? decodeSubjectReference(notification.accountReference)
+        : undefined;
+      if (notification.providerAccountId && referenced !== undefined) {
+        await linkProviderAccount(deps.d1, "paddle", notification.providerAccountId, referenced, { now: at });
         await repairOrphans(deps, at);
         // The link is what an orphan was waiting for, and this sweep will not look at those events again —
         // its cursor is past them. So the repair runs on the signal rather than on the next pass. #341.
@@ -622,12 +636,19 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
         continue;
       }
 
-      const userId = await resolveNotificationOwner(paymentsDatabase(deps.d1), "paddle", {
+      /**
+       * Who holds it — **resolved from rows, because a Workflow has nothing else**.
+       *
+       * There is no request here, so no `c.var.auth` and no adopter `resolveSubject`; see
+       * `workflows/worker.ts`. Every source `resolveNotificationOwner` consults is a row this server wrote
+       * or a reference it stamped and Paddle returned, and it answers with the **pair** read off one row.
+       */
+      const subject = await resolveNotificationOwner(paymentsDatabase(deps.d1), "paddle", {
         providerAccountId: notification.providerAccountId,
         providerTransactionId: notification.event.providerTransactionId,
         originalTransactionId: notification.event.originalTransactionId,
       });
-      if (!userId) {
+      if (subject === undefined) {
         // Orphaned. No number of sweeps will conjure a link, so the cursor advances — retrying it forever
         // would stall every event behind one customer. But the event is **not finished**: it is a real
         // purchase waiting on a link, and the delivery that follows that link is what projects it. So
@@ -639,15 +660,18 @@ export async function sweepPaddle(deps: PaddleSweepDeps): Promise<PaddleSweepRep
       }
 
       try {
+        // Both halves, spread from the one object they were read into. Two events from one notification bind
+        // the identical subject for the same reason a pair is never assembled twice: a charge row and a
+        // standing row that disagreed about their holder would be one purchase owned by two accounts.
         const projection = await projectPurchase(
           deps.d1,
-          { ...notification.event, userId },
+          { ...notification.event, ...subject },
           { config: deps.config, environment: deps.environment, now: at },
         );
         if (notification.stateEvent) {
           await projectPurchase(
             deps.d1,
-            { ...notification.stateEvent, userId },
+            { ...notification.stateEvent, ...subject },
             { config: deps.config, environment: deps.environment, now: at },
           );
         }

@@ -174,6 +174,29 @@ describe("runScheduler", () => {
     expect(await statusOf(fresh)).toBe("pending");
   });
 
+  /**
+   * `undispatched` is what an immediate job is born as when the composition binds no send Workflow
+   * (pithy-sh/pithy#410) — a configuration fact, and the honest thing to tell the caller. It must not
+   * also be a dead end: the day the host is provisioned, its first tick is what drains the backlog of
+   * magic links that were enqueued before it existed. Nothing else can — `retryJob` takes `failed`
+   * rows, and no operator command moves this one.
+   */
+  test("claims an undispatched job once a host exists, so the backlog is not lost", async () => {
+    const stranded = await insertJob({
+      status: "undispatched",
+      sendAt: NOW_MS - 5 * MINUTE,
+      createdAt: NOW_MS - 5 * MINUTE,
+    });
+    const fresh = await insertJob({ status: "undispatched", sendAt: NOW_MS, createdAt: NOW_MS });
+    const dispatched: string[][] = [];
+
+    await runScheduler(deps(async (_batchId, ids) => void dispatched.push(ids)));
+
+    expect(dispatched.flat()).toEqual([stranded]);
+    // The same grace window a `pending` row gets, for the same reason: a row this tick is racing.
+    expect(await statusOf(fresh)).toBe("undispatched");
+  });
+
   test("re-drives a stranded sending job past stuckMs but not a fresh send-in-flight", async () => {
     const stranded = await insertJob({
       status: "sending",

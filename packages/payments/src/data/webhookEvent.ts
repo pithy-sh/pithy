@@ -147,7 +147,7 @@ export function isWebhookEventFinished(state: PaymentsWebhookEventState): boolea
  * The prefix an event's `error` carries when the one thing missing was **an owner**.
  *
  * `error` is free text an operator reads, and two writers put two different sentences in it for the same
- * condition — the webhook handler's "no Pithy user could be resolved", and the sweep's own `orphaned:`. That
+ * condition — the webhook handler's "no subject could be resolved", and the sweep's own `orphaned:`. That
  * was fine while nothing queried it. It stopped being fine with #341: linking an account has to find exactly
  * the rows that were waiting on that link, and "waiting on a link" is not derivable from the two timestamps —
  * a quarantine after three failures wears the same pair.

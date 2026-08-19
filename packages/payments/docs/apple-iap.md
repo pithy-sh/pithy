@@ -75,19 +75,19 @@ Before presenting the purchase sheet, set the app account token on the purchase:
 
 ```swift
 let result = try await product.purchase(options: [
-  .appAccountToken(accountTokenFromYourServer)   // a random per-user UUID your server minted and stored
+  .appAccountToken(accountTokenFromYourServer)   // a random per-subject UUID your server minted and stored
 ])
 ```
 
 Apple requires a **UUID** here.
 
-**Make it a random value your server minted for that user, and never a value anybody else can derive.** Do not use the user's id, an email hash, or anything a third party could compute — mint a random UUID per user, store it beside the user, and hand it to the app. This matters because the token is the only hook from an App Store purchase back to a Pithy user for a notification that arrives before the app has submitted anything, and a *guessable* token is a way to aim at a specific account: someone who can work out your user's token could make one real purchase carrying it and claim the link first.
+**Make it a random value your server minted for the subject that will hold the purchase, and never a value anybody else can derive.** The subject is your user under `billingSubject: "user"` and the organization the buyer is acting for under `"organization"` — one token per subject either way, minted once and stored beside it. Do not use the subject's id, an email or domain hash, or anything a third party could compute. This matters because the token is the only hook from an App Store purchase back to a subject for a notification that arrives before the app has submitted anything, and a *guessable* token is a way to aim at a specific account: someone who can work out that subject's token could make one real purchase carrying it and claim the link first. Under organization billing the target is a whole company rather than one person, so a derivable token is worth more to an attacker, not less.
 
-Payments narrows that in three ways, and none of them substitutes for an unguessable token. The token is set by the *app*, which may put anything in it, so it is never treated as an owner on its own — it ranks **below** both a purchase already projected for an authenticated caller and the subscription family a renewal descends from. A binding is only written once a purchase has actually projected, so claiming one costs a real purchase on this deployment's own environment rather than a free sandbox receipt. And a binding is never rebound, so the first pairing wins and a collision is audited as `payments/provider_account_contested` rather than silently accepted.
+Payments narrows that in three ways, and none of them substitutes for an unguessable token. The token is set by the *app*, which may put anything in it, so it is never treated as a holder on its own — it ranks **below** both a purchase already projected for the subject an authenticated caller was acting for and the subscription family a renewal descends from. A binding is only written once a purchase has actually projected, so claiming one costs a real purchase on this deployment's own environment rather than a free sandbox receipt. And a binding is never rebound, so the first pairing wins and a collision is audited as `payments/provider_account_contested` rather than silently accepted.
 
 The link is written when your app submits the transaction — not by the notification.
 
-That gives your app one obligation beyond setting the token: submit the transaction to `POST /payments/purchases` at least once. Payments has two fallbacks for a notification whose token resolves nothing — a purchase already projected under the same transaction id, and the subscription family the renewal descends from through `originalTransactionId` — and both need somebody to have submitted the first purchase. An app that sets no token and submits nothing produces notifications with no user to project them against, which payments records with a reason rather than guessing.
+That gives your app one obligation beyond setting the token: submit the transaction to `POST /payments/purchases` at least once. Payments has two fallbacks for a notification whose token resolves nothing — a purchase already projected under the same transaction id, and the subscription family the renewal descends from through `originalTransactionId` — and both need somebody to have submitted the first purchase. An app that sets no token and submits nothing produces notifications with no subject to project them against, which payments records with a reason rather than guessing.
 
 Submitting is also what makes the purchase feel instant. StoreKit 2's transaction is a JWS Apple signed, so verification is local and offline, and the buyer sees their entitlement in the purchase flow rather than a second or two later when the notification lands. Nothing about correctness rests on it — the notification produces the identical row through the same idempotent writer.
 
@@ -152,7 +152,7 @@ No purchase sheet — no Worker can present one, so StoreKit stays your app's. N
 - [ ] Key ID and Issuer ID noted.
 - [ ] **Version 2** notification URLs set for production and sandbox, both pointing at `/payments/webhooks/apple`.
 - [ ] Test notification requested and answered 200.
-- [ ] `appAccountToken` set on every purchase the app starts, from a **random per-user UUID your server minted** — never the user id or anything derivable from it.
+- [ ] `appAccountToken` set on every purchase the app starts, from a **random per-subject UUID your server minted** — never the subject's id or anything derivable from it.
 - [ ] The app submits its transaction to `POST /payments/purchases`, which is what writes the account link.
 - [ ] The app calls `Transaction.finish()` once your server has confirmed the purchase.
 - [ ] `bundleId` + `keyId` + `issuerId` + `privateKey` stored together via `pithy secrets create payments-provider-credentials`; `rails: { apple: true }` in config.

@@ -12,4 +12,4 @@ A missing id is an absence, not an error: a membership can outlive the user row 
 
 The list is bounded at `MAX_USER_LOOKUP`, and past it the call is refused with the cap named rather than truncated — answering for 100 of somebody's 140 members would be a wrong roster presented as a right one. The cap is 100 because two numbers meet there: it is D1's bound-parameter budget for a statement that binds nothing else, and it is `MAX_PAGE_SIZE`, so the largest page the kit hands out always resolves in one call.
 
-Found while building the dashboard on the kit: its Team pane lists organisation members, and every one of them needed a name.
+Found while building the dashboard on the kit: its Team pane lists organization members, and every one of them needed a name.

@@ -181,6 +181,29 @@ Identifier-in-path is the ordinary shape for anything arriving by link: an invit
 
 **Prefer a path over a query string for anything link-addressed.** A query string lands in referrer headers and access logs more readily than a path segment. It is not a large difference — a token in a URL is a token in a URL — but it is the wrong thing to be forced into. Pithy's own `/otp` screen keeps its `?email=`, and says why in the file: that URL points at the code-entry screen, the address is a prefill rather than the resource, and `/otp` with no email is a valid screen.
 
+### The query string
+
+Everything above is the part of the URL that chooses a screen. The query string is the part that does not, and the router has four exports for it — because every screen that hand-rolled this met the same trap, and `/otp` was one of them.
+
+```tsx
+import { updateSearch, useSearchParam } from "../../router";
+
+export const path = "/inbox";
+
+export default function Inbox() {
+  const open = useSearchParam("message");
+  return <button onClick={() => updateSearch({ message: "42" })}>Open</button>;
+}
+```
+
+**`useSearchParam(name)` reads one value, decoded, or `null`.** `useSearch()` hands back the whole query string verbatim instead — `"?message=42"`, or `""` when there is none. Both re-render on every navigation, including the browser's own Back and Forward. The raw string rather than a `URLSearchParams` is deliberate: a params object is a new object every render, so every `useMemo` and `useEffect` downstream of one re-runs forever.
+
+**`updateSearch(patch)` writes.** A `string` sets a key, `null` clears it, and anything unmentioned is left where it was; the pathname and the hash come across untouched. It pushes a history entry, so Back closes what a click opened — pass `{ replace: true }` for a correction the reader did not make, which is what `replace(to)` is for generally.
+
+**Use it rather than assembling the URL yourself.** `window.location.search` is `""` and never `"?"`, so a writer that appends a bare `?` after clearing its last parameter produces a URL that never equals the current one: every repeat call pushes another entry, and Back then walks through them one at a time without the page ever changing. Carrying the hash across is the other half nobody remembers.
+
+A query value is a string from a stranger, exactly like a path parameter. A screen wanting a number, or a member of a set, validates it — the router types neither.
+
 ## `virtual:pithy/<capability>`
 
 Your screens need to know things about the backend: which social providers are enabled, whether a Turnstile widget must render and with which public sitekey, what the auth base path is. That knowledge lives in `pithy.config.ts`, which is server-side. The bridge is a set of virtual modules served by the `pithy()` Vite plugin in `@pithy-sh/vite`.
@@ -314,7 +337,7 @@ export const path = "/reports";
 export const entitlement = "pro";
 ```
 
-An entitlement belongs to somebody, so declaring one implies the session guard: the same order the server states it in, `requireAuth()` then `requireEntitlement()`.
+An entitlement belongs to somebody, so declaring one implies the session guard: the same order the server states it in, `requireAuth()` then `requireEntitlement()`. That somebody is not always a person — a project that bills organizations holds entitlements against the company, not the employee — and the guard is unchanged by it, because the holder is resolved from the caller's session on the server. No screen names a holder, and none should: a client that could say whose entitlements to read would be a client choosing.
 
 **It is a UX affordance, never a security boundary.** The server check is the boundary — every paid route declares `requireEntitlement()`, and no answer in the browser changes that. The guard exists so a visitor without `pro` lands on the paywall instead of watching a screen fill with 403s. Its failure direction follows from that: with payments not composed at all, the guard renders rather than blocks, exactly as the session guard does with no auth capability.
 
@@ -400,7 +423,7 @@ pithy ui sync --worker api             # re-derives and rewrites that one key
 $ pithy ui sync --check --worker api
 api: the SPA shell is answering these, not the worker.
   /api/cli/device/start
-  /api/organisations
+  /api/organizations
 Run pithy ui sync --worker api.
 ```
 
@@ -410,7 +433,7 @@ Run pithy ui sync --worker api.
 
 ### Why there is a list at all
 
-The obvious repair for a list that goes stale is to delete it. Try it and the API comes back to life: `curl /api/organisations` reaches the Worker, and deep links still serve the app shell. It looks free. It is not, and the reason is one line in Cloudflare's asset worker:
+The obvious repair for a list that goes stale is to delete it. Try it and the API comes back to life: `curl /api/organizations` reaches the Worker, and deep links still serve the app shell. It looks free. It is not, and the reason is one line in Cloudflare's asset worker:
 
 ```js
 if (!(has_static_routing || (navigateFlag && request.headers.get("Sec-Fetch-Mode") === "navigate")))
@@ -419,7 +442,7 @@ if (!(has_static_routing || (navigateFlag && request.headers.get("Sec-Fetch-Mode
 
 An array `run_worker_first` is what sets `has_static_routing`. With it, a path the list misses gets the shell whatever the method — the failure above. Without it, every **non**-navigation falls through to the Worker, which is why `curl` and `fetch` look fixed. The navigation half does not change: a request carrying `Sec-Fetch-Mode: navigate` still gets the shell.
 
-Two of those requests are ones Pithy's sign-in depends on. A magic-link click lands on `/auth/magic-link/verify`, and an OAuth provider redirects to `/auth/callback/<provider>` — both top-level navigations, both onto the Worker. Delete the list and they are answered by the app shell, silently, exactly the way the stale list answered `/api/organisations`. So the list stays, and `--check` is what keeps it honest.
+Two of those requests are ones Pithy's sign-in depends on. A magic-link click lands on `/auth/magic-link/verify`, and an OAuth provider redirects to `/auth/callback/<provider>` — both top-level navigations, both onto the Worker. Delete the list and they are answered by the app shell, silently, exactly the way the stale list answered `/api/organizations`. So the list stays, and `--check` is what keeps it honest.
 
 One route is deliberately never allowlisted: one your app capability mounts at **`/`**. In a Worker that serves a SPA, `/` is the app shell — that is what `not_found_handling` is for — so a root API route loses to the front end rather than shadowing it. If you need both, move the API route under a prefix (`/api/status` rather than `/`) and `pithy ui sync` will pick it up.
 

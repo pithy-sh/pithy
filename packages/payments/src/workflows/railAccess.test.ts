@@ -47,6 +47,7 @@ beforeAll(async () => {
 });
 
 const CONFIG = PaymentsConfig.parse({
+  billingSubject: "user",
   rails: { apple: true, google: true, stripe: true },
   stripe: {
     successUrl: "https://acme.example/thanks",
@@ -148,6 +149,7 @@ describe("batchedRailAccess", () => {
 
   test("a rail turned off in config refuses even with credentials present", async () => {
     const appleOnly = PaymentsConfig.parse({
+      billingSubject: "user",
       rails: { apple: true },
       products: {
         pro_monthly: {

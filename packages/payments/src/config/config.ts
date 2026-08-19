@@ -4,6 +4,7 @@
 import { EntitlementKey } from "@pithy-sh/core/src/entitlement/entitlement";
 import { z } from "zod";
 import { PAYMENTS_RAILS, type PaymentsRail } from "../data/rail";
+import { PaymentsSubjectType } from "../data/subject";
 
 /**
  * The payments capability's config — the catalog, and the thin surface an adopter owns in
@@ -278,6 +279,9 @@ export type PaymentsProduct = z.infer<typeof PaymentsProduct>;
 
 export const PaymentsConfig = z
   .object({
+    billingSubject: PaymentsSubjectType.describe(
+      "Who a purchase belongs to, and who its entitlements reach. `user` is one person buying for themselves: they pay, they are entitled, nobody else is. `organization` is a company buying for its people: the company is invoiced, and everybody the adopter counts as a member holds what it bought — so a colleague who joined this morning is entitled and one who left this afternoon is not, with no row rewritten either time. Required, and decided once for the project: a codebase that could grant to a user on one route and an organization on the next eventually disagrees with itself about who is entitled, and the disagreement surfaces as somebody being refused what they paid for. Changing it later is a migration of every entitlement, purchase, and store link, so it is worth the minute now.",
+    ),
     rails: PaymentsRailToggles.default({
       apple: false,
       google: false,

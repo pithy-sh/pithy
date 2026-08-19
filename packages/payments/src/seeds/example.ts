@@ -20,6 +20,14 @@ import { PAYMENTS_ENTITLEMENTS_TABLE, PAYMENTS_PURCHASES_TABLE } from "../data/t
  * `auth` seeds and `ledger` opens balances for. Order 250 puts them after auth's users (100), exactly the
  * way the migration registry encodes a dependency.
  *
+ * **Every row is a `user` subject, and a project on `billingSubject: "organization"` gets rows that
+ * resolve for nobody.** That is honest rather than a bug. The shared cast is three people; the kit has no
+ * example organization, and inventing one here would mint an id nothing else joins to — no `auth` row, no
+ * membership, nothing the adopter's own subject seam would ever return. So the fixture shows the shape of
+ * the tables and the states a reader must handle, and under organization billing the only real subjects
+ * are the adopter's own. Pinning it to `EXAMPLE_ADA/GRACE/ALAN` is what keeps the set idempotent and
+ * connected; a fabricated organization would be neither.
+ *
  * **Everything is fixed — the ids and the clock.** `pithy seed` is `INSERT OR IGNORE`, so a generated
  * UUID would give Ada a second subscription on every run. A fixed `CREATED_AT` does the same job for the
  * timestamps.
@@ -67,7 +75,8 @@ export const paymentsExampleSeed: SeedSet = defineSeed({
     d1SeedGroup("app", PAYMENTS_PURCHASES_TABLE, PaymentsPurchase, [
       {
         id: PRO_PURCHASE_ID,
-        userId: EXAMPLE_ADA.id,
+        subjectType: "user",
+        subjectId: EXAMPLE_ADA.id,
         rail: "apple",
         role: "charge",
         providerTransactionId: "2000000512345678",
@@ -92,7 +101,8 @@ export const paymentsExampleSeed: SeedSet = defineSeed({
       },
       {
         id: ADS_PURCHASE_ID,
-        userId: EXAMPLE_GRACE.id,
+        subjectType: "user",
+        subjectId: EXAMPLE_GRACE.id,
         rail: "stripe",
         role: "charge",
         providerTransactionId: "pi_3ExampleRemoveAds",
@@ -116,7 +126,8 @@ export const paymentsExampleSeed: SeedSet = defineSeed({
       },
       {
         id: COINS_PURCHASE_ID,
-        userId: EXAMPLE_ALAN.id,
+        subjectType: "user",
+        subjectId: EXAMPLE_ALAN.id,
         rail: "google",
         role: "charge",
         providerTransactionId: "GPA.3300-0000-0000-00000",
@@ -141,7 +152,8 @@ export const paymentsExampleSeed: SeedSet = defineSeed({
     d1SeedGroup("app", PAYMENTS_ENTITLEMENTS_TABLE, PaymentsEntitlement, [
       {
         id: PRO_ENTITLEMENT_ID,
-        userId: EXAMPLE_ADA.id,
+        subjectType: "user",
+        subjectId: EXAMPLE_ADA.id,
         entitlement: "pro",
         active: true,
         expiresAt: RENEWS_AT,
@@ -152,7 +164,8 @@ export const paymentsExampleSeed: SeedSet = defineSeed({
       },
       {
         id: ADS_ENTITLEMENT_ID,
-        userId: EXAMPLE_GRACE.id,
+        subjectType: "user",
+        subjectId: EXAMPLE_GRACE.id,
         entitlement: "ads_removed",
         active: true,
         expiresAt: null,

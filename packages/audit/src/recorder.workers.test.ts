@@ -249,7 +249,7 @@ describe("the tenant column", () => {
   });
 
   test("the same actor in two tenants produces two distinguishable rows", async () => {
-    // Why `actorId` is not this column. One person administers two organisations; every event they
+    // Why `actorId` is not this column. One person administers two organizations; every event they
     // produce carries the same actor, so a trail scoped by actor returns the other tenant's history.
     const db = auditDatabase(env.DB);
     await recordAuditEvent(db, { ...EVENT, tenant: "org-1" });

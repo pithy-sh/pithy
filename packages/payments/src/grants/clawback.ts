@@ -7,7 +7,7 @@ import { PaymentsClawbackFailedError } from "../error/errors";
 import type { PurchaseProjection } from "../projection/writer";
 import type { GrantOptions } from "./apply";
 import { ledgerGrantFor } from "./apply";
-import type { PaymentsLedger } from "./ledgerSeam";
+import { ledgerAccountId, type PaymentsLedger } from "./ledgerSeam";
 
 /**
  * The refund clawback: taking back what a `grants` clause credited, where — and only where — the catalog says
@@ -95,8 +95,13 @@ export async function clawbackGrants(
   if (grant === undefined || product?.clawback !== true || !REVERSED_STATUSES.has(purchase.status)) return [];
 
   const ref = clawbackRef(purchase.id, grant.currency);
+  // The same derivation the credit used, from the same helper. This is the invariant the helper exists for:
+  // a reversal that composed the account any other way would debit an account nothing was ever credited to,
+  // and the ledger would answer that with `insufficient_funds` — a refusal indistinguishable from a spent
+  // balance, so the shortfall would be recorded and nobody would learn the reversal had missed.
+  const accountId = ledgerAccountId(purchase);
   try {
-    await ledger.debit(purchase.userId, grant.currency, grant.amount, ref, {
+    await ledger.debit(accountId, grant.currency, grant.amount, ref, {
       memo: `payments refund ${purchase.rail} ${purchase.productId}`,
     });
   } catch (cause) {
@@ -112,7 +117,7 @@ export async function clawbackGrants(
         ref,
         error: new PaymentsClawbackFailedError(
           {
-            detail: `Reversing ${grant.amount} ${grant.currency} for ${purchase.userId} after the refund of ${purchase.rail} transaction ${purchase.providerTransactionId} exceeds their available balance.`,
+            detail: `Reversing ${grant.amount} ${grant.currency} for ${accountId} after the refund of ${purchase.rail} transaction ${purchase.providerTransactionId} exceeds their available balance.`,
           },
           { cause },
         ),

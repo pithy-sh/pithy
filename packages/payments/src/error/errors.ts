@@ -263,3 +263,41 @@ export class PaymentsDiscountInvalidError extends PithyError {
     );
   }
 }
+
+/**
+ * A write path could not learn which subject the caller is acting for.
+ *
+ * Under organization billing the capability asks the adopter *who is this caller acting for* and the
+ * adopter answers from its own session — it has the memberships, and this package never learns what an
+ * organization is. An unanswered seam on a **read** needs no code at all: the query holds nothing, the
+ * gate denies, and unentitled is the direction every gate in the kit already fails. A **write** has
+ * nowhere to fail to. Submitting a purchase, restoring, opening checkout, opening the billing portal —
+ * each of them has a row or a session to create and no holder to create it against. Writing nothing and
+ * answering 200 is the worse outcome by a distance: the customer is charged by the store, the webhook
+ * arrives for a subject nobody stamped, and the money is real while the entitlement is not.
+ *
+ * **403, not 400 and not 500.** The caller is authenticated and the request is well-formed, so it is not
+ * a bad request. And an operator reading *our* logs finds nothing to fix, because what is missing is the
+ * adopter's resolver returning a value — so it is not a fault of ours either.
+ *
+ * The three fields split hard here. `message` tells a caller to pick an account, which is the one thing
+ * they can do about it. `action` names `billingSubject` and the resolver, which are an operator's words
+ * and a small map of the deployment a stranger has no need of. `detail` carries what the resolver was
+ * asked and what it gave back. The codec strips the last two.
+ */
+export class PaymentsSubjectUnresolvedError extends PithyError {
+  constructor(args: PaymentsErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "payments/subject_unresolved",
+        status: 403,
+        message: args.message ?? "No billing account is selected. Choose one, then retry.",
+        action:
+          args.action ??
+          'This project sets `billingSubject: "organization"`. Have the subject resolver in pithy.config.ts return the organization the caller is acting for.',
+        detail: args.detail,
+      },
+      options,
+    );
+  }
+}

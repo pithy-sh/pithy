@@ -28,11 +28,15 @@ import type {
  * projected, and the management queries do not select it** (`admin/read.ts`). A field that never reaches
  * the Worker's memory cannot reach a response.
  *
- * Everything else payments stores is an identifier or a fact about a transaction. The only identity
- * column is `userId`, the opaque id the adopter's auth capability issued — the same value
- * `@pithy-sh/ledger` projects on every account, and already the address a management client must name to
- * ask about a person. Turning it into a name or an address needs `auth:users:read`, which is a separate
- * grant against a separate capability.
+ * Everything else payments stores is an identifier or a fact about a transaction. The only identity is the
+ * **subject pair**, `(subjectType, subjectId)` — opaque ids the adopter's auth capability and its own
+ * membership model issued, and already the address a management client must name to ask about a holder.
+ * Turning either into a name or an address needs `auth:users:read`, which is a separate grant against a
+ * separate capability.
+ *
+ * The two halves are projected together or not at all. A view carrying `subjectId` alone would read as a
+ * person whenever an adopter's organization ids and user ids met on a value, so the management
+ * projections below copy the pair off one row and never assemble one from config and a column.
  *
  * ## The two audiences, and why their projections differ
  *
@@ -41,7 +45,8 @@ import type {
  * management client, over the control-plane seam, about everybody's. The management views are wider by
  * the facts an operator cannot work without — who owns it, what was charged, whether a human granted it,
  * and which purchase is the reason — and narrower by `outcome`, which describes a write and has no
- * meaning on a read.
+ * meaning on a read. The client views name no subject at all: the caller is the holder, and a body
+ * echoing that back would be the protocol offering a field a client could one day fill in.
  *
  * ## The field lists live in `responses.ts`
  *
@@ -115,7 +120,8 @@ export function adminCatalogView(config: PaymentsConfig): PaymentsAdminCatalogRe
 export function adminPurchaseView(purchase: PaymentsPurchaseRecord): PaymentsAdminPurchaseView {
   return {
     id: purchase.id,
-    userId: purchase.userId,
+    subjectType: purchase.subjectType,
+    subjectId: purchase.subjectId,
     rail: purchase.rail,
     providerTransactionId: purchase.providerTransactionId,
     originalTransactionId: purchase.originalTransactionId,
@@ -144,7 +150,8 @@ export function adminPurchaseView(purchase: PaymentsPurchaseRecord): PaymentsAdm
 export function adminEntitlementView(row: PaymentsEntitlement, now: Date): PaymentsAdminEntitlementView {
   const lapsed = row.expiresAt !== null && row.expiresAt.getTime() <= now.getTime();
   return {
-    userId: row.userId,
+    subjectType: row.subjectType,
+    subjectId: row.subjectId,
     key: row.entitlement,
     granted: row.active && !lapsed,
     expiresAt: row.expiresAt?.toISOString() ?? null,

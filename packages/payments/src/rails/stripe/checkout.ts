@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
+import { encodeSubjectReference } from "../../data/subject";
 import { PaymentsDiscountInvalidError, PaymentsProviderUnavailableError } from "../../error/errors";
 import type { PaymentsStripeCredentials } from "../../secret/registry";
 import type { CheckoutHandoff, CheckoutSessionInput } from "../contract";
@@ -18,10 +19,18 @@ import { STRIPE_METADATA_ACCOUNT_REFERENCE, STRIPE_METADATA_PRICE } from "./obje
  *
  * ## What this call puts on the session, and why each of them
  *
- * **`client_reference_id`, from the authenticated caller.** A Stripe purchase is only ever heard about through a
- * webhook, and that webhook carries `cus_…` and no Pithy user. This is the pairing, and it is the reason the
- * `/checkout` route takes the purchaser from `c.var.auth` and never from a request body: a client that could name
- * it could attach its purchase to somebody else's account — or, worse, attach somebody else's purchase to its own.
+ * **`client_reference_id`, the resolved subject as `encodeSubjectReference` writes it.** A Stripe purchase is only
+ * ever heard about through a webhook, and that webhook carries `cus_…` and no Pithy holder. This is the pairing,
+ * and it is the reason the `/checkout` route resolves the subject through the configured seam and never from a
+ * request body: a client that could name it could attach its purchase to somebody else's account — or, worse,
+ * attach somebody else's purchase to its own.
+ *
+ * **Both halves of the subject, always — `user:ada`, never `ada`.** Nothing keeps an organization id from
+ * equalling some user's, so an id alone paired with a kind at the far end would eventually grant one holder's
+ * subscription to the other. The bare id is also what this rail stamped before subjects existed, and
+ * `decodeSubjectReference` refuses it on purpose: a lenient read would attribute a stranger's renewal to whoever
+ * holds that id. So a stamp that is not the encoding orphans its purchase, which is the safe direction and the
+ * reason nothing here builds the string by hand.
  *
  * **The same reference in `metadata`, and again in `subscription_data[metadata]`.** Stripe copies subscription
  * metadata onto the subscription it creates, so every later `customer.subscription.*` event carries the pairing
@@ -67,7 +76,10 @@ export async function createStripeCheckoutSession(
   const promotionCodeId =
     input.discountCode === undefined ? undefined : await resolvePromotionCode(input.discountCode, options);
 
-  const reference = { [STRIPE_METADATA_ACCOUNT_REFERENCE]: input.userId };
+  // One encoding, from the one function. See `data/subject.ts` — the value goes out here and comes back
+  // through `decodeSubjectReference` on the webhook, and a second spelling anywhere breaks that loop.
+  const accountReference = encodeSubjectReference(input.subject);
+  const reference = { [STRIPE_METADATA_ACCOUNT_REFERENCE]: accountReference };
   const metadata = { ...reference, [STRIPE_METADATA_PRICE]: input.providerProductId };
 
   const form: StripeFormObject = {
@@ -75,8 +87,8 @@ export async function createStripeCheckoutSession(
     line_items: [{ price: input.providerProductId, quantity: 1 }],
     success_url: input.successUrl,
     cancel_url: input.cancelUrl,
-    // The authenticated purchaser. Never a value from a request body — see the module doc.
-    client_reference_id: input.userId,
+    // The resolved subject, both halves. Never a value from a request body — see the module doc.
+    client_reference_id: accountReference,
     metadata,
     customer: input.providerAccountId ?? undefined,
     // Stripe refuses `customer` and `customer_creation` together, and there is nothing to create when the buyer

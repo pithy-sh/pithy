@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { envStem } from "@pithy-sh/core/src/env/stem";
 import { describe, expect, test } from "vitest";
 import type { DevConfig } from "../feature/devConfig";
 import { execArgs } from "../project/packageManager";
 import type { WorkerTarget } from "../project/workers";
-import { buildWorkerEnv, envStem, startCommand } from "./env";
+import { buildWorkerEnv, startCommand } from "./env";
 
 const config: DevConfig = {
   version: 1,
@@ -18,7 +19,10 @@ const config: DevConfig = {
 };
 
 describe("envStem", () => {
-  test("uppercases and collapses non-alphanumerics", () => {
+  test("is core's derivation — the CLI writes the var and the runtime reads it, so there is one rule", () => {
+    // `<STEM>_ORIGIN` is a contract between this process and code inside the Worker: core's loopback
+    // dispatcher looks the address up by the name written here. Kept as a case rather than deleted,
+    // because what is being pinned is that this side still agrees with the reader.
     expect(envStem("api")).toBe("API");
     expect(envStem("media-cli")).toBe("MEDIA_CLI");
   });
@@ -86,6 +90,40 @@ describe("startCommand", () => {
         command: "vite",
         args: ["--host"],
       });
+    });
+  });
+
+  describe("forwarding a capability host's address into the Worker", () => {
+    const api: WorkerTarget = { name: "api", dir: "/p/apps/api", hasWrangler: true };
+
+    /**
+     * `buildWorkerEnv` publishes `<STEM>_ORIGIN` into the child *process*, and a wrangler process is
+     * not workerd. Inside the Worker `process.env` is that script's own vars and nothing else, so an
+     * app Worker looking up `EMAIL_ORIGIN` — the address core's loopback dispatcher posts a Workflow
+     * dispatch to — would find nothing. One `--var` per host is what carries it across.
+     */
+    test("a wrangler worker gets each host's origin and port as vars", () => {
+      const { args } = startCommand(api, 8787, launch, "/p/state", {}, { email: 8797 });
+      expect(args.slice(-4)).toEqual(["--var", "EMAIL_ORIGIN:http://localhost:8797", "--var", "EMAIL_PORT:8797"]);
+    });
+
+    test("a project with no capability host forwards nothing", () => {
+      expect(startCommand(api, 8787, launch, "/p/state", {}, {}).args).not.toContain("--var");
+    });
+
+    test("a host does not forward its own address to itself", () => {
+      const email: WorkerTarget = { name: "email", dir: "/p/.wrangler/pithy/hosts/email", hasWrangler: true };
+      expect(startCommand(email, 8797, launch, "/p/state", {}, { email: 8797 }).args).not.toContain("--var");
+    });
+
+    test("a dev.command worker gets none — it already inherits the real environment", () => {
+      const web: WorkerTarget = {
+        name: "web",
+        dir: "/p/apps/web",
+        hasWrangler: false,
+        dev: { autostart: true, readySignal: "ready", command: ["vite", "--host"] },
+      };
+      expect(startCommand(web, 5173, launch, "/p/state", {}, { email: 8797 }).args).toEqual(["--host"]);
     });
   });
 

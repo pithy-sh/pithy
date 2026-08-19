@@ -5,6 +5,7 @@ import { z } from "zod";
 import { pauseResumesAt } from "../../data/pause";
 import type { PurchaseEnvironment } from "../../data/purchase";
 import type { PurchaseStatus } from "../../data/status";
+import { decodeSubjectReference } from "../../data/subject";
 import { PaymentsVerificationFailedError } from "../../error/errors";
 import type { UnboundProviderEvent } from "../contract";
 
@@ -61,7 +62,17 @@ import type { UnboundProviderEvent } from "../contract";
  * two constants below are the single source for both sides and the round-trip is pinned by a test.
  */
 
-/** The `checkout_data.custom` key carrying the authenticated purchaser. snake_case, because LS normalizes to it. */
+/**
+ * The `checkout_data.custom` key carrying the subject reference. snake_case, because LS normalizes to it.
+ *
+ * **The name is frozen even though its meaning moved.** What travels here is now
+ * `encodeSubjectReference`'s output — `user:ada`, `organization:acme` — because a purchase can be held by an
+ * organization. This string is a wire contract with Lemon Squeezy rather than an identifier of ours: a
+ * checkout stamped today is a hosted page open in somebody's browser and a subscription that renews for
+ * months, and the store echoes whatever it was given back on every delivery that purchase ever produces. A
+ * renamed key reads nothing on any of them — every in-flight purchase would come back naming nobody,
+ * permanently, with a `linkProviderAccount` that never rebinds behind it. Rename it and the loss is silent.
+ */
 export const LEMON_SQUEEZY_CUSTOM_ACCOUNT = "pithy_account_reference";
 
 /** The `checkout_data.custom` key carrying this deployment's environment. snake_case, for the same reason. */
@@ -388,6 +399,14 @@ export function orderEvent(id: string, order: LemonSqueezyOrder): UnboundProvide
  * A deployment that does not know its own `ENVIRONMENT` trusts no reference at all. That is the safe
  * direction: the cost is a purchase that lands unbound and is repairable from the trail, where the other way
  * round is an unauthenticated write into the account map that nothing ever undoes.
+ *
+ * **And the value must be the subject encoding, which the MAC alone does not make it.** A stamp can be
+ * authentic and still name nobody: a bare id is what this rail wrote before subjects existed, and reading
+ * one as a user would hand a purchase to whoever else holds that id. So the reference is put through
+ * `decodeSubjectReference` — the one decoder, never a split written here — and anything that is not exactly
+ * the encoding is refused in the same direction as everything else above. The string is returned rather than
+ * the pair because a rail reports `accountReference` as a string; the route decodes it again through the same
+ * function, and gets the same answer.
  */
 export async function accountReferenceOf(
   webhook: LemonSqueezyWebhook,
@@ -403,6 +422,10 @@ export async function accountReferenceOf(
   if (typeof reference !== "string" || reference === "") return null;
   if (typeof stampedEnv !== "string" || typeof proof !== "string") return null;
 
+  // Fail closed on the shape before spending an HMAC on it. A reference that does not decode names nobody
+  // however well it is proven, so there is nothing a MAC could add.
+  if (decodeSubjectReference(reference) === undefined) return null;
+
   // The environment is checked as part of the MAC's message rather than beside it, so a proof minted for
   // staging cannot be replayed against production by editing one field.
   if (stampedEnv !== deployment) return null;
@@ -413,10 +436,10 @@ export async function accountReferenceOf(
  * The proof this deployment stamps beside an account reference, and the only reason the reference is worth
  * anything.
  *
- * An HMAC over the environment and the user id, keyed with a secret a stranger does not have. The message is
- * domain-separated by a fixed prefix so this MAC can never be confused with the webhook-body signature that
- * shares its key: the two answer different questions, and a value that satisfied both would be a
- * cross-protocol attack waiting to be found.
+ * An HMAC over the environment and the subject reference, keyed with a secret a stranger does not have. The
+ * message is domain-separated by a fixed prefix so this MAC can never be confused with the webhook-body
+ * signature that shares its key: the two answer different questions, and a value that satisfied both would be
+ * a cross-protocol attack waiting to be found.
  *
  * The key is the webhook signing secret because it is already per-environment, already rotated with the
  * rail, and already known only to this deployment and to Lemon Squeezy — and Lemon Squeezy is not the

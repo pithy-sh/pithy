@@ -34,7 +34,7 @@ await c.var.emit({
   outcome: "success",
   actorType: "user",
   actorId: user.id,
-  tenant: organisation.id, // whose account this was done to
+  tenant: organization.id, // whose account this was done to
 });
 ```
 

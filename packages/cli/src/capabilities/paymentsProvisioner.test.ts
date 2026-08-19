@@ -27,6 +27,7 @@ const PROJECT = "acme";
  */
 
 const CATALOG = PaymentsConfig.parse({
+  billingSubject: "user",
   rails: { apple: true },
   products: {
     pro_monthly: {
@@ -153,6 +154,7 @@ describe("the committed reconcile-worker template", () => {
     // added to the schema and dropped here would reconcile nothing and report zero drift, which reads
     // exactly like a rail with nothing wrong.
     const catalog = PaymentsConfig.parse({
+      billingSubject: "user",
       rails: { lemonSqueezy: true },
       lemonSqueezy: { successUrl: "https://app.example.com/thanks" },
       products: {

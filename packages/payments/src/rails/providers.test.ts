@@ -39,6 +39,7 @@ const CREDENTIALS = PaymentsProviderCredentials.parse({
 
 const config = (rails: Record<string, boolean>) =>
   PaymentsConfig.parse({
+    billingSubject: "user",
     rails,
     ...(rails.stripe
       ? {
@@ -200,6 +201,7 @@ describe("the lemonSqueezy factory hands the rail what only config knows", () =>
     // supplied it left a refusal that could not fire — and a fixed discount in the wrong currency would
     // have failed at redemption, in front of the customer.
     const config = PaymentsConfig.parse({
+      billingSubject: "user",
       rails: { lemonSqueezy: true },
       lemonSqueezy: { successUrl: "https://acme.test/thanks", storeCurrency: "usd" },
       products: { pro: { type: "subscription", name: "Pro", entitlements: ["pro"], lemonSqueezy: { variantId: "1" } } },

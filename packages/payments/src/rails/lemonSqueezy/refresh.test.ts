@@ -33,7 +33,8 @@ function stub(body: string, status = 200): LemonSqueezyHttpFetch & { urls: strin
 function stored(overrides: Partial<PaymentsPurchase> = {}): PaymentsPurchase {
   return {
     id: "44444444-4444-4444-8444-444444444444",
-    userId: "ada",
+    subjectType: "user",
+    subjectId: "ada",
     rail: "lemonSqueezy",
     role: "state",
     providerTransactionId: `subscription:${SUBSCRIPTION_ID}`,

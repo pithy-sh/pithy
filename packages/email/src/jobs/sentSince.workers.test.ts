@@ -96,7 +96,10 @@ describe("sentSince — has this template already gone to this person", () => {
       since: new Date(NOW.getTime() - HOUR_MS),
     });
 
-    expect(log.items).toEqual([{ id, status: "pending", createdAt: NOW, sentAt: null }]);
+    // `undispatched` because this harness enqueues with no send Workflow binding — the status a row is
+    // born with when nothing is coming for it (pithy-sh/pithy#410). What matters here is that the
+    // status travels, whatever it is: a caller deciding whether to send again reads it.
+    expect(log.items).toEqual([{ id, status: "undispatched", createdAt: NOW, sentAt: null }]);
     expect(log.truncated).toBe(false);
   });
 
@@ -210,7 +213,7 @@ describe("correlation — which of this template's messages", () => {
     "plan_revoked",
     "plan_paused",
   ] as const;
-  const about = (notice: string, organisation = "org-42"): string => `${notice}:${organisation}`;
+  const about = (notice: string, organization = "org-42"): string => `${notice}:${organization}`;
 
   /**
    * The ambiguity itself, stated first.

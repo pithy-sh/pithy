@@ -30,7 +30,10 @@ export const CUSTOMER_ID = 700;
 export const VARIANT_ID = 55555;
 
 /** The purchaser this deployment stamped into the checkout, echoed back by the store on every delivery. */
-export const ACCOUNT_REFERENCE = "user-ada";
+// An encoded subject reference, the exact string `encodeSubjectReference` produces (#412). A bare id is
+// what this was, and the strict decoder now refuses one — a fixture carrying the old shape would prove a
+// binding that production no longer makes.
+export const ACCOUNT_REFERENCE = "user:ada";
 
 /** What the fences are tested against. */
 export const THIS_DEPLOYMENT = "staging";

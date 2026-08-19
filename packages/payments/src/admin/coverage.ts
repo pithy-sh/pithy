@@ -53,19 +53,24 @@ export const PAYMENTS_TABLE_DISCLOSURE: Record<keyof PaymentsTables, PaymentsDis
    * history. Neither read ever selects `payload` — see `read.ts`.
    */
   pithyPaymentsPurchases: { reads: [PAYMENTS_PURCHASES_READ_SCOPE, PAYMENTS_SUBSCRIPTIONS_READ_SCOPE] },
-  /** The entitlement read model — what an account holds right now, and why. */
+  /** The entitlement read model — what a subject holds right now, and why. */
   pithyPaymentsEntitlements: { reads: [PAYMENTS_ENTITLEMENTS_READ_SCOPE] },
   /**
-   * Withheld. Every row is a *provider-side* identity — `cus_PithyAda`, an Apple `appAccountToken` — paired
-   * with the Pithy user it belongs to. Listing it in bulk hands a management client a cross-reference from
-   * a customer's store account to their user id, and there is nothing an operator can do with it that a
-   * purchase does not already answer: a purchase names its own owner and its own rail. The one legitimate
-   * question it settles — "which Stripe customer is this person" — belongs to a route that answers it for
-   * one named user, if it is ever wanted, and not to a page of a thousand of them.
+   * Withheld, and the argument is stronger now that the far side is a subject rather than a user. Every row
+   * is a *provider-side* identity — `cus_PithyAda`, an Apple `appAccountToken` — paired with the subject
+   * that holds it: a Pithy user, or an organization whose id came out of the adopter's own membership
+   * model. Listing it in bulk hands a management client a cross-reference from a store account to the
+   * adopter's internal id space, and under organization billing that maps a company to its billing
+   * identity at every store it sells through.
+   *
+   * There is nothing an operator can do with the page that a purchase does not already answer: a purchase
+   * names its own subject and its own rail. The one legitimate question it settles — "which Stripe customer
+   * is this holder" — belongs to a route that answers it for one named subject, if it is ever wanted, and
+   * not to a page of a thousand of them.
    */
   pithyPaymentsProviderAccounts: {
     withheld:
-      "Every row pairs a provider-side account identifier with a Pithy user. In bulk that is a cross-reference nothing on this surface needs, and a purchase already names its owner and rail.",
+      "Every row pairs a provider-side account identifier with a subject — a Pithy user, or an organization from the adopter's own membership model. In bulk that is a cross-reference from a store's id space into the adopter's, and nothing on this surface needs it: a purchase already names its subject and its rail.",
   },
   /**
    * Withheld. Each row holds the raw verified provider notification exactly as it arrived, and that

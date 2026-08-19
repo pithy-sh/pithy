@@ -68,7 +68,8 @@ import { getJob } from "./read";
  *
  * So a retry mints its own, writes it in the same statement that makes the row queryable again, and
  * creates the instance under it. Null when there is no binding to dispatch on, because then nothing is
- * coming for the row and the scheduler should claim it on the next tick.
+ * coming for the row and the scheduler should claim it on the next tick — and the row is `undispatched`
+ * rather than `pending` there, for the reason the write itself states.
  */
 
 /** What a retry needs: both databases, the send Workflow binding, and the clock. */
@@ -154,7 +155,13 @@ export async function retryJob(deps: RetryDeps, jobId: string): Promise<RetryRes
       // `pending`, whatever the original mode was. A retry is an operator asking for this to go now;
       // re-arming a `scheduled` job to a `sendAt` that is already in the past would say the same thing
       // less clearly, and re-deriving a `timezone` job's local slot would move the send to tomorrow.
-      status: "pending",
+      //
+      // With no binding it is `undispatched` instead — the same word `enqueueEmail` writes for the very
+      // same env (pithy-sh/pithy#410). One deployment must not have two names for one configuration
+      // fact: `pending` here would tell an operator their click queued a send while an enqueue two
+      // lines away was recording that this composition can start none. The scheduler claims either, so
+      // the retry is deferred and not dropped.
+      status: deps.sender ? "pending" : "undispatched",
       sendAt: SQLiteDate.encode(deps.now),
       attempts: 0,
       updatedAt: SQLiteDate.encode(deps.now),

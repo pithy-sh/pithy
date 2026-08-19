@@ -345,13 +345,13 @@ describe("pithy ui", () => {
         name: "api",
         requiredBindings: [],
         routes: (app) => {
-          app.get("/api/organisations", (c) => c.json({}));
+          app.get("/api/organizations", (c) => c.json({}));
         },
       }),
     };
     const report = await runUiSync({ projectDir, workerDir, config: grown, check: true });
 
-    expect(report.uncovered).toEqual(["/api/organisations"]);
+    expect(report.uncovered).toEqual(["/api/organizations"]);
     expect(report.changed).toBe(true);
     // A check that repairs the thing it is checking cannot be run twice for the same answer.
     expect(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")).toBe(written);

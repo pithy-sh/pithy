@@ -9,18 +9,24 @@ import { PAYMENTS_CAPABILITY, type PaymentsReconcileParams, paymentsWorkflowRegi
 /**
  * Starting a reconciliation pass from inside a Worker.
  *
- * **One dispatch path, three callers.** The cron in the host worker, an on-demand pass for a single user, and
- * anything a later surface adds all route through {@link triggerWorkflow} — so a scheduled run and a manual
- * one validate their parameters identically, resolve the binding identically, and log an absent binding
- * identically. Calling `env.PAYMENTS_RECONCILE.create()` directly would skip all three: a mistyped payload
- * would surface as a failed step inside a running instance rather than at the call site, and an unprovisioned
- * project would silently do nothing.
+ * **One dispatch path, three callers.** The cron in the host worker, an on-demand pass for a single holder,
+ * and anything a later surface adds all route through {@link triggerWorkflow} — so a scheduled run and a
+ * manual one validate their parameters identically, resolve the binding identically, and log an absent
+ * binding identically. Calling `env.PAYMENTS_RECONCILE.create()` directly would skip all three: a mistyped
+ * payload would surface as a failed step inside a running instance rather than at the call site, and an
+ * unprovisioned project would silently do nothing.
+ *
+ * **What is handed over is a payload, and that is why a holder is the pair.** `triggerWorkflow` parses
+ * `params` through `PaymentsReconcileParams` before it touches the binding, so a narrowing missing half its
+ * subject is refused here — where the caller is still on the stack — rather than inside an instance that
+ * would otherwise start, scan the wrong rows, and report them as the account somebody asked about. Nothing
+ * callable crosses: the instance runs with no subject seam at all, which `workflows/worker.ts` explains.
  *
  * **An absent binding is a logged skip, not a failure.** The job is declared `optional`, because the Workflow
  * lives in the prebuilt reconcile worker and that worker exists only once `pithy payments provision` has run.
  * A support request that cannot start a pass yet must not become a 500 on a route that otherwise works.
  *
- * It lives under `http/` because the on-demand caller is a request handler — support reconciling one account.
+ * It lives under `http/` because the on-demand caller is a request handler — support reconciling one holder.
  * The host worker's cron uses the identical function, which is the point: there is one way to start this job.
  */
 

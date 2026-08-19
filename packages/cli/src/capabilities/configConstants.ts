@@ -64,8 +64,11 @@ export function optionValue(
   option: ConfigOption,
   source: string,
   override: ConfigOptionValue | undefined,
-): ConfigOptionValue | ConfigConstantRef {
+): ConfigOptionValue | ConfigConstantRef | undefined {
   if (override !== undefined) return override;
   if (option.constant && declaresConstant(source, option.constant)) return { constant: option.constant };
+  // `undefined` when the option is required and this run named no value — the one thing this function
+  // will not do is invent one. It is the caller that knows which capability is being written, so the
+  // caller raises the refusal that names the flag; see `requiredOptions.ts`.
   return option.default;
 }

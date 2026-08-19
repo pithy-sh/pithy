@@ -98,7 +98,7 @@ function compose(environment: string | undefined): Hono<PithyHonoEnv> {
     await next();
   });
   for (const middleware of capability.middleware ?? []) middleware(app);
-  app.post("/organisations", requireSameOrigin(), (c) => c.text("ok"));
+  app.post("/organizations", requireSameOrigin(), (c) => c.text("ok"));
   capability.routes?.(app);
   return app;
 }
@@ -173,7 +173,7 @@ test("a mutating cookie route passes the same-origin gate in dev, with nothing i
   const app = compose("dev");
 
   const response = await app.request(
-    "http://localhost:9339/organisations",
+    "http://localhost:9339/organizations",
     { method: "POST", headers: { cookie: "session=t", origin: "http://localhost:9339" } },
     appEnv(),
   );
@@ -185,7 +185,7 @@ test("a dev composition still refuses a foreign origin", async () => {
   const app = compose("dev");
 
   const response = await app.request(
-    "http://localhost:9339/organisations",
+    "http://localhost:9339/organizations",
     { method: "POST", headers: { cookie: "session=t", origin: "https://evil.example.com" } },
     appEnv(),
   );
@@ -197,14 +197,14 @@ test("production is untouched: the configured origin passes and the local one do
   const app = compose("prod");
 
   const allowed = await app.request(
-    "https://app.pithy.sh/organisations",
+    "https://app.pithy.sh/organizations",
     { method: "POST", headers: { cookie: "session=t", origin: PRODUCTION_BASE_URL } },
     appEnv(),
   );
   expect(allowed.status).toBe(200);
 
   const refused = await app.request(
-    "http://localhost:9339/organisations",
+    "http://localhost:9339/organizations",
     { method: "POST", headers: { cookie: "session=t", origin: "http://localhost:9339" } },
     appEnv(),
   );

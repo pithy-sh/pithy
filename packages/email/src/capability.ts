@@ -18,12 +18,13 @@ import { emailAdminRoutes } from "./http/guards";
 import { registerEmailAdminRoutes } from "./http/routes";
 import { email_0001_init } from "./migrations/0001_init";
 import { email_0001_suppressions } from "./migrations/0001_suppressions";
-import { type EnqueueDeps, type EnqueueInput, type EnqueueResult, enqueueEmail } from "./send/enqueue";
+import { DevMailDelivery } from "./provision/devDelivery";
+import { emailSettings } from "./provision/settingsCheck";
+import { type EnqueueInput, type EnqueueResult, enqueueEmail } from "./send/enqueue";
+import { type EmailSenderEnv, emailSenderBinding } from "./send/senderBinding";
 import { CustomTheme, type EmailTheme, resolveTheme } from "./templates/theme";
 import { PACKAGE_VERSION } from "./version.generated";
-
-/** The send Workflow binding shape — declared by `EnqueueDeps` so the capability and adopters agree. */
-type SendWorkflowBinding = NonNullable<EnqueueDeps["sender"]>;
+import { EmailScheduleParams, EmailSendParams } from "./workflows/params";
 
 /**
  * The bindings the enqueue seam reads from the request env: the shared `DB`, the send Workflow, and the
@@ -36,9 +37,8 @@ type SendWorkflowBinding = NonNullable<EnqueueDeps["sender"]>;
  * adopter *may* do — because it is their database — is ask for it back through
  * {@link EmailCapability.suppressions} and read or write it like any other table.
  */
-export interface EmailEnqueueEnv {
+export interface EmailEnqueueEnv extends EmailSenderEnv {
   DB: D1Database;
-  EMAIL_SENDER?: SendWorkflowBinding;
   /**
    * The global, durable suppression list.
    *
@@ -97,6 +97,9 @@ export const EmailConfig = z
     // eighth `resolveEmailConfig` param and a new `CloudflareEmailProvisioner` option, both of which
     // are pinned by tests this change may not edit — so it is filed, not fixed here.
     schedulerEnabled: z.boolean().default(true).describe("Whether the every-minute scheduler Workflow runs."),
+    devDelivery: DevMailDelivery.default("remote").describe(
+      "What the prebuilt email host does with a message when it is running on your machine under `pithy dev`. **The default, `remote`, sends real mail:** the Worker runs locally and delivers through Cloudflare Email Service, so a magic link you trigger from localhost arrives in the real inbox, with the same DKIM and the same delivery logs as production. That needs a Cloudflare login `wrangler dev` can use and a sending domain already onboarded onto Email Service. Set it to `simulator` to send nothing — `wrangler dev` logs the sender, recipient and subject and writes the rendered HTML and text bodies to disk, which is what an offline machine and CI want. It changes local development only; every deployed environment always sends for real.",
+    ),
   })
   .describe("Configuration for the email capability.");
 export type EmailConfig = z.output<typeof EmailConfig>;
@@ -108,6 +111,12 @@ export interface ResolvedEmailConfig {
   fromName: string;
   baseUrl: string;
   schedulerEnabled: boolean;
+  /**
+   * What the host's `send_email` binding does under `pithy dev` — `remote` (real mail, the default)
+   * or `simulator`. Attached here because `pithy dev` reads it off the composed capability when it
+   * resolves the host's local config; nothing inside the app worker consults it.
+   */
+  devDelivery: DevMailDelivery;
   theme: EmailTheme;
 }
 
@@ -196,18 +205,15 @@ export function email(config: EmailConfigInput): EmailCapability {
       send: {
         binding: "EMAIL_SENDER",
         className: "EmailSendWorkflow",
-        params: z
-          .object({
-            jobIds: z
-              .array(z.string().min(1).describe("A queued `pithy_email_jobs` row id."))
-              .describe("The batch of queued job ids this instance sends — one durable step each."),
-          })
-          .describe("Parameters for one durable send batch."),
+        // The same object the host's own registry and its dispatch route validate against
+        // (`workflows/params.ts`). One schema, three readers: what the app dispatches, what the host
+        // deploys, and what a loopback dispatch is checked against at the door (#410).
+        params: EmailSendParams,
       },
       schedule: {
         binding: "EMAIL_SCHEDULER",
         className: "EmailSchedulerWorkflow",
-        params: z.object({}).describe("The scheduler takes no parameters — it finds its own due jobs."),
+        params: EmailScheduleParams,
         schedule: "* * * * *",
         // Optional because the binding exists only on the prebuilt email worker, which self-fires it
         // from its cron. An app worker binds EMAIL_SENDER and nothing else, so deriving a required
@@ -235,6 +241,14 @@ export function email(config: EmailConfigInput): EmailCapability {
      * route tree nobody serves.
      */
     adminRoutes: emailAdminRoutes(resolved.basePath),
+    /**
+     * How `pithy doctor` checks that these settings **work**, not merely that they are written (#411).
+     *
+     * Built from the resolved config, on the instance, so discovery needs no `pithy.manifest.json` and no
+     * import of this package by the CLI. The local half runs `workflows/hostEnv.ts` — the very declaration
+     * the prebuilt host refuses to start without — so doctor and the host cannot come to two answers.
+     */
+    settings: emailSettings({ fromAddress: resolved.fromAddress, baseUrl: resolved.baseUrl, theme }),
     email: createBounceHandler(),
   });
   /**
@@ -264,7 +278,7 @@ export function email(config: EmailConfigInput): EmailCapability {
         fromAddress: resolved.fromAddress,
         fromName: resolved.fromName,
         theme,
-        sender: env.EMAIL_SENDER,
+        sender: emailSenderBinding(env),
         // Read straight off the env the consumer forwarded. This one line is what makes suppression
         // automatic: a consumer names nothing, and a hard-bounced address is never queued for a send.
         suppressionDb: env.EMAIL_SUPPRESSIONS ? emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS) : undefined,
@@ -279,6 +293,7 @@ export function email(config: EmailConfigInput): EmailCapability {
       fromName: resolved.fromName,
       baseUrl: resolved.baseUrl,
       schedulerEnabled: resolved.schedulerEnabled,
+      devDelivery: resolved.devDelivery,
       theme,
     },
     enqueue,

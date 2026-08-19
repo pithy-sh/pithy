@@ -15,6 +15,7 @@ import {
 import { PaymentsEntitlement } from "../data/entitlement";
 import { PaymentsPurchase, type PaymentsPurchaseRow, type PurchaseEnvironment } from "../data/purchase";
 import { grantingStatuses } from "../data/status";
+import { encodeSubjectReference, type PaymentsSubject, sameSubject } from "../data/subject";
 import {
   PAYMENTS_ENTITLEMENTS_TABLE,
   PAYMENTS_PURCHASES_TABLE,
@@ -31,7 +32,7 @@ import { ProviderEvent, type ProviderEventInput } from "./event";
 /**
  * The projection writer — the one place a purchase is ever written, and the heart of the package.
  *
- * Three triggers converge here: the buying user's app submitting its receipt, the provider's webhook, and
+ * Three triggers converge here: the buyer's app submitting its receipt, the provider's webhook, and
  * the reconciliation Workflow re-verifying what the webhook missed. All three produce the identical row,
  * which is what makes a dropped client call cost nothing and a replayed webhook change nothing — and it is
  * why refunds, renewals, and revocations need no handler of their own. They are states, and this projects
@@ -46,10 +47,12 @@ import { ProviderEvent, type ProviderEventInput } from "./event";
  *   revoke a paying subscriber. An event no newer than the row it would update is ignored entirely — the
  *   comparison is a SQL predicate on the `ON CONFLICT` branch as well as a pre-read, so two concurrent
  *   writers cannot order themselves wrongly.
- * - **Never rebound.** A transaction already projected against another user raises
+ * - **Never rebound.** A transaction already projected against another subject raises
  *   `payments/receipt_already_owned` (409) rather than moving. Together with the UNIQUE constraint that is
  *   what makes a stolen receipt worthless. The `ON CONFLICT` branch carries the owner check too, so the
- *   refusal survives a race the pre-read cannot see.
+ *   refusal survives a race the pre-read cannot see. The owner is a **pair**, and every comparison of it
+ *   here is both halves: nothing keeps an organization id from equalling some user's, so an id-only check
+ *   would let `organization:acme` take `user:acme`'s transaction and the entitlement behind it.
  * - **Environment-isolated.** The deployment's own store environment is an input, and a mismatch is refused
  *   outright. A sandbox StoreKit transaction granting a real entitlement is the most common
  *   in-app-purchase security defect there is; the safe design is for such a row never to exist.
@@ -62,8 +65,8 @@ import { ProviderEvent, type ProviderEventInput } from "./event";
  * purchase — the one whose access runs longest — as provenance.
  *
  * Which rows those are is a question about the catalog as well as the event, so a write also clears the keys
- * this user holds that the catalog has stopped granting — see {@link keysToDerive}. A catalog edit produces
- * no event of its own, and nothing else in the package would ever repair such a row.
+ * this subject holds that the catalog has stopped granting — see {@link keysToDerive}. A catalog edit
+ * produces no event of its own, and nothing else in the package would ever repair such a row.
  *
  * The ledger credit a `grants` clause asks for is deliberately **not** here. This function stays pure D1,
  * so its tests need no optional package resolved; fulfillment acts on what it returns. Nothing is lost —
@@ -111,6 +114,10 @@ export async function projectPurchase(
   options: ProjectPurchaseOptions,
 ): Promise<PurchaseProjection> {
   const event = ProviderEvent.parse(input);
+  // The owner, read off the event once and carried as one object from here down. Named here rather than at
+  // each call site because a pair assembled twice is a pair that can be assembled wrongly — the whole point
+  // of `PaymentsSubject` is that the two halves never travel apart. See `data/subject.ts`.
+  const subject: PaymentsSubject = { subjectType: event.subjectType, subjectId: event.subjectId };
   const { config } = options;
   const now = options.now ?? new Date();
   const newId = options.newId ?? (() => crypto.randomUUID());
@@ -135,7 +142,9 @@ export async function projectPurchase(
   const existing = await readPurchase(db, event);
 
   if (existing !== undefined) {
-    if (existing.userId !== event.userId) throw alreadyOwned(event, existing.userId);
+    // The owner comes out of the row as one object and is compared as one object. `sameSubject` is both
+    // halves and nothing else — an id-only check here is the cross-holder rebind this refusal exists for.
+    if (!sameSubject(existing, subject)) throw alreadyOwned(event, existing);
     // Stale, or an exact replay. Either way the row already says something at least as new, so nothing is
     // written and the caller gets the purchase it asked about.
     if (existing.providerEventAt.getTime() >= event.providerEventAt.getTime()) {
@@ -144,15 +153,17 @@ export async function projectPurchase(
         outcome: "ignored",
         purchase: existing,
         product: { id: existing.productId, entitlements: entitlementsForProduct(config, existing.productId) },
-        entitlements: await readEntitlements(db, event.userId, keys),
+        entitlements: await readEntitlements(db, subject, keys),
       };
     }
   }
 
-  const keys = await keysToDerive(db, config, entry.product, existing?.productId, event.userId);
+  const keys = await keysToDerive(db, config, entry.product, existing?.productId, subject);
   const row = PaymentsPurchase.encode({
     id: existing?.id ?? newId(),
-    userId: event.userId,
+    // The owner spread from the one object that carries it, rather than two fields written side by side.
+    // Two adjacent assignments are two a hand can transpose, and a transposed pair typechecks.
+    ...subject,
     rail: event.rail,
     providerTransactionId: event.providerTransactionId,
     productId: entry.id,
@@ -180,8 +191,8 @@ export async function projectPurchase(
     // Two statements per key, because a derivation cannot update a row that is not there yet. The insert is
     // the row's existence; the update is its value, computed from the purchases table inside this same
     // transaction — so the answer accounts for the purchase written one statement earlier.
-    statements.push(compile(d1, ensureEntitlement(db, newId(), event.userId, key, at)));
-    statements.push(compile(d1, deriveEntitlement(db, config, event.userId, key, at)));
+    statements.push(compile(d1, ensureEntitlement(db, newId(), subject, key, at)));
+    statements.push(compile(d1, deriveEntitlement(db, config, subject, key, at)));
   }
 
   // One batch, one D1 transaction: the purchase and every entitlement it implies commit together or not at
@@ -197,10 +208,10 @@ export async function projectPurchase(
       detail: `Projected ${event.rail} transaction ${event.providerTransactionId} but could not read it back.`,
     });
   }
-  // The race the pre-read cannot see: a concurrent submission for a different user landed first, and this
+  // The race the pre-read cannot see: a concurrent submission for a different subject landed first, and this
   // batch's `ON CONFLICT` guard correctly refused to rebind the row. Report the refusal rather than a
   // success against a row that is not this caller's.
-  if (projected.userId !== event.userId) throw alreadyOwned(event, projected.userId);
+  if (!sameSubject(projected, subject)) throw alreadyOwned(event, projected);
 
   return {
     outcome:
@@ -211,21 +222,27 @@ export async function projectPurchase(
           : "updated",
     purchase: projected,
     product: { id: entry.id, entitlements: entry.product.entitlements },
-    entitlements: await readEntitlements(db, event.userId, keys),
+    entitlements: await readEntitlements(db, subject, keys),
   };
 }
 
-/** The 409, with the throw-site context in `detail` where an operator sees it and a client never does. */
-function alreadyOwned(event: ProviderEvent, owner: string): PaymentsReceiptAlreadyOwnedError {
+/**
+ * The 409, with the throw-site context in `detail` where an operator sees it and a client never does.
+ *
+ * Both subjects are rendered through `encodeSubjectReference`, so the line names the *kind* as well as the
+ * id. The interesting refusal is the one where the two ids read identically and only the kind differs, and
+ * a log printing bare ids would render that as a machine refusing `acme` on behalf of `acme`.
+ */
+function alreadyOwned(event: ProviderEvent, owner: PaymentsSubject): PaymentsReceiptAlreadyOwnedError {
   return new PaymentsReceiptAlreadyOwnedError({
-    detail: `${event.rail} transaction ${event.providerTransactionId} is owned by ${owner}; ${event.userId} submitted it.`,
+    detail: `${event.rail} transaction ${event.providerTransactionId} is owned by ${encodeSubjectReference(owner)}; ${encodeSubjectReference(event)} submitted it.`,
   });
 }
 
 /**
  * The entitlement keys the catalog says this event touches: the ones its product grants, plus the ones the
  * row's previous product granted when a catalog edit re-mapped the SKU. Sorted, so a batch's statement order
- * is deterministic and two concurrent projections for one user cannot deadlock on opposite orders.
+ * is deterministic and two concurrent projections for one subject cannot deadlock on opposite orders.
  */
 function affectedKeys(
   config: PaymentsConfig,
@@ -241,13 +258,14 @@ function affectedKeys(
 
 /**
  * Every key a write must re-derive: what {@link affectedKeys} reads out of the catalog, **plus the keys this
- * user still holds that no current product grants at all**.
+ * subject still holds that no current product grants at all**.
  *
  * That second set cannot come from the config, because it is precisely what the config no longer mentions.
- * Drop `beta` from a product's `entitlements` and ship, and every user holding it holds it forever otherwise:
- * no purchase for that key will ever arrive again, the read path only lapses a row carrying a dated expiry,
- * and the reconciliation pass re-asks about subscriptions. A catalog edit is a deploy, so the repair is one
- * indexed read per projection and lands on this user's next purchase event, whatever it was about.
+ * Drop `beta` from a product's `entitlements` and ship, and every subject holding it holds it forever
+ * otherwise: no purchase for that key will ever arrive again, the read path only lapses a row carrying a
+ * dated expiry, and the reconciliation pass re-asks about subscriptions. A catalog edit is a deploy, so the
+ * repair is one indexed read per projection and lands on this subject's next purchase event, whatever it
+ * was about.
  *
  * Held rows are excluded, and the `active` filter keeps the set to rows that still claim something — a
  * support comp of a key the catalog never sold is a human's decision, and an already-cleared row needs no
@@ -258,7 +276,7 @@ async function keysToDerive(
   config: PaymentsConfig,
   product: PaymentsProduct,
   previousProductId: string | undefined,
-  userId: string,
+  subject: PaymentsSubject,
 ): Promise<string[]> {
   const keys = new Set<string>(affectedKeys(config, product, previousProductId));
   const granted = new Set<string>();
@@ -268,7 +286,10 @@ async function keysToDerive(
   const held = await db
     .selectFrom(PAYMENTS_ENTITLEMENTS_TABLE)
     .select("entitlement")
-    .where("userId", "=", userId)
+    // Both halves. This read decides what a write repairs, so a predicate matching on the id alone would
+    // hand one holder the other's orphaned keys and clear rows nothing asked about.
+    .where("subjectType", "=", subject.subjectType)
+    .where("subjectId", "=", subject.subjectId)
     .where("active", "=", 1)
     .where("manual", "=", 0)
     .execute();
@@ -295,21 +316,28 @@ async function readPurchase(
 /**
  * The entitlement rows for these keys, decoded, in key order. Empty when the product grants none.
  *
- * Chunked, because `keys` is no longer bounded by one product: {@link keysToDerive} adds every key this user
- * holds that the catalog dropped, and a long-lived account collects them. One statement binds a parameter per
- * key plus the `userId` — hence `fixed` of 1 — and D1 refuses the statement rather than truncating the list.
+ * Chunked, because `keys` is no longer bounded by one product: {@link keysToDerive} adds every key this
+ * subject holds that the catalog dropped, and a long-lived account collects them. One statement binds a
+ * parameter per key **plus both halves of the subject** — hence `fixed` of 2, where an owner that was one
+ * column wanted 1.
+ *
+ * That number is the whole safety of this loop, and getting it wrong is silent until it is not: left at 1
+ * the chunker hands back 100 keys, the statement binds 102, and D1 refuses the statement outright rather
+ * than truncating the list. The write has already committed by then, so the failure lands on the read-back
+ * of a purchase that was recorded perfectly — and only on the long-lived accounts the chunking exists for.
  */
 async function readEntitlements(
   db: PaymentsDatabase,
-  userId: string,
+  subject: PaymentsSubject,
   keys: readonly string[],
 ): Promise<PaymentsEntitlement[]> {
   const entitlements: PaymentsEntitlement[] = [];
-  for (const chunk of chunkByBoundParameters(keys, 1)) {
+  for (const chunk of chunkByBoundParameters(keys, 2)) {
     const rows = await db
       .selectFrom(PAYMENTS_ENTITLEMENTS_TABLE)
       .selectAll()
-      .where("userId", "=", userId)
+      .where("subjectType", "=", subject.subjectType)
+      .where("subjectId", "=", subject.subjectId)
       .where("entitlement", "in", chunk)
       .execute();
     for (const row of rows) entitlements.push(PaymentsEntitlement.parse(row));
@@ -335,8 +363,8 @@ export function upsertPurchaseStatement(d1: D1Database, row: PaymentsPurchaseRow
  * because a pre-read cannot see a concurrent writer: SQLite evaluates them against the row as it stands at
  * commit, so a stale event and a receipt lifted from another account are both refused by the database.
  *
- * `id`, `userId`, and `createdAt` are absent from the update set on purpose — a transaction's identity, its
- * owner, and when it was first projected are immutable.
+ * `id`, `subjectType`, `subjectId`, and `createdAt` are absent from the update set on purpose — a
+ * transaction's identity, its owner, and when it was first projected are immutable.
  */
 function upsertPurchase(db: PaymentsDatabase, row: PaymentsPurchaseRow) {
   return (
@@ -377,20 +405,34 @@ function upsertPurchase(db: PaymentsDatabase, row: PaymentsPurchaseRow) {
                 // biome-ignore lint/suspicious/noExplicitAny: an encoded ms-epoch number from the row.
                 row.providerEventAt as any,
               ),
-              // Never rebind an owner, whoever wins the race.
+              // Never rebind an owner, whoever wins the race — and the owner is both columns. With only
+              // the id compared, `organization:acme` overwrites `user:acme`'s row: the subject columns are
+              // absent from the update set, so the theft is silent, and the victim keeps a row now carrying
+              // the thief's status, payload, and timestamp.
               // biome-ignore lint/suspicious/noExplicitAny: as above.
-              eb(eb.ref(`${PAYMENTS_PURCHASES_TABLE}.userId`), "=", row.userId as any),
+              eb(eb.ref(`${PAYMENTS_PURCHASES_TABLE}.subjectType`), "=", row.subjectType as any),
+              // biome-ignore lint/suspicious/noExplicitAny: as above.
+              eb(eb.ref(`${PAYMENTS_PURCHASES_TABLE}.subjectId`), "=", row.subjectId as any),
             ]),
           ),
       )
   );
 }
 
-/** The entitlement row's existence. Cleared, so a project that grants nothing still leaves provenance. */
-function ensureEntitlement(db: PaymentsDatabase, id: string, userId: string, key: string, at: number) {
+/**
+ * The entitlement row's existence. Cleared, so a project that grants nothing still leaves provenance.
+ *
+ * **The conflict target is the whole unique, all three columns.** SQLite resolves `ON CONFLICT` against an
+ * index rather than against a prefix of one, so a target naming `(subjectId, entitlement)` matches
+ * `UNIQUE (subjectType, subjectId, entitlement)` not at all and raises `ON CONFLICT clause does not match
+ * any PRIMARY KEY or UNIQUE constraint`. That throw happens inside the batch, which is the whole purchase
+ * write — so a target one column short does not cost an entitlement, it costs the sale.
+ */
+function ensureEntitlement(db: PaymentsDatabase, id: string, subject: PaymentsSubject, key: string, at: number) {
   const row = {
     id,
-    userId,
+    // Spread, not written out: the pair goes into the row the way it came out of the caller.
+    ...subject,
     entitlement: key,
     active: 0,
     expiresAt: null,
@@ -405,7 +447,7 @@ function ensureEntitlement(db: PaymentsDatabase, id: string, userId: string, key
       .insertInto(PAYMENTS_ENTITLEMENTS_TABLE)
       // biome-ignore lint/suspicious/noExplicitAny: an encoded row; Kysely's insert type derives from z.input.
       .values(row as any)
-      .onConflict((oc) => oc.columns(["userId", "entitlement"]).doNothing())
+      .onConflict((oc) => oc.columns(["subjectType", "subjectId", "entitlement"]).doNothing())
   );
 }
 
@@ -421,6 +463,12 @@ function ensureEntitlement(db: PaymentsDatabase, id: string, userId: string, key
  * between "the read model agrees with what I read a moment ago" and "the read model agrees with the
  * purchases". Only the second survives a concurrent write.
  *
+ * **The two subject predicates are the join, and they are the same pair.** The CTE reads the purchases
+ * table and the UPDATE writes the entitlements table, so those `where`s are the only thing tying one
+ * holder's money to one holder's row. Key them differently — one half here, both halves there, a type from
+ * config beside an id from a row — and the derivation reads one subject's purchases and writes another
+ * subject's entitlement. That is a grant nobody bought, and nothing downstream can tell.
+ *
  * ## Two shapes here are about D1's bound-parameter cap, not about style
  *
  * D1 refuses a statement carrying more than 100 bound parameters (see `@pithy-sh/core`'s
@@ -435,7 +483,13 @@ function ensureEntitlement(db: PaymentsDatabase, id: string, userId: string, key
  * An empty list is the honest ordinary case, not a branch: `json_each('[]')` yields no rows, so no purchase
  * qualifies and the row is cleared — which is exactly right when a catalog edit stops granting a key.
  */
-function deriveEntitlement(db: PaymentsDatabase, config: PaymentsConfig, userId: string, key: string, at: number) {
+function deriveEntitlement(
+  db: PaymentsDatabase,
+  config: PaymentsConfig,
+  subject: PaymentsSubject,
+  key: string,
+  at: number,
+) {
   const grantingProducts = JSON.stringify(
     Object.entries(config.products)
       .filter(([, product]) => product.entitlements.includes(key))
@@ -450,7 +504,8 @@ function deriveEntitlement(db: PaymentsDatabase, config: PaymentsConfig, userId:
         cb
           .selectFrom(PAYMENTS_PURCHASES_TABLE)
           .select(["id", "expiresAt"])
-          .where("userId", "=", userId)
+          .where("subjectType", "=", subject.subjectType)
+          .where("subjectId", "=", subject.subjectId)
           // The catalog as one parameter. `json_each` is SQLite's own, so the ids stay bound values — never
           // interpolated SQL — and a thousand-product catalog binds exactly what a one-product catalog does.
           .where(sql<SqlBool>`${sql.ref("productId")} in (select value from json_each(${grantingProducts}))`)
@@ -470,10 +525,15 @@ function deriveEntitlement(db: PaymentsDatabase, config: PaymentsConfig, userId:
         sourcePurchaseId: eb.selectFrom("winner").select("id"),
         updatedAt: at,
       }))
-      .where("userId", "=", userId)
+      .where("subjectType", "=", subject.subjectType)
+      .where("subjectId", "=", subject.subjectId)
       .where("entitlement", "=", key)
       // The hold. Without this predicate a support comp of a key the catalog also sells is erased by the very
       // next purchase event for that key — the derivation would find no purchase behind the comp and clear it.
+      //
+      // It is a hold on one row, not on one key: a comp written for `user:ada` shields `user:ada`'s row and
+      // nothing else, so `organization:acme` buying the same key is derived normally. Anything wider would
+      // let a single support decision freeze a key across every holder in the project.
       .where("manual", "=", 0)
   );
 }

@@ -4,6 +4,7 @@
 import { env } from "cloudflare:test";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { openLedger } from "@pithy-sh/ledger/src/ledger";
 import { ledger_0001_accounts } from "@pithy-sh/ledger/src/migrations/0001_accounts";
 import type { Kysely } from "kysely";
@@ -19,6 +20,7 @@ import type { PaymentsRailProvider, UnboundProviderEvent } from "../rails/contra
 import type { PaddleSweepReport } from "./paddleSweep";
 import type { ReconcileRailAccess } from "./railAccess";
 import { type ReconcileDeps, type ReconcileStep, reconcilePayments } from "./reconcile";
+import { type PaymentsWorkerEnv, reconcileWorkerConfig } from "./workerConfig";
 
 /**
  * The reconciliation pass, against real D1 through Miniflare.
@@ -36,6 +38,10 @@ const DAY = 86_400 * SECOND;
 const T0 = 1_700_000_000_000;
 
 const CONFIG = PaymentsConfig.parse({
+  // Required now, and the project decides it once. `user` here, so every seed below is one person's
+  // purchase; the organization case has its own tests, because the property they prove is that the two
+  // kinds do not reach each other.
+  billingSubject: "user",
   rails: { apple: true, google: true, stripe: true },
   stripe: {
     successUrl: "https://acme.example/thanks",
@@ -80,7 +86,8 @@ async function seed(overrides: Partial<ProviderEventInput> = {}): Promise<Paymen
     rail: "apple",
     providerTransactionId: "txn-1",
     providerProductId: "com.acme.pro.monthly",
-    userId: "ada",
+    subjectType: "user",
+    subjectId: "ada",
     status: "active",
     environment: "production",
     purchasedAt: new Date(T0 - 30 * DAY),
@@ -437,7 +444,8 @@ describe("reconcilePayments", () => {
         rail: "apple",
         providerTransactionId: "txn-fresh",
         providerProductId: "com.acme.pro.monthly",
-        userId: "ada",
+        subjectType: "user",
+        subjectId: "ada",
         status: "active",
         environment: "production",
         purchasedAt: new Date(T0 - DAY),
@@ -465,7 +473,8 @@ describe("reconcilePayments", () => {
         rail: "apple",
         providerTransactionId: "txn-stale",
         providerProductId: "com.acme.pro.monthly",
-        userId: "ada",
+        subjectType: "user",
+        subjectId: "ada",
         status: "active",
         environment: "production",
         purchasedAt: new Date(T0 - 300 * DAY),
@@ -484,18 +493,73 @@ describe("reconcilePayments", () => {
     expect(report).toMatchObject({ scanned: 1, drifted: 1 });
   });
 
-  test("narrows to one user — the same steps, which is what makes it the support tool", async () => {
-    await seed({ userId: "ada", providerTransactionId: "txn-ada", originalTransactionId: "orig-ada" });
-    await seed({ userId: "grace", providerTransactionId: "txn-grace", originalTransactionId: "orig-grace" });
+  test("narrows to one holder — the same steps, which is what makes it the support tool", async () => {
+    await seed({ subjectId: "ada", providerTransactionId: "txn-ada", originalTransactionId: "orig-ada" });
+    await seed({ subjectId: "grace", providerTransactionId: "txn-grace", originalTransactionId: "orig-grace" });
 
     const asked: string[] = [];
     const report = await reconcilePayments(
       deps({ apple: fakeRail("apple", async (row) => refreshedFrom(row), asked) }),
       syncStep,
-      { userId: "ada" },
+      { subjectType: "user", subjectId: "ada" },
     );
     expect(asked).toEqual(["txn-ada"]);
     expect(report.scanned).toBe(1);
+  });
+
+  test("the narrowing is the pair, so a user and an organization sharing an id do not answer for each other", async () => {
+    // Nothing in the kit keeps the two id spaces apart — a Better Auth organization id and a user id are
+    // minted by different systems and may collide. A pass narrowed on the id alone would reconcile both
+    // rows and report the count as the account it was asked about, which is the support tool answering
+    // about somebody else.
+    await seed({
+      subjectType: "user",
+      subjectId: "acme",
+      providerTransactionId: "txn-user",
+      originalTransactionId: "orig-user",
+    });
+    await seed({
+      subjectType: "organization",
+      subjectId: "acme",
+      providerTransactionId: "txn-org",
+      originalTransactionId: "orig-org",
+    });
+
+    const asked: string[] = [];
+    const report = await reconcilePayments(
+      deps({ apple: fakeRail("apple", async (row) => refreshedFrom(row), asked) }),
+      syncStep,
+      { subjectType: "organization", subjectId: "acme" },
+    );
+    expect(asked).toEqual(["txn-org"]);
+    expect(report.scanned).toBe(1);
+  });
+
+  test("half a narrowing widens the pass rather than matching an id against either kind", async () => {
+    // The schema refuses half a subject before a Workflow instance exists (`specs.test.ts`), so this is the
+    // second line: params reaching the query some other way. The two directions are not symmetric — a pass
+    // that ignores half a filter is wide and slow and right, where one that keys on `subjectId` alone
+    // reconciles whichever kind carries that id. So the guard reads both halves or neither.
+    await seed({
+      subjectType: "user",
+      subjectId: "acme",
+      providerTransactionId: "txn-user",
+      originalTransactionId: "orig-user",
+    });
+    await seed({
+      subjectType: "organization",
+      subjectId: "acme",
+      providerTransactionId: "txn-org",
+      originalTransactionId: "orig-org",
+    });
+    await seed({ subjectId: "grace", providerTransactionId: "txn-grace", originalTransactionId: "orig-grace" });
+
+    const report = await reconcilePayments(
+      deps({ apple: fakeRail("apple", async (row) => refreshedFrom(row)) }),
+      syncStep,
+      { subjectId: "acme" },
+    );
+    expect(report.scanned).toBe(3);
   });
 
   test("narrows to one rail, so a single store's outage does not cost the other two", async () => {
@@ -531,16 +595,21 @@ describe("reconcilePayments", () => {
     expect(await statusOf("txn-1")).toBe("canceled");
   });
 
-  test("a refresh never rebinds an owner — the user comes from the row, never from the rail", async () => {
-    await seed({ userId: "ada" });
+  test("a refresh never rebinds an owner — the subject comes from the row, never from the rail", async () => {
+    // Both halves, read back from the row the pass rewrote. A rail's refresh answer carries no subject at
+    // all — `UnboundProviderEvent` has no field for one — and the pair the writer stores is the pair it was
+    // handed off the stored row, never a kind from config beside an id from somewhere else.
+    await seed({ subjectType: "organization", subjectId: "acme" });
     await reconcilePayments(
       deps({ apple: fakeRail("apple", async (row) => refreshedFrom(row, { status: "canceled" })) }),
       syncStep,
     );
-    const row = await env.DB.prepare("select user_id from pithy_payments_purchases where provider_transaction_id = ?")
+    const row = await env.DB.prepare(
+      "select subject_type, subject_id from pithy_payments_purchases where provider_transaction_id = ?",
+    )
       .bind("txn-1")
-      .first<{ user_id: string }>();
-    expect(row?.user_id).toBe("ada");
+      .first<{ subject_type: string; subject_id: string }>();
+    expect(row).toMatchObject({ subject_type: "organization", subject_id: "acme" });
   });
 
   test("an empty catalog is one cheap page and a clean report", async () => {
@@ -670,7 +739,8 @@ describe("reconcilePayments — superseded rows", () => {
         rail: "apple",
         providerTransactionId: "txn-2",
         providerProductId: "com.acme.pro.monthly",
-        userId: "ada",
+        subjectType: "user",
+        subjectId: "ada",
         status: "active",
         environment: "production",
         purchasedAt: new Date(T0 - 29 * DAY),
@@ -747,6 +817,7 @@ describe("reconcilePayments — superseded rows", () => {
  */
 describe("reconcilePayments — the default fulfillment path", () => {
   const COINS = PaymentsConfig.parse({
+    billingSubject: "user",
     rails: { apple: true },
     products: {
       pro_monthly: {
@@ -767,6 +838,9 @@ describe("reconcilePayments — the default fulfillment path", () => {
     await ledger_0001_accounts.up(createDatabase(env.DB, {}) as unknown as Kysely<unknown>);
   });
 
+  // The encoded pair, not the bare id: `ledgerAccountId` composes both halves so an organization called
+  // `acme` and a user called `acme` cannot share one balance. Spelled out rather than called, so a change to
+  // that derivation fails here instead of agreeing with itself.
   const balance = () => openLedger(env.DB, () => T0).balance("ada", "coins");
 
   test("a renewal found only by reconciliation credits the balance, through the real closure", async () => {
@@ -777,7 +851,8 @@ describe("reconcilePayments — the default fulfillment path", () => {
         rail: "apple",
         providerTransactionId: "txn-1",
         providerProductId: "com.acme.pro.monthly",
-        userId: "ada",
+        subjectType: "user",
+        subjectId: "ada",
         status: "active",
         environment: "production",
         purchasedAt: new Date(T0 - 30 * DAY),
@@ -812,7 +887,8 @@ describe("reconcilePayments — the default fulfillment path", () => {
         rail: "apple",
         providerTransactionId: "txn-1",
         providerProductId: "com.acme.pro.monthly",
-        userId: "ada",
+        subjectType: "user",
+        subjectId: "ada",
         status: "active",
         environment: "production",
         purchasedAt: new Date(T0 - 30 * DAY),
@@ -1272,5 +1348,55 @@ describe("the Paddle events sweep, inside a pass", () => {
     );
     expect(report.swept?.failed).toBe(3);
     expect(report.scanned).toBe(1);
+  });
+});
+
+/**
+ * The reconcile worker's boot config.
+ *
+ * It lives in this file rather than beside `worker.ts` because that module imports `cloudflare:workers`,
+ * so it can only be exercised in this pool — and the config it reads is this pass's own catalog.
+ *
+ * The property is a **deliberate behaviour change**: `billingSubject` is required, so the fallback to `{}`
+ * that used to make an absent var harmless now refuses. That is worth a test rather than a discovery in
+ * production, because the failure it replaces is silent — a defaulted `user` reconciling an organization's
+ * subscriptions repairs rows under a holder nobody chose, and reports the pass as healthy.
+ */
+describe("reconcileWorkerConfig", () => {
+  test("an absent PAYMENTS_CONFIG is refused, not defaulted", () => {
+    expect(() => reconcileWorkerConfig({} as PaymentsWorkerEnv)).toThrow(PithyError);
+    // And an empty one is absent rather than malformed: the key with no value is the same missing config.
+    expect(() => reconcileWorkerConfig({ PAYMENTS_CONFIG: "" } as PaymentsWorkerEnv)).toThrow(PithyError);
+  });
+
+  test("a config from before the holder kind existed is refused, naming the key and the repair", () => {
+    // The exact shape a worker provisioned by an earlier build carries: a complete, valid catalog with no
+    // `billingSubject`. It reconciled happily yesterday.
+    const before = JSON.stringify({ rails: { apple: true }, products: {} });
+    let caught: unknown;
+    try {
+      reconcileWorkerConfig({ PAYMENTS_CONFIG: before } as PaymentsWorkerEnv);
+    } catch (cause) {
+      caught = cause;
+    }
+    expect(caught).toBeInstanceOf(PithyError);
+    const payload = (caught as PithyError).payload;
+    expect(payload.message).toContain("PAYMENTS_CONFIG");
+    // The action is the operator's half — both steps of it, in order. The config is the adopter's file and
+    // the var is a copy of it, so a provision alone writes the same refusal back.
+    expect(payload.action).toContain("billingSubject");
+    expect(payload.action).toContain("pithy payments provision");
+  });
+
+  test("PAYMENTS_CONFIG that is not JSON at all is a refusal too, not a raw SyntaxError", () => {
+    expect(() => reconcileWorkerConfig({ PAYMENTS_CONFIG: "{" } as PaymentsWorkerEnv)).toThrow(PithyError);
+  });
+
+  test("the var provisioning actually writes parses back to the catalog that went in", () => {
+    // Anti-vacuity, and the round trip the split rests on: `billingSubject` is a two-value enum precisely
+    // so it survives `JSON.stringify`. The callable half — `resolveSubject` — is not here and cannot be.
+    const parsed = reconcileWorkerConfig({ PAYMENTS_CONFIG: JSON.stringify(CONFIG) } as PaymentsWorkerEnv);
+    expect(parsed.billingSubject).toBe("user");
+    expect(parsed).toEqual(CONFIG);
   });
 });

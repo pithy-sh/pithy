@@ -13,6 +13,7 @@ import {
   CONFIG_LINE_WIDTH,
   CONFIG_OPTION_INDENT,
   ConfigOption,
+  type ConfigOptionValue,
   renderCapabilityImport,
   renderCapabilityRegistration,
   renderConfigOptionComment,
@@ -362,6 +363,56 @@ describe("buildReconcilePlan — config keys", () => {
       default: "/auth",
       describe: "Where the auth routes mount.",
     });
+  });
+
+  /**
+   * A **required** option — one the manifest states no default for — is drift `pithy upgrade` can report
+   * and cannot repair.
+   *
+   * Reporting it is the point: `pithy doctor` names the key, so the adopter learns the config is
+   * incomplete before the Worker refuses to boot on it. Writing it is not on offer, because there is no
+   * value `upgrade` is entitled to pick and the whole reason the option has no default is that picking is
+   * the expensive mistake (#412). So the plan carries the key with no `default` and the apply refuses,
+   * naming the option and what it takes.
+   */
+  test("reports a required option with no default, and the apply refuses rather than writing undefined", async () => {
+    await writeManifest(dir, {
+      name: "auth",
+      package: "@pithy-sh/auth",
+      requiredBindings: [],
+      configOptions: [
+        { key: "billingSubject", choices: ["user", "organization"], describe: "Who holds a subscription." },
+      ],
+    });
+    await writeFile(join(workerDir, "pithy.config.ts"), configWith("    auth(),"));
+
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: AUTH,
+    });
+    const auth = plan.perCapability.find((cap) => cap.name === "auth");
+    expect(auth?.missingConfigKeys).toEqual([
+      { key: "billingSubject", choices: ["user", "organization"], describe: "Who holds a subscription." },
+    ]);
+
+    const before = await readFile(join(workerDir, "pithy.config.ts"), "utf8");
+    const error = (await applyReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      plan,
+      migrate: false,
+      env: "dev",
+      capabilities: [],
+    }).catch((thrown: unknown) => thrown)) as PithyError;
+
+    expect(error).toBeInstanceOf(PithyError);
+    expect(error.message).toContain("billingSubject");
+    expect(error.payload.action).toContain("--set billingSubject=user");
+    expect(await readFile(join(workerDir, "pithy.config.ts"), "utf8")).toBe(before);
   });
 
   test("reports and writes an option the adopter fills in by hand, as the empty literal", async () => {
@@ -1101,6 +1152,19 @@ function shippedManifests(): [string, CapabilityManifest][] {
 }
 
 /**
+ * The values a shipped option can put on the right of its line.
+ *
+ * A default, where the manifest states one. A **required** option states none — the answer is the
+ * adopter's, and that absence is the whole declaration (#412) — so the gate measures what an adopter can
+ * actually answer it with: every one of its choices. An option with neither would render nothing at all,
+ * which is why the list is asserted non-empty rather than quietly skipped.
+ */
+function renderedValues(option: ConfigOption): ConfigOptionValue[] {
+  if (option.default !== undefined) return [option.default];
+  return [...(option.choices ?? [])];
+}
+
+/**
  * The width rule, as a gate rather than a sentence.
  *
  * `renderConfigValue`'s contract has always said a default must fit on one line, because Biome breaks
@@ -1131,11 +1195,15 @@ describe("every shipped manifest default fits the line Biome would keep", () => 
   for (const [pkg, manifest] of manifests) {
     for (const option of manifest.configOptions) {
       test(`${pkg}: ${option.key}`, () => {
-        const line = renderConfigOptionLine(option.key, option.default, CONFIG_OPTION_INDENT);
-        expect(
-          line.length,
-          `${pkg}'s ${option.key} default renders ${line.length} columns. Biome breaks past ${CONFIG_LINE_WIDTH}, and the exploded literal fails biome check on an untouched scaffold. Shrink the example.`,
-        ).toBeLessThanOrEqual(CONFIG_LINE_WIDTH);
+        const values = renderedValues(option);
+        expect(values.length, `${pkg}'s ${option.key} states neither a default nor any choices.`).toBeGreaterThan(0);
+        for (const value of values) {
+          const line = renderConfigOptionLine(option.key, value, CONFIG_OPTION_INDENT);
+          expect(
+            line.length,
+            `${pkg}'s ${option.key} renders ${line.length} columns. Biome breaks past ${CONFIG_LINE_WIDTH}, and the exploded literal fails biome check on an untouched scaffold. Shrink the example.`,
+          ).toBeLessThanOrEqual(CONFIG_LINE_WIDTH);
+        }
       });
     }
   }
@@ -1181,7 +1249,11 @@ describe("every shipped manifest option renders lines Biome leaves alone", () =>
       lines.push(`    ${manifest.name}({`);
       for (const option of manifest.configOptions) {
         lines.push(renderConfigOptionComment(option.describe, CONFIG_OPTION_INDENT));
-        lines.push(renderConfigOptionLine(option.key, option.default, CONFIG_OPTION_INDENT));
+        // One line per option, so the file stays a legal object literal — a required option renders the
+        // first value an adopter could answer it with. Every other choice is measured by the width gate.
+        lines.push(
+          renderConfigOptionLine(option.key, renderedValues(option)[0] as ConfigOptionValue, CONFIG_OPTION_INDENT),
+        );
       }
       lines.push("    }),");
     }
@@ -1297,7 +1369,7 @@ describe("every shipped manifest renders a whole config file Biome leaves alone"
       imports.push(renderCapabilityImport(manifest.name, capabilityImportSpecifier(manifest.package)));
       const optionLines = manifest.configOptions.flatMap((option) => [
         renderConfigOptionComment(option.describe, CONFIG_OPTION_INDENT),
-        renderConfigOptionLine(option.key, option.default, CONFIG_OPTION_INDENT),
+        renderConfigOptionLine(option.key, renderedValues(option)[0] as ConfigOptionValue, CONFIG_OPTION_INDENT),
       ]);
       registrations.push(renderCapabilityRegistration({ name: manifest.name, indent: "    ", optionLines }));
     }
