@@ -19,9 +19,10 @@ import { describe, expect, it } from "vitest";
  * indistinguishable from the adopter's own code, and a client either skips it silently or reports it as
  * un-versioned. Neither is true.
  *
- * That is not hypothetical: `@pithy-sh/matchmaking` and `@pithy-sh/rating` ship no `pithy.manifest.json`,
- * so the first version of `scripts/stampVersions.ts` — which keyed on the manifest — skipped both. This
- * test is what makes the next such package fail CI instead of shipping a lie.
+ * That is not hypothetical: `@pithy-sh/matchmaking` and `@pithy-sh/rating` landed with no `pithy.manifest.json`
+ * at all, so the first version of `scripts/stampVersions.ts` — which keyed on the manifest — skipped
+ * both. This test is what makes the next such package fail CI instead of shipping a lie, and
+ * `capabilities/addable.test.ts` is what now fails on the missing manifest itself (#415).
  *
  * Repo-wide and unconditional, like `migrations/orders.test.ts`: the property is only true as a set, so
  * checking an affected subset would miss exactly the drift it exists to catch.

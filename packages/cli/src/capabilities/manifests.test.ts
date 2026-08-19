@@ -82,6 +82,54 @@ describe("loadManifest", () => {
     expect((error as PithyError).payload.action).toContain("pithy add auth");
   });
 
+  /**
+   * Installed and not a capability is a third answer, and it used to be given the first one's words.
+   *
+   * `runAdd` installs the package and *then* reads the manifest, so the branch a missing manifest lands
+   * in is reached with the package sitting in `node_modules`. Answering "no capability named rating is
+   * installed — run pithy add rating to install it" sends the adopter to the command that has just run,
+   * and it is not a message they can act on twice. `@pithy-sh/matchmaking` and `@pithy-sh/rating` shipped
+   * complete and unaddable behind exactly that sentence (#415).
+   */
+  test("an installed package that ships no manifest says so, and does not name the command that just ran", async () => {
+    const pkgDir = join(dir, "node_modules", "@pithy-sh", "rating");
+    await mkdir(pkgDir, { recursive: true });
+    await writeFile(join(pkgDir, "package.json"), JSON.stringify({ name: "@pithy-sh/rating", version: "0.0.0" }));
+
+    const error = (await loadManifest("rating", dir).catch((thrown: unknown) => thrown)) as PithyError;
+    expect(error).toBeInstanceOf(PithyError);
+    expect(error.message).toContain("@pithy-sh/rating");
+    expect(error.message).toContain("pithy.manifest.json");
+    expect(error.payload.action).not.toContain("pithy add rating");
+  });
+
+  /**
+   * **Both absences keep `core/not_found`, which is the code they already shared.**
+   *
+   * What was wrong was the sentence, not the classification, and only the sentence moved. A package that
+   * is installed and is not a capability is an adopter naming the wrong thing — `pithy add cloudflare` is
+   * a real `@pithy-sh` package that ships no manifest — so a 500 would tell them to read *our* logs for an
+   * answer that is not in them (CLAUDE.md §Errors). It would also make an ordinary mistake
+   * indistinguishable from a Pithy defect for `--json` callers, who could then branch on nothing but prose.
+   */
+  test("both absences answer core/not_found, so an agent can still branch on the code", async () => {
+    const pkgDir = join(dir, "node_modules", "@pithy-sh", "cloudflare");
+    await mkdir(pkgDir, { recursive: true });
+    await writeFile(join(pkgDir, "package.json"), JSON.stringify({ name: "@pithy-sh/cloudflare" }));
+
+    const installed = (await loadManifest("cloudflare", dir).catch((thrown: unknown) => thrown)) as PithyError;
+    const uninstalled = (await loadManifest("vector", dir).catch((thrown: unknown) => thrown)) as PithyError;
+    expect(installed.payload.code).toBe("core/not_found");
+    expect(uninstalled.payload.code).toBe(installed.payload.code);
+  });
+
+  test("and an uninstalled one still gets the install instruction, which is the right answer for it", async () => {
+    // The two branches are one line apart, so the second is asserted beside the first: narrowing the
+    // absent case must not cost the adopter who really did type a name they never installed.
+    const error = (await loadManifest("storage", dir).catch((thrown: unknown) => thrown)) as PithyError;
+    expect(error.payload.action).toContain("pithy add storage");
+  });
+
   test("a malformed manifest fails validation", async () => {
     await installManifest(dir, "auth", { name: "auth" }); // no package, no requiredBindings
     await expect(loadManifest("auth", dir)).rejects.toThrow();

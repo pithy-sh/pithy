@@ -73,11 +73,15 @@ interface StampTarget {
  * Every capability package, with the fields a stamp needs.
  *
  * Keyed on **`src/capability.ts`**, not on `pithy.manifest.json`. The manifest looked like the obvious
- * signal and is the wrong one: `@pithy-sh/matchmaking` and `@pithy-sh/rating` are published packages that
- * export a capability and ship no manifest, so a manifest-keyed rule skipped them and their capabilities
- * reported `version: null` — which the contract reserves for *the adopter's own app capability, which
- * genuinely has no npm version*. A published package reporting null is indistinguishable from the
- * adopter's own code, which is exactly the confusion the field exists to prevent.
+ * signal and is the wrong one: `@pithy-sh/matchmaking` and `@pithy-sh/rating` shipped as packages
+ * that export a capability with no manifest beside it, so a manifest-keyed rule skipped them and
+ * their capabilities reported `version: null` — which the contract reserves for *the adopter's own app
+ * capability, which genuinely has no npm version*. A published package reporting null is
+ * indistinguishable from the adopter's own code, which is exactly the confusion the field exists to
+ * prevent.
+ *
+ * Both ship a manifest now (#415) and the rule is unchanged by that, because the manifest is the artifact
+ * that goes missing: keying on it skips exactly the package the rule exists to catch.
  *
  * `core` is deliberately absent from this set and stamped by the rule below: it has no `src/capability.ts`
  * (its `controlplane()` lives at `src/controlPlane/capability.ts`) but does compose into the manifest.

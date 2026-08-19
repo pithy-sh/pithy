@@ -122,8 +122,13 @@ export interface BindingScope {
   capability: string;
 }
 
-/** The single DO class-migration tag Pithy scaffolds under. New DO classes merge into it at add time. */
-const DO_MIGRATION_TAG = "v1";
+/**
+ * The prefix every DO class-migration tag Pithy allocates carries: `v1`, `v2`, … in add order.
+ *
+ * A tag names one step, and Cloudflare remembers the last one it applied — which is why the number
+ * matters, and why {@link appendDurableObjectMigrations} never reuses one.
+ */
+const DO_MIGRATION_TAG_PREFIX = "v";
 
 /**
  * The rate-limit policy a `ratelimit` binding is written with: **100 requests per 60 seconds, per client
@@ -356,9 +361,21 @@ export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scop
  *
  * `new_sqlite_classes`, not `new_classes`, deliberately: a Pithy session object stores its state in
  * SQLite-backed DO storage, and `new_classes` would provision a key-value backend that silently cannot run
- * SQL — the well-known DO footgun. All classes merge into one tag (`v1`) at add time. **Note:** adding a
- * DO class to a Worker that has *already deployed* `v1` needs a *new* tag; this scaffolds the first-add
- * case, which is the only one Pithy has today.
+ * SQL — the well-known DO footgun.
+ *
+ * **Every add that brings new classes allocates its own tag, and no tag is ever edited after it is
+ * written.** A tag is applied once and remembered by Cloudflare: the next deploy sends only the tags
+ * *after* the last one applied. So a class appended into a tag that has already been deployed is sent to
+ * nobody — the namespace is never created, and the deploy fails on a binding to a class with no migration
+ * behind it. Every class used to merge into a single `v1`, and the comment here said why that was safe:
+ * `@pithy-sh/multiplayer` was the only capability shipping a Durable Object, so every add was a first add.
+ * #415 made `@pithy-sh/matchmaking` addable, which ends that — and `pithy add multiplayer` → `pithy deploy`
+ * → `pithy add matchmaking` is the path its own README recommends.
+ *
+ * Splitting costs a never-deployed Worker nothing: wrangler applies `v1` then `v2` in order on the first
+ * deploy, reaching the identical end state. **Idempotent**, because a class already named by *any* tag is
+ * not new — so a re-run allocates nothing and rewrites nothing, which is what `pithy add`'s contract and
+ * `pithy upgrade`'s reconcile both depend on.
  */
 export function appendDurableObjectMigrations(config: WranglerStanza, bindings: readonly BindingSpec[]): void {
   const classes = bindings
@@ -367,15 +384,28 @@ export function appendDurableObjectMigrations(config: WranglerStanza, bindings: 
   if (classes.length === 0) return;
 
   config.migrations ??= [];
-  let tag = config.migrations.find((migration) => migration.tag === DO_MIGRATION_TAG);
-  if (!tag) {
-    tag = { tag: DO_MIGRATION_TAG, new_sqlite_classes: [] };
-    config.migrations.push(tag);
-  }
-  tag.new_sqlite_classes ??= [];
-  for (const className of classes) {
-    if (!tag.new_sqlite_classes.includes(className)) tag.new_sqlite_classes.push(className);
-  }
+  // A class any existing tag already names is registered, whether or not that tag has been deployed yet.
+  // This is the whole of the idempotency: a second `pithy add` of the same capability finds nothing new
+  // and returns without touching the file.
+  const registered = new Set(config.migrations.flatMap((migration) => migration.new_sqlite_classes ?? []));
+  const fresh = [...new Set(classes)].filter((className) => !registered.has(className));
+  if (fresh.length === 0) return;
+
+  config.migrations.push({ tag: nextMigrationTag(config.migrations), new_sqlite_classes: fresh });
+}
+
+/**
+ * The next unused `v<n>` tag, counting past whatever is already there.
+ *
+ * Counting rather than incrementing the last one, because a tag an adopter wrote by hand need not be
+ * `v<n>` at all, and a collision would silently merge this step into theirs — the exact failure the split
+ * exists to prevent. The loop terminates: each pass tries a strictly larger number against a finite set.
+ */
+function nextMigrationTag(migrations: readonly DurableObjectMigration[]): string {
+  const taken = new Set(migrations.map((migration) => migration.tag));
+  let n = migrations.length + 1;
+  while (taken.has(`${DO_MIGRATION_TAG_PREFIX}${n}`)) n += 1;
+  return `${DO_MIGRATION_TAG_PREFIX}${n}`;
 }
 
 /**
