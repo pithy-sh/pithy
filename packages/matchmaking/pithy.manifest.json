@@ -1,0 +1,46 @@
+{
+  "name": "matchmaking",
+  "package": "@pithy-sh/matchmaking",
+  "requiredBindings": [
+    { "type": "d1", "name": "DB" },
+    { "type": "kv", "name": "MATCHMAKING" },
+    { "type": "durable_object", "name": "QUEUE", "className": "MatchmakingQueue" },
+    { "type": "durable_object", "name": "PRESENCE", "className": "MatchmakingPresence" }
+  ],
+  "peerCapabilities": [],
+  "optionalCapabilities": ["auth", "rating", "multiplayer"],
+  "migrationNamespace": "matchmaking",
+  "whenToEnable": "How players find each other. @pithy-sh/multiplayer gives you an authoritative session once players are in it; this is the four ways they get there, and every one of them ends at a session id. A room code — short, shareable, short-lived, limited-use — for playing with someone who is already beside you. A direct invite by email or screen name, pending until the invitee accepts. A symmetric friend graph formed by mutual accept. And an open queue: one Durable Object per game pairs waiting players, bucketed by Cloudflare's own edge geolocation and by skill read from @pithy-sh/rating, widening each player's skill band the longer they wait until any opponent qualifies. A second Durable Object holds every online player's WebSocket and pushes match-found, invite-received, and friend-request in real time, over the Hibernation API so a connection waiting on nothing bills no duration. Two Durable Objects means two bindings and two class migration tags across every environment, and the CLI writes all of it — that wiring is the reason this is a capability rather than a snippet. Nothing here is a hard dependency: without auth every route is denied, without rating the queue buckets by region alone, without multiplayer session minting is off. Add auth at minimum, and read packages/matchmaking/docs/costs.md before production — a presence socket is cheap and a busy queue's alarm cadence is the dial that decides how cheap.",
+  "scaffold": [
+    "Add a `matchmaking({ games: [...] })` block to pithy.config.ts and declare at least one game.",
+    "Give each game a `key`, a `players` count, an optional `skillPool` naming a @pithy-sh/rating pool, and a `snapshot` — the `kind` and `rules` of the @pithy-sh/multiplayer game a formed match is minted into. Tune `roomCodes` and `queue` per game.",
+    "Re-export both Durable Objects from your worker entry: `export { MatchmakingQueue } from \"@pithy-sh/matchmaking/src/queue/durableObject\";` and `export { MatchmakingPresence } from \"@pithy-sh/matchmaking/src/presence/durableObject\";` — wrangler's `class_name` resolves against your worker's `main`. Import each from its own module, never from the package entry point, which pithy.config.ts loads in Node.",
+    "The CLI has already added the QUEUE and PRESENCE durable_object bindings and their class migration tags (`new_sqlite_classes`) to wrangler.jsonc for every environment. No hand-editing.",
+    "Bind a D1 database named DB in wrangler.jsonc — the same app database your other capabilities use.",
+    "Create the MATCHMAKING KV namespace in your Cloudflare account under the name `pithy add` printed for each environment, and paste its id into the entry add already wrote. A kv_namespaces entry has no name field, so the title can only live in the account. Room codes live there under a TTL; nothing else does.",
+    "Run `pithy migrate` to create pithy_matchmaking_invites and pithy_matchmaking_friends.",
+    "Add `@pithy-sh/auth` if it is not already installed. Every route binds to an authenticated player; without auth all of them are denied.",
+    "Add `@pithy-sh/multiplayer` and bind its SESSIONS Durable Object namespace. Without it every pairing path still runs and none of them can mint the session it exists to produce.",
+    "Add `@pithy-sh/rating` and name one of its pools as a game's `skillPool` to bucket the open queue on skill. Without it the queue buckets by region only.",
+    "Read packages/matchmaking/docs/costs.md before production. The queue's `sweepSeconds` is the alarm cadence, and it is the one setting that decides whether a waiting queue costs anything."
+  ],
+  "configOptions": [
+    {
+      "key": "games",
+      "default": [
+        { "key": "duel", "snapshot": { "kind": "connect-n", "rules": { "rows": 3, "cols": 3, "connect": 3 } } }
+      ],
+      "describe": "Every game players are matched into. Replace this example — a two-player duel that mints a 3x3 connect-3 multiplayer session, which is the smallest game that actually plays. `key` is a URL path segment; `snapshot` is the multiplayer game the match becomes; add `skillPool` to bucket the queue on a rating pool. At least one game is required."
+    },
+    {
+      "key": "friends",
+      "default": true,
+      "describe": "Whether the friend graph — request, accept, decline, remove — is mounted. Turn it off for a game where players only ever meet through a code or the queue, and its routes and tables go unused."
+    },
+    {
+      "key": "basePath",
+      "default": "/matchmaking",
+      "describe": "Where the matchmaking routes mount. Rooms, invites, friends, and the queue live under it, and the presence WebSocket is at `<basePath>/presence`."
+    }
+  ]
+}

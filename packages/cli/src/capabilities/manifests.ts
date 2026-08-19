@@ -4,7 +4,7 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
-import { InternalError, messageOf, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, messageOf, NotFoundError, type PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import { readFileOutcome } from "../project/readOptionalFile";
 import { type CatalogEntry, capabilityPackageDir } from "./catalog";
@@ -67,27 +67,74 @@ async function readInstalledManifest(path: string): Promise<ManifestRead> {
 }
 
 /**
- * Resolve a capability's manifest by reading `pithy.manifest.json` from the
- * installed `@pithy-sh/<name>` package. An uninstalled or unknown name fails
- * with a `PithyError` naming the capability and how to add it.
+ * Resolve a capability's manifest by reading `pithy.manifest.json` from the installed
+ * `@pithy-sh/<name>` package. Every failure is a `PithyError` naming the capability.
  *
- * A manifest that is there and will not open is **not** "not installed": telling an adopter to run
- * `pithy add auth` when the file is unreadable sends them to the command that just declined to run.
+ * **Three refusals, because there are three failures**, and the rule joining them is one sentence: a
+ * refusal never names the command that has just run. A manifest that is there and will not open is not
+ * "not installed" — telling an adopter to run `pithy add auth` when the file is unreadable sends them to
+ * the command that just declined to run. Neither is a package that is installed and ships no manifest;
+ * see {@link absenceRefusal}, which is the half of that sentence #415 paid for.
  */
 export async function loadManifest(name: string, projectDir: string): Promise<CapabilityManifest> {
   const read = await readInstalledManifest(manifestPath(projectDir, name));
   if (read.state === "manifest") return read.manifest;
-  if (read.state === "absent") {
-    throw new NotFoundError({
-      message: `No capability named "${name}" is installed.`,
-      action: `Run pithy add ${name} to install it.`,
-    });
-  }
+  if (read.state === "absent") throw await absenceRefusal(name, projectDir);
   throw new InternalError({
     message: `${SCOPE}/${capabilityPackageDir(name)} ships a malformed ${MANIFEST_FILE}${firstFault(read.cause)}`,
     action: "Reinstall the capability, or report this to its maintainer.",
     detail: faults(read.cause),
   });
+}
+
+/**
+ * The refusal for a manifest that is not there — **two different refusals, told apart by whether the
+ * package is.**
+ *
+ * `runAdd` installs the package and *then* reads its manifest, so this branch is reached with the
+ * package already in `node_modules`. One sentence covered both cases for as long as the code existed,
+ * and it was the wrong one for exactly the case that can be reached from `pithy add`: telling an adopter
+ * to run `pithy add rating` is a dead end when `pithy add rating` is what they just ran and what
+ * installed the package this is complaining about. `@pithy-sh/matchmaking` and `@pithy-sh/rating` were
+ * complete, installable, and unaddable behind that answer (#415).
+ *
+ * A package that is there and ships no manifest is a defect in the package — either it is not a
+ * capability at all, or its author left the one file that makes a capability addable out of the publish.
+ * `capabilities/addable.test.ts` is what keeps that from being one of ours again.
+ */
+async function absenceRefusal(name: string, projectDir: string): Promise<PithyError> {
+  const pkg = `${SCOPE}/${capabilityPackageDir(name)}`;
+  if (!(await isInstalled(projectDir, name))) {
+    return new NotFoundError({
+      message: `No capability named "${name}" is installed.`,
+      action: `Run pithy add ${name} to install it.`,
+    });
+  }
+  // `core/not_found`, the same code the other branch answers — the classification was never the bug and
+  // only the sentence moved. A package that is installed and is not a capability is an adopter naming the
+  // wrong thing (`pithy add cloudflare` finds a real @pithy-sh package that ships no manifest), so a 500
+  // would send them to *our* logs for an answer that is not in them, and would leave a `--json` caller
+  // unable to tell an ordinary mistake from a Pithy defect.
+  return new NotFoundError({
+    message: `${pkg} is installed and ships no ${MANIFEST_FILE}, so there is no capability named "${name}" to wire.`,
+    action: `Check the name against pithy add --list. If ${pkg} is meant to be a capability, report the missing ${MANIFEST_FILE} to its maintainer.`,
+    detail: `${manifestPath(projectDir, name)} does not exist, but the package directory does`,
+  });
+}
+
+/**
+ * Whether the package behind a capability name is installed at all.
+ *
+ * Asked of `package.json` rather than of the directory: npm and bun both leave empty directories behind,
+ * and an empty one is not an install. Read through {@link readFileOutcome} so the module's one rule
+ * holds here too — only `ENOENT` is absence, and a `package.json` that is there and will not open is a
+ * package that is there.
+ */
+async function isInstalled(projectDir: string, name: string): Promise<boolean> {
+  const read = await readFileOutcome(
+    join(projectDir, "node_modules", SCOPE, capabilityPackageDir(name), "package.json"),
+  );
+  return read.state !== "absent";
 }
 
 /** A Zod issue path as a manifest reader would write it: `configOptions[2].key`, not `configOptions.2.key`. */

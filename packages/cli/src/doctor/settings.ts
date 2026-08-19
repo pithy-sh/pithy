@@ -25,8 +25,9 @@ import type {
  * which is the same reason `checkProjectName` takes its account probe as a parameter.
  *
  * It is not a check of its own. Nothing here knows what an email setting is, and nothing here reads a
- * `pithy.manifest.json`: discovery keys on the capability instance, because `@pithy-sh/matchmaking` and
- * `@pithy-sh/rating` ship no manifest and a manifest-keyed rule would skip them in silence.
+ * `pithy.manifest.json`: discovery keys on the capability instance, because a manifest is a file a
+ * capability package can be shipped without — `@pithy-sh/matchmaking` and `@pithy-sh/rating` both were,
+ * from the day they landed until #415 — and a manifest-keyed rule skips such a package in silence.
  *
  * ## The three rules it exists to keep
  *

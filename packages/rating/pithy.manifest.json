@@ -1,0 +1,42 @@
+{
+  "name": "rating",
+  "package": "@pithy-sh/rating",
+  "requiredBindings": [{ "type": "d1", "name": "DB" }],
+  "peerCapabilities": [],
+  "optionalCapabilities": ["auth"],
+  "migrationNamespace": "rating",
+  "whenToEnable": "Two numbers per player, per pool, in your own D1: a skill rating (MMR) that moves both ways with every result and feeds matchmaking, and an experience total (XP) that only ever rises and drives rank. They are separate on purpose — one number cannot both rank a player fairly and reward them for turning up. The algorithm is a choice rather than a hardcode: `elo` (1v1, transparent, one tunable), `glicko` (Glicko-2, 1v1, carrying an uncertainty term so a player returning on stale form is not rated as if they never left), and `trueskill` (any roster, and the only one that rates teams) ship built in, and registerRatingAlgorithm takes your own. Wiring a 1v1-only algorithm to a four-player game fails on deploy, not on the first recorded result. Pools are named, so several games can share one ladder or each can keep its own — and a pool is what @pithy-sh/matchmaking buckets its open queue on, which makes this the skill source that capability needs. Recording an outcome is server-authoritative by default and needs the rating:record scope, so a device cannot report that it won. This is the input system @pithy-sh/leaderboard deliberately left out: a leaderboard ranks what has happened, a rating estimates what will. Ratings bind to an authenticated player, so add auth too — without it every route is denied.",
+  "scaffold": [
+    "Add a `rating({ games: [...] })` block to pithy.config.ts and declare at least one game.",
+    "Give each game a `key` and an `algorithm` (`elo`, `glicko`, `trueskill`, or one you registered), and optionally `players`, `teams`, a shared `pool`, an `xp` award per outcome, and a `levels` ladder. `elo` and `glicko` rate 1v1 only; `trueskill` rates any roster and is the only one that rates teams.",
+    "Bind a D1 database named DB in wrangler.jsonc — the same app database your other capabilities use.",
+    "Run `pithy migrate` to create pithy_rating_ratings.",
+    "Add `@pithy-sh/auth` if it is not already installed. A rating belongs to an authenticated player; without auth every route is denied.",
+    "Mint a token carrying the `rating:record` scope for your trusted server, and record outcomes with it. Never put that scope on a player's token.",
+    "Call `registerRatingAlgorithm(yourAlgorithm)` in your worker entry, before the capability assembles, if none of the three built-ins fit. An unknown algorithm id fails at assembly.",
+    "Add `@pithy-sh/matchmaking` and point a game's `skillPool` at a pool declared here to bucket its open queue on skill.",
+    "Read packages/rating/docs/algorithms.md before choosing. A stored rating means nothing under a different model, so the choice is immutable in practice."
+  ],
+  "configOptions": [
+    {
+      "key": "games",
+      "default": [{ "key": "duel", "algorithm": "elo", "xp": { "win": 20, "draw": 10, "loss": 0 } }],
+      "describe": "Every rated game this app runs. Replace this example — a 1v1 duel rated by Elo, in a pool named after the key, awarding XP on top. `key` is a URL path segment and the outcome's game reference; `algorithm` names a built-in (`elo`, `glicko`, `trueskill`) or one you registered; `pool` shares a ladder across games and defaults to the key. At least one game is required."
+    },
+    {
+      "key": "serverAuthoritative",
+      "default": true,
+      "describe": "Require the record scope to post an outcome. On by default: a rating a client can write is a rating a client can invent, and the whole ladder is downstream of it. Turn it off only if you accept that a player's device can report that it won."
+    },
+    {
+      "key": "basePath",
+      "default": "/rating",
+      "describe": "Where the rating routes mount. Outcomes are recorded at POST `<basePath>/games/:game/outcomes`, and a standing is read under `<basePath>/games/:game`."
+    },
+    {
+      "key": "recordScope",
+      "default": "rating:record",
+      "describe": "The scope a caller must hold to record an outcome while `serverAuthoritative` is on. Mint it for your trusted server's token and never for a player's."
+    }
+  ]
+}

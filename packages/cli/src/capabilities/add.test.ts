@@ -204,6 +204,53 @@ describe("addCapability", () => {
     expect(await readFile(join(worker, "wrangler.jsonc"), "utf8")).toBe(once);
   });
 
+  /**
+   * **A second DO capability gets its own tag, because the first one's may already be deployed.**
+   *
+   * A wrangler class migration tag is applied once and remembered by Cloudflare: on the next deploy
+   * wrangler sends only the tags *after* the last one applied. So appending a class into a tag that has
+   * already been applied sends nothing at all — the namespace is never created, and the deploy then fails
+   * on a binding to a class with no migration behind it.
+   *
+   * `appendDurableObjectMigrations` merged every class into `v1` for as long as it existed, and its own
+   * comment said why that was safe: multiplayer was the only capability shipping a Durable Object, so
+   * every add was a first add. #415 made `@pithy-sh/matchmaking` addable — two more classes — and its
+   * README pairs it with multiplayer, so `pithy add multiplayer` → `pithy deploy` → `pithy add
+   * matchmaking` is the ordinary path rather than an exotic one.
+   */
+  test("a second DO capability lands in a new tag, never inside the one already deployed", async () => {
+    const multiplayerManifest = CapabilityManifest.parse({
+      name: "multiplayer",
+      package: "@pithy-sh/multiplayer",
+      requiredBindings: [{ type: "durable_object", name: "SESSIONS", className: "MultiplayerSession" }],
+    });
+    const matchmakingManifest = CapabilityManifest.parse({
+      name: "matchmaking",
+      package: "@pithy-sh/matchmaking",
+      requiredBindings: [
+        { type: "durable_object", name: "QUEUE", className: "MatchmakingQueue" },
+        { type: "durable_object", name: "PRESENCE", className: "MatchmakingPresence" },
+      ],
+    });
+
+    await addCapability({ workerDir: worker, manifest: multiplayerManifest });
+    await addCapability({ workerDir: worker, manifest: matchmakingManifest });
+
+    const wrangler = parse(await readFile(join(worker, "wrangler.jsonc"), "utf8")) as unknown as {
+      migrations?: { tag: string; new_sqlite_classes?: string[] }[];
+    };
+    expect(wrangler.migrations).toEqual([
+      { tag: "v1", new_sqlite_classes: ["MultiplayerSession"] },
+      { tag: "v2", new_sqlite_classes: ["MatchmakingQueue", "MatchmakingPresence"] },
+    ]);
+
+    // And still idempotent across the split: re-adding either allocates nothing.
+    const once = await readFile(join(worker, "wrangler.jsonc"), "utf8");
+    await addCapability({ workerDir: worker, manifest: multiplayerManifest });
+    await addCapability({ workerDir: worker, manifest: matchmakingManifest });
+    expect(await readFile(join(worker, "wrangler.jsonc"), "utf8")).toBe(once);
+  });
+
   test("wires only the target worker — a sibling's config and bindings are untouched", async () => {
     // A second worker, copied from the scaffolded one: same shape, different directory.
     const sibling = join(dir, "apps", "edge");
