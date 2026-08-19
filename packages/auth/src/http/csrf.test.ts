@@ -29,13 +29,13 @@ function compose(config: Partial<AuthConfigInput> = {}) {
   app.onError(pithyErrorHandler);
   for (const middleware of capability.middleware ?? []) middleware(app);
   // The adopter's own route, gated by a check it cannot parameterise.
-  app.post("/organisations", requireSameOrigin(), (c) => c.text("ok"));
+  app.post("/organizations", requireSameOrigin(), (c) => c.text("ok"));
   return app;
 }
 
 /** One request at the adopter's route, with the credential and origin headers a browser would send. */
 async function post(app: Hono<PithyHonoEnv>, headers: Record<string, string>): Promise<Response> {
-  return await app.request("/organisations", { method: "POST", headers }, {});
+  return await app.request("/organizations", { method: "POST", headers }, {});
 }
 
 describe("an adopter's route wears auth's same-origin policy", () => {
@@ -97,7 +97,7 @@ describe("an adopter's route wears auth's same-origin policy", () => {
       const app = new Hono<PithyHonoEnv>();
       app.onError(pithyErrorHandler);
       publishSameOrigin({ config: capability.authConfig, enqueueEmail: undefined, turnstile: undefined }, dev)(app);
-      app.post("/organisations", requireSameOrigin(), (c) => c.text("ok"));
+      app.post("/organizations", requireSameOrigin(), (c) => c.text("ok"));
       return app;
     }
 
@@ -108,7 +108,7 @@ describe("an adopter's route wears auth's same-origin policy", () => {
 
     test("the live local origin passes, with an empty trustedOrigins", async () => {
       const app = composeDev();
-      const response = await postTo(app, "http://localhost:41011/organisations", {
+      const response = await postTo(app, "http://localhost:41011/organizations", {
         cookie: "session=t",
         origin: "http://localhost:41011",
       });
@@ -118,7 +118,7 @@ describe("an adopter's route wears auth's same-origin policy", () => {
     test("it follows the port, so a second worker shifting the allocation changes nothing", async () => {
       const app = composeDev();
       for (const port of [8787, 8788, 41011]) {
-        const response = await postTo(app, `http://localhost:${port}/organisations`, {
+        const response = await postTo(app, `http://localhost:${port}/organizations`, {
           cookie: "session=t",
           origin: `http://localhost:${port}`,
         });
@@ -129,7 +129,7 @@ describe("an adopter's route wears auth's same-origin policy", () => {
     test("an origin that is not the one this request arrived at is still refused", async () => {
       const app = composeDev();
       // The neighbouring worker in the same `pithy dev` run. Local is not a wildcard.
-      const response = await postTo(app, "http://localhost:41011/organisations", {
+      const response = await postTo(app, "http://localhost:41011/organizations", {
         cookie: "session=t",
         origin: "http://localhost:8787",
       });
@@ -138,7 +138,7 @@ describe("an adopter's route wears auth's same-origin policy", () => {
 
     test("a foreign origin is refused exactly as it is in production", async () => {
       const app = composeDev();
-      const response = await postTo(app, "http://localhost:41011/organisations", {
+      const response = await postTo(app, "http://localhost:41011/organizations", {
         cookie: "session=t",
         origin: "https://evil.example.com",
       });
@@ -146,12 +146,12 @@ describe("an adopter's route wears auth's same-origin policy", () => {
     });
 
     test("naming no origin at all is still refused", async () => {
-      const response = await postTo(composeDev(), "http://localhost:41011/organisations", { cookie: "session=t" });
+      const response = await postTo(composeDev(), "http://localhost:41011/organizations", { cookie: "session=t" });
       expect(response.status).toBe(403);
     });
 
     test("the configured origin keeps passing — dev adds, it never replaces", async () => {
-      const response = await postTo(composeDev(), "http://localhost:41011/organisations", {
+      const response = await postTo(composeDev(), "http://localhost:41011/organizations", {
         cookie: "session=t",
         origin: "https://api.example.com",
       });

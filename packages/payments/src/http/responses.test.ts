@@ -12,8 +12,8 @@ import {
   PaymentsAdminEntitlementView,
   PaymentsAdminPurchasesResponse,
   PaymentsAdminPurchaseView,
+  PaymentsAdminSubjectEntitlementsResponse,
   PaymentsAdminSubscriptionsResponse,
-  PaymentsAdminUserEntitlementsResponse,
   PaymentsCheckoutHandoffResponse,
   PaymentsEntitlementResponse,
   PaymentsEntitlementsResponse,
@@ -71,7 +71,19 @@ describe("payments response schemas", () => {
     // no use for its own receipt read back to it, and the schema must not say otherwise.
     expect(Object.keys(PaymentsPurchaseView.shape)).not.toContain("payload");
     expect(Object.keys(PaymentsPurchaseView.shape)).not.toContain("providerTransactionId");
-    expect(Object.keys(PaymentsPurchaseView.shape)).not.toContain("userId");
+  });
+
+  test("a client's own views name no subject at all", () => {
+    // The player-facing half of the subject rule. A client reads its own rows, and who holds them is the
+    // answer the server already resolved — under organization billing from the adopter's resolver, never
+    // from anything the request said. Echoing the holder back teaches a client that it is a value in the
+    // protocol, and the field a response carries is the field a request grows next.
+    for (const view of [PaymentsPurchaseView, PaymentsEntitlementView]) {
+      const fields = Object.keys(view.shape);
+      expect(fields).not.toContain("subjectId");
+      expect(fields).not.toContain("subjectType");
+      expect(fields).not.toContain("userId");
+    }
   });
 
   test("the envelopes accept what the routes return", () => {
@@ -105,7 +117,8 @@ describe("the management read schemas", () => {
     // ever describe different objects — which is the drift the schemas exist to make impossible.
     const purchase = adminPurchaseView({
       id: "9c1f9b9e-6a2a-4c9d-8f1b-2b7c7d4c1a01",
-      userId: "ada",
+      subjectType: "user",
+      subjectId: "ada",
       rail: "apple",
       providerTransactionId: "2000000123",
       originalTransactionId: "2000000001",
@@ -125,7 +138,8 @@ describe("the management read schemas", () => {
 
     const row: PaymentsEntitlement = {
       id: "8c1f9b9e-6a2a-4c9d-8f1b-2b7c7d4c1a02",
-      userId: "ada",
+      subjectType: "organization",
+      subjectId: "acme",
       entitlement: "pro",
       active: true,
       expiresAt: new Date("2026-07-01T00:00:00.000Z"),
@@ -139,6 +153,35 @@ describe("the management read schemas", () => {
     expect(adminEntitlementView(row, new Date("2026-08-01T00:00:00.000Z")).granted).toBe(false);
   });
 
+  test("a management view carries the subject as the pair the row is keyed on", () => {
+    // The other half of the subject rule, and the reason it is a test rather than a convention: an
+    // organization id may equal some user's id, so a view carrying `subjectId` alone renders one holder's
+    // subscription under the other's name. Both halves are projected off one row, never assembled from
+    // config and a column — which is what this asserts by reading the pair back out of the projection.
+    const row: PaymentsEntitlement = {
+      id: "8c1f9b9e-6a2a-4c9d-8f1b-2b7c7d4c1a02",
+      subjectType: "organization",
+      subjectId: "shared-id",
+      entitlement: "pro",
+      active: true,
+      expiresAt: null,
+      sourcePurchaseId: null,
+      manual: true,
+      createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+    };
+    const view = adminEntitlementView(row, new Date("2026-06-10T00:00:00.000Z"));
+    expect(view.subjectType).toBe("organization");
+    expect(view.subjectId).toBe("shared-id");
+    // A user holding the same id is a different holder, and the schema is what keeps the two apart.
+    expect(PaymentsAdminEntitlementView.parse({ ...view, subjectType: "user" })).not.toEqual(view);
+    // And a half-named holder does not parse at all, in either direction.
+    for (const half of ["subjectType", "subjectId"]) {
+      const { [half]: _dropped, ...rest } = view as Record<string, unknown>;
+      expect(PaymentsAdminEntitlementView.safeParse(rest).success).toBe(false);
+    }
+  });
+
   test("no management projection carries the stored provider payload, or the row's surrogate keys", () => {
     // The one column that is a bearer artifact, and on Stripe a document carrying the buyer's email
     // address. It is not selected by the queries either — this is the schema half of that guarantee.
@@ -148,14 +191,15 @@ describe("the management read schemas", () => {
     // `outcome` describes what a write did. A read of the log has no write to report, and a client that
     // could read one would come to depend on a field with no meaning here.
     expect(fields).not.toContain("outcome");
-    // The entitlement row's own uuid is internal: an entitlement is addressed by `(userId, key)`.
+    // The entitlement row's own uuid is internal: an entitlement is addressed by its subject and its key.
     expect(Object.keys(PaymentsAdminEntitlementView.shape)).not.toContain("id");
   });
 
   test("the management envelopes accept what the handlers return", () => {
     const purchase: PaymentsAdminPurchaseView = {
       id: "9c1f9b9e-6a2a-4c9d-8f1b-2b7c7d4c1a01",
-      userId: "ada",
+      subjectType: "user",
+      subjectId: "ada",
       rail: "stripe",
       providerTransactionId: "pi_1Abc",
       originalTransactionId: null,
@@ -172,7 +216,8 @@ describe("the management read schemas", () => {
       updatedAt: "2026-06-01T00:00:00.000Z",
     };
     const entitlement: PaymentsAdminEntitlementView = {
-      userId: "ada",
+      subjectType: "user",
+      subjectId: "ada",
       key: "pro",
       granted: true,
       expiresAt: null,
@@ -183,15 +228,29 @@ describe("the management read schemas", () => {
     accepts(PaymentsAdminPurchasesResponse, { purchases: [], nextCursor: "eyJzb3J0IjoxfQ" });
     accepts(PaymentsAdminSubscriptionsResponse, { subscriptions: [purchase], nextCursor: null });
     accepts(PaymentsAdminEntitlementsResponse, { entitlements: [entitlement], nextCursor: null });
-    // No cursor on the per-account read: `UNIQUE (userId, entitlement)` bounds it, so there is no page.
-    accepts(PaymentsAdminUserEntitlementsResponse, { userId: "ada", entitlements: [entitlement] });
-    accepts(PaymentsAdminUserEntitlementsResponse, { userId: "nobody", entitlements: [] });
+    // No cursor on the per-subject read: `UNIQUE (subjectType, subjectId, entitlement)` bounds it, so there
+    // is no page. Both halves are echoed, so what a client renders is the holder it asked about.
+    accepts(PaymentsAdminSubjectEntitlementsResponse, {
+      subjectType: "user",
+      subjectId: "ada",
+      entitlements: [entitlement],
+    });
+    accepts(PaymentsAdminSubjectEntitlementsResponse, {
+      subjectType: "organization",
+      subjectId: "acme",
+      entitlements: [],
+    });
+    // A response naming only the id does not parse: half an address is a holder nobody asked about.
+    expect(PaymentsAdminSubjectEntitlementsResponse.safeParse({ subjectId: "ada", entitlements: [] }).success).toBe(
+      false,
+    );
   });
 
   test("the catalog view is what the schema says, in both of its two states", () => {
     // Equality rather than a bare parse, as everywhere in this file: a Zod object strips unknown keys, so
     // parsing alone would pass a projection that had grown one.
     const config = PaymentsConfig.parse({
+      billingSubject: "user",
       rails: { apple: true },
       manualEntitlements: ["founder"],
       products: {
@@ -203,9 +262,13 @@ describe("the management read schemas", () => {
         },
       },
     });
+    // The empty catalog still has a `billingSubject`: what a project bills is required config, and a
+    // project selling nothing yet has still decided who it would bill. It is not a catalog fact, which is
+    // why nothing about it reaches the response.
+    const empty = PaymentsConfig.parse({ billingSubject: "organization" });
     accepts(PaymentsAdminCatalogResponse, adminCatalogView(config));
-    accepts(PaymentsAdminCatalogResponse, adminCatalogView(PaymentsConfig.parse({})));
-    expect(adminCatalogView(PaymentsConfig.parse({}))).toEqual({ enabled: false });
+    accepts(PaymentsAdminCatalogResponse, adminCatalogView(empty));
+    expect(adminCatalogView(empty)).toEqual({ enabled: false });
   });
 
   test("a catalog product carries four facts, and none of them is commercial", () => {

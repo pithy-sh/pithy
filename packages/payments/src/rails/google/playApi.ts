@@ -193,7 +193,7 @@ export const PlaySubscriptionPurchase = z
           .string()
           .min(1)
           .optional()
-          .describe("The identifier the app set at purchase time — the only hook back to a Pithy user."),
+          .describe("The identifier the app set at purchase time — the only hook back to the subject that bought."),
         obfuscatedExternalProfileId: z
           .string()
           .min(1)
@@ -247,7 +247,7 @@ export const PlayProductPurchase = z
       .string()
       .min(1)
       .optional()
-      .describe("The identifier the app set at purchase time — the only hook back to a Pithy user."),
+      .describe("The identifier the app set at purchase time — the only hook back to the subject that bought."),
     regionCode: z.string().min(1).optional().describe("Where the purchase was made. Recorded only."),
   })
   .loose()

@@ -359,6 +359,91 @@ describe("CapabilityManifest", () => {
     ).toThrow();
   });
 
+  test("an option with no default parses — the absence is what makes it required", () => {
+    const parsed = CapabilityManifest.parse({
+      name: "payments",
+      package: "@pithy-sh/payments",
+      requiredBindings: [],
+      configOptions: [
+        { key: "billingSubject", choices: ["user", "organization"], describe: "Who holds a subscription." },
+      ],
+    });
+    expect(parsed.configOptions[0]?.default).toBeUndefined();
+    expect(parsed.configOptions[0]?.choices).toEqual(["user", "organization"]);
+  });
+
+  test("a default inside its choices parses", () => {
+    const parsed = CapabilityManifest.parse({
+      name: "auth",
+      package: "@pithy-sh/auth",
+      requiredBindings: [],
+      configOptions: [{ key: "mode", default: "bearer", choices: ["bearer", "session"], describe: "How." }],
+    });
+    expect(parsed.configOptions[0]?.default).toBe("bearer");
+  });
+
+  test("a default outside its choices is refused — the manifest, not the adopter, is wrong", () => {
+    const result = CapabilityManifest.safeParse({
+      name: "auth",
+      package: "@pithy-sh/auth",
+      requiredBindings: [],
+      configOptions: [{ key: "mode", default: "cookie", choices: ["bearer", "session"], describe: "How." }],
+    });
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain("bearer");
+  });
+
+  test("an empty choices list is refused — a closed set that admits nothing", () => {
+    expect(
+      CapabilityManifest.safeParse({
+        name: "auth",
+        package: "@pithy-sh/auth",
+        requiredBindings: [],
+        configOptions: [{ key: "mode", choices: [], describe: "How." }],
+      }).success,
+    ).toBe(false);
+  });
+
+  test("a choice the renderer cannot print is refused, like every other string that reaches source", () => {
+    expect(
+      CapabilityManifest.safeParse({
+        name: "auth",
+        package: "@pithy-sh/auth",
+        requiredBindings: [],
+        configOptions: [{ key: "mode", choices: ['a"b'], describe: "How." }],
+      }).success,
+    ).toBe(false);
+  });
+
+  test("a constant with no default is refused — an older project would get an identifier it never declares", () => {
+    const result = CapabilityManifest.safeParse({
+      name: "auth",
+      package: "@pithy-sh/auth",
+      requiredBindings: [],
+      configOptions: [{ key: "baseURL", constant: "publicOrigin", describe: "Where this Worker answers." }],
+    });
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain("publicOrigin");
+  });
+
+  test("a constant with a default still parses — that is the shipped shape", () => {
+    expect(
+      CapabilityManifest.safeParse({
+        name: "auth",
+        package: "@pithy-sh/auth",
+        requiredBindings: [],
+        configOptions: [
+          {
+            key: "baseURL",
+            default: "http://localhost:8787",
+            constant: "publicOrigin",
+            describe: "Where this Worker answers.",
+          },
+        ],
+      }).success,
+    ).toBe(true);
+  });
+
   test("rejects a configOption with no describe", () => {
     expect(() =>
       CapabilityManifest.parse({

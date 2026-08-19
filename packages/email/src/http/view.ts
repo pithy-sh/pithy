@@ -38,7 +38,7 @@ import type { EmailJobDetail, EmailJobListItem, EmailSuppressionView } from "./r
  * id, not the address, and let the audit trail hold what the response does not.
  *
  * The **domain survives masking**, deliberately. It is the field an operator reads a deliverability
- * problem off — every failure landing on one provider is the diagnosis — and it names an organisation
+ * problem off — every failure landing on one provider is the diagnosis — and it names an organization
  * rather than a person.
  *
  * The suppression list is the deliberate exception: an address *is* the record there, so masking it

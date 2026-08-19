@@ -57,6 +57,8 @@ const RECORD: Record<string, string> = {
     "`project/config.test.ts` asserts core's record of how Bun reports a build failure — that it wraps two or more diagnostics in an `AggregateError`, and re-throws it emptied on every import after the first (#223). The assertion belongs beside the classifier that depends on it, and the fact belongs in core, so the read crosses.",
   packages:
     "Every package's shipped files, read from the source tree rather than `node_modules`: the manifest-width sweep (#173), the migration-order scan, the capability catalog, and the stamped versions.",
+  "packages/payments/pithy.manifest.json":
+    "`capabilities/manifests.test.ts` names this one manifest rather than sweeping them all, because `billingSubject` is the first **required** config option the kit ships — no default, a closed set of two — and it is the whole reason a manifest can express one (#412). The repo-wide sweep above proves every manifest still parses; this proves that this option is still required, which is the feature. Editing the manifest must therefore re-run the CLI's suite, and `packages` alone does not say so specifically enough to survive somebody narrowing it.",
   "templates/starter": "The tree `pithy init` copies (#148). `project/scaffold.test.ts` reads it whole.",
   "templates/starter/apps/api/package.json":
     "`project/scaffold.test.ts` — the dependencies a scaffolded Worker starts with.",

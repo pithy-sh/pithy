@@ -15,7 +15,7 @@ import { NO_SOCIAL_PROVIDERS } from "./providers";
 /**
  * The whole claim of #271, end to end inside the Workers runtime: an adopter composes a plugin the kit
  * does not ship, `pithy migrate` creates the tables that plugin needs, and **its routes answer** — a
- * real organisation is created, and it is in a real D1 table.
+ * real organization is created, and it is in a real D1 table.
  *
  * Both halves in one test on purpose. Either alone passes while the feature is broken: a green
  * migration over routes nobody composed creates tables nothing uses, and a composed plugin over a

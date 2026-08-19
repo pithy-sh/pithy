@@ -112,6 +112,10 @@ export const auditExampleSeed: SeedSet = defineSeed({
         actorType: "system",
         actorId: null,
         sessionId: null,
+        // The two halves of a payments subject, spelled in the two columns the trail already had:
+        // `resourceType` is the kind (`user` or `organization` — `PaymentsSubjectType`) and `resourceId`
+        // is its id. An entitlement is held by a subject, never by a bare id, so a row naming only the
+        // id would be as ambiguous here as it would be in the table it describes.
         resourceType: "user",
         resourceId: EXAMPLE_ALAN.id,
         ip: null,

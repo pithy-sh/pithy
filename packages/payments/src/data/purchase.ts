@@ -6,6 +6,7 @@ import { z } from "zod";
 import { PaymentsProductType } from "../config/config";
 import { PaymentsRail } from "./rail";
 import { PurchaseStatus } from "./status";
+import { PaymentsSubject } from "./subject";
 
 /**
  * Which store environment a purchase happened in. Every purchase carries it, and it never widens: a
@@ -55,6 +56,10 @@ const ProviderPayload = z
  * submission, a webhook, and a reconciliation pass produce the identical row, so a dropped client call
  * costs nothing and a replayed webhook changes nothing.
  *
+ * The owner is a **subject pair**, not a user id: the buyer is whoever the project bills, which under
+ * organization billing is the organization rather than the person who happened to click. Both columns are
+ * written together, and `data/subject.ts` states why either alone is ambiguous.
+ *
  * `providerEventAt` is what makes the write monotonic. Providers do not guarantee delivery order, so an
  * `expired` notification can arrive after the `renewed` that superseded it. Last-write-wins would
  * silently revoke a paying subscriber, so the writer ignores any event staler than the row it is
@@ -67,7 +72,12 @@ export const PaymentsPurchase = z
       .describe(
         "The purchase's UUID. Text rather than an autoincrement integer because these surface in API responses, and sequential ids would leak order volume.",
       ),
-    userId: z.string().describe("The owning Pithy user — the authenticated purchaser."),
+    subjectType: PaymentsSubject.shape.subjectType.describe(
+      "Whether `subjectId` names a user or an organization. Half the owner — the id alone is ambiguous, so the two columns travel together.",
+    ),
+    subjectId: PaymentsSubject.shape.subjectId.describe(
+      "The subject that owns the purchase — the authenticated buyer, or the organization they bought for.",
+    ),
     rail: PaymentsRail.describe("Which store this transaction came from."),
     providerTransactionId: z
       .string()

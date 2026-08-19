@@ -247,7 +247,7 @@ export const StripeCheckoutSession = z
       .min(1)
       .nullish()
       .describe(
-        "The reference this deployment set when it created the session — the authenticated purchaser. The only hook from a Stripe purchase back to a Pithy user.",
+        "The reference this deployment set when it created the session — the encoded subject the buyer was acting for. The only hook from a Stripe purchase back to a holder, and it decodes strictly: anything that is not `user:<id>` or `organization:<id>` binds nobody.",
       ),
     payment_intent: z
       .union([

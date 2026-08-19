@@ -4,6 +4,7 @@
 import type { CreatedDiscount, DiscountTerms, SubscriptionPricing } from "../data/discount";
 import type { PaymentsPurchase } from "../data/purchase";
 import type { PaymentsRail } from "../data/rail";
+import type { PaymentsSubject } from "../data/subject";
 import type { ProviderEventInput } from "../projection/event";
 
 /**
@@ -35,25 +36,34 @@ import type { ProviderEventInput } from "../projection/event";
  * somebody eventually calls. So {@link CheckoutRail} is its own interface, and a rail that initiates
  * purchases implements both. Nothing needs to widen when a fourth rail arrives on either side.
  *
- * ## Why a rail cannot name a user
+ * ## Why a rail cannot name an owner
  *
- * Everything a rail returns is an {@link UnboundProviderEvent} — a provider event with no `userId`. That is
- * a type-level fact, not a convention: a webhook arrives carrying the store's own identifier and no Pithy
- * user, so a rail that could fill in a `userId` could be talked into filling in the wrong one. Binding
- * happens in exactly one place, the route, from the authenticated caller or the provider-account map.
+ * Everything a rail returns is an {@link UnboundProviderEvent} — a provider event with **neither half** of the
+ * subject pair. That is a type-level fact, not a convention: a webhook arrives carrying the store's own
+ * identifier and nothing else, so a rail that could fill an owner in could be talked into filling in the wrong
+ * one. Binding happens in exactly one place, the route, from the authenticated caller through the configured
+ * subject seam or from the provider-account map.
  *
- * The one thing a rail may report about ownership is an {@link VerifiedNotification.accountReference} — a value
- * *this deployment's own server* attached when it created the purchase and the store echoed back. That is a
- * different fact from a user id the rail decided, and it is what a rail with no client-submission path needs:
- * a Stripe purchase is only ever heard about through a webhook, so the pairing of `cus_…` with a Pithy user
- * has to arrive with the notification or never at all.
+ * Omitting *both* halves is what makes the guarantee hold. A rail that could name a `subjectId` and leave the
+ * kind to be supplied from config would be pairing an id from a store with a type from somewhere else — and
+ * nothing keeps an organization id from equalling some user's, so the two together would grant one holder's
+ * subscription to the other. A subject is read and written whole. See `data/subject.ts`.
+ *
+ * The one thing a rail may report about ownership is an {@link VerifiedNotification.accountReference} — the
+ * encoded subject reference *this deployment's own server* attached when it created the purchase, echoed back
+ * by the store. That is a claim about the purchase rather than a rail's verdict on who holds it, and it is
+ * what a rail with no client-submission path needs: a Stripe purchase is only ever heard about through a
+ * webhook, so the pairing of `cus_…` with a subject has to arrive with the notification or never at all.
  */
 
 /**
- * A normalized provider event with its owner left out. The rail knows everything about the transaction and
- * nothing about who it belongs to, and the shape says so.
+ * A normalized provider event with its owner left out — **both halves of it**. The rail knows everything about
+ * the transaction and nothing about who it belongs to, and the shape says so.
+ *
+ * Derived by omission rather than declared beside {@link ProviderEventInput}, so a field added to the event is
+ * a field every rail may report, and the only fields a rail may never report are the two named here.
  */
-export type UnboundProviderEvent = Omit<ProviderEventInput, "userId">;
+export type UnboundProviderEvent = Omit<ProviderEventInput, "subjectType" | "subjectId">;
 
 /** What a rail needs from the request it is serving. The clock, and which deployment is asking. */
 export interface RailRequestContext {
@@ -104,15 +114,21 @@ export interface VerifiedPurchase {
    */
   providerAccountId: string | null;
   /**
-   * The reference **this deployment's own server** attached when it created the purchase, echoed back by the
-   * store — Stripe's `client_reference_id`, which the `/checkout` route sets from the authenticated caller.
+   * The **encoded subject reference** this deployment's own server attached when it created the purchase,
+   * echoed back by the store — Stripe's `client_reference_id`, which the `/checkout` route sets from the
+   * caller's resolved subject. `user:ada`, `organization:acme`: the pair, as `encodeSubjectReference` in
+   * `data/subject.ts` writes it, and read back only by `decodeSubjectReference`. Never split by hand — one
+   * encoding with one decoder is what keeps a value stamped by one code path readable by another.
    *
    * Set only by a rail whose purchases Pithy initiates. Apple's `appAccountToken` and Google's
    * `obfuscatedAccountId` deliberately do **not** go here: those are set by the *app*, which may put anything
    * in them, so treating one as an owner would make a client's choice of value decide who a purchase belongs
    * to. This is the value a server wrote and a store returned unchanged.
    *
-   * The route uses it to refuse a submission whose own reference names somebody else, before projecting it.
+   * A string all the same, and untrusted all the same: it comes back as bytes from a store. **It decodes or
+   * it names nobody** — a bare id, the shape every pre-subject client sent, is not a user, and a kind this
+   * build does not know is not a kind. The route uses it to refuse a submission whose own reference names
+   * somebody else, before projecting it.
    */
   accountReference?: string | null;
 }
@@ -153,12 +169,21 @@ export interface VerifiedNotification {
    */
   voidedOrderId?: string | null;
   /**
-   * The reference this deployment attached when it created the purchase, echoed back — see
-   * {@link VerifiedPurchase.accountReference} for why that is not the same as a rail naming a user.
+   * The encoded subject reference this deployment attached when it created the purchase, echoed back — see
+   * {@link VerifiedPurchase.accountReference} for the encoding, and for why this is not the same as a rail
+   * naming an owner.
    *
    * On a rail with no client-submission path this is the **only** way the account map is ever populated: a
-   * Stripe webhook arrives carrying `cus_…`, and the pairing with a Pithy user exists nowhere else. The route
-   * writes the link from this, and `linkProviderAccount` never rebinds, so the first pairing wins.
+   * Stripe webhook arrives carrying `cus_…`, and the pairing with a subject exists nowhere else. The route
+   * decodes it, writes the link from it, and `linkProviderAccount` never rebinds, so the first pairing wins.
+   *
+   * **It is ranked last in the owner trust order, and it fails closed.** Last because everything above it in
+   * `projection/owner.ts` is a fact this server established about a purchase it already projected, and this is
+   * a string that made a round trip through somebody else's system — Paddle's is stamped with a MAC precisely
+   * because a browser can overwrite it. Closed because `decodeSubjectReference` returns `undefined` for
+   * anything that is not exactly the encoding, and `undefined` means the event is recorded as an **orphan**,
+   * replayable when an account links, granting nothing. A decode miss is never read as a bare user id: that
+   * guess would attribute one customer's renewal to whoever happens to hold the id they sent.
    */
   accountReference?: string | null;
   /**
@@ -305,8 +330,16 @@ export interface CheckoutSessionInput {
   providerProductId: string;
   /** Whether this buys a recurring subscription or a one-off. Decides the hosted flow the store presents. */
   subscription: boolean;
-  /** The authenticated purchaser, passed to the rail so its webhook arrives already bound to a user. */
-  userId: string;
+  /**
+   * The subject the purchase is for — the authenticated caller, or the organization the project bills on
+   * their behalf, as the configured subject seam resolved it.
+   *
+   * Passed as the pair rather than an id so the rail stamps `encodeSubjectReference(input.subject)` into the
+   * checkout it creates, and the webhook that follows arrives already naming a holder this server chose. A
+   * rail that received an id alone would have to pair it with a kind from config to build that reference,
+   * which is the one pairing `data/subject.ts` forbids.
+   */
+  subject: PaymentsSubject;
   /**
    * The store account this caller already has, from the provider-account map, or null on a first purchase.
    *

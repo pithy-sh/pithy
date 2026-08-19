@@ -9,7 +9,7 @@ import type { PriceVisitor } from "./location";
  * project's own Worker.
  *
  * **The same value the checkout charges, from the same row.** That route reads the provider-account map
- * keyed on the authenticated caller — `providerAccountForUser(db, "paddle", userId)` — and so does
+ * keyed on the subject the seam resolved — `providerAccountForSubject(db, "paddle", subject)` — and so does
  * `POST /payments/checkout`, which hands it to Paddle as `customer_id`. One reader, one row, so the
  * figure quoted and the figure charged cannot resolve location differently. A screen that derived a
  * customer id any other way would move this problem rather than solve it.

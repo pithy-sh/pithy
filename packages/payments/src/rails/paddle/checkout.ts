@@ -3,6 +3,7 @@
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
+import { encodeSubjectReference } from "../../data/subject";
 import { PaymentsDiscountInvalidError, PaymentsRailNotConfiguredError } from "../../error/errors";
 import type { PaymentsPaddleCredentials } from "../../secret/registry";
 import type { CheckoutHandoff, CheckoutSessionInput } from "../contract";
@@ -25,9 +26,16 @@ import {
  *
  * ## What this call stamps, and why each of them
  *
- * **The authenticated purchaser, in `custom_data.pithy_user`.** A Paddle purchase is heard about through
- * a webhook carrying `ctm_…` and no Pithy user. This is the pairing, and it is why the `/checkout` route
- * takes the purchaser from `c.var.auth` and never from a request body.
+ * **The resolved subject, in `custom_data.pithy_user`.** A Paddle purchase is heard about through a webhook
+ * carrying `ctm_…` and no Pithy holder. This is the pairing, and it is why the `/checkout` route resolves the
+ * subject through the configured seam and never from a request body.
+ *
+ * The value is `encodeSubjectReference`'s output — `user:ada`, `organization:acme` — and **both halves travel
+ * or neither does**. Nothing keeps an organization id from equalling some user's, so a bare id read back at
+ * the far end would eventually hand one holder's subscription to the other. A bare id is also exactly what
+ * this rail stamped before subjects existed, and `decodeSubjectReference` refuses one on purpose: the
+ * purchase orphans, replayable, rather than being attributed to a stranger. The key name is unchanged
+ * through all of that — see `objects.ts`.
  *
  * **This deployment's environment, beside it.** `dev` is not publicly routable, so a dev checkout's
  * webhooks land at `staging`, and both point at one Paddle sandbox with one set of destinations. The
@@ -81,11 +89,15 @@ export async function createPaddleCheckoutSession(
   const discountId =
     input.discountCode === undefined ? undefined : await resolveDiscount(input.discountCode, options, transport);
 
-  const custom: Record<string, string> = { [PADDLE_CUSTOM_ACCOUNT]: input.userId };
+  // One encoding, from the one function. The webhook reads it back through `decodeSubjectReference`, and a
+  // second spelling anywhere is a purchase stamped by one code path and read by another.
+  const accountReference = encodeSubjectReference(input.subject);
+
+  const custom: Record<string, string> = { [PADDLE_CUSTOM_ACCOUNT]: accountReference };
   if (options.deployment !== undefined) {
     custom[PADDLE_CUSTOM_ENV] = options.deployment;
     custom[PADDLE_CUSTOM_PROOF] = await accountReferenceProof(
-      input.userId,
+      accountReference,
       options.deployment,
       options.credentials.webhookSecret,
     );
@@ -102,7 +114,12 @@ export async function createPaddleCheckoutSession(
     // buyer who starts a checkout, closes it, types a code and starts again would otherwise be handed back
     // the transaction created *before* the code — charged full price by an idempotency key that was doing
     // exactly what it was asked to.
-    idempotencyKey: `pithy:${options.deployment ?? "unknown"}:${input.userId}:${input.providerProductId}:${input.discountCode ?? ""}`,
+    //
+    // **The buyer is the encoded pair, not the id**, for the same reason and with a sharper edge: an
+    // organization that shares an id with a user is a different buyer entirely, and a key derived from the
+    // id alone would hand the second one back the first one's transaction. Deriving it from the reference
+    // this call already stamped is what keeps the two definitions of "the buyer" from drifting apart.
+    idempotencyKey: `pithy:${options.deployment ?? "unknown"}:${accountReference}:${input.providerProductId}:${input.discountCode ?? ""}`,
     body: {
       items: [{ price_id: input.providerProductId, quantity: 1 }],
       // Reuse the buyer's existing Paddle customer, so one buyer keeps one account and their portal shows

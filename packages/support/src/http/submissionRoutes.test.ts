@@ -136,7 +136,7 @@ describe("the in-app surface fails closed", () => {
       seen.push(c.var.auth?.userId ?? null);
       // Their vocabulary, not ours. Nothing in this package knows what an owner is.
       if (c.var.auth && c.req.header("x-org-role") !== "owner") {
-        throw new ForbiddenError({ message: "An owner or an admin applies on the organisation's behalf." });
+        throw new ForbiddenError({ message: "An owner or an admin applies on the organization's behalf." });
       }
       await next();
     };

@@ -68,7 +68,12 @@ function subcommand(name: string): CommandDef {
 }
 
 /** Run a subcommand to its first failure and return the `--json` error payload it reported. */
-async function failure(name: string, args: Record<string, unknown>): Promise<{ code: string; message: string }> {
+async function failure(
+  name: string,
+  args: Record<string, unknown>,
+  // `action` is the operator half of the payload and `operatorError` puts it on the `--json` line. Declared
+  // optional because not every refusal carries one, and asserted where a test is about what to do next.
+): Promise<{ code: string; message: string; action?: string }> {
   const lines: string[] = [];
   const stderr = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
     lines.push(String(chunk));
@@ -109,6 +114,7 @@ async function succeed(name: string, args: Record<string, unknown>): Promise<Rec
  */
 function lemonSqueezyWorker(): ResolvedWorker[] {
   const capability = paymentsCapability({
+    billingSubject: "user",
     rails: { lemonSqueezy: true },
     lemonSqueezy: { successUrl: "https://app.example.com/thanks" },
     products: {
@@ -182,10 +188,37 @@ describe("pithy payments reconcile --rail", () => {
     });
   });
 
-  test("a dry run narrowed to one user and lemonSqueezy carries both, and writes nothing", async () => {
-    await succeed("reconcile", { json: true, env: "staging", user: "ada", rail: "lemonSqueezy", "dry-run": true });
+  test("a dry run narrowed to one holder and lemonSqueezy carries both, and writes nothing", async () => {
+    await succeed("reconcile", {
+      json: true,
+      env: "staging",
+      subject: "user:ada",
+      rail: "lemonSqueezy",
+      "dry-run": true,
+    });
 
-    expect(dispatched.calls[0]?.params).toEqual({ userId: "ada", rail: "lemonSqueezy", dryRun: true });
+    expect(dispatched.calls[0]?.params).toEqual({
+      subjectType: "user",
+      subjectId: "ada",
+      rail: "lemonSqueezy",
+      dryRun: true,
+    });
+  });
+
+  test("an organization is as narrow a holder as a person", async () => {
+    await succeed("reconcile", { json: true, env: "staging", subject: "organization:acme" });
+
+    expect(dispatched.calls[0]?.params).toEqual({ subjectType: "organization", subjectId: "acme" });
+  });
+
+  test("a bare id is refused here, because it names whichever holder happens to carry it", async () => {
+    // The shape somebody types from memory, and the one a lenient read would answer about the wrong holder
+    // for. `user` and `organization` id spaces are not disjoint, so `ada` is a question with two answers.
+    const error = await failure("reconcile", { json: true, env: "staging", subject: "ada" });
+
+    expect(error.message).toContain('"ada" does not name a holder.');
+    expect(error.action).toContain("--subject user:<id>");
+    expect(dispatched.calls).toEqual([]);
   });
 
   test("the kebab spelling is refused here, not by a Workflow that already started", async () => {

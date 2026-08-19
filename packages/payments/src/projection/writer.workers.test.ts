@@ -25,6 +25,10 @@ const DAY = 86_400 * SECOND;
 const T0 = 1_700_000_000_000;
 
 const CONFIG = PaymentsConfig.parse({
+  // Required, and stated here for completeness rather than because the writer reads it: the mode decides who
+  // the *route* resolves as the holder, and by the time an event reaches this function that question is
+  // answered and on the event. Every test below drives both kinds through the same configured writer.
+  billingSubject: "user",
   rails: { apple: true, google: true, stripe: true },
   stripe: {
     successUrl: "https://acme.example/thanks",
@@ -79,7 +83,7 @@ function wideCatalog(count: number): PaymentsConfig {
       apple: { productId: `com.acme.pro.${i}` },
     };
   }
-  return PaymentsConfig.parse({ rails: { apple: true }, products });
+  return PaymentsConfig.parse({ billingSubject: "user", rails: { apple: true }, products });
 }
 
 function event(overrides: Partial<ProviderEventInput> = {}): ProviderEventInput {
@@ -87,7 +91,10 @@ function event(overrides: Partial<ProviderEventInput> = {}): ProviderEventInput 
     rail: "apple",
     providerTransactionId: "txn-1",
     providerProductId: "com.acme.pro.monthly",
-    userId: "ada",
+    // The owner, as the route bound it. Both halves, always — an event carrying one is not a thing the
+    // schema can express, which is the point of the pair.
+    subjectType: "user",
+    subjectId: "ada",
     status: "active",
     environment: "production",
     purchasedAt: new Date(T0),
@@ -108,17 +115,26 @@ const project = (
     now: options.now ?? new Date(T0 + SECOND),
   });
 
-async function purchaseRows(): Promise<{ user_id: string; status: string; provider_event_at: number }[]> {
+/**
+ * Both readers project the owner as `subject_type || ':' || subject_id`, which is `encodeSubjectReference`'s
+ * own format read straight out of the row.
+ *
+ * Deliberate, and not for brevity. An assertion naming `user:acme` fails loudly when the kind is wrong, where
+ * two adjacent fields let an eye slide over `subject_type` and read only the id — and the id is the half that
+ * proves nothing, because `user:acme` and `organization:acme` are two holders with one id between them. The
+ * concatenation happens in SQL, over one row, so the two halves are never assembled from two places.
+ */
+async function purchaseRows(): Promise<{ subject: string; status: string; provider_event_at: number }[]> {
   const { results } = await env.DB.prepare(
-    "SELECT user_id, status, provider_event_at FROM pithy_payments_purchases ORDER BY provider_transaction_id",
-  ).all<{ user_id: string; status: string; provider_event_at: number }>();
+    "SELECT subject_type || ':' || subject_id AS subject, status, provider_event_at FROM pithy_payments_purchases ORDER BY provider_transaction_id",
+  ).all<{ subject: string; status: string; provider_event_at: number }>();
   return results;
 }
 
-async function entitlementRows(): Promise<{ user_id: string; entitlement: string; active: number }[]> {
+async function entitlementRows(): Promise<{ subject: string; entitlement: string; active: number }[]> {
   const { results } = await env.DB.prepare(
-    "SELECT user_id, entitlement, active FROM pithy_payments_entitlements ORDER BY user_id, entitlement",
-  ).all<{ user_id: string; entitlement: string; active: number }>();
+    "SELECT subject_type || ':' || subject_id AS subject, entitlement, active FROM pithy_payments_entitlements ORDER BY subject_type, subject_id, entitlement",
+  ).all<{ subject: string; entitlement: string; active: number }>();
   return results;
 }
 
@@ -181,7 +197,7 @@ describe("projectPurchase — idempotency", () => {
     for (let i = 0; i < 4; i++) await project(event());
 
     expect(await purchaseRows()).toHaveLength(1);
-    expect(await entitlementRows()).toEqual([{ user_id: "ada", entitlement: "pro", active: 1 }]);
+    expect(await entitlementRows()).toEqual([{ subject: "user:ada", entitlement: "pro", active: 1 }]);
     // The row's identity survives every replay: the id is minted once and never re-minted.
     const repeated = await project(event());
     expect(repeated.purchase.id).toBe(first.purchase.id);
@@ -216,7 +232,7 @@ describe("projectPurchase — idempotency", () => {
       expect(rows).toHaveLength(1);
       // Whatever the order, the newest provider event is the one that stands.
       expect(rows[0]?.provider_event_at).toBe(T0 + 2 * SECOND);
-      expect(await entitlementRows()).toEqual([{ user_id: "ada", entitlement: "pro", active: 1 }]);
+      expect(await entitlementRows()).toEqual([{ subject: "user:ada", entitlement: "pro", active: 1 }]);
     }
   });
 });
@@ -243,7 +259,7 @@ describe("projectPurchase — monotonic on the provider's event time", () => {
     expect(result.outcome).toBe("ignored");
     expect(result.purchase.status).toBe("active");
     expect(result.purchase.expiresAt).toEqual(new Date(T0 + 60 * DAY));
-    expect(await entitlementRows()).toEqual([{ user_id: "ada", entitlement: "pro", active: 1 }]);
+    expect(await entitlementRows()).toEqual([{ subject: "user:ada", entitlement: "pro", active: 1 }]);
   });
 
   test("an event with the same provider timestamp is stale too — the comparison is strictly newer", async () => {
@@ -312,23 +328,24 @@ describe("projectPurchase — sandbox isolation", () => {
   });
 });
 
-describe("projectPurchase — cross-user receipt replay", () => {
-  test("user B submitting user A's transaction is refused, and A keeps the purchase", async () => {
+describe("projectPurchase — cross-holder receipt replay", () => {
+  test("holder B submitting holder A's transaction is refused, and A keeps the purchase", async () => {
     // `UNIQUE (rail, providerTransactionId)` plus this owner check is what makes a stolen receipt worthless:
     // it cannot be rebound, and it cannot be projected twice.
-    const owned = await project(event({ userId: "ada" }));
-    await expect(project(event({ userId: "grace" }))).rejects.toThrow(/belongs to another account/i);
+    const owned = await project(event({ subjectId: "ada" }));
+    await expect(project(event({ subjectId: "grace" }))).rejects.toThrow(/belongs to another account/i);
 
     const rows = await purchaseRows();
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.user_id).toBe("ada");
-    expect(await entitlementRows()).toEqual([{ user_id: "ada", entitlement: "pro", active: 1 }]);
-    expect(owned.purchase.userId).toBe("ada");
+    expect(rows[0]?.subject).toBe("user:ada");
+    expect(await entitlementRows()).toEqual([{ subject: "user:ada", entitlement: "pro", active: 1 }]);
+    expect(owned.purchase.subjectType).toBe("user");
+    expect(owned.purchase.subjectId).toBe("ada");
   });
 
   test("the refusal is a 409, so a client can tell it apart from a malformed receipt", async () => {
-    await project(event({ userId: "ada" }));
-    await expect(project(event({ userId: "grace" }))).rejects.toMatchObject({
+    await project(event({ subjectId: "ada" }));
+    await expect(project(event({ subjectId: "grace" }))).rejects.toMatchObject({
       payload: { code: "payments/receipt_already_owned", status: 409 },
     });
   });
@@ -337,12 +354,15 @@ describe("projectPurchase — cross-user receipt replay", () => {
     // Both callers read "no such transaction", then both write: one row, one owner, and the loser is told the
     // transaction is not theirs. Which check refuses it depends on how D1 serializes the two batches, so the
     // `ON CONFLICT` owner guard is pinned on its own below rather than inferred from this outcome.
-    const settled = await Promise.allSettled([project(event({ userId: "ada" })), project(event({ userId: "grace" }))]);
+    const settled = await Promise.allSettled([
+      project(event({ subjectId: "ada" })),
+      project(event({ subjectId: "grace" })),
+    ]);
 
     const rows = await purchaseRows();
     expect(rows).toHaveLength(1);
-    const owner = rows[0]?.user_id;
-    expect(owner === "ada" || owner === "grace").toBe(true);
+    const owner = rows[0]?.subject;
+    expect(owner === "user:ada" || owner === "user:grace").toBe(true);
     // Exactly one caller was told it succeeded, and the other was told the transaction is not theirs.
     expect(settled.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     const rejection = settled.find((result) => result.status === "rejected");
@@ -350,15 +370,143 @@ describe("projectPurchase — cross-user receipt replay", () => {
       payload: { code: "payments/receipt_already_owned" },
     });
     // And the loser's entitlement was never granted.
-    expect((await entitlementRows()).filter((row) => row.active === 1).map((row) => row.user_id)).toEqual([owner]);
+    expect((await entitlementRows()).filter((row) => row.active === 1).map((row) => row.subject)).toEqual([owner]);
   });
 
-  test("two users buying the same product on separate transactions each get their own entitlement", async () => {
-    await project(event({ userId: "ada", providerTransactionId: "txn-ada" }));
-    await project(event({ userId: "grace", providerTransactionId: "txn-grace" }));
+  test("two holders buying the same product on separate transactions each get their own entitlement", async () => {
+    await project(event({ subjectId: "ada", providerTransactionId: "txn-ada" }));
+    await project(event({ subjectId: "grace", providerTransactionId: "txn-grace" }));
     expect(await entitlementRows()).toEqual([
-      { user_id: "ada", entitlement: "pro", active: 1 },
-      { user_id: "grace", entitlement: "pro", active: 1 },
+      { subject: "user:ada", entitlement: "pro", active: 1 },
+      { subject: "user:grace", entitlement: "pro", active: 1 },
+    ]);
+  });
+});
+
+describe("projectPurchase — the holder is a pair, and both halves count", () => {
+  /**
+   * `acme` is a user id and an organization id at once through every test here, because that collision is
+   * what the pair exists to survive. Nothing in the kit makes the two id spaces disjoint: a Pithy user id and
+   * whatever the adopter's own membership model calls an organization are minted by different things, neither
+   * of which knows the other exists. Every assertion below would pass on a key of the id alone and mean the
+   * opposite of what it says.
+   */
+
+  test("a user and an organization sharing an id are two holders, each with its own entitlement", async () => {
+    // `UNIQUE (subjectType, subjectId, entitlement)` is what makes this two rows instead of one upsert
+    // overwriting the other. Both columns lead the key, so this is also the shape the per-holder read uses.
+    await project(event({ providerTransactionId: "txn-user", subjectType: "user", subjectId: "acme" }));
+    await project(event({ providerTransactionId: "txn-org", subjectType: "organization", subjectId: "acme" }));
+
+    expect(await entitlementRows()).toEqual([
+      { subject: "organization:acme", entitlement: "pro", active: 1 },
+      { subject: "user:acme", entitlement: "pro", active: 1 },
+    ]);
+  });
+
+  test("an organization cannot submit a user's transaction, though the ids are identical", async () => {
+    await project(event({ subjectType: "user", subjectId: "acme" }));
+    await expect(project(event({ subjectType: "organization", subjectId: "acme" }))).rejects.toThrow(
+      /belongs to another account/i,
+    );
+
+    expect(await purchaseRows()).toEqual([{ subject: "user:acme", status: "active", provider_event_at: T0 }]);
+    expect(await entitlementRows()).toEqual([{ subject: "user:acme", entitlement: "pro", active: 1 }]);
+  });
+
+  test("and a user cannot submit an organization's — the refusal is symmetric", async () => {
+    await project(event({ subjectType: "organization", subjectId: "acme" }));
+    await expect(project(event({ subjectType: "user", subjectId: "acme" }))).rejects.toThrow(
+      /belongs to another account/i,
+    );
+
+    expect(await purchaseRows()).toEqual([{ subject: "organization:acme", status: "active", provider_event_at: T0 }]);
+    expect(await entitlementRows()).toEqual([{ subject: "organization:acme", entitlement: "pro", active: 1 }]);
+  });
+
+  test("the derivation reads the buying holder's purchases and writes the buying holder's row", async () => {
+    // The two subject predicates in `deriveEntitlement` are the join between the purchases table and the
+    // entitlements table, and each is load-bearing alone. Both holders own a purchase of `pro` here and they
+    // disagree: the user's stands, the organization's has expired.
+    //
+    // Drop the kind from the CTE and the organization's row is derived from the *user's* live purchase — a
+    // grant nobody bought, carrying somebody else's purchase id as its provenance. Drop it from the UPDATE
+    // and the organization's clearing lands on the user's row too, revoking a subscription that is paid.
+    const held = await project(event({ providerTransactionId: "txn-user", subjectType: "user", subjectId: "acme" }));
+    const lapsed = await project(
+      event({
+        providerTransactionId: "txn-org",
+        subjectType: "organization",
+        subjectId: "acme",
+        status: "expired",
+      }),
+    );
+
+    expect(await entitlementRows()).toEqual([
+      { subject: "organization:acme", entitlement: "pro", active: 0 },
+      { subject: "user:acme", entitlement: "pro", active: 1 },
+    ]);
+    // Provenance follows the same join: the cleared row points at nothing, and never at the purchase the
+    // other holder made.
+    expect(lapsed.entitlements.map((entitlement) => entitlement.sourcePurchaseId)).toEqual([null]);
+    expect(held.entitlements.map((entitlement) => entitlement.sourcePurchaseId)).toEqual([held.purchase.id]);
+  });
+
+  test("a comp held by the user does not shield the organization's row from derivation", async () => {
+    // The hold is a property of one row, not of a key. `manual` on `user:acme`'s `pro` is a support decision
+    // about one holder, and `organization:acme` buying `pro` must derive normally beside it — anything wider
+    // would let a single comp freeze a key across every holder in the project.
+    //
+    // **The organization's purchase is live, and that is what makes this test able to fail.** An expired one
+    // derives to `active: 0` — byte-identical to the row `ensureEntitlement` inserts before the derivation
+    // runs — so a hold that wrongly froze the whole key would leave the same row behind and the assertion
+    // would still hold. `active: 1` is a value only a derivation that actually ran can produce.
+    await grantEntitlement(
+      env.DB,
+      CONFIG,
+      { subjectType: "user", subjectId: "acme", entitlement: "pro" },
+      { now: new Date(T0) },
+    );
+    await project(event({ subjectType: "organization", subjectId: "acme" }));
+
+    expect(await entitlementRows()).toEqual([
+      { subject: "organization:acme", entitlement: "pro", active: 1 },
+      { subject: "user:acme", entitlement: "pro", active: 1 },
+    ]);
+  });
+
+  test("and a comp held by the organization does not shield the user's row either", async () => {
+    // Live purchase, for the reason above: `active: 1` on the user's row is the only outcome a wrongly
+    // widened hold could not produce.
+    await grantEntitlement(
+      env.DB,
+      CONFIG,
+      { subjectType: "organization", subjectId: "acme", entitlement: "pro" },
+      { now: new Date(T0) },
+    );
+    await project(event({ subjectType: "user", subjectId: "acme" }));
+
+    expect(await entitlementRows()).toEqual([
+      { subject: "organization:acme", entitlement: "pro", active: 1 },
+      { subject: "user:acme", entitlement: "pro", active: 1 },
+    ]);
+  });
+
+  test("an orphaned key one holder still carries is not cleared by the other holder's projection", async () => {
+    // `keysToDerive`'s second set — the keys this holder still has that no product grants any more — is
+    // scoped to the pair for the same reason everything else here is. Read on the id alone, the
+    // organization's purchase would sweep a row belonging to the user and clear a key nobody asked about.
+    await env.DB.prepare(
+      "INSERT INTO pithy_payments_entitlements (id, subject_type, subject_id, entitlement, active, expires_at, source_purchase_id, manual, created_at, updated_at) VALUES ('ent-legacy', 'user', 'acme', 'beta', 1, NULL, NULL, 0, ?, ?)",
+    )
+      .bind(T0, T0)
+      .run();
+
+    await project(event({ subjectType: "organization", subjectId: "acme" }));
+
+    expect(await entitlementRows()).toEqual([
+      { subject: "organization:acme", entitlement: "pro", active: 1 },
+      { subject: "user:acme", entitlement: "beta", active: 1 },
     ]);
   });
 });
@@ -382,7 +530,7 @@ describe("projectPurchase — the derived read model", () => {
       }),
     );
 
-    expect(await entitlementRows()).toEqual([{ user_id: "ada", entitlement: "pro", active: 1 }]);
+    expect(await entitlementRows()).toEqual([{ subject: "user:ada", entitlement: "pro", active: 1 }]);
     expect(annual.entitlements[0]?.sourcePurchaseId).toBe(annual.purchase.id);
     expect(annual.entitlements[0]?.expiresAt).toEqual(new Date(T0 + 365 * DAY));
     expect(monthly.purchase.id).not.toBe(annual.purchase.id);
@@ -409,7 +557,7 @@ describe("projectPurchase — the derived read model", () => {
     );
 
     // The row survives so provenance and history survive; `active` is what changes.
-    expect(await entitlementRows()).toEqual([{ user_id: "ada", entitlement: "pro", active: 0 }]);
+    expect(await entitlementRows()).toEqual([{ subject: "user:ada", entitlement: "pro", active: 0 }]);
     expect(expired.entitlements[0]?.sourcePurchaseId).toBe(null);
     expect(expired.entitlements[0]?.expiresAt).toBe(null);
   });
@@ -459,7 +607,7 @@ describe("projectPurchase — the derived read model", () => {
     // makes the column's null readable: on a paused row it means indefinite, everywhere else not paused.
     await expect(
       env.DB.prepare(
-        "INSERT INTO pithy_payments_purchases (id, user_id, rail, provider_transaction_id, product_id, provider_product_id, type, status, role, environment, purchased_at, expires_at, revoked_at, resumes_at, original_transaction_id, amount_minor, currency, provider_event_at, payload, created_at, updated_at) VALUES ('p-planted', 'ada', 'apple', 'txn-planted', 'pro_monthly', 'com.acme.pro.monthly', 'subscription', 'active', 'charge', 'production', ?, null, null, ?, null, null, null, ?, '{}', ?, ?)",
+        "INSERT INTO pithy_payments_purchases (id, subject_type, subject_id, rail, provider_transaction_id, product_id, provider_product_id, type, status, role, environment, purchased_at, expires_at, revoked_at, resumes_at, original_transaction_id, amount_minor, currency, provider_event_at, payload, created_at, updated_at) VALUES ('p-planted', 'user', 'ada', 'apple', 'txn-planted', 'pro_monthly', 'com.acme.pro.monthly', 'subscription', 'active', 'charge', 'production', ?, null, null, ?, null, null, null, ?, '{}', ?, ?)",
       )
         .bind(T0, Date.UTC(2026, 9, 1), T0, T0, T0)
         .run(),
@@ -468,7 +616,7 @@ describe("projectPurchase — the derived read model", () => {
     // The same row with the status the date belongs to is accepted, so the refusal is the constraint and
     // not the statement being malformed.
     await env.DB.prepare(
-      "INSERT INTO pithy_payments_purchases (id, user_id, rail, provider_transaction_id, product_id, provider_product_id, type, status, role, environment, purchased_at, expires_at, revoked_at, resumes_at, original_transaction_id, amount_minor, currency, provider_event_at, payload, created_at, updated_at) VALUES ('p-planted', 'ada', 'apple', 'txn-planted', 'pro_monthly', 'com.acme.pro.monthly', 'subscription', 'paused', 'charge', 'production', ?, null, null, ?, null, null, null, ?, '{}', ?, ?)",
+      "INSERT INTO pithy_payments_purchases (id, subject_type, subject_id, rail, provider_transaction_id, product_id, provider_product_id, type, status, role, environment, purchased_at, expires_at, revoked_at, resumes_at, original_transaction_id, amount_minor, currency, provider_event_at, payload, created_at, updated_at) VALUES ('p-planted', 'user', 'ada', 'apple', 'txn-planted', 'pro_monthly', 'com.acme.pro.monthly', 'subscription', 'paused', 'charge', 'production', ?, null, null, ?, null, null, null, ?, '{}', ?, ?)",
     )
       .bind(T0, Date.UTC(2026, 9, 1), T0, T0, T0)
       .run();
@@ -532,8 +680,8 @@ describe("projectPurchase — the derived read model", () => {
     // The `pro` write reports only `pro`; `ads_removed` is untouched and still stands.
     expect(pro.entitlements.map((e) => e.entitlement)).toEqual(["pro"]);
     expect(await entitlementRows()).toEqual([
-      { user_id: "ada", entitlement: "ads_removed", active: 1 },
-      { user_id: "ada", entitlement: "pro", active: 1 },
+      { subject: "user:ada", entitlement: "ads_removed", active: 1 },
+      { subject: "user:ada", entitlement: "pro", active: 1 },
     ]);
   });
 
@@ -589,8 +737,8 @@ describe("projectPurchase — the derived read model", () => {
 
     expect(await purchaseRows()).toHaveLength(3);
     expect(await entitlementRows()).toEqual([
-      { user_id: "ada", entitlement: "ads_removed", active: 1 },
-      { user_id: "ada", entitlement: "pro", active: 1 },
+      { subject: "user:ada", entitlement: "ads_removed", active: 1 },
+      { subject: "user:ada", entitlement: "pro", active: 1 },
     ]);
     const { results } = await env.DB.prepare(
       "SELECT status FROM pithy_payments_purchases WHERE provider_transaction_id = 'txn-m'",
@@ -603,6 +751,7 @@ describe("projectPurchase — a catalog edit that stops granting a key", () => {
   /** One product, granting whatever the edit says it grants. The catalog is config, so this is a deploy. */
   const adsCatalog = (entitlements: string[]) =>
     PaymentsConfig.parse({
+      billingSubject: "user",
       rails: { apple: true },
       products: {
         remove_ads: {
@@ -628,8 +777,8 @@ describe("projectPurchase — a catalog edit that stops granting a key", () => {
     // stand active, forever, with no purchase behind it.
     await project(ads(), { config: adsCatalog(["ads_removed", "beta"]) });
     expect(await entitlementRows()).toEqual([
-      { user_id: "ada", entitlement: "ads_removed", active: 1 },
-      { user_id: "ada", entitlement: "beta", active: 1 },
+      { subject: "user:ada", entitlement: "ads_removed", active: 1 },
+      { subject: "user:ada", entitlement: "beta", active: 1 },
     ]);
 
     const narrowed = adsCatalog(["ads_removed"]);
@@ -641,8 +790,8 @@ describe("projectPurchase — a catalog edit that stops granting a key", () => {
     );
 
     expect(await entitlementRows()).toEqual([
-      { user_id: "ada", entitlement: "ads_removed", active: 0 },
-      { user_id: "ada", entitlement: "beta", active: 0 },
+      { subject: "user:ada", entitlement: "ads_removed", active: 0 },
+      { subject: "user:ada", entitlement: "beta", active: 0 },
     ]);
   });
 
@@ -651,6 +800,7 @@ describe("projectPurchase — a catalog edit that stops granting a key", () => {
     // product that no longer grants `beta` will ever arrive, so waiting for one is waiting forever.
     await project(ads(), { config: adsCatalog(["ads_removed", "beta"]) });
     const wider = PaymentsConfig.parse({
+      billingSubject: "user",
       rails: { apple: true },
       products: {
         remove_ads: {
@@ -670,20 +820,24 @@ describe("projectPurchase — a catalog edit that stops granting a key", () => {
     await project(event({ providerTransactionId: "txn-pro" }), { config: wider });
 
     expect(await entitlementRows()).toEqual([
-      { user_id: "ada", entitlement: "ads_removed", active: 1 },
-      { user_id: "ada", entitlement: "beta", active: 0 },
-      { user_id: "ada", entitlement: "pro", active: 1 },
+      { subject: "user:ada", entitlement: "ads_removed", active: 1 },
+      { subject: "user:ada", entitlement: "beta", active: 0 },
+      { subject: "user:ada", entitlement: "pro", active: 1 },
     ]);
   });
 
   test("a user holding more orphaned keys than D1 will bind is still repaired, and the write still lands", async () => {
-    // The repair widens the key set from "what one product grants" to "what this user holds", so it is the
-    // one that can push the read-back past D1's parameter cap. A hundred and twenty keys is what years of
-    // catalog edits leave on a long-lived account, and it must cost the purchase nothing.
+    // The repair widens the key set from "what one product grants" to "what this subject holds", so it is
+    // the one that can push the read-back past D1's parameter cap. A hundred and twenty keys is what years
+    // of catalog edits leave on a long-lived account, and it must cost the purchase nothing.
+    //
+    // It is also where `readEntitlements`' `fixed` count is proved. The owner is two bound parameters now,
+    // not one, so a chunker still told 1 hands back 99 keys, the statement binds 101, and D1 refuses it
+    // outright — after the write has committed, so a perfectly recorded purchase fails on its read-back.
     const keys = Array.from({ length: 120 }, (_, i) => `legacy_${i}`);
     for (const key of keys) {
       await env.DB.prepare(
-        "INSERT INTO pithy_payments_entitlements (id, user_id, entitlement, active, expires_at, source_purchase_id, manual, created_at, updated_at) VALUES (?, 'ada', ?, 1, NULL, NULL, 0, ?, ?)",
+        "INSERT INTO pithy_payments_entitlements (id, subject_type, subject_id, entitlement, active, expires_at, source_purchase_id, manual, created_at, updated_at) VALUES (?, 'user', 'ada', ?, 1, NULL, NULL, 0, ?, ?)",
       )
         .bind(`ent-${key}`, key, T0, T0)
         .run();
@@ -693,7 +847,7 @@ describe("projectPurchase — a catalog edit that stops granting a key", () => {
 
     expect(result.outcome).toBe("created");
     const rows = await entitlementRows();
-    expect(rows.filter((row) => row.active === 1)).toEqual([{ user_id: "ada", entitlement: "pro", active: 1 }]);
+    expect(rows.filter((row) => row.active === 1)).toEqual([{ subject: "user:ada", entitlement: "pro", active: 1 }]);
     expect(rows).toHaveLength(121);
   });
 
@@ -704,12 +858,17 @@ describe("projectPurchase — a catalog edit that stops granting a key", () => {
     // `founder` is grantable because the adopter declared it, which is the only way a key nothing sells can
     // be comped since the catalog check moved to the write (#305).
     const comping = PaymentsConfig.parse({ ...CONFIG, manualEntitlements: ["founder"] });
-    await grantEntitlement(env.DB, comping, { userId: "ada", entitlement: "founder" }, { now: new Date(T0) });
+    await grantEntitlement(
+      env.DB,
+      comping,
+      { subjectType: "user", subjectId: "ada", entitlement: "founder" },
+      { now: new Date(T0) },
+    );
     await project(event());
 
     expect(await entitlementRows()).toEqual([
-      { user_id: "ada", entitlement: "founder", active: 1 },
-      { user_id: "ada", entitlement: "pro", active: 1 },
+      { subject: "user:ada", entitlement: "founder", active: 1 },
+      { subject: "user:ada", entitlement: "pro", active: 1 },
     ]);
   });
 });
@@ -724,7 +883,8 @@ describe("upsertPurchaseStatement — the guards the database applies at commit"
   const row = (overrides: Partial<PaymentsPurchase> = {}): PaymentsPurchaseRow =>
     PaymentsPurchase.encode({
       id: "purchase-compiled",
-      userId: "ada",
+      subjectType: "user",
+      subjectId: "ada",
       rail: "apple",
       role: "charge",
       providerTransactionId: "txn-1",
@@ -756,21 +916,67 @@ describe("upsertPurchaseStatement — the guards the database applies at commit"
 
     await stale.run();
 
-    expect(await purchaseRows()).toEqual([{ user_id: "ada", status: "active", provider_event_at: T0 + 10 * SECOND }]);
+    expect(await purchaseRows()).toEqual([
+      { subject: "user:ada", status: "active", provider_event_at: T0 + 10 * SECOND },
+    ]);
   });
 
-  test("a write compiled for another user cannot overwrite the owner's row, even carrying a newer event", async () => {
-    await project(event({ userId: "ada", status: "active", providerEventAt: new Date(T0) }));
+  test("a write compiled for another holder cannot overwrite the owner's row, even carrying a newer event", async () => {
+    await project(event({ subjectId: "ada", status: "active", providerEventAt: new Date(T0) }));
     // Newer than the row, so the monotonic half of the predicate lets it through. Only the owner half refuses
-    // it — and `userId` is absent from the update set, so without that half the theft is silent: ada keeps
-    // the row and grace's status, payload, and timestamp land on it.
+    // it — and the subject columns are absent from the update set, so without that half the theft is silent:
+    // ada keeps the row and grace's status, payload, and timestamp land on it.
     const thief = upsertPurchaseStatement(
       env.DB,
-      row({ userId: "grace", status: "revoked", providerEventAt: new Date(T0 + 10 * SECOND) }),
+      row({ subjectId: "grace", status: "revoked", providerEventAt: new Date(T0 + 10 * SECOND) }),
     );
 
     await thief.run();
 
-    expect(await purchaseRows()).toEqual([{ user_id: "ada", status: "active", provider_event_at: T0 }]);
+    expect(await purchaseRows()).toEqual([{ subject: "user:ada", status: "active", provider_event_at: T0 }]);
+  });
+
+  test("a write compiled for an organization cannot overwrite the user's row of the same id", async () => {
+    // The half an id-only owner predicate would wave through, and the only reason the guard is `sameSubject`
+    // rather than a string comparison. The ids are identical here — the kind is the entire difference — so a
+    // predicate reading `subject_id` alone finds the row it was compiled against and rebinds nothing while
+    // rewriting everything: the columns naming the holder are absent from the update set, so `user:acme`
+    // keeps the row and the organization's status, payload, and timestamp land on it.
+    await project(event({ subjectType: "user", subjectId: "acme", status: "active", providerEventAt: new Date(T0) }));
+    const thief = upsertPurchaseStatement(
+      env.DB,
+      row({
+        subjectType: "organization",
+        subjectId: "acme",
+        status: "revoked",
+        providerEventAt: new Date(T0 + 10 * SECOND),
+      }),
+    );
+
+    await thief.run();
+
+    expect(await purchaseRows()).toEqual([{ subject: "user:acme", status: "active", provider_event_at: T0 }]);
+  });
+
+  test("and a write compiled for the user cannot overwrite the organization's — the guard is symmetric", async () => {
+    // Stated separately because a predicate can be wrong in one direction only: comparing the kind against a
+    // literal, or against the mode in config rather than against the row, refuses one of these and passes
+    // the other. Both directions are the same guard or neither is.
+    await project(
+      event({ subjectType: "organization", subjectId: "acme", status: "active", providerEventAt: new Date(T0) }),
+    );
+    const thief = upsertPurchaseStatement(
+      env.DB,
+      row({
+        subjectType: "user",
+        subjectId: "acme",
+        status: "revoked",
+        providerEventAt: new Date(T0 + 10 * SECOND),
+      }),
+    );
+
+    await thief.run();
+
+    expect(await purchaseRows()).toEqual([{ subject: "organization:acme", status: "active", provider_event_at: T0 }]);
   });
 });

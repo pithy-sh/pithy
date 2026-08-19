@@ -16,6 +16,7 @@ import type { PaymentsClientProduct, PaymentsClientProjection } from "./client/p
 import { PaymentsConfig, type PaymentsConfigInput } from "./config/config";
 import { paymentsTables } from "./data/tables";
 import { installEntitlementResolver } from "./entitlement/resolver";
+import type { PaymentsSubjectResolver, PaymentsSubjectSeam } from "./entitlement/subjectSeam";
 import { registerPaymentsRoutes } from "./http/routes";
 import { paymentsAdminRoutes } from "./http/scopes";
 import { payments_0001_purchases } from "./migrations/0001_purchases";
@@ -34,8 +35,33 @@ export const PAYMENTS_MIGRATION_ORDER = 1000;
 /** The database name every capability sharing the app D1 coordinates on. `DB` is the binding. */
 const PAYMENTS_DATABASE_NAME = "app" as const;
 
-/** The options `payments()` takes: the catalog, plus where it mounts and how grace behaves. */
-export type PaymentsOptions = PaymentsConfigInput;
+/**
+ * The options `payments()` takes: the catalog, plus the one thing that cannot live in it.
+ *
+ * **`resolveSubject` rides here rather than in `PaymentsConfig`, and the split is forced rather than
+ * stylistic.** The config is serializable by contract: `provision/resolvePaymentsConfig.ts`
+ * `JSON.stringify`s it into the reconcile worker's `PAYMENTS_CONFIG` var, and `workflows/worker.ts` parses
+ * it back with `PaymentsConfig.parse` at boot. A function does not survive that round trip — `JSON.stringify`
+ * drops it, and the field is simply gone in the one deployment that has no human to ask. So the decision is
+ * split along the line the round trip draws: the **serializable** half (`billingSubject`, a two-value enum)
+ * is config, diffable in git and carried into the var, and the **callable** half is a composition-time
+ * option, handed to the factory alongside it.
+ *
+ * The consequence is worth stating rather than leaving to be discovered: **the reconcile and paddleSweep
+ * Workflows always run with no adopter resolver.** They have no request to hand one, so anything in a
+ * Workflow that needs a subject reads it from the rows it is already reconciling — never from the seam.
+ *
+ * An intersection rather than a field on the config schema for the same reason a Zod object cannot hold it:
+ * everything in `PaymentsConfig` is data, and this is not.
+ */
+export type PaymentsOptions = PaymentsConfigInput & {
+  /**
+   * Which subject this caller is acting for. Required in practice under `billingSubject: "organization"`,
+   * where the capability has no way to answer on its own — see `entitlement/subjectSeam.ts`. Under `"user"`
+   * it is optional and the authenticated caller is the answer.
+   */
+  resolveSubject?: PaymentsSubjectResolver;
+};
 
 /**
  * The slice of `@pithy-sh/ledger`'s capability the grants check reads — its declared currency codes.
@@ -73,6 +99,23 @@ function checkLedgerGrants({ capabilities }: CapabilityComposeContext, config: P
   );
   if (granting.length === 0) return;
 
+  // **A per-user ledger and an organization-billed catalog do not compose**, and the refusal belongs here
+  // rather than at the first purchase. `@pithy-sh/ledger` is a per-user model by design: it keys an account
+  // `(userId, currency)` and every read it owns addresses a user — the authenticated balance route, the
+  // `:userId` management segment, its seeds. There is no honest address for an organization in it. Writing
+  // one anyway would put a non-user in a column that means user, and the balance would be invisible to every
+  // route the ledger ships; refusing at the purchase instead would take the customer's money first.
+  //
+  // So this is a catalog that has to change, not a runtime state to handle: either the project bills people,
+  // or the products that credit a balance are not the ones it sells to companies.
+  if (config.billingSubject !== "user") {
+    throw new ValidationError({
+      message: "This catalog credits a balance, and this project bills organizations.",
+      action: 'Set `billingSubject: "user"`, or drop the `grants` clause from the products that credit a balance.',
+      detail: `@pithy-sh/ledger keys every account on a user id and every route it serves reads one, so there is no account an organization's credit could land in that anything would read. Products with a \`grants.ledger\` clause: ${granting.map((entry) => entry.id).join(", ")}.`,
+    });
+  }
+
   const peer = capabilities.find(isLedgerPeer);
   if (!peer) {
     throw new ValidationError({
@@ -91,6 +134,35 @@ function checkLedgerGrants({ capabilities }: CapabilityComposeContext, config: P
     detail: `${unknown
       .map((entry) => `product "${entry.id}" grants "${entry.currency}"`)
       .join("; ")}. The ledger declares: ${[...declared].sort().join(", ") || "nothing"}.`,
+  });
+}
+
+/**
+ * Refuse the one composition that can never entitle anybody: organization billing with no resolver.
+ *
+ * **A throw at assembly, not a `pithy doctor` finding**, and the difference from the entitlement-gap check
+ * is where the evidence lives. That check must read the adopter's *route code* to know whether anything
+ * gates at all, which is a question no capability can ask about itself — so it belongs to a tool that reads
+ * the project. This one needs nothing but the two arguments already in hand: `billingSubject` from the
+ * config being parsed on the line above, and `resolveSubject` from the same call. Where a capability can
+ * see the whole fault by itself, it says so at the deploy, which is what `checkLedgerGrants` does two
+ * functions down and for the same reason.
+ *
+ * And the fault is total. Under `"organization"` there is no default resolver — deliberately, because a
+ * capability that guessed would key a company's plan to whoever logged in first — so with none supplied
+ * `resolvePaymentsSubject` answers nobody for every request. Every entitlement gate denies, every write
+ * raises `payments/subject_unresolved`, and both look exactly like a customer who has not paid. There is no
+ * request that ever works, so there is nothing to lose by refusing to boot, and a Worker that boots into
+ * that state is one whose first symptom is a support ticket from a paying company.
+ */
+function requireResolvableSubject(config: PaymentsConfig, resolveSubject: PaymentsSubjectResolver | undefined): void {
+  if (config.billingSubject !== "organization" || resolveSubject !== undefined) return;
+  throw new ValidationError({
+    message: "This project bills organizations, and nothing can say which one a caller is acting for.",
+    action:
+      'Pass `resolveSubject` to `payments(...)` in this Worker\'s pithy.config.ts, or set `billingSubject: "user"`.',
+    detail:
+      'billingSubject is "organization" and no subject resolver was supplied. Payments has no members table and never guesses a holder, so every entitlement gate would deny and every write would raise payments/subject_unresolved, for every caller, forever.',
   });
 }
 
@@ -198,16 +270,43 @@ export interface PaymentsCapability
  *
  * `dependsOn: ["secrets"]` is real. Every rail's credentials are read through the aggregated secret
  * registry, so a project composing payments without `@pithy-sh/secrets` must fail at assembly rather
- * than at the first receipt. Auth is *not* listed — it is a seam: purchases scope to `c.var.auth.userId`,
- * so with no auth capability composed every route denies, which is the right failure and needs no
- * dependency edge. `@pithy-sh/ledger` is likewise a seam, reached through one guarded dynamic import and
- * only for products whose catalog entry declares `grants`. Both belong in the manifest's
- * `optionalCapabilities`.
+ * than at the first receipt. Auth is *not* listed — it is a seam: under `billingSubject: "user"` a purchase
+ * scopes to the authenticated caller, so with no auth capability composed every route denies, which is the
+ * right failure and needs no dependency edge. `@pithy-sh/ledger` is likewise a seam, reached through one
+ * guarded dynamic import and only for products whose catalog entry declares `grants`. Both belong in the
+ * manifest's `optionalCapabilities`.
+ *
+ * Under `billingSubject: "organization"` the holder is not the caller and cannot be derived from them, so
+ * the adopter supplies `resolveSubject` and a composition without one is refused outright — see
+ * {@link requireResolvableSubject}.
  */
-export function payments(options: PaymentsOptions = {}): PaymentsCapability {
+export function payments(options: PaymentsOptions): PaymentsCapability {
+  // Split before parsing rather than letting Zod strip it. `PaymentsConfig` would drop `resolveSubject`
+  // silently — it is an unknown key on a stripping object — and silence is the wrong outcome for the field
+  // whose whole hazard is being serialized by accident. Separated here, the config that reaches
+  // `JSON.stringify` in `provision/resolvePaymentsConfig.ts` provably holds no function, because no function
+  // was ever in it.
+  const { resolveSubject, ...catalog } = options;
+
   // Parse the catalog at assembly — a product naming a disabled rail, a duplicate provider SKU, or a
-  // ledger grant on a non-consumable fails on deploy, not on the first webhook.
-  const resolved = PaymentsConfig.parse(options);
+  // ledger grant on a non-consumable fails on deploy, not on the first webhook. `billingSubject` is required
+  // and has no default: what a project bills is a decision, and a default would make it an accident.
+  const resolved = PaymentsConfig.parse(catalog);
+  requireResolvableSubject(resolved, resolveSubject);
+
+  // The one seam, built once. Both halves come from different places by construction (see
+  // {@link PaymentsOptions}), and every asker — the entitlement gate through the middleware, the routes
+  // through their own factory — is handed this object rather than reassembling it. A second construction is
+  // a second policy, and the two disagree the day one of them is edited.
+  //
+  // Spread rather than writing the key outright, so an absent resolver leaves an absent key rather than one
+  // holding `undefined`. Nothing reads it by presence today — `resolvePaymentsSubject` coalesces and
+  // `requirePaymentsSubject` tests truthiness — but a seam that has to be inspected (a doctor check, a log
+  // line saying whether one is wired) then reads the fact rather than a placeholder for it.
+  const subject: PaymentsSubjectSeam = {
+    billingSubject: resolved.billingSubject,
+    ...(resolveSubject ? { resolveSubject } : {}),
+  };
 
   const migrations: Record<string, Migration> = {
     "0001_purchases": payments_0001_purchases,
@@ -250,14 +349,17 @@ export function payments(options: PaymentsOptions = {}): PaymentsCapability {
         migrations,
       },
     },
-    // Replaces core's fail-closed `noEntitlementProvider` with the D1-backed resolver.
-    middleware: [installEntitlementResolver(PAYMENTS_DATABASE_NAME)],
+    // Replaces core's fail-closed `noEntitlementProvider` with the D1-backed resolver, over the seam that
+    // says who to resolve for.
+    middleware: [installEntitlementResolver(PAYMENTS_DATABASE_NAME, subject)],
     // The management surface, described for `GET /control-plane/manifest`. Built from the resolved
     // `basePath` rather than the default, so an adopter who mounted payments at `/billing` gets a
     // manifest naming `/billing/entitlements/grant` — the whole point of describing rather than
     // assuming. `routeContract.test.ts` checks these against the routes actually registered.
     adminRoutes: paymentsAdminRoutes(resolved.basePath),
-    routes: registerPaymentsRoutes({ config: resolved }),
+    // The routes ask the same question the gate does — a checkout, a restore and a portal all need a holder
+    // to key a row to — so they are handed the same seam rather than building one from the config alone.
+    routes: registerPaymentsRoutes({ config: resolved, subject }),
     seeds: [paymentsExampleSeed],
   });
 

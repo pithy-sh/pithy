@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
+import { decodeSubjectReference, encodeSubjectReference } from "../data/subject";
 import { ProviderEvent } from "../projection/event";
 import {
   type CheckoutRail,
@@ -14,7 +15,7 @@ import {
 
 /**
  * The contract is mostly types, and types are checked by `tsc`. What is worth asserting at runtime is the
- * one place the types meet the database: an `UnboundProviderEvent` plus a `userId` must be exactly what the
+ * one place the types meet the database: an `UnboundProviderEvent` plus a subject must be exactly what the
  * projection writer accepts. If those two drift, every rail compiles and every projection fails.
  */
 
@@ -30,9 +31,10 @@ const MINIMAL: UnboundProviderEvent = {
 };
 
 describe("UnboundProviderEvent", () => {
-  test("plus a userId is a legal projection input, with the optional fields defaulting to null", () => {
-    const event = ProviderEvent.parse({ ...MINIMAL, userId: "user-1" });
-    expect(event.userId).toBe("user-1");
+  test("plus a subject is a legal projection input, with the optional fields defaulting to null", () => {
+    const event = ProviderEvent.parse({ ...MINIMAL, subjectType: "user", subjectId: "ada" });
+    expect(event.subjectType).toBe("user");
+    expect(event.subjectId).toBe("ada");
     // The rails leave these out when the store did not report them; the schema decides they are null rather
     // than each rail deciding separately.
     expect(event.expiresAt).toBeNull();
@@ -42,10 +44,27 @@ describe("UnboundProviderEvent", () => {
     expect(event.currency).toBeNull();
   });
 
+  test("an organization is as legal an owner as a person, and the pair says which", () => {
+    // Both halves travel together, so nothing downstream has to consult config to read the row it was handed.
+    const event = ProviderEvent.parse({ ...MINIMAL, subjectType: "organization", subjectId: "acme" });
+    expect(event.subjectType).toBe("organization");
+    expect(event.subjectId).toBe("acme");
+  });
+
+  test("half an owner is not an owner", () => {
+    // The pair is the identity. An id with no kind would be matched against whichever kind the reader assumed,
+    // and nothing keeps an organization id from equalling some user's.
+    expect(ProviderEvent.safeParse({ ...MINIMAL, subjectId: "ada" }).success).toBe(false);
+    expect(ProviderEvent.safeParse({ ...MINIMAL, subjectType: "user" }).success).toBe(false);
+    // And there is no default: an unnamed kind is never a user.
+    expect(ProviderEvent.safeParse({ ...MINIMAL, subjectType: "person", subjectId: "ada" }).success).toBe(false);
+  });
+
   test("a fully-populated event round-trips through the schema unchanged", () => {
     const full = {
       ...MINIMAL,
-      userId: "user-1",
+      subjectType: "user" as const,
+      subjectId: "ada",
       expiresAt: new Date("2026-02-01T00:00:00.000Z"),
       revokedAt: null,
       // Null because this event is not paused. A resume date beside a live subscription is the one thing
@@ -61,9 +80,12 @@ describe("UnboundProviderEvent", () => {
     expect(ProviderEvent.parse(full)).toEqual(full);
   });
 
-  test("carries no userId of its own — a rail cannot name an owner", () => {
-    // The type-level guarantee, asserted structurally: whatever a rail returns, the field is absent, so the
-    // route is the only place an owner is decided.
+  test("carries no owner of its own — a rail cannot name one", () => {
+    // The type-level guarantee, asserted structurally: whatever a rail returns, neither half of the subject is
+    // there, so the route is the only place an owner is decided.
+    expect(Object.keys(MINIMAL)).not.toContain("subjectType");
+    expect(Object.keys(MINIMAL)).not.toContain("subjectId");
+    // And the field the pair replaced is gone rather than tolerated beside it.
     expect(Object.keys(MINIMAL)).not.toContain("userId");
   });
 
@@ -95,19 +117,38 @@ describe("UnboundProviderEvent", () => {
     expect(noteText(notification.note)).toContain("GPA.3311-8452-9910-77304");
   });
 
-  test("an account reference travels beside the store's own identifier, never as a userId", () => {
+  test("an account reference travels beside the store's own identifier, never as an owner", () => {
     // The pairing a rail with no client-submission path depends on. Both halves are on the notification and
-    // neither is a `userId`: the route is still the only place an owner is decided, and it decides by writing
-    // the link and then resolving through it.
+    // neither names a subject: the route is still the only place an owner is decided, and it decides by
+    // decoding this reference, writing the link, and then resolving through it.
     const notification: VerifiedNotification = {
       providerEventId: "evt_stripeSessionSubscription",
       payload: { type: "checkout.session.completed" },
       event: null,
       providerAccountId: "cus_PithyAda",
-      accountReference: "ada",
+      accountReference: encodeSubjectReference({ subjectType: "user", subjectId: "ada" }),
     };
-    expect(Object.keys(notification)).not.toContain("userId");
-    expect(notification.accountReference).toBe("ada");
+    expect(Object.keys(notification)).not.toContain("subjectType");
+    expect(Object.keys(notification)).not.toContain("subjectId");
+    expect(notification.accountReference).toBe("user:ada");
+  });
+
+  test("an account reference is an encoded subject, so an organization's purchase comes back as one", () => {
+    // What crosses to a store and back is the pair, not an id. Without the kind, an organization's renewal
+    // would return a bare id and be attributed to whichever kind the reader assumed.
+    const reference = encodeSubjectReference({ subjectType: "organization", subjectId: "acme" });
+    expect(reference).toBe("organization:acme");
+    expect(decodeSubjectReference(reference)).toEqual({ subjectType: "organization", subjectId: "acme" });
+  });
+
+  test("a bare id does not decode to a user — the reference fails closed", () => {
+    // The pre-subject shape, which every older client sent and any store may echo back. Reading it as a user
+    // would attribute a stranger's purchase to whoever holds that id, so it decodes to nothing and the route
+    // records the event as an orphan. Undefined is the safe answer here; a guess is not.
+    expect(decodeSubjectReference("ada")).toBeUndefined();
+    expect(decodeSubjectReference("")).toBeUndefined();
+    // Nor does an unknown kind, which is the same mistake wearing a separator.
+    expect(decodeSubjectReference("person:ada")).toBeUndefined();
   });
 });
 

@@ -49,6 +49,14 @@ import { DEFAULT_EXPIRING_WITHIN_SECONDS, DEFAULT_STALE_AFTER_SECONDS, type Paym
  * **Each page is one `step.do`, named from a page counter.** Step names must be identical across replays or
  * the journal is unusable, so they are derived from a counter and never from a timestamp or a row id.
  *
+ * ## Who a repaired purchase belongs to
+ *
+ * **Off the row, always.** A pass has no request, so there is no `c.var.auth` and no adopter
+ * `resolveSubject` — `entitlement/subjectSeam.ts` resolves a subject from a Hono context, and this file
+ * never has one. A rail's `refresh` answer carries no subject either, by construction. So every subject the
+ * pass touches is the pair already stored on the purchase it read, and the narrowing a support pass takes is
+ * the pair a human typed. See `workflows/worker.ts` for why that is structural rather than an omission.
+ *
  * ## What is asked, and what is left alone
  *
  * **Subscriptions only.** A consumable or a non-consumable is bought once and does not drift: the single thing
@@ -248,7 +256,21 @@ async function readPage(
     .limit(limit);
 
   if (cursor !== null) query = query.where("id", ">", cursor);
-  if (params.userId !== undefined) query = query.where("userId", "=", params.userId);
+  /**
+   * The holder narrowing — **both halves in one guard, or no narrowing at all**.
+   *
+   * The schema already refuses half a subject, so this is the second line rather than the first. It is
+   * written as one condition because the failure it prevents is the tempting one: two independent `if`s
+   * would let `subjectId` alone reach the query, and `where subject_id = 'acme'` matches the user *and* the
+   * organization called `acme` — nothing keeps those id spaces apart. The support pass would then reconcile
+   * a stranger's purchases and report the count as the account it was asked about.
+   *
+   * Widening when only one half arrives is the safe direction: a pass over the whole catalog is slow and
+   * correct, where a pass over the wrong holder is fast and wrong.
+   */
+  if (params.subjectType !== undefined && params.subjectId !== undefined) {
+    query = query.where("subjectType", "=", params.subjectType).where("subjectId", "=", params.subjectId);
+  }
   if (params.rail !== undefined) query = query.where("rail", "=", params.rail);
 
   return (await query.execute()).map((row) => PaymentsPurchase.parse(row));
@@ -335,9 +357,14 @@ async function reconcileOne(
   try {
     // The owner comes from the stored row, never from the rail — the same rule every other write path obeys.
     // A refresh cannot rebind a purchase, and the writer's own owner check refuses it if it somehow tried.
+    //
+    // **Both halves off the same row**, which is the invariant `data/subject.ts` states: a `subjectType`
+    // taken from config beside a `subjectId` taken from a row typechecks perfectly and names a holder
+    // nobody meant. There is nothing else here it could come from — a Workflow runs with no request and no
+    // adopter resolver, so the row is the only source of a subject in this whole file.
     projection = await projectPurchase(
       deps.d1,
-      { ...refreshed, userId: purchase.userId },
+      { ...refreshed, subjectType: purchase.subjectType, subjectId: purchase.subjectId },
       { config: deps.config, environment: deps.environment, now },
     );
   } catch (cause) {

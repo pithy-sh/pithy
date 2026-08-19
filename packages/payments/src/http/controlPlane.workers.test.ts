@@ -19,6 +19,7 @@ import type { Kysely } from "kysely";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { PaymentsConfig } from "../config/config";
 import { recordReconcileRun } from "../data/reconcileRun";
+import type { PaymentsSubject } from "../data/subject";
 import { grantEntitlement } from "../entitlement/manual";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
 import { projectPurchase } from "../projection/writer";
@@ -31,8 +32,8 @@ import {
   PaymentsAdminPurchaseView,
   PaymentsAdminReconcileRunsResponse,
   PaymentsAdminReconcileRunView,
+  PaymentsAdminSubjectEntitlementsResponse,
   PaymentsAdminSubscriptionsResponse,
-  PaymentsAdminUserEntitlementsResponse,
 } from "./responses";
 import { registerPaymentsRoutes } from "./routes";
 import {
@@ -68,6 +69,9 @@ const ENVIRONMENT = "prod";
 
 /** A catalog with one subscription and one consumable, so "the log" and "the ones that renew" differ. */
 const CONFIG = PaymentsConfig.parse({
+  // Required. Every fixture here bills people, so the subject a row is keyed on is `user:<id>` — and the
+  // organization cases below exist to prove the *other* half of the pair is genuinely part of the address.
+  billingSubject: "user",
   rails: { apple: true },
   products: {
     pro_monthly: {
@@ -173,9 +177,20 @@ async function call(app: Hono<PithyHonoEnv>, path: string, scope: ControlPlaneSc
   );
 }
 
+/** A user subject, written the way every fixture below names one. Both halves, always — see `data/subject.ts`. */
+const user = (id: string): PaymentsSubject => ({ subjectType: "user", subjectId: id });
+
+/**
+ * An organization subject carrying the same id shape.
+ *
+ * Nothing in the kit makes the two id spaces disjoint, so `organization:ada` and `user:ada` are two holders
+ * that a filter reading the id alone would merge. The cases below use this to prove they do not.
+ */
+const organization = (id: string): PaymentsSubject => ({ subjectType: "organization", subjectId: id });
+
 /** One purchase, written by the real projection so the rows are the ones a webhook would have left. */
 async function purchase(options: {
-  user: string;
+  holder: PaymentsSubject;
   sku: string;
   transaction: string;
   at: Date;
@@ -190,7 +205,7 @@ async function purchase(options: {
       rail: "apple",
       providerTransactionId: options.transaction,
       providerProductId: options.sku,
-      userId: options.user,
+      ...options.holder,
       status: options.status ?? "active",
       environment: "production",
       purchasedAt: options.at,
@@ -201,7 +216,11 @@ async function purchase(options: {
       currency: "USD",
       // The receipt, as a rail hands it over. Every assertion about what a management read discloses is
       // made against a row that actually holds one.
-      payload: { transactionId: options.transaction, appAccountToken: `token-${options.user}`, secret: "s3cret" },
+      payload: {
+        transactionId: options.transaction,
+        appAccountToken: `token-${options.holder.subjectId}`,
+        secret: "s3cret",
+      },
     },
     { config: CONFIG, environment: "production", now: options.at },
   );
@@ -249,6 +268,7 @@ beforeEach(async () => {
  * blindness is planted against on every run in `packages/core/src/projection/published.test.ts`.
  */
 const SENTINEL_CATALOG = PaymentsConfig.parse({
+  billingSubject: "user",
   rails: { apple: true, google: true, stripe: true },
   stripe: {
     successUrl: "https://sentinel.example/thanks?session={CHECKOUT_SESSION_ID}",
@@ -384,7 +404,7 @@ describe("GET /payments/admin/catalog", () => {
     const body = PaymentsAdminCatalogResponse.parse(
       await (
         await call(
-          makeApp([PAYMENTS_CATALOG_READ_SCOPE], PaymentsConfig.parse({})),
+          makeApp([PAYMENTS_CATALOG_READ_SCOPE], PaymentsConfig.parse({ billingSubject: "user" })),
           "/payments/admin/catalog",
           PAYMENTS_CATALOG_READ_SCOPE,
         )
@@ -454,9 +474,13 @@ describe("GET /payments/admin/catalog", () => {
 const PURCHASED_AT = new Date("2026-06-01T00:00:00.000Z");
 
 /**
- * Every key `GET {base}/admin/purchases` may carry, at any depth. Seventeen: the envelope's two, and a
- * purchase's fifteen. `GET {base}/admin/subscriptions` returns the same view under one other envelope
+ * Every key `GET {base}/admin/purchases` may carry, at any depth. Eighteen: the envelope's two, and a
+ * purchase's sixteen. `GET {base}/admin/subscriptions` returns the same view under one other envelope
  * key, so widening the row is refused here whichever route a client reached it through.
+ *
+ * **The owner is two keys, `subjectType` and `subjectId`,** and both are permitted deliberately. A view
+ * publishing the id alone would read as a person the moment an adopter's organization ids and user ids met
+ * on a value, so the pair crosses whole or the row names no holder at all.
  *
  * **Written out, never `Object.keys(PaymentsAdminPurchaseView.shape)`.** See the note above
  * `SENTINEL_CATALOG`: a gate derived from what it polices cannot fail when what it polices changes, and
@@ -466,7 +490,8 @@ const PUBLISHED_PURCHASE_KEYS = [
   "purchases",
   "nextCursor",
   "id",
-  "userId",
+  "subjectType",
+  "subjectId",
   "rail",
   "providerTransactionId",
   "originalTransactionId",
@@ -483,11 +508,12 @@ const PUBLISHED_PURCHASE_KEYS = [
   "updatedAt",
 ];
 
-/** Every key the two entitlement reads may carry. Nine: two envelopes' three, and an entitlement's six. */
+/** Every key the two entitlement reads may carry. Ten: two envelopes' four, and an entitlement's seven. */
 const PUBLISHED_ENTITLEMENT_KEYS = [
   "entitlements",
   "nextCursor",
-  "userId",
+  "subjectType",
+  "subjectId",
   "key",
   "granted",
   "expiresAt",
@@ -497,7 +523,7 @@ const PUBLISHED_ENTITLEMENT_KEYS = [
 
 describe("GET /payments/admin/purchases", () => {
   test("answers a connection holding the scope, and the body is what the schema says it is", async () => {
-    await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "t1", at: new Date("2026-06-01") });
+    await purchase({ holder: user("ada"), sku: "com.acme.pro.monthly", transaction: "t1", at: new Date("2026-06-01") });
 
     const response = await call(
       makeApp([PAYMENTS_PURCHASES_READ_SCOPE]),
@@ -510,7 +536,8 @@ describe("GET /payments/admin/purchases", () => {
     const body = PaymentsAdminPurchasesResponse.parse(await response.json());
     expect(body.purchases).toHaveLength(1);
     expect(body.purchases[0]).toMatchObject({
-      userId: "ada",
+      subjectType: "user",
+      subjectId: "ada",
       rail: "apple",
       productId: "pro_monthly",
       type: "subscription",
@@ -533,7 +560,7 @@ describe("GET /payments/admin/purchases", () => {
     // the provider payload (a bearer artifact, and on Stripe a document holding the buyer's address),
     // the rail's own SKU, the row's role, and two ms-epoch timestamps that are published nowhere and as
     // ISO-8601 everywhere.
-    await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "t1", at: PURCHASED_AT });
+    await purchase({ holder: user("ada"), sku: "com.acme.pro.monthly", transaction: "t1", at: PURCHASED_AT });
     const raw = await (
       await call(makeApp([PAYMENTS_PURCHASES_READ_SCOPE]), "/payments/admin/purchases", PAYMENTS_PURCHASES_READ_SCOPE)
     ).json();
@@ -544,6 +571,9 @@ describe("GET /payments/admin/purchases", () => {
     const id = await env.DB.prepare("SELECT id FROM pithy_payments_purchases").first<{ id: string }>();
     const published = [
       id?.id ?? "",
+      // Both halves of the holder. `"user"` is a published leaf now, and it has to be: the kind is half the
+      // address, and a response that carried the id without it would name whoever else holds the id.
+      "user",
       "ada",
       "apple",
       "t1",
@@ -564,7 +594,7 @@ describe("GET /payments/admin/purchases", () => {
   test("the row really holds everything the sweep is meant to refuse", async () => {
     // A gate over nothing passes perfectly. Every value the assertion above must refuse has to be on the
     // row it read, or that test says only that an empty response discloses nothing.
-    await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "t1", at: PURCHASED_AT });
+    await purchase({ holder: user("ada"), sku: "com.acme.pro.monthly", transaction: "t1", at: PURCHASED_AT });
     const stored = await env.DB.prepare(
       "SELECT payload, provider_product_id, role, provider_event_at, created_at FROM pithy_payments_purchases",
     ).first<{
@@ -594,7 +624,7 @@ describe("GET /payments/admin/purchases", () => {
     // The state #247 described, made a test. Before the read existed there was no route to refuse at all:
     // a pane computed `absent` and vanished, which no grant could repair. Now the refusal is a 403 that
     // names the missing grant, which is a thing an adopter can act on.
-    await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "t1", at: new Date("2026-06-01") });
+    await purchase({ holder: user("ada"), sku: "com.acme.pro.monthly", transaction: "t1", at: new Date("2026-06-01") });
     const response = await call(
       makeApp([PAYMENTS_ENTITLEMENTS_READ_SCOPE]),
       "/payments/admin/purchases",
@@ -620,7 +650,7 @@ describe("GET /payments/admin/purchases", () => {
     // whole window, so page 2 repeats a row page 1 already showed. Only a second page can catch it.
     for (const [index, day] of ["01", "02", "03", "04"].entries()) {
       await purchase({
-        user: `u${index + 1}`,
+        holder: user(`u${index + 1}`),
         sku: "com.acme.coins.100",
         transaction: `t-${day}`,
         at: new Date(`2026-06-${day}T00:00:00.000Z`),
@@ -636,7 +666,7 @@ describe("GET /payments/admin/purchases", () => {
 
     // A fifth purchase lands between the two requests, at the head of the ordering.
     await purchase({
-      user: "u5",
+      holder: user("u5"),
       sku: "com.acme.coins.100",
       transaction: "t-05",
       at: new Date("2026-06-05T00:00:00.000Z"),
@@ -656,7 +686,7 @@ describe("GET /payments/admin/purchases", () => {
   });
 
   test("a malformed cursor is a first page, not a 500", async () => {
-    await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "t1", at: new Date("2026-06-01") });
+    await purchase({ holder: user("ada"), sku: "com.acme.pro.monthly", transaction: "t1", at: new Date("2026-06-01") });
     const response = await call(
       makeApp([PAYMENTS_PURCHASES_READ_SCOPE]),
       "/payments/admin/purchases?cursor=not-a-cursor",
@@ -666,10 +696,10 @@ describe("GET /payments/admin/purchases", () => {
     expect(PaymentsAdminPurchasesResponse.parse(await response.json()).purchases).toHaveLength(1);
   });
 
-  test("filters narrow on account, store, status and store environment", async () => {
-    await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "t1", at: new Date("2026-06-01") });
+  test("filters narrow on holder, store, status and store environment", async () => {
+    await purchase({ holder: user("ada"), sku: "com.acme.pro.monthly", transaction: "t1", at: new Date("2026-06-01") });
     await purchase({
-      user: "grace",
+      holder: user("grace"),
       sku: "com.acme.coins.100",
       transaction: "t2",
       at: new Date("2026-06-02"),
@@ -678,9 +708,11 @@ describe("GET /payments/admin/purchases", () => {
     const app = makeApp([PAYMENTS_PURCHASES_READ_SCOPE]);
 
     const mine = PaymentsAdminPurchasesResponse.parse(
-      await (await call(app, "/payments/admin/purchases?userId=ada", PAYMENTS_PURCHASES_READ_SCOPE)).json(),
+      await (
+        await call(app, "/payments/admin/purchases?subjectType=user&subjectId=ada", PAYMENTS_PURCHASES_READ_SCOPE)
+      ).json(),
     );
-    expect(mine.purchases.map((p) => p.userId)).toEqual(["ada"]);
+    expect(mine.purchases.map((p) => p.subjectId)).toEqual(["ada"]);
 
     const refunded = PaymentsAdminPurchasesResponse.parse(
       await (await call(app, "/payments/admin/purchases?status=refunded", PAYMENTS_PURCHASES_READ_SCOPE)).json(),
@@ -706,11 +738,70 @@ describe("GET /payments/admin/purchases", () => {
     expect(await errorCode(response)).toBe("validation/invalid_input");
   });
 
+  test("half a subject filter is a 400 on every listing, never a narrowing on the id alone", async () => {
+    // The dangerous half is `subjectId` with no kind: a listing narrowed on `subject_id` alone hands a
+    // client asking about a person the rows of an organization that happens to share the id, and renders as
+    // *this holder bought all of it*. So the schema refuses the pair broken either way, and refuses it
+    // rather than ignoring it — a filter that silently did nothing is the same wrong page with no warning.
+    const app = makeApp([
+      PAYMENTS_PURCHASES_READ_SCOPE,
+      PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
+      PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+    ]);
+    for (const [path, scope] of [
+      ["purchases", PAYMENTS_PURCHASES_READ_SCOPE],
+      ["subscriptions", PAYMENTS_SUBSCRIPTIONS_READ_SCOPE],
+      ["entitlements", PAYMENTS_ENTITLEMENTS_READ_SCOPE],
+    ] as const) {
+      for (const half of ["subjectId=ada", "subjectType=user"]) {
+        const response = await call(app, `/payments/admin/${path}?${half}`, scope);
+        expect(response.status, `${path}?${half}`).toBe(400);
+        expect(await errorCode(response)).toBe("validation/invalid_input");
+      }
+    }
+  });
+
+  test("the filter is the pair — the same id under the other kind does not cross", async () => {
+    // Two holders, one id. The listing must answer about the one that was asked for, and nothing in the kit
+    // makes an adopter's two id spaces disjoint, so this is the case a `WHERE subject_id = ?` gets wrong.
+    await purchase({
+      holder: user("ada"),
+      sku: "com.acme.pro.monthly",
+      transaction: "t-user",
+      at: new Date("2026-06-01"),
+    });
+    await purchase({
+      holder: organization("ada"),
+      sku: "com.acme.coins.100",
+      transaction: "t-org",
+      at: new Date("2026-06-02"),
+    });
+    const app = makeApp([PAYMENTS_PURCHASES_READ_SCOPE]);
+
+    const asUser = PaymentsAdminPurchasesResponse.parse(
+      await (
+        await call(app, "/payments/admin/purchases?subjectType=user&subjectId=ada", PAYMENTS_PURCHASES_READ_SCOPE)
+      ).json(),
+    );
+    expect(asUser.purchases.map((p) => p.providerTransactionId)).toEqual(["t-user"]);
+
+    const asOrganization = PaymentsAdminPurchasesResponse.parse(
+      await (
+        await call(
+          app,
+          "/payments/admin/purchases?subjectType=organization&subjectId=ada",
+          PAYMENTS_PURCHASES_READ_SCOPE,
+        )
+      ).json(),
+    );
+    expect(asOrganization.purchases.map((p) => p.providerTransactionId)).toEqual(["t-org"]);
+  });
+
   test("the read is audited, with the operator and the connection recorded and no row in the trail", async () => {
-    await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "t1", at: new Date("2026-06-01") });
+    await purchase({ holder: user("ada"), sku: "com.acme.pro.monthly", transaction: "t1", at: new Date("2026-06-01") });
     await call(
       makeApp([PAYMENTS_PURCHASES_READ_SCOPE]),
-      "/payments/admin/purchases?userId=ada",
+      "/payments/admin/purchases?subjectType=user&subjectId=ada",
       PAYMENTS_PURCHASES_READ_SCOPE,
     );
     const event = emitted.find((e) => e.action === "payments/purchases_read");
@@ -719,6 +810,12 @@ describe("GET /payments/admin/purchases", () => {
     const metadata = event?.metadata as { connectionId?: string; returned?: number } | undefined;
     expect(metadata?.connectionId).toBe(CONNECTION_ID);
     expect(metadata?.returned).toBe(1);
+    // The holder the read was narrowed to, as two keys and once more as the row's single-column resource id.
+    expect(event?.resourceId).toBe("user:ada");
+    expect((event?.metadata as { filters?: Record<string, unknown> } | undefined)?.filters).toMatchObject({
+      subjectType: "user",
+      subjectId: "ada",
+    });
     // Counts and filters, never the rows: a trail that copied the purchase log would be a second purchase
     // log with weaker access rules than the first.
     expect(JSON.stringify(event?.metadata)).not.toContain("t1");
@@ -728,13 +825,18 @@ describe("GET /payments/admin/purchases", () => {
 describe("GET /payments/admin/subscriptions", () => {
   test("returns only the purchases that renew", async () => {
     await purchase({
-      user: "ada",
+      holder: user("ada"),
       sku: "com.acme.pro.monthly",
       transaction: "sub-1",
       at: new Date("2026-06-01"),
       expires: new Date("2026-07-01"),
     });
-    await purchase({ user: "ada", sku: "com.acme.coins.100", transaction: "coins-1", at: new Date("2026-06-02") });
+    await purchase({
+      holder: user("ada"),
+      sku: "com.acme.coins.100",
+      transaction: "coins-1",
+      at: new Date("2026-06-02"),
+    });
 
     const body = PaymentsAdminSubscriptionsResponse.parse(
       await (
@@ -759,7 +861,7 @@ describe("GET /payments/admin/subscriptions", () => {
     // and which stores can produce a paused row at all is `data/pause.ts`'s question, asserted there.
     const RESUMES = new Date("2026-10-01T00:00:00.000Z");
     await purchase({
-      user: "ada",
+      holder: user("ada"),
       sku: "com.acme.pro.monthly",
       transaction: "sub-paused",
       at: new Date("2026-06-01"),
@@ -767,7 +869,7 @@ describe("GET /payments/admin/subscriptions", () => {
       resumes: RESUMES,
     });
     await purchase({
-      user: "grace",
+      holder: user("grace"),
       sku: "com.acme.pro.monthly",
       transaction: "sub-indefinite",
       at: new Date("2026-06-02"),
@@ -795,7 +897,12 @@ describe("GET /payments/admin/subscriptions", () => {
   test("the subscription scope does not open the purchase log", async () => {
     // The split is only real if holding the narrower grant genuinely denies the wider one. `scopeCovers`
     // matches exactly, with no prefix rule, and this is where that is worth more than a comment.
-    await purchase({ user: "ada", sku: "com.acme.coins.100", transaction: "coins-1", at: new Date("2026-06-02") });
+    await purchase({
+      holder: user("ada"),
+      sku: "com.acme.coins.100",
+      transaction: "coins-1",
+      at: new Date("2026-06-02"),
+    });
     const response = await call(
       makeApp([PAYMENTS_SUBSCRIPTIONS_READ_SCOPE]),
       "/payments/admin/purchases",
@@ -820,13 +927,15 @@ describe("GET /payments/admin/entitlements", () => {
     // expiry in the past. The gate the adopter's own app calls applies the timestamp on every request; a
     // dashboard that rendered the flag would disagree with it, and the customer would believe us.
     await purchase({
-      user: "ada",
+      holder: user("ada"),
       sku: "com.acme.pro.monthly",
       transaction: "sub-1",
       at: new Date("2026-05-01"),
       expires: new Date("2026-06-01T00:00:00.000Z"),
     });
-    const stored = await env.DB.prepare("SELECT active FROM pithy_payments_entitlements WHERE user_id = 'ada'").first<{
+    const stored = await env.DB.prepare(
+      "SELECT active FROM pithy_payments_entitlements WHERE subject_type = 'user' AND subject_id = 'ada'",
+    ).first<{
       active: number;
     }>();
     expect(stored?.active).toBe(1);
@@ -843,7 +952,7 @@ describe("GET /payments/admin/entitlements", () => {
     // Lapsed on 1 June; `NOW` is the 10th. Returned rather than hidden, with its date, because a paywall
     // and an operator both need to say "your Pro ended on the 1st".
     expect(body.entitlements).toEqual([
-      expect.objectContaining({ userId: "ada", key: "pro", granted: false, manual: false }),
+      expect.objectContaining({ subjectType: "user", subjectId: "ada", key: "pro", granted: false, manual: false }),
     ]);
     expect(body.entitlements[0]?.expiresAt).toBe(new Date("2026-06-01T00:00:00.000Z").toISOString());
   });
@@ -854,7 +963,7 @@ describe("GET /payments/admin/entitlements", () => {
     // that it is *not* the answer `granted` gives, and two ms-epoch timestamps. Enumeration would never
     // have named them; the invariant refuses them without being told they exist.
     await purchase({
-      user: "ada",
+      holder: user("ada"),
       sku: "com.acme.pro.monthly",
       transaction: "sub-1",
       at: PURCHASED_AT,
@@ -871,6 +980,7 @@ describe("GET /payments/admin/entitlements", () => {
     // The granting purchase's id is published as `source`, so it is read from the column that holds it.
     const purchaseId = await env.DB.prepare("SELECT id FROM pithy_payments_purchases").first<{ id: string }>();
     const published = [
+      "user",
       "ada",
       "pro",
       purchaseId?.id ?? "",
@@ -885,7 +995,7 @@ describe("GET /payments/admin/entitlements", () => {
 
     // And the row really carries what the sweep is meant to refuse.
     const stored = await env.DB.prepare(
-      "SELECT id, active, created_at, updated_at FROM pithy_payments_entitlements WHERE user_id = 'ada'",
+      "SELECT id, active, created_at, updated_at FROM pithy_payments_entitlements WHERE subject_id = 'ada'",
     ).first<{ id: string; active: number; created_at: number; updated_at: number }>();
     expect(stored?.id).toBeTypeOf("string");
     expect(stored?.id).not.toBe(purchaseId?.id);
@@ -894,7 +1004,13 @@ describe("GET /payments/admin/entitlements", () => {
   });
 
   test("the entitlement schema declares nothing the hand-written key list does not name", () => {
-    const declared = ["entitlements", "nextCursor", "userId", ...Object.keys(PaymentsAdminEntitlementView.shape)];
+    const declared = [
+      "entitlements",
+      "nextCursor",
+      "subjectType",
+      "subjectId",
+      ...Object.keys(PaymentsAdminEntitlementView.shape),
+    ];
     expect(declared.filter((key) => !PUBLISHED_ENTITLEMENT_KEYS.includes(key))).toEqual([]);
     expect(PUBLISHED_ENTITLEMENT_KEYS.filter((key) => !declared.includes(key))).toEqual([]);
   });
@@ -902,8 +1018,13 @@ describe("GET /payments/admin/entitlements", () => {
   test("shows which grants a human wrote and which a purchase produced", async () => {
     // The question the grant and revoke writes made unanswerable on their own: a console could comp an
     // entitlement and never see that it had. `manual` and `source` are what close that loop.
-    await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "sub-1", at: new Date("2026-06-01") });
-    await grantEntitlement(env.DB, CONFIG, { userId: "grace", entitlement: "pro", expiresAt: null }, { now: NOW });
+    await purchase({
+      holder: user("ada"),
+      sku: "com.acme.pro.monthly",
+      transaction: "sub-1",
+      at: new Date("2026-06-01"),
+    });
+    await grantEntitlement(env.DB, CONFIG, { ...user("grace"), entitlement: "pro", expiresAt: null }, { now: NOW });
 
     const body = PaymentsAdminEntitlementsResponse.parse(
       await (
@@ -914,16 +1035,26 @@ describe("GET /payments/admin/entitlements", () => {
         )
       ).json(),
     );
-    const grace = body.entitlements.find((e) => e.userId === "grace");
-    const ada = body.entitlements.find((e) => e.userId === "ada");
+    const grace = body.entitlements.find((e) => e.subjectId === "grace");
+    const ada = body.entitlements.find((e) => e.subjectId === "ada");
     expect(grace).toMatchObject({ key: "pro", granted: true, manual: true, source: null });
     expect(ada).toMatchObject({ key: "pro", granted: true, manual: false });
     expect(ada?.source).toBeTypeOf("string");
   });
 
   test("filters to one entitlement key — the “who holds pro” question", async () => {
-    await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "sub-1", at: new Date("2026-06-01") });
-    await purchase({ user: "ada", sku: "com.acme.coins.100", transaction: "coins-1", at: new Date("2026-06-02") });
+    await purchase({
+      holder: user("ada"),
+      sku: "com.acme.pro.monthly",
+      transaction: "sub-1",
+      at: new Date("2026-06-01"),
+    });
+    await purchase({
+      holder: user("ada"),
+      sku: "com.acme.coins.100",
+      transaction: "coins-1",
+      at: new Date("2026-06-02"),
+    });
     const body = PaymentsAdminEntitlementsResponse.parse(
       await (
         await call(
@@ -939,7 +1070,7 @@ describe("GET /payments/admin/entitlements", () => {
   test("pages by keyset and stops at the end", async () => {
     for (const [index, day] of ["01", "02", "03"].entries()) {
       await purchase({
-        user: `u${index + 1}`,
+        holder: user(`u${index + 1}`),
         sku: "com.acme.pro.monthly",
         transaction: `t-${day}`,
         at: new Date(`2026-06-${day}T00:00:00.000Z`),
@@ -962,7 +1093,7 @@ describe("GET /payments/admin/entitlements", () => {
     expect(second.entitlements).toHaveLength(1);
     expect(second.nextCursor).toBeNull();
     // No row appears in both pages, which is the property an offset silently loses.
-    const ids = [...first.entitlements, ...second.entitlements].map((e) => `${e.userId}:${e.key}`);
+    const ids = [...first.entitlements, ...second.entitlements].map((e) => `${e.subjectType}:${e.subjectId}:${e.key}`);
     expect(new Set(ids).size).toBe(3);
   });
 
@@ -978,47 +1109,117 @@ describe("GET /payments/admin/entitlements", () => {
   });
 });
 
-describe("GET /payments/admin/entitlements/:userId", () => {
-  test("resolves everything one account holds, by key", async () => {
-    await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "sub-1", at: new Date("2026-06-01") });
-    await purchase({ user: "ada", sku: "com.acme.coins.100", transaction: "coins-1", at: new Date("2026-06-02") });
-    await purchase({ user: "grace", sku: "com.acme.pro.monthly", transaction: "sub-2", at: new Date("2026-06-03") });
+describe("GET /payments/admin/entitlements/:subjectType/:subjectId", () => {
+  test("resolves everything one subject holds, by key", async () => {
+    await purchase({
+      holder: user("ada"),
+      sku: "com.acme.pro.monthly",
+      transaction: "sub-1",
+      at: new Date("2026-06-01"),
+    });
+    await purchase({
+      holder: user("ada"),
+      sku: "com.acme.coins.100",
+      transaction: "coins-1",
+      at: new Date("2026-06-02"),
+    });
+    await purchase({
+      holder: user("grace"),
+      sku: "com.acme.pro.monthly",
+      transaction: "sub-2",
+      at: new Date("2026-06-03"),
+    });
 
-    const body = PaymentsAdminUserEntitlementsResponse.parse(
+    const body = PaymentsAdminSubjectEntitlementsResponse.parse(
       await (
         await call(
           makeApp([PAYMENTS_ENTITLEMENTS_READ_SCOPE]),
-          "/payments/admin/entitlements/ada",
+          "/payments/admin/entitlements/user/ada",
           PAYMENTS_ENTITLEMENTS_READ_SCOPE,
         )
       ).json(),
     );
-    expect(body.userId).toBe("ada");
+    // The address, echoed back whole, so a response stands on its own in a log or a client's cache.
+    expect(body.subjectType).toBe("user");
+    expect(body.subjectId).toBe("ada");
     expect(body.entitlements.map((e) => e.key)).toEqual(["coins", "pro"]);
     // Never somebody else's, whatever else is in the table.
-    expect(body.entitlements.every((e) => e.userId === "ada")).toBe(true);
+    expect(body.entitlements.every((e) => e.subjectId === "ada")).toBe(true);
   });
 
-  test("an account holding nothing is an empty list, not a 404", async () => {
-    // An entitlement row appears with the first purchase that grants one, so its absence is not a missing
-    // person — and a 404 would make this an existence oracle for user ids.
+  test("the kind is half the address — the same id under the other one holds nothing", async () => {
+    // The whole reason the route carries two segments. `organization:ada` and `user:ada` are two holders,
+    // and a read keyed on the id alone would hand one of them the other's entitlements. Nothing in the kit
+    // makes an adopter's organization ids and their user ids disjoint, so this is a collision waiting for a
+    // deployment rather than a hypothetical.
+    await purchase({
+      holder: user("ada"),
+      sku: "com.acme.pro.monthly",
+      transaction: "sub-1",
+      at: new Date("2026-06-01"),
+    });
+
+    const mine = PaymentsAdminSubjectEntitlementsResponse.parse(
+      await (
+        await call(
+          makeApp([PAYMENTS_ENTITLEMENTS_READ_SCOPE]),
+          "/payments/admin/entitlements/organization/ada",
+          PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+        )
+      ).json(),
+    );
+    expect(mine.subjectType).toBe("organization");
+    expect(mine.entitlements).toEqual([]);
+  });
+
+  test("a kind that is not one of the two is a 400, not a 404", async () => {
+    // A malformed address, refused by the param validator behind the guard. A 404 would read as "that holder
+    // has nothing here", which is a different and wrong sentence — and one that would make this surface an
+    // existence oracle by accident.
     const response = await call(
       makeApp([PAYMENTS_ENTITLEMENTS_READ_SCOPE]),
-      "/payments/admin/entitlements/nobody",
+      "/payments/admin/entitlements/tenant/ada",
+      PAYMENTS_ENTITLEMENTS_READ_SCOPE,
+    );
+    expect(response.status).toBe(400);
+    expect(await errorCode(response)).toBe("validation/invalid_input");
+  });
+
+  test("no credential at all is refused before the param schema is ever consulted", async () => {
+    // The validator sits behind the guard, so a malformed address from an unverified caller is a 401 rather
+    // than a 400. A 400 here would tell a stranger which of their requests were well-formed.
+    const response = await makeApp([PAYMENTS_ENTITLEMENTS_READ_SCOPE]).request(
+      "http://x/payments/admin/entitlements/tenant/ada",
+      { method: "GET" },
+      { ...env, ENVIRONMENT },
+    );
+    expect(response.status).toBe(401);
+  });
+
+  test("a subject holding nothing is an empty list, not a 404", async () => {
+    // An entitlement row appears with the first purchase that grants one, so its absence is not a missing
+    // holder — and a 404 would make this an existence oracle for user and organization ids alike.
+    const response = await call(
+      makeApp([PAYMENTS_ENTITLEMENTS_READ_SCOPE]),
+      "/payments/admin/entitlements/user/nobody",
       PAYMENTS_ENTITLEMENTS_READ_SCOPE,
     );
     expect(response.status).toBe(200);
-    expect(PaymentsAdminUserEntitlementsResponse.parse(await response.json()).entitlements).toEqual([]);
+    expect(PaymentsAdminSubjectEntitlementsResponse.parse(await response.json()).entitlements).toEqual([]);
   });
 
-  test("the read is audited against the account it named", async () => {
+  test("the read is audited against the subject it named, both halves", async () => {
     await call(
       makeApp([PAYMENTS_ENTITLEMENTS_READ_SCOPE]),
-      "/payments/admin/entitlements/ada",
+      "/payments/admin/entitlements/user/ada",
       PAYMENTS_ENTITLEMENTS_READ_SCOPE,
     );
     const event = emitted.find((e) => e.action === "payments/entitlements_read");
-    expect(event?.resourceId).toBe("ada");
+    // `resourceId` is one column, so the pair is encoded for it — the one single-field slot of ours.
+    expect(event?.resourceId).toBe("user:ada");
+    // And the metadata carries the halves apart, because that is what a trail is queried by.
+    expect(event?.metadata?.subjectType).toBe("user");
+    expect(event?.metadata?.subjectId).toBe("ada");
     expect(event?.actorType).toBe("control-plane");
   });
 });
@@ -1037,7 +1238,12 @@ describe("the reads never widen into the player surface, and never write", () =>
   });
 
   test("a read changes nothing", async () => {
-    await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "sub-1", at: new Date("2026-06-01") });
+    await purchase({
+      holder: user("ada"),
+      sku: "com.acme.pro.monthly",
+      transaction: "sub-1",
+      at: new Date("2026-06-01"),
+    });
     const before = await env.DB.prepare("SELECT * FROM pithy_payments_purchases").all();
     const app = makeApp([PAYMENTS_PURCHASES_READ_SCOPE, PAYMENTS_ENTITLEMENTS_READ_SCOPE]);
     await call(app, "/payments/admin/purchases", PAYMENTS_PURCHASES_READ_SCOPE);
@@ -1187,7 +1393,12 @@ describe("the reconciliation run log", () => {
     // Both halves at once, over the **raw** body. It ran over the parsed one until #328: Zod strips unknown
     // keys, so an undeclared field was removed from the document before either half looked at it, and the
     // gate could not fail for the reason it exists. The test below plants exactly that.
-    await purchase({ user: "ada", sku: "com.acme.pro.monthly", transaction: "sub-1", at: new Date("2026-06-01") });
+    await purchase({
+      holder: user("ada"),
+      sku: "com.acme.pro.monthly",
+      transaction: "sub-1",
+      at: new Date("2026-06-01"),
+    });
     await recordReconcileRun(env.DB, RUN, { now: NOW });
     const raw = await readRunsRaw();
 

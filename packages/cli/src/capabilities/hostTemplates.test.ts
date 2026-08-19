@@ -198,7 +198,7 @@ const COVERAGE: readonly HostCoverage[] = [
           appDatabaseId: DATABASE.app,
           secretsDatabaseId: DATABASE.secrets,
           storeId: STORE_ID,
-          paymentsConfig: PaymentsConfig.parse({}),
+          paymentsConfig: PaymentsConfig.parse({ billingSubject: "user" }),
         }),
       };
     },

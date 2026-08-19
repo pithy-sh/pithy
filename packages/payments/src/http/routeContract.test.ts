@@ -10,8 +10,10 @@ import { describe, expect, test } from "vitest";
 import * as z from "zod";
 import { payments } from "../capability";
 import { PaymentsConfig } from "../config/config";
+import * as responses from "./responses";
 import { PaymentsPricingEnvelope } from "./responses";
 import { registerPaymentsRoutes } from "./routes";
+import * as schemas from "./schemas";
 import {
   PAYMENTS_CATALOG_READ_SCOPE,
   PAYMENTS_CONTROL_PLANE_SCOPES,
@@ -36,14 +38,19 @@ import {
  *
  * Every payments path was literal until the management reads landed, and most still are on purpose: the three
  * webhook rails are three routes rather than one `:rail` because each proves authenticity by a different
- * mechanism, and the rail a caller *claims* is not something to route on. The one `:segment` is
- * `admin/entitlements/:userId`, which is what makes the gate above do real work rather than pass vacuously —
- * and the path list below is what keeps a second one from appearing unnoticed.
+ * mechanism, and the rail a caller *claims* is not something to route on. The one route with `:segment`s is
+ * `admin/entitlements/:subjectType/:subjectId`, and it carries **two** — a holder is a pair, and a route
+ * addressed by the id alone would answer about whichever of a user and an organization happened to share it.
+ * Both need a validator, which is what makes the gate above do real work rather than pass vacuously, and the
+ * path list below is what keeps a third from appearing unnoticed.
  */
 function makeApp() {
   const app = new Hono<PithyHonoEnv>();
   registerPaymentsRoutes({
     config: PaymentsConfig.parse({
+      // Required, and every fixture in this file states it: `PaymentsConfig` refuses to parse without it,
+      // because who a purchase belongs to is not a thing a project may leave to a default.
+      billingSubject: "user",
       rails: { apple: true, google: true, stripe: true },
       stripe: {
         successUrl: "https://acme.example/thanks?session={CHECKOUT_SESSION_ID}",
@@ -108,7 +115,7 @@ describe("payments route contract", () => {
       "GET /payments/admin/catalog",
       "GET /payments/admin/discounts",
       "GET /payments/admin/entitlements",
-      "GET /payments/admin/entitlements/:userId",
+      "GET /payments/admin/entitlements/:subjectType/:subjectId",
       "GET /payments/admin/purchases",
       "GET /payments/admin/reconcile-runs",
       "GET /payments/admin/subscriptions",
@@ -127,15 +134,16 @@ describe("payments route contract", () => {
       "POST /payments/webhooks/paddle",
       "POST /payments/webhooks/stripe",
     ]);
-    // One `:segment`, which is what makes the param gate above do work rather than pass vacuously.
-    expect(paramPaths(app)).toEqual(["/payments/admin/entitlements/:userId"]);
+    // One route with `:segment`s — two of them, the pair a holder is — which is what makes the param gate
+    // above do work rather than pass vacuously.
+    expect(paramPaths(app)).toEqual(["/payments/admin/entitlements/:subjectType/:subjectId"]);
   });
 
   test("mounts under the configured basePath, webhooks included", () => {
     // The webhook URLs an operator registers in a store console are derived from this, so a basePath that only
     // moved some of the routes would be a silently half-broken deployment.
     const app = new Hono<PithyHonoEnv>();
-    registerPaymentsRoutes({ config: PaymentsConfig.parse({ basePath: "/billing" }) })(app);
+    registerPaymentsRoutes({ config: PaymentsConfig.parse({ billingSubject: "user", basePath: "/billing" }) })(app);
     expect([...new Set(app.routes.map((route) => route.path))].every((path) => path.startsWith("/billing/"))).toBe(
       true,
     );
@@ -277,6 +285,7 @@ describe("the admin surface payments advertises", () => {
    * surface does not depend on what is sold, but a catalog has to be coherent to assemble at all.
    */
   const CATALOG = {
+    billingSubject: "user" as const,
     rails: { apple: true },
     products: {
       pro_monthly: {
@@ -314,7 +323,7 @@ describe("the admin surface payments advertises", () => {
       "/billing/admin/purchases",
       "/billing/admin/subscriptions",
       "/billing/admin/entitlements",
-      "/billing/admin/entitlements/:userId",
+      "/billing/admin/entitlements/:subjectType/:subjectId",
       "/billing/admin/discounts",
       "/billing/admin/discounts",
       "/billing/admin/reconcile-runs",
@@ -366,5 +375,118 @@ describe("the admin surface payments advertises", () => {
     const reads = capability.adminRoutes?.filter((route) => route.method === "GET") ?? [];
     expect(reads).toHaveLength(7);
     expect(reads.every((route) => route.path.startsWith("/payments/admin/"))).toBe(true);
+  });
+});
+
+/**
+ * The subject never crosses a player-facing surface — asserted as a property, over every schema this
+ * capability declares rather than route by route.
+ *
+ * **This is the security core of subject billing, and it is a property because a review is not.** A body,
+ * a query or a path segment that could name a holder lets any signed-in caller read or write against one
+ * they have no membership of, and payments has nothing to check that claim against: it has no members
+ * table, by design. The server resolves the holder — the authenticated caller under `billingSubject:
+ * "user"`, and under `"organization"` whatever the adopter's own resolver answers from its own session.
+ *
+ * The mirror half matters as much and is easier to lose. A *response* that published a subject teaches a
+ * client the id space and the spelling, and the field a client can read is the field somebody eventually
+ * sends back. So neither direction is permitted, and both are checked here in one sweep.
+ *
+ * **The permitted list is a frozen literal.** Every entry is a control-plane surface, where naming another
+ * holder *is* the feature — support acting on somebody else's account, behind a default-denied scoped
+ * credential, audited on every write. Adding a name here is a deliberate edit in a test, beside the
+ * sentence saying why, which is the same shape the disclosure sweeps in `controlPlane.workers.test.ts`
+ * take and for the same reason: a gate derived from what it polices cannot fail when what it polices
+ * changes.
+ */
+describe("no player-facing surface names a subject", () => {
+  /** The two field names that address a holder. Both, because half a subject is a different holder. */
+  const SUBJECT_FIELDS = ["subjectType", "subjectId"];
+
+  /**
+   * The surfaces permitted to name one. Control-plane, every one of them: the two entitlement writes, the
+   * three listing filters, the per-subject read's path segments, and the management views those reads
+   * return. Nothing a browser or a mobile client calls is on this list, and nothing may be added to it
+   * without moving the sentence above.
+   */
+  const NAMES_A_SUBJECT = [
+    "EntitlementGrantRequest",
+    "EntitlementRevokeRequest",
+    "AdminPurchasesQuery",
+    "AdminSubscriptionsQuery",
+    "AdminEntitlementsQuery",
+    "AdminSubjectParam",
+    "PaymentsAdminPurchaseView",
+    "PaymentsAdminEntitlementView",
+    "PaymentsAdminPurchasesResponse",
+    "PaymentsAdminSubscriptionsResponse",
+    "PaymentsAdminEntitlementsResponse",
+    "PaymentsAdminSubjectEntitlementsResponse",
+  ];
+
+  /**
+   * Every key a schema declares, at any depth.
+   *
+   * Descends objects, arrays, unions and the optional/nullable/default wrappers, because a subject that
+   * arrived inside an array of one or on the second member of a union would be exactly as reachable as one
+   * on the top level — and rather more likely to be missed by a reader. The `seen` set is what keeps a
+   * self-referential schema from spinning.
+   */
+  function keysIn(schema: z.ZodType, seen: Set<z.ZodType> = new Set()): string[] {
+    if (seen.has(schema)) return [];
+    seen.add(schema);
+    if (schema instanceof z.ZodObject) {
+      return Object.entries(schema.shape).flatMap(([key, value]) => [key, ...keysIn(value as z.ZodType, seen)]);
+    }
+    if (schema instanceof z.ZodArray) return keysIn(schema.element as z.ZodType, seen);
+    if (schema instanceof z.ZodUnion) return schema.options.flatMap((option) => keysIn(option as z.ZodType, seen));
+    if (schema instanceof z.ZodOptional || schema instanceof z.ZodNullable || schema instanceof z.ZodDefault) {
+      return keysIn(schema.unwrap() as z.ZodType, seen);
+    }
+    return [];
+  }
+
+  /** Every Zod object this capability's request and response modules export, by the name it exports it as. */
+  function declared(): [string, z.ZodType][] {
+    const exported: [string, unknown][] = [...Object.entries(schemas), ...Object.entries(responses)];
+    return exported.flatMap(([name, value]) =>
+      value instanceof z.ZodType ? [[name, value] as [string, z.ZodType]] : [],
+    );
+  }
+
+  test("the sweep is reading real schemas, so the assertion below is not vacuous", () => {
+    // An introspection that silently found nothing would clear every surface at once.
+    const found = declared();
+    expect(found.length).toBeGreaterThan(20);
+    expect(keysIn(schemas.PurchaseSubmission)).toEqual(["rail", "receipt"]);
+    // And it genuinely descends: the subject on a management *view* is a level inside its envelope.
+    expect(keysIn(responses.PaymentsAdminEntitlementsResponse)).toContain("subjectId");
+  });
+
+  test("only the control-plane surfaces name one", () => {
+    const offenders = declared()
+      .filter(([name]) => !NAMES_A_SUBJECT.includes(name))
+      .filter(([, schema]) => keysIn(schema).some((key) => SUBJECT_FIELDS.includes(key)))
+      .map(([name]) => name);
+    expect(
+      offenders,
+      `These name a subject and are not control-plane surfaces. A request that names a holder lets any signed-in caller act against one they have no membership of; a response that publishes one teaches a client the id space it would send back:\n${offenders
+        .map((name) => `  ${name}`)
+        .join("\n")}`,
+    ).toEqual([]);
+  });
+
+  test("nothing on the permitted list is there without needing to be", () => {
+    // The other direction, so a surface that stops naming a subject does not leave a permission behind it —
+    // slack on a list like this is what silently absolves the next field to arrive.
+    const exported = new Map(declared());
+    for (const name of NAMES_A_SUBJECT) {
+      const schema = exported.get(name);
+      expect(schema, `${name} is permitted to name a subject and is not exported at all`).toBeDefined();
+      expect(
+        schema === undefined ? [] : keysIn(schema).filter((key) => SUBJECT_FIELDS.includes(key)),
+        `${name} is permitted to name a subject and names none`,
+      ).not.toEqual([]);
+    }
   });
 });

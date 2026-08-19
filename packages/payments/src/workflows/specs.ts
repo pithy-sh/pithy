@@ -5,6 +5,7 @@ import { workflowKey } from "@pithy-sh/core/src/workflow/naming";
 import type { WorkflowRegistry, WorkflowSpecMap } from "@pithy-sh/core/src/workflow/spec";
 import { z } from "zod";
 import { PaymentsRail } from "../data/rail";
+import { PaymentsSubject } from "../data/subject";
 
 /**
  * The one durable job payments owns: the reconciliation pass.
@@ -37,15 +38,24 @@ export const DEFAULT_STALE_AFTER_SECONDS = 604_800;
  * The two windows are the pass's whole selection policy, and they are parameters rather than config because
  * the reason to change one is always a one-off: reproducing a repair in staging without waiting for a
  * subscription to age, or sweeping wider after an outage that ate a day of deliveries.
+ *
+ * **A holder narrowing is the pair, both halves or neither** — the rule `data/subject.ts` states, applied to
+ * the one field a support pass narrows on. Neither half is the cron. Both is *"reconcile this account"*. One
+ * half is refused rather than ignored: `subjectId` alone would scan whichever user *or* organization happens
+ * to carry that id, and nothing keeps those two ids apart, so the pass would answer about somebody else and
+ * report it as the account that was asked about.
  */
 export const PaymentsReconcileParams = z
   .object({
-    userId: z
-      .string()
-      .min(1)
+    subjectType: PaymentsSubject.shape.subjectType
       .optional()
       .describe(
-        "Reconcile one user's purchases instead of the whole catalog. This is the support tool for \"my subscription isn't showing up\" — the same steps, narrowed, so the answer comes from the same code path the cron runs.",
+        "Which kind of holder to narrow to. Send it with `subjectId` or send neither — half a subject names nobody.",
+      ),
+    subjectId: PaymentsSubject.shape.subjectId
+      .optional()
+      .describe(
+        "Reconcile one holder's purchases instead of the whole catalog. This is the support tool for \"my subscription isn't showing up\" — the same steps, narrowed, so the answer comes from the same code path the cron runs. Send it with `subjectType`: an id alone names whichever user or organization happens to carry it.",
       ),
     rail: PaymentsRail.optional().describe(
       "Reconcile one rail's purchases only. The pass to run when a single store's webhooks were interrupted, rather than paying for the other two.",
@@ -89,6 +99,12 @@ export const PaymentsReconcileParams = z
         "Ask every store and write nothing. The safe way to answer 'how much drift is there' before letting a pass repair it, and the way to measure whether the webhook path is working at all.",
       ),
   })
+  .refine(
+    (params) => (params.subjectType === undefined) === (params.subjectId === undefined),
+    // The remedy is the other field, so the refusal names it. This is read off a CLI flag most of the time,
+    // where the two-line house error is all the operator sees.
+    { message: "Narrow on `subjectType` and `subjectId` together, or neither. Half a subject names no holder." },
+  )
   .describe("What one reconciliation run should cover. Every field optional, because a cron passes none of them.");
 export type PaymentsReconcileParams = z.infer<typeof PaymentsReconcileParams>;
 

@@ -10,9 +10,10 @@ import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry"
 import { unpublishedIn } from "@pithy-sh/core/src/projection/published";
 import { ledger } from "@pithy-sh/ledger/src/capability";
 import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { isPaymentsCapability, PAYMENTS_MIGRATION_ORDER, payments } from "./capability";
+import type { PaymentsSubject } from "./data/subject";
 import {
   PaymentsClawbackFailedError,
   PaymentsEntitlementRequiredError,
@@ -29,6 +30,9 @@ import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "./secret/regi
 import { paymentsWorkflows } from "./workflows/specs";
 
 const CATALOG = {
+  // Required, and with no default — see `data/subject.ts`. Every fixture in this file states it, because
+  // `PaymentsConfig.parse({})` no longer parses: what a project bills is a decision, not a fallback.
+  billingSubject: "user" as const,
   rails: { apple: true, stripe: true },
   stripe: {
     successUrl: "https://acme.example/thanks?session={CHECKOUT_SESSION_ID}",
@@ -137,7 +141,10 @@ describe("payments()", () => {
       "/billing/admin/catalog",
       "/billing/admin/discounts",
       "/billing/admin/entitlements",
-      "/billing/admin/entitlements/:userId",
+      // The pair, both halves in the path. A holder is a `(subjectType, subjectId)` — see
+      // `data/subject.ts` — so a management client naming only an id would be naming a row this capability
+      // cannot find, or worse, one that belongs to somebody else with the same id under the other kind.
+      "/billing/admin/entitlements/:subjectType/:subjectId",
       "/billing/admin/purchases",
       "/billing/admin/reconcile-runs",
       "/billing/admin/subscriptions",
@@ -218,8 +225,11 @@ describe("payments()", () => {
     expect(capability.paymentsConfig.basePath).toBe("/payments");
   });
 
-  test("composes with no arguments at all — an empty catalog is a legal starting point", () => {
-    const capability = payments();
+  test("composes with nothing but a billing subject — an empty catalog is a legal starting point", () => {
+    // `payments()` used to take no argument at all. It cannot any more, and that is the point: the one
+    // field with no default is the one nobody may leave to chance, so the minimum legal composition is a
+    // project that has said who it bills and has nothing to sell them yet.
+    const capability = payments({ billingSubject: "user" });
     expect(capability.paymentsConfig.products).toEqual({});
     expect(capability.paymentsConfig.rails).toEqual({
       apple: false,
@@ -232,10 +242,11 @@ describe("payments()", () => {
 
   test("rejects an impossible catalog at assembly, not on the first webhook", () => {
     // A SKU for a rail that is off.
-    expect(() => payments({ rails: { apple: false }, products: CATALOG.products })).toThrow();
+    expect(() => payments({ billingSubject: "user", rails: { apple: false }, products: CATALOG.products })).toThrow();
     // A ledger grant on a non-consumable.
     expect(() =>
       payments({
+        billingSubject: "user",
         rails: { apple: true },
         products: {
           pack: {
@@ -247,6 +258,104 @@ describe("payments()", () => {
         },
       }),
     ).toThrow();
+  });
+});
+
+/**
+ * The subject seam, at the one place its two halves meet.
+ *
+ * `billingSubject` is config and `resolveSubject` is a composition-time option — see `PaymentsOptions` for
+ * why the round trip through `PAYMENTS_CONFIG` forces the split. What is left to check here is that the
+ * factory joins them: that the function it was handed is the one the entitlement gate asks, that it never
+ * reaches the config a Workflow parses back, and that the one combination which can never entitle anybody
+ * is refused at the deploy rather than met as production 403s.
+ */
+describe("payments() — the subject seam", () => {
+  /** A resolver that records every context it was asked about, and answers whatever it was built with. */
+  function spyResolver(answer: PaymentsSubject | undefined) {
+    const calls: Context<PithyHonoEnv>[] = [];
+    const resolveSubject = async (c: Context<PithyHonoEnv>) => {
+      calls.push(c);
+      return answer;
+    };
+    return { calls, resolveSubject };
+  }
+
+  /** Drive the capability's one middleware and ask the seam it installed for this request's entitlements. */
+  async function listEntitlementsThrough(capability: ReturnType<typeof payments>): Promise<readonly unknown[]> {
+    const app = new Hono<PithyHonoEnv>();
+    for (const middleware of capability.middleware ?? []) middleware(app);
+    app.get("/probe", async (c) => c.json({ held: await c.var.entitlements.list() }));
+    const body = (await (await app.request("/probe")).json()) as { held: unknown[] };
+    return body.held;
+  }
+
+  test("refuses organization billing with no resolver — it could never entitle anybody", () => {
+    // Not a `pithy doctor` finding. Both facts are arguments to this call, so the capability can see the
+    // whole fault by itself, and the fault is total: with no resolver and no default under `organization`,
+    // every gate denies and every write raises payments/subject_unresolved, for every caller, forever.
+    expect(() => payments({ ...CATALOG, billingSubject: "organization" })).toThrow(PithyError);
+  });
+
+  test("the refusal names both ways out, because either is a legitimate answer", () => {
+    let thrown: PithyError | undefined;
+    try {
+      payments({ ...CATALOG, billingSubject: "organization" });
+    } catch (cause) {
+      thrown = cause instanceof PithyError ? cause : undefined;
+    }
+    // `action` is the operator's, and this is a config edit in a file they own.
+    expect(thrown?.payload.action).toContain("resolveSubject");
+    expect(thrown?.payload.action).toContain("billingSubject");
+    // `detail` says why it can never work, so nobody re-litigates it as an over-strict check.
+    expect(thrown?.payload.detail).toContain("payments/subject_unresolved");
+  });
+
+  test("organization billing composes once a resolver answers for it", () => {
+    const { resolveSubject } = spyResolver({ subjectType: "organization", subjectId: "acme" });
+    expect(() => payments({ ...CATALOG, billingSubject: "organization", resolveSubject })).not.toThrow();
+  });
+
+  test("user billing needs none — the authenticated caller is the whole answer", () => {
+    expect(() => payments(CATALOG)).not.toThrow();
+  });
+
+  test("the resolver never reaches the config, so nothing serializes a function", () => {
+    // The reason the split exists. `provision/resolvePaymentsConfig.ts` JSON.stringifies this object into
+    // the reconcile worker's var, and `JSON.stringify` drops a function without a word.
+    const { resolveSubject } = spyResolver(undefined);
+    const capability = payments({ ...CATALOG, billingSubject: "organization", resolveSubject });
+    expect(Object.keys(capability.paymentsConfig)).not.toContain("resolveSubject");
+    expect(JSON.parse(JSON.stringify(capability.paymentsConfig)).resolveSubject).toBeUndefined();
+  });
+
+  test("the resolver the factory was given is the one the entitlement gate asks", async () => {
+    // The wiring this task exists to prove: `installEntitlementResolver` takes the seam as its second
+    // argument, and the seam is built here. A resolver that is never called is a capability whose gate is
+    // still reading whatever it read before.
+    const { calls, resolveSubject } = spyResolver(undefined);
+    const held = await listEntitlementsThrough(
+      payments({ ...CATALOG, billingSubject: "organization", resolveSubject }),
+    );
+    expect(calls).toHaveLength(1);
+    // Unanswered is unentitled: no subject, nothing held, and no D1 touched on the way — the request in this
+    // test has no `DB` binding at all, so a resolver that fell through to the database would throw here.
+    expect(held).toEqual([]);
+  });
+
+  test("the gate resolves per request, not once at install — an adopter's middleware order is theirs", async () => {
+    const { calls, resolveSubject } = spyResolver(undefined);
+    const capability = payments({ ...CATALOG, billingSubject: "organization", resolveSubject });
+    await listEntitlementsThrough(capability);
+    await listEntitlementsThrough(capability);
+    expect(calls).toHaveLength(2);
+  });
+
+  test("under user billing the gate resolves without any adopter resolver at all", async () => {
+    // The default half of the seam. Nothing is authenticated on this request, so `authenticatedUserSubject`
+    // answers nobody and the gate holds nothing — the same denial an unauthenticated caller already gets,
+    // and again with no D1 in reach to fall through to.
+    expect(await listEntitlementsThrough(payments(CATALOG))).toEqual([]);
   });
 });
 
@@ -311,6 +420,7 @@ describe("pithy.manifest.json — declared secrets", () => {
  * identifier, a rail flag or a base path, so any of them crossing is a leaf the sweep reports.
  */
 const CLIENT_CATALOG = {
+  billingSubject: "user" as const,
   rails: { apple: true, google: true, stripe: true },
   stripe: {
     successUrl: "https://acme.example/thanks?session={CHECKOUT_SESSION_ID}",
@@ -473,7 +583,11 @@ describe("payments().client — virtual:pithy/payments", () => {
   test("carries the enabled rails, so a paywall knows which products it can actually sell", () => {
     expect(projection.rails).toEqual({ apple: true, google: true, stripe: true, lemonSqueezy: false, paddle: false });
     const mobileOnly = resolveClientProjection(
-      payments({ rails: { apple: true }, products: { remove_ads: CLIENT_CATALOG.products.remove_ads } }),
+      payments({
+        billingSubject: "user",
+        rails: { apple: true },
+        products: { remove_ads: CLIENT_CATALOG.products.remove_ads },
+      }),
       { environment: "dev" },
     );
     expect(mobileOnly.rails).toEqual({
@@ -493,7 +607,9 @@ describe("payments().client — virtual:pithy/payments", () => {
   test("an empty catalog is { enabled: false } — there is no paywall to render", () => {
     // A screen branches on `enabled` rather than guarding, so "composed but with nothing to sell" has to
     // be the same shape as "not composed at all".
-    expect(resolveClientProjection(payments(), { environment: "dev" })).toEqual({ enabled: false });
+    expect(resolveClientProjection(payments({ billingSubject: "user" }), { environment: "dev" })).toEqual({
+      enabled: false,
+    });
   });
 
   test("an uncomposed capability is { enabled: false } too", () => {
@@ -511,6 +627,7 @@ describe("payments().client — virtual:pithy/payments", () => {
  * place to catch a typo is a deploy.
  */
 const GRANTING_CATALOG = {
+  billingSubject: "user" as const,
   rails: { apple: true },
   products: {
     coins_100: {
@@ -565,9 +682,35 @@ describe("payments().compose", () => {
     expect(() => compose(payments(CATALOG), [])).not.toThrow();
   });
 
+  test("refuses a balance-crediting catalog under organization billing", () => {
+    // `@pithy-sh/ledger` is a per-user model: it keys an account `(userId, currency)` and every route it
+    // serves reads a user. There is no account a company's credit could land in that anything would read,
+    // so the catalog is refused at assembly rather than at the purchase — which is after the money moved.
+    // A resolver is supplied so this isolates the ledger refusal — organization billing without one is
+    // refused a step earlier, by `requireResolvableSubject`.
+    const detail = composeDetail(
+      payments({ ...GRANTING_CATALOG, billingSubject: "organization", resolveSubject: async () => undefined }),
+      [],
+    );
+    expect(detail).toContain("user id");
+    expect(detail).toContain("coins_100");
+  });
+
+  test("and the refusal is about the catalog, not about whether a ledger is there", () => {
+    // Composing the ledger does not make it composable — the fault is the pairing itself, so a project that
+    // adds `ledger(...)` to satisfy the previous refusal must still get this one.
+    expect(() =>
+      compose(
+        payments({ ...GRANTING_CATALOG, billingSubject: "organization", resolveSubject: async () => undefined }),
+        [ledger({ currencies: [{ code: "coins", name: "Coins" }] })],
+      ),
+    ).toThrow();
+  });
+
   test("reports every mismatched product at once, not the first", () => {
     // An operator fixing one typo per deploy is a bad afternoon.
     const capability = payments({
+      billingSubject: "user",
       rails: { apple: true },
       products: {
         coins_100: {

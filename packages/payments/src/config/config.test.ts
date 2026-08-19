@@ -17,6 +17,15 @@ import {
   resolveProduct,
 } from "./config";
 
+/**
+ * Who holds a purchase. Required, with no default, so a config that omits it does not parse at all.
+ *
+ * Spread into every fixture below rather than written out forty times: each of those tests is about a
+ * rail, a SKU, or a grant, and would say nothing new by restating the subject. The tests that *are*
+ * about the subject write it out.
+ */
+const BILLING_SUBJECT = { billingSubject: "user" } as const;
+
 /** Where Stripe's hosted pages return to. Required whenever the Stripe rail is on. */
 const STRIPE_RETURN_URLS = {
   successUrl: "https://acme.example/thanks?session={CHECKOUT_SESSION_ID}",
@@ -44,6 +53,7 @@ const HOSTED_RAIL_SETTINGS = [
 /** The catalog from issue #79's example, trimmed to what a test needs. Parsed fresh per test. */
 function catalog(overrides: Partial<PaymentsConfigInput> = {}): PaymentsConfigInput {
   return {
+    ...BILLING_SUBJECT,
     rails: { apple: true, google: true, stripe: true },
     stripe: STRIPE_RETURN_URLS,
     products: {
@@ -74,6 +84,31 @@ function catalog(overrides: Partial<PaymentsConfigInput> = {}): PaymentsConfigIn
   };
 }
 
+describe("PaymentsConfig requires a billing subject", () => {
+  test("a config that never says who holds a purchase does not parse, and the issue names the key", () => {
+    const result = PaymentsConfig.safeParse({});
+    expect(result.success).toBe(false);
+    // The path is the assertion, not the throw. Every other field in this schema has a default or is
+    // optional, so an empty object parsed happily until this one landed — and a refusal that named
+    // nothing would send an adopter through the whole file looking for the line they owe.
+    expect(result.error?.issues.map((issue) => issue.path)).toEqual([["billingSubject"]]);
+  });
+
+  test("both kinds of holder parse", () => {
+    expect(PaymentsConfig.parse({ billingSubject: "user" }).billingSubject).toBe("user");
+    expect(PaymentsConfig.parse({ billingSubject: "organization" }).billingSubject).toBe("organization");
+  });
+
+  test("the British spelling is refused", () => {
+    // `organization` is an identifier inherited from Better Auth's plugin, not prose — it is the token an
+    // adopter reads off the session and the token stored in a column and a UNIQUE index. Accepting the
+    // other spelling here would make a project's entitlements unreadable by the gate that reads them.
+    const result = PaymentsConfig.safeParse({ billingSubject: "organisation" });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.map((issue) => issue.path)).toEqual([["billingSubject"]]);
+  });
+});
+
 describe("the catalog's pieces are typeable as written", () => {
   test("a product assembles from a price id without restating what the schema defaults", () => {
     // The shape that makes price ids swappable per environment: products built from a map, one
@@ -93,7 +128,7 @@ describe("the catalog's pieces are typeable as written", () => {
     const rails: PaymentsRailTogglesInput = { stripe: true };
     const stripe: PaymentsStripeSettingsInput = STRIPE_RETURN_URLS;
 
-    const config = PaymentsConfig.parse({ rails, products, stripe } satisfies PaymentsConfigInput);
+    const config = PaymentsConfig.parse({ ...BILLING_SUBJECT, rails, products, stripe } satisfies PaymentsConfigInput);
     expect(config.rails).toEqual({ apple: false, google: false, stripe: true, lemonSqueezy: false, paddle: false });
     expect(config.products.pro_monthly?.clawback).toBe(false);
     expect(config.products.team_monthly?.entitlements).toEqual(["team"]);
@@ -108,7 +143,7 @@ describe("PaymentsConfig defaults", () => {
   });
 
   test("every rail is off until named, so an empty catalog composes without claiming a store", () => {
-    const config = PaymentsConfig.parse({ products: {} });
+    const config = PaymentsConfig.parse({ ...BILLING_SUBJECT, products: {} });
     expect(config.rails).toEqual({
       apple: false,
       google: false,
@@ -128,6 +163,7 @@ describe("PaymentsConfig defaults", () => {
   test("an entitlement key is validated as a key, so a store SKU in that field fails at assembly", () => {
     expect(() =>
       PaymentsConfig.parse({
+        ...BILLING_SUBJECT,
         rails: { apple: true },
         products: {
           pro: { type: "subscription", name: "Pro", entitlements: ["com.acme.pro"], apple: { productId: "a" } },
@@ -148,6 +184,7 @@ describe("PaymentsConfig cross-field rules", () => {
 
   test("two products claiming one rail's SKU fail — a webhook could not tell which it bought", () => {
     const result = PaymentsConfig.safeParse({
+      ...BILLING_SUBJECT,
       rails: { apple: true },
       products: {
         pro_monthly: { type: "subscription", name: "Pro", entitlements: ["pro"], apple: { productId: "com.acme.pro" } },
@@ -167,6 +204,7 @@ describe("PaymentsConfig cross-field rules", () => {
 
   test("the same SKU string on two different rails is fine — the rails are separate namespaces", () => {
     const result = PaymentsConfig.safeParse({
+      ...BILLING_SUBJECT,
       rails: { apple: true, google: true },
       products: {
         pro_monthly: {
@@ -183,6 +221,7 @@ describe("PaymentsConfig cross-field rules", () => {
 
   test("a ledger grant on a subscription is legal — it fires once per billing period", () => {
     const result = PaymentsConfig.safeParse({
+      ...BILLING_SUBJECT,
       rails: { stripe: true },
       stripe: STRIPE_RETURN_URLS,
       products: {
@@ -202,6 +241,7 @@ describe("PaymentsConfig cross-field rules", () => {
     // Hosted Checkout and the Billing Portal cannot create a session without somewhere to return to. A deploy is
     // the moment to learn that; a 404 on a buyer's first checkout reads as a bug rather than as missing config.
     const result = PaymentsConfig.safeParse({
+      ...BILLING_SUBJECT,
       rails: { stripe: true },
       products: {
         pro_monthly: { type: "subscription", name: "Pro", entitlements: ["pro"], stripe: { priceId: "price_1Abc" } },
@@ -212,7 +252,12 @@ describe("PaymentsConfig cross-field rules", () => {
   });
 
   test("return URLs for a rail that is off fail too — the mirror of the per-product rule", () => {
-    const result = PaymentsConfig.safeParse({ rails: { apple: true }, stripe: STRIPE_RETURN_URLS, products: {} });
+    const result = PaymentsConfig.safeParse({
+      ...BILLING_SUBJECT,
+      rails: { apple: true },
+      stripe: STRIPE_RETURN_URLS,
+      products: {},
+    });
     expect(result.success).toBe(false);
     expect(result.error?.issues.map((issue) => issue.message).join("\n")).toMatch(/`rails.stripe` is off/);
   });
@@ -222,6 +267,7 @@ describe("PaymentsConfig cross-field rules", () => {
     // config is the last place to catch one.
     for (const successUrl of ["javascript:alert(1)", "not a url", "ftp://acme.example/ok"]) {
       const result = PaymentsConfig.safeParse({
+        ...BILLING_SUBJECT,
         rails: { stripe: true },
         stripe: { ...STRIPE_RETURN_URLS, successUrl },
         products: {},
@@ -232,6 +278,7 @@ describe("PaymentsConfig cross-field rules", () => {
 
   test("a ledger grant on a non-consumable fails — it is bought once and restored forever", () => {
     const result = PaymentsConfig.safeParse({
+      ...BILLING_SUBJECT,
       rails: { apple: true },
       products: {
         starter_pack: {
@@ -250,6 +297,7 @@ describe("PaymentsConfig cross-field rules", () => {
 
   test("a product on no rail at all fails — nothing could ever buy it", () => {
     const result = PaymentsConfig.safeParse({
+      ...BILLING_SUBJECT,
       rails: { apple: true },
       products: { ghost: { type: "subscription", name: "Ghost", entitlements: ["pro"] } },
     });
@@ -259,6 +307,7 @@ describe("PaymentsConfig cross-field rules", () => {
 
   test("a product that grants nothing fails — a purchase with no effect is a catalog mistake", () => {
     const result = PaymentsConfig.safeParse({
+      ...BILLING_SUBJECT,
       rails: { apple: true },
       products: { inert: { type: "consumable", name: "Inert", apple: { productId: "com.acme.inert" } } },
     });
@@ -268,6 +317,7 @@ describe("PaymentsConfig cross-field rules", () => {
 
   test("one bad catalog reports every rule it breaks, so a config is fixed in one pass", () => {
     const result = PaymentsConfig.safeParse({
+      ...BILLING_SUBJECT,
       rails: { apple: false },
       products: { ghost: { type: "non_consumable", name: "Ghost", apple: { productId: "com.acme.ghost" } } },
     });
@@ -286,12 +336,17 @@ describe("one fault, one issue", () => {
   test.each(HOSTED_RAIL_SETTINGS)(
     "the %s rail reports one issue for a missing block, and one for a block with the rail off",
     (rail, settings) => {
-      const missing = PaymentsConfig.safeParse({ rails: { [rail]: true }, products: {} });
+      const missing = PaymentsConfig.safeParse({ ...BILLING_SUBJECT, rails: { [rail]: true }, products: {} });
       expect(missing.success).toBe(false);
       expect(missing.error?.issues.filter((issue) => issue.path.join(".") === rail)).toHaveLength(1);
       expect(missing.error?.issues).toHaveLength(1);
 
-      const orphaned = PaymentsConfig.safeParse({ rails: { apple: true }, [rail]: settings, products: {} });
+      const orphaned = PaymentsConfig.safeParse({
+        ...BILLING_SUBJECT,
+        rails: { apple: true },
+        [rail]: settings,
+        products: {},
+      });
       expect(orphaned.success).toBe(false);
       expect(orphaned.error?.issues.filter((issue) => issue.path.join(".") === rail)).toHaveLength(1);
       expect(orphaned.error?.issues).toHaveLength(1);
@@ -309,6 +364,7 @@ describe("one fault, one issue", () => {
     rails.push(original[0] as string);
     try {
       const result = PaymentsConfig.safeParse({
+        ...BILLING_SUBJECT,
         rails: { paddle: true },
         products: {
           pro_monthly: { type: "subscription", name: "Pro", entitlements: ["pro"], paddle: { priceId: "pri_01a" } },
@@ -372,6 +428,7 @@ describe("catalog lookups", () => {
     // products granting one key is the whole point of the catalog's shape.
     expect([...grantableEntitlements(config)].sort()).toEqual(["ads_removed", "pro"]);
     const withDeclared = PaymentsConfig.parse({
+      ...BILLING_SUBJECT,
       rails: { apple: true },
       manualEntitlements: ["founder", "pro"],
       products: {
@@ -389,16 +446,16 @@ describe("catalog lookups", () => {
   test("a project selling nothing and declaring nothing defines no key at all", () => {
     // Empty is a real answer, not a missing one: every grant against it is refused, because there is no
     // vocabulary to grant in. The same statement the catalog read makes as `{ enabled: false }`.
-    expect(grantableEntitlements(PaymentsConfig.parse({})).size).toBe(0);
+    expect(grantableEntitlements(PaymentsConfig.parse({ ...BILLING_SUBJECT })).size).toBe(0);
   });
 
   test("a declared manual key must still be a well-formed entitlement key", () => {
     // The escape widens *which* keys are legal, never what a key may look like — gating code names these.
-    expect(() => PaymentsConfig.parse({ manualEntitlements: ["Founder Tier!"] })).toThrow();
+    expect(() => PaymentsConfig.parse({ ...BILLING_SUBJECT, manualEntitlements: ["Founder Tier!"] })).toThrow();
   });
 
   test("reports which rails are enabled", () => {
     expect(railEnabled(config, "apple")).toBe(true);
-    expect(railEnabled(PaymentsConfig.parse({ products: {} }), "apple")).toBe(false);
+    expect(railEnabled(PaymentsConfig.parse({ ...BILLING_SUBJECT, products: {} }), "apple")).toBe(false);
   });
 });

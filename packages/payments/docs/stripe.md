@@ -65,7 +65,7 @@ Subscribe it to these events, and only these:
 
 | Event | What it does |
 |---|---|
-| `checkout.session.completed` | Binds the Stripe customer to a Pithy user, and projects a one-time purchase |
+| `checkout.session.completed` | Binds the Stripe customer to the subject that bought, and projects a one-time purchase |
 | `checkout.session.async_payment_succeeded` | A delayed payment method (bank debit, voucher) finally cleared |
 | `checkout.session.async_payment_failed` | It did not |
 | `customer.subscription.created` | A subscription began |
@@ -112,15 +112,15 @@ The secret is **rotatable**, per environment. Stripe lists a signature per activ
 
 Worth knowing, because it explains the failure modes:
 
-1. Your paywall posts to `POST /payments/checkout` with a catalog product id. The **price** comes from the catalog, the **return URLs** from config, and the **purchaser** from the authenticated session — none of them from the request body.
-2. Payments creates a Checkout Session with `client_reference_id` set to the purchaser, and sends the browser to Stripe's page.
-3. Stripe takes the money and POSTs `checkout.session.completed`. Its `client_reference_id` and its `cus_…` are what write the `(stripe, cus_…) → user` row. **This is the only place that link is ever made**, because a Stripe purchase is only ever heard about through a webhook.
+1. Your paywall posts to `POST /payments/checkout` with a catalog product id. The **price** comes from the catalog, the **return URLs** from config, and the **subject** — the person or the organization this purchase will belong to — from the subject seam, which resolves it from the authenticated session. None of the three comes from the request body.
+2. Payments creates a Checkout Session with `client_reference_id` set to that subject, encoded as `user:<id>` or `organization:<id>`, and sends the browser to Stripe's page. The pair travels as one string because either half alone is ambiguous: nothing keeps an organization id from equalling some user's id.
+3. Stripe takes the money and POSTs `checkout.session.completed`. Its `client_reference_id` and its `cus_…` are what write the `(stripe, cus_…) → subject` row. **This is the only place that link is ever made**, because a Stripe purchase is only ever heard about through a webhook. A `client_reference_id` that is not exactly that encoding does not decode to anybody — a bare id, the format that predates subjects, is refused rather than read as a user — and the delivery is recorded as orphaned instead.
 4. The subscription's own events carry the state. Each one is verified — HMAC over the exact bytes, inside a five-minute window — then recorded, then projected.
 5. Every delivery lands in `pithy_payments_webhook_events`. A delivery that projected carries `processedAt`; one that did not carries the reason and no `processedAt`, so Stripe's next attempt — or your replay — runs it again.
 
 So: a delivery that fails its signature is 401 and **nothing is recorded**, which is what stops a forger filling the table. A delivery Stripe signed but this build does not act on is 200 with a row. A test-mode purchase against a production deployment is 200, is not projected, and records `payments/environment_mismatch`.
 
-**Identifiers, since they surface in your data.** A subscription purchase is keyed on the **invoice** id, so each billing period is its own row — which is what makes a `grants` clause credit once per period rather than once ever — and the subscription id is the family key that ties renewals to the buyer. A one-time purchase is keyed on the **payment intent**, because a later refund names the payment intent and nothing else.
+**Identifiers, since they surface in your data.** A subscription purchase is keyed on the **invoice** id, so each billing period is its own row — which is what makes a `grants` clause credit once per period rather than once ever — and the subscription id is the family key that ties renewals to the subject that bought. A one-time purchase is keyed on the **payment intent**, because a later refund names the payment intent and nothing else.
 
 **One bounded gap.** A session Pithy did not create — a Payment Link built in the dashboard — carries no price this code can resolve, since a Checkout Session's line items are not in its webhook payload. The delivery is recorded with the payment intent in its `error` column and the reconciliation pass repairs it. Sell through `POST /payments/checkout` and it never arises.
 

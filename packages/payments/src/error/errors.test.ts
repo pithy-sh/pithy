@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { clientError } from "@pithy-sh/core/src/error/client";
 import { KitErrorPayload, PublicErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { describe, expect, test } from "vitest";
 import {
@@ -12,6 +13,7 @@ import {
   PaymentsProviderUnavailableError,
   PaymentsRailNotConfiguredError,
   PaymentsReceiptAlreadyOwnedError,
+  PaymentsSubjectUnresolvedError,
   PaymentsVerificationFailedError,
   PaymentsWebhookUnverifiedError,
 } from "./errors";
@@ -32,6 +34,7 @@ const FAMILY = [
     code: "payments/entitlement_not_in_catalog",
     status: 400,
   },
+  { error: () => new PaymentsSubjectUnresolvedError(), code: "payments/subject_unresolved", status: 403 },
 ] as const;
 
 describe("payments error family", () => {
@@ -82,6 +85,24 @@ describe("payments error family", () => {
     const wire = PublicErrorPayload.parse(thrown.payload);
     expect(JSON.stringify(wire)).not.toContain("coins");
     expect("detail" in wire).toBe(false);
+  });
+
+  test("the unresolved-subject refusal keeps the operator's words off the wire", () => {
+    // Three fields, three audiences, and this code is the one where they diverge most. The caller is
+    // told to pick an account, which is something they can do. That the project bills organizations,
+    // that a resolver in pithy.config.ts returned nothing — those are the operator's sentences, and
+    // naming a config key to a stranger is a map of the deployment they did not need.
+    const thrown = new PaymentsSubjectUnresolvedError({
+      detail: "billingSubject=organization; resolver returned undefined",
+    });
+    expect(thrown.payload.status).toBe(403);
+    expect(thrown.payload.message).not.toMatch(/billingSubject|pithy\.config|resolver|seam/i);
+    expect(thrown.payload.action).toMatch(/billingSubject/);
+
+    const wire = clientError(thrown.payload);
+    expect("action" in wire).toBe(false);
+    expect("detail" in wire).toBe(false);
+    expect(JSON.stringify(wire)).not.toMatch(/billingSubject|resolver/);
   });
 
   test("a cause is preserved, so a rail's own failure stays attached to the throw", () => {

@@ -43,7 +43,16 @@ describe("paymentsExampleSeed", () => {
   });
 
   test("hangs off the canonical cast, so the seeded backend is connected rather than scattered", () => {
-    expect(purchases().map((row) => row.userId)).toEqual([EXAMPLE_ADA.id, EXAMPLE_GRACE.id, EXAMPLE_ALAN.id]);
+    expect(purchases().map((row) => row.subjectId)).toEqual([EXAMPLE_ADA.id, EXAMPLE_GRACE.id, EXAMPLE_ALAN.id]);
+  });
+
+  test("every row is a `user` subject, because the shared cast is three people and no company", () => {
+    // Both halves on every row, and both of them `user`. The cast in `@pithy-sh/core` is Ada, Grace
+    // and Alan — an organization would have to be invented here to seed one, and an invented id is a
+    // fixture nothing else in the kit joins to. So a project on `billingSubject: "organization"` seeds
+    // rows that resolve for nobody, which is the honest outcome rather than a bug: the fixture shows
+    // the shape of the tables, and the adopter's own organizations are the only real subjects it has.
+    for (const row of [...purchases(), ...entitlements()]) expect(row.subjectType).toBe("user");
   });
 
   test("the live subscription has not lapsed, and the owned-forever purchase never does", () => {
@@ -72,9 +81,9 @@ describe("paymentsExampleSeed", () => {
   test("the entitlement rows are the derivation the projection would have written", () => {
     // Two, not three: Alan's refunded consumable granted a balance, not a key, so it leaves no row.
     // That is the derivation, and seeding a third would show a shape the writer never produces.
-    expect(entitlements().map((row) => [row.userId, row.entitlement, row.active])).toEqual([
-      [EXAMPLE_ADA.id, "pro", true],
-      [EXAMPLE_GRACE.id, "ads_removed", true],
+    expect(entitlements().map((row) => [row.subjectType, row.subjectId, row.entitlement, row.active])).toEqual([
+      ["user", EXAMPLE_ADA.id, "pro", true],
+      ["user", EXAMPLE_GRACE.id, "ads_removed", true],
     ]);
   });
 
@@ -100,7 +109,8 @@ describe("paymentsExampleSeed", () => {
 });
 
 describe("payments() with seed.includeExamples", () => {
-  const catalog = { rails: { apple: true }, products: {} };
+  // `billingSubject` is required, so a catalog fixture states it. `user` is what the fixture seeds.
+  const catalog = { billingSubject: "user", rails: { apple: true }, products: {} } as const;
 
   test("composes the example set only when includeExamples is on", () => {
     const capability = payments(catalog);

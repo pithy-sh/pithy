@@ -16,7 +16,7 @@ import { PaymentsWebhookEvent } from "./webhookEvent";
 export const PAYMENTS_PURCHASES_TABLE = "pithyPaymentsPurchases";
 /** The materialized read model `requireEntitlement()` hits. → `pithy_payments_entitlements`. */
 export const PAYMENTS_ENTITLEMENTS_TABLE = "pithyPaymentsEntitlements";
-/** Provider identity → Pithy user. → `pithy_payments_provider_accounts`. */
+/** Provider identity → the subject that holds it. → `pithy_payments_provider_accounts`. */
 export const PAYMENTS_PROVIDER_ACCOUNTS_TABLE = "pithyPaymentsProviderAccounts";
 /** Raw received notifications, the replay source. → `pithy_payments_webhook_events`. */
 export const PAYMENTS_WEBHOOK_EVENTS_TABLE = "pithyPaymentsWebhookEvents";

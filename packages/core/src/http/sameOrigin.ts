@@ -45,7 +45,7 @@ export type SameOriginGate = MiddlewareHandler<PithyHonoEnv>;
  * Require this request to come from an origin the Worker trusts — the CSRF gate a cookie-authenticated
  * mutating route wears, beside the strategy that says who the caller is.
  *
- *   app.post("/organisations", requireAuth(), requireSameOrigin(), zValidator(…), handler)
+ *   app.post("/organizations", requireAuth(), requireSameOrigin(), zValidator(…), handler)
  *
  * A bearer request carries no ambient credential and is CSRF-exempt; that exemption belongs to the
  * published gate, since the capability that owns the credential model is the one that knows.

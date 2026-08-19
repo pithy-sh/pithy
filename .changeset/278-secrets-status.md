@@ -31,7 +31,7 @@ A failed rotation never advances freshness — the aggregate takes the newest *s
 
 A registry entry may now declare its own rotation cadence. An age is a number; whether that age is late is a policy, and the policy belongs beside the secret — ninety days is unremarkable for a session signing key and a long time for a live payment key. Without it every client picks its own threshold, they disagree, and the one an owner happens to be looking at decides whether they are told.
 
-It is independent of `rotatable`, deliberately. `rotatable` says what automation may do; this says what the organisation expects, whoever performs it. A `rotatable: false` third-party key is precisely the case where no tooling will ever help, so refusing the declaration there would silence the secrets that most need saying — and a `rotatable: false` secret reports identically to a `rotatable: true` one in every field.
+It is independent of `rotatable`, deliberately. `rotatable` says what automation may do; this says what the organization expects, whoever performs it. A `rotatable: false` third-party key is precisely the case where no tooling will ever help, so refusing the declaration there would silence the secrets that most need saying — and a `rotatable: false` secret reports identically to a `rotatable: true` one in every field.
 
 ## What the listing covers
 

@@ -213,7 +213,7 @@ describe("correlation — which of this template's messages", () => {
     "plan_revoked",
     "plan_paused",
   ] as const;
-  const about = (notice: string, organisation = "org-42"): string => `${notice}:${organisation}`;
+  const about = (notice: string, organization = "org-42"): string => `${notice}:${organization}`;
 
   /**
    * The ambiguity itself, stated first.

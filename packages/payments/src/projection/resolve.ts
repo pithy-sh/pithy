@@ -3,10 +3,11 @@
 
 import type { Entitlement } from "@pithy-sh/core/src/entitlement/entitlement";
 import { PaymentsEntitlement } from "../data/entitlement";
+import type { PaymentsSubject } from "../data/subject";
 import { PAYMENTS_ENTITLEMENTS_TABLE, type PaymentsDatabase } from "../data/tables";
 
 /**
- * The read path: every entitlement a user holds, as the core seam's shape.
+ * The read path: every entitlement a subject holds, as the core seam's shape.
  *
  * **A read never writes.** Repairing a stale row is the reconciliation Workflow's job, which is what keeps
  * this the hot path it needs to be — one indexed lookup per request, no KV cache, no token claim, so a
@@ -20,16 +21,26 @@ import { PAYMENTS_ENTITLEMENTS_TABLE, type PaymentsDatabase } from "../data/tabl
  *
  * Lapsed rows are returned rather than filtered out, with `active` false. A paywall wants to say "your Pro
  * ended on the 4th", and it can only do that if the row and its date survive the read.
+ *
+ * **Both halves of the subject are in the `where`, and neither is decorative.** Nothing in the kit makes the
+ * user id space and the adopter's organization id space disjoint — they are minted by different things, and
+ * neither knows the other exists — so a read filtered on the id alone would hand `user:acme` whatever
+ * `organization:acme` bought. The pair arrives as one object for exactly that reason: it is read from and
+ * compared as a unit, and no call site here pairs a kind from config with an id from somewhere else.
+ *
+ * Both columns lead `UNIQUE (subjectType, subjectId, entitlement)`, so this stays the one indexed lookup it
+ * has to be — the index answers the whole predicate rather than filtering a kind out afterwards.
  */
 export async function resolveEntitlements(
   db: PaymentsDatabase,
-  userId: string,
+  subject: PaymentsSubject,
   now: Date,
 ): Promise<readonly Entitlement[]> {
   const rows = await db
     .selectFrom(PAYMENTS_ENTITLEMENTS_TABLE)
     .selectAll()
-    .where("userId", "=", userId)
+    .where("subjectType", "=", subject.subjectType)
+    .where("subjectId", "=", subject.subjectId)
     .orderBy("entitlement")
     .execute();
 

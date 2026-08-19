@@ -3,16 +3,18 @@
 
 import { env } from "cloudflare:test";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { openLedger } from "@pithy-sh/ledger/src/ledger";
 import { ledger_0001_accounts } from "@pithy-sh/ledger/src/migrations/0001_accounts";
 import type { Kysely } from "kysely";
 import { beforeEach, describe, expect, test } from "vitest";
 import { PaymentsConfig } from "../config/config";
+import type { PaymentsSubject } from "../data/subject";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
 import type { ProviderEventInput } from "../projection/event";
 import { type PurchaseProjection, projectPurchase } from "../projection/writer";
 import { applyGrants, fulfillPurchase, grantRef } from "./apply";
-import type { PaymentsLedger } from "./ledgerSeam";
+import { ledgerAccountId, type PaymentsLedger } from "./ledgerSeam";
 
 /**
  * Ledger grants, against a real ledger in a real D1. The claim under test is not "a credit happens" — it is
@@ -24,7 +26,11 @@ const SECOND = 1000;
 const DAY = 86_400 * SECOND;
 const T0 = 1_700_000_000_000;
 
+/** The buyer, as every event and every balance assertion names her: a pair, never a bare id. */
+const ADA: PaymentsSubject = { subjectType: "user", subjectId: "ada" };
+
 const CONFIG = PaymentsConfig.parse({
+  billingSubject: "user",
   rails: { apple: true },
   products: {
     coins_100: {
@@ -71,7 +77,7 @@ function event(overrides: Partial<ProviderEventInput> = {}): ProviderEventInput 
     rail: "apple",
     providerTransactionId: "txn-1",
     providerProductId: "com.acme.coins100",
-    userId: "ada",
+    ...ADA,
     status: "active",
     environment: "production",
     purchasedAt: new Date(T0),
@@ -86,7 +92,8 @@ const project = (input: ProviderEventInput = event()): Promise<PurchaseProjectio
 
 const ledger = () => openLedger(env.DB, () => T0 + SECOND);
 
-const balance = (userId: string, currency = "coins") => ledger().balance(userId, currency);
+/** A subject's balance, addressed the way `applyGrants` addresses it — through the one derivation. */
+const balance = (subject: PaymentsSubject, currency = "coins") => ledger().balance(ledgerAccountId(subject), currency);
 
 async function transactionRows(): Promise<{ ref: string; kind: string; amount: number; memo: string | null }[]> {
   const { results } = await env.DB.prepare(
@@ -116,11 +123,12 @@ describe("grantRef", () => {
 describe("the ledger constraint the ref shape defends against", () => {
   test("a duplicate ref is swallowed as success, crediting only the first currency", async () => {
     const shared = "payments:grant:p-1";
-    await ledger().credit("ada", "coins", 100, shared);
-    await ledger().credit("ada", "gems", 5, shared);
-    expect((await balance("ada")).balance).toBe(100);
+    const account = ledgerAccountId(ADA);
+    await ledger().credit(account, "coins", 100, shared);
+    await ledger().credit(account, "gems", 5, shared);
+    expect((await balance(ADA)).balance).toBe(100);
     // Not an error, not a rejection — a silent no-op. This is why the currency is in the ref.
-    expect((await balance("ada", "gems")).balance).toBe(0);
+    expect((await balance(ADA, "gems")).balance).toBe(0);
   });
 });
 
@@ -130,7 +138,7 @@ describe("applyGrants", () => {
     const applied = await applyGrants(ledger(), projection, { config: CONFIG });
 
     expect(applied).toEqual([{ currency: "coins", amount: 100, ref: grantRef(projection.purchase.id, "coins") }]);
-    expect((await balance("ada")).balance).toBe(100);
+    expect((await balance(ADA)).balance).toBe(100);
   });
 
   test("names the rail and the product in the memo, and nothing a receipt would carry", async () => {
@@ -146,14 +154,14 @@ describe("applyGrants", () => {
     await applyGrants(ledger(), projection, { config: CONFIG });
     await applyGrants(ledger(), projection, { config: CONFIG });
 
-    expect((await balance("ada")).balance).toBe(100);
+    expect((await balance(ADA)).balance).toBe(100);
     expect(await transactionRows()).toHaveLength(1);
   });
 
   test("a redelivered webhook re-projects and re-applies to the same balance", async () => {
     // The whole delivery, twice, exactly as a provider retry would run it.
     for (let i = 0; i < 2; i++) await applyGrants(ledger(), await project(), { config: CONFIG });
-    expect((await balance("ada")).balance).toBe(100);
+    expect((await balance(ADA)).balance).toBe(100);
   });
 
   test("a subscription's grant fires once per billing period, because each renewal is its own transaction", async () => {
@@ -172,7 +180,7 @@ describe("applyGrants", () => {
     await applyGrants(ledger(), first, { config: CONFIG });
     await applyGrants(ledger(), renewal, { config: CONFIG });
     // Two periods, two credits — and the refs differ only because the purchase ids do.
-    expect((await balance("ada")).balance).toBe(100);
+    expect((await balance(ADA)).balance).toBe(100);
     expect((await transactionRows()).map((row) => row.amount)).toEqual([50, 50]);
   });
 
@@ -189,7 +197,7 @@ describe("applyGrants", () => {
       );
       expect(await applyGrants(ledger(), projection, { config: CONFIG })).toEqual([]);
     }
-    expect((await balance("ada")).balance).toBe(0);
+    expect((await balance(ADA)).balance).toBe(0);
   });
 
   test("a reversed purchase credits nothing — the money came back", async () => {
@@ -197,14 +205,14 @@ describe("applyGrants", () => {
       const projection = await project(event({ providerTransactionId: `txn-${status}`, status }));
       expect(await applyGrants(ledger(), projection, { config: CONFIG })).toEqual([]);
     }
-    expect((await balance("ada")).balance).toBe(0);
+    expect((await balance(ADA)).balance).toBe(0);
   });
 
   test("a lapsed period still credited, because the charge for it was paid", async () => {
     // `expired` is where a subscription ends up, not a statement about whether its invoice cleared.
     const projection = await project(event({ providerProductId: "com.acme.pro.monthly", status: "expired" }));
     expect(await applyGrants(ledger(), projection, { config: CONFIG })).toHaveLength(1);
-    expect((await balance("ada")).balance).toBe(50);
+    expect((await balance(ADA)).balance).toBe(50);
   });
 
   test("a purchase that terminated before any money cleared credits nothing", async () => {
@@ -214,7 +222,7 @@ describe("applyGrants", () => {
     // with no clawback ever to follow, because there was no payment to reverse.
     const projection = await project(event({ status: "never_paid" }));
     expect(await applyGrants(ledger(), projection, { config: CONFIG })).toEqual([]);
-    expect((await balance("ada")).balance).toBe(0);
+    expect((await balance(ADA)).balance).toBe(0);
     expect(await transactionRows()).toEqual([]);
   });
 
@@ -243,7 +251,54 @@ describe("fulfillPurchase", () => {
   test("credits through the real guarded import when the catalog does ask", async () => {
     const report = await fulfillPurchase(env.DB, await project(), { config: CONFIG });
     expect(report.granted).toHaveLength(1);
-    expect((await balance("ada")).balance).toBe(100);
+    expect((await balance(ADA)).balance).toBe(100);
+  });
+});
+
+/**
+ * Organization billing, against the real ledger.
+ *
+ * `@pithy-sh/ledger` keys an account on one flat id, and nothing in the kit keeps an organization id and a
+ * user id apart — they are minted by different systems, and under organization billing the id comes from a
+ * membership model this package never sees. So the only honest way to test the derivation is to give the two
+ * subjects the **same** id and prove there are still two balances.
+ */
+describe("a grant to an organization", () => {
+  /**
+   * There is no such thing, and that is the behaviour.
+   *
+   * `@pithy-sh/ledger` is a per-user model: an account is `(userId, currency)` and every route it serves
+   * reads a user id. A company's credit has no account to land in that anything would read, so
+   * `checkLedgerGrants` refuses the pairing at **composition** — proved in `capability.test.ts`, before a
+   * project deploys rather than after a customer has paid for coins nothing can deliver. What is left to
+   * prove here is the address itself, which is what this module owns.
+   */
+
+  test("ledgerAccountId refuses an organization outright — the backstop below composition", () => {
+    // Unreachable through a composed Worker. Present so a path that skipped composition fails loudly rather
+    // than writing a row into `pithy_ledger_accounts` whose `user_id` is not a user.
+    expect(() => ledgerAccountId({ subjectType: "organization", subjectId: "acme" })).toThrow(PithyError);
+  });
+
+  test("a user keeps the address the ledger's own routes read", async () => {
+    // The half that regressed, asserted against the real ledger rather than against the helper alone: a
+    // grant credited to `user:ada` landed in an account no ledger route reads, so the player's balance
+    // stayed empty and nothing on either side reported a fault.
+    const ada: PaymentsSubject = { subjectType: "user", subjectId: "ada" };
+    await applyGrants(
+      ledger(),
+      await projectPurchase(env.DB, event(ada), {
+        config: CONFIG,
+        environment: "production",
+        now: new Date(T0 + SECOND),
+      }),
+      { config: CONFIG },
+    );
+
+    const { results } = await env.DB.prepare(
+      "SELECT user_id AS accountId, balance FROM pithy_ledger_accounts ORDER BY user_id",
+    ).all<{ accountId: string; balance: number }>();
+    expect(results).toEqual([{ accountId: "ada", balance: 100 }]);
   });
 });
 
@@ -258,6 +313,7 @@ describe("fulfillPurchase", () => {
  */
 describe("a subscription whose money and state are separate rows", () => {
   const LS_CONFIG = PaymentsConfig.parse({
+    billingSubject: "user",
     rails: { lemonSqueezy: true },
     lemonSqueezy: { successUrl: "https://acme.test/thanks", cancelUrl: "https://acme.test/paywall" },
     products: {
@@ -275,7 +331,7 @@ describe("a subscription whose money and state are separate rows", () => {
   const lsEvent = (overrides: Partial<ProviderEventInput>): ProviderEventInput => ({
     rail: "lemonSqueezy",
     providerProductId: "55555",
-    userId: "ada",
+    ...ADA,
     environment: "production",
     purchasedAt: new Date(T0),
     providerEventAt: new Date(T0),
@@ -312,7 +368,7 @@ describe("a subscription whose money and state are separate rows", () => {
     await fulfilLs(invoice("8002", T0 + 30 * DAY));
 
     // 50 per period, twice — and not three times, which is what a crediting state row would have made it.
-    expect((await balance("ada")).balance).toBe(100);
+    expect((await balance(ADA)).balance).toBe(100);
     const credits = (await transactionRows()).filter((row) => row.kind === "credit");
     expect(credits).toHaveLength(2);
   });
@@ -340,13 +396,13 @@ describe("a subscription whose money and state are separate rows", () => {
 
   test("a refund claws back once, against the row that took the money", async () => {
     await fulfilLs(invoice("8001", T0));
-    expect((await balance("ada")).balance).toBe(50);
+    expect((await balance(ADA)).balance).toBe(50);
 
     const report = await fulfilLs(
       invoice("8001", T0, { status: "refunded", revokedAt: new Date(T0 + DAY), providerEventAt: new Date(T0 + DAY) }),
     );
     expect(report.clawedBack).toHaveLength(1);
-    expect((await balance("ada")).balance).toBe(0);
+    expect((await balance(ADA)).balance).toBe(0);
   });
 
   test("the revocation that accompanies a refund claws back nothing of its own", async () => {
@@ -362,7 +418,7 @@ describe("a subscription whose money and state are separate rows", () => {
 
     expect(report.clawedBack).toEqual([]);
     // One credit and one debit. A second debit would take currency the buyer was never given.
-    expect((await balance("ada")).balance).toBe(0);
+    expect((await balance(ADA)).balance).toBe(0);
     const rows = await transactionRows();
     expect(rows.filter((row) => row.kind === "credit")).toHaveLength(1);
     expect(rows.filter((row) => row.kind === "debit")).toHaveLength(1);

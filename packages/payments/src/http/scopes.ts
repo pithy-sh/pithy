@@ -177,7 +177,7 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       path: `${basePath}/admin/purchases`,
       scope: PAYMENTS_PURCHASES_READ_SCOPE,
       summary:
-        "Page the purchase log — every verified transaction, newest first, filtered by account, store, status or store environment.",
+        "Page the purchase log — every verified transaction, newest first, filtered by holder (both halves of the subject), store, status or store environment.",
     },
     {
       method: "GET",
@@ -193,10 +193,10 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
     },
     {
       method: "GET",
-      path: `${basePath}/admin/entitlements/:userId`,
+      path: `${basePath}/admin/entitlements/:subjectType/:subjectId`,
       scope: PAYMENTS_ENTITLEMENTS_READ_SCOPE,
       summary:
-        "Everything one account is entitled to, resolved now. The answer to “why can this person not use what they paid for”.",
+        "Everything one subject is entitled to, resolved now — addressed by both halves, `user`/`organization` and the id. The answer to “why can this person not use what they paid for”.",
     },
     {
       method: "GET",

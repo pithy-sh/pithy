@@ -67,6 +67,9 @@ const backend = createBackend({
     secrets({ registry: {} }),
     payments({
       basePath: BASE_PATH,
+      // Required by `PaymentsConfig`, and `user` because this fixture's holders are people. The advertised
+      // per-subject read carries both halves whichever mode a project bills in — the path is the pair.
+      billingSubject: "user",
       rails: { apple: true },
       products: {
         pro_monthly: {
@@ -189,7 +192,8 @@ async function seed(): Promise<void> {
         rail: "apple",
         providerTransactionId: `t-${sku}`,
         providerProductId: sku,
-        userId: "ada",
+        subjectType: "user",
+        subjectId: "ada",
         status: "active",
         environment: "production",
         purchasedAt: new Date(at),
@@ -209,6 +213,7 @@ async function seed(): Promise<void> {
 /** The same catalog the backend composes, parsed once for the seeding writer. */
 const PAYMENTS_CATALOG = payments({
   basePath: BASE_PATH,
+  billingSubject: "user",
   rails: { apple: true },
   products: {
     pro_monthly: {
@@ -253,7 +258,7 @@ describe("what a management client discovers about payments", () => {
       "/billing/admin/purchases",
       "/billing/admin/subscriptions",
       "/billing/admin/entitlements",
-      "/billing/admin/entitlements/:userId",
+      "/billing/admin/entitlements/:subjectType/:subjectId",
       "/billing/admin/discounts",
       "/billing/admin/reconcile-runs",
     ]);

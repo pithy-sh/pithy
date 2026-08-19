@@ -5,6 +5,7 @@ import { z } from "zod";
 import { pauseResumesAt } from "../../data/pause";
 import type { PurchaseEnvironment } from "../../data/purchase";
 import type { PurchaseStatus } from "../../data/status";
+import { decodeSubjectReference } from "../../data/subject";
 import { PaymentsVerificationFailedError } from "../../error/errors";
 import type { UnboundProviderEvent } from "../contract";
 
@@ -66,7 +67,18 @@ import type { UnboundProviderEvent } from "../contract";
  * they are worth exactly what a value only this deployment's server could have produced is worth.
  */
 
-/** The `custom_data` key carrying the authenticated purchaser. Literal snake_case, as the issue specifies. */
+/**
+ * The `custom_data` key carrying the subject reference. Literal snake_case, as the issue specifies.
+ *
+ * **The name says `user` and the value no longer has to be one, and that mismatch is deliberate.** What
+ * travels here is now `encodeSubjectReference`'s output — `user:ada`, `organization:acme` — because a
+ * purchase can be held by an organization. The obvious tidy-up is to rename the key to match. It is the one
+ * thing that must not happen: this string is a wire contract with Paddle, not an identifier of ours. A
+ * checkout stamped `pithy_user` today is a transaction sitting open in somebody's browser, a subscription
+ * renewing next month, and a `custom_data` object Paddle stores verbatim for the life of the customer. A
+ * renamed key reads nothing on any of them — every in-flight purchase comes back naming nobody, permanently,
+ * with a `linkProviderAccount` that never rebinds behind it. The name is frozen; the meaning moved.
+ */
 export const PADDLE_CUSTOM_ACCOUNT = "pithy_user";
 
 /** The `custom_data` key carrying this deployment's environment — the shared-sandbox fence. */
@@ -550,6 +562,14 @@ export function fencedOut(custom: Record<string, unknown> | null | undefined, de
  * A deployment that does not know its own `ENVIRONMENT` trusts no reference at all. That is the safe
  * direction: the cost is a purchase that lands unbound and is repairable from the trail, where the other
  * way round is an unauthenticated write into the account map that nothing ever undoes.
+ *
+ * **And the value must be the subject encoding, which the MAC alone does not make it.** A stamp can be
+ * authentic and still name nobody: a bare id is what this rail wrote before subjects existed, and reading
+ * one as a user would hand a purchase to whoever else holds that id. So the reference is put through
+ * `decodeSubjectReference` — the one decoder, never a split written here — and anything that is not exactly
+ * the encoding is refused in the same direction as everything else above. The string is returned rather than
+ * the pair because a rail reports `accountReference` as a string; the route decodes it again through the same
+ * function, and gets the same answer.
  */
 export async function accountReferenceOf(
   custom: Record<string, unknown> | null | undefined,
@@ -563,6 +583,10 @@ export async function accountReferenceOf(
   const proof = custom?.[PADDLE_CUSTOM_PROOF];
   if (typeof reference !== "string" || reference === "") return null;
   if (typeof stampedEnv !== "string" || typeof proof !== "string") return null;
+
+  // Fail closed on the shape before spending an HMAC on it. A reference that does not decode names nobody
+  // however well it is proven, so there is nothing a MAC could add.
+  if (decodeSubjectReference(reference) === undefined) return null;
 
   // The environment is checked as part of the MAC's message rather than beside it, so a proof minted for
   // staging cannot be replayed against production by editing one field.
@@ -598,7 +622,7 @@ export async function accountReferenceProof(reference: string, deployment: strin
 /** Domain separation, so this MAC and the webhook body signature can never be mistaken for one another. */
 const ACCOUNT_REFERENCE_DOMAIN = "pithy:paddle:account-reference:v1:";
 
-/** What the MAC covers: the domain, the environment, and the user — in that order, and never one of them. */
+/** What the MAC covers: the domain, the environment, and the subject — in that order, and never one of them. */
 function message(reference: string, deployment: string): string {
   return `${ACCOUNT_REFERENCE_DOMAIN}${deployment}:${reference}`;
 }

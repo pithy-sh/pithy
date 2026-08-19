@@ -18,6 +18,7 @@ import {
   runAdd,
 } from "../capabilities/flow";
 import { availableManifests } from "../capabilities/manifests";
+import { requiredOptionRefusal } from "../capabilities/requiredOptions";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import type { DatabaseRun } from "../migrations/run";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
@@ -163,24 +164,70 @@ function describeRun(run: DatabaseRun): string {
     : `${run.database}: ${run.results.length} applied.`;
 }
 
-/** Fill un-set options interactively — a human-attached run prompts from the manifest. */
+/**
+ * The first entry offered for a **required** closed-set option, and the one `select` opens on.
+ *
+ * `@clack/prompts`' `select` has no unselected state: it highlights its first option and enter accepts it.
+ * So "offer no `initialValue`" does not mean "nothing is pre-committed" — it means the first choice is, and
+ * for `billingSubject` that is enter silently picking a billing model, which is the exact defect #412
+ * exists to close. An unanswerable first entry is what actually gives the prompt no default: enter lands
+ * here, and here refuses.
+ *
+ * The empty string cannot collide with a real choice — `ConfigOption.choices` are non-empty printable
+ * strings — so it is unambiguous as a sentinel.
+ */
+const UNANSWERED_CHOICE = "";
+
+/**
+ * Fill un-set options interactively — a human-attached run prompts from the manifest.
+ *
+ * **What the option states decides what it is asked with.** A closed set is a `select` over its choices,
+ * because a free-text field that only accepts three answers is a quiz. And an option with **no default** is
+ * offered nothing to accept, in either shape: a `select` opens on {@link UNANSWERED_CHOICE}, and a `text`
+ * gets no `defaultValue` and no `placeholder`. Both then refuse an unanswered enter with the same error a
+ * `--json` run gets, naming the same flag — so the guarantee is one guarantee rather than one per transport.
+ *
+ * It used to hand `String(option.default)` to every prompt, which is how pressing enter picked a billing
+ * model (#412).
+ */
 const promptConfigValues: ConfigPrompt = async (manifest, provided) => {
-  const { isCancel, text } = await import("@clack/prompts");
+  const { isCancel, select, text } = await import("@clack/prompts");
   const values: Record<string, ConfigValue> = { ...provided };
   for (const option of manifest.configOptions) {
     if (option.key in values) continue;
     // Left as the manifest scaffolds it. A secrets registry is not something anyone types at a prompt,
     // and the fallback offered would have been the string "[object Object]".
     if (isHandWritten(option)) continue;
-    const fallback = String(option.default);
-    const answer = await text({
-      message: `${option.key} — ${option.describe}`,
-      defaultValue: fallback,
-      placeholder: fallback,
-    });
+    const message = `${option.key} — ${option.describe}`;
+    const required = option.default === undefined;
+    const answer = option.choices
+      ? await select({
+          message,
+          options: [
+            // Only for a required option: an optional one has a default that enter should accept, which is
+            // the whole point of having one.
+            ...(required ? [{ value: UNANSWERED_CHOICE, label: "Choose one" }] : []),
+            ...option.choices.map((choice) => ({ value: choice, label: choice })),
+          ],
+          ...(typeof option.default === "string" ? { initialValue: option.default } : {}),
+        })
+      : await text({
+          message,
+          // Absent for a required option, both of them: `defaultValue` is what enter accepts and
+          // `placeholder` is what says so. There is nothing here to accept.
+          ...(option.default === undefined
+            ? {}
+            : { defaultValue: String(option.default), placeholder: String(option.default) }),
+        });
     if (isCancel(answer)) {
       process.stderr.write("Cancelled.\n");
       process.exit(1);
+    }
+    // An unanswered required option is refused rather than written. `text` returns "" for a bare enter and
+    // `select` returns the sentinel, and both mean the same thing: nobody chose. Writing either would put
+    // an empty key into the adopter's config for them to find later — which is worse than the question.
+    if (required && (answer === UNANSWERED_CHOICE || answer === "")) {
+      throw requiredOptionRefusal({ capability: manifest.name, missing: [option] });
     }
     values[option.key] = coerceConfigValue(option, answer, manifest.name);
   }

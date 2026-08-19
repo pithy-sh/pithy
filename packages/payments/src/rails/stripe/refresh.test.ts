@@ -25,7 +25,8 @@ const credentials = { secretKey: STRIPE_TEST_SECRET_KEY, webhookSecret: "whsec_u
 function stored(overrides: Partial<PaymentsPurchase> = {}): PaymentsPurchase {
   return {
     id: "22222222-2222-4222-8222-222222222222",
-    userId: "ada",
+    subjectType: "user",
+    subjectId: "ada",
     rail: "stripe",
     role: "charge",
     providerTransactionId: "in_1PithyAdaJan",

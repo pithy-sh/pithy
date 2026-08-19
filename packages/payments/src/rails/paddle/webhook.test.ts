@@ -43,12 +43,12 @@ function read(
   });
 }
 
-/** The stamp a checkout this deployment created would carry. */
-async function stamp(userId = "ada", deployment = "prod"): Promise<Record<string, string>> {
+/** The stamp a checkout this deployment created would carry — the encoded subject, never a bare id. */
+async function stamp(reference = "user:ada", deployment = "prod"): Promise<Record<string, string>> {
   return {
-    pithy_user: userId,
+    pithy_user: reference,
     pithy_env: deployment,
-    pithy_ref_proof: await accountReferenceProof(userId, deployment, CREDENTIALS.webhookSecret),
+    pithy_ref_proof: await accountReferenceProof(reference, deployment, CREDENTIALS.webhookSecret),
   };
 }
 
@@ -327,7 +327,7 @@ describe("the adjustment map — refunds Paddle issued on its own", () => {
     // An adjustment carries no stamp of ours, so the fence is ownership of the row it names — read back
     // and checked against this deployment's environment.
     const notification = await read(event("adjustment.created", adjustment(), "evt_fence", LATER), {
-      readTransaction: async () => await transaction({ custom_data: await stamp("ada", "staging") }),
+      readTransaction: async () => await transaction({ custom_data: await stamp("user:ada", "staging") }),
     });
     expect(notification.event).toBeNull();
     expect(notification.note).toBeNull();
@@ -337,7 +337,7 @@ describe("the adjustment map — refunds Paddle issued on its own", () => {
 describe("the environment fence and the ownership proof", () => {
   test("an event stamped for another environment projects nothing and warns nobody", async () => {
     const notification = await read(
-      event("subscription.activated", await subscription({ custom_data: await stamp("ada", "dev") })),
+      event("subscription.activated", await subscription({ custom_data: await stamp("user:ada", "dev") })),
       {
         deployment: "staging",
       },
@@ -366,16 +366,25 @@ describe("the environment fence and the ownership proof", () => {
 
     // Anti-vacuity: the proven form does bind, so the case above fails on the MAC and not on the shape.
     const proven = await read(event("subscription.activated", await subscription()));
-    expect(proven.accountReference).toBe("ada");
+    expect(proven.accountReference).toBe("user:ada");
+  });
+
+  test("a proven stamp carrying a bare id binds nobody — the shape a pre-subject build wrote", async () => {
+    // Authentic, and still nobody. `decodeSubjectReference` refuses anything that is not exactly the
+    // encoding, so an old stamp orphans its purchase rather than attributing it to whoever holds that id.
+    const bare = await read(event("subscription.activated", await subscription({ custom_data: await stamp("ada") })));
+    expect(bare.accountReference).toBeNull();
+    // And the event is still recorded, so the delivery is replayable when a link appears.
+    expect(bare.event).not.toBeNull();
   });
 
   test("a proof minted for another environment does not bind here", async () => {
     // The environment is inside the MAC's message rather than beside it, so a staging proof cannot be
     // replayed against production by editing one field.
     const crossed = {
-      pithy_user: "ada",
+      pithy_user: "user:ada",
       pithy_env: "prod",
-      pithy_ref_proof: await accountReferenceProof("ada", "staging", CREDENTIALS.webhookSecret),
+      pithy_ref_proof: await accountReferenceProof("user:ada", "staging", CREDENTIALS.webhookSecret),
     };
     const notification = await read(event("subscription.activated", await subscription({ custom_data: crossed })));
     expect(notification.accountReference).toBeNull();
@@ -383,9 +392,9 @@ describe("the environment fence and the ownership proof", () => {
 
   test("a proof minted under another secret does not bind", async () => {
     const otherKey = {
-      pithy_user: "ada",
+      pithy_user: "user:ada",
       pithy_env: "prod",
-      pithy_ref_proof: await accountReferenceProof("ada", "prod", "pdl_ntfset_someone_else"),
+      pithy_ref_proof: await accountReferenceProof("user:ada", "prod", "pdl_ntfset_someone_else"),
     };
     const notification = await read(event("subscription.activated", await subscription({ custom_data: otherKey })));
     expect(notification.accountReference).toBeNull();

@@ -43,7 +43,8 @@ describe("table prefixing (CLAUDE.md §Data layer)", () => {
 describe("PaymentsPurchase codec round-trip", () => {
   const purchase: PaymentsPurchase = {
     id: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
-    userId: "u1",
+    subjectType: "user",
+    subjectId: "ada",
     rail: "apple",
     role: "charge",
     providerTransactionId: "2000000123456789",
@@ -112,7 +113,8 @@ describe("PaymentsPurchase codec round-trip", () => {
 describe("PaymentsEntitlement codec round-trip", () => {
   const entitlement: PaymentsEntitlement = {
     id: "9f8d1c00-0000-4000-8000-000000000001",
-    userId: "u1",
+    subjectType: "user",
+    subjectId: "ada",
     entitlement: "pro",
     active: true,
     expiresAt: new Date(1_702_592_000_000),
@@ -139,15 +141,34 @@ describe("PaymentsEntitlement codec round-trip", () => {
     const row = PaymentsEntitlement.encode(entitlement);
     expect(PaymentsEntitlement.safeParse({ ...row, entitlement: "com.acme.pro" }).success).toBe(false);
   });
+
+  it("round-trips an organization's grant, and refuses any other spelling of the holder's kind", () => {
+    // The pair is the key, so the kind is as validated as the id. `organisation` and `team` are rows no
+    // gate would ever match — the database refuses them too, and this is the same refusal one layer up.
+    const held: PaymentsEntitlement = { ...entitlement, subjectType: "organization", subjectId: "acme" };
+    expect(PaymentsEntitlement.parse(PaymentsEntitlement.encode(held))).toEqual(held);
+    const row = PaymentsEntitlement.encode(entitlement);
+    expect(PaymentsEntitlement.safeParse({ ...row, subjectType: "organisation" }).success).toBe(false);
+    expect(PaymentsEntitlement.safeParse({ ...row, subjectType: "team" }).success).toBe(false);
+  });
+
+  it("refuses an empty subject id, and one longer than a provider reference field can carry", () => {
+    // Both halves are `PaymentsSubject`'s own fields, so the cap that keeps a reference round-tripping
+    // through Stripe's `client_reference_id` holds at the row as well as at the encoder.
+    const row = PaymentsEntitlement.encode(entitlement);
+    expect(PaymentsEntitlement.safeParse({ ...row, subjectId: "" }).success).toBe(false);
+    expect(PaymentsEntitlement.safeParse({ ...row, subjectId: "o".repeat(181) }).success).toBe(false);
+  });
 });
 
 describe("PaymentsProviderAccount codec round-trip", () => {
-  it("round-trips a Stripe customer link", () => {
+  it("round-trips a Stripe customer link back to the subject that holds it", () => {
     const account: PaymentsProviderAccount = {
       id: "9f8d1c00-0000-4000-8000-000000000002",
       rail: "stripe",
       providerAccountId: "cus_123",
-      userId: "u1",
+      subjectType: "user",
+      subjectId: "ada",
       createdAt: new Date(1_700_000_000_000),
     };
     const row = PaymentsProviderAccount.encode(account);

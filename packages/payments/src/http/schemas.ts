@@ -9,6 +9,7 @@ import { DiscountCode, DiscountTerms } from "../data/discount";
 import { PurchaseEnvironment } from "../data/purchase";
 import { PaymentsRail } from "../data/rail";
 import { PurchaseStatus } from "../data/status";
+import { PaymentsSubject } from "../data/subject";
 
 /**
  * Everything a caller may send to a payments route, declared here and parsed on the route line. Reading a
@@ -17,11 +18,21 @@ import { PurchaseStatus } from "../data/status";
  *
  * ## What is deliberately absent
  *
- * **The user.** Never a field on a purchase route. A purchase belongs to the authenticated caller, from the
- * `AuthContext` seam; a body that could name a `userId` would let any signed-in caller submit a receipt
- * against somebody else. The two control-plane schemas at the bottom are the deliberate exception, and the
- * exception is the feature: support acting on another account is what they are for, which is why they sit
- * behind a scoped credential and are audited on every write.
+ * **The subject.** Never a field on a route the adopter's own app calls, and this is the security core of
+ * subject billing. A purchase belongs to whoever the project bills, resolved on the server — the
+ * authenticated caller under `billingSubject: "user"`, and under `"organization"` whatever the adopter's
+ * own resolver answers from its own session, because this package never learns what an organization is. A
+ * body that could name a `subjectId` would let any signed-in caller buy, restore, or read against a holder
+ * they have no membership of, and the capability has nothing to check that claim against: it has no
+ * members table, by design. So the claim is never accepted. The control-plane schemas at the bottom are
+ * the deliberate exception, and the exception is the feature: support acting on somebody else's account is
+ * what they are for, which is why they sit behind a default-denied scoped credential and are audited on
+ * every write.
+ *
+ * **Half a subject.** Where a subject *is* named, both halves are, because nothing keeps an organization
+ * id from equalling some user's id — a filter or a grant carrying the id alone addresses whichever holder
+ * happens to share it. The halves inherit their bounds from `PaymentsSubject` rather than restating them,
+ * so a request can never carry an id a row would refuse.
  *
  * **The product.** Also never a field, and this one is easy to get wrong. The catalog product is resolved from
  * the *verified* payload's SKU, not from anything the client declared: a client-supplied `productId` would let
@@ -49,9 +60,6 @@ const MAX_RESTORE_RECEIPTS = 50;
 /** The longest a catalog product id may be, matching the SKU bound the catalog itself uses. */
 const MAX_PRODUCT_ID_LENGTH = 200;
 
-/** The longest a user id may be. A UUID is 36; the bound is generous against an adopter's own id scheme. */
-const MAX_USER_ID_LENGTH = 200;
-
 /** The longest a page cursor may be. Ours are a base64url'd pair; the bound refuses anything that is not. */
 const MAX_CURSOR_LENGTH = 512;
 
@@ -66,7 +74,9 @@ export const PurchaseSubmission = z
         "The store's own artifact, exactly as its SDK returned it — a StoreKit 2 signed transaction, a Play purchase token. Everything about what was bought is read from inside it after it verifies, never from the request.",
       ),
   })
-  .describe("A client submitting one purchase for verification. The purchaser is the authenticated caller.");
+  .describe(
+    "A client submitting one purchase for verification. Who holds it is the server's answer, never the request's.",
+  );
 export type PurchaseSubmission = z.infer<typeof PurchaseSubmission>;
 
 export const RestoreRequest = z
@@ -82,7 +92,7 @@ export const RestoreRequest = z
         "The caller's current store entitlements, as the store's own artifacts. Restore is client-driven because only the device can enumerate what its store account owns.",
       ),
   })
-  .describe("A client re-submitting its store purchase history, to bind it to the authenticated caller.");
+  .describe("A client re-submitting its store purchase history, to bind it to the subject the server resolves.");
 export type RestoreRequest = z.infer<typeof RestoreRequest>;
 
 /**
@@ -107,7 +117,7 @@ export type AppleWebhookNotification = z.infer<typeof AppleWebhookNotification>;
  * No price, no amount, no currency, no return URL. The price comes from the catalog entry the id resolves to,
  * and the return URLs come from config — a client that could name where hosted Checkout returns to could send a
  * paying customer to a page it controls, and a client that could name a price could buy Pro for the price of a
- * coin pack. The purchaser is the authenticated caller, as everywhere else.
+ * coin pack. The purchaser is the subject the server resolves for the caller, as everywhere else.
  */
 export const CheckoutRequest = z
   .object({
@@ -275,11 +285,18 @@ export type PaddleWebhookNotification = z.infer<typeof PaddleWebhookNotification
 /**
  * A control-plane grant: who, which entitlement, and for how long.
  *
- * The one place in this package where `userId` is a request field, and the only reason it is legal is the gate
- * ahead of it — a manual grant is support acting on somebody else's account, so naming that account is the
- * whole point. Every other route reads the caller from the `AuthContext` seam precisely because a body that
- * could name a user would let any signed-in caller write against another one. Here that power *is* the
- * feature, which is why the route requires a scoped control-plane credential and audits the write.
+ * One of the two places in this package where a subject is a request field, and the only reason it is legal
+ * is the gate ahead of it — a manual grant is support acting on somebody else's holding, so naming that
+ * holder is the whole point. Every player-facing route resolves the subject on the server precisely because
+ * a body that could name one would let any signed-in caller write against another. Here that power *is* the
+ * feature, which is why the route requires a default-denied scoped control-plane credential and audits the
+ * write.
+ *
+ * **Both halves, and the type is named rather than assumed.** The row this writes is keyed
+ * `(subjectType, subjectId, entitlement)` and is read back by the same pair, so a grant that carried an id
+ * alone would land on whichever holder shares it. Whether the named kind is the one this project bills is a
+ * config-backed question and stays where the entitlement key's own catalog check is, in the handler: a
+ * schema constrains a string, it never replaces a lookup.
  *
  * No product, no rail, no price. A manual grant is not a purchase and must not pretend to be one: it writes
  * the read model directly, with null provenance, and the purchase record stays empty because nothing was
@@ -287,13 +304,12 @@ export type PaddleWebhookNotification = z.infer<typeof PaddleWebhookNotification
  */
 export const EntitlementGrantRequest = z
   .object({
-    userId: z
-      .string()
-      .min(1)
-      .max(MAX_USER_ID_LENGTH)
-      .describe(
-        "The account to grant. Support acts on somebody else's account, so this is the one route where the subject is a request field rather than the authenticated caller.",
-      ),
+    subjectType: PaymentsSubject.shape.subjectType.describe(
+      "Which kind of holder to grant — the half that makes the id an address. Named, never assumed from the project's `billingSubject`, so what an audit row records is what a management client asked for.",
+    ),
+    subjectId: PaymentsSubject.shape.subjectId.describe(
+      "The subject to grant. Support acts on somebody else's holding, so this is one of the two routes where the subject is a request field rather than the server's own answer.",
+    ),
     entitlement: EntitlementKey.describe(
       "The entitlement key to grant, as gating code names it. Not a store SKU. It must be one this project defines — a key some product grants, or one the adopter declared in `manualEntitlements` — and anything else is a 400 naming the key. Comping a key nothing sells is still the durable case; declaring it is how a project says so.",
     ),
@@ -301,28 +317,27 @@ export const EntitlementGrantRequest = z
       "When the grant lapses, as an ISO 8601 timestamp. Omit for a comp that never ends. A past timestamp writes a row that grants nothing, which is a slower way of revoking.",
     ),
   })
-  .describe("A control-plane request to grant one entitlement to one account, with no purchase behind it.");
+  .describe("A control-plane request to grant one entitlement to one subject, with no purchase behind it.");
 export type EntitlementGrantRequest = z.output<typeof EntitlementGrantRequest>;
 
 /**
  * A control-plane revoke: who, and which entitlement.
  *
- * No expiry, because a revoke is immediate — the read model is the truth every gate hits, so the account
- * loses access on the next request rather than at the end of a period. Revoking a key the account never held
+ * No expiry, because a revoke is immediate — the read model is the truth every gate hits, so the subject
+ * loses access on the next request rather than at the end of a period. Revoking a key the subject never held
  * is legal and idempotent: the inactive row is itself the record that somebody decided it.
  */
 export const EntitlementRevokeRequest = z
   .object({
-    userId: z
-      .string()
-      .min(1)
-      .max(MAX_USER_ID_LENGTH)
-      .describe(
-        "The account to revoke. As with the grant, the subject is named because support is acting on another account.",
-      ),
+    subjectType: PaymentsSubject.shape.subjectType.describe(
+      "Which kind of holder to revoke from. Half the address: a revoke aimed at an id alone would clear whichever holder shares it, which is an outage for somebody who paid.",
+    ),
+    subjectId: PaymentsSubject.shape.subjectId.describe(
+      "The subject to revoke. As with the grant, the subject is named because support is acting on somebody else's holding.",
+    ),
     entitlement: EntitlementKey.describe("The entitlement key to revoke, as gating code names it."),
   })
-  .describe("A control-plane request to revoke one entitlement from one account, effective immediately.");
+  .describe("A control-plane request to revoke one entitlement from one subject, effective immediately.");
 export type EntitlementRevokeRequest = z.output<typeof EntitlementRevokeRequest>;
 
 /**
@@ -356,12 +371,43 @@ const Limit = z.coerce
   .optional()
   .describe(`How many rows to return, from 1 to ${MAX_PAGE_SIZE}. Defaults to a page a dashboard can render.`);
 
-/** An account id as a filter or a path segment — opaque to payments, which never issues one. */
-const UserId = z.string().min(1).max(MAX_USER_ID_LENGTH);
+/**
+ * The owner filter on a management listing: both halves of a subject, or neither.
+ *
+ * **Two optional fields with a rule, rather than one field.** A query string is flat, so the pair arrives as
+ * two values and the rule is what keeps them one fact. An id without a kind is the dangerous half — the
+ * listing would narrow on `subject_id` alone and hand back an organization's purchases to a client that
+ * asked about a person, whenever an adopter's two id spaces happen to meet on a value. A kind without an id
+ * is merely useless, and it is refused with it because "or neither" is a rule somebody can hold in their
+ * head and "or neither, unless" is not.
+ *
+ * Refused rather than ignored. A filter that silently did nothing would render as *this holder bought
+ * everything on the page*, which is worse than a 400 naming what to send.
+ */
+const SUBJECT_FILTER = {
+  subjectType: PaymentsSubject.shape.subjectType
+    .optional()
+    .describe("Which kind of holder to narrow to. Send it with `subjectId` or send neither."),
+  subjectId: PaymentsSubject.shape.subjectId
+    .optional()
+    .describe(
+      "Which holder to narrow to. Send it with `subjectType` or send neither: an id alone names whichever user or organization happens to carry it.",
+    ),
+};
+
+/** Both halves of the subject filter, or neither. See {@link SUBJECT_FILTER}. */
+function subjectFilterIsWhole(query: { subjectType?: string; subjectId?: string }): boolean {
+  return (query.subjectType === undefined) === (query.subjectId === undefined);
+}
+
+/** What a caller is told when they send one half. Names the remedy, because the remedy is the other field. */
+const SUBJECT_FILTER_RULE = {
+  message: "Send `subjectType` and `subjectId` together, or neither. Half a subject names no holder.",
+} as const;
 
 export const AdminPurchasesQuery = z
   .object({
-    userId: UserId.optional().describe("Restrict the listing to one account's purchases."),
+    ...SUBJECT_FILTER,
     rail: PaymentsRail.optional().describe("Restrict the listing to one store."),
     status: PurchaseStatus.optional().describe("Restrict the listing to one normalized status."),
     environment: PurchaseEnvironment.optional().describe(
@@ -370,18 +416,20 @@ export const AdminPurchasesQuery = z
     cursor: Cursor,
     limit: Limit,
   })
+  .refine(subjectFilterIsWhole, SUBJECT_FILTER_RULE)
   .describe("The purchase-log query: what to narrow it to, and where to resume.");
 export type AdminPurchasesQuery = z.output<typeof AdminPurchasesQuery>;
 
 export const AdminSubscriptionsQuery = z
   .object({
-    userId: UserId.optional().describe("Restrict the listing to one account's subscriptions."),
+    ...SUBJECT_FILTER,
     status: PurchaseStatus.optional().describe(
       "Restrict the listing to one normalized status — `active` for who is paying now, `in_grace` for whose renewal is failing.",
     ),
     cursor: Cursor,
     limit: Limit,
   })
+  .refine(subjectFilterIsWhole, SUBJECT_FILTER_RULE)
   .describe(
     "The subscription query: what to narrow it to, and where to resume. No rail — a subscription is read forwards, not by store.",
   );
@@ -389,13 +437,14 @@ export type AdminSubscriptionsQuery = z.output<typeof AdminSubscriptionsQuery>;
 
 export const AdminEntitlementsQuery = z
   .object({
-    userId: UserId.optional().describe("Restrict the listing to one account."),
+    ...SUBJECT_FILTER,
     entitlement: EntitlementKey.optional().describe(
       "Restrict the listing to one entitlement key — the `who holds pro` question. A shape check only: the key set is the adopter's, and one nothing grants is an empty page rather than a refusal.",
     ),
     cursor: Cursor,
     limit: Limit,
   })
+  .refine(subjectFilterIsWhole, SUBJECT_FILTER_RULE)
   .describe("The entitlement query: what to narrow it to, and where to resume.");
 export type AdminEntitlementsQuery = z.output<typeof AdminEntitlementsQuery>;
 
@@ -413,11 +462,26 @@ export const AdminReconcileRunsQuery = z
   .describe("The reconciliation-run query: what to narrow it to, and where to resume.");
 export type AdminReconcileRunsQuery = z.output<typeof AdminReconcileRunsQuery>;
 
-export const AdminUserParam = z
+/**
+ * The two path segments on the per-subject management read: `…/entitlements/:subjectType/:subjectId`.
+ *
+ * **Two segments, not one encoded reference.** `encodeSubjectReference` exists for the single-field slots a
+ * store gives us — Apple's `appAccountToken`, Stripe's `client_reference_id` — where there is exactly one
+ * string to write and it comes back through a webhook. A URL has as many segments as it needs, and the
+ * decoder for that wire format answers `undefined` for anything it does not recognise, which on a path
+ * would be a 404 that reads like a missing holder rather than the 400 a malformed address deserves. Two
+ * validated segments say which half is wrong.
+ *
+ * Neither is optional, because half an address is not a narrower read: it is a different holder.
+ */
+export const AdminSubjectParam = z
   .object({
-    userId: UserId.describe(
-      "The account whose entitlements to resolve — the `:userId` path segment. Opaque to payments: it is whatever id the adopter's auth capability issued.",
+    subjectType: PaymentsSubject.shape.subjectType.describe(
+      "Which kind of holder to resolve — the `:subjectType` path segment. A closed enum, so an unknown kind is a 400 naming the two that exist.",
+    ),
+    subjectId: PaymentsSubject.shape.subjectId.describe(
+      "Whose entitlements to resolve — the `:subjectId` path segment. Opaque to payments: whatever id the adopter's auth capability or its own membership model issued.",
     ),
   })
-  .describe("The `:userId` path segment on the per-account management read.");
-export type AdminUserParam = z.output<typeof AdminUserParam>;
+  .describe("The `:subjectType/:subjectId` path segments on the per-subject management read.");
+export type AdminSubjectParam = z.output<typeof AdminSubjectParam>;

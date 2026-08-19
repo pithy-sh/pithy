@@ -8,7 +8,6 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import {
   type CapabilityManifest,
   ConfigOption,
-  ConfigOptionValue,
   renderCapabilityRegistration,
   renderConfigOptionComment,
   renderConfigOptionLine,
@@ -34,6 +33,7 @@ import { ejectedCapabilities } from "./eject";
 import { findEntitlementGap } from "./entitlementGap";
 import { availableManifests } from "./manifests";
 import { MissingPrerequisite, missingPrerequisites } from "./prerequisites";
+import { requiredOptionRefusal } from "./requiredOptions";
 
 /**
  * The shared reconcile engine behind `pithy upgrade` and (read-only) `pithy doctor` — one plan-builder,
@@ -93,8 +93,11 @@ export const MissingConfigKey = z
     key: ConfigOption.shape.key.describe(
       "The option name to add to the capability's registration call in pithy.config.ts.",
     ),
-    default: ConfigOptionValue.describe(
-      "The manifest default rendered as the option's value (an adopter can change it afterward).",
+    default: ConfigOption.shape.default.describe(
+      "The manifest default rendered as the option's value (an adopter can change it afterward). Absent for a **required** option — one the manifest states no default for, because the answer is the adopter's. The key is still reported, so `pithy doctor` names the drift; what `pithy upgrade` cannot do is choose a value for it.",
+    ),
+    choices: ConfigOption.shape.choices.describe(
+      "The closed set this option takes, when it states one — carried so a refusal to write a required key can name the legal values rather than only the key.",
     ),
     describe: ConfigOption.shape.describe.describe(
       "The option's rationale, rendered as the comment above it in pithy.config.ts.",
@@ -445,7 +448,7 @@ function objectKeys(body: string): string[] {
 }
 
 /** Find a capability's registration call in pithy.config.ts source, and which option keys it already carries. */
-function locateRegistration(source: string, name: string): RegistrationLocation | null {
+export function locateRegistration(source: string, name: string): RegistrationLocation | null {
   const re = new RegExp(`^([ \\t]*)${escapeRegExp(name)}[ \\t]*\\(`, "m");
   const match = re.exec(source);
   if (!match) return null;
@@ -472,7 +475,10 @@ function computeMissingConfigKeys(manifest: CapabilityManifest, configSource: st
     .filter((option) => !location.presentKeys.includes(option.key))
     .map((option) => ({
       key: option.key,
-      default: option.default,
+      // Conditional, because an absent default is a real state and not a missing field: an option the
+      // manifest states none for is required, and the plan says so by carrying none either.
+      ...(option.default === undefined ? {} : { default: option.default }),
+      ...(option.choices === undefined ? {} : { choices: option.choices }),
       describe: option.describe,
       // Decided against this Worker's own source, by the same function `pithy add` calls — so the two
       // commands write the same line for the same option, which is the whole reason the renderers are
@@ -639,11 +645,17 @@ function appendBindings(
  * default came out as `{"code":"chips"}` here and `{ code: "chips" }` there, and only the second
  * survived the `biome check` a scaffolded project runs on itself (#171).
  */
-function renderKeyLines(keys: MissingConfigKey[], indent: string): string {
+function renderKeyLines(capability: string, keys: MissingConfigKey[], indent: string): string {
   const lines: string[] = [];
   for (const key of keys) {
+    const value = key.constant ? { constant: key.constant } : key.default;
+    // A required option — one the manifest states no default for — is reported as drift and cannot be
+    // repaired here: `pithy upgrade` has no adopter to ask and no value it is entitled to pick, and the
+    // decision is exactly the kind #412 refused to guess at. So it refuses, naming the option and what it
+    // takes, rather than writing the word `undefined` into a config the adopter has to find later.
+    if (value === undefined) throw requiredOptionRefusal({ capability, missing: [key] });
     lines.push(renderConfigOptionComment(key.describe, indent));
-    lines.push(renderConfigOptionLine(key.key, key.constant ? { constant: key.constant } : key.default, indent));
+    lines.push(renderConfigOptionLine(key.key, value, indent));
   }
   return lines.join("\n");
 }
@@ -659,7 +671,7 @@ function convertOneLiner(source: string, name: string, indent: string, keys: Mis
   const block = renderCapabilityRegistration({
     name,
     indent,
-    optionLines: [renderKeyLines(keys, `${indent}  `)],
+    optionLines: [renderKeyLines(name, keys, `${indent}  `)],
     trailingComma: false,
   });
   // `indent` is the indent this very regex captured when the registration was located, so the block
@@ -674,7 +686,7 @@ function convertOneLiner(source: string, name: string, indent: string, keys: Mis
  * A separating comma is spliced onto the prior property when it lacks a trailing one — otherwise inserting
  * after `{ x: 1 }` (an adopter's hand-written inline block) would produce `{ x: 1  y: 2 }`, invalid TypeScript.
  */
-function insertIntoBlock(source: string, closeIndex: number, keys: MissingConfigKey[]): string {
+function insertIntoBlock(capability: string, source: string, closeIndex: number, keys: MissingConfigKey[]): string {
   // The last real character of the block body: `,` or `{` (empty block) means no separator is needed.
   let last = closeIndex - 1;
   while (last >= 0 && /\s/.test(source[last] as string)) last--;
@@ -690,14 +702,18 @@ function insertIntoBlock(source: string, closeIndex: number, keys: MissingConfig
   if (prefixOnLine.trim() === "") {
     // The close brace sits on its own line — insert whole key lines above it.
     const inner = `${prefixOnLine}  `;
-    return `${withComma.slice(0, lineStart)}${renderKeyLines(keys, inner)}\n${withComma.slice(lineStart)}`;
+    return `${withComma.slice(0, lineStart)}${renderKeyLines(capability, keys, inner)}\n${withComma.slice(lineStart)}`;
   }
   // Inline block (`name({ x: 1 })`) — append `key: value,` before the closing brace.
   // One space stands in for the indent: an inline block has no line of its own to sit on. The value is
   // rendered by the same function as every other writer's, so a hand-written block gets Biome's shape
   // too — the whole point of there being one renderer (#171).
   const inline = keys
-    .map((key) => renderConfigOptionLine(key.key, key.constant ? { constant: key.constant } : key.default, " "))
+    .map((key) => {
+      const value = key.constant ? { constant: key.constant } : key.default;
+      if (value === undefined) throw requiredOptionRefusal({ capability, missing: [key] });
+      return renderConfigOptionLine(key.key, value, " ");
+    })
     .join("");
   return `${withComma.slice(0, close)}${inline}${withComma.slice(close)}`;
 }
@@ -844,7 +860,7 @@ async function applyConfigKeys(workerDir: string, plan: ReconcilePlan): Promise<
     source =
       location.form === "oneliner"
         ? convertOneLiner(source, cap.name, location.indent, toAdd)
-        : insertIntoBlock(source, location.closeIndex, toAdd);
+        : insertIntoBlock(cap.name, source, location.closeIndex, toAdd);
     added.set(
       cap.name,
       toAdd.map((key) => key.key),
@@ -873,6 +889,21 @@ function requireMigrationProject(project: string | undefined): string {
 }
 
 /**
+ * The required options in a plan that nothing here can supply a value for — a manifest option with no
+ * `default` and no `constant`.
+ *
+ * `pithy upgrade` has no adopter to ask and no value it is entitled to pick: which billing subject a
+ * project uses is exactly the decision #412 refused to guess at. So the plan is refused whole, naming every
+ * such option across every capability, and the Worker is left as it was.
+ */
+function refuseUnwritableConfigKeys(plan: ReconcilePlan): void {
+  for (const cap of plan.perCapability) {
+    const missing = cap.missingConfigKeys.filter((key) => key.default === undefined && key.constant === undefined);
+    if (missing.length > 0) throw requiredOptionRefusal({ capability: cap.name, missing });
+  }
+}
+
+/**
  * Apply a reconcile plan — the write step behind `pithy upgrade`, never called by `doctor`. Adds the
  * missing bindings to the Worker's `wrangler.jsonc` and the missing config keys to its `pithy.config.ts`
  * (a one-liner call becomes block form; an existing block gains only the absent keys — an adopter-changed
@@ -887,6 +918,17 @@ export async function applyReconcilePlan(options: ApplyReconcilePlanOptions): Pr
   // having written nothing rather than mid-fan-out with one Worker already reconciled. Reconciling wiring
   // is survivable without a name; writing to a database is not.
   const migrateAs = options.migrate ? requireMigrationProject(options.project) : null;
+
+  // Every required option this plan cannot write, refused **before the first write**, for the same reason
+  // `migrateAs` is resolved above it: `applyBindings` rewrites `wrangler.jsonc`, and a refusal raised after
+  // it leaves the Worker half-reconciled — new bindings on disk, no config keys, and every *other*
+  // capability's keys in the same run silently dropped. Worse, the refusal is unfixable from here by
+  // construction, so `pithy upgrade` would report drift it had just made harder to see.
+  //
+  // Named together rather than one at a time: an adopter fixing config edits one file once, and a refusal
+  // that surfaces the second required option only after they have fixed the first is two round trips for
+  // one edit.
+  refuseUnwritableConfigKeys(plan);
 
   const addedBindings = await applyBindings(projectDir, workerDir, plan, options.project, capabilities);
   const addedConfigKeys = await applyConfigKeys(workerDir, plan);

@@ -43,6 +43,9 @@ const TXN = "txn_01hv8wptq8987qeep44cyrewp9";
 const CUSTOMER = "ctm_01hv8wptq8987qeep44cyrewp9";
 
 const CATALOG: PaymentsConfigInput = {
+  // Required now. `user` for most of this file; the organization case rebuilds the config, because the pair
+  // a sweep writes comes off the event's own proven reference and not off this key.
+  billingSubject: "user",
   rails: { paddle: true },
   paddle: {
     clientToken: "test_1234567890abcdefghij",
@@ -74,8 +77,18 @@ const webhookRows = () =>
   db().selectFrom("pithyPaymentsWebhookEvents").selectAll().orderBy("providerEventId").execute();
 const cursors = () => db().selectFrom("pithyPaymentsSyncCursors").selectAll().execute();
 
+/**
+ * The subject every stamped fixture below belongs to, and the reference form Paddle actually carries.
+ *
+ * `pithy_user` holds `encodeSubjectReference`'s output — the key name is a frozen wire contract and the
+ * value moved underneath it, which `rails/paddle/objects.ts` explains. Spelled `user:ada` literally rather
+ * than composed, so a change to the encoding fails this suite instead of agreeing with itself.
+ */
+const SUBJECT = { subjectType: "user", subjectId: "ada" } as const;
+const REFERENCE = "user:ada";
+
 /** One `subscription.activated`, stamped with a proof this deployment could have written. */
-async function activated(eventId: string, subscriptionId = SUB, customerId = CUSTOMER) {
+async function activated(eventId: string, subscriptionId = SUB, customerId = CUSTOMER, reference = REFERENCE) {
   return {
     event_id: eventId,
     event_type: "subscription.activated",
@@ -87,9 +100,9 @@ async function activated(eventId: string, subscriptionId = SUB, customerId = CUS
       items: [{ price: { id: PRICE } }],
       current_billing_period: { starts_at: "2026-08-12T09:00:00Z", ends_at: "2026-09-12T09:00:00Z" },
       custom_data: {
-        pithy_user: "ada",
+        pithy_user: reference,
         pithy_env: "prod",
-        pithy_ref_proof: await accountReferenceProof("ada", "prod", CREDENTIALS.webhookSecret),
+        pithy_ref_proof: await accountReferenceProof(reference, "prod", CREDENTIALS.webhookSecret),
       },
       created_at: "2026-08-12T09:00:00Z",
     },
@@ -229,10 +242,43 @@ describe("sweepPaddle", () => {
 
     const rows = await purchases();
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ rail: "paddle", userId: "ada", providerTransactionId: SUB, status: "active" });
-    // Bound through the proven reference, exactly as the webhook path binds.
+    expect(rows[0]).toMatchObject({ rail: "paddle", ...SUBJECT, providerTransactionId: SUB, status: "active" });
+    // Bound through the proven reference, exactly as the webhook path binds — and bound to the **pair** the
+    // reference decodes to, never to a bare id read as a user.
     const links = await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute();
-    expect(links[0]).toMatchObject({ rail: "paddle", providerAccountId: CUSTOMER, userId: "ada" });
+    expect(links[0]).toMatchObject({ rail: "paddle", providerAccountId: CUSTOMER, ...SUBJECT });
+  });
+
+  test("an organization's subscription lands on the organization, both halves, off the reference alone", async () => {
+    // The sweep runs inside a Workflow: no request, no `c.var.auth`, no adopter `resolveSubject`. The only
+    // statement of who holds this purchase is the reference the checkout stamped and Paddle echoed back —
+    // so the pair is decoded from it, and the config's `billingSubject` is not read to supply the kind.
+    const org = await sweepPaddle(
+      deps(stream([[await activated("evt_01", SUB, CUSTOMER, "organization:acme")]]), {
+        config: PaymentsConfig.parse({ ...CATALOG, billingSubject: "organization" }),
+      }),
+    );
+    expect(org).toMatchObject({ read: 1, projected: 1, orphaned: [] });
+
+    const rows = await purchases();
+    expect(rows[0]).toMatchObject({ subjectType: "organization", subjectId: "acme" });
+    const links = await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute();
+    expect(links[0]).toMatchObject({ subjectType: "organization", subjectId: "acme" });
+  });
+
+  test("a bare id — the shape every pre-subject checkout stamped — names nobody and orphans", async () => {
+    // Proven by this deployment's own secret, and still not an owner. `decodeSubjectReference` is strict
+    // precisely here: reading `ada` as a user would attribute the purchase to whoever holds that id, which
+    // under organization billing is not even the same kind of thing. The event is recorded and replayable,
+    // and nothing is granted — the direction every gate in this package fails.
+    const bare = await activated("evt_bare", "sub_bare", "ctm_01hv8wptq8987qeep44cybare", "ada");
+
+    const report = await sweepPaddle(deps(stream([[bare]])));
+    expect(report.orphaned).toEqual(["evt_bare"]);
+    expect(await purchases()).toEqual([]);
+    // And no link either: a reference that names nobody is not a pairing, so nothing is bound permanently
+    // to a holder that was never established.
+    expect(await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute()).toEqual([]);
   });
 
   test("two consecutive runs over the same events are a no-op the second time", async () => {
@@ -322,9 +368,9 @@ describe("sweepPaddle", () => {
   test("an event stamped for another environment is recorded, projects nothing, and does not stall the sweep", async () => {
     const fenced = await activated("evt_01");
     (fenced.data as { custom_data: Record<string, string> }).custom_data = {
-      pithy_user: "someone",
+      pithy_user: "user:someone",
       pithy_env: "staging",
-      pithy_ref_proof: await accountReferenceProof("someone", "staging", CREDENTIALS.webhookSecret),
+      pithy_ref_proof: await accountReferenceProof("user:someone", "staging", CREDENTIALS.webhookSecret),
     };
 
     const report = await sweepPaddle(deps(stream([[fenced, await activated("evt_02", "sub_02")]])));
@@ -339,6 +385,7 @@ describe("sweepPaddle", () => {
     const report = await sweepPaddle(
       deps(transport, {
         config: PaymentsConfig.parse({
+          billingSubject: "user",
           rails: { stripe: true },
           stripe: {
             successUrl: "https://acme.example/thanks",
@@ -784,7 +831,7 @@ describe("sweepPaddle", () => {
 
     const rows = await purchases();
     expect(rows.map((row) => row.providerTransactionId).sort()).toEqual(["sub_linked", "sub_orphan"]);
-    expect(rows.every((row) => row.userId === "ada")).toBe(true);
+    expect(rows.every((row) => row.subjectType === "user" && row.subjectId === "ada")).toBe(true);
 
     const repaired = (await webhookRows()).find((row) => row.providerEventId === "evt_orphan");
     expect(repaired?.processedAt, "the purchase is projected, so the event is finished").not.toBeNull();

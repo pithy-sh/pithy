@@ -32,8 +32,15 @@ import { PAYMENTS_TABLE_DISCLOSURE } from "./coverage";
  * route exists somewhere, is what decides whether a pane renders or vanishes.
  */
 
-/** The smallest catalog `payments()` will parse. The admin surface does not depend on what is sold. */
+/**
+ * The smallest catalog `payments()` will parse. The admin surface does not depend on what is sold.
+ *
+ * `billingSubject` is required and has no default, so it is here rather than absent: what a project bills
+ * is a decision, and a config that could omit it would decide by accident. Which value it takes does not
+ * matter to a disclosure decision — a table is readable or withheld whoever holds its rows.
+ */
 const CATALOG = {
+  billingSubject: "user" as const,
   rails: { apple: true },
   products: {
     pro_monthly: {

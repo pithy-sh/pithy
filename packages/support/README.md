@@ -103,7 +103,7 @@ Sent alongside `threadId`, it is refused too. A conversation carries what it was
 
 `POST {base}/feedback` takes a session and same-origin, and **nothing else, permanently**. Writing to support must not be role-gated or it stops being a general intake: the person who most needs to reach you is often the one whose access is broken.
 
-If your own account model makes some submissions act-on-behalf-of — an application made for an organisation, which a member may not make — put that check in your `app` capability's middleware, over your own path:
+If your own account model makes some submissions act-on-behalf-of — an application made for an organization, which a member may not make — put that check in your `app` capability's middleware, over your own path:
 
 ```ts
 defineCapability({
@@ -113,8 +113,8 @@ defineCapability({
       app.use("/support/feedback", async (c, next) => {
         // Signed out? Pass it through — the route's own gate answers 401. A 403 here would tell
         // somebody who was never signed in that they are forbidden.
-        if (c.var.auth && !(await mayActForTheOrganisation(c))) {
-          throw new ForbiddenError({ message: "An owner or an admin applies on the organisation's behalf." });
+        if (c.var.auth && !(await mayActForTheOrganization(c))) {
+          throw new ForbiddenError({ message: "An owner or an admin applies on the organization's behalf." });
         }
         await next();
       });
