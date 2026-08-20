@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { initializePaddle, Paddle } from "@paddle/paddle-js";
-import { describe, expect, expectTypeOf, test } from "vitest";
+import { describe, expect, expectTypeOf, test, vi } from "vitest";
 import { PAYMENTS_NO_BROWSER, PAYMENTS_UNREADABLE } from "./api";
 import { DE, GB, JP_YEN, US_COUNTRY_ONLY, US_NEW_YORK } from "./fixtures/pricePreview";
 import {
@@ -25,6 +26,8 @@ import {
   priceSummary,
   readPricePreview,
 } from "./paddle";
+import type { PaddleQuoteCache } from "./paddleCache";
+import { memoryStore, refusingStore } from "./test-utils/cacheStore";
 
 /**
  * Two kinds of test live here, and they answer different questions.
@@ -500,6 +503,165 @@ describe("previewPrices", () => {
   });
 });
 
+describe("previewPrices, caching", () => {
+  /** One price, asked for the way a pricing page asks. */
+  const QUERY: PaddlePriceQuery = { items: [{ priceId: "pri_1", quantity: 1 }] };
+
+  /** A cache in a store a test can read, with a lifetime a test can outlive. */
+  function cache(): PaddleQuoteCache & { store: ReturnType<typeof memoryStore> } {
+    return { key: "pricing", store: memoryStore(), ttlMs: 300_000 };
+  }
+
+  test("asks Paddle once, and answers the same question from the cache without loading anything", async () => {
+    // The load is the expensive half. A cached answer that still fetched Paddle.js would save the round
+    // trip nobody sees and keep the one everybody waits for.
+    const held = cache();
+    const first = stubInitializer(stubPaddle(US_NEW_YORK));
+    const firstResult = await previewPrices(SANDBOX, QUERY, { initialize: first, registry: page(), cache: held });
+
+    const second = stubInitializer(stubPaddle(US_NEW_YORK));
+    const secondResult = await previewPrices(SANDBOX, QUERY, { initialize: second, registry: page(), cache: held });
+
+    expect(secondResult).toEqual(firstResult);
+    expect(first.loads).toHaveLength(1);
+    expect(second.loads).toEqual([]);
+  });
+
+  test("caches nothing at all when the caller named no cache", async () => {
+    const initialize = stubInitializer(stubPaddle(US_NEW_YORK));
+    await previewPrices(SANDBOX, QUERY, { initialize, registry: page() });
+    const again = stubInitializer(stubPaddle(US_NEW_YORK));
+    await previewPrices(SANDBOX, QUERY, { initialize: again, registry: page() });
+
+    expect(again.loads).toHaveLength(1);
+  });
+
+  test("asks again for a different question, because a cached price is an answer to one", async () => {
+    const held = cache();
+    await previewPrices(SANDBOX, QUERY, {
+      initialize: stubInitializer(stubPaddle(US_NEW_YORK)),
+      registry: page(),
+      cache: held,
+    });
+
+    const second = stubInitializer(stubPaddle(US_NEW_YORK));
+    await previewPrices(
+      SANDBOX,
+      { ...QUERY, customerId: "ctm_01kzvyz9pithyNotARealCustomer" },
+      { initialize: second, registry: page(), cache: held },
+    );
+
+    expect(second.loads).toHaveLength(1);
+  });
+
+  test("asks again for a different account, so a sandbox answer cannot survive into production", async () => {
+    const held = cache();
+    await previewPrices(SANDBOX, QUERY, {
+      initialize: stubInitializer(stubPaddle(US_NEW_YORK)),
+      registry: page(),
+      cache: held,
+    });
+
+    const live = stubInitializer(stubPaddle(US_NEW_YORK));
+    await previewPrices(PRODUCTION, QUERY, { initialize: live, registry: page(), cache: held });
+
+    expect(live.loads).toHaveLength(1);
+  });
+
+  test("remembers no refusal — a Paddle that was unreachable is asked again, not cached as an answer", async () => {
+    const held = cache();
+    const result = await previewPrices(SANDBOX, QUERY, {
+      initialize: stubInitializer(new Error("blocked")),
+      registry: page(),
+      cache: held,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(held.store.entries.size).toBe(0);
+  });
+
+  test("remembers no answer it could not read, so an unreadable shape is not served twice", async () => {
+    const held = cache();
+    await previewPrices(SANDBOX, QUERY, {
+      initialize: stubInitializer(stubPaddle({ what: "is this" })),
+      registry: page(),
+      cache: held,
+    });
+
+    expect(held.store.entries.size).toBe(0);
+  });
+
+  test("asks Paddle again once the caller's ttl has passed", async () => {
+    vi.useFakeTimers();
+    try {
+      const held = cache();
+      await previewPrices(SANDBOX, QUERY, {
+        initialize: stubInitializer(stubPaddle(US_NEW_YORK)),
+        registry: page(),
+        cache: held,
+      });
+      vi.advanceTimersByTime(held.ttlMs + 1);
+
+      const second = stubInitializer(stubPaddle(US_NEW_YORK));
+      await previewPrices(SANDBOX, QUERY, { initialize: second, registry: page(), cache: held });
+
+      expect(second.loads).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("asks Paddle again when what was cached no longer reads, rather than refusing the page a price", async () => {
+    // A cached answer is read by the same reader a fresh one is. An entry written by an older bundle,
+    // or one a page tampered with, is a cache miss — never a refusal, and never a price nobody validated.
+    const held = cache();
+    await previewPrices(SANDBOX, QUERY, {
+      initialize: stubInitializer(stubPaddle(US_NEW_YORK)),
+      registry: page(),
+      cache: held,
+    });
+    for (const [key] of held.store.entries) {
+      held.store.entries.set(key, JSON.stringify({ at: Date.now(), answer: { what: "is this" } }));
+    }
+
+    const second = await previewPrices(SANDBOX, QUERY, {
+      initialize: stubInitializer(stubPaddle(US_NEW_YORK)),
+      registry: page(),
+      cache: held,
+    });
+
+    expect(second.ok).toBe(true);
+  });
+
+  test("quotes from the network, and says so once, when a cache was only half stated", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const initialize = stubInitializer(stubPaddle(US_NEW_YORK));
+      const result = await previewPrices(SANDBOX, QUERY, {
+        initialize,
+        registry: page(),
+        cache: { key: "pricing" } as unknown as PaddleQuoteCache,
+      });
+
+      expect(result.ok).toBe(true);
+      expect(warned).toHaveBeenCalledTimes(1);
+    } finally {
+      warned.mockRestore();
+    }
+  });
+
+  test("a store that refuses every operation costs the page nothing but the round trip", async () => {
+    const held: PaddleQuoteCache = { key: "pricing", store: refusingStore(), ttlMs: 300_000 };
+    const result = await previewPrices(SANDBOX, QUERY, {
+      initialize: stubInitializer(stubPaddle(US_NEW_YORK)),
+      registry: page(),
+      cache: held,
+    });
+
+    expect(result.ok).toBe(true);
+  });
+});
+
 describe("priceQueryKey", () => {
   test("two objects describing the same request key the same", () => {
     const first = priceQueryKey({ items: [{ priceId: "pri_1", quantity: 2 }], currencyCode: "USD" });
@@ -528,6 +690,35 @@ describe("priceQueryKey", () => {
       { ...base, discountId: "dsc_1" },
     ];
     expect(new Set(variants.map(priceQueryKey)).size).toBe(variants.length);
+  });
+
+  test("every field of a query is in the key, because the key is now what separates two visitors", () => {
+    // `priceQueryKey` began as an effect dependency, where a field it missed cost a re-fetch nobody saw.
+    // It is the cache key now, and a field missing from *that* is one visitor's price served to another
+    // — two different questions landing on one entry. `PaddleQuoteQuery` is
+    // `Omit<PaddlePriceQuery, "items">`, so a field Paddle adds arrives in the request with no edit
+    // here. This is what makes it arrive in the key too, or fail.
+    //
+    // The witness is `Record<keyof PaddlePriceQuery, true>`, so **TypeScript** fails on the day a field
+    // is added and nobody listed it — the scan below cannot go vacuous, because its input is the type
+    // rather than a regex that might match nothing.
+    const EVERY_FIELD: Record<keyof PaddlePriceQuery, true> = {
+      items: true,
+      address: true,
+      customerId: true,
+      customerIpAddress: true,
+      currencyCode: true,
+      discountId: true,
+    };
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "paddle.ts"), "utf8");
+    const composer = /export function priceQueryKey\([\s\S]*?\n\}/.exec(source)?.[0];
+    expect(composer, "priceQueryKey was renamed or moved — this gate reads it by name").toBeDefined();
+
+    const missing = Object.keys(EVERY_FIELD).filter((field) => !(composer ?? "").includes(`query.${field}`));
+    expect(
+      missing,
+      `These fields are on a price query and not in its key. Two requests differing only by one of them would share a cache entry, which is one visitor's price on another visitor's screen:\n${missing.map((field) => `  ${field}`).join("\n")}`,
+    ).toEqual([]);
   });
 
   test("an omitted address and a country-only address are different requests", () => {

@@ -10,6 +10,7 @@ import {
   type PaymentsPaddleEnvironment,
   type PaymentsResult,
 } from "./api";
+import { cachedAnswer, type PaddleQuoteCache, readQuoteCache, rememberAnswer } from "./paddleCache";
 
 /**
  * Paddle.js: loading it once, asking it what this visitor pays, and reading the answer safely.
@@ -254,12 +255,21 @@ export interface PaddleRegistry {
 /** The page's registry. Module state on purpose: a page is exactly the scope this is about. */
 const PAGE: PaddleRegistry = {};
 
-/** What {@link loadPaddle} and {@link previewPrices} let a caller replace. */
+/** What {@link loadPaddle} and {@link previewPrices} let a caller replace, and where a quote may rest. */
 export interface PaddleOptions {
   /** How to fetch and start Paddle.js. Defaults to `@paddle/paddle-js`. */
   initialize?: PaddleInitializer;
   /** Where the one-per-page load is remembered. Defaults to the page's own. */
   registry?: PaddleRegistry;
+  /**
+   * Where a quote may be cached, under what name, and for how long. Omitted, nothing is cached.
+   *
+   * All three parts or none — see `readQuoteCache`. There is no default store and no default lifetime,
+   * because a quote resolved for a signed-in customer is that customer's price, and neither where it
+   * rests nor how long it stands is a thing this package may pick for the program that knows who is
+   * looking at it.
+   */
+  cache?: PaddleQuoteCache;
 }
 
 /** Which account a setup names, as one comparable string. */
@@ -556,6 +566,22 @@ export async function previewPrices(
   query: PaddlePriceQuery,
   options?: PaddleOptions,
 ): Promise<PaymentsResult<PricePreview>> {
+  // The account and the question, together. The account belongs in the key because sandbox and live are
+  // separate accounts answering the same question differently, and a cached sandbox figure surviving a
+  // deploy into production is a wrong price nobody would think to look for. It is the *publishable*
+  // token, which the page already carries in the open.
+  const cache = options?.cache === undefined ? null : readQuoteCache(options.cache);
+  const asked = cache === null ? "" : `${setupKey(setup)}|${priceQueryKey(query)}`;
+  if (cache !== null) {
+    const held = cachedAnswer(cache, asked);
+    // Read by the same reader a fresh answer is, so `#416` still has exactly one place it can exist and
+    // a stored shape this bundle no longer understands is a miss rather than a price nobody validated.
+    const remembered = held === null ? null : readPricePreview(held);
+    // Ahead of the load, deliberately: the script fetch is the part a visitor waits for, so a cache that
+    // still loaded Paddle.js would save the round trip nobody sees and keep the one everybody does.
+    if (remembered !== null) return { ok: true, value: remembered };
+  }
+
   const loaded = await loadPaddle(setup, options);
   if (!loaded.ok) return loaded;
   // Settled as a pair rather than caught into a sentinel: the answer is `unknown`, so any sentinel value
@@ -573,6 +599,8 @@ export async function previewPrices(
   if (!answer.answered) return { ok: false, failure: PADDLE_PREVIEW_REFUSED };
   const preview = readPricePreview(answer.value);
   if (preview === null) return { ok: false, failure: PAYMENTS_UNREADABLE };
+  // Only an answer, and only one that read. A refusal is a thing to ask again, not a thing to serve twice.
+  if (cache !== null) rememberAnswer(cache, asked, answer.value);
   return { ok: true, value: preview };
 }
 

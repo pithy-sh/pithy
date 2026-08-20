@@ -286,7 +286,15 @@ const BROWSER_MODULES: Readonly<Record<string, readonly string[]>> = {
   "src/client/hooks.ts": ["react", "./api", "./checkout", "./paddle"],
   "src/client/checkout.ts": ["./api", "./paddle"],
   // Paddle.js is the browser SDK a checkout opens with. It is the one third-party import on this side.
-  "src/client/paddle.ts": ["@paddle/paddle-js", "./api"],
+  "src/client/paddle.ts": ["@paddle/paddle-js", "./api", "./paddleCache"],
+  // The cache seam. No imports at all, the same strongest form the primitive takes — a module that
+  // decides where a price rests must not be able to drag anything into the bundle deciding it.
+  "src/client/paddleCache.ts": [],
+  "src/client/paddlePrices.ts": ["./api", "./paddle"],
+  "src/client/paddlePricesTag.ts": ["./api", "./paddle", "./paddleCache", "./paddlePrices"],
+  // The browser build's entry, and the reason this whole list is not advisory: everything reachable from
+  // here is bytes a static site downloads.
+  "src/client/paddlePrices.iife.ts": ["./paddlePricesTag"],
   "src/pricing/location.ts": [],
   "src/pricing/visitor.ts": ["../client/api", "./location"],
 };
