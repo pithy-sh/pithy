@@ -560,7 +560,13 @@ export async function previewPrices(
   if (!loaded.ok) return loaded;
   // Settled as a pair rather than caught into a sentinel: the answer is `unknown`, so any sentinel value
   // is one an answer could in principle equal.
-  const answer = await loaded.value.PricePreview(query).then(
+  //
+  // `Promise.try`'s shape by hand, the second time in this file and for the same reason {@link loadPaddle}
+  // gives: Paddle.js validates a query synchronously, so one it refuses outright **throws** instead of
+  // returning a rejected promise. Calling it bare let that throw past the handler pair and out of this
+  // function, which is an unhandled rejection on the adopter's page in place of the `PaymentsFailure`
+  // every path here promises. "Nothing here throws" is a claim about every path or it is not one.
+  const answer = await new Promise<unknown>((resolve) => resolve(loaded.value.PricePreview(query))).then(
     (value: unknown) => ({ answered: true as const, value }),
     () => ({ answered: false as const, value: undefined }),
   );

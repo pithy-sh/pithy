@@ -266,6 +266,39 @@ The pricing screen is public — it declares no `session`, because a stranger ha
 
 The Japanese row above was fetched twice minutes apart and returned ¥797 then ¥798. Paddle's FX rate moves. Nothing should assert an exact converted figure against a live account, and nothing should cache one.
 
+### A site with no build step
+
+A marketing page is not a React app. It has no bundler, no import map and often no `package.json`, and yet it is the page most people read a price on. So the same quote path ships as one classic script:
+
+```html
+<script src="/js/paddle-prices.js"
+        data-paddle-env="sandbox"
+        data-paddle-token="test_…"
+        data-paddle-price-solo="pri_…"
+        data-paddle-price-team="pri_…"></script>
+```
+
+The page names plans, never ids, and carries two slots per plan:
+
+```html
+<p data-price-plan="solo">Priced where you are billed</p>
+<small data-price-note="solo"></small>
+```
+
+The script writes the formatted total into the first and **the sentence that makes it true into the second**. Both matter: in the United States the listed price is the subtotal and the buyer is charged more, so `$5.00` on its own is a number nobody pays — the note says *Plus $0.44 tax.* In Berlin the listed price already includes VAT and the note says so instead. A page that ships only the figure slot gets the figure and no sentence, which is the display §11 above exists to avoid; give every plan a note slot. Plan names are matched case-insensitively, because an attribute *name* is lower-cased by HTML and an attribute *value* is not.
+
+A price id belongs to one Paddle account, so it is environment-specific and has no business in page content; whoever deploys the site puts the ids on the tag. `data-paddle-env` and the token's own prefix must agree — `sandbox` with `test_…`, `production` with `live_…` — and a tag pairing them the other way is refused rather than sent.
+
+**Load it where you like.** The quote starts the moment the script runs and the paint waits for `DOMContentLoaded`, so a tag in `<head>` overlaps its round trip with parsing the page rather than racing it.
+
+Build it with `bun run build` in `@pithy-sh/payments`; the artifact is `dist/paddle-prices.iife.js` and is published as `@pithy-sh/payments/paddle-prices.iife.js`, so a static site's deploy copies it out of `node_modules` into its own `/js/`. It bundles Paddle's own loader, so a page loads one file from this project and one from `cdn.paddle.com`, and nothing else.
+
+**Everything the tag names carries the rail; the page's own slots do not.** `data-paddle-*` on the script, `data-price-plan` and `data-price-note` in the markup, `paddle-prices.iife.js` on disk, `window.pithyPaddlePrices` on the page. Which provider quotes is a deployment decision and belongs on the tag; a pricing page's slots are content, and naming a provider in them would mean rewriting the markup to change rails. It is also what leaves room for a second rail's quote script to arrive without renaming this one.
+
+**It quotes nothing rather than quoting wrong.** A tag missing its environment or its token, or still carrying a `REPLACE_WITH_…` placeholder in any one of its ids, is refused before Paddle is loaded at all — no request, no console error, and every slot still holding the sentence the page shipped with. All or nothing across the plans, because a table with one real figure and one placeholder is the version a reader believes.
+
+**Caching and formatting stay with the page.** Set `data-paddle-paint="off"` and the script quotes without writing anything; `window.pithyPaddlePrices.quotes` resolves to the same `PaymentsResult` the module hands the dashboard, and the page does what it likes with it — a `localStorage` window, a zero-fraction trim, its own markup. Only the quote is shared, and it is shared because it is the part that was wrong in one of two copies for months while both looked fine.
+
 ## 12. Overlay and inline checkout
 
 `paddle.checkout` in `pithy.config.ts` decides which of three the buyer sees, and the server puts the answer on the handoff so a screen never guesses:
