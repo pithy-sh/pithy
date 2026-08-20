@@ -473,6 +473,22 @@ describe("previewPrices", () => {
     expect(result).toEqual({ ok: false, failure: PADDLE_PREVIEW_REFUSED });
   });
 
+  test("a PricePreview that throws before it returns a promise is a refusal too", async () => {
+    // `loadPaddle` hand-rolls `Promise.try` for exactly this hazard one call earlier. Paddle.js
+    // validates its arguments synchronously, so a query it rejects outright throws rather than
+    // resolving — and a rejection escaping here is an unhandled rejection on the page, in place of the
+    // `PaymentsFailure` every path in this module promises.
+    const paddle = stubPaddle(() => {
+      throw new Error("invalid query");
+    });
+    const result = await previewPrices(
+      SANDBOX,
+      { items: [] },
+      { initialize: stubInitializer(paddle), registry: page() },
+    );
+    expect(result).toEqual({ ok: false, failure: PADDLE_PREVIEW_REFUSED });
+  });
+
   test("an answer this client cannot read is unreadable, and no price escapes", async () => {
     const paddle = stubPaddle({ what: "is this" });
     const result = await previewPrices(
