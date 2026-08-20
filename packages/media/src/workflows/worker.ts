@@ -6,6 +6,7 @@ import { NonRetryableError } from "cloudflare:workflows";
 import type { D1Database, KVNamespace, R2Bucket } from "@cloudflare/workers-types";
 import { CloudflareStreamManager } from "@pithy-sh/cloudflare/src/media/streamManager";
 import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
+import { workflowHostEntry } from "@pithy-sh/core/src/workflow/hostEntry";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { configureSharedSecrets, sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { z } from "zod";
@@ -25,6 +26,7 @@ import {
 } from "./enrich";
 import { fetchVideoAudio } from "./hls";
 import { mediaWorkflowRetry } from "./retryPolicy";
+import { MEDIA_CAPABILITY } from "./specs";
 
 /**
  * The prebuilt media worker. `pithy media provision` deploys one per environment; the adopter authors no
@@ -35,6 +37,13 @@ import { mediaWorkflowRetry } from "./retryPolicy";
  * This module imports `cloudflare:workers`, so it runs only in the Workers runtime (excluded from the node
  * meta-test). The worker reads records with a passthrough schema so an adopter's extension fields survive
  * the derived-field write-back untouched, without the worker needing the adopter's extension code.
+ *
+ * **The default export is what makes this an ES module** (#426). It exports four Workflow classes and has no
+ * cron, so until now it exported no default — and wrangler infers a worker's module format from exactly
+ * that, so the build read it as a service worker and refused `cloudflare:workers` outright. The host did not
+ * build, `pithy dev` carried on past it, and every finalize that dispatched an enrichment enriched nothing.
+ * The refusal it exports is the honest body for a host with no request surface; see
+ * `@pithy-sh/core/src/workflow/hostEntry`.
  */
 
 /** The media worker's env: the record bindings, the R2 bucket, the AI binding, the secrets, and config. */
@@ -174,3 +183,10 @@ export class MediaDocExtractWorkflow extends WorkflowEntrypoint<MediaWorkerEnv, 
     );
   }
 }
+
+/**
+ * The module's default export, and therefore its format. See `hostEntry` for why a Workflow host needs one
+ * at all, and why this one refuses rather than being empty: nothing reaches this worker over HTTP — the
+ * media routes live in the app worker, which starts an instance on the matching binding at finalize.
+ */
+export default workflowHostEntry(MEDIA_CAPABILITY);

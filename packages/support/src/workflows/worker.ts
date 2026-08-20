@@ -5,12 +5,14 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import { NonRetryableError } from "cloudflare:workflows";
 import type { D1Database } from "@cloudflare/workers-types";
 import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
+import { workflowHostEntry } from "@pithy-sh/core/src/workflow/hostEntry";
 import type { SupportAi } from "../ai/classify";
 import { SupportConfig } from "../config/config";
 import { resolveCategories } from "../data/categories";
 import { supportDatabase } from "../data/tables";
 import { runClassification } from "./classify";
 import { supportWorkflowRetry } from "./retryPolicy";
+import { SUPPORT_CAPABILITY } from "./specs";
 
 /**
  * The prebuilt support worker. `pithy support provision` deploys one per environment; the adopter
@@ -24,6 +26,13 @@ import { supportWorkflowRetry } from "./retryPolicy";
  * **The effective taxonomy arrives as config, not as code.** `SUPPORT_CONFIG` carries the adopter's
  * own categories, so their `tournament_dispute` reaches the prompt without this worker importing
  * anything of theirs — which it could not do anyway, since it is deployed from this package.
+ *
+ * **The default export is what makes this an ES module** (#426). It exports one Workflow class and has
+ * no cron, so until now it exported no default — and wrangler infers a worker's module format from
+ * exactly that, so the build read it as a service worker and refused `cloudflare:workers` outright.
+ * The host did not build, `pithy dev` carried on past it, and classification silently never ran. The
+ * refusal it exports is the honest body for a host with no request surface; see
+ * `@pithy-sh/core/src/workflow/hostEntry`.
  */
 
 /** The support worker's env: the app database, the AI binding, and the serialized config. */
@@ -64,3 +73,10 @@ export class SupportClassifyWorkflow extends WorkflowEntrypoint<SupportWorkerEnv
     );
   }
 }
+
+/**
+ * The module's default export, and therefore its format. See `hostEntry` for why a Workflow host needs
+ * one at all, and why this one refuses rather than being empty: nothing reaches this worker over HTTP —
+ * the app worker stores the message and starts an instance on the `SUPPORT_CLASSIFY` binding.
+ */
+export default workflowHostEntry(SUPPORT_CAPABILITY);
