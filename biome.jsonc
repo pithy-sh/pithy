@@ -19,6 +19,12 @@
   // which is how a record reaches Workers Logs at all. Tests and `test-utils/` are excluded because a
   // test harness printing debris it is reaping is output for a human at a terminal, not a log line.
   //
+  // `payments/src/client/paddleCache.ts` is excluded for a third reason: it compiles into an adopter's
+  // *browser* bundle, where there is no request context to resolve `c.var.log` from and no Workers Logs
+  // for a record to reach. `console` is the sink an adopter reads there, and the one line it writes is a
+  // misconfigured cache — a mistake the person reading that console is the only one who can fix. The
+  // rest of `src/client/**` stays gated: this is the one module that may say anything at all.
+  //
   // `no-process-io.grit` is the same gate for `process.stdout`/`process.stderr`, and it needs its own
   // entry rather than two more patterns in the one above, because it needs the opposite scope: the CLI
   // is the one package where writing to stdout is correct, since that is how a CLI emits and `--json`
@@ -35,6 +41,7 @@
         "**/packages/*/src/**",
         "!**/packages/core/src/logger/local.ts",
         "!**/packages/core/src/logger/worker.ts",
+        "!**/packages/payments/src/client/paddleCache.ts",
         "!**/*.test.ts",
         "!**/test-utils/**"
       ]

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { PaymentsResult } from "./api";
-import { type PaddleOptions, type PaddleSetup, previewPrices, priceSummary } from "./paddle";
+import { type PaddleOptions, type PaddlePriceQuery, type PaddleSetup, previewPrices, priceSummary } from "./paddle";
 
 /**
  * One quote per named plan — the whole of what two Pithy surfaces share.
@@ -31,6 +31,26 @@ import { type PaddleOptions, type PaddleSetup, previewPrices, priceSummary } fro
 /** Plan name to the Paddle price — `pri_…` — that quotes it. */
 export type PaddlePlanPrices = Readonly<Record<string, string>>;
 
+/**
+ * Who the quote is for, and where — every part of a `PricePreview` query but the prices themselves.
+ *
+ * **A quote must resolve from the same Paddle row the charge will.** Omitted, Paddle resolves location
+ * from the browser's IP, which is right for a stranger reading a marketing page and wrong for everybody
+ * who has signed in: a customer with an address on file is quoted from whatever network they happen to
+ * be on, and `priceSummary` marks the figure `estimated` because no postal code resolved. Pass
+ * `customerId` and Paddle prices them from the address `POST /payments/checkout` will bill.
+ *
+ * Derived from {@link PaddlePriceQuery} rather than restated, so a field Paddle adds arrives here with
+ * it. `items` is the one part {@link quotePlans} owns — it is the plans, and there is one source of it.
+ */
+export type PaddleQuoteQuery = Omit<PaddlePriceQuery, "items">;
+
+/** What {@link quotePlans} lets a caller replace, plus who the quote is for. */
+export interface PaddleQuoteOptions extends PaddleOptions {
+  /** Who to quote for, and where they are. Omitted, Paddle resolves it from the visitor's IP. */
+  readonly query?: PaddleQuoteQuery;
+}
+
 /** What one plan costs this visitor, ready to render. */
 export interface PaddlePlanQuote {
   /** The plan this quotes, as the caller named it. */
@@ -49,6 +69,14 @@ export interface PaddlePlanQuote {
   readonly note: string | null;
   /** Whether the tax in this quote may be short of what the buyer is charged. */
   readonly estimated: boolean;
+  /**
+   * The ISO-4217 currency Paddle answered in — `"USD"`, `"JPY"`.
+   *
+   * {@link headline} is already formatted, so nothing here needs this to render. A caller that formats
+   * the figure itself does, and this is the only place it exists: `PriceSummary` carries no currency, so
+   * a caller reading only the quote had `preview.currencyCode` held one layer down and dropped.
+   */
+  readonly currency: string;
 }
 
 /**
@@ -71,13 +99,20 @@ export interface PaddlePlanQuote {
 export async function quotePlans(
   setup: PaddleSetup,
   plans: PaddlePlanPrices,
-  options?: PaddleOptions,
+  options?: PaddleQuoteOptions,
 ): Promise<PaymentsResult<readonly PaddlePlanQuote[]>> {
   const named = Object.entries(plans);
   if (named.length === 0) return { ok: true, value: [] };
 
   const asked = [...new Set(named.map(([, priceId]) => priceId))];
-  const preview = await previewPrices(setup, { items: asked.map((priceId) => ({ priceId, quantity: 1 })) }, options);
+  // The caller's half of the query first and `items` last, so a query naming items — which TypeScript
+  // forbids and a caller compiled from JavaScript is not asking TypeScript about — cannot quietly replace
+  // the prices the plans named.
+  const preview = await previewPrices(
+    setup,
+    { ...options?.query, items: asked.map((priceId) => ({ priceId, quantity: 1 })) },
+    options,
+  );
   if (!preview.ok) return preview;
 
   const quotes: PaddlePlanQuote[] = [];
@@ -85,7 +120,14 @@ export async function quotePlans(
     const line = preview.value.lines.find((candidate) => candidate.priceId === priceId);
     if (line === undefined) continue;
     const summary = priceSummary(preview.value, line);
-    quotes.push({ plan, priceId, headline: summary.headline, note: summary.note, estimated: summary.estimated });
+    quotes.push({
+      plan,
+      priceId,
+      headline: summary.headline,
+      note: summary.note,
+      estimated: summary.estimated,
+      currency: preview.value.currencyCode,
+    });
   }
   return { ok: true, value: quotes };
 }

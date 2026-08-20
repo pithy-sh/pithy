@@ -85,10 +85,20 @@ function stubPaddle(window: Window, answer: unknown): { queries: unknown[] } {
   return { queries };
 }
 
-/** A pricing page carrying the artifact, its configuration, and one slot per plan. */
-async function load(attributes: Record<string, string>, answer: unknown): Promise<Window> {
-  const window = new Window({ url: "https://pithy.sh/pricing/", settings: { enableJavaScriptEvaluation: true } });
-  stubPaddle(window, answer);
+/**
+ * Run the artifact on a page in an existing window, with a fresh Paddle behind it.
+ *
+ * Separate from {@link load} so a test can run it twice in **one** window — which is the only way to
+ * exercise a cache, since a `Window` gets its own `localStorage` and two of them share nothing. The
+ * second run is a second page of the same site: same store, new script, a Paddle that would answer if
+ * anything asked it.
+ */
+async function run(
+  window: Window,
+  attributes: Record<string, string>,
+  answer: unknown,
+): Promise<{ queries: unknown[] }> {
+  const paddle = stubPaddle(window, answer);
   window.document.body.innerHTML = `
     <p data-price-plan="solo">Priced where you are billed</p><small data-price-note="solo"></small>
     <p data-price-plan="team">Priced where you are billed</p><small data-price-note="team"></small>`;
@@ -97,6 +107,13 @@ async function load(attributes: Record<string, string>, answer: unknown): Promis
   script.textContent = bundle;
   window.document.head.appendChild(script);
   await window.happyDOM.waitUntilComplete();
+  return paddle;
+}
+
+/** A pricing page carrying the artifact, its configuration, and one slot per plan. */
+async function load(attributes: Record<string, string>, answer: unknown): Promise<Window> {
+  const window = new Window({ url: "https://pithy.sh/pricing/", settings: { enableJavaScriptEvaluation: true } });
+  await run(window, attributes, answer);
   return window;
 }
 
@@ -156,6 +173,52 @@ describe("paddle-prices.iife.js", () => {
       await recorded(),
     );
     expect(painted(window)).toEqual({ solo: "Priced where you are billed", team: "Priced where you are billed" });
+  });
+
+  test("caches across pages when the tag names a cache, so the second page costs no round trip", async () => {
+    const cached = {
+      ...CONFIGURED,
+      "data-paddle-cache": "pricing",
+      "data-paddle-cache-store": "local",
+      "data-paddle-cache-ttl": "300",
+    };
+    const window = new Window({ url: "https://pithy.sh/pricing/", settings: { enableJavaScriptEvaluation: true } });
+    await run(window, cached, await recorded());
+
+    const second = await run(window, cached, await recorded());
+
+    expect(second.queries).toEqual([]);
+    expect(painted(window)).toEqual({ solo: "$5.00", team: "$5.00" });
+  });
+
+  test("asks again on the second page when the tag named no cache", async () => {
+    // The other half of the pair. Without it the test above would pass on an artifact that never quoted
+    // twice for any reason at all.
+    const window = new Window({ url: "https://pithy.sh/pricing/", settings: { enableJavaScriptEvaluation: true } });
+    await run(window, CONFIGURED, await recorded());
+
+    const second = await run(window, CONFIGURED, await recorded());
+
+    expect(second.queries).toHaveLength(1);
+  });
+
+  test("quotes the customer the tag names, so one artifact serves a signed-in page too", async () => {
+    const window = new Window({ url: "https://pithy.sh/pricing/", settings: { enableJavaScriptEvaluation: true } });
+    const paddle = await run(
+      window,
+      { ...CONFIGURED, "data-paddle-customer": "ctm_01kzvyz9pithyNotARealCustomer" },
+      await recorded(),
+    );
+
+    expect(paddle.queries).toEqual([
+      {
+        items: [
+          { priceId: SOLO_PRICE, quantity: 1 },
+          { priceId: TEAM_PRICE, quantity: 1 },
+        ],
+        customerId: "ctm_01kzvyz9pithyNotARealCustomer",
+      },
+    ]);
   });
 
   test("names no account and no price of its own", () => {

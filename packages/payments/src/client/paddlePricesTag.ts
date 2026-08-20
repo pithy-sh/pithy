@@ -2,8 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import type { PaymentsFailure, PaymentsResult } from "./api";
-import type { PaddleOptions, PaddleSetup } from "./paddle";
-import { type PaddlePlanPrices, type PaddlePlanQuote, quotePlans } from "./paddlePrices";
+import type { PaddleSetup } from "./paddle";
+import { type PaddleCacheStore, type PaddleQuoteCache, readQuoteCache } from "./paddleCache";
+import {
+  type PaddlePlanPrices,
+  type PaddlePlanQuote,
+  type PaddleQuoteOptions,
+  type PaddleQuoteQuery,
+  quotePlans,
+} from "./paddlePrices";
 
 /**
  * The script tag as configuration, for a site with no build step.
@@ -39,6 +46,25 @@ export interface PaddlePricesTagConfig {
   readonly plans: PaddlePlanPrices;
   /** Whether to write the totals into the page, or only to hand them to whoever asked. */
   readonly paint: boolean;
+  /** Who to quote for. Empty unless the tag named a customer, which is a visitor Paddle knows. */
+  readonly query: PaddleQuoteQuery;
+  /** Where a quote may rest, or null — which is every tag that did not ask for a cache, and every tag
+   * that asked for half of one. */
+  readonly cache: PaddleQuoteCache | null;
+}
+
+/**
+ * The two stores a script tag can name, injectable so a suite can look inside one.
+ *
+ * A tag cannot hand over an object, so it names a store rather than passing one — `local` or `session`,
+ * the only two a browser has. Everywhere else in this kit the caller passes the store itself, and that
+ * stays true: this is the one surface where the caller is HTML.
+ */
+export interface PricesCacheStores {
+  /** What `data-paddle-cache-store="local"` resolves to. Defaults to `globalThis.localStorage`. */
+  readonly local?: PaddleCacheStore | null;
+  /** What `data-paddle-cache-store="session"` resolves to. Defaults to `globalThis.sessionStorage`. */
+  readonly session?: PaddleCacheStore | null;
 }
 
 /** The prefix that marks an attribute as naming a plan. */
@@ -52,6 +78,59 @@ const CLIENT_TOKEN: Readonly<Record<PaddleSetup["environment"], string>> = {
 
 /** A real Paddle price. */
 const PRICE_ID = /^pri_/;
+
+/** A real Paddle customer. */
+const CUSTOMER_ID = /^ctm_/;
+
+/**
+ * One of the browser's own stores, or null where there is not one.
+ *
+ * Guarded rather than read, because reaching for `localStorage` **throws** where a browser has storage
+ * switched off or a sandboxed frame denies it — a page that quotes prices would take that exception on
+ * the way to asking Paddle a question it could have asked anyway.
+ */
+function browserStore(name: "localStorage" | "sessionStorage"): PaddleCacheStore | null {
+  try {
+    const held = (globalThis as { localStorage?: PaddleCacheStore; sessionStorage?: PaddleCacheStore })[name];
+    return held ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The store a tag named, the **name** it gave when nothing resolved, or null when it named nothing.
+ *
+ * The three are different and used to be two. `data-paddle-cache-store="localStorage"` is the likely
+ * typo — the accepted value is `local` — and collapsing it into the same null a bare tag produces made
+ * it the one misconfiguration that got no console line, because "did anybody ask for a cache?" had
+ * nothing left to see. Handing the name back is what makes an unresolvable store an answer.
+ *
+ * An injected `null` is honoured as an answer too: `PricesCacheStores` says `PaddleCacheStore | null`,
+ * so null means *this environment has none* — a suite saying so, or an adopter's SSR-safe wrapper — and
+ * quietly resolving the browser's real store instead would exercise the opposite path from the one the
+ * caller named.
+ */
+function storeNamed(named: string | null, stores?: PricesCacheStores): PaddleCacheStore | string | null {
+  if (named === "local") return stores?.local !== undefined ? stores.local : (browserStore("localStorage") ?? named);
+  if (named === "session") {
+    return stores?.session !== undefined ? stores.session : (browserStore("sessionStorage") ?? named);
+  }
+  return named;
+}
+
+/**
+ * A lifetime in seconds, as milliseconds.
+ *
+ * Seconds on the attribute because a tag is HTML and HTML counts a cache in seconds — `max-age`, and
+ * every header that copied it. `NaN` rather than null for text that is not a number, so a tag that
+ * tried to state a lifetime and failed is a warning rather than a silence.
+ */
+function lifetime(value: string | null): number | null {
+  if (value === null) return null;
+  const seconds = Number(value);
+  return Number.isFinite(seconds) ? seconds * 1000 : Number.NaN;
+}
 
 /**
  * Read a tag's configuration, or refuse it.
@@ -75,7 +154,10 @@ const PRICE_ID = /^pri_/;
  * Paddle.js and spent a round trip finding out. Refusing it here is what makes "no request" true of
  * every misconfigured tag rather than of most of them.
  */
-export function readPaddlePricesTag(tag: PaddlePricesTag | null): PaddlePricesTagConfig | null {
+export function readPaddlePricesTag(
+  tag: PaddlePricesTag | null,
+  stores?: PricesCacheStores,
+): PaddlePricesTagConfig | null {
   if (tag === null) return null;
   const environment = tag.getAttribute("data-paddle-env");
   if (environment !== "sandbox" && environment !== "production") return null;
@@ -91,7 +173,33 @@ export function readPaddlePricesTag(tag: PaddlePricesTag | null): PaddlePricesTa
   }
   if (Object.keys(plans).length === 0) return null;
 
-  return { setup: { clientToken, environment }, plans, paint: tag.getAttribute("data-paddle-paint") !== "off" };
+  // **A customer that is not one is dropped, not refused** — the opposite call to the one a placeholder
+  // price id gets one line above, and deliberately. A wrong price is unrecoverable, so a placeholder id
+  // takes the whole tag down. A missing customer costs the visitor a quote resolved from their IP and
+  // marked `estimated`, which is exactly what every anonymous visitor already sees, and is a great deal
+  // better than a pricing table with no figures in it.
+  const named = tag.getAttribute("data-paddle-customer")?.trim() ?? "";
+  const query: PaddleQuoteQuery = CUSTOMER_ID.test(named) ? { customerId: named } : {};
+
+  const cache = readQuoteCache({
+    key: tag.getAttribute("data-paddle-cache"),
+    store: storeNamed(tag.getAttribute("data-paddle-cache-store"), stores),
+    ttlMs: lifetime(tag.getAttribute("data-paddle-cache-ttl")),
+  });
+
+  return {
+    setup: { clientToken, environment },
+    plans,
+    paint: tag.getAttribute("data-paddle-paint") !== "off",
+    query,
+    cache,
+  };
+}
+
+/** What {@link mountPrices} lets a caller replace, plus the stores a tag may name. */
+export interface MountPricesOptions extends PaddleQuoteOptions {
+  /** What `data-paddle-cache-store` resolves to. Defaults to the browser's own two. */
+  readonly stores?: PricesCacheStores;
 }
 
 /** The slice of a plan slot this writes. */
@@ -178,12 +286,27 @@ function parsed(document: PricesDocument): Promise<void> {
 export async function mountPrices(
   document: PricesDocument,
   tag: PaddlePricesTag | null,
-  options?: PaddleOptions,
+  options?: MountPricesOptions,
 ): Promise<PaymentsResult<readonly PaddlePlanQuote[]>> {
-  const config = readPaddlePricesTag(tag);
+  const { stores, ...given } = options ?? {};
+  const config = readPaddlePricesTag(tag, stores);
   if (config === null) return { ok: false, failure: PADDLE_PRICES_NOT_CONFIGURED };
 
-  const quoted = await quotePlans(config.setup, config.plans, options);
+  // The tag is the page's configuration; an explicit option is a caller who knows better than the
+  // markup — a screen mounting this itself, or a test. Neither is common and both are legitimate, so
+  // the more specific one wins and the tag fills in the rest.
+  //
+  // **The query merges, field by field; the cache does not.** A query is a bag of independent facts, and
+  // a dashboard that server-renders `data-paddle-customer` onto the tag and passes an address from the
+  // screen means both — replacing wholesale would drop the customer and quote from the network again,
+  // which is the defect this module exists to remove. A cache is one indivisible decision about where a
+  // price rests and for how long, so half of the tag's and half of the caller's is not a cache anybody
+  // chose.
+  const quoted = await quotePlans(config.setup, config.plans, {
+    ...given,
+    query: { ...config.query, ...given.query },
+    cache: given.cache ?? config.cache ?? undefined,
+  });
   if (!quoted.ok || !config.paint) return quoted;
   // **The quote starts immediately and the paint waits.** A third-party tag's usual home is `<head>`,
   // where nothing it paints into has been parsed yet — so a paint that ran the moment Paddle answered

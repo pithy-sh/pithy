@@ -264,7 +264,48 @@ The pricing screen is public — it declares no `session`, because a stranger ha
 
 ### A converted amount is not a stable number
 
-The Japanese row above was fetched twice minutes apart and returned ¥797 then ¥798. Paddle's FX rate moves. Nothing should assert an exact converted figure against a live account, and nothing should cache one.
+The Japanese row above was fetched twice minutes apart and returned ¥797 then ¥798. Paddle's FX rate moves. Nothing should assert an exact converted figure against a live account, and a cached one is a figure nobody re-checked — which is why the cache below has no default lifetime and every caller states one.
+
+### One quote path, shared
+
+The marketing site and the dashboard quote the same plans from the same account, and each once carried its own copy of the twelve lines that do it. One copy was wrong for months — `#416` read `currencyCode` off the top of Paddle's answer when it lives under `data`, so the reader refused every real response and the screen rendered an empty price slot that looked deliberate. It was the *reviewed* copy that was wrong. Nothing could tell, because there was nothing both of them ran.
+
+`quotePlans` is that thing:
+
+```ts
+import { quotePlans } from "@pithy-sh/payments/src/client/paddlePrices";
+
+const quoted = await quotePlans(paddleSetup, { solo: soloPriceId, team: teamPriceId }, {
+  query: { customerId },                                             // who to quote for
+  cache: { key: "pricing", store: sessionStorage, ttlMs: 300_000 },  // where a quote may rest
+});
+```
+
+It answers one `PaddlePlanQuote` per plan — `{ plan, priceId, headline, note, estimated, currency }` — off **one** `PricePreview` call, because Paddle answers a line per item and a page is one round trip. A plan Paddle returned no line for is left out rather than quoted from another plan's line, and a price two plans point at is asked for once.
+
+**`query` is the location half of the request** — `customerId`, `address`, `customerIpAddress`, `currencyCode`, `discountId`, everything a `PricePreview` query carries except the prices themselves. Pass `customerId` for anyone signed in: a quote has to resolve from the same Paddle row the charge will, and without it a customer with an address on file is quoted from whatever network they are on and the figure comes back marked `estimated` because no postal code resolved. `resolvePriceLocation` above decides *which* of them you have; this is where it goes.
+
+**`currency` is the currency Paddle answered in.** `headline` is already formatted, so a screen rendering it needs nothing else — a caller formatting the figure itself needs this, and it is the only place it exists.
+
+### Caching a quote
+
+Off unless you switch it on, and switching it on means saying three things:
+
+| | |
+|---|---|
+| `key` | The namespace entries rest under. Two surfaces sharing a store share nothing else. |
+| `store` | Where they rest. `localStorage`, `sessionStorage`, or anything with `getItem`/`setItem`/`removeItem`. |
+| `ttlMs` | How long one may stand. |
+
+**There is no default store and no default lifetime, and that is the whole design.** A quote resolved from `customerId` is one customer's price, resolved from the address on their account — `sessionStorage` and `localStorage` are the same interface and very different promises about a shared machine, and only the program that knows who is signed in can choose between them. **Signed in, reach for `sessionStorage`**, as the snippet above does: it is gone when the tab closes, which is the promise you want for a named customer's resolved address on a machine somebody else also uses. `localStorage` is right for the anonymous marketing page, where the quote belongs to nobody and outliving a tab is the point. Paddle's figures move, too: the FX rate above shifted between two calls minutes apart. A cached figure is a figure nobody re-checked, so how long that may last is yours to state rather than yours to inherit.
+
+**A write clears the cache's own expired entries as it passes.** Nothing reads a departed customer's key again, so without a sweep nothing would ever expire it — a dashboard caching per customer on a shared machine accumulates one permanent entry per person who ever signs in, the origin's quota fills, and every write from then on fails silently. The sweep is scoped to that cache's own namespace and judged by its own `ttlMs`, so two surfaces sharing a store with different lifetimes never expire each other's answers. It needs `length` and `key` — `Storage` has both, so `localStorage` and `sessionStorage` get it; a custom three-method store still caches, it just does not get tidied.
+
+**All three, or none.** Two of the three is what a caller reaches for first, and silently ignoring it would look exactly like caching that works — so it warns to the console, names the parts that are missing, and quotes from the network. A broken cache never fails a quote.
+
+**The question is inside the key**, so one visitor can never be handed another's answer, and a sandbox answer cannot survive a deploy into production. A cached answer is read back through the same reader a fresh one is, so an entry an older bundle wrote is a miss rather than a price nobody validated. A store that throws — Safari in private browsing, a full quota — is a miss too, and costs the page one round trip rather than its prices.
+
+A hit skips the Paddle.js load entirely, which is the part a visitor waits for.
 
 ### A site with no build step
 
@@ -289,6 +330,17 @@ The script writes the formatted total into the first and **the sentence that mak
 
 A price id belongs to one Paddle account, so it is environment-specific and has no business in page content; whoever deploys the site puts the ids on the tag. `data-paddle-env` and the token's own prefix must agree — `sandbox` with `test_…`, `production` with `live_…` — and a tag pairing them the other way is refused rather than sent.
 
+**The tag carries the location and the cache too**, because one artifact serves the marketing site and a signed-in dashboard both:
+
+| Attribute | |
+|---|---|
+| `data-paddle-customer` | The `ctm_…` to quote as. Render it per visitor from your own Worker; omit it for a page nobody signs in to. |
+| `data-paddle-cache` | The namespace to cache under. |
+| `data-paddle-cache-store` | `local` or `session` — the two a browser has. A tag cannot hand over an object, so it names one. |
+| `data-paddle-cache-ttl` | How long a quote may stand, **in seconds**. HTML counts a cache in seconds everywhere else. |
+
+The three cache attributes go together or not at all; a tag naming some of them warns to the console and quotes from the network. A `data-paddle-customer` that is not a `ctm_…` is dropped rather than refused — the opposite call to the one a placeholder price id gets, and deliberately: a wrong price is unrecoverable, while a missing customer costs the visitor a quote resolved from their IP and labelled as the estimate it is, which is what every anonymous visitor already sees.
+
 **Load it where you like.** The quote starts the moment the script runs and the paint waits for `DOMContentLoaded`, so a tag in `<head>` overlaps its round trip with parsing the page rather than racing it.
 
 Build it with `bun run build` in `@pithy-sh/payments`; the artifact is `dist/paddle-prices.iife.js` and is published as `@pithy-sh/payments/paddle-prices.iife.js`, so a static site's deploy copies it out of `node_modules` into its own `/js/`. It bundles Paddle's own loader, so a page loads one file from this project and one from `cdn.paddle.com`, and nothing else.
@@ -297,7 +349,7 @@ Build it with `bun run build` in `@pithy-sh/payments`; the artifact is `dist/pad
 
 **It quotes nothing rather than quoting wrong.** A tag missing its environment or its token, or still carrying a `REPLACE_WITH_…` placeholder in any one of its ids, is refused before Paddle is loaded at all — no request, no console error, and every slot still holding the sentence the page shipped with. All or nothing across the plans, because a table with one real figure and one placeholder is the version a reader believes.
 
-**Caching and formatting stay with the page.** Set `data-paddle-paint="off"` and the script quotes without writing anything; `window.pithyPaddlePrices.quotes` resolves to the same `PaymentsResult` the module hands the dashboard, and the page does what it likes with it — a `localStorage` window, a zero-fraction trim, its own markup. Only the quote is shared, and it is shared because it is the part that was wrong in one of two copies for months while both looked fine.
+**Formatting stays with the page.** Set `data-paddle-paint="off"` and the script quotes without writing anything; `window.pithyPaddlePrices.quotes` resolves to the same `PaymentsResult` the module hands the dashboard, and the page does what it likes with it — a zero-fraction trim, its own markup, its own slots. Only the quote is shared, and it is shared because it is the part that was wrong in one of two copies for months while both looked fine.
 
 ## 12. Overlay and inline checkout
 
