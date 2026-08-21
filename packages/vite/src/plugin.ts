@@ -12,6 +12,46 @@ import {
 } from "./virtualModule";
 import { type LoadedWorkerConfig, loadWorkerConfig } from "./workerConfig";
 
+/**
+ * What {@link pithy} hands back: a Vite plugin, described without naming a Vite type.
+ *
+ * **The return type used to be Vite's own `Plugin`, and that made the peer range a lie — Jim,
+ * 2026-08-21 (#414).** `package.json` declares `vite: ^6.1.0 || ^7.0.0 || ^8.0.0`, but a `Plugin` in
+ * the signature is a `Plugin` out of *this package's* `node_modules`. An adopter who resolved any
+ * other copy — which is every adopter developing against a symlinked kit, and every adopter whose
+ * install did not deduplicate — had to prove the kit's copy assignable to theirs, field by field,
+ * before `plugins: [pithy()]` would compile. Across majors that comparison fails outright: `hotUpdate`
+ * does not carry the same `this` in 6 as in 8, so this plugin was not a Vite 6 plugin however identical
+ * the hook body is. Within a major it does not even finish — `Plugin` is deep and recursive enough to
+ * exhaust tsc's depth budget, which is the `TS2321: Excessive stack depth` that stopped
+ * `pithy-sh/dashboard` typechecking the `vite.config.ts` `pithy init` had just written for it. A peer
+ * dependency that only compiles when the install deduplicates is not a peer dependency.
+ *
+ * So the signature promises the two things every Vite in that range agrees on and an adopter's
+ * checker can settle in two comparisons: the plugin has a name, and it runs early. No recursion, no
+ * hook signatures, nothing that can differ between two copies of the same library.
+ *
+ * **What is still checked.** The object below is written `satisfies Plugin` against the Vite this
+ * package develops against, so every hook keeps its parameter types, its `this`, and its return type.
+ * A hook that reads the wrong field off `config`, returns the wrong shape, or is spelled with a name
+ * Vite does not call is still a red build — here, where the kit is compiled, and in
+ * `tooling/vite-adopter`, which compiles this file too.
+ *
+ * **What is not.** The adopter's checker no longer re-derives any of that against their copy. It sees
+ * two properties and takes the hooks on trust. Three things pay for that trust and none of them is a
+ * type: `tooling/vite-adopter` compiles the return against every major in the peer range,
+ * `plugin.test.ts` drives each hook by hand, and it runs a real `vite build` and reads the bundle.
+ */
+export interface PithyPlugin {
+  /** `"pithy"`. The plugin's identity in Vite's plugin list, and in any error raised from a hook. */
+  name: string;
+  /**
+   * `"pre"`, always. `virtual:pithy/*` is claimed before any other plugin can, so the order of an
+   * adopter's `plugins` array never decides whether the front end can read its own backend.
+   */
+  enforce: "pre";
+}
+
 /** Options for {@link pithy}. Every one has a working default; `pithy()` is the usual call. */
 export interface PithyPluginOptions {
   /**
@@ -36,7 +76,7 @@ export interface PithyPluginOptions {
  * resolves to `{ enabled: false }` rather than failing the import, including a name nobody has ever
  * heard of: a screen branches on `enabled`, it does not guard on whether the module exists.
  */
-export function pithy(options: PithyPluginOptions = {}): Plugin {
+export function pithy(options: PithyPluginOptions = {}): PithyPlugin {
   const environment = options.environment ?? process.env.ENVIRONMENT ?? "dev";
   let configFile = "";
   // Memoize the promise, not the value: `load` runs concurrently for every virtual module a bundle
@@ -74,7 +114,13 @@ export function pithy(options: PithyPluginOptions = {}): Plugin {
     return loading;
   }
 
-  return {
+  // `satisfies` rather than an annotation, and the difference is the whole fix. It contextually types
+  // every hook below against Vite's `Plugin` — same checking as the old `: Plugin` return type gave —
+  // while leaving the literal's own type intact, so the narrow `PithyPlugin` the signature promises is
+  // still derived from what is actually returned rather than asserted over it. A `const` because a
+  // fresh object literal returned straight out would be excess-property-checked against `PithyPlugin`,
+  // which names none of the hooks.
+  const plugin = {
     name: "pithy",
     // Claim `virtual:pithy/*` before any other plugin can, so the plugin array's order in an
     // adopter's vite.config.ts never decides whether the front end can read its own backend.
@@ -119,5 +165,7 @@ export function pithy(options: PithyPluginOptions = {}): Plugin {
       this.environment.hot.send({ type: "full-reload" });
       return invalidated;
     },
-  };
+  } satisfies Plugin;
+
+  return plugin;
 }

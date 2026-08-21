@@ -59,6 +59,8 @@ const RECORD: Record<string, string> = {
     "Every package's shipped files, read from the source tree rather than `node_modules`: the manifest-width sweep (#173), the migration-order scan, the capability catalog, and the stamped versions.",
   "packages/payments/pithy.manifest.json":
     "`capabilities/manifests.test.ts` names this one manifest rather than sweeping them all, because `billingSubject` is the first **required** config option the kit ships — no default, a closed set of two — and it is the whole reason a manifest can express one (#412). The repo-wide sweep above proves every manifest still parses; this proves that this option is still required, which is the feature. Editing the manifest must therefore re-run the CLI's suite, and `packages` alone does not say so specifically enough to survive somebody narrowing it.",
+  "packages/vite/package.json":
+    "`@pithy-sh/vite-adopter`'s `resolution.test.ts` reads the peer range `@pithy-sh/vite` publishes and holds it to the Vite copies that fixture pins — one per major, each a copy the kit does not resolve, which is what makes compiling `pithy()`'s return against them prove anything (#414). Widening the range without extending the fixture ships a major unproven, and that edit is a manifest field rather than source.",
   "templates/starter": "The tree `pithy init` copies (#148). `project/scaffold.test.ts` reads it whole.",
   "templates/starter/apps/api/package.json":
     "`project/scaffold.test.ts` — the dependencies a scaffolded Worker starts with.",
@@ -88,11 +90,20 @@ describe("the cross-package reads CI plans from", () => {
     // in another package. A ledger entry pointing at a renamed file rots into a subject that reads as
     // held, so the entry resolves the path; and resolving it is worth nothing unless renaming the gate
     // re-runs the ledger.
+    //
+    // `@pithy-sh/vite-adopter` is the fifth, and it is the one entry here that `--affected` would have
+    // reached anyway: it declares `@pithy-sh/vite` as a dependency, so editing that package's manifest
+    // plans it through the dependency edge as well as through this list. It is listed because the read
+    // is real and this assertion is derived from the tree rather than curated — and because the edge is
+    // not what makes the read correct. The fixture pins one copy of Vite per major in the published peer
+    // range and compiles `pithy()`'s return against each (#414); the day someone moves that range into a
+    // file the edge does not carry, this is the line that keeps the read planned.
     expect([...new Set((await reads()).map((read) => read.package))].sort()).toEqual([
       "@pithy-sh/browser-scopes",
       "@pithy-sh/cli",
       "@pithy-sh/cloudflare",
       "@pithy-sh/ui-react",
+      "@pithy-sh/vite-adopter",
     ]);
   });
 

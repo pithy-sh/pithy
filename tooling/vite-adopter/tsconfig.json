@@ -1,0 +1,13 @@
+{
+  "extends": "@pithy-sh/tsconfig/base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    // Both, and it has to be both — the same pair an adopter's Node program needs. `plugin.ts` is
+    // compiled as part of this program (the package exports `./src/*` as TypeScript), and it reaches
+    // `@pithy-sh/core`'s `Capability`, which names Workers globals. Without the second entry this
+    // program fails on `Cannot find name 'ExecutionContext'` and never gets as far as the plugin.
+    "lib": ["ES2022"],
+    "types": ["node", "@cloudflare/workers-types"]
+  },
+  "include": ["src"]
+}

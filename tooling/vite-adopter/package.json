@@ -1,0 +1,26 @@
+{
+  "name": "@pithy-sh/vite-adopter",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:node": "vitest run",
+    "clean": "rm -rf .turbo",
+    "reset": "bun run clean && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260729.1",
+    "@pithy-sh/tsconfig": "workspace:*",
+    "@pithy-sh/vite": "workspace:*",
+    "@types/node": "^22.15.0",
+    "@vitest/coverage-v8": "^4.1.0",
+    "typescript": "^7.0.2",
+    "vite": "6.1.6",
+    "vite7": "npm:vite@7.0.0",
+    "vite8": "npm:vite@8.0.0",
+    "vitest": "^4.1.0"
+  }
+}

@@ -5,9 +5,9 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
-import { build, type EnvironmentModuleNode, type Plugin, type ResolvedConfig } from "vite";
+import { build, type EnvironmentModuleNode, type ResolvedConfig } from "vite";
 import { afterAll, describe, expect, test } from "vitest";
-import { pithy } from "./plugin";
+import { type PithyPlugin, pithy } from "./plugin";
 
 const dirs: string[] = [];
 
@@ -47,10 +47,16 @@ async function loadCount(dir: string): Promise<number> {
 }
 
 /**
- * Drive the plugin's hooks the way Vite does. The hooks are plain functions on our plugin, but their
- * declared type is Vite's `ObjectHook` union, so each is narrowed once here rather than at every call.
+ * Drive the plugin's hooks the way Vite does.
+ *
+ * The hooks are plain functions on the returned object, and `PithyPlugin` names none of them (#414) —
+ * the whole point of that type is that it says nothing an adopter's checker has to compare against
+ * their copy of Vite. So the shape a test drives is stated once here rather than at every call. It is
+ * not a weaker check than reading the hooks off `Plugin` was: the signatures below are the ones every
+ * case in this file calls, and `plugin.ts` is what holds them to Vite's — `satisfies Plugin`, in the
+ * program where the kit's own Vite is the right one.
  */
-function driver(plugin: Plugin, root: string) {
+function driver(plugin: PithyPlugin, root: string) {
   const hooks = plugin as unknown as {
     configResolved: (config: ResolvedConfig) => void;
     configureServer: (server: { watcher: { add: (path: string) => void } }) => void;

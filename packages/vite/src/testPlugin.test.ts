@@ -7,9 +7,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import type { Plugin, ResolvedConfig } from "vite";
+import type { ResolvedConfig } from "vite";
 import { afterAll, describe, expect, test } from "vitest";
-import { pithy } from "./plugin";
+import { type PithyPlugin, pithy } from "./plugin";
 import { pithyTest } from "./testPlugin";
 
 const run = promisify(execFile);
@@ -196,7 +196,7 @@ describe("a module reading the projection is testable, and reads the real one", 
   });
 
   test("it resolves to the build plugin itself, not to a second one", async () => {
-    const plugin: Plugin = await pithyTest();
+    const plugin: PithyPlugin = await pithyTest();
     expect(plugin.name).toBe("pithy");
     // Every hook the build plugin declares, and no hook it does not. A stub answering the same module
     // shape would pass a value comparison and fail here.
