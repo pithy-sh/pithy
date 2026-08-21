@@ -3,6 +3,7 @@
 
 import { asRead } from "@pithy-sh/core/src/projection/asRead";
 import { z } from "zod";
+import { SUPPORT_BILLING_SCOPE } from "../data/billingScope";
 import {
   SupportAccountLinkSource,
   SupportChannel,
@@ -11,7 +12,6 @@ import {
   SupportSentiment,
 } from "../data/enums";
 import { SupportSubmissionContext } from "../data/message";
-import { SUPPORT_BILLING_SCOPE } from "../link/sender";
 
 /**
  * What the support routes return, as Zod objects a management client can validate against.
@@ -30,6 +30,13 @@ import { SUPPORT_BILLING_SCOPE } from "../link/sender";
  * **No codecs, and no transform anywhere in this file.** These describe JSON on the wire, so parsing
  * one hands back exactly what went in — which is what lets `responses.test.ts` compare a parsed value
  * with the projection's output and fail on a field either side forgot.
+ *
+ * **A browser imports this file, so it reaches no module that needs the Workers runtime.** That is not
+ * a preference about bundle size; it is what "a client validates what comes back" means once the client
+ * is a Vite program with the DOM lib and no Workers types. This file imported `SUPPORT_BILLING_SCOPE`
+ * from `link/sender.ts` for one release and brought D1, Kysely and two capabilities' table maps with it,
+ * which took `pithy-sh/dashboard`'s client build down on an error in `@pithy-sh/auth` (#419). The rule is
+ * held by `tooling/browser-scopes`, which compiles this module with `types: []` and walks its imports.
  */
 
 /** Where a page resumes, or the end of the list. */

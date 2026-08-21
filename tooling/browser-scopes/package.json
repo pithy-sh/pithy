@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && tsc -p tsconfig.probe.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.client.json && tsc -p tsconfig.probe.json && tsc -p tsconfig.responses.json",
     "test": "vitest run",
     "test:node": "vitest run",
     "clean": "rm -rf .turbo",

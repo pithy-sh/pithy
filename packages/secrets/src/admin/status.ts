@@ -10,6 +10,7 @@ import { z } from "zod";
 import { RotationStatus, RotationTrigger } from "../data/secretRotations";
 import type { SecretsTables } from "../data/tables";
 import { SecretBackend, type SecretRegistry, SecretValueType } from "../registry";
+import type { CarriesNoValue } from "../valueBearing";
 
 /**
  * The read behind "is any secret overdue" — metadata about secrets, and never a secret.
@@ -29,7 +30,9 @@ import { SecretBackend, type SecretRegistry, SecretValueType } from "../registry
  * 2. **The shapes are Zod objects and rows are parsed through them**, so an unknown column is stripped
  *    rather than passed along — a `selectAll()` written here later still discloses nothing.
  * 3. **{@link SECRET_STATUS_CARRIES_NO_VALUE} is a compile-time tripwire.** Adding a banned field to
- *    either shape makes this module fail to typecheck.
+ *    either shape makes this module fail to typecheck. The type behind it is `../valueBearing.ts`,
+ *    moved out of this file so that `http/responses.ts` — a module a browser imports — can make the
+ *    same promise without acquiring this file's Kysely reader and the D1 layer behind it (#419).
  * 4. **`status.test.ts` asserts the exact field set**, so *any* new field — not only a banned one — has
  *    to be argued for by somebody editing a test that says why.
  *
@@ -57,22 +60,6 @@ import { SecretBackend, type SecretRegistry, SecretValueType } from "../registry
 
 /** The Kysely instance these reads run against — typed over the secrets tables, CamelCasePlugin installed. */
 export type SecretsStatusDb = Kysely<DatabaseSchema<SecretsTables>>;
-
-/**
- * Field names that would carry a secret's value, the envelope around it, or free text written where a
- * value is in scope. Named as a type so the tripwire below is a list somebody has to delete from rather
- * than a rule somebody has to remember.
- */
-type ValueBearing = "encryptedValue" | "iv" | "value" | "plaintext" | "metadataSnapshot" | "errorMessage";
-
-/**
- * `true` when `T` names none of {@link ValueBearing}, and `never` when it names any — so an assignment
- * of `true` to this type stops compiling the moment a shape is widened.
- *
- * The tuple wrapper is not decoration: a bare `Extract<...> extends never` on a union would distribute
- * and answer `true` for every member, which is the one way this check could quietly pass.
- */
-export type CarriesNoValue<T> = [Extract<keyof T, ValueBearing>] extends [never] ? true : never;
 
 /**
  * One rotation attempt, as an owner may see it: when, how it ended, what caused it, and who.

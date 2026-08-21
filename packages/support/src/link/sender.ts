@@ -4,6 +4,7 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { parseAddress } from "@pithy-sh/core/src/address/address";
 import type { Entitlement } from "@pithy-sh/core/src/entitlement/entitlement";
+import { SUPPORT_BILLING_SCOPE } from "../data/billingScope";
 
 /**
  * The link from an address in a `From` header to the customer the app already knows about.
@@ -39,6 +40,12 @@ import type { Entitlement } from "@pithy-sh/core/src/entitlement/entitlement";
  * between "bought nothing", "`@pithy-sh/payments` is not installed" and "billed to an organization".
  * An operator reads the first of those and decides a refund on it. A declared scope is what turns the
  * third case from a silence into a limitation somebody can see.
+ *
+ * **The scope constant used to be declared here, and is now `data/billingScope.ts` (Jim, 2026-08-21).**
+ * The old argument was that the query and the wire must read one value, which is right and unchanged —
+ * but `http/responses.ts` honouring it by importing from *this* file pulled the whole server data layer
+ * into a browser program, because that is what this file's imports are (#419). One value, in a module
+ * neither half owns.
  */
 
 /** The account a sender resolves to, and what the app knows about them. */
@@ -91,18 +98,6 @@ export interface SenderPurchase {
 
 /** How many purchases a thread view carries. Enough to see the pattern, bounded so a whale is not a slow page. */
 export const MAX_LINKED_PURCHASES = 25;
-
-/**
- * The one payments subject kind this seam reads — see the module doc for why it is pinned rather than
- * resolved.
- *
- * **Declared once, here, and consumed by both the query and the wire.** `http/responses.ts` builds
- * `SenderBillingScope` from this constant, so the value a console is told and the value the `WHERE`
- * clause filters on cannot drift apart. Widening it is therefore one edit that breaks every consumer
- * that has not decided what an organization's panel should render, which is the correct amount of
- * friction for that change.
- */
-export const SUPPORT_BILLING_SCOPE = "user" as const;
 
 /**
  * Resolve a sender address to a user id.
