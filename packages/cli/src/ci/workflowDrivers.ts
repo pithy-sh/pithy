@@ -47,6 +47,23 @@
  * `WorkflowEntrypoint`, or any function taking a parameter typed as a step runner — and a step runner is
  * itself discovered, as any interface in the tree whose one member is `do(name, callback)`. A capability
  * that adds a Workflow tomorrow is analysed tomorrow, with nothing to remember.
+ *
+ * ## A second rule, off the same walk (#426)
+ *
+ * > **Every module in this kit that extends `WorkflowEntrypoint` has a default export.**
+ *
+ * A worker whose entry exports only classes is not an ES module as far as the build is concerned. wrangler
+ * warns, falls back to service-worker format, and then refuses the entry outright — `Unexpected external
+ * import of "cloudflare:workers" and "cloudflare:workflows"` — so the host does not build at all. `pithy dev`
+ * carries on with the rest of the set, which is how three of these shipped: `support`, `media` and `vector`
+ * each had no cron, so nothing prompted anyone to write the `export default { async scheduled(…) }` that
+ * happened to make the other four ES modules. The format was a side effect of a feature four hosts wanted
+ * and three did not.
+ *
+ * So the property belongs to the *class*, not to whoever remembers it, and it is answered here rather than
+ * in a list: this walk already knows every module in the tree that extends `WorkflowEntrypoint`, and whether
+ * that module has a default export is one more question about the same file. See {@link WorkflowHostModule}
+ * and `workflowModuleFormat.test.ts`, which is what holds the kit to it.
  */
 
 /** A source file the analysis reads. The same shape `sourceFiles` yields, so the tree walk feeds it directly. */
@@ -77,10 +94,27 @@ export interface DriverFinding extends WorkflowDriver {
   readonly via: string;
 }
 
+/**
+ * One module that hosts at least one Workflow, and whether the build will read it as an ES module.
+ *
+ * The unit is the **file**, not the class: `main` in a `wrangler.jsonc` names a module, and the default
+ * export is a property of that module however many Workflow classes it happens to hold.
+ */
+export interface WorkflowHostModule {
+  /** The file, repo-relative as the caller supplied it. */
+  readonly file: string;
+  /** Every `WorkflowEntrypoint` subclass it declares, sorted. Never empty — that is what puts it here. */
+  readonly classes: string[];
+  /** Whether the module declares a default export, in any of the three spellings ESTree has for one. */
+  readonly defaultExport: boolean;
+}
+
 /** What one analysis pass found. */
 export interface DriverAnalysis {
   /** Every `WorkflowEntrypoint` subclass in the tree, as `path#ClassName`, sorted. */
   readonly entrypoints: string[];
+  /** Every module holding one or more of those classes, sorted by path. See {@link WorkflowHostModule}. */
+  readonly hosts: WorkflowHostModule[];
   /** Every driver body analysed. */
   readonly drivers: WorkflowDriver[];
   /** Every `WorkflowSpec.className` declared anywhere in the tree, sorted. */
@@ -209,6 +243,51 @@ function parameterTypeName(param: Node): string | undefined {
   return nameOf(reference.typeName);
 }
 
+/**
+ * Does this module declare a default export?
+ *
+ * Top-level only, because that is the only place one can be, and structural rather than textual: a comment
+ * or a string containing `export default` is not one, and `export { entry as default }` is.
+ *
+ * All three ESTree spellings count, and a re-export counts too — `export { default } from "./entry"` puts a
+ * default binding on this module, which is the whole of what the build asks.
+ */
+function hasDefaultExport(program: Node): boolean {
+  const body = Array.isArray(program.body) ? program.body.filter(isNode) : [];
+  for (const statement of body) {
+    // A type is not a default export, whatever it is spelled like — Jim, 2026-08-21.
+    //
+    // `export type { HostEntry as default }` and `export default interface HostEntry {}` both put the
+    // word `default` in the syntax tree and neither survives to runtime: `verbatimModuleSyntax` erases
+    // them, so the emitted module has no default binding and wrangler infers Service Worker format
+    // exactly as before. An adversarial pass planted both against a copy of the pre-fix support host
+    // and this function answered `true` while the real build still failed with `Unexpected external
+    // import of "cloudflare:workers"`.
+    //
+    // `exportKind` is `"type"` on those and `"value"` on everything real, which is the fact this rule
+    // is actually about: the build asks whether the *emitted* module has a default binding.
+    if (statement.exportKind === "type") continue;
+    if (statement.type === "ExportDefaultDeclaration") {
+      // And the declaration itself, because `export default interface X {}` is a value-kind statement
+      // whose declaration is a type. There is nothing to emit for either.
+      const declared = isNode(statement.declaration) ? statement.declaration.type : "";
+      if (declared === "TSInterfaceDeclaration" || declared === "TSTypeAliasDeclaration") continue;
+      return true;
+    }
+    if (statement.type === "ExportNamedDeclaration" || statement.type === "ExportAllDeclaration") {
+      const specifiers = Array.isArray(statement.specifiers) ? statement.specifiers.filter(isNode) : [];
+      const exported = statement.type === "ExportAllDeclaration" ? [statement] : specifiers;
+      for (const entry of exported) {
+        // Per-specifier too: `export { a, type b as default }` is a value-kind statement carrying one
+        // type specifier, so the statement-level check above does not see it.
+        if (entry.exportKind === "type") continue;
+        if (nameOf(entry.exported) === "default") return true;
+      }
+    }
+  }
+  return false;
+}
+
 /** Collect every function declaration in a module, by name, so a call from a driver body can be followed. */
 function moduleFunctions(program: Node): Map<string, Node> {
   const found = new Map<string, Node>();
@@ -324,9 +403,9 @@ function walkScope(
 /**
  * Analyse a set of source files for Workflow driver bodies and the sources they evaluate.
  *
- * Everything is derived from the files: the Workflow classes, the step-runner interfaces, the delegates that
- * take one, and the class names the `WorkflowSpec` maps declare. Nothing about the shipped population is
- * written down here, which is the point — see the module doc.
+ * Everything is derived from the files: the Workflow classes, the modules that hold them, the step-runner
+ * interfaces, the delegates that take one, and the class names the `WorkflowSpec` maps declare. Nothing about
+ * the shipped population is written down here, which is the point — see the module doc.
  */
 export function analyseDrivers(sources: readonly DriverSource[], parseModule: ParseModule): DriverAnalysis {
   const programs: { source: DriverSource; program: Node }[] = [];
@@ -346,6 +425,7 @@ export function analyseDrivers(sources: readonly DriverSource[], parseModule: Pa
   }
 
   const entrypoints: string[] = [];
+  const hosts: WorkflowHostModule[] = [];
   const declaredClassNames = new Set<string>();
   const drivers: WorkflowDriver[] = [];
   const findings: DriverFinding[] = [];
@@ -353,6 +433,9 @@ export function analyseDrivers(sources: readonly DriverSource[], parseModule: Pa
   for (const { source, program } of programs) {
     const functions = moduleFunctions(program);
     const bodies: { driver: WorkflowDriver; scope: Node }[] = [];
+    // The classes this one file declares, collected as the walk finds them — the module-format rule asks
+    // about the file, and `entrypoints` is flat across the tree.
+    const hosted: string[] = [];
 
     const visit = (node: Node): void => {
       // A Workflow class: its `run` is a driver body, and the second parameter is the platform's step runner.
@@ -363,6 +446,7 @@ export function analyseDrivers(sources: readonly DriverSource[], parseModule: Pa
       ) {
         const className = nameOf(node.id) ?? "<anonymous>";
         entrypoints.push(`${source.path}#${className}`);
+        hosted.push(className);
         const members = isNode(node.body) && Array.isArray(node.body.body) ? node.body.body.filter(isNode) : [];
         for (const member of members) {
           if (member.type !== "MethodDefinition" || nameOf(member.key) !== "run") continue;
@@ -414,6 +498,12 @@ export function analyseDrivers(sources: readonly DriverSource[], parseModule: Pa
     };
     visit(program);
 
+    // A file that declares no Workflow class is not a host, whatever else it exports. The default-export
+    // question is only asked of files the answer means something for.
+    if (hosted.length > 0) {
+      hosts.push({ file: source.path, classes: hosted.sort(), defaultExport: hasDefaultExport(program) });
+    }
+
     if (bodies.length > 0) {
       const lineAt = lineIndex(source.text);
       for (const { driver, scope } of bodies) {
@@ -425,6 +515,7 @@ export function analyseDrivers(sources: readonly DriverSource[], parseModule: Pa
 
   return {
     entrypoints: entrypoints.sort(),
+    hosts: hosts.sort((a, b) => a.file.localeCompare(b.file)),
     drivers: drivers.sort((a, b) => `${a.file}#${a.name}`.localeCompare(`${b.file}#${b.name}`)),
     declaredClassNames: [...declaredClassNames].sort(),
     findings,

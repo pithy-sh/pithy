@@ -6,6 +6,7 @@ import { NonRetryableError } from "cloudflare:workflows";
 import type { D1Database } from "@cloudflare/workers-types";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
+import { workflowHostEntry } from "@pithy-sh/core/src/workflow/hostEntry";
 import type { VectorIndexConfig } from "../config/config";
 import { VectorWorkerConfig, type VectorWorkerIndex } from "../config/workerConfig";
 import { vectorDocuments } from "../data/documents";
@@ -16,7 +17,7 @@ import { compileFilter } from "../index/filter";
 import type { VectorStore } from "../index/index";
 import { type ReprocessReport, reprocessIndex } from "./reprocess";
 import { vectorWorkflowRetry } from "./retryPolicy";
-import { VectorReprocessParams } from "./specs";
+import { VECTOR_CAPABILITY, VectorReprocessParams } from "./specs";
 
 /**
  * The prebuilt vector worker. `pithy vector provision` deploys one per environment; the adopter authors no
@@ -30,6 +31,12 @@ import { VectorReprocessParams } from "./specs";
  * itself: an index's `metadata` is a live Zod schema, which cannot travel through a wrangler var. The
  * projection carries the introspected filterable descriptors instead, which is all this worker needs to
  * validate a `--filter`.
+ *
+ * **The default export is what makes this an ES module** (#426). It exports one Workflow class and has no
+ * cron, so until now it exported no default — and wrangler infers a worker's module format from exactly
+ * that, so the build read it as a service worker and refused `cloudflare:workers` outright. The host did not
+ * build, `pithy dev` carried on past it, and a reprocess dispatched at it went nowhere. The refusal it
+ * exports is the honest body for a host with no request surface; see `@pithy-sh/core/src/workflow/hostEntry`.
  */
 
 /** The vector worker's env: the corpus database, the AI binding, its config, and one Vectorize binding per index. */
@@ -114,3 +121,10 @@ export class VectorReprocessWorkflow extends WorkflowEntrypoint<VectorWorkerEnv,
     );
   }
 }
+
+/**
+ * The module's default export, and therefore its format. See `hostEntry` for why a Workflow host needs one
+ * at all, and why this one refuses rather than being empty: nothing reaches this worker over HTTP — search
+ * lives in the app worker, and a re-embed starts on the `VECTOR_REPROCESS` binding.
+ */
+export default workflowHostEntry(VECTOR_CAPABILITY);
