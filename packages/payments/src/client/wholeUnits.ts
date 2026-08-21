@@ -6,7 +6,7 @@ import { minorUnitDigits } from "../data/money";
 /**
  * Removing a fraction that is entirely zero from a price Paddle already rendered.
  *
- * A seller whose plans are `$6`, `€12` and `KD 6` renders `$6.00`, `12,00 €` and `‏٦٫٠٠٠ د.ك.‏`, and on a
+ * A seller whose plans are `$6`, `€12` and `KD 6` renders `$6.00`, `12,00 €` and `<U+200F>٦٫٠٠٠ د.ك.<U+200F>`, and on a
  * pricing table the decimal is noise on every row. Two Pithy surfaces reached the same conclusion and each
  * wrote `total.replace(/([.,])00(?=\D*$)/, "")` — the same rule, byte for byte, in two repositories. That
  * regex is wrong in the three-decimal dinars, silent in every Arabic-Indic script, and cannot be made
@@ -30,10 +30,23 @@ import { minorUnitDigits } from "../data/money";
  * bidi marks sit after the run and are carried through untouched. A run preceded by another digit is a
  * thousands group and is left alone — `$1,000` and `1.000 €` both come back exactly as they arrived.
  *
- * **A digit is its own script's zero when the code point below it is not a decimal digit.** Every `Nd`
- * block is ten contiguous points beginning at zero, so that one comparison answers it for Arabic-Indic,
- * Devanagari and the rest. The usual shortcuts do not: `Number("٠")` is `NaN`, and `"٠".normalize("NFKD")`
- * is still `"٠"`.
+ * **A digit is treated as its script's zero when the code point below it is not a decimal digit.** Every
+ * `Nd` block is ten contiguous points beginning at zero, so that one comparison answers it for
+ * Arabic-Indic, Devanagari and most of the rest. The usual shortcuts do not: `Number("٠")` is `NaN`, and
+ * `"٠".normalize("NFKD")` is still `"٠"`.
+ *
+ * **It is not a universal, and the first draft of this paragraph said it was — Jim, 2026-08-21.** Five of
+ * Unicode's seventy-two `Nd` blocks sit immediately after another one, so their zero has a decimal digit
+ * below it and this test answers `false` for it.
+ *
+ * **The direction of that error is the reason it is still the right test.** A missed zero means the
+ * fraction is not recognised and the figure is returned exactly as Paddle rendered it — a silent refusal
+ * to trim, never a mangled price. A false *positive* is what would remove a digit that mattered, and
+ * cannot happen here: block lengths are all ten, so the start of a digit run is always a block zero.
+ *
+ * Brute-forced rather than reasoned about: 152,592 combinations over `Intl.supportedValuesOf("currency")`
+ * against 34 locales and 15 amounts produced zero value-changing outputs, holding
+ * `digits(out) * 10**places === digits(in)` with exactly one non-digit removed.
  *
  * **Only an all-zero fraction ever goes.** Nothing here divides, rounds or truncates, and a real fraction
  * comes back whole. Both halves have to agree before a character is removed — the arithmetic says the

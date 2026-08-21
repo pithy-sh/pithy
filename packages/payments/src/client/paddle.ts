@@ -634,8 +634,8 @@ export interface PriceSummary {
 /** What a caller may ask {@link priceSummary} to do differently. */
 export interface PriceSummaryOptions {
   /**
-   * Drop the headline's fraction where it is entirely zero — `$6.00` becomes `$6`, `‏٦٫٠٠٠ د.ك.‏` becomes
-   * `‏٦ د.ك.‏`.
+   * Drop the headline's fraction where it is entirely zero — `$6.00` becomes `$6`, `<U+200F>٦٫٠٠٠ د.ك.<U+200F>` becomes
+   * `<U+200F>٦ د.ك.<U+200F>`.
    *
    * **Off unless a caller says so, and that is the decision rather than the default.** A seller pricing
    * at `$6.99` is unaffected either way, because only an all-zero fraction ever goes — but which figures

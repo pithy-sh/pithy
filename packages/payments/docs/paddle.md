@@ -289,7 +289,7 @@ It answers one `PaddlePlanQuote` per plan — `{ plan, priceId, headline, note, 
 
 ### Prices in whole units
 
-A seller whose plans are `$6`, `€12` and `KD 6` renders `$6.00`, `12,00 €` and `‏٦٫٠٠٠ د.ك.‏`, and the decimal is noise on every row of the table. Pass `wholeUnits: true` and each `headline` loses a fraction that is entirely zero:
+A seller whose plans are `$6`, `€12` and `KD 6` renders `$6.00`, `12,00 €` and `<U+200F>٦٫٠٠٠ د.ك.<U+200F>`, and the decimal is noise on every row of the table. Pass `wholeUnits: true` and each `headline` loses a fraction that is entirely zero:
 
 ```ts
 const quoted = await quotePlans(paddleSetup, plans, { wholeUnits: true });
