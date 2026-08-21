@@ -213,6 +213,20 @@
         "!$TURBO_ROOT$/packages/*/dist/**",
         "!$TURBO_ROOT$/packages/*/coverage/**",
         "!$TURBO_ROOT$/packages/*/.*/**/*",
+        // A dot-*file* sitting directly in a package, which the line above does not reach: it wants a
+        // directory with contents. `packages/cloudflare/.dev.vars` appears the moment anybody runs
+        // `pithy dev`, and it is git-ignored — Jim, 2026-08-21.
+        //
+        // Named, not globbed as `packages/*/.*`, and the difference was measured: that glob also drops
+        // `packages/cli/.gitignore`, which is tracked, is a real cross-package read in the register, and
+        // failed this package's own guard the moment it went missing from the key. The two dot-files
+        // directly in a package are `.dev.vars` (ignored) and `.gitignore` (tracked); a shape that
+        // cannot tell them apart is not a shortcut worth taking.
+        "!$TURBO_ROOT$/packages/*/.dev.vars",
+        // `tsc -b` leaves this beside a package's tsconfig, so it appears on any machine that has run a
+        // solution build and on no clean checkout. Left in the key, the gate passes in CI and fails
+        // locally — the worst shape a gate can have, because the failure looks like the developer's.
+        "!$TURBO_ROOT$/packages/*/*.tsbuildinfo",
         "!$TURBO_ROOT$/packages/cli/templates/**"
       ]
     },
@@ -226,6 +240,20 @@
         "!$TURBO_ROOT$/packages/*/dist/**",
         "!$TURBO_ROOT$/packages/*/coverage/**",
         "!$TURBO_ROOT$/packages/*/.*/**/*",
+        // A dot-*file* sitting directly in a package, which the line above does not reach: it wants a
+        // directory with contents. `packages/cloudflare/.dev.vars` appears the moment anybody runs
+        // `pithy dev`, and it is git-ignored — Jim, 2026-08-21.
+        //
+        // Named, not globbed as `packages/*/.*`, and the difference was measured: that glob also drops
+        // `packages/cli/.gitignore`, which is tracked, is a real cross-package read in the register, and
+        // failed this package's own guard the moment it went missing from the key. The two dot-files
+        // directly in a package are `.dev.vars` (ignored) and `.gitignore` (tracked); a shape that
+        // cannot tell them apart is not a shortcut worth taking.
+        "!$TURBO_ROOT$/packages/*/.dev.vars",
+        // `tsc -b` leaves this beside a package's tsconfig, so it appears on any machine that has run a
+        // solution build and on no clean checkout. Left in the key, the gate passes in CI and fails
+        // locally — the worst shape a gate can have, because the failure looks like the developer's.
+        "!$TURBO_ROOT$/packages/*/*.tsbuildinfo",
         "!$TURBO_ROOT$/packages/cli/templates/**"
       ]
     },
@@ -239,6 +267,20 @@
         "!$TURBO_ROOT$/packages/*/dist/**",
         "!$TURBO_ROOT$/packages/*/coverage/**",
         "!$TURBO_ROOT$/packages/*/.*/**/*",
+        // A dot-*file* sitting directly in a package, which the line above does not reach: it wants a
+        // directory with contents. `packages/cloudflare/.dev.vars` appears the moment anybody runs
+        // `pithy dev`, and it is git-ignored — Jim, 2026-08-21.
+        //
+        // Named, not globbed as `packages/*/.*`, and the difference was measured: that glob also drops
+        // `packages/cli/.gitignore`, which is tracked, is a real cross-package read in the register, and
+        // failed this package's own guard the moment it went missing from the key. The two dot-files
+        // directly in a package are `.dev.vars` (ignored) and `.gitignore` (tracked); a shape that
+        // cannot tell them apart is not a shortcut worth taking.
+        "!$TURBO_ROOT$/packages/*/.dev.vars",
+        // `tsc -b` leaves this beside a package's tsconfig, so it appears on any machine that has run a
+        // solution build and on no clean checkout. Left in the key, the gate passes in CI and fails
+        // locally — the worst shape a gate can have, because the failure looks like the developer's.
+        "!$TURBO_ROOT$/packages/*/*.tsbuildinfo",
         "!$TURBO_ROOT$/packages/cli/templates/**"
       ]
     },
