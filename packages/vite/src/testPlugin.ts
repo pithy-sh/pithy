@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { fileURLToPath } from "node:url";
-import { type Plugin, runnerImport } from "vite";
-import type { PithyPluginOptions } from "./plugin";
+import { runnerImport } from "vite";
+import type { PithyPlugin, PithyPluginOptions } from "./plugin";
 
 /**
  * `./plugin.ts`, as an absolute path.
@@ -57,7 +57,12 @@ const BUILD_PLUGIN = fileURLToPath(new URL("./plugin.ts", import.meta.url));
  *
  * A promise, because vite awaits a plugin. That is a documented `PluginOption`, and it is what lets the
  * real plugin be built by vite's loader instead of restated for node's.
+ *
+ * `Promise<PithyPlugin>` rather than `Promise<Plugin>` for the reason {@link PithyPlugin} gives (#414):
+ * a Vite type in this signature is *this package's* Vite type, and an adopter's `vitest.config.ts`
+ * cannot be typechecked against it unless their install happened to deduplicate onto the same copy.
+ * The test config is the same surface as the build config and takes the same rule.
  */
-export function pithyTest(options: PithyPluginOptions = {}): Promise<Plugin> {
+export function pithyTest(options: PithyPluginOptions = {}): Promise<PithyPlugin> {
   return runnerImport<typeof import("./plugin")>(BUILD_PLUGIN).then(({ module }) => module.pithy(options));
 }
