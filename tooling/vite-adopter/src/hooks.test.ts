@@ -35,8 +35,9 @@ import { afterAll, describe, expect, test } from "vitest";
  * build calls them, and `packages/vite`'s `plugin.test.ts` drives them against one Vite. Across the
  * range they are covered by name only — `PITHY_PLUGIN_HOOKS` against each major's `keyof Plugin`, in
  * `peerRange.ts`. That is the accepted gap. It is narrow: both read the arguments Vite has passed since
- * the Environment API landed in 6.0, and `^6.1.0` is the floor because `hotUpdate` itself arrived in
- * 6.1 and the plugin would be silently inert below it.
+ * the Environment API landed in 6.0. Why the floor is `^6.1.0` rather than `^6.0.0` is not stated here
+ * any more: the reason first written down — that `hotUpdate` arrived in 6.1 — is false, and
+ * `plugin.ts` records what replaced it. `6.0.0` is not pinned below, so nothing has compiled against it.
  *
  * One thing this does not reproduce and cannot: `loadWorkerConfig` reaches `runnerImport` from the Vite
  * `@pithy-sh/vite` resolves, which in this monorepo is the kit's 8.2.1 whichever `build` is running

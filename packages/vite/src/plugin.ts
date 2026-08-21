@@ -53,9 +53,18 @@ import { type LoadedWorkerConfig, loadWorkerConfig } from "./workerConfig";
  * a fact about the two Vites rather than about this plugin. What is checked across the range is the
  * hook *set* and the hook *behaviour*: a name Vite 6 never calls is a red build, and a build that does
  * not inline the projection at 6.1.6 is a red test. What is taken on trust across the range is that a
- * hook Vite 6 calls with an argument of its own shape reaches the same field. The peer range is
- * `^6.1.0` rather than `^6.0.0` for the narrowest version of that reason: `hotUpdate` arrived in 6.1,
- * and below it the plugin would be silently inert on config edits.
+ * hook Vite 6 calls with an argument of its own shape reaches the same field.
+ *
+ * **Why the floor is `^6.1.0` is not recorded here, because the reason first written down was wrong —
+ * Jim, 2026-08-21.** It said `hotUpdate` arrived in 6.1 and that below it this plugin would be silently
+ * inert. It did not: `npm pack vite@6.0.0` carries `hotUpdate?: ObjectHook<…>` in `index.d.ts`, and its
+ * `HotUpdatePluginContext` is byte-identical to 6.1.6's. The floor may still be right for a reason
+ * nobody has written down, and `6.0.0` is not pinned in `tooling/vite-adopter`, so nothing here has ever
+ * compiled against it.
+ *
+ * Two honest next steps, neither taken in this change: pin `6.0.0` in the fixture and find out, or drop
+ * the floor to `^6.0.0` and let the fixture say whether that holds. **An invented reason is worse than
+ * an absent one**, because the next person reads it instead of measuring.
  */
 export interface PithyPlugin {
   /** `"pithy"`. The plugin's identity in Vite's plugin list, and in any error raised from a hook. */
