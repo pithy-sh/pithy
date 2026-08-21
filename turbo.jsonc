@@ -60,6 +60,94 @@
     "@pithy-sh/cli#typecheck": {
       "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/.github/scripts/**/*.ts"]
     },
+    // The same seam, one package over, and it swallowed the gate built to close #414 — Jim, 2026-08-21.
+    //
+    // `tooling/vite-adopter` holds no product code. It exists to compile `@pithy-sh/vite`'s public
+    // return type against three copies of Vite the kit does not resolve, which is the only way to catch
+    // a signature that compiles inside the monorepo and nowhere else. **Its subject is another
+    // package**, and a task's default inputs are the files in its own — so the fixture went on
+    // replaying while the thing it guards moved underneath it.
+    //
+    // Reproduced with the branch's cache warm: `packages/vite/src` restored byte-for-byte to the state
+    // that produces the dashboard's `TS2321`, `bun run typecheck` printed
+    // `@pithy-sh/vite-adopter:typecheck: cache hit, replaying logs 9340e74d2b125457` and
+    // `24 successful, 24 total`, FULL TURBO. **Identical hash to the fixed state.** Forced, the same
+    // tree fails. Widening the peer range replayed `63eb09b1808fbe8e` the same way while
+    // `resolution.test.ts` refuses it outright when run — `2 failed | 1 passed`. CI restores this cache
+    // from main, so neither is local-only. A gate that cannot fail on the change it exists to catch is
+    // not a weak gate; it is a green tick over unverified work.
+    //
+    // The same two, after: `bun run typecheck` on the reverted tree with the cache warm printed
+    // `cache miss, executing 96a631368a20b574` and `Tasks: 23 successful, 24 total`, and the widened
+    // range printed `cache miss, executing 6a4e1d3c8e991be6` and `2 failed | 1 passed`. Neither run
+    // was forced.
+    //
+    // **The files named are the ones the program actually reads, and that is checked rather than
+    // remembered.** `tsc --listFiles` on this fixture reports 54 files: its own four, four under
+    // `packages/vite/src`, and 46 under `packages/core/src` that the plugin reaches through
+    // `resolveClientProjection`. `packages/vite/package.json` is the peer range `resolution.test.ts`
+    // reads, and it is a manifest field rather than source — the edit that ships a fourth major
+    // unproven touches nothing else. `bun.lock` is which copies are on disk: a `bun update` that moved
+    // the kit's own Vite would change what all three pins are being compared against without a byte of
+    // either manifest moving. `turboInputs.test.ts` in the fixture re-derives every one of those from
+    // the compile and from the cross-package-read register, and holds it against what
+    // `turbo run --dry=json` says is hashed. A hand-written `inputs` list is the same defect one level
+    // up; that test is what keeps this one honest.
+    //
+    // **This file is in the key too, and it has to be.** A task's hash covers its own definition and no
+    // other — measured on 2.10.10: adding a glob to `#typecheck` above left `#test`'s hash at
+    // `429baa82f581a479`, unmoved. The guard runs in the test task and asserts about all three
+    // declarations, so without `turbo.jsonc` named here, narrowing one of them would replay the very
+    // test that exists to refuse it. Every edit to this file re-runs three sub-second tasks. That is
+    // the price of a guard that cannot be switched off by editing the thing it guards.
+    //
+    // `dependsOn: ["@pithy-sh/vite#typecheck"]` would also key this on the kit's source, by way of that
+    // task's hash. It is not used: it orders the run for no reason — the fixture needs the kit's files,
+    // not its verdict, and that verdict was green throughout the defect — and it reaches only one hop,
+    // so `packages/core` would still be missing. Naming the subject says which files and why.
+    //
+    // This is the third instance of this class found this session. `#432` holds the pre-existing half —
+    // the repo-wide gates under `packages/cli/src/ci/` that are scoped to their package — and asks for
+    // a shape where the miscoping is impossible rather than corrected. This is the corrected kind, with
+    // a test standing over it. When #432 lands a general answer, these three entries should collapse
+    // into it.
+    //
+    // **The three lists are identical, and that is the point rather than a copy-paste.** `test` and
+    // `test:node` are one command here — `vitest run`; the package has no workers project — and the
+    // guard runs inside it. `turboInputs.test.ts` derives its answer from the compile's own module
+    // graph, so a hook that reaches a package nobody listed changes what the guard should say; if the
+    // test task were keyed more narrowly than the compile it checks, that edit would replay a green
+    // guard over a stale list. One list, checked to be one list.
+    "@pithy-sh/vite-adopter#typecheck": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/turbo.jsonc",
+        "$TURBO_ROOT$/bun.lock",
+        "$TURBO_ROOT$/packages/vite/src/**",
+        "$TURBO_ROOT$/packages/vite/package.json",
+        "$TURBO_ROOT$/packages/core/src/**"
+      ]
+    },
+    "@pithy-sh/vite-adopter#test": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/turbo.jsonc",
+        "$TURBO_ROOT$/bun.lock",
+        "$TURBO_ROOT$/packages/vite/src/**",
+        "$TURBO_ROOT$/packages/vite/package.json",
+        "$TURBO_ROOT$/packages/core/src/**"
+      ]
+    },
+    "@pithy-sh/vite-adopter#test:node": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/turbo.jsonc",
+        "$TURBO_ROOT$/bun.lock",
+        "$TURBO_ROOT$/packages/vite/src/**",
+        "$TURBO_ROOT$/packages/vite/package.json",
+        "$TURBO_ROOT$/packages/core/src/**"
+      ]
+    },
     // `test` runs both vitest projects (node + workers) in one process — the convenient local
     // default, and the one to run before pushing. `test:node` and `test:workers` run one project
     // each, which is what lets CI schedule them separately: the Node-runtime job needs the node

@@ -38,9 +38,24 @@ import { type LoadedWorkerConfig, loadWorkerConfig } from "./workerConfig";
  * `tooling/vite-adopter`, which compiles this file too.
  *
  * **What is not.** The adopter's checker no longer re-derives any of that against their copy. It sees
- * two properties and takes the hooks on trust. Three things pay for that trust and none of them is a
- * type: `tooling/vite-adopter` compiles the return against every major in the peer range,
- * `plugin.test.ts` drives each hook by hand, and it runs a real `vite build` and reads the bundle.
+ * two properties and takes the hooks on trust. Four things pay for that trust and none of them is a
+ * type an adopter has to compare: `tooling/vite-adopter` compiles the return against every major in
+ * the peer range and runs a real `vite build` through the plugin at each of them, {@link
+ * PITHY_PLUGIN_HOOKS} holds every hook name to something all three call, `plugin.test.ts` drives each
+ * hook by hand, and it runs a real `vite build` and reads the bundle.
+ *
+ * **One gap, named rather than papered over — Jim, 2026-08-21.** The hook *signatures* are checked
+ * against one Vite, and there is no arrangement in which they could be checked against three. Vite 8
+ * is rolldown-based and Vite 6 and 7 are rollup-based, so `hotUpdate`'s `this` is
+ * `MinimalPluginContext & { environment: DevEnvironment }` out of two different bundlers — `meta`
+ * carries `rolldownVersion` in one and not the other. A single object cannot be written `satisfies
+ * Plugin` against both; restoring `pithy(): Plugin` reports exactly that at 6.1.6 and 7.0.0, and it is
+ * a fact about the two Vites rather than about this plugin. What is checked across the range is the
+ * hook *set* and the hook *behaviour*: a name Vite 6 never calls is a red build, and a build that does
+ * not inline the projection at 6.1.6 is a red test. What is taken on trust across the range is that a
+ * hook Vite 6 calls with an argument of its own shape reaches the same field. The peer range is
+ * `^6.1.0` rather than `^6.0.0` for the narrowest version of that reason: `hotUpdate` arrived in 6.1,
+ * and below it the plugin would be silently inert on config edits.
  */
 export interface PithyPlugin {
   /** `"pithy"`. The plugin's identity in Vite's plugin list, and in any error raised from a hook. */
@@ -51,6 +66,25 @@ export interface PithyPlugin {
    */
   enforce: "pre";
 }
+
+/**
+ * Every hook {@link pithy} defines, by name.
+ *
+ * **The one thing about the hooks an adopter's checker can be given for free.** {@link PithyPlugin}
+ * deliberately names no Vite type, so nothing in the return says which hooks exist — and a hook Vite
+ * never calls is dead code that looks like a feature. A name is not a Vite type: `tooling/vite-adopter`
+ * asserts each of these is a `keyof Plugin` in 6, 7 and 8, which costs an adopter nothing and catches
+ * the regression that matters here. Adding a `buildApp` hook, which Vite 7 introduced and Vite 6 has no
+ * name for, reddens the fixture rather than shipping under a range that claims 6.
+ *
+ * `plugin.test.ts` holds this list to the object itself, both directions, at runtime — a hook added
+ * without listing it is a failure there, and a name listed that no longer exists is one too. A list
+ * that can drift from what it lists is a worse gate than none.
+ */
+export const PITHY_PLUGIN_HOOKS = ["configResolved", "configureServer", "resolveId", "load", "hotUpdate"] as const;
+
+/** One of the names {@link PITHY_PLUGIN_HOOKS} lists. */
+export type PithyPluginHook = (typeof PITHY_PLUGIN_HOOKS)[number];
 
 /** Options for {@link pithy}. Every one has a working default; `pithy()` is the usual call. */
 export interface PithyPluginOptions {

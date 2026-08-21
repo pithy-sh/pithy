@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { build, type EnvironmentModuleNode, type ResolvedConfig } from "vite";
 import { afterAll, describe, expect, test } from "vitest";
-import { type PithyPlugin, pithy } from "./plugin";
+import { PITHY_PLUGIN_HOOKS, type PithyPlugin, pithy } from "./plugin";
 
 const dirs: string[] = [];
 
@@ -109,6 +109,21 @@ export default {
   },
 };
 `;
+
+describe("the plugin's shape", () => {
+  test("PITHY_PLUGIN_HOOKS is the object's hooks, both directions", () => {
+    // The list exists so `tooling/vite-adopter` can assert every hook name is one Vite 6, 7 and 8 all
+    // call. A list that has drifted from the object proves nothing about the object, so it is derived
+    // here from the thing itself: everything on the returned plugin that is not a declared property.
+    const plugin = pithy() as unknown as Record<string, unknown>;
+    const hooks = Object.keys(plugin).filter((key) => key !== "name" && key !== "enforce");
+    expect(hooks.sort()).toEqual([...PITHY_PLUGIN_HOOKS].sort());
+    // And the two declared properties really are declared, so the filter above cannot quietly become
+    // the whole object.
+    expect(pithy().name).toBe("pithy");
+    expect(pithy().enforce).toBe("pre");
+  });
+});
 
 describe("pithy() virtual modules", () => {
   test("a composed capability's projection reaches the module, as default and named exports", async () => {

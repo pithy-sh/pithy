@@ -12,4 +12,6 @@ The hooks are still checked. The object is written `satisfies Plugin` against th
 
 `tooling/vite-adopter` is what pays for the trust, and it could not live in this package: proving the rule needs two resolutions of Vite present at once, and typechecking the kit against the kit is exactly what always passed. It pins one exact copy per major in the peer range, none of them the copy the kit installs, and compiles both entry points against each. Restoring the old signature reddens it — including, at Vite 8, the same `TS2321` the dashboard reported.
 
+It also runs a real `vite build` through the plugin at 6.1.6, 7.0.0 and 8.0.0, and reads the bundle: the projection inlined, the environment threaded, and an unprojected config value absent. Compiling against three copies proves the return type; only building proves the hooks. What crosses the range in types is the hook *set* — `PITHY_PLUGIN_HOOKS`, a new export, is held to each major's `keyof Plugin`, so a hook Vite 6 has no name for cannot ship under a range that claims 6. Hook *signatures* are checked against one Vite and cannot be checked against three: Vite 8 is rolldown-based and 6 and 7 are rollup-based, so no single object can be written `satisfies Plugin` against both.
+
 No behaviour changed. A `PithyPlugin` is the same object Vite already received.
