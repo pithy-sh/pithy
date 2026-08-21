@@ -90,6 +90,28 @@ describe("the rule, proved against fixtures before it is trusted against the tre
     expect(hosts[0]?.defaultExport).toBe(true);
   });
 
+  test("a type exported as default is not a default export", () => {
+    /*
+      The plant that walked past the first version of this rule — Jim, 2026-08-21.
+
+      `verbatimModuleSyntax` erases a type-only export, so neither of these puts a default binding on the
+      emitted module and wrangler infers Service Worker format exactly as before. An adversarial pass put
+      `export type { … as default }` on a copy of the pre-fix support host: this gate said clean and the
+      real build still failed with `Unexpected external import of "cloudflare:workers"`.
+
+      The question the build asks is whether the *emitted* module has a default binding, so `exportKind`
+      is the fact, not the presence of the word.
+    */
+    for (const spelling of [
+      "export type { Env as default };",
+      "export default interface HostEntry { fetch(): Promise<Response> }",
+      "type Env2 = { a: 1 };\nexport { type Env2 as default };",
+    ]) {
+      const { hosts } = analyse(`${CLASSES_ONLY}\n${spelling}`);
+      expect({ spelling, defaultExport: hosts[0]?.defaultExport }).toEqual({ spelling, defaultExport: false });
+    }
+  });
+
   test("the words in a comment are not an export", () => {
     // Structural, not textual. This file itself quotes `export default { ... }` in its own prose.
     const { hosts } = analyse(`${CLASSES_ONLY}\n// try adding \`export default { ... }\` in your entry-point`);

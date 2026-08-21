@@ -255,11 +255,34 @@ function parameterTypeName(param: Node): string | undefined {
 function hasDefaultExport(program: Node): boolean {
   const body = Array.isArray(program.body) ? program.body.filter(isNode) : [];
   for (const statement of body) {
-    if (statement.type === "ExportDefaultDeclaration") return true;
+    // A type is not a default export, whatever it is spelled like — Jim, 2026-08-21.
+    //
+    // `export type { HostEntry as default }` and `export default interface HostEntry {}` both put the
+    // word `default` in the syntax tree and neither survives to runtime: `verbatimModuleSyntax` erases
+    // them, so the emitted module has no default binding and wrangler infers Service Worker format
+    // exactly as before. An adversarial pass planted both against a copy of the pre-fix support host
+    // and this function answered `true` while the real build still failed with `Unexpected external
+    // import of "cloudflare:workers"`.
+    //
+    // `exportKind` is `"type"` on those and `"value"` on everything real, which is the fact this rule
+    // is actually about: the build asks whether the *emitted* module has a default binding.
+    if (statement.exportKind === "type") continue;
+    if (statement.type === "ExportDefaultDeclaration") {
+      // And the declaration itself, because `export default interface X {}` is a value-kind statement
+      // whose declaration is a type. There is nothing to emit for either.
+      const declared = isNode(statement.declaration) ? statement.declaration.type : "";
+      if (declared === "TSInterfaceDeclaration" || declared === "TSTypeAliasDeclaration") continue;
+      return true;
+    }
     if (statement.type === "ExportNamedDeclaration" || statement.type === "ExportAllDeclaration") {
       const specifiers = Array.isArray(statement.specifiers) ? statement.specifiers.filter(isNode) : [];
       const exported = statement.type === "ExportAllDeclaration" ? [statement] : specifiers;
-      for (const entry of exported) if (nameOf(entry.exported) === "default") return true;
+      for (const entry of exported) {
+        // Per-specifier too: `export { a, type b as default }` is a value-kind statement carrying one
+        // type specifier, so the statement-level check above does not see it.
+        if (entry.exportKind === "type") continue;
+        if (nameOf(entry.exported) === "default") return true;
+      }
     }
   }
   return false;
