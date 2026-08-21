@@ -14,6 +14,12 @@
  * So this holds the short list of currencies whose exponent is not two. It is a fixed list — ISO 4217 does
  * not churn — and an unknown code falls back to two rather than throwing, because a webhook must not fail
  * over a reporting detail.
+ *
+ * **{@link minorUnitDigits} is read from the browser half too**, by `../client/wholeUnits`, which is why
+ * this module imports nothing and must keep importing nothing: it is on the browser allowlist in
+ * `../client/sameOrigin.test.ts`, so anything reached from here lands in an adopter's bundle. The
+ * exponent is the same fact on both sides — how many digits the fraction occupies — and a second table
+ * for the client would be the drift `#427` exists to remove.
  */
 
 /** Currencies with no subunit — the amount is already in minor units whatever the rail's scale. */

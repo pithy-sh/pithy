@@ -46,6 +46,14 @@ export interface PaddlePricesTagConfig {
   readonly plans: PaddlePlanPrices;
   /** Whether to write the totals into the page, or only to hand them to whoever asked. */
   readonly paint: boolean;
+  /**
+   * Whether the page asked for a zero fraction to be dropped from each figure — `$6.00` as `$6`.
+   *
+   * False unless the tag said `on`, and false for any other value. A seller who prices in whole numbers
+   * is the one who knows it, and a mistyped attribute leaves every figure exactly as Paddle rendered it,
+   * which is the safe half of the two. See `./wholeUnits`.
+   */
+  readonly wholeUnits: boolean;
   /** Who to quote for. Empty unless the tag named a customer, which is a visitor Paddle knows. */
   readonly query: PaddleQuoteQuery;
   /** Where a quote may rest, or null — which is every tag that did not ask for a cache, and every tag
@@ -191,6 +199,9 @@ export function readPaddlePricesTag(
     setup: { clientToken, environment },
     plans,
     paint: tag.getAttribute("data-paddle-paint") !== "off",
+    // The opposite polarity to `paint`, and deliberately: painting is what the artifact is for, so it is
+    // on until a page opts out, while a pricing decision is off until a page opts in.
+    wholeUnits: tag.getAttribute("data-paddle-whole-units") === "on",
     query,
     cache,
   };
@@ -306,6 +317,9 @@ export async function mountPrices(
     ...given,
     query: { ...config.query, ...given.query },
     cache: given.cache ?? config.cache ?? undefined,
+    // One boolean, so the more specific answer wins outright — a caller passing `false` over a tag that
+    // said `on` is saying so, and `??` is what keeps that from reading as "nobody asked".
+    wholeUnits: given.wholeUnits ?? config.wholeUnits,
   });
   if (!quoted.ok || !config.paint) return quoted;
   // **The quote starts immediately and the paint waits.** A third-party tag's usual home is `<head>`,

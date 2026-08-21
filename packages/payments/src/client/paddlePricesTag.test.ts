@@ -51,6 +51,7 @@ describe("readPaddlePricesTag", () => {
       setup: { environment: "sandbox", clientToken: "test_682bec647f93d37fd95a1b700db" },
       plans: { solo: "pri_01kzvyz9e21z9vbhd7xqq3csyh", team: "pri_01kzvyz9khsdy36z10wb8bgmq4" },
       paint: true,
+      wholeUnits: false,
       query: {},
       cache: null,
     });
@@ -87,6 +88,19 @@ describe("readPaddlePricesTag", () => {
 
   test('`data-paddle-paint="off"` leaves the page to paint itself', () => {
     expect(readPaddlePricesTag(tag({ ...CONFIGURED, "data-paddle-paint": "off" }))?.paint).toBe(false);
+  });
+
+  test("shows Paddle's own figure unless the tag asks for whole units", () => {
+    // Off is the default and off is what anything but `on` means. A page that mistyped the value gets
+    // the seller's prices exactly as Paddle rendered them, which is the safe half of the two.
+    expect(readPaddlePricesTag(tag(CONFIGURED))?.wholeUnits).toBe(false);
+    for (const value of ["", "off", "true", "yes", "ON"]) {
+      expect(readPaddlePricesTag(tag({ ...CONFIGURED, "data-paddle-whole-units": value }))?.wholeUnits).toBe(false);
+    }
+  });
+
+  test('`data-paddle-whole-units="on"` is how a page with whole-number prices asks', () => {
+    expect(readPaddlePricesTag(tag({ ...CONFIGURED, "data-paddle-whole-units": "on" }))?.wholeUnits).toBe(true);
   });
 
   test("caches nothing, and says nothing, when the tag asks for no cache", () => {
@@ -413,6 +427,50 @@ describe("mountPrices", () => {
 
     expect(result.ok && result.value.map((quote) => quote.headline)).toEqual(["$5.00"]);
     expect(painted()).toEqual({ solo: "$5.00" });
+  });
+
+  test("paints Paddle's own figure, decimals and all, when the tag did not ask otherwise", async () => {
+    // The default, at the surface a static site actually loads. `#427` is only worth having if the kit
+    // never restyles a seller's prices for them.
+    pricingPage("solo");
+    await mountPrices(document, tag(SOLO_TAG), {
+      initialize: stubInitializer(stubPaddle(US_NEW_YORK)),
+      registry: page(),
+    });
+
+    expect(painted()).toEqual({ solo: "$5.00" });
+  });
+
+  test("paints whole units when the tag asked for them", async () => {
+    pricingPage("solo");
+    const result = await mountPrices(document, tag({ ...SOLO_TAG, "data-paddle-whole-units": "on" }), {
+      initialize: stubInitializer(stubPaddle(US_NEW_YORK)),
+      registry: page(),
+    });
+
+    expect(result.ok && result.value.map((quote) => quote.headline)).toEqual(["$5"]);
+    expect(painted()).toEqual({ solo: "$5" });
+    // The sentence beside it is untouched, so the page still says where the rest of the money goes.
+    expect(notes()).toEqual({ solo: "Plus $0.44 tax." });
+  });
+
+  test("a caller who says so overrules the tag, in both directions", async () => {
+    // The same rule the query and the cache follow: an explicit option is a caller who knows better than
+    // the markup. A screen mounting this itself is the case, and a suite is the other.
+    pricingPage("solo");
+    const asked = await mountPrices(document, tag(SOLO_TAG), {
+      wholeUnits: true,
+      initialize: stubInitializer(stubPaddle(US_NEW_YORK)),
+      registry: page(),
+    });
+    expect(asked.ok && asked.value.map((quote) => quote.headline)).toEqual(["$5"]);
+
+    const declined = await mountPrices(document, tag({ ...SOLO_TAG, "data-paddle-whole-units": "on" }), {
+      wholeUnits: false,
+      initialize: stubInitializer(stubPaddle(US_NEW_YORK)),
+      registry: page(),
+    });
+    expect(declined.ok && declined.value.map((quote) => quote.headline)).toEqual(["$5.00"]);
   });
 
   test("hands back the quotes without painting when the page said it paints itself", async () => {

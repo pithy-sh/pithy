@@ -11,6 +11,7 @@ import {
   type PaymentsResult,
 } from "./api";
 import { cachedAnswer, type PaddleQuoteCache, readQuoteCache, rememberAnswer } from "./paddleCache";
+import { withoutZeroFraction } from "./wholeUnits";
 
 /**
  * Paddle.js: loading it once, asking it what this visitor pays, and reading the answer safely.
@@ -25,6 +26,16 @@ import { cachedAnswer, type PaddleQuoteCache, readQuoteCache, rememberAnswer } f
  * currencies (¥725 is `725`, not `72500`). A kit that took the raw minor units and reached for
  * `Intl.NumberFormat` would have to carry a table of which currencies have two decimals, and would get
  * one wrong. The raw amounts are exposed too, but they are for **comparing**, never for showing.
+ *
+ * **Amended: removing a zero fraction from Paddle's string is not composing one (Jim, 2026-08-21).** The
+ * rule above was read as forbidding any touch of a formatted total, and two adopter surfaces each wrote
+ * their own `total.replace(/([.,])00(?=\D*$)/, "")` rather than break it — the same wrong regex, twice,
+ * in two repositories (`#427`). Nothing is assembled by dropping an all-zero fraction: the symbol, the
+ * separators, the grouping and the digits are still the ones Paddle chose, and one run of characters is
+ * gone. What the rule actually forbids is *deciding* what a price looks like from raw minor units, and
+ * that decision is still Paddle's. So {@link PriceSummaryOptions.wholeUnits} exists, is off unless a
+ * caller asks, and removes only a fraction the arithmetic in `./wholeUnits` has already proved is zero —
+ * which is the part neither adopter could do, because `totals` never leaves this package.
  *
  * **What "localized" actually means, measured rather than assumed.** With no `unit_price_overrides` on
  * the price, every country is billed in the catalogue's currency — a preview from a UK address on a USD
@@ -620,6 +631,24 @@ export interface PriceSummary {
   estimated: boolean;
 }
 
+/** What a caller may ask {@link priceSummary} to do differently. */
+export interface PriceSummaryOptions {
+  /**
+   * Drop the headline's fraction where it is entirely zero — `$6.00` becomes `$6`, `‏٦٫٠٠٠ د.ك.‏` becomes
+   * `‏٦ د.ك.‏`.
+   *
+   * **Off unless a caller says so, and that is the decision rather than the default.** A seller pricing
+   * at `$6.99` is unaffected either way, because only an all-zero fraction ever goes — but which figures
+   * a page advertises is a pricing decision, and the kit does not get to make it. An option is a caller
+   * saying *I do*.
+   *
+   * **Only the headline.** A tax sentence names an amount nobody chose: it is a rate applied to a base,
+   * so one plan's tax landing on a round number while the next plan's does not would put `$0.44` and
+   * `$1` in the same column. `./wholeUnits` is where the removal is argued and tested.
+   */
+  readonly wholeUnits?: boolean;
+}
+
 /**
  * The one number to show, and the one sentence that makes it true.
  *
@@ -636,21 +665,32 @@ export interface PriceSummary {
  * Per unit, always. A pricing page quotes "$5.00 a month", not "$15.00 for the three seats you have not
  * chosen yet"; a cart that wants the line total reads `formattedTotals` itself.
  */
-export function priceSummary(preview: PricePreview, line: PriceLine): PriceSummary {
+export function priceSummary(preview: PricePreview, line: PriceLine, options?: PriceSummaryOptions): PriceSummary {
   const estimated = preview.postalCode === null;
   const totals = line.formattedUnitTotals;
+  // The rendered figure and the minor-unit amount behind it, taken from the same field name so the two
+  // cannot drift apart. Which field a convention chose is decided once, below, for both at once.
+  const headline = (field: "subtotal" | "total"): string =>
+    options?.wholeUnits === true
+      ? withoutZeroFraction({
+          formatted: totals[field],
+          minorAmount: line.unitTotals[field],
+          currency: preview.currencyCode,
+        })
+      : totals[field];
+
   if (line.taxTreatment === "added") {
-    return { headline: totals.subtotal, note: `Plus ${totals.tax} tax.`, estimated };
+    return { headline: headline("subtotal"), note: `Plus ${totals.tax} tax.`, estimated };
   }
   if (line.taxTreatment === "included") {
-    return { headline: totals.total, note: `Includes ${totals.tax} tax.`, estimated };
+    return { headline: headline("total"), note: `Includes ${totals.tax} tax.`, estimated };
   }
   if (line.taxTreatment === "none") {
     // No tax was resolved. Whether that is the truth or the missing postal code depends on `estimated`,
     // and saying "no tax" when we did not ask precisely enough would be the lie.
-    return { headline: totals.total, note: estimated ? "Tax is settled at checkout." : null, estimated };
+    return { headline: headline("total"), note: estimated ? "Tax is settled at checkout." : null, estimated };
   }
-  return { headline: totals.total, note: `Includes ${totals.tax} tax.`, estimated };
+  return { headline: headline("total"), note: `Includes ${totals.tax} tax.`, estimated };
 }
 
 /**
