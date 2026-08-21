@@ -21,6 +21,7 @@ import {
   type PaddleRegistry,
   type PaddleSetup,
   type PricePreview,
+  type PriceSummaryOptions,
   previewPrices,
   priceQueryKey,
   priceSummary,
@@ -380,13 +381,16 @@ describe("readPricePreview refuses what it cannot read", () => {
 
 describe("priceSummary", () => {
   /** The summary for a fixture's only line. */
-  function summarize(fixture: unknown) {
+  function summarize(fixture: unknown, options?: PriceSummaryOptions) {
     const preview = readPricePreview(fixture);
     if (preview === null) throw new Error("unreachable");
     const only = preview.lines[0];
     if (!only) throw new Error("unreachable");
-    return priceSummary(preview, only);
+    return priceSummary(preview, only, options);
   }
+
+  /** Every recording, so a claim about the default is a claim about all of them. */
+  const EVERY_FIXTURE = [US_NEW_YORK, GB, DE, JP_YEN, US_COUNTRY_ONLY];
 
   test("New York advertises the price before tax, and says the tax is coming", () => {
     // The US convention. Advertising $5.44 would put a New Yorker's local sales tax in the headline and
@@ -436,9 +440,60 @@ describe("priceSummary", () => {
   test("every headline is a string Paddle rendered — none is assembled here", () => {
     // The acceptance criterion, as a test rather than as a comment: a headline must appear verbatim in
     // the recorded answer. A formatter that divided by a hundred, or inserted a symbol, fails this.
-    for (const fixture of [US_NEW_YORK, GB, DE, JP_YEN, US_COUNTRY_ONLY]) {
+    for (const fixture of EVERY_FIXTURE) {
       expect(JSON.stringify(fixture)).toContain(`"${summarize(fixture).headline}"`);
     }
+  });
+
+  test("the whole-units trim is off unless a caller asks, and off is Paddle's own string", () => {
+    // The gate the option exists under. Whether to advertise `$5` or `$5.00` is a pricing decision, so
+    // the kit may not make it for anybody — and a default that quietly restyled a seller's prices would
+    // be caught here, on every recording at once, in all three ways of not asking.
+    for (const fixture of EVERY_FIXTURE) {
+      expect(summarize(fixture)).toEqual(summarize(fixture, {}));
+      expect(summarize(fixture)).toEqual(summarize(fixture, { wholeUnits: false }));
+      expect(JSON.stringify(fixture)).toContain(`"${summarize(fixture).headline}"`);
+    }
+  });
+
+  test("asked for whole units, New York advertises $5 and still says the tax is coming", () => {
+    expect(summarize(US_NEW_YORK, { wholeUnits: true })).toEqual({
+      headline: "$5",
+      note: "Plus $0.44 tax.",
+      estimated: false,
+    });
+  });
+
+  test("the sentence keeps its own decimals, because a tax figure is arithmetic and not a price", () => {
+    // A seller chose `$5.00`, so every plan's headline loses the same fraction. Nobody chose `$0.44`;
+    // it is a rate applied to a base, and one plan's tax landing on a round number while the next does
+    // not would put `$0.44` and `$1` side by side in the same column.
+    expect(summarize(GB, { wholeUnits: true })).toEqual({
+      headline: "$5",
+      note: "Includes $0.83 tax.",
+      estimated: false,
+    });
+    expect(summarize(DE, { wholeUnits: true }).note).toBe("Includes $0.80 tax.");
+  });
+
+  test("the trim follows the headline across the two tax conventions", () => {
+    // New York's headline is the subtotal and London's is the total. The figure that loses its fraction
+    // is whichever of them the convention chose, never a third one.
+    expect(summarize(US_NEW_YORK, { wholeUnits: true }).headline).toBe("$5");
+    expect(summarize(GB, { wholeUnits: true }).headline).toBe("$5");
+    expect(summarize(US_COUNTRY_ONLY, { wholeUnits: true })).toEqual({
+      headline: "$5",
+      note: "Tax is settled at checkout.",
+      estimated: true,
+    });
+  });
+
+  test("a zero-decimal currency is unmoved by asking, because it has no fraction to lose", () => {
+    expect(summarize(JP_YEN, { wholeUnits: true })).toEqual({
+      headline: "¥798",
+      note: "Includes ¥73 tax.",
+      estimated: false,
+    });
   });
 });
 

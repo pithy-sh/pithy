@@ -159,6 +159,18 @@ describe("paddle-prices.iife.js", () => {
     expect(noted(window)).toEqual({ solo: "Plus $0.44 tax.", team: "Plus $0.44 tax." });
   });
 
+  test("writes whole units when the tag asks, and Paddle's own decimals when it does not", async () => {
+    // The pair, against the artifact rather than the modules. A static site's only way to ask is the
+    // attribute, so an option that never reached the bundle would be an option nobody can use — and a
+    // trim that reached it by default would restyle a seller's prices the first time they deployed.
+    const asked = await load({ ...CONFIGURED, "data-paddle-whole-units": "on" }, await recorded());
+    expect(painted(asked)).toEqual({ solo: "$5", team: "$5" });
+    expect(noted(asked)).toEqual({ solo: "Plus $0.44 tax.", team: "Plus $0.44 tax." });
+
+    const untouched = await load(CONFIGURED, await recorded());
+    expect(painted(untouched)).toEqual({ solo: "$5.00", team: "$5.00" });
+  });
+
   test("leaves the page's own sentence standing when the token is still a placeholder", async () => {
     const window = await load(
       { ...CONFIGURED, "data-paddle-token": "REPLACE_WITH_LIVE_CLIENT_TOKEN" },

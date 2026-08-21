@@ -287,6 +287,22 @@ It answers one `PaddlePlanQuote` per plan — `{ plan, priceId, headline, note, 
 
 **`currency` is the currency Paddle answered in.** `headline` is already formatted, so a screen rendering it needs nothing else — a caller formatting the figure itself needs this, and it is the only place it exists.
 
+### Prices in whole units
+
+A seller whose plans are `$6`, `€12` and `KD 6` renders `$6.00`, `12,00 €` and `<U+200F>٦٫٠٠٠ د.ك.<U+200F>`, and the decimal is noise on every row of the table. Pass `wholeUnits: true` and each `headline` loses a fraction that is entirely zero:
+
+```ts
+const quoted = await quotePlans(paddleSetup, plans, { wholeUnits: true });
+```
+
+**Off unless you ask, and only ever an all-zero fraction.** `$6.99` is untouched, `6,50 €` is untouched, nothing rounds and nothing truncates. Which figures you advertise is a pricing decision and the kit does not make it for you — but if you have made it, this is the one place it is decided correctly.
+
+**Correctly, because the kit holds a number neither surface does.** Paddle sends every figure twice: in minor units for comparing and rendered for showing, so $6.00 is `600` and whether the fraction is zero is `600 % 100 === 0`. No parsing, no locale, no guess — and *is the trailing `000` in `$1,000` a fraction or a thousands group?* is never asked, because the answer is known before the string is touched. Both Pithy surfaces that tried this from the formatted string alone wrote `total.replace(/([.,])00(?=\D*$)/, "")`, which misses the three-decimal dinars (`KD 6.000` has three digits) and never fires at all on Arabic-Indic ones (`٠٠` is not `00`). Neither could do better; only `totals` can, and it never leaves the package.
+
+**The removal never asks which character the separator is.** That is a property of the locale, not of the currency — `de-DE` renders EUR as `6,00 €` and `en-IE` renders the same currency as `€6.00` — and it cannot come from the browser either, because `Intl.NumberFormat(undefined, …)` answers for the *visitor's* locale while the string was rendered by *Paddle*. So the fraction is found positionally, and everything after it — symbol, spacing, bidi marks — is carried through untouched.
+
+The tax sentence keeps its own decimals. A tax figure is a rate applied to a base rather than a price anybody set, so trimming it would put `$0.44` and `$1` in the same column.
+
 ### Caching a quote
 
 Off unless you switch it on, and switching it on means saying three things:
@@ -338,6 +354,7 @@ A price id belongs to one Paddle account, so it is environment-specific and has 
 | `data-paddle-cache` | The namespace to cache under. |
 | `data-paddle-cache-store` | `local` or `session` — the two a browser has. A tag cannot hand over an object, so it names one. |
 | `data-paddle-cache-ttl` | How long a quote may stand, **in seconds**. HTML counts a cache in seconds everywhere else. |
+| `data-paddle-whole-units` | `on` to drop a fraction that is entirely zero — `$6.00` as `$6`. Off by default, and off for any other value. §Prices in whole units above. |
 
 The three cache attributes go together or not at all; a tag naming some of them warns to the console and quotes from the network. A `data-paddle-customer` that is not a `ctm_…` is dropped rather than refused — the opposite call to the one a placeholder price id gets, and deliberately: a wrong price is unrecoverable, while a missing customer costs the visitor a quote resolved from their IP and labelled as the estimate it is, which is what every anonymous visitor already sees.
 
@@ -349,7 +366,9 @@ Build it with `bun run build` in `@pithy-sh/payments`; the artifact is `dist/pad
 
 **It quotes nothing rather than quoting wrong.** A tag missing its environment or its token, or still carrying a `REPLACE_WITH_…` placeholder in any one of its ids, is refused before Paddle is loaded at all — no request, no console error, and every slot still holding the sentence the page shipped with. All or nothing across the plans, because a table with one real figure and one placeholder is the version a reader believes.
 
-**Formatting stays with the page.** Set `data-paddle-paint="off"` and the script quotes without writing anything; `window.pithyPaddlePrices.quotes` resolves to the same `PaymentsResult` the module hands the dashboard, and the page does what it likes with it — a zero-fraction trim, its own markup, its own slots. Only the quote is shared, and it is shared because it is the part that was wrong in one of two copies for months while both looked fine.
+**Formatting stays with the page.** Set `data-paddle-paint="off"` and the script quotes without writing anything; `window.pithyPaddlePrices.quotes` resolves to the same `PaymentsResult` the module hands the dashboard, and the page does what it likes with it — its own markup, its own slots. Only the quote is shared, and it is shared because it is the part that was wrong in one of two copies for months while both looked fine.
+
+**Amended: the zero-fraction trim was named here as one of the things a page does for itself, and both pages then wrote the same wrong version of it (Jim, 2026-08-21).** That was `#416`'s shape one layer up — `#427`. Formatting still stays with the page, and the trim is no longer part of what that means: it is not a formatting choice a page can make correctly, because deciding it needs the minor-unit amount, which never leaves this package. Ask for it with `data-paddle-whole-units="on"`, or with `wholeUnits: true` from a module caller, and keep `data-paddle-paint="off"` for the markup decisions that genuinely are the page's.
 
 ## 12. Overlay and inline checkout
 

@@ -279,6 +279,47 @@ describe("quotePlans", () => {
     expect(result.ok && result.value.map((quote) => quote.estimated)).toEqual([true]);
   });
 
+  test("quotes what Paddle rendered, unless the caller asked for whole units", async () => {
+    // The gate the option exists under, at the surface the dashboard calls. Not asking, and asking for
+    // `false`, must both be the string Paddle sent — a default that trimmed would restyle a seller's
+    // prices on their behalf, and this is where that would show.
+    const untouched = await quotePlans(
+      SANDBOX,
+      { solo: SOLO_PRICE },
+      { initialize: stubInitializer(stubPaddle(US_NEW_YORK)), registry: page() },
+    );
+    const declined = await quotePlans(
+      SANDBOX,
+      { solo: SOLO_PRICE },
+      { wholeUnits: false, initialize: stubInitializer(stubPaddle(US_NEW_YORK)), registry: page() },
+    );
+
+    expect(untouched.ok && untouched.value.map((quote) => quote.headline)).toEqual(["$5.00"]);
+    expect(declined.ok && declined.value.map((quote) => quote.headline)).toEqual(["$5.00"]);
+  });
+
+  test("drops a zero fraction from every plan when the caller asked for whole units", async () => {
+    const result = await quotePlans(
+      SANDBOX,
+      { solo: SOLO_PRICE, team: TEAM_PRICE },
+      { wholeUnits: true, initialize: stubInitializer(stubPaddle(twoLines())), registry: page() },
+    );
+
+    expect(result.ok && result.value.map((quote) => quote.headline)).toEqual(["$5", "$5"]);
+    // The sentence beside it is unchanged, which is the half a caller must be able to rely on.
+    expect(result.ok && result.value.map((quote) => quote.note)).toEqual(["Plus $0.44 tax.", "Plus $0.44 tax."]);
+  });
+
+  test("asking for whole units changes nothing in a currency that has no fraction", async () => {
+    const result = await quotePlans(
+      SANDBOX,
+      { solo: SOLO_PRICE },
+      { wholeUnits: true, initialize: stubInitializer(stubPaddle(JP_YEN)), registry: page() },
+    );
+
+    expect(result.ok && result.value.map((quote) => quote.headline)).toEqual(["¥798"]);
+  });
+
   test("carries the currency Paddle answered in, which is not always the one it answered last time", async () => {
     // `PaddlePlanQuote` was the only thing holding `preview.currencyCode`, and it dropped it — so a
     // caller formatting the figure itself had nothing to format it in.

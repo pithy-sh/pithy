@@ -286,7 +286,14 @@ const BROWSER_MODULES: Readonly<Record<string, readonly string[]>> = {
   "src/client/hooks.ts": ["react", "./api", "./checkout", "./paddle"],
   "src/client/checkout.ts": ["./api", "./paddle"],
   // Paddle.js is the browser SDK a checkout opens with. It is the one third-party import on this side.
-  "src/client/paddle.ts": ["@paddle/paddle-js", "./api", "./paddleCache"],
+  "src/client/paddle.ts": ["@paddle/paddle-js", "./api", "./paddleCache", "./wholeUnits"],
+  // The zero-fraction trim. `../data/money` is the **one** import out of `src/client/` on this list, and
+  // it earns it: the ISO-4217 exponent table decides whether a currency's fraction is two digits, three
+  // or none, the purchase projection already holds it, and a second copy in the browser half would be
+  // `#427`'s own defect one layer down. It is safe to cross because that module imports nothing — a set
+  // of currency codes reaches the bundle, no graph behind it.
+  "src/client/wholeUnits.ts": ["../data/money"],
+  "src/data/money.ts": [],
   // The cache seam. No imports at all, the same strongest form the primitive takes — a module that
   // decides where a price rests must not be able to drag anything into the bundle deciding it.
   "src/client/paddleCache.ts": [],

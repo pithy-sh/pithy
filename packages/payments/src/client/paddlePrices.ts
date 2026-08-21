@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import type { PaymentsResult } from "./api";
-import { type PaddleOptions, type PaddlePriceQuery, type PaddleSetup, previewPrices, priceSummary } from "./paddle";
+import {
+  type PaddleOptions,
+  type PaddlePriceQuery,
+  type PaddleSetup,
+  type PriceSummaryOptions,
+  previewPrices,
+  priceSummary,
+} from "./paddle";
 
 /**
  * One quote per named plan — the whole of what two Pithy surfaces share.
@@ -46,7 +53,7 @@ export type PaddlePlanPrices = Readonly<Record<string, string>>;
 export type PaddleQuoteQuery = Omit<PaddlePriceQuery, "items">;
 
 /** What {@link quotePlans} lets a caller replace, plus who the quote is for. */
-export interface PaddleQuoteOptions extends PaddleOptions {
+export interface PaddleQuoteOptions extends PaddleOptions, PriceSummaryOptions {
   /** Who to quote for, and where they are. Omitted, Paddle resolves it from the visitor's IP. */
   readonly query?: PaddleQuoteQuery;
 }
@@ -63,6 +70,9 @@ export interface PaddlePlanQuote {
    * Per unit, and not the same field in every country: where tax is added on top the listed price is the
    * subtotal, and where it is taken out of an inclusive figure the listed price is the total. See
    * {@link priceSummary}, which is where that decision is made and tested.
+   *
+   * Paddle's own string, unless the caller passed `wholeUnits` — the one thing that ever changes it, and
+   * only by removing a fraction that is entirely zero.
    */
   readonly headline: string;
   /** One sentence about tax, or null where there is nothing true to say. */
@@ -119,7 +129,7 @@ export async function quotePlans(
   for (const [plan, priceId] of named) {
     const line = preview.value.lines.find((candidate) => candidate.priceId === priceId);
     if (line === undefined) continue;
-    const summary = priceSummary(preview.value, line);
+    const summary = priceSummary(preview.value, line, { wholeUnits: options?.wholeUnits });
     quotes.push({
       plan,
       priceId,
