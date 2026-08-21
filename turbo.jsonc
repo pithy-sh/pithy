@@ -148,6 +148,100 @@
         "$TURBO_ROOT$/packages/core/src/**"
       ]
     },
+    // The same seam, one tooling package over, and it swallowed the gate built to close #419 — Jim,
+    // 2026-08-21.
+    //
+    // `tooling/browser-scopes` holds no product code. It exists to prove that a module a browser may
+    // import reaches no module that needs the Workers runtime, which is a claim about **every capability
+    // in `packages/`** — and a task's default inputs are the files in its own package, so the gate
+    // replayed while its entire subject moved underneath it.
+    //
+    // Reproduced with the branch's cache warm, by planting the exact #419 chain back:
+    // `packages/support/src/data/leakD.ts` re-exporting `MAX_LINKED_PURCHASES` from `../link/sender.js`,
+    // and one import of it in `packages/support/src/http/responses.ts`. `turbo run test
+    // --filter=@pithy-sh/browser-scopes` printed `1 successful, Cached: 1 cached, Time: 16ms >>> FULL
+    // TURBO` and replayed the pre-plant logs — `20 passed`, timestamped before the file existed.
+    // `typecheck` did the same, `cache hit, replaying logs d30bc0e6bdd6b550`. Forced, the same tree fails
+    // and names the chain: `expected [ …(6) ] to deeply equal []`, the first line reading
+    // `support/src/http/responses.ts -> support/src/data/leakD.ts -> support/src/link/sender.ts`. CI
+    // restores this cache from main, so it is not local-only. A gate that cannot fail on the change it
+    // exists to catch is not a weak gate; it is a green tick over unverified work.
+    //
+    // **The whole of `packages/`, rather than the files the gate reads.** This is the one decision here
+    // that is not taken from `#414`'s answer to the same class, and it goes the other way. That lane's
+    // fixture has two named packages for a subject, and `tsc --listFiles` says exactly which of their
+    // files it opens, so naming those files is both necessary and sufficient. This one derives its
+    // expectation from a **directory walk**: `responseCoverage.test.ts` calls
+    // `sourcePaths(PACKAGES, …)` to find every `src/http/responses.ts` the kit ships, so that a
+    // capability landing tomorrow is covered by the commit that adds it. Its answer therefore changes
+    // when a file **appears** — and a file nothing yet imports is a file no compile opens. Keying on what
+    // the programs read would leave `packages/newcap/src/http/responses.ts` unhashed, which is precisely
+    // the module the coverage assertion exists to demand. `.github/scripts/crossPackageReads.ts` has
+    // recorded the same thing all along, from two test files: target `packages`, the directory.
+    //
+    // `bun.lock` is which copies are on disk. The gate's answer is a list of npm packages the compiler
+    // pulled in, so a `bun update` that moved `zod` or `@cloudflare/workers-types` changes what is being
+    // classified without a byte of any manifest moving.
+    //
+    // **This file is in the key too, and it has to be.** A task's hash covers its own definition and no
+    // other — measured on turbo 2.10.10 by the `#414` lane. `turboInputs.test.ts` runs in the test task and
+    // asserts about all three declarations, so without `turbo.jsonc` named here, narrowing one of them
+    // would replay the very test that exists to refuse it.
+    //
+    // `dependsOn` is not used, and would not do this job. There is no one package to depend on: the
+    // subject is every capability, present and future, and `^build` reaches only this package's declared
+    // dependencies — which is a list, maintained by hand, of exactly the kind the derived guard exists to
+    // refuse. It would also order the run for no reason. The gate needs the capabilities' files, not
+    // their verdicts, and every one of those verdicts was green throughout #419.
+    //
+    // **The three lists are identical, and that is the point rather than a copy-paste.** `test` and
+    // `test:node` are one command here — `vitest run`; the package has no workers project — and the
+    // guard runs inside it. If the test task were keyed more narrowly than the compile it checks, that
+    // edit would replay a green guard over a stale list. One list, checked to be one list.
+    //
+    // This is the fourth instance of this class found this session, and the second introduced by a fix.
+    // `#432` holds the pre-existing half and asks for a shape where the miscoping is impossible rather
+    // than corrected. This is the corrected kind, with a test standing over it. When #432 lands a general
+    // answer, every entry of this shape should collapse into it.
+    "@pithy-sh/browser-scopes#typecheck": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/turbo.jsonc",
+        "$TURBO_ROOT$/bun.lock",
+        "$TURBO_ROOT$/packages/**",
+        "!$TURBO_ROOT$/packages/*/node_modules/**",
+        "!$TURBO_ROOT$/packages/*/dist/**",
+        "!$TURBO_ROOT$/packages/*/coverage/**",
+        "!$TURBO_ROOT$/packages/*/.*/**/*",
+        "!$TURBO_ROOT$/packages/cli/templates/**"
+      ]
+    },
+    "@pithy-sh/browser-scopes#test": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/turbo.jsonc",
+        "$TURBO_ROOT$/bun.lock",
+        "$TURBO_ROOT$/packages/**",
+        "!$TURBO_ROOT$/packages/*/node_modules/**",
+        "!$TURBO_ROOT$/packages/*/dist/**",
+        "!$TURBO_ROOT$/packages/*/coverage/**",
+        "!$TURBO_ROOT$/packages/*/.*/**/*",
+        "!$TURBO_ROOT$/packages/cli/templates/**"
+      ]
+    },
+    "@pithy-sh/browser-scopes#test:node": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/turbo.jsonc",
+        "$TURBO_ROOT$/bun.lock",
+        "$TURBO_ROOT$/packages/**",
+        "!$TURBO_ROOT$/packages/*/node_modules/**",
+        "!$TURBO_ROOT$/packages/*/dist/**",
+        "!$TURBO_ROOT$/packages/*/coverage/**",
+        "!$TURBO_ROOT$/packages/*/.*/**/*",
+        "!$TURBO_ROOT$/packages/cli/templates/**"
+      ]
+    },
     // `test` runs both vitest projects (node + workers) in one process — the convenient local
     // default, and the one to run before pushing. `test:node` and `test:workers` run one project
     // each, which is what lets CI schedule them separately: the Node-runtime job needs the node

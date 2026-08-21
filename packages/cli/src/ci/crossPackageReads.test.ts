@@ -77,9 +77,10 @@ describe("the cross-package reads CI plans from", () => {
     // `--affected` maps a changed file to its owning package and that package's dependents, and
     // nothing else. A package appearing here is one whose suite that model cannot reach.
     //
-    // `@pithy-sh/browser-scopes` is the second, and it is here for the same reason the CLI is: its gate
-    // reads every capability's source to find every control-plane scope the kit declares, so a scope
-    // added in a package it does not depend on is a scope its suite must re-check (#315).
+    // `@pithy-sh/browser-scopes` is the second, and it is here for the same reason the CLI is: its gates
+    // read every capability's source to find every control-plane scope the kit declares (#315) and every
+    // response schema it ships (#419), so either landing in a package this one does not depend on is a
+    // change its suite must re-check.
     //
     // `@pithy-sh/cloudflare` is the third, and it reads exactly one thing: `docs/FIXTURES.md`, the
     // document every live-fixture skip message cites. The gate is that the cited section exists, and a

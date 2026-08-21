@@ -1,0 +1,15 @@
+{
+  "extends": "@pithy-sh/tsconfig/base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    // Same two lines as `tsconfig.client.json`, and for the same reason: the DOM and nothing of a
+    // Worker, with `types: []` so TypeScript cannot borrow the Workers types a sibling package
+    // installed. A third program rather than one more import in `client.ts` because the two subjects
+    // fail apart — #315's scope constants went green the moment they moved, while #419's response
+    // schemas were still dragging D1 in. One program would have reported that as one red build and
+    // hidden which half was broken.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "include": ["src/responses.ts"]
+}

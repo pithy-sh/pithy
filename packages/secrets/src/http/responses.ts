@@ -3,10 +3,10 @@
 
 import { SecretRotation } from "@pithy-sh/core/src/capability/secretOrigin";
 import { z } from "zod";
-import type { CarriesNoValue } from "../admin/status";
 import { RotationStatus, RotationTrigger } from "../data/secretRotations";
 import { SecretBackend, SecretValueType } from "../registry";
 import { SecretRotationStatus, SecretRotationUnchangedReason } from "../rotation/rotateValue";
+import type { CarriesNoValue } from "../valueBearing";
 
 /**
  * What the secrets management routes return, as Zod objects a client can validate against.
@@ -34,6 +34,14 @@ import { SecretRotationStatus, SecretRotationUnchangedReason } from "../rotation
  * about its reader shapes, restated at the wire, and {@link SECRET_RESPONSES_CARRY_NO_VALUE} is the
  * compile-time tripwire that keeps it true. A ciphertext, an IV, a metadata snapshot and a rotation's
  * error message are all absent from the type rather than omitted by a projection.
+ *
+ * **A browser imports this file, so it reaches no module that needs the Workers runtime** — which is
+ * why `CarriesNoValue` comes from `../valueBearing.ts` and not from `admin/status.ts`, where it was
+ * declared until #419. The reader is a Kysely module; importing a *type* out of it still put the D1
+ * layer in the browser program's file set, and `@pithy-sh/support` shipped the version of that mistake
+ * where the reached module named a bare Workers global and the adopter's client build went red.
+ * `tooling/browser-scopes` compiles this module with `types: []` and asks the compiler which files that
+ * program included.
  */
 
 /** One rotation attempt on the wire. */

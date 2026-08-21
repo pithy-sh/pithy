@@ -5,5 +5,5 @@
     "lib": ["ES2022"],
     "types": ["node"]
   },
-  "include": ["src/coverage.test.ts"]
+  "include": ["src/coverage.test.ts", "src/program.test.ts", "src/responseCoverage.test.ts", "src/turboInputs.test.ts"]
 }
