@@ -36,7 +36,8 @@ import { SupportSubmissionContext } from "../data/message";
  * is a Vite program with the DOM lib and no Workers types. This file imported `SUPPORT_BILLING_SCOPE`
  * from `link/sender.ts` for one release and brought D1, Kysely and two capabilities' table maps with it,
  * which took `pithy-sh/dashboard`'s client build down on an error in `@pithy-sh/auth` (#419). The rule is
- * held by `tooling/browser-scopes`, which compiles this module with `types: []` and walks its imports.
+ * held by `tooling/browser-scopes`, which compiles this module with `types: []` and asks the compiler
+ * which files that program included.
  */
 
 /** Where a page resumes, or the end of the list. */

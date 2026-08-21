@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { execFile, execFileSync } from "node:child_process";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
@@ -89,15 +90,26 @@ function inside(dir: string, path: string): boolean {
  * Every file inside the repository, outside this package and outside `node_modules`, that the response
  * gate's TypeScript program compiles.
  *
- * `tsc --listFiles` rather than a hand-rolled import walk: the question is which files the compiler
+ * `tsc --listFilesOnly` rather than a hand-rolled import walk: the question is which files the compiler
  * opens, and the compiler is the only thing that knows. That is the same argument `program.ts` makes
- * about the gate itself, for the same reason. A failing compile still lists them, and the verdict belongs
- * to `typecheck` — reporting it here too would name the same defect twice.
+ * about the gate itself, for the same reason. The verdict on whether it compiles belongs to `typecheck`
+ * — reporting it here too would name the same defect twice.
+ *
+ * **`--listFilesOnly`, and the same two lines of defence `program.ts` grew — Jim, 2026-08-21.** This was
+ * `--listFiles`, which runs the full check and writes diagnostics to the same stream the paths come out
+ * of. So a response program with any error at all handed this function its error text as filenames, and
+ * the guard then failed claiming a turbo cache-key defect that did not exist. An adversarial pass planted
+ * a bare `D1Database` and got exactly one non-path line back:
+ * `../../packages/support/src/data/leakD.ts(6,27): error TS2552: Cannot find name 'D1Database'.`
+ *
+ * That is the same mistake `program.ts` documents having fixed, in the sibling function written in the
+ * same commit — which is how a defect class survives being named. `--listFilesOnly` skips the check, and
+ * the path test behind it means a line that is not a file on disk is never mistaken for one.
  */
 async function compiled(): Promise<string[]> {
   let stdout: string;
   try {
-    ({ stdout } = await run(TSC, ["-p", "tsconfig.responses.json", "--noEmit", "--listFiles"], {
+    ({ stdout } = await run(TSC, ["-p", "tsconfig.responses.json", "--listFilesOnly"], {
       cwd: PACKAGE_DIR,
       maxBuffer: 64 * 1024 * 1024,
     }));
@@ -108,6 +120,8 @@ async function compiled(): Promise<string[]> {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
+    // A line that is not a path on disk is not a file the compiler opened. See the note above.
+    .filter((line) => isAbsolute(line) && existsSync(line))
     .filter((path) => !path.split(sep).includes("node_modules"))
     .filter((path) => inside(REPO_ROOT, path) && !inside(PACKAGE_DIR, path))
     .map(fromRoot);

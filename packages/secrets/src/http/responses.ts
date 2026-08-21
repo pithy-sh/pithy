@@ -40,7 +40,8 @@ import type { CarriesNoValue } from "../valueBearing";
  * declared until #419. The reader is a Kysely module; importing a *type* out of it still put the D1
  * layer in the browser program's file set, and `@pithy-sh/support` shipped the version of that mistake
  * where the reached module named a bare Workers global and the adopter's client build went red.
- * `tooling/browser-scopes` compiles this module with `types: []` and walks its imports.
+ * `tooling/browser-scopes` compiles this module with `types: []` and asks the compiler which files that
+ * program included.
  */
 
 /** One rotation attempt on the wire. */
