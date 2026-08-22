@@ -238,14 +238,19 @@ describe("startDev — bootstrapping pinned ports", () => {
 });
 
 describe("ensureDevConfig", () => {
-  /** A temp project dir plus its own registry, so nothing touches the real repo. */
+  /**
+   * A temp project dir plus its own registry, so nothing touches the real repo — or, since #435, the
+   * operator's own config directory. `blocks()` reads the branches filed under this checkout, which is
+   * the registry's outer key now.
+   */
   async function project() {
     const dir = await mkdtemp(join(tmpdir(), "pithy-dev-bootstrap-"));
-    const registryPath = join(dir, ".dev-ports.json");
+    const registryPath = join(dir, "config", "dev-ports.json");
     return {
       dir,
       registryPath,
       registry: async () => JSON.parse(await readFile(registryPath, "utf8")) as PortsRegistry,
+      blocks: async () => (JSON.parse(await readFile(registryPath, "utf8")) as PortsRegistry)[dir] ?? {},
       cleanup: () => rm(dir, { recursive: true, force: true }),
     };
   }
@@ -258,6 +263,7 @@ describe("ensureDevConfig", () => {
         workers,
         existing: null,
         registryPathFor: async () => p.registryPath,
+        rootFor: async () => p.dir,
         branchFor: async () => null,
       });
 
@@ -265,7 +271,7 @@ describe("ensureDevConfig", () => {
       expect(dev.workers.web).toEqual({ port: 8788, origin: "http://localhost:8788" });
       expect(await readDevConfig(devConfigPath(p.dir))).toEqual(dev);
       // Off a branch the checkout path is the registry key — one block per checkout, still centrally locked.
-      expect((await p.registry())[`local:${p.dir}`]).toEqual({ block: 0, base: 8787, size: BLOCK_SIZE });
+      expect((await p.blocks())[`local:${p.dir}`]).toEqual({ block: 0, base: 8787, size: BLOCK_SIZE });
     } finally {
       await p.cleanup();
     }
@@ -278,13 +284,114 @@ describe("ensureDevConfig", () => {
         projectDir: p.dir,
         workers,
         registryPathFor: async () => p.registryPath,
+        rootFor: async () => p.dir,
         branchFor: async () => "main",
       };
       const first = await ensureDevConfig({ ...deps, existing: null });
       const again = await ensureDevConfig({ ...deps, existing: await readDevConfig(devConfigPath(p.dir)) });
 
       expect(again).toEqual(first);
-      expect(Object.keys(await p.registry())).toEqual(["main"]);
+      expect(Object.keys(await p.blocks())).toEqual(["main"]);
+      // One checkout, one key: the file is machine-wide now and this project must occupy exactly its own.
+      expect(Object.keys(await p.registry())).toEqual([p.dir]);
+    } finally {
+      await p.cleanup();
+    }
+  });
+
+  test("reclaims a block a worktree still holds, scanning the checkout and not the registry's own directory", async () => {
+    // The scan used to be handed `dirname(registryPath)`, which was the main repo root only because the
+    // registry sat in it. With the file in the config directory that argument resolves to `~/.config/pithy`
+    // — a directory with no `.worktrees` and never one — so `scanPinnedBlocks` would return `[]` forever
+    // and reclaim would short-circuit before it even took the lock. No error, no changed return value:
+    // self-healing simply dead, surfacing much later as a live feature's ports handed to a new one (#435).
+    const p = await project();
+    try {
+      const pinned = join(p.dir, ".worktrees", "12-live");
+      await mkdir(pinned, { recursive: true });
+      await writeFile(
+        devConfigPath(pinned),
+        JSON.stringify({
+          version: 1,
+          branch: "feature/12-live",
+          ports: { index: 0, base: 8787, size: BLOCK_SIZE },
+          workers: { api: { port: 8787, origin: "http://localhost:8787" } },
+        }),
+        "utf8",
+      );
+
+      const dev = await ensureDevConfig({
+        projectDir: p.dir,
+        workers,
+        existing: null,
+        registryPathFor: async () => p.registryPath,
+        rootFor: async () => p.dir,
+        branchFor: async () => "main",
+      });
+
+      // Block 0 is spoken for by the live worktree, so this run must not be handed it.
+      expect(dev.ports.index).not.toBe(0);
+      expect((await p.blocks())["feature/12-live"]).toEqual({ block: 0, base: 8787, size: BLOCK_SIZE });
+    } finally {
+      await p.cleanup();
+    }
+  });
+
+  test("re-registers a pinned block the registry has lost, since a settled project never allocates", async () => {
+    // The registry is machine-wide, so it can lose this project's entry to something this project never
+    // did — a wiped config directory, a new machine, a moved checkout another project's allocation pruned
+    // as gone. The whole reclaim used to sit on the no-config path, which a settled project never takes,
+    // so `pithy dev` repaired nothing and a live feature's ports stayed on offer to whoever allocated
+    // next (#435).
+    const p = await project();
+    try {
+      const existing: DevConfig = {
+        version: 1,
+        branch: "feature/12-live",
+        ports: { index: 0, base: 8787, size: BLOCK_SIZE },
+        workers: { api: { port: 8787, origin: "http://localhost:8787" } },
+      };
+
+      await ensureDevConfig({
+        projectDir: p.dir,
+        workers,
+        existing,
+        registryPathFor: async () => p.registryPath,
+        rootFor: async () => p.dir,
+        branchFor: async () => "feature/12-live",
+      });
+
+      expect((await p.blocks())["feature/12-live"]).toEqual({ block: 0, base: 8787, size: BLOCK_SIZE });
+    } finally {
+      await p.cleanup();
+    }
+  });
+
+  test("a lost registry it cannot write is not a reason to refuse to start", async () => {
+    // The ports are already pinned and are verified on both stacks before anything binds, so an
+    // unwritable config directory must leave `pithy dev` working off the config alone — as it did before
+    // this path touched the registry at all.
+    const p = await project();
+    try {
+      const existing: DevConfig = {
+        version: 1,
+        branch: "feature/12-live",
+        ports: { index: 0, base: 8787, size: BLOCK_SIZE },
+        workers: { api: { port: 8787, origin: "http://localhost:8787" } },
+      };
+
+      const dev = await ensureDevConfig({
+        projectDir: p.dir,
+        workers,
+        existing,
+        registryPathFor: async () => {
+          throw new Error("config directory is unwritable");
+        },
+        rootFor: async () => p.dir,
+        branchFor: async () => "feature/12-live",
+      });
+
+      expect(dev.workers.api?.port).toBe(8787);
     } finally {
       await p.cleanup();
     }
@@ -303,16 +410,17 @@ describe("ensureDevConfig", () => {
         projectDir: p.dir,
         workers,
         existing,
-        // An existing config keeps its own block: the registry is never re-keyed under a live feature.
-        registryPathFor: async () => {
-          throw new Error("the registry must not be touched when a block is already pinned");
-        },
+        registryPathFor: async () => p.registryPath,
+        rootFor: async () => p.dir,
         branchFor: async () => "some/other-branch",
       });
 
       expect(dev.branch).toBe("feature/73-cli-commands");
       expect(dev.workers.web?.port).toBe(8788);
       expect(dev.workers.api?.port).toBe(8787);
+      // The pinned block is re-registered, never re-keyed: the branch the config names, not the branch
+      // git is on. Allocating would have taken `some/other-branch` and moved every worker's address.
+      expect(await p.blocks()).toEqual({ "feature/73-cli-commands": { block: 0, base: 8787, size: 10 } });
     } finally {
       await p.cleanup();
     }

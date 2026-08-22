@@ -5,6 +5,9 @@ dist/
 
 # feature worktrees + pithy feature state (scripts/worktree.ts, pithy feature)
 .worktrees/
+# The port registry moved to <config>/dev-ports.json in #435 and nothing writes this path any more. The
+# line stays for the checkouts that still have one: deleting it would make an existing stale file both
+# untracked and unignored, which is one `git add -A` away from committing it.
 .dev-ports.json
 .dev.config.json
 .dev-state.json

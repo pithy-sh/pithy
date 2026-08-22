@@ -10,6 +10,8 @@ dist/
 
 # pithy local dev state
 .dev-state.json
+# Legacy: the port registry lives at <config>/dev-ports.json now (#435). Kept so a project scaffolded
+# before the move keeps ignoring the file it already has.
 .dev-ports.json
 logs/
 

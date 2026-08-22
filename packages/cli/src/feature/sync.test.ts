@@ -14,10 +14,15 @@ import { syncFeatureDevConfig } from "./sync";
 describe("syncFeatureDevConfig", () => {
   let mainRoot: string;
   let worktreePath: string;
+  /** The machine's registry, injected: it lives in the config directory now, not under `mainRoot` (#435). */
+  let registryPath: string;
+
+  const readRegistry = async () => JSON.parse(await readFile(registryPath, "utf8"))[mainRoot];
 
   beforeEach(async () => {
     mainRoot = await mkdtemp(join(tmpdir(), "pithy-sync-"));
     worktreePath = join(mainRoot, ".worktrees", "69-demo");
+    registryPath = join(mainRoot, "config", "dev-ports.json");
     await mkdir(worktreePath, { recursive: true });
     await writeFile(join(mainRoot, ".dev.vars"), "SECRET=abc\n");
   });
@@ -40,6 +45,7 @@ describe("syncFeatureDevConfig", () => {
   const sync = (names: string[]) =>
     syncFeatureDevConfig({
       mainRoot,
+      registryPath,
       worktreePath,
       branch: "feature/69-demo",
       discoverWorkers: async () => workerTargets(worktreePath, names),
@@ -99,6 +105,7 @@ describe("syncFeatureDevConfig", () => {
     await mkdir(otherWorktree, { recursive: true });
     const other = await syncFeatureDevConfig({
       mainRoot,
+      registryPath,
       worktreePath: otherWorktree,
       branch: "feature/70-other",
       discoverWorkers: async () => workerTargets(otherWorktree, ["api"]),
@@ -108,24 +115,52 @@ describe("syncFeatureDevConfig", () => {
     expect(other.dev.workers.api?.port).not.toBe(BASE_PORT);
   });
 
+  test("a second project on the machine never draws from the first project's block", async () => {
+    // #435. The registry sat at each main checkout, so every project on a machine kept its own, every one
+    // of them started empty, and every one handed out block 0 — with identical branch names, which is the
+    // normal case, two projects bound the same twenty ports. The key is the checkout now, and this is the
+    // test that says so from the caller's side rather than the registry's.
+    const mine = await sync(["api"]);
+
+    const otherRoot = await mkdtemp(join(tmpdir(), "pithy-sync-other-"));
+    try {
+      const otherWorktree = join(otherRoot, ".worktrees", "69-demo");
+      await mkdir(otherWorktree, { recursive: true });
+      const theirs = await syncFeatureDevConfig({
+        mainRoot: otherRoot,
+        registryPath,
+        worktreePath: otherWorktree,
+        branch: "feature/69-demo", // the same branch name, in a different project.
+        discoverWorkers: async () => workerTargets(otherWorktree, ["api"]),
+      });
+
+      expect(theirs.block.block).not.toBe(mine.block.block);
+      expect(theirs.dev.workers.api?.port).not.toBe(mine.dev.workers.api?.port);
+    } finally {
+      await rm(otherRoot, { recursive: true, force: true });
+    }
+  });
+
   test("reclaims a live worktree's block into a lost registry", async () => {
-    // .dev-ports.json is git-ignored, so it can vanish while the worktrees allocated from it live on. A
-    // live worktree — one that still has its gitlink — must get its pinned block back, or the next feature
-    // would be handed a block someone is already running on.
+    // The registry is outside every checkout now, so a clone or a `git clean` cannot take it — but a wiped
+    // config directory, a new machine, or a relocated PITHY_CONFIG_DIR still can, while the worktrees
+    // allocated from it live on. A live worktree — one that still has its gitlink — must get its pinned
+    // block back, or the next feature would be handed a block someone is already running on.
     const first = await sync(["api"]);
     await writeFile(join(worktreePath, ".git"), "gitdir: /somewhere/.git/worktrees/69-demo\n");
-    await rm(join(mainRoot, ".dev-ports.json"));
+    await rm(registryPath);
 
     const otherWorktree = join(mainRoot, ".worktrees", "70-other");
     await mkdir(otherWorktree, { recursive: true });
     const other = await syncFeatureDevConfig({
       mainRoot,
+      registryPath,
       worktreePath: otherWorktree,
       branch: "feature/70-other",
       discoverWorkers: async () => workerTargets(otherWorktree, ["api"]),
     });
 
-    const registry = JSON.parse(await readFile(join(mainRoot, ".dev-ports.json"), "utf8"));
+    const registry = await readRegistry();
     expect(registry["feature/69-demo"]).toEqual(first.block);
     expect(other.block.block).not.toBe(first.block.block);
   });
@@ -136,9 +171,8 @@ describe("syncFeatureDevConfig", () => {
     // claim re-registered a feature that no longer exists, holding its ports forever and pushing every
     // later feature to a higher base.
     const destroyed = await sync(["api"]);
-    const registryPath = join(mainRoot, ".dev-ports.json");
     const registry = JSON.parse(await readFile(registryPath, "utf8"));
-    delete registry["feature/69-demo"]; // what freePortBlock does.
+    delete registry[mainRoot]["feature/69-demo"]; // what freePortBlock does.
     await writeFile(registryPath, `${JSON.stringify(registry, null, 2)}\n`);
     // The worktree is gone — no gitlink — but its .dev.config.json is still on disk.
     expect(await readDevConfig(devConfigPath(worktreePath))).not.toBeNull();
@@ -148,12 +182,13 @@ describe("syncFeatureDevConfig", () => {
     await writeFile(join(otherWorktree, ".git"), "gitdir: /somewhere/.git/worktrees/70-other\n");
     const other = await syncFeatureDevConfig({
       mainRoot,
+      registryPath,
       worktreePath: otherWorktree,
       branch: "feature/70-other",
       discoverWorkers: async () => workerTargets(otherWorktree, ["api"]),
     });
 
-    const after = JSON.parse(await readFile(registryPath, "utf8"));
+    const after = await readRegistry();
     expect(after["feature/69-demo"]).toBeUndefined(); // stays freed
     // And the freed block is handed straight to the next feature.
     expect(other.block).toEqual(destroyed.block);
@@ -179,10 +214,8 @@ describe("syncFeatureDevConfig", () => {
 
     expect(report.added.sort()).toEqual(["api", "web"]);
     expect(await readDevConfig(devConfigPath(worktreePath))).toEqual(report.dev);
-    // Their block is allocated against THEIR registry, which is why ports are never committed.
-    expect(JSON.parse(await readFile(join(mainRoot, ".dev-ports.json"), "utf8"))["feature/69-demo"]).toMatchObject({
-      block: 0,
-    });
+    // Their block is allocated against THEIR machine's registry, which is why ports are never committed.
+    expect((await readRegistry())["feature/69-demo"]).toMatchObject({ block: 0 });
   });
 
   test("refuses to sync the main checkout as if it were a feature worktree, leaving its .dev.vars untouched", async () => {
@@ -193,6 +226,7 @@ describe("syncFeatureDevConfig", () => {
 
     const failure = await syncFeatureDevConfig({
       mainRoot,
+      registryPath,
       worktreePath: mainRoot,
       branch: "feature/69-demo",
       discoverWorkers: async () => workerTargets(mainRoot, ["api"]),

@@ -134,6 +134,13 @@ export function doctorHarness(): DoctorHarness {
       }),
       // Same reason: unstubbed, every test here would list the real account's D1 and R2.
       checkProjectName: async () => ({ state: "ok" as const, project: "pithy-app", misnamed: [] }),
+      // And the same again for the machine's port registry: unstubbed, `present` would depend on whether
+      // the machine running the suite happens to have one, which is a report that differs by machine.
+      checkPortsRegistry: async () => ({
+        path: "/home/u/.config/pithy/dev-ports.json",
+        present: true,
+        stray: null,
+      }),
       now: () => 1_000,
       fetch: registryFetch({ cli: "1.3.0" }),
       detectShell: async () => zsh,

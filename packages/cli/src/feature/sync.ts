@@ -13,7 +13,7 @@ import {
   scanPinnedBlocks,
   writeDevConfig,
 } from "./devConfig";
-import { allocatePortBlock, type PortBlock, reclaimPortBlocks } from "./ports";
+import { allocatePortBlock, type PortBlock, portsRegistryPath, reclaimPortBlocks } from "./ports";
 
 /**
  * Reconcile a feature's worktree with the workers actually in it — the operation behind `pithy feature sync`
@@ -67,8 +67,10 @@ export interface SyncReport {
 
 /** Options for {@link syncFeatureDevConfig}. */
 export interface SyncFeatureOptions {
-  /** The main checkout root — where the central port registry lives. */
+  /** The main checkout root — the port registry's key, and the tree the worktree scan walks. */
   mainRoot: string;
+  /** The registry file (default: `<config>/dev-ports.json`). A seam, so a test never writes the real one. */
+  registryPath?: string;
   /** The worktree to reconcile. */
   worktreePath: string;
   /** The feature branch, the registry's key. */
@@ -109,16 +111,21 @@ export async function syncFeatureDevConfig(options: SyncFeatureOptions): Promise
   // Rebuild any registry entry lost since the worktrees were created before reserving, so a fresh registry
   // can never hand out a block a live feature still holds. A destroyed feature's leftover config is not a
   // claim: reclaiming it would undo the teardown that just freed its block.
-  const registryPath = join(options.mainRoot, ".dev-ports.json");
+  //
+  // The path comes from the one resolver (#435). It was composed here, from `mainRoot`, which made this a
+  // second derivation of a location that has exactly one — and a second derivation is how `create`/`sync`
+  // end up writing one file while `destroy` frees a key in another, both exiting 0.
+  const registryPath = options.registryPath ?? portsRegistryPath();
   const pinned = await scanPinnedBlocks(options.mainRoot);
   const reservations: typeof pinned = [];
   for (const reservation of pinned) {
     if (await isLiveWorktree(options.mainRoot, reservation.branch)) reservations.push(reservation);
   }
-  await reclaimPortBlocks({ registryPath, reservations });
+  await reclaimPortBlocks({ registryPath, root: options.mainRoot, reservations });
 
   const block = await allocatePortBlock({
     registryPath,
+    root: options.mainRoot,
     branch: options.branch,
     ...(options.blockSize !== undefined ? { size: options.blockSize } : {}),
   });

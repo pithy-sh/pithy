@@ -9,7 +9,7 @@ import type { CliAuditEmit } from "../audit/cliAudit";
 import type { ResourceProvisioners } from "../provision/resources";
 import type { SecretsStore } from "../provision/store";
 import { devConfigPath } from "./devConfig";
-import { freePortBlock, resolvePortsRegistryPath } from "./ports";
+import { freePortBlock, portsRegistryPath, resolveMainRepoRoot } from "./ports";
 import { type DeprovisionedResource, deletedBeforeFailure, deprovisionFeature } from "./provision";
 import { defaultGit, type GitRunner, teardownWorktree } from "./worktree";
 
@@ -85,8 +85,10 @@ export interface DestroyFeatureOptions {
   audit?: CliAuditEmit;
   /** git runner seam. */
   git?: GitRunner;
-  /** Override the resolved `.dev-ports.json` path (tests inject; a real run resolves it via git-common-dir). */
+  /** Override the registry file (tests inject; a real run resolves `<config>/dev-ports.json`). */
   registryPath?: string;
+  /** Override the main checkout root, the registry's key (tests inject; a real run resolves it via git-common-dir). */
+  root?: string;
 }
 
 /**
@@ -128,7 +130,12 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
     }
   }
 
-  const registryPath = options.registryPath ?? (await resolvePortsRegistryPath(options.projectDir));
+  const registryPath = options.registryPath ?? portsRegistryPath();
+  // The same git-common-dir derivation the registry key was always freed by — `projectDir` is the
+  // worktree, and this is the main checkout it belongs to. `ports.test.ts` pins it against the
+  // `git worktree list` derivation `feature create` reserves under, because a key freed under a root
+  // create never wrote is a no-op that still reports `portsFreed: true` (#435).
+  const root = options.root ?? (await resolveMainRepoRoot(options.projectDir));
   const branch = `feature/${options.identity.issue}-${options.identity.slug}`;
   // Drop the feature's pinned ports **before** freeing its registry key, and in that order. Teardown leaves
   // the worktree's files on disk by design (recursive deletion is what we must never do on Linux), and
@@ -138,7 +145,7 @@ export async function destroyFeature(options: DestroyFeatureOptions): Promise<De
   // dies between the two steps, the registry is the only claim left and a re-run clears it; the reverse order
   // would leave the stale claim to be reclaimed.
   await rm(devConfigPath(options.projectDir), { force: true });
-  await freePortBlock({ registryPath, branch });
+  await freePortBlock({ registryPath, root, branch });
 
   const teardown = await teardownWorktree({ issue: options.identity.issue, slug: options.identity.slug, git });
 

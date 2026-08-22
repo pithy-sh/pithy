@@ -25,6 +25,7 @@ import { checkDevVarsLocal, type DevVarsLocalCheck, describeDevVarsLocal } from 
 import { checkEnvironments, describeEnvironmentDrift, type EnvironmentsCheck } from "../doctor/environments";
 import { buildProjectHealth, type MigrationHealth, type ProjectHealth, type WorkerChecks } from "../doctor/health";
 import { checkLocalDelivery, describeLocalDelivery, type LocalDeliveryCheck } from "../doctor/localDelivery";
+import { checkPortsRegistry, describePortsRegistry, type PortsRegistryCheck } from "../doctor/portsRegistry";
 import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
 import { checkSecretBindings, describeSecretBindings, type SecretBindingsCheck } from "../doctor/secretBindings";
 import {
@@ -240,6 +241,16 @@ export interface DoctorReport {
    * found nothing, correctly.
    */
   devPreferences: DevPreferencesCheck | null;
+  /**
+   * Where this machine's dev-port registry is, and whether an older CLI left one in the checkout.
+   *
+   * It sits in the report for the reason `devPreferences` does, one step further out: the registry left
+   * the main repo root in #435, and being inside the checkout was the only thing that ever made it
+   * findable. It decides every port `pithy dev` binds and nothing in the project mentions it.
+   *
+   * `null` outside a project — the stray half of the check is a question about a checkout.
+   */
+  portsRegistry: PortsRegistryCheck | null;
   /**
    * Whether any declared `d1`-backed secret is still sitting in `.dev.vars`, and whether the secrets file
    * is readable by anyone but its owner. `null` outside a project that composes `secrets` — with no
@@ -539,6 +550,11 @@ export interface DoctorReportOptions {
    * and `env` the config directory is, so the line can never name a path this report did not resolve.
    */
   checkDevPreferences?: (projectDir: string) => Promise<DevPreferencesCheck | null>;
+  /**
+   * Port-registry seam; defaults to {@link checkPortsRegistry} resolved against the same `homedir` and
+   * `env` the config directory is, so the line can never name a path this report did not resolve.
+   */
+  checkPortsRegistry?: (projectDir: string) => Promise<PortsRegistryCheck>;
   /** Seam: whether this project's secrets are in the file they belong in, without loading real configs. */
   checkDevSecrets?: (projectDir: string) => Promise<DevSecretsCheck | null>;
   /** Seam: whether every declared environment binds the Secrets Store entries its Worker reads. */
@@ -642,6 +658,11 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeCloudflare =
     options.checkCloudflare ??
     (() => checkCloudflareAccess({ ...(options.homedir ? { homedir: options.homedir } : {}), env, account, offline }));
+  const probePortsRegistry = (): Promise<PortsRegistryCheck> =>
+    (
+      options.checkPortsRegistry ??
+      ((dir: string) => checkPortsRegistry(dir, { ...(options.homedir ? { homedir: options.homedir } : {}), env }))
+    )(options.projectDir);
   const probeProjectName = options.checkProjectName ?? checkProjectName;
   const probeWorkerNames = options.checkWorkerNames ?? checkWorkerNames;
   const probeEnvironments = options.checkEnvironments ?? checkEnvironments;
@@ -856,6 +877,9 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // Gated the same way, and files only: the two `.dev.` files and each Worker's registry. No account, no
   // database, no seed run — so it answers offline, in the project that is not working.
   const devSecrets = inProject ? await checkedProbe(() => probeDevSecrets(options.projectDir)) : null;
+  // Gated the same way, and files only: two `stat` calls, no account and no git. It reports a location
+  // rather than a verdict, so its could-not-check state is simply `null` — see `probePortsRegistry`.
+  const portsRegistry = inProject ? await probed<PortsRegistryCheck | null>(() => probePortsRegistry(), null) : null;
   // The same registry, asked about the deployed environments rather than the local file. Files only once
   // more: whether a store *entry* exists is provisioning's question, and this one is whether the stanza
   // that would bind it is there at all (#238).
@@ -916,6 +940,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     workflows,
     extensions,
     devPreferences,
+    portsRegistry,
     devSecrets,
     secretBindings,
     settings,
@@ -1555,6 +1580,13 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     // question they do. The terse report has no paths block to sit in, so it gets the line on its own,
     // in this same position — see `secretsLocation` above.
     if (secretsLocation !== null) paths.push(`Secrets:    ${secretsLocation}`);
+    // The same block once more, and machine-wide like `State file:` rather than per project like
+    // `Dev login:`. A registry that is simply there gets its path and no verdict — the path is the line.
+    if (report.portsRegistry) {
+      const detail = describePortsRegistry(report.portsRegistry);
+      const path = tildify(report.portsRegistry.path, home);
+      paths.push(`Ports:      ${path}${detail ? ` — ${detail}` : ""}`);
+    }
     blocks.push([...paths, `Notifier:   ${notifier}`].join("\n"));
   } else if (secretsLocation !== null) {
     // Unpadded, because there is nothing here to align it against: the terse report carries this line
@@ -1771,6 +1803,12 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
     // a path they can open, not one a human recognises. The same `null` discipline as the two above.
     devPreferences: report.devPreferences
       ? { ...report.devPreferences, detail: describeDevPreferences(report.devPreferences) }
+      : null,
+    // Same `null` discipline. `detail` is nullable here rather than always a sentence: a registry that is
+    // present with nothing stray beside it has no verdict to give, and inventing one ("ok") would put a
+    // string in front of agents that means nothing they can act on.
+    portsRegistry: report.portsRegistry
+      ? { ...report.portsRegistry, detail: describePortsRegistry(report.portsRegistry) }
       : null,
     // Same `null` discipline, and each finding carries its own sentence so an agent fixing it never has to
     // reproduce the wording from the fields. `mode` is octal-formatted here for the same reason: `420` is

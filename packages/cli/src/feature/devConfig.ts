@@ -39,7 +39,11 @@ export type DevWorkerConfig = z.output<typeof DevWorkerConfig>;
 /** The feature's reserved slice of the central port registry. */
 export const DevPortBlock = z
   .object({
-    index: z.number().int().nonnegative().describe("The block's index in the central .dev-ports.json registry."),
+    index: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe("The block's index in the machine's <config>/dev-ports.json registry."),
     base: z.number().int().positive().describe("The first port in the block."),
     size: z.number().int().positive().describe("How many ports the block spans — its worker capacity."),
   })
@@ -141,7 +145,7 @@ export async function writeDevConfig(path: string, config: DevConfig): Promise<v
 
 /**
  * Every port block currently pinned on disk, read from each worktree's own `.dev.config.json` under
- * `<mainRoot>/.worktrees`. This is what lets a lost `.dev-ports.json` be rebuilt from the worktrees that
+ * `<mainRoot>/.worktrees`. This is what lets a lost port registry be rebuilt from the worktrees that
  * outlived it (see `reclaimPortBlocks`).
  * Unreadable or malformed configs are skipped rather than failing the scan — one bad worktree must not block
  * creating a new feature.

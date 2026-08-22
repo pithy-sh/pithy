@@ -7,8 +7,11 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { fromZodError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
+import { ensureOwnerOnlyDirFor } from "../devSecrets/mode";
+import { type StatePathOptions, stateDir } from "../notifier/state";
 import { writeFileAtomic } from "../project/atomic";
 import { readOptionalFile } from "../project/readOptionalFile";
+import { canonicalRepoPath } from "./worktree";
 
 const execFileAsync = promisify(execFile);
 
@@ -32,6 +35,19 @@ function unreadableAction(code: string | undefined, name: string): string {
     default:
       return `${name} is there and would not open (${code ?? "unknown error"}). Check that file, then re-run.`;
   }
+}
+
+/**
+ * The remedy for a registry that will not parse. One function because it is one sentence, and it used to
+ * be written out at both throw sites — which is how two copies of a sentence drift.
+ *
+ * **It names the absolute path, not the file name.** The registry left the checkout in #435, so *delete
+ * `.dev-ports.json`* names a file no `ls` in the project finds and no editor's file tree reaches. Same
+ * argument `pithy doctor`'s `Secrets:` line is built on: knowing a file is broken is not the same as
+ * having a way to get at it.
+ */
+function corruptAction(registryPath: string): string {
+  return `Delete ${registryPath} and re-run pithy feature create to rebuild it.`;
 }
 
 /** Read a property off an unknown throwable without widening anything to `any`. */
@@ -116,16 +132,32 @@ export const PortBlock = z
   .describe("A contiguous block of ports assigned to one feature branch.");
 export type PortBlock = z.output<typeof PortBlock>;
 
-/** The registry file shape: branch name → its allocated block. */
+/** One checkout's allocations: branch name → its allocated block. */
+export const RepoPortBlocks = z
+  .record(z.string().describe('A branch name, e.g. "feature/69-media-cli".'), PortBlock)
+  .describe("One main checkout's allocations: branch name → its allocated block.");
+export type RepoPortBlocks = z.output<typeof RepoPortBlocks>;
+
+/**
+ * The registry file shape: absolute main-checkout root → branch → its allocated block.
+ *
+ * **Keyed on the checkout, not the project name (#435).** The file is machine-wide now, so the key is
+ * the only partition left, and a project `name` is not one: `devSecrets/location.ts` already documents
+ * that two unrelated projects both called `app` collide on it, and here that collision would hand them
+ * the same ports — the exact defect this key exists to prevent. The root is also the key the pruner
+ * asks the filesystem about, which is what stops a machine-lifetime file from growing forever.
+ */
 export const PortsRegistry = z
-  .record(z.string(), PortBlock)
-  .describe("The registry file shape: branch name → its allocated block.");
+  .record(z.string().describe("The absolute path of a main checkout root."), RepoPortBlocks)
+  .describe("The registry file shape: absolute main-checkout root → branch → its allocated block.");
 export type PortsRegistry = z.output<typeof PortsRegistry>;
 
 /** Inputs to `allocatePortBlock`. */
 export interface AllocateOptions {
-  /** Absolute path to the .dev-ports.json registry (at the main repo root). */
+  /** Absolute path to the registry — `<config>/dev-ports.json`, see {@link portsRegistryPath}. */
   registryPath: string;
+  /** The absolute main-checkout root this branch belongs to — the registry's outer key. */
+  root: string;
   /** The feature branch key, e.g. "feature/69-media-cli". */
   branch: string;
   /** Ports per block (default BLOCK_SIZE). */
@@ -136,8 +168,10 @@ export interface AllocateOptions {
 
 /** Inputs to `freePortBlock`. */
 export interface FreeOptions {
-  /** Absolute path to the .dev-ports.json registry (at the main repo root). */
+  /** Absolute path to the registry — `<config>/dev-ports.json`, see {@link portsRegistryPath}. */
   registryPath: string;
+  /** The absolute main-checkout root the branch belongs to — the registry's outer key. */
+  root: string;
   /** The feature branch key to release. */
   branch: string;
   /** How long to wait for the registry lock. Defaults to the production budget — see {@link LockBudget}. */
@@ -215,8 +249,42 @@ async function releaseLock(lockPath: string): Promise<void> {
   await unlink(lockPath).catch(() => {});
 }
 
+/**
+ * Make sure the directory holding the registry exists, before anything tries to open a file in it.
+ *
+ * **The lock cannot report this failure (#435).** `acquireLock` opens `${registryPath}.lock` with `"wx"`
+ * and treats every errno that is not `EEXIST` the same way — sleep, retry — so a missing config directory
+ * would spend the whole 50 × 100ms budget and then refuse with *delete the lock file by hand*, naming a
+ * file that was never created inside a directory that does not exist. Loudly wrong about the wrong thing,
+ * and it reads as a lock bug forever. The registry left the checkout, so its directory is no longer one
+ * some earlier command already made — and on a fresh machine this can be the first thing to create it.
+ *
+ * **Which is why it goes through {@link ensureOwnerOnlyDirFor} and not a bare `mkdir`.** `<config>` itself
+ * is `0700`: `cloudflare.json` sits directly in it, and the writer that mints one narrows this exact
+ * directory on every write. A private `mkdir` here would be the fourth writer under this root, and
+ * `mode.ts` says in as many words what the fourth writer does — *a private copy per writer is how the
+ * third one lands at the umask default*. First command on a new machine being `pithy dev` would leave
+ * `~/.config/pithy` at `0755` for as long as nobody happened to write a credential.
+ *
+ * A failure is a `PithyError` like every other refusal in this module. The raw errno out of `mkdir` would
+ * surface through `allocatePortBlock` with no action line, from a path the operator cannot see.
+ */
+async function ensureRegistryDir(registryPath: string): Promise<void> {
+  try {
+    await ensureOwnerOnlyDirFor(registryPath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    throw new InternalError({
+      message: "Could not open the Pithy config directory.",
+      action: `${unreadableAction(code, dirname(registryPath))} It holds the dev port registry; PITHY_CONFIG_DIR moves it.`,
+      detail: `${code ?? "unknown error"}: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+}
+
 /** Run `fn` while holding the advisory lock on `registryPath`, always releasing it after. */
 async function withLock<T>(registryPath: string, fn: () => Promise<T>, budget?: LockBudget): Promise<T> {
+  await ensureRegistryDir(registryPath);
   const lockPath = await acquireLock(registryPath, budget);
   try {
     return await fn();
@@ -238,7 +306,7 @@ async function readRegistry(registryPath: string): Promise<PortsRegistry> {
     unreadable: ({ code, cause }) =>
       new InternalError({
         message: "Could not read the port registry.",
-        action: unreadableAction(code, ".dev-ports.json"),
+        action: unreadableAction(code, registryPath),
         detail: `${code ?? "unknown error"}: ${cause instanceof Error ? cause.message : String(cause)}`,
       }),
   });
@@ -250,7 +318,7 @@ async function readRegistry(registryPath: string): Promise<PortsRegistry> {
   } catch (err) {
     throw new InternalError({
       message: "The port registry is corrupt.",
-      action: "Delete .dev-ports.json and re-run pithy feature create to rebuild it.",
+      action: corruptAction(registryPath),
       detail: err instanceof Error ? err.message : String(err),
     });
   }
@@ -259,11 +327,63 @@ async function readRegistry(registryPath: string): Promise<PortsRegistry> {
   if (!result.success) {
     throw fromZodError(result.error, {
       message: "The port registry is corrupt.",
-      action: "Delete .dev-ports.json and re-run pithy feature create to rebuild it.",
+      action: corruptAction(registryPath),
     });
   }
 
   return result.data;
+}
+
+/**
+ * Whether a checkout root is still on disk.
+ *
+ * **Only a definite `ENOENT` is absence.** Every other errno is the process failing to *reach* the path
+ * rather than the path being gone — a repo under a mount that is not up, a `PITHY_CONFIG_DIR` on a
+ * network share, a parent that stopped being a directory. Treating those as gone deletes a live
+ * checkout's whole allocation set in one atomic write, and the reclaim scan that could rebuild it cannot
+ * run for a root this process could not stat either.
+ */
+async function rootExists(root: string): Promise<boolean> {
+  try {
+    await stat(root);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== "ENOENT";
+  }
+}
+
+/**
+ * Drop every checkout that is gone from disk, and every one left holding no branches. Returns whether
+ * anything changed, so the caller knows whether a write is owed.
+ *
+ * **This is what pays for the file being machine-wide (#435).** At the main repo root the registry died
+ * with the checkout, so `rm -rf` freed a project's ports for nothing. In the config directory nothing
+ * ever frees them, and a file that only grows is a file whose block indices only climb.
+ *
+ * `keep` is never pruned. The root being allocated for is the caller's own answer to "where am I", and a
+ * seam may legitimately hand over one that does not exist on disk; refusing to prune it costs nothing and
+ * removes a way for this function to delete the allocation it was called to make.
+ *
+ * **It cannot tell a deleted checkout from a moved one, and does not try.** Both are `ENOENT`, and the
+ * only thing that could separate them is a record of where a repository used to be — which is a second
+ * source of truth about identity, kept in the file whose whole problem was that it outlives what it
+ * describes. A moved repository's blocks are freed, and the next `pithy dev` in it re-registers the block
+ * its `.dev.config.json` still pins — see `ensureDevConfig`, which had to start doing that on the pinned
+ * path before this sentence was true of the command anybody runs. The window in between is one where
+ * another project can be handed one, and `pithy dev`'s dual-stack port check turns that into a reported
+ * conflict rather than two Workers on one port.
+ */
+async function pruneDeadRoots(registry: PortsRegistry, keep: string): Promise<boolean> {
+  let changed = false;
+  for (const root of Object.keys(registry)) {
+    if (root === keep) continue;
+    const branches = registry[root];
+    if (Object.keys(branches ?? {}).length === 0 || !(await rootExists(root))) {
+      delete registry[root];
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 /** Write the registry file atomically as pretty-printed JSON with a trailing newline. */
@@ -296,25 +416,35 @@ function lowestFreeBlock(taken: ReadonlySet<number>, size: number, held: readonl
  * overlapping any taken block, writes the registry atomically, and returns it.
  */
 export async function allocatePortBlock(options: AllocateOptions): Promise<PortBlock> {
-  const { registryPath, branch } = options;
+  const { registryPath, root, branch } = options;
   const size = options.size ?? BLOCK_SIZE;
 
   return withLock(
     registryPath,
     async () => {
       const registry = await readRegistry(registryPath);
+      const pruned = await pruneDeadRoots(registry, root);
 
-      const existing = registry[branch];
+      const existing = registry[root]?.[branch];
       if (existing) {
+        // Deliberately still a write when something was pruned. Pruning is the *only* thing that frees a
+        // deleted project's ports, and a machine whose whole steady state is `pithy dev` on branches it
+        // already allocated never reaches the path below — so pruning only there would let the file grow
+        // for the life of the machine while block indices climbed past every dead checkout.
+        if (pruned) await writeRegistry(registryPath, registry);
         return existing;
       }
 
-      const held = Object.values(registry);
+      // Every block in every checkout, because the file is machine-wide now: a taken-set built from one
+      // root's blocks would put every project back at block 0, which is #435 reintroduced one flatMap up.
+      const held = Object.values(registry).flatMap((branches) => Object.values(branches));
       const taken = new Set(held.map((entry) => entry.block));
       const block = lowestFreeBlock(taken, size, held);
       const allocated: PortBlock = { block, base: BASE_PORT + block * size, size };
 
-      registry[branch] = allocated;
+      const branches = registry[root] ?? {};
+      branches[branch] = allocated;
+      registry[root] = branches;
       await writeRegistry(registryPath, registry);
 
       return allocated;
@@ -326,17 +456,25 @@ export async function allocatePortBlock(options: AllocateOptions): Promise<PortB
 /**
  * Re-register blocks that a worktree already holds but the registry has lost, under the lock.
  *
- * `.dev-ports.json` is git-ignored, so it can vanish — a fresh clone, a stray clean — while the worktrees
- * that were allocated from it still exist and still have their ports pinned in `.dev.config.json`. Without
- * this, the next allocation would restart at block 0 and hand out a block a live feature is already using.
- * Reclaiming those blocks first makes the registry self-healing.
+ * **What it guards narrowed in #435, and it did not go away.** At the main repo root the registry was
+ * git-ignored, so a fresh clone or a stray `git clean` took it while the worktrees allocated from it
+ * lived on with their ports pinned in `.dev.config.json`. In the config directory no checkout operation
+ * can reach it — only a wiped config directory, a new machine, or a `PITHY_CONFIG_DIR` pointed somewhere
+ * else. Rarer, and identical in consequence: without this the next allocation restarts at block 0 and
+ * hands out a block a live feature is already using.
+ *
+ * Reservations belong to **one** checkout, named by `root` — a worktree scan can only speak for the
+ * repository it walked, and writing its branches under anyone else's key is how one project's recovery
+ * would corrupt another's allocations.
  *
  * Only fills gaps: a branch already in the registry is left exactly as it is, so this never overwrites a
  * live allocation. Returns the branches it re-registered.
  */
 export async function reclaimPortBlocks(options: {
-  /** The central registry path. */
+  /** The central registry path — `<config>/dev-ports.json`, see {@link portsRegistryPath}. */
   registryPath: string;
+  /** The absolute main-checkout root the reservations were scanned from. */
+  root: string;
   /** Blocks observed on disk, one per existing worktree. */
   reservations: { branch: string; block: PortBlock }[];
   /** How long to wait for the registry lock. Defaults to the production budget — see {@link LockBudget}. */
@@ -348,10 +486,12 @@ export async function reclaimPortBlocks(options: {
     options.registryPath,
     async () => {
       const registry = await readRegistry(options.registryPath);
+      const branches = registry[options.root] ?? {};
+      registry[options.root] = branches;
       const reclaimed: string[] = [];
       for (const { branch, block } of options.reservations) {
-        if (branch in registry) continue; // a live allocation always wins.
-        registry[branch] = block;
+        if (branch in branches) continue; // a live allocation always wins.
+        branches[branch] = block;
         reclaimed.push(branch);
       }
       if (reclaimed.length > 0) await writeRegistry(options.registryPath, registry);
@@ -361,26 +501,59 @@ export async function reclaimPortBlocks(options: {
   );
 }
 
-/** Free a branch's block under the lock (idempotent: a missing branch/registry is a no-op). */
+/** Free a branch's block under the lock (idempotent: a missing branch/checkout/registry is a no-op). */
 export async function freePortBlock(options: FreeOptions): Promise<void> {
-  const { registryPath, branch } = options;
+  const { registryPath, root, branch } = options;
 
   await withLock(
     registryPath,
     async () => {
       const registry = await readRegistry(registryPath);
-      if (!(branch in registry)) {
+      const branches = registry[root];
+      if (branches === undefined || !(branch in branches)) {
         return;
       }
-      delete registry[branch];
+      delete branches[branch];
+      // A checkout holding nothing is not a checkout the registry has anything to say about, and leaving
+      // the empty object behind would keep a deleted project in the file until the pruner reached it.
+      if (Object.keys(branches).length === 0) delete registry[root];
       await writeRegistry(registryPath, registry);
     },
     options.lock,
   );
 }
 
-/** Resolve the .dev-ports.json path from any cwd (main checkout or a worktree) via git-common-dir. */
-export async function resolvePortsRegistryPath(cwd: string): Promise<string> {
+/**
+ * `<config>/dev-ports.json` — one port space per machine, spanning every checkout on it (#435).
+ *
+ * **At the config root, not `<config>/<project>/`.** A per-project directory is the partition this file
+ * moved to get rid of: the registry sat at each main repo root, so every project kept its own, every one
+ * started empty, and every one handed out block 0 — two projects on their default branch bound the same
+ * twenty ports before either had done anything unusual. Nesting it under a project name would put the
+ * same defect back one directory down.
+ *
+ * The resolution is {@link stateDir}'s, unchanged and unrepeated — `$PITHY_CONFIG_DIR`, then
+ * `%APPDATA%\pithy`, then `$XDG_CONFIG_HOME/pithy`, then `~/.config/pithy`. Two implementations of "where
+ * does config live" is the defect shape `devSecrets/location.ts` names, and the Windows branch is the
+ * half a second one forgets.
+ */
+export function portsRegistryPath(options: StatePathOptions = {}): string {
+  // The name is inline, not a constant. `state.test.ts` decides from the text whether a segment joined
+  // onto `stateDir()` is safe, and the only two answers it takes are a literal this repository typed and
+  // a validator's return — a `const` reads as neither. Undotted, on the `state.json` rule: nothing here
+  // is hidden from anything.
+  return join(stateDir(options), "dev-ports.json");
+}
+
+/**
+ * The main checkout's root, from any cwd inside the repository — the main checkout itself or any of its
+ * worktrees. This is the registry's outer key.
+ *
+ * It used to be welded to the registry's location, because they were the same answer: the file sat at
+ * this path. They are different questions now, and a single function that answered both would be a
+ * second derivation of a location that has exactly one (#435).
+ */
+export async function resolveMainRepoRoot(cwd: string): Promise<string> {
   let stdout: string;
   try {
     ({ stdout } = await execFileAsync("git", ["rev-parse", "--git-common-dir"], { cwd }));
@@ -398,7 +571,11 @@ export async function resolvePortsRegistryPath(cwd: string): Promise<string> {
 
   const commonDir = stdout.trim();
   const absoluteCommonDir = isAbsolute(commonDir) ? commonDir : resolve(cwd, commonDir);
-  const mainRoot = dirname(absoluteCommonDir);
+  const root = dirname(absoluteCommonDir);
 
-  return join(mainRoot, ".dev-ports.json");
+  // **Canonical, because the root is a key now and not a place to put a file** (#435). The same helper
+  // `mainRepoRoot` uses, and it has to be both of them: canonicalising one side alone fixes POSIX and
+  // breaks Windows, where git's forward slashes matched `dirname`'s output and stop matching
+  // `realpath`'s. See {@link canonicalRepoPath} for both divergences and why neither shows up in CI.
+  return canonicalRepoPath(root);
 }

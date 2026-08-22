@@ -3,6 +3,7 @@
 
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync, rmSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
@@ -54,8 +55,35 @@ export function featureNames(issue: string, slug: string, root: string): Feature
 }
 
 /**
+ * One spelling of a repository path, whoever asked and however they got there.
+ *
+ * **Two things derive the main checkout's root and they must agree, because it is a registry key now**
+ * (#435): {@link mainRepoRoot} below, off `git worktree list`, and `resolveMainRepoRoot` in `ports.ts`,
+ * off `git rev-parse --git-common-dir`. Under the old design both were a *place to put a file* and any
+ * two spellings of one directory addressed the same file, so a difference could not be observed. As keys
+ * they are two entries for one repository — `pithy feature create` reserving under one while `destroy`
+ * frees under the other, `freePortBlock` no-opping, and `portsFreed: true` reported over a block that
+ * leaks forever.
+ *
+ * They diverge two ways, one per platform, and neither shows up in CI (every job is `ubuntu-24.04`).
+ * On POSIX, `--git-common-dir` answers `.git` and resolving that against the working directory keeps
+ * whatever symlinks were walked to get there, while `worktree list` always reports the real path. On
+ * **Windows** git emits forward slashes — `C:/code/app` — while `dirname`/`realpath` give `C:\code\app`.
+ * `realpath` settles both: it resolves the links and returns the platform's own separators.
+ *
+ * A failure is not worth refusing a command over — the path came from git, so it exists — and the
+ * uncanonicalised answer stands in.
+ */
+export function canonicalRepoPath(path: string): Promise<string> {
+  return realpath(path).catch(() => path);
+}
+
+/**
  * The main checkout's root. The first `git worktree list` entry is always the primary worktree, so this
  * resolves the same path whether invoked from the root or from inside another worktree.
+ *
+ * Canonicalised through {@link canonicalRepoPath}, which is what makes it the *same string* as the other
+ * derivation rather than merely the same directory.
  */
 export async function mainRepoRoot(git: GitRunner = defaultGit): Promise<string> {
   const first = (await git(["worktree", "list", "--porcelain"])).split("\n")[0] ?? "";
@@ -66,7 +94,7 @@ export async function mainRepoRoot(git: GitRunner = defaultGit): Promise<string>
       action: "Run pithy feature from inside a git repository.",
     });
   }
-  return path;
+  return canonicalRepoPath(path);
 }
 
 /** Whether a worktree is registered at this absolute path. */

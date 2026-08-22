@@ -29,8 +29,19 @@ function appCapability() {
 describe("createFeature → destroyFeature round-trip", () => {
   let repo: string;
   let git: GitRunner;
+  /**
+   * The machine's port registry, injected per test (#435).
+   *
+   * It lives in the Pithy config directory now, not under the checkout — so without a seam every test in
+   * this file would share one file and contaminate the next one's block indices, and a real run would
+   * write the operator's own.
+   */
+  let registryPath: string;
+  let registryDir: string;
 
   beforeEach(async () => {
+    registryDir = await mkdtemp(join(tmpdir(), "pithy-feature-ports-"));
+    registryPath = join(registryDir, "dev-ports.json");
     repo = await mkdtemp(join(tmpdir(), "pithy-feature-repo-"));
     const g = (args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "pipe" });
     g(["init", "-q"]);
@@ -48,19 +59,19 @@ describe("createFeature → destroyFeature round-trip", () => {
   });
   afterEach(async () => {
     await rm(repo, { recursive: true, force: true });
+    await rm(registryDir, { recursive: true, force: true });
   });
 
   test("create builds the worktree, pins ports, wires .dev.vars, migrates + seeds; destroy reverses it", async () => {
     const migrated: string[] = [];
     const seeded: string[] = [];
-    const registryPath = join(repo, ".dev-ports.json");
-
     const createReport = await createFeature({
       projectDir: repo,
       issue: "77",
       slug: "demo",
       skipInstall: true,
       git,
+      registryPath,
       migrate: async ({ projectDir }) => void migrated.push(projectDir),
       seed: async ({ projectDir }) => void seeded.push(projectDir),
     });
@@ -72,8 +83,12 @@ describe("createFeature → destroyFeature round-trip", () => {
 
     // A port block was reserved and the app worker's port pinned from it.
     expect(createReport.dev.workers).toEqual({ app: { port: BASE_PORT, origin: `http://localhost:${BASE_PORT}` } });
+    // One checkout, so one key — and reading it back rather than recomposing it is what makes the
+    // assertion after destroy a real statement about create and destroy agreeing on the key (#435).
     const registry = JSON.parse(await readFile(registryPath, "utf8"));
-    expect(registry["feature/77-demo"]).toMatchObject({ block: 0, base: BASE_PORT });
+    expect(Object.keys(registry)).toHaveLength(1);
+    const rootKey = Object.keys(registry)[0] as string;
+    expect(registry[rootKey]["feature/77-demo"]).toMatchObject({ block: 0, base: BASE_PORT });
 
     // The pinned ports are persisted in the worktree's own .dev.config.json, fixed for the feature's life.
     const devConfig = await readDevConfig(devConfigPath(createReport.worktree));
@@ -109,8 +124,12 @@ describe("createFeature → destroyFeature round-trip", () => {
     expect(destroyReport.portsFreed).toBe(true);
     expect(destroyReport.worktreePruned).toBe(true);
 
+    // Empty, not merely missing that branch: `create` reserves under the root `git worktree list` reports
+    // and `destroy` frees under the one `git rev-parse --git-common-dir` gives. Two derivations of one
+    // quantity, and a disagreement is a free that no-ops while still reporting `portsFreed: true`. An
+    // emptied registry is the only assertion that catches it.
     const afterRegistry = JSON.parse(await readFile(registryPath, "utf8"));
-    expect(afterRegistry["feature/77-demo"]).toBeUndefined();
+    expect(afterRegistry).toEqual({});
     // The worktree is no longer registered.
     expect(await defaultGit(["worktree", "list", "--porcelain"], repo)).not.toContain(createReport.worktree);
   });
@@ -122,6 +141,7 @@ describe("createFeature → destroyFeature round-trip", () => {
       slug: "demo",
       skipInstall: true,
       git,
+      registryPath,
       migrate: async () => {},
       seed: async () => {},
     };
@@ -135,7 +155,7 @@ describe("createFeature → destroyFeature round-trip", () => {
   });
 
   test("two features get non-overlapping port blocks, so both can run at once", async () => {
-    const common = { projectDir: repo, skipInstall: true, git };
+    const common = { projectDir: repo, skipInstall: true, git, registryPath };
     const noop = { migrate: async () => {}, seed: async () => {} };
 
     const a = await createFeature({ ...common, ...noop, issue: "77", slug: "demo" });
@@ -149,9 +169,16 @@ describe("createFeature → destroyFeature round-trip", () => {
   });
 
   test("destroy leaves no port claim behind: the next feature gets the freed block, not a higher one", async () => {
-    const registryPath = join(repo, ".dev-ports.json");
     const noop = { migrate: async () => {}, seed: async () => {} };
-    const first = await createFeature({ projectDir: repo, issue: "77", slug: "demo", skipInstall: true, git, ...noop });
+    const first = await createFeature({
+      projectDir: repo,
+      issue: "77",
+      slug: "demo",
+      skipInstall: true,
+      git,
+      registryPath,
+      ...noop,
+    });
     expect(first.dev.ports.index).toBe(0);
 
     await destroyFeature({
@@ -174,13 +201,16 @@ describe("createFeature → destroyFeature round-trip", () => {
       slug: "next",
       skipInstall: true,
       git,
+      registryPath,
       ...noop,
     });
 
     expect(second.dev.ports.index).toBe(0); // the freed block, reused
     const registry = JSON.parse(await readFile(registryPath, "utf8"));
-    expect(registry["feature/77-demo"]).toBeUndefined();
-    expect(Object.keys(registry)).toEqual(["feature/78-next"]);
+    expect(Object.values(registry).flatMap((branches) => Object.keys(branches as object))).not.toContain(
+      "feature/77-demo",
+    );
+    expect(Object.values(registry).flatMap((branches) => Object.keys(branches as object))).toEqual(["feature/78-next"]);
   });
 
   test("destroy is idempotent: running it with no worktree and no credentials exits cleanly", async () => {
@@ -190,7 +220,7 @@ describe("createFeature → destroyFeature round-trip", () => {
       capabilities: [],
       env: "feature",
       git,
-      registryPath: join(repo, ".dev-ports.json"),
+      registryPath,
     });
     expect(report.deleted).toEqual([]);
     expect(report.remote).toBe(false); // no provisioners passed → remote skipped

@@ -90,7 +90,7 @@ export interface CreateReport {
 
 /** Options for {@link createFeature}. */
 export interface CreateFeatureOptions {
-  /** The main checkout root — where `.dev-ports.json` and the source `.dev.vars` live. */
+  /** The main checkout root — the port registry's key, and where the source `.dev.vars` lives. */
   projectDir: string;
   /** The issue number. */
   issue: string;
@@ -100,6 +100,8 @@ export interface CreateFeatureOptions {
   skipInstall?: boolean;
   /** Ports per feature block (defaults to the registry's block size). */
   blockSize?: number;
+  /** The registry file (default: `<config>/dev-ports.json`). A seam, so a test never writes the real one. */
+  registryPath?: string;
   /** git runner seam. */
   git?: GitRunner;
   /** Install runner seam. */
@@ -136,6 +138,7 @@ export async function createFeature(options: CreateFeatureOptions): Promise<Crea
     mainRoot: worktree.root,
     worktreePath: worktree.wtPath,
     branch: worktree.branch,
+    ...(options.registryPath !== undefined ? { registryPath: options.registryPath } : {}),
     ...(options.blockSize !== undefined ? { blockSize: options.blockSize } : {}),
     ...(options.discoverWorkers !== undefined ? { discoverWorkers: options.discoverWorkers } : {}),
   });

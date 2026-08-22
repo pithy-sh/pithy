@@ -442,7 +442,8 @@ branch + `.worktrees/<issue>-<name>/` convention:
     `.env.<env>.local` layering, which *does* merge — rejected to keep one clear secrets
     convention.)
 - **Per-feature port allocation via a central registry (so multiple worktrees run in
-  unison).** Port collisions are the one thing that stops two feature worktrees running at
+  unison).** *As-shipped behaviour is [`docs/commands/dev.md` §Per-feature ports](../../commands/dev.md#per-feature-ports-run-many-worktrees-at-once) — read that before changing anything here.* Two details below were superseded: the per-worktree file shipped as `.dev.config.json`, and the registry moved out of the main repo root to `<config>/dev-ports.json`, keyed by checkout root, because one registry per checkout meant every project on a machine started over at the same base port (#435). The design intent — one lock, one read of the whole picture, lowest free non-overlapping block — is unchanged.
+  Port collisions are the one thing that stops two feature worktrees running at
   once. The allocator is a single **git-ignored registry at the main repo root** (the parent
   of `.worktrees/` — the one place every linked worktree resolves identically, via
   `git rev-parse --git-common-dir`): **`.dev-ports.json`**, a map **keyed by feature branch**

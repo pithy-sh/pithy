@@ -157,7 +157,8 @@ afterAll(async () => {
       env: ENV,
       provisioners,
       git: stubGit,
-      registryPath: path.join(projectDir, ".dev-ports.json"),
+      registryPath: path.join(projectDir, "..", "dev-ports.json"),
+      root: projectDir,
     }).catch((error: unknown) => {
       // Surface a cleanup failure loudly: a leaked resource costs money and blocks the next run.
       console.error("lifecycle teardown failed — check the account for leftovers:", error);
@@ -268,7 +269,8 @@ describe.skipIf(!hasCreds)("feature lifecycle — LIVE", () => {
       env: ENV,
       provisioners,
       git: stubGit,
-      registryPath: path.join(projectDir, ".dev-ports.json"),
+      registryPath: path.join(projectDir, "..", "dev-ports.json"),
+      root: projectDir,
     };
 
     const first = await destroyFeature(teardown);

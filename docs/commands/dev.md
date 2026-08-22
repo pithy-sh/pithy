@@ -47,16 +47,26 @@ pithy dev [--json]
 
 ### Per-feature ports (run many worktrees at once)
 
-Port collisions are the one thing that stops two feature worktrees running simultaneously. The fix is a **central registry that every feature reads before it assigns** — so a new feature sees what's already taken and can't collide.
+Port collisions are the one thing that stops two feature worktrees running simultaneously — and, since every project starts at the same base port, two *projects* as readily as two worktrees. The fix is a **central registry that every feature reads before it assigns**, held once per machine rather than once per checkout, so a new feature sees everything already taken on the machine and can't collide with any of it.
 
-- **The registry** is a single git-ignored **`.dev-ports.json`** at the **main repo root** (the parent of `.worktrees/`). A worktree resolves it from anywhere via `git rev-parse --git-common-dir`. It's a map keyed by feature branch, each value the contiguous block that branch owns:
+- **The registry** is a single **`dev-ports.json`** in the Pithy config directory — `$PITHY_CONFIG_DIR`, else `%APPDATA%\pithy` on Windows, else `$XDG_CONFIG_HOME/pithy`, else `~/.config/pithy`. **One file for the whole machine, not one per checkout.** It used to sit at the main repo root, which meant every project on a machine kept its own, every one of them started empty, and every one of them handed out block 0 — so two projects on their default branch pinned the same twenty ports. `pithy doctor` prints the resolved path on every run, because nothing in your project mentions it.
+
+  It's keyed by **main-checkout root**, then by branch, each value the contiguous block that branch owns:
 
   ```json
   {
-    "feature/12-auth":  { "block": 0, "base": 8787, "size": 20 },
-    "feature/34-email": { "block": 1, "base": 8807, "size": 20 }
+    "/home/jo/code/acme": {
+      "main":             { "block": 0, "base": 8787, "size": 20 },
+      "feature/12-auth":  { "block": 1, "base": 8807, "size": 20 }
+    },
+    "/home/jo/code/other-app": {
+      "main":             { "block": 2, "base": 8827, "size": 20 }
+    }
   }
   ```
+
+  The key is the checkout, not the project `name`: two unrelated projects can share a name, and sharing a name must never mean sharing ports. A worktree resolves its own root from anywhere via `git rev-parse --git-common-dir`, so every worktree of one repository files under one key.
+- **A checkout that is gone frees its ports.** At the repo root the registry died with the checkout, so `rm -rf` cleaned up for nothing. In the config directory nothing would, so every allocation prunes — under the same lock — any root no longer on disk. Only a definite "not there" counts: a root the CLI merely could not reach keeps its blocks. It cannot tell a deleted checkout from a **moved** one, and does not try: a moved repository's blocks are freed, and it takes them back the next time `pithy dev`, `pithy feature create` or `pithy feature sync` runs in it, since its worktrees still pin them. Between those two moments another project can be handed one — again as a reported port conflict, not a silent double-bind.
 
 - **`pithy feature create`** takes a short file lock, reads the registry (seeing every block already in use), assigns the **lowest free, non-overlapping block**, writes its key, and unlocks. One atomic read-modify-write — no two features can pick the same block.
 - **`pithy feature destroy`** (and merge-to-`main` cleanup) deletes its key, returning the block to the pool. Add/remove is a single keyed mutation; no per-branch files to orphan.
@@ -79,15 +89,15 @@ Port collisions are the one thing that stops two feature worktrees running simul
 - **Per-feature values never go in `.dev.vars`.** That file is generated (above), so a value typed into it is gone on the next `pithy dev` — and the sources it is generated from are keyed on the project and held on the machine, which means every worktree of one project resolves the same ones. A per-feature value put there would clobber every other feature's. Shared secrets live in the dev secrets file; per-feature ports live in `.dev.config.json`.
 - `pithy dev` still verifies each assigned port is actually free (IPv4 + IPv6) before starting, and **reports a conflict rather than drifting** if something external grabbed one — a worker that quietly moves breaks every sibling that was told its address at creation. Because blocks are disjoint and stable, multiple worktrees run in unison and each feature's workers reach each other on their assigned localhost ports.
 
-> **Why one keyed registry, not a file per branch** (`.dev-ports.<branch>.json`)? A single file shows every allocation in one read, makes add/remove a one-key mutation, and leaves no stale per-branch files to garbage-collect. File-per-branch works but forces a glob-and-read-all to see what's taken.
+> **Why one keyed registry, not a file per branch** (`dev-ports.<branch>.json`)? A single file shows every allocation on the machine in one read, makes add/remove a one-key mutation, and leaves no stale per-branch files to garbage-collect. File-per-branch works but forces a glob-and-read-all to see what's taken — and it is exactly the glob that a second project would have started over from.
 
 - **Adding a worker is additive.** Port assignment is *sticky*: a worker that already holds a port keeps it, and only genuinely new workers are assigned, each taking the lowest free port in the block. Discovery is alphabetical, so a purely positional assignment would renumber every later worker the moment someone added one that sorts earlier — moving addresses out from under a running session. A removed worker releases its port back to the block.
-- **The registry is self-healing.** `.dev-ports.json` is git-ignored, so it can vanish while the worktrees allocated from it live on. Before allocating, `pithy feature create` reclaims any block still pinned in an existing worktree's `.dev.config.json`, so a lost registry can never hand out a block a live feature is using.
+- **The registry is self-healing.** It sits outside every checkout, so no clone and no `git clean` can take it — but a wiped config directory, a new machine, or a relocated `$PITHY_CONFIG_DIR` still can, while the worktrees allocated from it live on. Before allocating, `pithy feature create` reclaims any block still pinned in an existing worktree's `.dev.config.json`, so a lost registry cannot hand out a block a live feature is using. **Within that checkout** — the scan walks the `.worktrees/` of the repository the command was run in, and it does not go looking through the others the registry knew about. So after a wipe, each project re-registers its own the next time `pithy dev` starts there — every worktree's pinned block, and the checkout's own — and a project that has not run since the wipe can be handed one of its blocks by one that has. `pithy dev` verifies each port on both stacks before binding and reports the conflict, so it surfaces as a refusal rather than two Workers on one port.
 
 **`pithy feature sync`** — run from the worktree, no arguments, the branch says which feature it is. It makes the local environment ready whatever state it is in, and covers the two everyday cases with one command:
 
 - **You added a worker.** It takes the next free port from the feature's already-reserved block and leaves every existing worker exactly where it was.
-- **A colleague pushed the branch and you pulled it.** None of the local state is in git — `.dev.config.json` and the port reservation are both machine-local — so sync creates them on *your* machine, with your own free block, and migrates + seeds your local backend. (This is precisely why ports are never committed: your teammate's block may already be taken on your machine by one of your other worktrees.) It touches no `.dev.vars`: each worker's is generated by `pithy dev` from sources that were already on your machine, so there is nothing here to share and nothing to lose.
+- **A colleague pushed the branch and you pulled it.** None of the local state is in git — `.dev.config.json` and the port reservation are both machine-local — so sync creates them on *your* machine, with your own free block, and migrates + seeds your local backend. (This is precisely why ports are never committed: your teammate's block may already be taken on your machine by one of your other worktrees — or by another project entirely.) It touches no `.dev.vars`: each worker's is generated by `pithy dev` from sources that were already on your machine, so there is nothing here to share and nothing to lose.
 
 Every step is idempotent, so running it when nothing is missing reports that nothing moved. `--skip-data` reconciles ports without touching the backend.
 

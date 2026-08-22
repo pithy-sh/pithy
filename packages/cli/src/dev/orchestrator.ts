@@ -21,7 +21,14 @@ import {
   scanPinnedBlocks,
   writeDevConfig,
 } from "../feature/devConfig";
-import { allocatePortBlock, type PortBlock, reclaimPortBlocks, resolvePortsRegistryPath } from "../feature/ports";
+import {
+  allocatePortBlock,
+  type PortBlock,
+  portsRegistryPath,
+  reclaimPortBlocks,
+  resolveMainRepoRoot,
+} from "../feature/ports";
+import { canonicalRepoPath } from "../feature/worktree";
 import { allCapabilities, loadProject, loadWorkerConfig, requireProjectName } from "../project/config";
 import { detectPackageManager, execArgs } from "../project/packageManager";
 import { defaultWorkerDev } from "../project/workerManifest";
@@ -206,9 +213,11 @@ const execFileAsync = promisify(execFile);
 
 /** Seams for {@link ensureDevConfig} — the git and registry lookups a test drives itself. */
 export interface EnsureDevConfigDeps {
-  /** Resolve the central `.dev-ports.json` (default: the main repo root, or the project when there is no repo). */
+  /** Resolve the machine's registry file (default: `<config>/dev-ports.json`). */
   registryPathFor?: (projectDir: string) => Promise<string>;
-  /** The current branch, the registry's key (default: `git rev-parse --abbrev-ref HEAD`; `null` off a branch). */
+  /** The main checkout root, the registry's outer key (default: git-common-dir; the project itself with no repo). */
+  rootFor?: (projectDir: string) => Promise<string>;
+  /** The current branch, the registry's inner key (default: `git rev-parse --abbrev-ref HEAD`; `null` off a branch). */
   branchFor?: (projectDir: string) => Promise<string | null>;
   /** Persist the built config (default: {@link writeDevConfig}). */
   writeConfig?: (path: string, config: DevConfig) => Promise<void>;
@@ -224,12 +233,23 @@ export interface EnsureDevConfigOptions extends EnsureDevConfigDeps {
   existing?: DevConfig | null;
 }
 
-/** The registry lives at the main repo root; with no repo at all, the project keeps its own. */
-async function defaultRegistryPath(projectDir: string): Promise<string> {
+/** The registry is machine-wide and always resolvable — no repository is involved in finding it (#435). */
+async function defaultRegistryPath(_projectDir: string): Promise<string> {
+  return portsRegistryPath();
+}
+
+/**
+ * The main checkout root, the key this project's blocks are filed under. With no repository at all the
+ * project is its own root, which keys one block set per checkout — the same answer the old registry
+ * location gave by sitting in it.
+ */
+async function defaultRoot(projectDir: string): Promise<string> {
   try {
-    return await resolvePortsRegistryPath(projectDir);
+    return await resolveMainRepoRoot(projectDir);
   } catch {
-    return join(projectDir, ".dev-ports.json");
+    // Canonical for the same reason `resolveMainRepoRoot` is: the answer is a registry key, and a project
+    // reached once through a symlink and once through the real path would occupy two of them.
+    return canonicalRepoPath(projectDir);
   }
 }
 
@@ -241,6 +261,23 @@ async function defaultBranch(projectDir: string): Promise<string | null> {
     return branch === "" || branch === "HEAD" ? null : branch;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Put this config's already-pinned block back into the registry if the registry has lost it.
+ *
+ * Gap-filling only — {@link reclaimPortBlocks} never overwrites a live allocation, so this can only ever
+ * restore a claim, never move one. Swallows its own failure: see {@link ensureDevConfig} for why a
+ * registry that cannot be written must not stop a session whose ports are already decided.
+ */
+async function reregisterPinnedBlock(options: EnsureDevConfigOptions, branch: string, block: PortBlock): Promise<void> {
+  try {
+    const registryPath = await (options.registryPathFor ?? defaultRegistryPath)(options.projectDir);
+    const root = await (options.rootFor ?? defaultRoot)(options.projectDir);
+    await reclaimPortBlocks({ registryPath, root, reservations: [{ branch, block }] });
+  } catch {
+    // Nothing to report and nothing to stop: the ports this run uses are the ones already on disk.
   }
 }
 
@@ -257,6 +294,21 @@ async function defaultBranch(projectDir: string): Promise<string | null> {
  * once allocated, and assignment is sticky, so a second run returns the same ports and a worker added later
  * takes a free port without moving a sibling's address. An existing config keeps its own block and branch —
  * the registry is never re-keyed underneath a live feature.
+ *
+ * **A pinned config still re-registers its claim, and that is not a contradiction of the line above**
+ * (#435). The registry is machine-wide now, so it can lose this project's entry to something this project
+ * never did: a wiped config directory, a new machine, a moved checkout pruned as gone by another project's
+ * allocation. Every one of those ends with a live feature's ports on offer to whoever allocates next.
+ * Before, the whole reclaim lived on the path that runs when there is *no* config — which is the path a
+ * settled project never takes, so `pithy dev`, the command anybody actually runs, repaired nothing. The
+ * repair is {@link reclaimPortBlocks}, which fills gaps and never overwrites, so re-registering a block
+ * this config already pins cannot move anyone: the promise above is about *re-keying*, and nothing here
+ * re-keys.
+ *
+ * Best-effort, deliberately. This session's ports are already pinned and are verified on both stacks
+ * before anything binds, so a registry that cannot be written is not a reason to refuse to start — an
+ * unwritable `$PITHY_CONFIG_DIR` used to leave `pithy dev` working off the pinned config alone, and it
+ * still does.
  */
 export async function ensureDevConfig(options: EnsureDevConfigOptions): Promise<DevConfig> {
   const existing = options.existing ?? null;
@@ -267,15 +319,19 @@ export async function ensureDevConfig(options: EnsureDevConfigOptions): Promise<
   if (existing) {
     branch = existing.branch;
     block = { block: existing.ports.index, base: existing.ports.base, size: existing.ports.size };
+    await reregisterPinnedBlock(options, branch, block);
   } else {
     const registryPath = await (options.registryPathFor ?? defaultRegistryPath)(options.projectDir);
+    const root = await (options.rootFor ?? defaultRoot)(options.projectDir);
     const named = await (options.branchFor ?? defaultBranch)(options.projectDir);
     // Off a branch (no repo, detached HEAD) the checkout path is the stable key — one block per checkout.
     branch = named ?? `local:${options.projectDir}`;
     // Rebuild any registry entry lost since the worktrees were created, so a fresh registry can never hand
-    // out a block a live feature still holds.
-    await reclaimPortBlocks({ registryPath, reservations: await scanPinnedBlocks(dirname(registryPath)) });
-    block = await allocatePortBlock({ registryPath, branch });
+    // out a block a live feature still holds. Scanned from the repository root, never from the registry's
+    // own directory: the file sits in the config directory now, which has no `.worktrees` and never will,
+    // so `dirname(registryPath)` would make this a silent no-op in every direction (#435).
+    await reclaimPortBlocks({ registryPath, root, reservations: await scanPinnedBlocks(root) });
+    block = await allocatePortBlock({ registryPath, root, branch });
   }
 
   const config = buildDevConfig({ branch, block, workers: options.workers, previous: existing });

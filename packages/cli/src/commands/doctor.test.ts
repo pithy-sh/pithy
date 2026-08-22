@@ -177,6 +177,7 @@ describe("renderDoctorText", () => {
         "",
         "Config dir: ~/.config/pithy",
         `State file: ${report.stateFile}`,
+        "Ports:      ~/.config/pithy/dev-ports.json",
         "Notifier:   enabled (PITHY_NO_UPDATE_NOTIFIER to disable)",
         "",
         "Project: pithy.config.ts found",

@@ -181,6 +181,14 @@ function docOptions(options: DoctorReportOptions): DoctorReportOptions {
       present: true,
       orphans: [],
     }),
+    // And its neighbour once more, resolved under the same home so the transcript's path tilde-abbreviates
+    // like every other one on the page. Present with nothing stray, which is the state that prints the bare
+    // path — the healthy machine the transcript is of.
+    checkPortsRegistry: async () => ({
+      path: join(harness.dir, ".config", "pithy", "dev-ports.json"),
+      present: true,
+      stray: null,
+    }),
     runtime: BUN,
   };
 }
