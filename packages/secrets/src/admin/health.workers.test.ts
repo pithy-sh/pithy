@@ -3,7 +3,7 @@
 
 import { env } from "cloudflare:test";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
-import { HealthSummaryKey } from "@pithy-sh/core/src/controlPlane/discovery/health";
+import { HealthSummaryKey } from "@pithy-sh/core/src/controlPlane/discovery/healthSummary";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { Hono } from "hono";
 import { beforeEach, describe, expect, test } from "vitest";

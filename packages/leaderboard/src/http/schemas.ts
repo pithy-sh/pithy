@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
-import { BOARD_KEY_PATTERN } from "../config/config";
-import { MAX_SEGMENT_SIZE } from "../rank/query";
+import { BOARD_KEY_PATTERN } from "../config/boardKey";
+import { MAX_SEGMENT_SIZE } from "../rank/segment";
 
 /**
  * The HTTP boundary shapes. Everything a client can send is parsed through one of these before it

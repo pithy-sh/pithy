@@ -11,7 +11,7 @@ import { browserProgram } from "./program";
 /**
  * The instrument, held to each shape somebody has got past a gate here.
  *
- * `responseCoverage.test.ts` proves the gate sees **this repository**: it asserts that `link/sender.ts`,
+ * `browserSurface.test.ts` proves the gate sees **this repository**: it asserts that `link/sender.ts`,
  * a real module that really is a Worker's, pulls in the Workers types. That assertion is the one no
  * fixture can fake, and it is why it lives there rather than here.
  *

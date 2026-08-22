@@ -5,7 +5,7 @@ import { z } from "zod";
 import { MAX_SUBMISSION_ATTACHMENTS, MAX_SUBMISSION_BODY_CHARS, MAX_SUBMISSION_SUBJECT_CHARS } from "../config/config";
 import { SupportChannel, SupportPriority, SupportSentiment } from "../data/enums";
 import { SupportSubmissionContext } from "../data/message";
-import { MAX_PAGE_SIZE } from "../store/threads";
+import { MAX_PAGE_SIZE } from "../store/paging";
 
 /**
  * The request contracts every support route declares (CLAUDE.md §HTTP).

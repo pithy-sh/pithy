@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import { ControlPlaneScope } from "../scope/scope";
-import { CapabilityHealthReport, HealthSummary, HealthSummaryKey, healthReport, healthWire } from "./health";
+import { CapabilityHealthReport, HealthSummary, HealthSummaryKey, healthReport, healthWire } from "./healthSummary";
 
 /**
  * What a capability tells a management client about its own admin surface.

@@ -16,6 +16,7 @@ import {
 } from "../data/tables";
 import { SupportThread } from "../data/thread";
 import { SupportNotFoundError } from "../error/errors";
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from "./paging";
 import { isSearchable, searchPredicate } from "./search";
 
 /**
@@ -33,11 +34,6 @@ import { isSearchable, searchPredicate } from "./search";
  * millisecond is unlikely and a page boundary landing between them is exactly where it would show up
  * as a dropped row.
  */
-
-/** How many threads a page holds by default. */
-export const DEFAULT_PAGE_SIZE = 25;
-/** The most a caller may ask for in one page. */
-export const MAX_PAGE_SIZE = 100;
 
 /** An opaque position in the inbox ordering. */
 export interface ThreadCursor {

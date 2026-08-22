@@ -17,7 +17,8 @@ import type { LeaderboardBoard } from "../config/config";
 import { leaderboardDatabase } from "../data/tables";
 import { entryStore } from "../entry/store";
 import { leaderboard_0001_entries } from "../migrations/0001_entries";
-import { entriesAround, MAX_SEGMENT_SIZE, rankOf, SEGMENT_FIXED_PARAMETERS, topEntries } from "./query";
+import { entriesAround, rankOf, topEntries } from "./query";
+import { MAX_SEGMENT_SIZE, SEGMENT_FIXED_PARAMETERS } from "./segment";
 
 const WINDOW = "all";
 const T0 = new Date(1_700_000_000_000);

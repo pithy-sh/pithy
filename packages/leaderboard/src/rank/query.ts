@@ -7,6 +7,7 @@ import { type Expression, type SqlBool, sql } from "kysely";
 import type { LeaderboardBoard } from "../config/config";
 import { LeaderboardEntry } from "../data/entry";
 import { LEADERBOARD_ENTRIES_TABLE, type LeaderboardDatabase } from "../data/tables";
+import { MAX_SEGMENT_SIZE, SEGMENT_FIXED_PARAMETERS } from "./segment";
 import { classifyTier } from "./tiers";
 
 /**
@@ -25,23 +26,6 @@ import { classifyTier } from "./tiers";
  * arises and neither is implemented. It also means a top-N page can number its own rows from the offset
  * rather than asking the database to rank them.
  */
-
-/**
- * What a segment query binds besides the members: 4 filters (boardId, windowKey, visible, hidden) plus
- * the 6 of `betterThan` (score twice, achieved_at twice, score and userId again). `rankOf` within a
- * segment is the tightest path, so its overhead is the one that sets the cap.
- */
-export const SEGMENT_FIXED_PARAMETERS = 10;
-
-/**
- * Cap on a segment's member count.
- *
- * `boundParameterBudget(SEGMENT_FIXED_PARAMETERS)` is 90 — the most D1 would take. 80 is deliberately
- * inside it, so that adding one more filter to a segment query is a change to this file rather than a
- * change to what every caller may pass. `segmentMembers` asserts the relationship rather than trusting
- * it, and `boundParameters.test.ts` in core owns the arithmetic itself.
- */
-export const MAX_SEGMENT_SIZE = 80;
 
 /**
  * The members a segment query may bind, or a refusal naming the cap.

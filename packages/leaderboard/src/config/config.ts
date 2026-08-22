@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import { assertValidSchedule } from "../window/schedule";
+import { BOARD_KEY_PATTERN } from "./boardKey";
 
 /**
  * The leaderboard capability's config — the thin, user-owned surface in `pithy.config.ts`. Every field
@@ -14,9 +15,6 @@ import { assertValidSchedule } from "../window/schedule";
  * database records is only what config cannot: the entries, and a fingerprint of each board's immutable
  * fields so a later edit cannot silently reinterpret scores already stored (see `data/boardRecord`).
  */
-
-/** A board key is a URL path segment (`/leaderboard/<key>/top`), so it is kebab-case and lowercase. */
-export const BOARD_KEY_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 export const ScoreDirection = z
   .enum(["asc", "desc"])

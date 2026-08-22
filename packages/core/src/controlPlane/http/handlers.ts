@@ -11,7 +11,8 @@ import { ControlPlaneConnection, type RegisteredKey } from "../data/connection";
 import { appendKey, expireKey, pruneKeys } from "../data/keyLifecycle";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, type ControlPlaneDatabase } from "../data/tables";
 import type { CapabilityDeclaration, ControlPlaneManifestWire } from "../discovery/adminRoute";
-import { type CapabilityHealthSource, healthWire, readCapabilityHealth } from "../discovery/health";
+import { type CapabilityHealthSource, readCapabilityHealth } from "../discovery/health";
+import { healthWire } from "../discovery/healthSummary";
 import { ControlPlaneInvalidCredentialError, ControlPlaneKeyConflictError } from "../error/errors";
 import type {
   ControlPlaneKeysResponse,

@@ -51,14 +51,20 @@ export { type AdminRouteDrift, missingAdminRoutes } from "./controlPlane/discove
 // carries them — so a client renders "3 secrets need rotating" from the read it already made rather than
 // spending a round trip per number (#317). Exported whole, because a client renders the values through
 // the declarations that travel with them.
+// Split across two modules and exported as one surface: the seam a capability implements needs Hono
+// and the `Capability` contract, and the vocabulary a client renders needs neither. A browser importing
+// the second must not compile the first (#430).
 export {
   type CapabilityHealth,
   type CapabilityHealthInput,
-  CapabilityHealthReport,
   type CapabilityHealthSource,
-  type CapabilityHealthWire,
   capabilityHealthSources,
   defineCapabilityHealth,
+  readCapabilityHealth,
+} from "./controlPlane/discovery/health";
+export {
+  CapabilityHealthReport,
+  type CapabilityHealthWire,
   HealthSummary,
   HealthSummaryKey,
   HealthSummaryValue,
@@ -68,8 +74,7 @@ export {
   healthWire,
   type NamedHealthValue,
   namedHealthValues,
-  readCapabilityHealth,
-} from "./controlPlane/discovery/health";
+} from "./controlPlane/discovery/healthSummary";
 export { requireControlPlane } from "./controlPlane/http/guard";
 export {
   ANY_VERIFIED_CALLER,

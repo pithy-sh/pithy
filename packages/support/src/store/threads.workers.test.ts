@@ -16,17 +16,10 @@ import { SupportThread } from "../data/thread";
 import { SupportListedThreadView, SupportMessageView, SupportThreadView } from "../http/responses";
 import { listedThreadView, messageView, threadView } from "../http/views";
 import { support_0001_threads } from "../migrations/0001_threads";
+import { MAX_PAGE_SIZE } from "./paging";
 import { indexMessage } from "./search";
 import { createSearchIndex } from "./searchIndex";
-import {
-  listOwnThreads,
-  listThreads,
-  MAX_PAGE_SIZE,
-  readOwnThread,
-  readThread,
-  setArchived,
-  setFlags,
-} from "./threads";
+import { listOwnThreads, listThreads, readOwnThread, readThread, setArchived, setFlags } from "./threads";
 
 /**
  * The inbox query against real D1 — pagination, filters, and both search backends on live rows.

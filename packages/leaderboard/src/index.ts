@@ -30,7 +30,8 @@ export {
 } from "./config/config";
 export { LeaderboardEntry } from "./data/entry";
 export type { OwnRank } from "./http/handlers";
-export { MAX_SEGMENT_SIZE, type RankedEntry } from "./rank/query";
+export type { RankedEntry } from "./rank/query";
+export { MAX_SEGMENT_SIZE } from "./rank/segment";
 export { classifyTier } from "./rank/tiers";
 export { BOOKMARK_HEADER } from "./session/bookmark";
 export { ALL_TIME_WINDOW, previousWindowKeys, windowKeyAt } from "./window/schedule";

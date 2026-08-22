@@ -6,16 +6,12 @@ import type { z } from "zod";
 import { defineCapability } from "../../capability/capability";
 import { InternalError, PithyError } from "../../error/pithyError";
 import {
-  type CapabilityHealthReport,
   type CapabilityHealthSource,
   capabilityHealthSources,
   defineCapabilityHealth,
-  HealthSummaryKey,
-  healthReport,
-  healthWire,
-  namedHealthValues,
   readCapabilityHealth,
 } from "./health";
+import { HealthSummaryKey } from "./healthSummary";
 
 /**
  * The health seam: a bounded, scalar, scope-inheriting summary a capability contributes to its own
@@ -24,6 +20,10 @@ import {
  *
  * Every case below is about one of the three things that would turn this into a data API: a value that
  * is not a scalar, a key nobody declared, and a number a caller was never granted.
+ *
+ * **The vocabulary's own cases live in `healthSummary.test.ts`** — what a key may be called, what a
+ * declaration may hold, and how the four states cross the wire. That half moved out of this module in
+ * #430 so that a scope declaration importing `AdminRoute` stops reaching `Capability` and D1 with it.
  */
 
 /** A key as a capability writes one, before parsing. */
@@ -303,60 +303,5 @@ describe("a producer that throws is its own state, and it rides on the value (#3
       for (const spy of spies) spy.mockRestore();
     }
     expect(written).toEqual([]);
-  });
-});
-
-describe("the four states round-trip the wire, and an older Worker still lands on the right one", () => {
-  const keys = [HealthSummaryKey.parse(dueForRotation)];
-
-  test("each state encodes and decodes back to itself", () => {
-    const reports: CapabilityHealthReport[] = [
-      { state: "undeclared" },
-      { state: "withheld" },
-      { state: "reported", values: { secretsDueForRotation: 0 } },
-      { state: "unavailable" },
-    ];
-    for (const report of reports) {
-      // `undeclared` and `withheld` encode alike; `healthKeys` rides in the same entry and tells them
-      // apart, which is the arrangement #317 chose.
-      const declared = report.state === "undeclared" ? [] : keys;
-      expect(healthReport({ healthKeys: declared, ...healthWire(report) })).toEqual(report);
-    }
-  });
-
-  test("a Worker deployed before #350 sends no flag and lands on the three states it had", () => {
-    expect(healthReport({ healthKeys: [], health: null, healthUnavailable: false })).toEqual({ state: "undeclared" });
-    expect(healthReport({ healthKeys: keys, health: null, healthUnavailable: false })).toEqual({ state: "withheld" });
-    expect(healthReport({ healthKeys: keys, health: { secretsDueForRotation: 0 }, healthUnavailable: false })).toEqual({
-      state: "reported",
-      values: { secretsDueForRotation: 0 },
-    });
-  });
-
-  test("a Worker sending both a failure and values is read as the failure", () => {
-    // Not a shape this seam produces, and exactly why it is pinned: whatever a broken producer left in
-    // the values is not an answer, and reading it would be reading the wreckage.
-    expect(healthReport({ healthKeys: keys, health: { secretsDueForRotation: 9 }, healthUnavailable: true })).toEqual({
-      state: "unavailable",
-    });
-  });
-});
-
-describe("a client renders an unknown key as nothing", () => {
-  test("a value with no declaration beside it is dropped rather than guessed at", () => {
-    // A newer Worker reporting a key this client has never heard of must render as nothing. It has a
-    // declaration, so it renders generically; a value with *no* declaration is not renderable at all.
-    const named = namedHealthValues({
-      healthKeys: [HealthSummaryKey.parse(dueForRotation)],
-      health: { state: "reported", values: { secretsDueForRotation: 3, somethingNewer: 9 } },
-    });
-    expect(named).toEqual([{ key: HealthSummaryKey.parse(dueForRotation), value: 3 }]);
-  });
-
-  test("a withheld summary and a failed one both name nothing", () => {
-    const declared = [HealthSummaryKey.parse(dueForRotation)];
-    expect(namedHealthValues({ healthKeys: declared, health: { state: "withheld" } })).toEqual([]);
-    expect(namedHealthValues({ healthKeys: declared, health: { state: "unavailable" } })).toEqual([]);
-    expect(namedHealthValues({ healthKeys: declared, health: { state: "undeclared" } })).toEqual([]);
   });
 });
