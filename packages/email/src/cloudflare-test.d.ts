@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-/// <reference types="@cloudflare/vitest-pool-workers/types" />
+/// <reference types="@cloudflare/vitest-plugin/types" />
 
 // Bindings the Workers-runtime test project provides to `*.workers.test.ts`, matching the Miniflare
 // config in `vitest.workers.config.ts`: the app `DB` database the email tables live in, and the

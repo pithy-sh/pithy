@@ -32,11 +32,18 @@ import { readSource, sourcePaths } from "./sourceFiles";
  * accepted from either level and `setupFiles` is required on the project itself. Getting that backwards
  * is how a config acquires a guard that never runs.
  *
- * **Workers projects are exempt, and the exemption is structural rather than a judgement.** Probed on
- * this tree: a test in the `@cloudflare/vitest-pool-workers` pool sees a `process.env` of seven keys —
- * miniflare's bindings. No `CLOUDFLARE_API_TOKEN`, no `HOME`. workerd does not inherit the host
- * environment, so there is no ambient credential to blank and no real home directory to resolve. A
- * guard there would be inert by construction, which is the thing this file exists to refuse.
+ * **Workers projects are exempt, and the exemption is structural rather than a judgement.** workerd does
+ * not inherit the host environment, so there is no ambient credential to blank and no real home
+ * directory to resolve. A guard there would be inert by construction, which is the thing this file
+ * exists to refuse. A test under `@cloudflare/vitest-plugin` sees Vite's `import.meta.env` shims and
+ * vitest's two pool ids, plus whatever `bindings` its own config declares. No `CLOUDFLARE_API_TOKEN`,
+ * no `HOME`.
+ *
+ * **That is asserted, not probed.** It used to be a sentence here reporting a count taken once on
+ * workerd `1.20260730.1`; #433 moved the harness to `1.20260820.1` and the sentence would have gone
+ * stale without a word — in the file that justifies dropping a guard, which is the worst place for a
+ * fact nothing checks. {@link WORKERD_ENV_EVIDENCE} pins the exact key set from inside workerd, and
+ * the citation is resolved below rather than left as prose that rots the same way.
  *
  * **`templates/` is exempt too.** Those files are copied verbatim into an adopter's repository by
  * `pithy init`, where they become the adopter's code and this repository's root does not exist. They are
@@ -58,7 +65,20 @@ const CONFIG_DIR_SETUP = join(REPO_ROOT, "vitest.setup.ts");
 const ALLOW_REAL = "PITHY_ALLOW_REAL_CONFIG_DIR";
 
 /** The plugin that marks a project as running inside workerd rather than on the host. */
-const WORKERS_POOL = "@cloudflare/vitest-pool-workers";
+const WORKERS_PLUGIN = "@cloudflare/vitest-plugin";
+
+/**
+ * The measurement the workers exemption rests on, written down once and resolved below.
+ *
+ * #433 asserted the key set and then cited the assertion in a comment — which is the same defect one
+ * level out. `grep` found this path in prose and nowhere else: no `existsSync`, no import, nothing that
+ * runs. Rename or delete the file and the exemption over every workers project in the tree is justified
+ * by a citation to nothing, green.
+ */
+const WORKERD_ENV_EVIDENCE = "packages/core/src/worker/envIsolation.workers.test.ts";
+
+/** The prose that cites it. A move has to move these too, or the reader is sent nowhere. */
+const EVIDENCE_CITATIONS = ["CONTRIBUTING.md"];
 
 /** The configs vitest is actually invoked with. A `vitest.workers.config.ts` is reached as a project. */
 function isEntryConfig(name: string): boolean {
@@ -119,11 +139,11 @@ function testBlock(config: ConfigShape | null): TestBlock {
   return block === null ? {} : (block as TestBlock);
 }
 
-/** Whether a loaded module declares the workers pool plugin. Nested arrays are how vite states plugins. */
-function usesWorkersPool(config: ConfigShape | null): boolean {
+/** Whether a loaded module declares the workers plugin. Nested arrays are how vite states plugins. */
+function usesWorkersPlugin(config: ConfigShape | null): boolean {
   const plugins = config?.plugins;
   if (!Array.isArray(plugins)) return false;
-  return plugins.flat(Number.POSITIVE_INFINITY).some((plugin) => asRecord(plugin)?.name === WORKERS_POOL);
+  return plugins.flat(Number.POSITIVE_INFINITY).some((plugin) => asRecord(plugin)?.name === WORKERS_PLUGIN);
 }
 
 /** `setupFiles` in either spelling vitest accepts, made absolute against the project's directory. */
@@ -166,7 +186,7 @@ async function projectsOf(path: string): Promise<Project[]> {
         dir,
         env: rootEnv,
         setupFiles: setupFilesOf(root, dir),
-        workers: usesWorkersPool(config),
+        workers: usesWorkersPlugin(config),
         integration,
         testTimeout: root.testTimeout,
         hookTimeout: root.hookTimeout,
@@ -185,7 +205,7 @@ async function projectsOf(path: string): Promise<Project[]> {
         dir: dirname(file),
         env: { ...rootEnv, ...(block.env ?? {}) },
         setupFiles: setupFilesOf(block, dirname(file)),
-        workers: usesWorkersPool(referenced),
+        workers: usesWorkersPlugin(referenced),
         integration,
         testTimeout: block.testTimeout,
         hookTimeout: block.hookTimeout,
@@ -200,7 +220,7 @@ async function projectsOf(path: string): Promise<Project[]> {
       dir,
       env: { ...rootEnv, ...(block.env ?? {}) },
       setupFiles: setupFilesOf(block, dir),
-      workers: usesWorkersPool(inline as ConfigShape),
+      workers: usesWorkersPlugin(inline as ConfigShape),
       integration,
       testTimeout: block.testTimeout,
       hookTimeout: block.hookTimeout,
@@ -245,6 +265,34 @@ describe("the walk itself", () => {
       }
     }
     expect(missing).toEqual([]);
+  });
+});
+
+/**
+ * **The workers exemption cites evidence, and the citation is resolved.**
+ *
+ * The exemption above drops two guards over every `*.workers.test.ts` project, and its whole argument
+ * is one file measuring workerd's environment from inside. That file was named in a comment here and
+ * linked as markdown from `CONTRIBUTING.md`, and neither is a thing that runs. This repository has a
+ * gate for exactly that shape — `packages/ui-react/src/seededGates.test.ts` resolves every gate its
+ * ledger cites — so the argument gets the same treatment as the count it replaced.
+ */
+describe("the workers exemption cites evidence that exists", () => {
+  test("the measurement it rests on is where it says", () => {
+    expect(
+      readSource(join(REPO_ROOT, WORKERD_ENV_EVIDENCE)),
+      `the workers exemption is justified by ${WORKERD_ENV_EVIDENCE}, which is not there`,
+    ).not.toBeNull();
+  });
+
+  test("every citation of it names that path", () => {
+    for (const citation of EVIDENCE_CITATIONS) {
+      const text = readSource(join(REPO_ROOT, citation));
+      expect(text, `${citation} cites the workerd measurement and is not there`).not.toBeNull();
+      expect(text ?? "", `${citation} sends its reader to a path that is not ${WORKERD_ENV_EVIDENCE}`).toContain(
+        WORKERD_ENV_EVIDENCE,
+      );
+    }
   });
 });
 

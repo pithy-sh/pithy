@@ -1,4 +1,4 @@
-import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 import { COMPATIBILITY_DATE } from "../../compatibility";
 import { UNIT_BUDGETS } from "../../vitest.shared";

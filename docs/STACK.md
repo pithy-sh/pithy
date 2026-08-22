@@ -626,7 +626,7 @@ This is documented in `CONTRIBUTING.md` for completeness. The main scripts assum
 - **Fast by default.** Native ESM, parallel execution, smart test isolation.
 - **Modern API.** No need for transformers, plugins, or Jest's legacy quirks.
 - **Snapshot testing, mocking, coverage** all built in.
-- **Works with the Cloudflare Workers runtime** via `@cloudflare/vitest-pool-workers` — important since you'll want to test capabilities against the actual Workers runtime, not a mock.
+- **Works with the Cloudflare Workers runtime** via `@cloudflare/vitest-plugin` — important since you'll want to test capabilities against the actual Workers runtime, not a mock.
 
 ### Standard test layout
 
@@ -890,7 +890,7 @@ bun add citty @clack/prompts picocolors zod execa defu
 
 # Capability packages (each one)
 bun add zod @cloudflare/workers-types
-bun add -d wrangler vitest @cloudflare/vitest-pool-workers
+bun add -d wrangler vitest @cloudflare/vitest-plugin
 ```
 
 Configure the root `package.json`:
@@ -1011,21 +1011,15 @@ seven. Do not lower it because a grep says we are clean — the grep is about us
 `^22.20.1`, never 26. `CLAUDE.md` and §1 above set a **Node 22 LTS floor**; moving the types past it
 contradicts a stated constraint rather than satisfying it.
 
-### `miniflare` stays on 4.x, and `@cloudflare/vitest-pool-workers` is held with it
+### The `miniflare` we ship stays on 4.x. The one the harness runs on no longer can
 
-`miniflare` 5 is published only as `5.x-alpha`, and #388 settled the compatibility-date story on 4.x.
-A first release does not ship on an alpha dependency.
+`miniflare` 5 is published only as `5.x-alpha`, and #388 settled the compatibility-date story on 4.x. **A first release does not ship on an alpha dependency**, and it still does not: the `miniflare` this kit *ships* is a runtime dependency of `@pithy-sh/cli` — `pithy migrate` and the dev-secrets store construct it directly — declared `^4.20260722.1` and resolving `4.20260730.0`. That declaration is the hold, and nothing below moves it.
 
-**These two are one decision, not two.** `@cloudflare/vitest-pool-workers` moved to the miniflare 5
-alpha line at **0.20.0** and has not come back: every version from 0.20.0 to 0.21.3 pins an exact
-`miniflare@5.x-alpha`. So taking the pool-workers major *is* taking the alpha. The declared
-`^0.19.0` caret enforces the exclusion on its own — for a `0.x` package it resolves `<0.20.0` — which
-is why no pin is needed to hold it.
+**What changed is that the test harness stopped being covered by the same sentence.** Until #433 it was: the Workers Vitest integration was a `0.x` package whose caret resolved `<0.20.0`, and every version from 0.20.0 up pinned an exact `miniflare@5.x-alpha`, so the caret excluded the alpha for free. Version 1 is that same line renamed — `@cloudflare/vitest-plugin@1.0.0` pins `miniflare@5.20260820.0-alpha` — so there is no version of the current name that runs on 4.x. **Do not read that as an abandoned package.** The registry says otherwise: `@cloudflare/vitest-pool-workers` carries no `deprecated` field on any version, and its `latest` is `0.22.0`, published 2026-08-18 — newer than the `^0.19.0` we resolved. `@cloudflare/vitest-plugin@1.0.0` landed two days later, on 2026-08-20. The argument for following it is that version 1 is where the integration continues, not that the old name has stopped working. The cost of following it is a test-only alpha.
 
-Revisit both together, the day miniflare 5 has a stable release. Re-checked against the registry for
-#402: `miniflare`'s `latest` dist-tag is still `5.20260811.1-alpha`, there is no stable 5.x, and every
-`@cloudflare/vitest-pool-workers` from 0.20.0 to 0.21.3 still pins an exact miniflare 5 alpha. The
-top of the 4.x line is `4.20260730.0`, which is what we resolve.
+So the two are no longer one decision. `@cloudflare/vitest-plugin` is a devDependency in all eighteen manifests that declare it — seventeen capability packages here, and `templates/starter`, where it is the adopter's own. Nothing puts it in a `dependencies` block, so it never reaches a `node_modules` a Worker is bundled from. The workerd it spawns for `*.workers.test.ts` is now `1.20260820.1` rather than `1.20260730.1`. It is also not the first alpha in this tree. `wrangler` is a **devDependency** of eighteen of the twenty-one packages under `packages/`, every one of them at `^4.115.0`, and `templates/starter/apps/api` declares `^4.123.0` as the adopter's own. They hoist to a single `wrangler@4.123.0`, which has been carrying a nested `miniflare@5.20260811.1-alpha` for our own suites all along. It is a devDependency everywhere deliberately: the kit does not ship a wrangler. `pithy dev` and `pithy deploy` exec `wrangler` through the adopter's own package manager, so an adopter drives the wrangler in their repository, not one of ours. Both alphas here are dev-side, and one of them was already.
+
+**The exposure this leaves is real and worth naming, and nothing narrows it.** The harness now runs a newer workerd than the `miniflare` `pithy migrate` drives, so a behaviour difference between them is a difference the tests cannot see. The two halves differ in build **and** in compatibility date. `compatibility.ts` reaches the harness — all seventeen `vitest.workers.config.ts` under `packages/` import `COMPATIBILITY_DATE` — and it does not reach the migrator: the four `new Miniflare(` outside the CLI's own suites (`migrations/run.ts`, `seed/drivers.ts`, `devSecrets/store.ts`, `test-utils/seedHarness.ts`) pass no `compatibilityDate` between them, so `pithy migrate` and `pithy seed` run on whatever date that miniflare defaults to. Handing those four the constant would close the date half and leave the build half; it is a runtime change and wants its own issue, not this one. Revisit the whole thing the day `miniflare` 5 has a stable release: promote both 4.x declarations, and the two halves are one line again.
 
 ### The kit does not read Babel
 
@@ -1068,19 +1062,41 @@ drivers, declared class names, findings, lines and expressions.
 
 ### `undici`: the one advisory we cannot close, and why
 
-`bun audit` reports five undici advisories (`>=7.0.0 <7.29.0`), reached through `miniflare`. One is
+`bun audit` reports five undici advisories (`>=7.0.0 <7.29.0`) down a single path, `miniflare`. One is
 high: cross-user information disclosure via degenerate private cache directives.
 
 **No floor of ours can move it.** Every `miniflare` 4.x release pins `undici` at exactly `7.28.0` —
-not a range — so there is no 4.x version that resolves a patched undici. Only `miniflare@5.x-alpha`
-pins `7.29.0`, and that is the alpha excluded above.
+not a range — so there is no 4.x version that resolves a patched undici. `7.29.0` is the first patched
+release, and on this tree only the nested `miniflare@5.x-alpha` copies carry it: the one under
+`@cloudflare/vitest-plugin`, and the ones under `wrangler` — the hoisted `4.123.0`, plus the `4.125.0`
+the plugin's own exact pin drags in. Count that fan-out in `bun.lock` rather than assuming it is
+uniform. There are fifteen nested `wrangler@4.125.0` entries: one under `@cloudflare/vitest-plugin`
+itself, and fourteen under `@pithy-sh/*` packages that declare both it and `wrangler`. Three packages
+declare both and get no nested entry — `audit`, `media` and `vector` keep the hoisted `4.123.0`. So
+the tree now carries two wrangler generations, and two miniflare and workerd generations with them,
+across the capability packages. That is harmless, because the workerd a `*.workers.test.ts` runs on
+comes from the plugin's own pinned miniflare either way, never from whichever wrangler sits beside it.
+None of these copies is reported, and after #433 none is excluded either — the harness runs the first.
 
-What bounds it: miniflare is the local simulator behind `pithy dev` and the Workers test pool. It is
-**not in any deployed Worker** — a deployed Worker runs on workerd, which does not use undici. The
-exposure is a developer's own machine running their own dev server, and the advisories are
-HTTP-client and cache-directive faults that need an attacker-controlled upstream to reach.
+So **`bun audit` now leaves the advisory exactly one resolved path — and the manifest it names is not
+the one that matters.** It prints `workspace:@pithy-sh/auth › miniflare`. Two manifests declare
+`miniflare` 4.x, both at `^4.20260722.1`, and both resolve the single hoisted `4.20260730.0` with
+`undici@7.28.0`: `@pithy-sh/cli` as a **runtime dependency**, and `@pithy-sh/auth` as a
+**devDependency**, for the `Miniflare` that `packages/auth/src/test-utils/liveApp.ts` builds. Only the
+first is shipped — `pithy migrate`, `pithy seed` and the dev-secrets store construct `Miniflare`
+directly to reach a local D1 or KV. The cli declaration is #388's hold on 4.x, and this document does
+not move it.
 
-Accepted, not ignored. It closes when miniflare 5 stabilises, which is the same revisit as above.
+What bounds it. It is **not in any deployed Worker** — a deployed Worker runs on workerd, which does
+not use undici, and the adopter-facing runtime is untouched by any of this. It is not behind
+`pithy dev` either: that execs the adopter's own `wrangler`, which brings its own miniflare. What is
+left is a local simulator on a developer's machine, reading a local database, and five advisories that
+are HTTP-client and cache-directive faults needing an attacker-controlled upstream to reach.
+
+Accepted, not ignored. It closes when miniflare 5 stabilises and **both** declarations are promoted —
+`@pithy-sh/cli`'s runtime dependency and `@pithy-sh/auth`'s devDependency. Moving cli's alone leaves
+auth resolving 4.x and `bun audit` reporting the same five advisories under the same path it prints
+today. That is the same revisit as above.
 
 ### `@cloudflare/workers-types` is held at `5.20260729.1`
 

@@ -96,7 +96,7 @@ const IMPORTED_MODULE = /^import \* as [a-zA-Z]+ from "([^"]+)";$/gm;
  *
  * **An allowlist, deliberately.** A blocklist naming `@cloudflare/workers-types` would be the
  * count-of-spellings mistake one level up: `kysely-d1`, `wrangler` and
- * `@cloudflare/vitest-pool-workers` are the same fault wearing other names, and a list of them is a list
+ * `@cloudflare/vitest-plugin` are the same fault wearing other names, and a list of them is a list
  * somebody is always one entry behind on. This fails closed. A package arriving that nobody argued for
  * turns the gate red, and the fix is one line here with a reason beside it.
  *

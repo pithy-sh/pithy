@@ -37,7 +37,7 @@
     //
     // That `^build` was also, by accident, throttling the test run: test tasks started staggered
     // behind their dependencies' builds. Without it every package's vitest launches at once, and the
-    // `@cloudflare/vitest-pool-workers` suites each spawn workerd — enough oversubscription to time
+    // `@cloudflare/vitest-plugin` suites each spawn workerd — enough oversubscription to time
     // out `beforeAll` hooks on an 8-core machine. The root `test` script replaces the accidental
     // throttle with an explicit `--concurrency=50%`; keep it there if you touch these deps.
     // `@pithy-sh/vite#build` writes one file outside its own package: `templates/client-env.d.ts` in

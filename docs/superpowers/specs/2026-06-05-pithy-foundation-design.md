@@ -49,7 +49,7 @@ ownership of their data and infrastructure.**
 - **Runtime/dev: Bun.** `bun install`, `bun run`, `bunx` — never `npm`/`npx`. Bun
   provides install + workspaces + native-TS script running (no `tsx`/`ts-node`). Turborepo
   orchestrates builds/cache; **tsdown** (Rolldown) bundles libraries + dts; Changesets
-  handles versioning/release; **Vitest + `@cloudflare/vitest-pool-workers`** remains the
+  handles versioning/release; **Vitest + `@cloudflare/vitest-plugin`** remains the
   test framework (Workers-runtime fidelity), invoked via `bunx vitest` (not `bun test`).
 - **Node 22 LTS is the floor** (TS-7/`tsgo` requires it; CF Workers are at parity). Dev/
   build/test scripts assume Bun, but published `@pithy-sh/*` packages are pure ESM that
@@ -277,7 +277,7 @@ config paths present.
 ## 9. Testing & security (utmost priority — §10.13)
 
 - **Testing:** Vitest, co-located (`feature.ts`→`feature.test.ts`). Workers-runtime tests
-  use `@cloudflare/vitest-pool-workers` with real D1/KV (Miniflare), not mocks, where it
+  use `@cloudflare/vitest-plugin` with real D1/KV (Miniflare), not mocks, where it
   matters. Every migration `up`+`down` tested; every codec round-trips in tests. CI gates
   merges on test + typecheck + Biome.
 - **Security:** treat as a first-class deliverable, not a review afterthought. Secrets via

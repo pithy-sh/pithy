@@ -124,7 +124,7 @@ describe("scaffoldProject", () => {
     expect(pkg.scripts).toMatchObject({ typecheck: "tsc -b", test: "vitest run", lint: "biome check ." });
     // Every gate's tool is declared, or the first `bun install` leaves three scripts that cannot run.
     expect(Object.keys(pkg.devDependencies)).toEqual(
-      expect.arrayContaining(["@biomejs/biome", "@cloudflare/vitest-pool-workers", "typescript", "vitest"]),
+      expect.arrayContaining(["@biomejs/biome", "@cloudflare/vitest-plugin", "typescript", "vitest"]),
     );
 
     // `tsc -b` needs a solution file: `files: []` and references, never one program over both worlds.

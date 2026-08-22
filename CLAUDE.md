@@ -18,7 +18,7 @@ Pithy is an open-source, **Cloudflare-native backend kit for mobile *and* web ap
 - **Node 22 LTS is the floor** (TS-7/`tsgo` requires it; CF Workers are at parity). Internal dev/build/test scripts assume Bun, but every published `@pithy-sh/*` package is pure ESM that also runs on Node 22+/Deno/Workers — **adoption is never gated behind a Bun install.**
 - **Bun stays in the workspace, never in a published manifest.** `packageManager` and `engines.bun` live **only** in the private root `package.json` (they are dev/workspace signals for Turbo + Corepack, invisible to adopters). Every published `@pithy-sh/*` package declares `"engines": { "node": ">=22" }` (22 LTS floor, 24 LTS included), omits `packageManager`, ships no lockfile, and uses no Bun-only API — so adopters install with any package manager on Node 22+. The committed `bun.lock` is a root dev artifact, not shipped.
 - **JSONC everywhere it's allowed.** Every config file we author or generate uses the `.jsonc` extension and is comment-documented whenever the consuming tool recognizes that name — `biome.jsonc`, `turbo.jsonc`, `wrangler.jsonc`, and the generated `pithy.config`'s JSON outputs. **Exceptions, forced by the tool:** `package.json` stays strict JSON (npm/Node/Bun reject comments — never comment it); `tsconfig*.json` and `.vscode/settings.json` keep their fixed `.json` names but are JSONC-parsed (comments fine). Biome's single `json` block formats `.json` and `.jsonc` alike. Trailing commas are off everywhere.
-- **Vitest stays the test framework** (`bunx vitest`), with `@cloudflare/vitest-pool-workers` for Workers-runtime tests — not `bun test`.
+- **Vitest stays the test framework** (`bunx vitest`), with `@cloudflare/vitest-plugin` for Workers-runtime tests — not `bun test`.
 - **Repo: GitHub (public).** CI is **GitHub Actions** with Turbo filtered/affected builds — a change builds/tests only its segment; shared-package changes cascade (expected).
 - **No barrel re-exports. No re-exporting third-party libraries.** Modern tooling resolves deep import paths fine. Direct imports only; re-export a dependency only with an amazing, documented reason.
 - **Group a package's `src/` by concern, not by artifact kind.** Folders map to seams / responsibilities (`data/`, `http/`, `kv/`, `capability/`, `config/`), each holding the related codecs/schemas/logic together — never a by-kind junk drawer (`schemas/`, `models/`). A folder appears only when a real module lands; no empty scaffolding. Since there's no barrel, the folder path **is** the public import path (`@pithy-sh/core/src/data/codecs`), so name for the consumer.
@@ -136,7 +136,7 @@ Pithy is an open-source, **Cloudflare-native backend kit for mobile *and* web ap
 ## Testing
 
 - **Vitest**, co-located (`feature.ts` → `feature.test.ts`).
-- Workers-runtime behavior uses `@cloudflare/vitest-pool-workers` with real D1/KV bindings (Miniflare), not mocks, where it matters.
+- Workers-runtime behavior uses `@cloudflare/vitest-plugin` with real D1/KV bindings (Miniflare), not mocks, where it matters.
 - Every migration's `up` **and** `down` is tested. Every codec round-trips in tests.
 - CI gates merges on tests + typecheck + Biome.
 

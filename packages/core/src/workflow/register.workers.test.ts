@@ -10,7 +10,7 @@ import type { WorkflowDispatcher } from "./dispatch";
 
 /**
  * Registration and dispatch against a real Miniflare env. Workflow bindings themselves cannot be
- * emulated — `@cloudflare/vitest-pool-workers` has no Workflow host — so a job's binding is supplied
+ * emulated — `@cloudflare/vitest-plugin` has no Workflow host — so a job's binding is supplied
  * as a plain object on the request env. What this file proves is everything *around* that: that a
  * declared job derives a required binding, that the derivation runs through the same first-request
  * fail-fast path as D1 and KV, and that `c.var.workflows` is wired on a live request.

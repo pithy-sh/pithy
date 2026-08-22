@@ -110,7 +110,9 @@ export default defineConfig({
 
 **Both lines go on the project, not on the root `test` block.** Measured on vitest 4.1.9: a root `env` reaches an inline project and a root `setupFiles` does not. Stating them at the wrong level is a guard that never runs.
 
-`*.workers.test.ts` projects state neither, deliberately. workerd does not inherit the host environment — a test there sees seven `process.env` keys, all miniflare bindings, no token and no `HOME` — so there is nothing to blank and nothing to relocate.
+`*.workers.test.ts` projects state neither, deliberately. workerd does not inherit the host environment — no token and no `HOME` — so there is nothing to blank and nothing to relocate. A test there sees Vite's `import.meta.env` shims, vitest's two pool ids, and whatever `bindings` its own config declares. Nothing else.
+
+That is an assertion, not a remembered probe: [`packages/core/src/worker/envIsolation.workers.test.ts`](packages/core/src/worker/envIsolation.workers.test.ts) pins the exact key set from inside workerd, so a runtime bump cannot quietly retire the reason a guard was dropped. Read the set there rather than here — a number copied into prose is the thing that rotted. The gate resolves this link, so the file cannot be renamed out from under it.
 
 [`packages/cli/src/ci/testIsolation.test.ts`](packages/cli/src/ci/testIsolation.test.ts) is the gate. It **loads** each config and inspects the object vitest is handed, rather than reading the source, because #198's first guard was a second `env:` key on one object literal — which JavaScript discards without a word, so the file said covered and the run was not. A guard that is present but inert fails there exactly like a missing one.
 

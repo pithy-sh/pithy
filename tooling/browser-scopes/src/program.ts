@@ -84,7 +84,7 @@ import { fileURLToPath } from "node:url";
  * - **A dependency.** A package under `node_modules`, named. This is the answer the gate asserts on, and
  *   it is asserted as an **allowlist**: the caller states which packages a browser build may have, and
  *   anything else fails. A blocklist of `@cloudflare/workers-types` would be the count-of-spellings
- *   mistake one level up — `wrangler`, `kysely-d1`, `@cloudflare/vitest-pool-workers` are all the same
+ *   mistake one level up — `wrangler`, `kysely-d1`, `@cloudflare/vitest-plugin` are all the same
  *   fault wearing other names, and a list of them is a list somebody is always one entry behind on. An
  *   allowlist fails closed: a package arriving that nobody argued for is red, and the fix is one line
  *   and a reason.
