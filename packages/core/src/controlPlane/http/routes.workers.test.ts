@@ -14,6 +14,7 @@ import { controlplane } from "../capability";
 import { ControlPlaneConnection, type Ed25519PublicJwk, type RegisteredKey } from "../data/connection";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, controlPlaneDatabase } from "../data/tables";
 import { ControlPlaneManifest } from "../discovery/adminRoute";
+import { defineManifestConfig, namedConfigValues } from "../discovery/configuration";
 import { defineCapabilityHealth } from "../discovery/health";
 import { namedHealthValues } from "../discovery/healthSummary";
 import { controlplane_0001_init } from "../migrations/0001_init";
@@ -69,14 +70,31 @@ let pending = 0;
 /** How many times the producer ran — a caller with no grant must cost the adopter's Worker nothing. */
 let produced = 0;
 
+/** The configured fact the inventory fixture states, and the value this composition resolved it to. */
+const INVENTORY_UNIT = "crate";
+
 /**
  * A capability that contributes a bounded health summary (#317): one count, behind the scope its own
  * admin route already requires, so a client can render "3 things pending" from the manifest read it
  * already made instead of a second call per number.
+ *
+ * It also states a configured fact (#422), on the same entry and deliberately so: the two mechanisms
+ * look alike and behave nothing alike, and the cases below hold them apart on one capability rather
+ * than on two that could differ for some other reason.
  */
 const inventory = defineCapability({
   name: "inventory",
   requiredBindings: [],
+  manifestConfig: defineManifestConfig({
+    keys: [
+      {
+        key: "unit",
+        choices: ["crate", "pallet"],
+        summary: "What a thing is counted in, which a client must name back when it files one.",
+      },
+    ],
+    values: { unit: INVENTORY_UNIT },
+  }),
   adminRoutes: [
     {
       method: "GET",
@@ -663,6 +681,57 @@ describe("the counts a client would otherwise pay a round trip for (#317)", () =
         values: { secretsDueForRotation: 1 },
       });
     });
+  });
+});
+
+describe("the configured facts a client must respect (#422)", () => {
+  /** The manifest, read as a client reads it — over the wire, then through the schema it publishes. */
+  async function entryFor(name: string): Promise<ControlPlaneManifest["capabilities"][number]> {
+    const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
+    expect(response.status).toBe(200);
+    const entry = ControlPlaneManifest.parse(await body<unknown>(response)).capabilities.find(
+      (capability) => capability.name === name,
+    );
+    if (!entry) throw new Error(`the fixture capability ${name} is missing from the manifest`);
+    return entry;
+  }
+
+  test("a stated fact reaches the manifest with the declaration that says how to read it", async () => {
+    await connect([registered(alice)], [MANIFEST_READ_SCOPE]);
+
+    const entry = await entryFor("inventory");
+    expect(entry.configKeys.map((key) => key.key)).toEqual(["unit"]);
+    expect(entry.configKeys[0]?.choices).toEqual(["crate", "pallet"]);
+    // Read through the pairing rather than off the record, because that is what a client does: a key it
+    // has never heard of has no declaration beside it and is not renderable at all.
+    expect(namedConfigValues(entry).map((named) => [named.key.key, named.value])).toEqual([["unit", INVENTORY_UNIT]]);
+  });
+
+  test("a capability that states nothing reports no facts, which is not the same as no manifest entry", async () => {
+    await connect([registered(alice)], [MANIFEST_READ_SCOPE]);
+
+    const plain = await entryFor("quiet");
+    expect(plain.configKeys).toEqual([]);
+    expect(plain.config).toEqual({});
+    expect(namedConfigValues(plain)).toEqual([]);
+  });
+
+  test("the fact is the same for every caller, while the number beside it is not", async () => {
+    // The property that separates this from health, asserted on one entry so nothing else can explain
+    // the difference. A configured fact is what the adopter decided; withholding it from a connection
+    // would leave that client guessing the argument to its next call, which is the whole defect.
+    await connect([registered(alice)], [MANIFEST_READ_SCOPE]);
+    pending = 3;
+    const ungranted = await entryFor("inventory");
+
+    await controlPlaneDatabase(env.DB).deleteFrom(CONTROL_PLANE_CONNECTIONS_TABLE).execute();
+    await connect([registered(alice)], [MANIFEST_READ_SCOPE, INVENTORY_READ_SCOPE]);
+    const granted = await entryFor("inventory");
+
+    expect(ungranted.config).toEqual(granted.config);
+    expect(ungranted.configKeys).toEqual(granted.configKeys);
+    expect(ungranted.health).toEqual({ state: "withheld" });
+    expect(granted.health).toEqual({ state: "reported", values: { thingsPending: 3 } });
   });
 });
 

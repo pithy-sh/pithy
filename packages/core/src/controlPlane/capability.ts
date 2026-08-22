@@ -168,6 +168,10 @@ export function controlplane(options: ControlPlaneOptions = {}): ControlPlaneCap
         // The vocabulary, always — a capability declaring a number this connection cannot see must be
         // visible as a withheld number rather than as silence.
         healthKeys: [...(cap.health?.keys ?? [])],
+        // The configured facts, read once here and the same for every caller (#422). No producer and no
+        // per-request cost: a fact is resolved config, so there is nothing to ask and nothing to fail.
+        configKeys: [...(cap.manifestConfig?.keys ?? [])],
+        config: { ...(cap.manifestConfig?.values ?? {}) },
       }));
       health = capabilityHealthSources(capabilities);
     },

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { describe, expect, test } from "vitest";
 import { CapabilityDescriptor, ControlPlaneManifest } from "./adminRoute";
+import { ManifestConfigKey, namedConfigValues } from "./configuration";
 
 /**
  * A manifest as a Worker deployed before #317 sends it: no `healthKeys`, no `health`, anywhere.
@@ -61,6 +62,73 @@ describe("a manifest from a Worker that predates the health fields", () => {
     const parsed = ControlPlaneManifest.parse(PRE_317_MANIFEST);
     for (const capability of parsed.capabilities) expect(capability.health).toEqual({ state: "undeclared" });
   });
+
+  /**
+   * The same transcript, and the same mechanism, for the configured facts #422 added.
+   *
+   * It carries no `configKeys` and no `config` either — it predates both by two issues — so every field
+   * this manifest ever grows has to answer to it. Absence reads as "this capability states no fact",
+   * which is what a Worker too old to know the field genuinely means.
+   */
+  test("and it predates the configured facts too, which read as none rather than failing the read", () => {
+    const parsed = ControlPlaneManifest.parse(PRE_317_MANIFEST);
+    for (const capability of parsed.capabilities) {
+      expect(capability.configKeys).toEqual([]);
+      expect(capability.config).toEqual({});
+    }
+  });
+});
+
+describe("a configured fact a client must respect (#422)", () => {
+  const base = { name: "payments", version: "0.4.1", adminRoutes: [] };
+
+  /** The first fact the kit states: what a project bills. Spelled out, as a Worker would send it. */
+  const BILLING_SUBJECT = {
+    key: "billingSubject",
+    choices: ["user", "organization"],
+    summary: "What kind of thing holds a purchase in this project.",
+  };
+
+  test("the declaration and the value both survive the codec", () => {
+    const entry = CapabilityDescriptor.parse({
+      ...base,
+      configKeys: [BILLING_SUBJECT],
+      config: { billingSubject: "organization" },
+    });
+    expect(entry.configKeys.map((key) => key.key)).toEqual(["billingSubject"]);
+    expect(entry.configKeys[0]?.choices).toEqual(["user", "organization"]);
+    // The point of the whole exercise: a client writes `subjectType: "organization"` on its next grant
+    // rather than guessing, and a guess here is a row nothing reads.
+    expect(entry.config).toEqual({ billingSubject: "organization" });
+  });
+
+  test("and go back on the wire as the entry they came from", () => {
+    // The round-trip property the seam's response contract rests on, extended rather than replaced: a
+    // field that decodes and does not encode is a field a handler silently drops.
+    const entry = {
+      ...base,
+      configKeys: [BILLING_SUBJECT],
+      config: { billingSubject: "user" },
+      healthKeys: [],
+      health: null,
+      healthUnavailable: false,
+    };
+    expect(CapabilityDescriptor.encode(CapabilityDescriptor.parse(entry))).toEqual(entry);
+  });
+
+  test("a fact this build has never heard of parses, and reads as nothing", () => {
+    // What an older client meets against a newer Worker. Failing here would cost it the whole manifest —
+    // every pane, every route — over one fact it did not want. So it parses, and the pairing is where
+    // the unknown one stops.
+    const entry = CapabilityDescriptor.parse({
+      ...base,
+      configKeys: [BILLING_SUBJECT],
+      config: { billingSubject: "organization", proration: true },
+    });
+    expect(namedConfigValues(entry)).toEqual([
+      { key: ManifestConfigKey.parse(BILLING_SUBJECT), value: "organization" },
+    ]);
+  });
 });
 
 describe("and the four states survive this", () => {
@@ -120,11 +188,15 @@ describe("and the four states survive this", () => {
   });
 
   test("each state goes back on the wire as the entry it came from", () => {
+    // Every defaulted field spelled out, configured facts included. Encoding is total over the wire
+    // shape — a current Worker sends all of them — so an entry that omitted one would be asserting that
+    // absence round-trips, which is a different claim and belongs with the transcript above.
+    const sent = { ...base, configKeys: [], config: {} };
     const entries = [
-      { ...base, healthKeys: [], health: null, healthUnavailable: false },
-      { ...base, healthKeys: [DUE_FOR_ROTATION], health: null, healthUnavailable: false },
-      { ...base, healthKeys: [DUE_FOR_ROTATION], health: { secretsDueForRotation: 0 }, healthUnavailable: false },
-      { ...base, healthKeys: [DUE_FOR_ROTATION], health: null, healthUnavailable: true },
+      { ...sent, healthKeys: [], health: null, healthUnavailable: false },
+      { ...sent, healthKeys: [DUE_FOR_ROTATION], health: null, healthUnavailable: false },
+      { ...sent, healthKeys: [DUE_FOR_ROTATION], health: { secretsDueForRotation: 0 }, healthUnavailable: false },
+      { ...sent, healthKeys: [DUE_FOR_ROTATION], health: null, healthUnavailable: true },
     ];
     for (const entry of entries) {
       expect(CapabilityDescriptor.encode(CapabilityDescriptor.parse(entry))).toEqual(entry);

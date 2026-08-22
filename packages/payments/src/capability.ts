@@ -17,6 +17,7 @@ import { PaymentsConfig, type PaymentsConfigInput } from "./config/config";
 import { paymentsTables } from "./data/tables";
 import { installEntitlementResolver } from "./entitlement/resolver";
 import type { PaymentsSubjectResolver, PaymentsSubjectSeam } from "./entitlement/subjectSeam";
+import { paymentsManifestConfig } from "./http/manifestConfig";
 import { registerPaymentsRoutes } from "./http/routes";
 import { paymentsAdminRoutes } from "./http/scopes";
 import { payments_0001_purchases } from "./migrations/0001_purchases";
@@ -357,6 +358,10 @@ export function payments(options: PaymentsOptions): PaymentsCapability {
     // manifest naming `/billing/entitlements/grant` — the whole point of describing rather than
     // assuming. `routeContract.test.ts` checks these against the routes actually registered.
     adminRoutes: paymentsAdminRoutes(resolved.basePath),
+    // The one decision a management client cannot infer: what this project bills (#422). Built from the
+    // resolved config for the same reason the routes are, and it is the only check there is — nothing
+    // downstream compares a stated fact against the seam that acts on it.
+    manifestConfig: paymentsManifestConfig(resolved.billingSubject),
     // The routes ask the same question the gate does — a checkout, a restore and a portal all need a holder
     // to key a row to — so they are handed the same seam rather than building one from the config alone.
     routes: registerPaymentsRoutes({ config: resolved, subject }),

@@ -6,6 +6,7 @@ import { controlplane } from "@pithy-sh/core/src/controlPlane/capability";
 import { ControlPlaneConnection } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { CONTROL_PLANE_CONNECTIONS_TABLE, controlPlaneDatabase } from "@pithy-sh/core/src/controlPlane/data/tables";
 import { type AdminRoute, ControlPlaneManifest } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
+import { namedConfigValues } from "@pithy-sh/core/src/controlPlane/discovery/configuration";
 import { controlplane_0001_init } from "@pithy-sh/core/src/controlPlane/migrations/0001_init";
 import { MANIFEST_READ_SCOPE } from "@pithy-sh/core/src/controlPlane/scope/scope";
 import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/controlPlane/token/mint";
@@ -16,8 +17,11 @@ import { secrets } from "@pithy-sh/secrets/src/capability";
 import type { Kysely } from "kysely";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { payments } from "../capability";
+import type { PaymentsConfigInput } from "../config/config";
+import type { PaymentsSubjectType } from "../data/subject";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
 import { projectPurchase } from "../projection/writer";
+import { PAYMENTS_BILLING_SUBJECT } from "./manifestConfig";
 import {
   PaymentsAdminCatalogResponse,
   PaymentsAdminEntitlementsResponse,
@@ -26,6 +30,7 @@ import {
 } from "./responses";
 import {
   PAYMENTS_CATALOG_READ_SCOPE,
+  PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
   PAYMENTS_PURCHASES_READ_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
@@ -60,34 +65,54 @@ const BASE_PATH = "/billing";
 /** The three resources the first adopter's payments panes read. */
 const PANES = ["purchases", "entitlements", "subscriptions"] as const;
 
-/** The composed Worker, exactly as `apps/board/pithy.config.ts` would assemble it. */
-const backend = createBackend({
-  capabilities: [
-    controlplane(),
-    secrets({ registry: {} }),
-    payments({
-      basePath: BASE_PATH,
-      // Required by `PaymentsConfig`, and `user` because this fixture's holders are people. The advertised
-      // per-subject read carries both halves whichever mode a project bills in — the path is the pair.
-      billingSubject: "user",
-      rails: { apple: true },
-      products: {
-        pro_monthly: {
-          type: "subscription",
-          name: "Pro",
-          entitlements: ["pro"],
-          apple: { productId: "com.acme.pro.monthly" },
-        },
-        coins_100: {
-          type: "consumable",
-          name: "100 Coins",
-          entitlements: ["coins"],
-          apple: { productId: "com.acme.coins.100" },
-        },
-      },
-    }),
-  ],
-});
+/** The products both fixtures sell. One catalog, so only the billing mode differs between them. */
+const PRODUCTS = {
+  pro_monthly: {
+    type: "subscription",
+    name: "Pro",
+    entitlements: ["pro"],
+    apple: { productId: "com.acme.pro.monthly" },
+  },
+  coins_100: {
+    type: "consumable",
+    name: "100 Coins",
+    entitlements: ["coins"],
+    apple: { productId: "com.acme.coins.100" },
+  },
+} satisfies PaymentsConfigInput["products"];
+
+/**
+ * A composed Worker, exactly as `apps/board/pithy.config.ts` would assemble it, for a project that bills
+ * one kind of holder.
+ *
+ * Parameterized on `billingSubject` because that is the fact under test: the same client code has to work
+ * against both, and a fixture that only ever bills people could not tell whether it was reading the
+ * manifest or guessing right. Organization billing takes a resolver, without which the capability refuses
+ * to boot — it has no way to answer who a caller acts for.
+ */
+function composedFor(billingSubject: PaymentsSubjectType): ReturnType<typeof createBackend> {
+  return createBackend({
+    capabilities: [
+      controlplane(),
+      secrets({ registry: {} }),
+      payments({
+        basePath: BASE_PATH,
+        // Required by `PaymentsConfig`, which ships no default: what a project bills is a decision, and a
+        // default would make it an accident. The advertised per-subject read carries both halves whichever
+        // mode a project bills in — the path is the pair.
+        billingSubject,
+        rails: { apple: true },
+        products: PRODUCTS,
+        ...(billingSubject === "organization"
+          ? { resolveSubject: async () => ({ subjectType: "organization" as const, subjectId: "acme" }) }
+          : {}),
+      }),
+    ],
+  });
+}
+
+/** The fixture the reads below run against: a project whose holders are people. */
+const backend = composedFor("user");
 
 const BINDINGS = { ...env, ENVIRONMENT, PITHY_PROJECT: PROJECT, PITHY_WORKER: WORKER };
 
@@ -126,8 +151,8 @@ async function connect(scopes: string[]): Promise<void> {
     .execute();
 }
 
-/** One real HTTP GET at the composed backend, carrying a freshly minted single-use token. */
-async function get(path: string, scope: string): Promise<Response> {
+/** One real HTTP GET at a composed backend, carrying a freshly minted single-use token. */
+async function get(path: string, scope: string, at: ReturnType<typeof createBackend> = backend): Promise<Response> {
   const token = await mintControlPlaneToken({
     privateKey: keys.privateKey,
     keyId: KEY_ID,
@@ -136,16 +161,49 @@ async function get(path: string, scope: string): Promise<Response> {
     subject: "operator-1",
     scope,
   });
-  return backend.request(
+  return at.request(
     `http://${PROJECT}-${WORKER}.workers.dev${path}`,
     { method: "GET", headers: { [CONTROL_PLANE_HEADER]: token } },
     BINDINGS,
   );
 }
 
+/**
+ * One real HTTP POST, with the token's digest bound to these exact bytes.
+ *
+ * The body is serialized once and both signed and sent, because a token minted over anything else is
+ * refused — which is the property that keeps a management write from being replayed onto another one.
+ */
+async function post(
+  path: string,
+  scope: string,
+  payload: unknown,
+  at: ReturnType<typeof createBackend> = backend,
+): Promise<Response> {
+  const body = JSON.stringify(payload);
+  const token = await mintControlPlaneToken({
+    privateKey: keys.privateKey,
+    keyId: KEY_ID,
+    issuer: ISSUER,
+    connectionId: CONNECTION_ID,
+    subject: "operator-1",
+    scope,
+    body: new TextEncoder().encode(body),
+  });
+  return at.request(
+    `http://${PROJECT}-${WORKER}.workers.dev${path}`,
+    {
+      method: "POST",
+      headers: { [CONTROL_PLANE_HEADER]: token, "content-type": "application/json" },
+      body,
+    },
+    BINDINGS,
+  );
+}
+
 /** The manifest, as a management client reads it before deciding anything. */
-async function manifest(): Promise<ControlPlaneManifest> {
-  const response = await get("/control-plane/manifest", MANIFEST_READ_SCOPE);
+async function manifest(at: ReturnType<typeof createBackend> = backend): Promise<ControlPlaneManifest> {
+  const response = await get("/control-plane/manifest", MANIFEST_READ_SCOPE, at);
   expect(response.status).toBe(200);
   return ControlPlaneManifest.parse(await response.json());
 }
@@ -178,6 +236,14 @@ function paneAccess(reported: ControlPlaneManifest, resource: string): "absent" 
   const route = collection(paymentsRoutes(reported), resource);
   if (!route) return "absent";
   return reported.grantedScopes.includes(route.scope ?? "") ? "ready" : "blocked";
+}
+
+/** Every entitlement row the grant wrote, read straight off D1 rather than through a route. */
+async function heldEntitlements(): Promise<{ subjectType: string; subjectId: string; entitlement: string }[]> {
+  const rows = await env.DB.prepare(
+    "SELECT subject_type AS subjectType, subject_id AS subjectId, entitlement FROM pithy_payments_entitlements ORDER BY entitlement",
+  ).all<{ subjectType: string; subjectId: string; entitlement: string }>();
+  return rows.results;
 }
 
 /** Two purchases: one that renews, one that does not, so the two listings genuinely differ. */
@@ -333,6 +399,73 @@ describe("what a management client discovers about payments", () => {
       await (await get(entitlements?.path ?? "", entitlements?.scope ?? "")).json(),
     );
     expect(entitlementsBody.entitlements.map((e) => e.key).sort()).toEqual(["coins", "pro"]);
+  });
+
+  test("a comp control learns what this project bills, and writes the grant it could not before (#422)", async () => {
+    // The acceptance criterion, executed. `POST {base}/entitlements/grant` names the holder and never
+    // assumes it, so a client has to name it too — and before this fact reached the manifest it had
+    // nothing to name it from. Everything below is composed from the manifest's own reply: the path, the
+    // scope, and the kind of holder.
+    await connect([MANIFEST_READ_SCOPE, PAYMENTS_ENTITLEMENT_GRANT_SCOPE]);
+    const reported = await manifest();
+    const entry = reported.capabilities.find((capability) => capability.name === "payments");
+    if (!entry) throw new Error("the payments capability is missing from the manifest");
+
+    // Read through the pairing, so a fact this client has never heard of is dropped rather than guessed.
+    const facts = namedConfigValues(entry);
+    const subjectType = facts.find((fact) => fact.key.key === PAYMENTS_BILLING_SUBJECT)?.value;
+    expect(subjectType).toBe("user");
+    // The declaration travels with it, which is what lets a client offer the same choice the adopter had.
+    expect(facts[0]?.key.choices).toEqual(["user", "organization"]);
+
+    const route = paymentsRoutes(reported).find((one) => one.method === "POST" && one.path.endsWith("/grant"));
+    expect(route?.path).toBe("/billing/entitlements/grant");
+    const granted = await post(route?.path ?? "", route?.scope ?? "", {
+      subjectType,
+      subjectId: "ada",
+      entitlement: "pro",
+    });
+    expect(granted.status).toBe(200);
+    expect(await heldEntitlements()).toEqual([{ subjectType: "user", subjectId: "ada", entitlement: "pro" }]);
+  });
+
+  test("and the same client code writes an organization row against a project that bills companies", async () => {
+    // No branch on the client side, and nothing hardcoded: the only difference between this case and the
+    // one above is the adopter's config, which is the whole claim.
+    await connect([MANIFEST_READ_SCOPE, PAYMENTS_ENTITLEMENT_GRANT_SCOPE]);
+    const organizations = composedFor("organization");
+    const reported = await manifest(organizations);
+    const entry = reported.capabilities.find((capability) => capability.name === "payments");
+    if (!entry) throw new Error("the payments capability is missing from the manifest");
+
+    const subjectType = namedConfigValues(entry).find((fact) => fact.key.key === PAYMENTS_BILLING_SUBJECT)?.value;
+    expect(subjectType).toBe("organization");
+
+    const route = paymentsRoutes(reported).find((one) => one.method === "POST" && one.path.endsWith("/grant"));
+    const granted = await post(
+      route?.path ?? "",
+      route?.scope ?? "",
+      { subjectType, subjectId: "acme", entitlement: "pro" },
+      organizations,
+    );
+    expect(granted.status).toBe(200);
+    expect(await heldEntitlements()).toEqual([{ subjectType: "organization", subjectId: "acme", entitlement: "pro" }]);
+  });
+
+  test("a client that guessed instead is refused, which is the dead end the fact removes", async () => {
+    // Why guessing was never an option. `user` is the likelier guess and it is wrong here: the grant is
+    // refused, and the person a support agent meant to help is still locked out. The manifest is what
+    // turns that into a call that lands.
+    await connect([MANIFEST_READ_SCOPE, PAYMENTS_ENTITLEMENT_GRANT_SCOPE]);
+    const organizations = composedFor("organization");
+    const refused = await post(
+      `${BASE_PATH}/entitlements/grant`,
+      PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
+      { subjectType: "user", subjectId: "ada", entitlement: "pro" },
+      organizations,
+    );
+    expect(refused.status).toBe(400);
+    expect(await heldEntitlements()).toEqual([]);
   });
 
   test("a Worker nobody has connected answers nothing, however good the token looks", async () => {
