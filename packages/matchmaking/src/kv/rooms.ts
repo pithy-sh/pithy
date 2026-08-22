@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { KVNamespace } from "@cloudflare/workers-types";
 import { JsonDate } from "@pithy-sh/core/src/data/codecs";
 import { TypedKv } from "@pithy-sh/core/src/kv/kv";
 import { z } from "zod";

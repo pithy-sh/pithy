@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { D1Database } from "@cloudflare/workers-types";
+
 /**
  * Read a player's skill number in a rating pool via the optional `@pithy-sh/rating` seam
  * (dynamic-imported). Returns `null` when rating is not installed, the pool is empty, or the player is

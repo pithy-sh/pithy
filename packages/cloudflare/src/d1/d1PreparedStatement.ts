@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { D1Meta, D1PreparedStatement, D1Result } from "@cloudflare/workers-types";
 import type { Cloudflare } from "cloudflare";
 import type { QueryResult } from "cloudflare/resources/d1/database";
 import { cloudflareRequest } from "../client/errors";
@@ -11,8 +12,12 @@ import { cloudflareRequest } from "../client/errors";
  * Kysely `D1Dialect` (kysely-d1) can drive it unchanged — which is how `pithy migrate` runs the
  * same query builder from a CLI/CI context against D1 over REST (issue #31).
  *
- * `D1PreparedStatement`/`D1Result`/`D1Meta` are the ambient `@cloudflare/workers-types` shapes, so
- * this class is structurally a drop-in for the binding's statement.
+ * `D1PreparedStatement` and `D1Meta` are imported by name from `@cloudflare/workers-types`, so this
+ * class is structurally a drop-in for the binding's statement. They used to be named off the global
+ * scope, which resolved only because this package's own `tsconfig.json` loads the types — and every
+ * package here ships raw TypeScript, so an adopter compiling this file got `Cannot find name` unless
+ * their program happened to pull the types in too. Importing them is what makes the dependency real
+ * (#431).
  */
 function mapMeta(restMeta?: QueryResult.Meta): D1Meta & Record<string, unknown> {
   return {

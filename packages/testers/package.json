@@ -27,6 +27,7 @@
     }
   },
   "dependencies": {
+    "@cloudflare/workers-types": "^5.20260729.1",
     "@hono/zod-validator": "^0.9.0",
     "@pithy-sh/core": "workspace:*",
     "@pithy-sh/email": "workspace:*",
@@ -37,7 +38,6 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.0.0",
-    "@cloudflare/workers-types": "^5.20260729.1",
     "@pithy-sh/auth": "workspace:*",
     "@pithy-sh/tsconfig": "workspace:*",
     "@types/node": "^22.15.0",
