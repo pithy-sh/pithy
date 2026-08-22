@@ -38,7 +38,7 @@ describe("initial()", () => {
     expect(glicko.initial(params)).toEqual({ rating: 1500, rd: 350, vol: 0.06 });
   });
 
-  it("honours custom params", () => {
+  it("honors custom params", () => {
     const custom = GlickoParams.parse({ initialRating: 1200, initialRd: 200, initialVol: 0.05 });
     expect(glicko.initial(custom)).toEqual({ rating: 1200, rd: 200, vol: 0.05 });
   });

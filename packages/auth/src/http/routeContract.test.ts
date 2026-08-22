@@ -93,7 +93,7 @@ function mountedRoutes(app: Hono<PithyHonoEnv>): { method: string; path: string 
  * The routes that actually answer `controlplane/not_connected` to a request carrying no credential —
  * the admin surface as the router behaves, not as anything declares it.
  *
- * Read from behaviour on purpose. A set computed from `authAdminRoutes` could not observe a route
+ * Read from behavior on purpose. A set computed from `authAdminRoutes` could not observe a route
  * mounted with `requireControlPlane` and never declared, which is the whole failure this exists for,
  * and a path-prefix filter would miss one mounted outside `/auth/admin/`. Sending the request is the
  * only question that cannot be answered by the declaration under test.
@@ -300,7 +300,7 @@ describe("the advertised admin surface matches what is mounted", () => {
 
   test("the advertised paths follow a moved basePath", () => {
     // An adopter who mounts auth at `/identity` must get a manifest naming `/identity/admin/users`, or a
-    // client composing its calls from it 404s against exactly the adopters who customised anything.
+    // client composing its calls from it 404s against exactly the adopters who customized anything.
     const moved = auth({ baseURL: "http://localhost", basePath: "/identity" }) as unknown as Capability;
     expect(moved.adminRoutes ?? []).not.toHaveLength(0);
     for (const route of moved.adminRoutes ?? []) {

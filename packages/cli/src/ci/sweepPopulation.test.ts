@@ -93,7 +93,7 @@ const GUARDED = [
 ];
 
 /**
- * Sweeps that do not — every one of them green over an empty glob. **Open, tracked, and not a licence.**
+ * Sweeps that do not — every one of them green over an empty glob. **Open, tracked, and not a license.**
  *
  * **Empty as of #351**, and it stays a list rather than becoming a comment because the next unguarded
  * sweep needs somewhere to be named. A new sweep lands in neither list and fails the partition below,

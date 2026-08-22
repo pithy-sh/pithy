@@ -531,7 +531,7 @@ export interface UsePricePreview {
  * **Only the latest quote is rendered, whichever answers first.** Two previews can be in flight at once —
  * an anonymous visitor's location resolves under the query, or a country picker moves — and the slower
  * one landing last would otherwise win, putting a price for an address the visitor has left on the one
- * screen whose entire job is showing a correct one. Superseded answers are *ignored*, not cancelled:
+ * screen whose entire job is showing a correct one. Superseded answers are *ignored*, not canceled:
  * Paddle.js's `PricePreview` takes no `AbortSignal` and hands back a bare promise, so there is nothing to
  * cancel and ignoring it is the whole of the fix. A superseded refusal is ignored the same way, which is
  * what stops a dead request blanking a price the visitor is already reading.

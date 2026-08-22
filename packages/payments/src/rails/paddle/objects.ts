@@ -27,7 +27,7 @@ import type { UnboundProviderEvent } from "../contract";
  * event table stated out loud.** The issue maps `transaction.completed` to `active`. On a one-off that is
  * right and this module does it. On a subscription it would be a row with no expiry saying "paid and
  * current" forever — and a never-expiring `active` row outranks the subscription's own state row, so a
- * cancelled subscriber would keep their entitlement for good. The paid period is real and it has closed:
+ * canceled subscriber would keep their entitlement for good. The paid period is real and it has closed:
  * `expired` grants nothing and still credits a `grants` clause, which is what makes two renewals credit
  * twice. This is the trap `lemonSqueezy/objects.ts` documents at length; Paddle has it identically.
  *
@@ -294,7 +294,7 @@ export const PaddleSubscription = z
       .nullish()
       .describe("The trial window, when this subscription has one. Its end is a trialing subscription's expiry."),
     next_billed_at: z.string().nullish().describe("When the next charge falls due, when one is going to."),
-    canceled_at: z.string().nullish().describe("When it was cancelled, if it was."),
+    canceled_at: z.string().nullish().describe("When it was canceled, if it was."),
     paused_at: z.string().nullish().describe("When it was paused, if it was."),
     discount: z
       .object({
@@ -546,7 +546,7 @@ export function fencedOut(custom: Record<string, unknown> | null | undefined, de
 /**
  * The account reference this deployment stamped into the checkout, or null.
  *
- * **Honoured only when a MAC this deployment could have produced is beside it**, and that condition is the
+ * **Honored only when a MAC this deployment could have produced is beside it**, and that condition is the
  * whole security of the field. `accountReference`'s contract says it is "a value this deployment's own
  * server wrote and the store returned unchanged" — the route writes the provider-account link from it, and
  * `linkProviderAccount` never rebinds, so the first pairing is permanent.

@@ -12,7 +12,7 @@ import { base64UrlDecode } from "./jwt";
  * **The payload is a pointer, not a state.** Apple and Stripe deliver the transaction inline; Play delivers a
  * purchase token and a notification type, and nothing about the purchase's current condition. So this module
  * produces a {@link GoogleNotificationPointer} — which purchase changed, and nothing more — and resolving it to
- * a state is the *next* call, into the Play Developer API. That is modelled in the type rather than papered
+ * a state is the *next* call, into the Play Developer API. That is modeled in the type rather than papered
  * over: the pointer has no status field, so there is no place for a guess to hide.
  *
  * Guessing would be the alternative, and it fails in both directions. `SUBSCRIPTION_RENEWED` looks like

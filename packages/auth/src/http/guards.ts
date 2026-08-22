@@ -111,7 +111,7 @@ export const AUTH_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  * scope a manifest advertises are the same constant read from one place. `basePath` is a parameter and
  * never a default: an adopter who mounted auth at `/identity` must get a manifest naming
  * `/identity/admin/users`, or a management client composing its calls from the manifest would 404
- * against exactly the adopters who customised anything.
+ * against exactly the adopters who customized anything.
  *
  * The summaries say what the operation is *for*. A client renders these next to a button somebody is
  * about to press on a real person's account.

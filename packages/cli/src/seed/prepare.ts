@@ -43,7 +43,7 @@ export const DEV_PREFERENCES_FILE_NAME = "dev.json";
  * got it right. Delegating deletes that logic instead of adding a third copy of it, and it makes this the
  * directory `pithy doctor` already reports — which is what lets doctor name this file at all.
  *
- * One behavioural consequence, taken deliberately: `stateDir` reads the home directory from `os.homedir()`,
+ * One behavioral consequence, taken deliberately: `stateDir` reads the home directory from `os.homedir()`,
  * not from `$HOME`, so exporting `HOME` no longer relocates the preference file. That is the same rule the
  * state file has always followed, and one rule is the point.
  *

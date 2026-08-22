@@ -14,7 +14,7 @@ import { getDomain } from "tldts";
  * — a receiving MTA will deliver it rather than reject it.
  *
  * That claim is the join key for the customer link: it resolves to a `pithy_auth_users` row and
- * pulls that account's name, entitlements, and itemised purchase history into a support console,
+ * pulls that account's name, entitlements, and itemized purchase history into a support console,
  * where a human reads it and acts. Rendering an attacker's thread decorated with a real customer's
  * billing history is the standard opening move of support-driven account takeover, and this
  * capability's own `account_access` and `privacy_request` categories route exactly those messages to

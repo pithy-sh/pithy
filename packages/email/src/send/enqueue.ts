@@ -192,7 +192,7 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
   const blocked: SuppressionReason | null = deps.suppressionDb
     ? await blockingSuppression(deps.suppressionDb, input.to, deps.now, templateKind(input.template))
     : null;
-  // The match key, on the same normalisation the suppression list is written and read under. The row
+  // The match key, on the same normalization the suppression list is written and read under. The row
   // keeps the address as the caller typed it in `toAddress` — an operator diagnosing a send needs the
   // string that was actually addressed — and carries this beside it as `recipientKey`, which is what
   // the events table is keyed on and what `sentSince` matches. One value, computed once, so a job and

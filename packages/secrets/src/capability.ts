@@ -192,7 +192,7 @@ export function secrets(config: SecretsConfig): SecretsCapability {
     adminRoutes: secretsAdminRoutes(mountPath),
     // One number on the manifest entry — how many secrets are past their declared cadence — so a client
     // renders "3 need rotating" beside the rail from the read it already made, instead of spending a
-    // credential per screen load to ask (#317). Behind the same scope as the listing it summarises, and
+    // credential per screen load to ask (#317). Behind the same scope as the listing it summarizes, and
     // over the same combined registry, so a secret whose freshness can be seen is one this counts.
     health: secretsHealth(() => reported.current),
     // At worker startup, merge every capability's secret-registry slice into one combined registry and

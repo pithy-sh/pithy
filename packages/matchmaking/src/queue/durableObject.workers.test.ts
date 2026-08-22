@@ -31,7 +31,7 @@ function queue(name: string): DurableObjectStub<MatchmakingQueue> {
 
 // `runInDurableObject`'s `O` constraint only admits a DO with a `fetch` handler or one whose env is the full
 // test Env. This coordinator is RPC-only (no WebSockets) with a narrow env, so it satisfies neither — reshape
-// the helper's type to the concrete queue instance. Runtime behaviour is unchanged; only the types narrow.
+// the helper's type to the concrete queue instance. Runtime behavior is unchanged; only the types narrow.
 const inQueue = runInDurableObject as unknown as <R>(
   stub: DurableObjectStub<MatchmakingQueue>,
   fn: (q: MatchmakingQueue) => R | Promise<R>,

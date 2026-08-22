@@ -201,7 +201,7 @@ describe("the limits table", () => {
     }
   });
 
-  it("quotes both numbers the Workflow row turns on, and the composer honours the tighter one", () => {
+  it("quotes both numbers the Workflow row turns on, and the composer honors the tighter one", () => {
     // Separate from the loop above because a Workflow's `<thing>` is two segments, `<capability>-<job>`,
     // so it cannot be asked for with a single string. It was simply left out of that map, and being a
     // `Partial` record the omission cost nothing and skipped the row in silence — the one cap in the table

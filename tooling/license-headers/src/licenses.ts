@@ -5,19 +5,19 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 /**
- * The licences this repo declares, and the only ones the gate can generate a `LICENSE` for.
+ * The licenses this repo declares, and the only ones the gate can generate a `LICENSE` for.
  *
- * A package declaring anything else fails the check rather than silently shipping no licence text:
- * adding a licence is a deliberate act, so it should cost one `.txt` file and one entry here.
+ * A package declaring anything else fails the check rather than silently shipping no license text:
+ * adding a license is a deliberate act, so it should cost one `.txt` file and one entry here.
  */
 export const KNOWN_LICENSES = ["MIT", "FSL-1.1-MIT"] as const;
 
 /**
- * The verbatim text of a licence, or `null` if we hold none for it.
+ * The verbatim text of a license, or `null` if we hold none for it.
  *
  * The texts live as inert `.txt` files rather than TypeScript constants on purpose. Legal text has
  * to stay byte-exact, and a `.ts` file is subject to the formatter — a reflowed paragraph in a
- * licence is a change nobody reviewed.
+ * license is a change nobody reviewed.
  */
 export function canonicalText(license: string): string | null {
   if (!isKnown(license)) return null;

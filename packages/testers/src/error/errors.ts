@@ -157,7 +157,7 @@ export class TestersWithdrawnError extends PithyError {
 }
 
 /**
- * The cohort is closed, so this operation would write to or send from a finished programme.
+ * The cohort is closed, so this operation would write to or send from a finished program.
  *
  * `closedAt` was stamped by `closeCohort` and then read by exactly one filter, so everything that did
  * not go through that filter carried on: the control-plane routes still invited, resent and nudged, and

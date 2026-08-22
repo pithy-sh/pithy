@@ -10,7 +10,7 @@ import { StorageQuotaExceededError } from "../error/errors";
  * Per-owner byte quotas.
  *
  * **Quota is checked when an upload *starts*, and the sum counts `pending` rows alongside `stored`
- * ones.** That is the whole design, and it is not an optimisation.
+ * ones.** That is the whole design, and it is not an optimization.
  *
  * Counting only completed uploads would make the check meaningless under concurrency: ten clients
  * that each declare 1 GiB against a 1 GiB quota all read a used total of zero, all pass, and all

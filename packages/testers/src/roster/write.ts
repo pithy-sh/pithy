@@ -261,7 +261,7 @@ export interface AcceptResult {
  * store's tester list — a manual step, because no API can add an address to a Play email list. Only
  * once that is done does the store link work for them.
  *
- * **This is consent, not enrolment**, which is why it is a separate state from `opted_in`. Recording it
+ * **This is consent, not enrollment**, which is why it is a separate state from `opted_in`. Recording it
  * as an opt-in would inflate the count with people who agreed and never joined, and the count is the
  * one number the whole capability exists to keep honest.
  *
@@ -289,14 +289,14 @@ export interface OptInResult {
 /**
  * Record that a tester followed the link through to the store's own opt-in page.
  *
- * **This is the strongest evidence of enrolment Pithy can have, and it is still not proof.** We know
+ * **This is the strongest evidence of enrollment Pithy can have, and it is still not proof.** We know
  * they reached Google's page; whether they accepted there, with the right account, is Google's to know
  * and no API reports it. That gap is exactly what `estimated*` names and the disclaimer states.
  *
  * **Idempotent, and that is a requirement rather than a nicety.** The link is followed from an email
  * client, and email clients prefetch links, scanners follow them, and people click twice when a page is
  * slow. If a second visit re-stamped `optedInAt`, every one of those would silently reset the tester's
- * streak to zero — turning the most ordinary user behaviour there is into the exact failure this
+ * streak to zero — turning the most ordinary user behavior there is into the exact failure this
  * capability exists to prevent. So a repeat visit returns the original date and writes nothing.
  */
 export async function confirmOptIn(deps: WriteDeps, memberId: string): Promise<OptInResult> {
@@ -326,7 +326,7 @@ export async function lapseMember(deps: WriteDeps, memberId: string): Promise<La
   await appendEvent(deps, { cohortId: member.cohortId, memberId, kind: "lapsed", actor: "tester" });
   // Rotating the token is what makes an opt-out stick. Without it the store link already sitting in the
   // tester's inbox stays live, and one replay — a mail client prefetching an older message, a forwarded
-  // thread — silently re-enrols someone who explicitly withdrew.
+  // thread — silently re-enrolls someone who explicitly withdrew.
   await patchMember(deps, memberId, {
     state: "lapsed",
     lapsedAt: deps.now.getTime(),
@@ -407,7 +407,7 @@ export interface CreateCohortInput {
   readonly maxRosterSize: number;
   readonly targetPlatform: TesterPlatform;
   readonly resetPolicy: ResetPolicy;
-  /** The store's own opt-in page, where a tester actually enrols. Null until the developer supplies it. */
+  /** The store's own opt-in page, where a tester actually enrolls. Null until the developer supplies it. */
   readonly storeOptInUrl: string | null;
 }
 
@@ -424,7 +424,7 @@ export async function createCohort(deps: WriteDeps, input: CreateCohortInput): P
   // Checked here rather than only on the config default, because `--store-url` is the only way to set
   // this per cohort and it reached the column unvalidated — a bare `z.string().nullable()` over a plain
   // `text` column. A value that is present but not usable is worse than an absent one: the daily pass
-  // reads presence as readiness and mails every accepted tester a link that enrols nobody.
+  // reads presence as readiness and mails every accepted tester a link that enrolls nobody.
   if (input.storeOptInUrl !== null && !isStoreOptInUrl(input.storeOptInUrl)) {
     throw new ValidationError({
       message: "That store opt-in link is not a store link.",

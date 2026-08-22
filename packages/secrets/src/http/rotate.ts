@@ -34,7 +34,7 @@ import { SystemSecretsStore } from "../store/systemSecretsStore";
  *   `resolveWriteTargets` fans a global `d1` write across all of them for exactly that reason. A Worker
  *   can reach one. Writing its own and reporting success would leave staging and prod holding different
  *   values for one name, which is the mixed state `#38` names as the shape to refuse — and, worse, it
- *   would arrive labelled `rotated`.
+ *   would arrive labeled `rotated`.
  *
  * Both are answered with `secrets/rotation_unsupported` **before anything is called**, naming the command
  * that can. A client renders the free path instead of a dead button, which is the same answer `#38` already

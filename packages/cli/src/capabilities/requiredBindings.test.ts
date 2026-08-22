@@ -123,7 +123,7 @@ function required(manifest: CapabilityManifest): BindingSpec[] {
 
 /**
  * Every workflow binding a manifest declares that the writer could not emit a complete entry for,
- * labelled `<pkg>: workflow:<NAME>`.
+ * labeled `<pkg>: workflow:<NAME>`.
  *
  * **The invariant, not a list of the packages that broke it.** A `workflows` entry needs `name` and
  * `class_name`, both derived from the binding's `job` and `className`, so a binding missing either is

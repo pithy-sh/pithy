@@ -29,7 +29,7 @@ import { type PaymentsWorkerEnv, reconcileWorkerConfig } from "./workerConfig";
  * every row even though reconciling one stops it matching the selection, that a repair goes through the same
  * writer as a webhook so the entitlement moves with it, and that an unreachable store fails the step rather
  * than recording a repair that never happened. The rails themselves are fakes here — each one's real network
- * behaviour is proved in its own suite, and repeating it would test the fake.
+ * behavior is proved in its own suite, and repeating it would test the fake.
  */
 
 const SECOND = 1000;
@@ -657,7 +657,7 @@ describe("reconcilePayments — fulfillment", () => {
     expect(fulfilled).toEqual([]);
   });
 
-  test("a dry run fulfils nothing — it writes nothing at all", async () => {
+  test("a dry run fulfills nothing — it writes nothing at all", async () => {
     await seed();
     const fulfilled: string[] = [];
     const report = await reconcilePayments(
@@ -940,7 +940,7 @@ describe("the run record", () => {
     expect(row?.drifted).toBe(1);
     expect(row?.failed).toBe(0);
     expect(row?.environment).toBe("production");
-    // Null is the scheduled behaviour: this pass named no rail, so it was about every enabled one.
+    // Null is the scheduled behavior: this pass named no rail, so it was about every enabled one.
     expect(row?.rail).toBeNull();
     expect(row?.started_at).toBe(T0);
     expect(purchase.id).toBeDefined();
@@ -1209,7 +1209,7 @@ describe("reconcilePayments — a replayed run", () => {
  * this pass, and three things about it are decisions rather than plumbing — when it runs, what it puts in the
  * report, and what it says on the trail when it finds a gap it cannot close. Each is gated here.
  *
- * The sweep itself is a fake. Its real network behaviour is `paddleSweep.workers.test.ts`'s subject; what this
+ * The sweep itself is a fake. Its real network behavior is `paddleSweep.workers.test.ts`'s subject; what this
  * file owns is whether the pass calls it, when, and what it does with the answer.
  */
 describe("the Paddle events sweep, inside a pass", () => {
@@ -1357,7 +1357,7 @@ describe("the Paddle events sweep, inside a pass", () => {
  * It lives in this file rather than beside `worker.ts` because that module imports `cloudflare:workers`,
  * so it can only be exercised in this pool — and the config it reads is this pass's own catalog.
  *
- * The property is a **deliberate behaviour change**: `billingSubject` is required, so the fallback to `{}`
+ * The property is a **deliberate behavior change**: `billingSubject` is required, so the fallback to `{}`
  * that used to make an absent var harmless now refuses. That is worth a test rather than a discovery in
  * production, because the failure it replaces is silent — a defaulted `user` reconciling an organization's
  * subscriptions repairs rows under a holder nobody chose, and reports the pass as healthy.

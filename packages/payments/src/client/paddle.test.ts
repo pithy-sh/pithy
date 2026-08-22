@@ -224,7 +224,7 @@ describe("readPricePreview, against five recorded sandbox answers", () => {
     expect(quoted.taxTreatment).toBe("added");
   });
 
-  test("the United Kingdom takes VAT out of an inclusive price — the opposite convention, same catalogue", () => {
+  test("the United Kingdom takes VAT out of an inclusive price — the opposite convention, same catalog", () => {
     const { line: quoted } = line(GB);
     expect(quoted.formattedUnitTotals).toEqual({
       subtotal: "$4.17",
@@ -242,9 +242,9 @@ describe("readPricePreview, against five recorded sandbox answers", () => {
     expect(quoted.taxTreatment).toBe("included");
   });
 
-  test("currency is not localized without a catalogue override — the UK and Germany are quoted in dollars", () => {
+  test("currency is not localized without a catalog override — the UK and Germany are quoted in dollars", () => {
     // The measurement that stops "localized pricing" from being a claim this rail cannot keep. Currency
-    // comes from `unit_price_overrides`, which is catalogue data. What localizes without one is tax.
+    // comes from `unit_price_overrides`, which is catalog data. What localizes without one is tax.
     expect(read(GB).currencyCode).toBe("USD");
     expect(read(DE).currencyCode).toBe("USD");
     expect(read(US_NEW_YORK).currencyCode).toBe("USD");
@@ -259,8 +259,8 @@ describe("readPricePreview, against five recorded sandbox answers", () => {
     expect(quoted.formattedUnitTotals.total).toBe("¥798");
   });
 
-  test("a converted quote cannot be told against a catalogue amount in another currency", () => {
-    // The catalogue lists USD 500. This quote is in yen. Neither 725 nor 798 is "the listed price", so
+  test("a converted quote cannot be told against a catalog amount in another currency", () => {
+    // The catalog lists USD 500. This quote is in yen. Neither 725 nor 798 is "the listed price", so
     // the honest answer is that the convention is unknown — and the total is still what is owed.
     expect(line(JP_YEN).line.taxTreatment).toBe("unknown");
   });
@@ -373,7 +373,7 @@ describe("readPricePreview refuses what it cannot read", () => {
     expect(readPricePreview(damaged)).toBeNull();
   });
 
-  test("an empty catalogue answer is a preview with no lines, not a refusal", () => {
+  test("an empty catalog answer is a preview with no lines, not a refusal", () => {
     const empty = readPricePreview({ currencyCode: "USD", details: { lineItems: [] } });
     expect(empty).toEqual({ currencyCode: "USD", countryCode: null, postalCode: null, lines: [] });
   });
@@ -415,7 +415,7 @@ describe("priceSummary", () => {
     expect(summarize(GB)).toEqual({ headline: "$5.00", note: "Includes $0.83 tax.", estimated: false });
   });
 
-  test("the two conventions put different numbers in the headline from one catalogue price", () => {
+  test("the two conventions put different numbers in the headline from one catalog price", () => {
     // The whole claim, in one assertion: a $5.00 price, and the figure a page shows is not the same.
     expect(summarize(US_NEW_YORK).headline).toBe("$5.00");
     expect(summarize(US_NEW_YORK).note).toBe("Plus $0.44 tax.");
@@ -818,9 +818,9 @@ describe("the browser half holds no credential but the publishable one", () => {
   /**
    * The shapes of a credential that must never reach a browser.
    *
-   * Not "the word secret". Each is a literal artefact of the server half: Paddle's two API key prefixes,
+   * Not "the word secret". Each is a literal artifact of the server half: Paddle's two API key prefixes,
    * the env binding one would arrive on, the reader the server takes it out of, and the header it would
-   * travel in — quoted, because a *code* header key is the offence and `Authorization` in a sentence
+   * travel in — quoted, because a *code* header key is the offense and `Authorization` in a sentence
    * saying this client sends none is not. A client module holding any of these is a credential in a
    * bundle an adopter serves publicly.
    *
@@ -837,13 +837,13 @@ describe("the browser half holds no credential but the publishable one", () => {
   ];
 
   test("no client module names a server credential", async () => {
-    const offences: string[] = [];
+    const offense: string[] = [];
     for (const file of await clientFiles()) {
       for (const shape of FORBIDDEN) {
-        if (file.text.includes(shape)) offences.push(`${file.path} contains ${shape}`);
+        if (file.text.includes(shape)) offense.push(`${file.path} contains ${shape}`);
       }
     }
-    expect(offences).toEqual([]);
+    expect(offense).toEqual([]);
   });
 
   test("the sweep would catch one — every forbidden shape is found in text that contains it", () => {

@@ -74,7 +74,7 @@ describe.skipIf(!creds.hasCreds)("CloudflareVectorizeProvisioner — LIVE", () =
         const found = await waitForMetadataIndex(provisioner, name, "tenantId");
 
         // The decoded shape carries the type in the lowercase spelling the create endpoint takes — live
-        // returns "String", so this also pins the casing normalisation.
+        // returns "String", so this also pins the casing normalization.
         expect(found).toEqual({ propertyName: "tenantId", indexType: "string" });
 
         await provisioner.deleteMetadataIndex(name, "tenantId");

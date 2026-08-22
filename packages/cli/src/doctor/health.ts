@@ -235,7 +235,7 @@ function healthFromPlan(worker: string, plan: ReconcilePlan): WorkerHealth {
   // `ok` only on a whole read with nothing on either side of it. A `partial` ledger is a database this
   // check did not compare, and a check that did not run is not a check that passed — the same standard
   // `pithy doctor` already applies to a manifest it could not parse (#184). It is also what today's
-  // behaviour was: an unreadable ledger threw, and the exit was non-zero.
+  // behavior was: an unreadable ledger threw, and the exit was non-zero.
   const ledger = plan.ledger;
   const migrations: MigrationHealth = {
     ok: ledger.state === "read" && ledger.pending === 0 && ledger.undeclared.length === 0,
@@ -314,7 +314,7 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
   const manifests: ManifestHealth = { ok: faults.length === 0, faults };
   // An unchecked Worker fails the project, on the same standard #184 set for an unreadable manifest: a
   // check that did not run established nothing, and a report calling a project healthy around a hole is
-  // the under-report this whole family exists to prevent. It is also what the behaviour already was —
+  // the under-report this whole family exists to prevent. It is also what the behavior already was —
   // the throw reached `pithy doctor`'s catch and drove a non-zero exit — so the gate does not weaken.
   const checked = workers.every((worker) => worker.state === "checked" && worker.ok);
   return { ok: manifests.ok && checked, workers, manifests };

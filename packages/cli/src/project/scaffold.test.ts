@@ -331,7 +331,7 @@ describe("scaffoldProject", () => {
     await expect(readFile(join(target, "pithy.config.ts"), "utf8")).rejects.toThrow();
   });
 
-  test("the reservation is read after kebabing, so a spaced or capitalised variant is caught too", async () => {
+  test("the reservation is read after kebabing, so a spaced or capitalized variant is caught too", async () => {
     await expect(scaffoldProject({ targetDir: dir, appName: "Pithy Int Suite" })).rejects.toThrow(PithyError);
   });
 
@@ -356,7 +356,7 @@ describe("scaffoldProject", () => {
     await expect(readFile(join(target, "pithy.config.ts"), "utf8")).rejects.toThrow();
   });
 
-  test("the rule is read after kebabing, so a spaced or capitalised name is judged as Cloudflare sees it", async () => {
+  test("the rule is read after kebabing, so a spaced or capitalized name is judged as Cloudflare sees it", async () => {
     await expect(scaffoldProject({ targetDir: dir, appName: "2026 Launch" })).rejects.toThrow(PithyError);
     // The same shape with a letter in front is fine — this refuses illegal names, not unusual ones. And
     // since the rule was read after kebabing, the scaffold writes the kebabed form: `Launch 2026` is not a
@@ -375,7 +375,7 @@ describe("scaffoldProject", () => {
   });
 
   test("scaffolds into a freshly cloned repo — a clone is how a project normally starts", async () => {
-    // .git, a README, a licence, an editor config, and a CLAUDE.md. None of them is a project, and
+    // .git, a README, a license, an editor config, and a CLAUDE.md. None of them is a project, and
     // refusing them meant `pithy init` could not run in the repo the adopter had just made for it.
     await mkdir(join(dir, ".git"), { recursive: true });
     await writeFile(join(dir, ".git", "HEAD"), "ref: refs/heads/main\n");
@@ -1769,7 +1769,7 @@ describe("the template copy", () => {
       // No `.dev.vars` at all — least of all the maintainer's. `init` writes none (#154), and the
       // allowlist is what stops the planted one being copied in the first place.
       expect(await pathExists(join(dir, ".dev.vars"))).toBe(false);
-      // Ignored is not the rule — untracked is. An exclusion filter has to predict the next artefact.
+      // Ignored is not the rule — untracked is. An exclusion filter has to predict the next artifact.
       expect(await pathExists(join(dir, "apps", "board", "notes.local.md"))).toBe(false);
     } finally {
       await rm(planted, { force: true });
@@ -1805,7 +1805,7 @@ describe("the template copy", () => {
  * **What is under test is the route, not the result.** A mode assertion is satisfied by a hand-rolled
  * `writeFile` that happens to `chmod` afterwards — which is the exact writer this fix removed, and the
  * one that leaves the file world-readable for the interval between the two calls and follows a planted
- * link the whole time. So the tests below name behaviour only `writeFileAtomic` produces: a symlink chain
+ * link the whole time. So the tests below name behavior only `writeFileAtomic` produces: a symlink chain
  * refused by *its* wording, and the stale temp sweep that is *its* housekeeping. Neither is reachable from
  * a writer that merely lands the right bits.
  */

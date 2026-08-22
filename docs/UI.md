@@ -98,7 +98,7 @@ They are two files because ownership says they must be. Adding the sign-in scree
 Two properties make Pithy's file safe to keep:
 
 - **Everything in it sits in a `@layer pithy` cascade layer.** Unlayered CSS beats layered CSS regardless of order or specificity, so any rule you write wins over one of Pithy's with no `!important` and no regard for import order. Give `.screen` a different `max-width` in your own stylesheet and it takes.
-- **Its palette is seven tokens read with fallbacks** — `--bg`, `--surface`, `--fg`, `--fg-muted`, `--border`, `--accent`, `--danger`. Declare them on `:root` and Pithy's screens adopt your colours; declare none and they stand up on their own, following `prefers-color-scheme`. **Declare them as a set**: a screen whose background is yours and whose text is Pithy's is the one way this can still read badly, and no fallback can detect it.
+- **Its palette is seven tokens read with fallbacks** — `--bg`, `--surface`, `--fg`, `--fg-muted`, `--border`, `--accent`, `--danger`. Declare them on `:root` and Pithy's screens adopt your colors; declare none and they stand up on their own, following `prefers-color-scheme`. **Declare them as a set**: a screen whose background is yours and whose text is Pithy's is the one way this can still read badly, and no fallback can detect it.
 
 #### The check that a screen is styled, and when it runs
 
@@ -245,7 +245,7 @@ const BRAND: ReactNode = null;   // the panel beside the form
 const MARK: ReactNode = null;    // the compact mark, for the widths the panel is not on
 ```
 
-`BRAND` is the panel — your mark, your sentence, your claims. It ships empty, and the layout is correct empty: with nothing there the page is one centred column rather than a blank half. Fill it and the page becomes the two-column split. `MARK` appears in the form column at the widths where the panel is not rendered, so exactly one of the two is ever on screen.
+`BRAND` is the panel — your mark, your sentence, your claims. It ships empty, and the layout is correct empty: with nothing there the page is one centered column rather than a blank half. Fill it and the page becomes the two-column split. `MARK` appears in the form column at the widths where the panel is not rendered, so exactly one of the two is ever on screen.
 
 **The panel is not stacked below the form at a narrow width — it is not rendered.** Copy under a sign-in form is copy nobody reads with a keyboard open, and it pushes the thing you came to do off the screen.
 
@@ -257,21 +257,21 @@ const MARK: ReactNode = null;    // the compact mark, for the widths the panel i
 
 ### The provider marks, and the terms they ship under
 
-Every provider the screen can render arrives with its logo: Google, GitHub, Apple, Facebook. **They are trademarks, not icons, and none of them is covered by Pithy's MIT licence.** Each mark is a component of its own with its owner's rules in the doc comment above it, and that is deliberate — the rules are opposite from one provider to the next, so one parameterised `<Mark provider="…" />` would have to encode "unless it is Google" somewhere and the first tidy-up would lose it.
+Every provider the screen can render arrives with its logo: Google, GitHub, Apple, Facebook. **They are trademarks, not icons, and none of them is covered by Pithy's MIT license.** Each mark is a component of its own with its owner's rules in the doc comment above it, and that is deliberate — the rules are opposite from one provider to the next, so one parameterized `<Mark provider="…" />` would have to encode "unless it is Google" somewhere and the first tidy-up would lose it.
 
 The short version, with the long version beside the asset:
 
-| Mark | Colour | Why |
+| Mark | Color | Why |
 | --- | --- | --- |
 | GitHub | `currentColor` | The monochrome Invertocat is the form GitHub publishes; it follows your theme for free. |
 | Google | four fixed hex fills | Google's terms forbid recolouring the mark. It answers no theme and no token. |
 | Apple | `currentColor` | Apple permits black or white only — which is what `--pithy-fg` resolves to. Change `--fg` to anything else and you must override it. |
-| Facebook | fixed `#1877F2` on a white disc | Meta fixes the colour, and the published path cuts the "f" out, so the disc is what keeps the counter white in both themes. |
+| Facebook | fixed `#1877F2` on a white disc | Meta fixes the color, and the published path cuts the "f" out, so the disc is what keeps the counter white in both themes. |
 
 Two rules if you add a provider:
 
 - **Never hand-draw a mark.** A wrong-shaped official logo on a credentials page is what a phishing page looks like. If you cannot source accurate path data, ship that button with no mark — label-only buttons render correctly.
-- **Font Awesome's `brands/google` is a monochrome single-path G.** It is the obvious thing to reach for, it is in the package most projects already have, and it is the wrong asset for a sign-in button: Google's guidelines require the four-colour mark there. The same goes for any other icon set's "google" glyph.
+- **Font Awesome's `brands/google` is a monochrome single-path G.** It is the obvious thing to reach for, it is in the package most projects already have, and it is the wrong asset for a sign-in button: Google's guidelines require the four-color mark there. The same goes for any other icon set's "google" glyph.
 
 Apple and Google additionally specify the *button*, not only the mark — background, corner radius, minimum size, wording. Pithy's `.auth__provider` is a generic secondary button and makes no claim to satisfy either. Read their guidelines before you enable those providers in production.
 
@@ -347,7 +347,7 @@ The scaffolded client uses **cookie sessions**, and it can because the SPA and t
 
 Cookie mode means CSRF protection, always, and Pithy's is `requireSameOrigin()` from `@pithy-sh/core`: every mutating route checks the request's origin against the auth config's `baseURL` and `trustedOrigins`. Same-origin deployment is what makes that check both strict and invisible.
 
-**In `dev`, "same origin" is the address the run is actually serving on.** `baseURL` holds where you deploy, and where you deploy is HTTPS; local dev has no TLS and its port is assigned per Worker per run, so it is the one address no config file can hold. A `dev` composition therefore ignores `baseURL` and resolves `http://<the host the request arrived at>` — which is what the browser is at, so the check passes with nothing added to `trustedOrigins`, and follows the port when a second Worker shifts the allocation. It is not a wildcard: a request whose `Origin` is a neighbouring worker in the same `pithy dev` run is refused like any other. The gate is one condition on the environment alone, so staging and production resolve `baseURL` verbatim and the same-origin set they build is unchanged.
+**In `dev`, "same origin" is the address the run is actually serving on.** `baseURL` holds where you deploy, and where you deploy is HTTPS; local dev has no TLS and its port is assigned per Worker per run, so it is the one address no config file can hold. A `dev` composition therefore ignores `baseURL` and resolves `http://<the host the request arrived at>` — which is what the browser is at, so the check passes with nothing added to `trustedOrigins`, and follows the port when a second Worker shifts the allocation. It is not a wildcard: a request whose `Origin` is a neighboring worker in the same `pithy dev` run is refused like any other. The gate is one condition on the environment alone, so staging and production resolve `baseURL` verbatim and the same-origin set they build is unchanged.
 
 The session cookie's name comes off the same resolution. Better Auth prefixes it `__Secure-` when the base URL is HTTPS, so a dev composition reads the unprefixed name — the name `pithy seed` writes. Both are computed from one place; they cannot disagree.
 

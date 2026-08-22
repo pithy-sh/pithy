@@ -98,12 +98,12 @@ export interface PriceLocation {
  *
  * Precedence is authority, not convenience: a Paddle customer beats an address the caller holds, because
  * Paddle prices the customer from the address it will actually charge — and if the two disagree, a
- * traveller or a VPN, the billing address wins for what they are charged, so it wins for what they are
+ * traveler or a VPN, the billing address wins for what they are charged, so it wins for what they are
  * shown.
  *
  * **Never a silent default.** `null`, `undefined`, an empty customer id and an address with no country
  * all resolve to `ip` *and say so*, so a caller that meant to pass something and passed nothing gets an
- * estimate labelled as one rather than a guess wearing the authority of an address.
+ * estimate labeled as one rather than a guess wearing the authority of an address.
  */
 export function resolvePriceLocation(visitor: PriceVisitor | null | undefined): PriceLocation {
   const customerId = visitor?.customerId;
@@ -155,7 +155,7 @@ export function priceQueryFor(
 }
 
 /**
- * Whether the figure has to be labelled an estimate.
+ * Whether the figure has to be labeled an estimate.
  *
  * Two independent reasons, and either one is enough:
  *

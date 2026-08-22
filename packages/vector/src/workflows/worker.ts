@@ -110,7 +110,7 @@ export class VectorReprocessWorkflow extends WorkflowEntrypoint<VectorWorkerEnv,
         now: () => new Date(),
       },
       // Under `vectorWorkflowRetry`: an unreachable embedding model re-drives the page, and a pinned
-      // dimension, a filter the index cannot answer, or a shape nobody recognises fails on page one —
+      // dimension, a filter the index cannot answer, or a shape nobody recognizes fails on page one —
       // which is where a config error belongs in a job thousands of pages long.
       classifiedSteps(step, vectorWorkflowRetry, NonRetryableError),
       {

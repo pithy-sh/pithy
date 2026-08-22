@@ -15,7 +15,7 @@ export const PACKAGE_GROUPS = ["packages", "tooling"] as const;
 /** Which workspace directory a package lives in. */
 export type PackageGroup = (typeof PACKAGE_GROUPS)[number];
 
-/** A workspace package, as the gate sees it: where it lives and what licence it claims. */
+/** A workspace package, as the gate sees it: where it lives and what license it claims. */
 export interface WorkspacePackage {
   /** The `name` from its `package.json`. */
   name: string;
@@ -35,7 +35,7 @@ const SKIP_DIRS = new Set(["node_modules", "dist", ".turbo"]);
  *
  * Keyed on the presence of `package.json`, not on the directory existing: a stale folder left by a
  * rename (`packages/wallet` still held `dist/` and `node_modules/` long after the `ledger` rename)
- * is not a package and must not be reported as one missing a licence.
+ * is not a package and must not be reported as one missing a license.
  */
 export function discoverPackages(root: string): WorkspacePackage[] {
   const found: WorkspacePackage[] = [];
@@ -95,8 +95,8 @@ export function sourceFiles(packageDir: string): string[] {
     // A directory that cannot be listed contributes nothing, rather than throwing out of the walk (#185).
     // `existsSync` above answers for the root only, and answers it one syscall before the listing — the
     // window between the two is the whole defect. This runs on every commit through `lint-staged` and in
-    // CI over a tree other suites are scaffolding into; a licence gate that dies on somebody else's
-    // teardown is a licence gate people learn to skip with `--no-verify`.
+    // CI over a tree other suites are scaffolding into; a license gate that dies on somebody else's
+    // teardown is a license gate people learn to skip with `--no-verify`.
     let entries: Dirent[];
     try {
       entries = readdirSync(dir, { withFileTypes: true });

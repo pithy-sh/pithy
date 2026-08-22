@@ -516,7 +516,7 @@ describe("POST /auth/admin/sessions/revoke", () => {
   });
 
   test("the response tells the caller nothing about whose session it was", async () => {
-    // Holding a revoke scope is not a licence to read the user table, so the owner reaches the trail
+    // Holding a revoke scope is not a license to read the user table, so the owner reaches the trail
     // and not the caller.
     await seedUser("u-1", "ada@example.test", 10);
     await seedSession("s-1", "u-1");

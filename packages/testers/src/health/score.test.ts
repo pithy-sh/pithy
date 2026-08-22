@@ -55,7 +55,7 @@ describe("scoring a tester we can see", () => {
     expect(points(score({ daysDark: 9 }), "dark_8_10")).toBe(-45);
     expect(points(score({ daysDark: 12 }), "dark_11_13")).toBe(-60);
     expect(points(score({ daysDark: 40 }), "dark_14_plus")).toBe(-75);
-    // Never two at once — the bands are exclusive, and overlapping them would double-penalise.
+    // Never two at once — the bands are exclusive, and overlapping them would double-penalize.
     const result = score({ daysDark: 9 });
     expect(result.factors.filter((factor) => factor.code.startsWith("dark_"))).toHaveLength(1);
   });
@@ -93,7 +93,7 @@ describe("scoring a tester we can see", () => {
     expect(stale.health).toBe(75);
   });
 
-  test("confirming the link but never opening the app is penalised without being disqualifying", () => {
+  test("confirming the link but never opening the app is penalized without being disqualifying", () => {
     // They still count toward Google's twelve. The score says watch them; it must not remove them.
     const result = score({ sessionSinceOptIn: false, daysSinceOptIn: 5, sessionsInWindow: 0, deviceCount: 1 });
     expect(points(result, "session_never_since_optin")).toBe(-20);
@@ -104,7 +104,7 @@ describe("scoring a tester we can see", () => {
     const android = score({ hasTargetPlatformDevice: false });
     expect(points(android, "no_target_platform_device")).toBe(-15);
     expect(android.factors.find((f) => f.code === "no_target_platform_device")?.reason).toContain("android");
-    // A cohort that declares no platform must not penalise everyone for failing an unstated test.
+    // A cohort that declares no platform must not penalize everyone for failing an unstated test.
     expect(points(score({ hasTargetPlatformDevice: false, targetPlatform: null }), "no_target_platform_device")).toBe(
       0,
     );

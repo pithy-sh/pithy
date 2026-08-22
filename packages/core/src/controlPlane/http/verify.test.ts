@@ -195,7 +195,7 @@ describe("verifyControlPlaneCall — the connection lookup", () => {
   });
 
   test("an unknown aud is a credential failure, not a not_connected, once any connection exists", async () => {
-    // The enumeration-oracle defence. If "no such connection" answered differently from "bad
+    // The enumeration-oracle defense. If "no such connection" answered differently from "bad
     // signature", a caller with no credential could walk uuids and learn which ones this Worker knows.
     const token = await mint({ connectionId: OTHER_CONNECTION_ID });
 
@@ -270,7 +270,7 @@ describe("verifyControlPlaneCall — key selection", () => {
 
   test("denies a key whose validity window has already closed", async () => {
     // The superseded half of a completed rotation. The row keeps it for the audit trail; verification
-    // must not keep honouring it.
+    // must not keep honoring it.
     const token = await mint();
 
     const error = await denial(
@@ -284,7 +284,7 @@ describe("verifyControlPlaneCall — key selection", () => {
   });
 
   test("denies a key registered ahead of its validFrom, so a key cannot be used early", async () => {
-    // A key staged for a future rotation is not a live key. Honouring it early would let a client
+    // A key staged for a future rotation is not a live key. Honoring it early would let a client
     // pre-register a credential and start using it before the adopter expected it to exist.
     const token = await mint();
 
@@ -373,7 +373,7 @@ describe("verifyControlPlaneCall — the time window", () => {
     expect(error.payload.code).toBe("controlplane/invalid_credential");
   });
 
-  test("denies a lifetime longer than this Worker honours, even while the token is unexpired", async () => {
+  test("denies a lifetime longer than this Worker honors, even while the token is unexpired", async () => {
     // This is what makes the replay TTL sound. The jti is remembered for a fixed span; a token allowed
     // to outlive that memory would replay cleanly for the remainder of its life. The cap is enforced
     // here rather than trusted to the client, which is why the token below is refused while still valid.
@@ -556,7 +556,7 @@ describe("verifyControlPlaneCall — ordering", () => {
 
 describe("verifyControlPlaneCall — what a denial tells the caller", () => {
   test("every credential failure is one indistinguishable error, and the wire carries no detail", async () => {
-    // The oracle defence, asserted across the whole pipeline at once. A caller sees the same code, the
+    // The oracle defense, asserted across the whole pipeline at once. A caller sees the same code, the
     // same status, and the same words whether their key was unknown, their signature forged, their
     // token stale or their body swapped — so the response cannot be used to learn how far a forgery
     // got. The step that actually failed goes in `detail`, which the HTTP codec strips (error/http.ts).

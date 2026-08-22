@@ -84,7 +84,7 @@ import { toCohortView } from "./view";
  * store opt-in page only works once the developer has added that address to the tester list, and no API
  * can do that — it is a manual step in the console. So `/confirm` asks whether they will help and
  * records their answer; the developer then adds the confirmed addresses; and `/opt-in` follows, which
- * records the strongest enrolment signal we can observe and renders the store's own link for them.
+ * records the strongest enrollment signal we can observe and renders the store's own link for them.
  * Sending the store link first produces `App not available`, which reads to a tester as a broken app.
  *
  * **Three routes are `public`, and all of them are deliberate.** A tester must be able to confirm or withdraw
@@ -257,7 +257,7 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
     const member = await findMemberByToken(db, token);
     if (!member) throw new TestersInvalidTokenError({ detail: "no member holds that token" });
     // Removed and lapsed are both dead ends. Both rotate the token on the way out, so an old link
-    // already fails the lookup; this is the second line of defence, and it is what stops a withdrawal
+    // already fails the lookup; this is the second line of defense, and it is what stops a withdrawal
     // being undone by a replay of whatever is still sitting in the tester's inbox. Coming back requires
     // a fresh invitation, which mints a fresh token.
     if (member.state === "removed" || member.state === "lapsed") {
@@ -332,7 +332,7 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
       );
     });
 
-    // Step two: through to the store's own opt-in page. This is the strongest enrolment signal Pithy can
+    // Step two: through to the store's own opt-in page. This is the strongest enrollment signal Pithy can
     // observe — and it is still not proof that the store accepted them, which is what `estimated` means.
     app.get(`${base}/opt-in/:token`, zValidator("param", OptInTokenParam, validationHook), async (c) => {
       const now = clock();
@@ -375,7 +375,7 @@ export function registerTestersRoutes(options: TestersRoutesOptions): (app: Hono
     app.get(`${base}/opt-out/:token`, zValidator("param", OptInTokenParam, validationHook), async (c) => {
       const db = testersDatabase(database(c));
       // Looked up so a dead link says so here rather than after the tester has confirmed an intent that
-      // was never going to be honoured.
+      // was never going to be honored.
       await memberForWithdrawal(db, c.req.valid("param").token);
       return confirmOptOutPage(`${base}/opt-out/${c.req.valid("param").token}`);
     });

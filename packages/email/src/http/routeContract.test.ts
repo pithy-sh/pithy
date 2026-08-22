@@ -169,7 +169,7 @@ describe("email admin route contract", () => {
   });
 
   test("the advertised admin surface names the same scope the route checks", () => {
-    // Drift here means a management client greys out an action it may perform, or offers one it may not.
+    // Drift here means a management client grays out an action it may perform, or offers one it may not.
     // Keyed on method *and* path: `/email/suppressions` is one path with two methods and two very
     // different scopes, so a path-only key would compare the write route against the read route's
     // entry and quietly pass whichever one it happened to keep.

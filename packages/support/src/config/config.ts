@@ -23,7 +23,7 @@ import { SupportReplySnippet } from "../reply/snippets";
  * An instruct model rather than a classifier: the taxonomy is federated, so the valid label set is
  * not known until an adopter composes the capability, and a fine-tuned classifier cannot be given new
  * classes in a config file. Small on purpose — this runs once per inbound message on the adopter's
- * own bill, and the judgement is "which of these eight sentences fits", not a reasoning task.
+ * own bill, and the judgment is "which of these eight sentences fits", not a reasoning task.
  */
 export const DEFAULT_CLASSIFY_MODEL = "@cf/meta/llama-3.1-8b-instruct";
 
@@ -89,7 +89,7 @@ export const SupportAttachmentsConfig = z
       .boolean()
       .default(true)
       .describe(
-        "Keep each message's raw MIME in R2, unchanged. Separate from `enabled` on purpose: the raw form is what makes the parse and the sanitise re-runnable, so a project that drops attachments still wants it, and folding the two together would silently turn off re-parsing for anyone who only meant to stop storing screenshots. Off means `rawKey` is null on every message and a sanitiser improvement can never be applied retroactively.",
+        "Keep each message's raw MIME in R2, unchanged. Separate from `enabled` on purpose: the raw form is what makes the parse and the sanitize re-runnable, so a project that drops attachments still wants it, and folding the two together would silently turn off re-parsing for anyone who only meant to stop storing screenshots. Off means `rawKey` is null on every message and a sanitizer improvement can never be applied retroactively.",
       ),
   })
   .describe("Attachment and raw-message handling — what bytes are kept, and the bounds on what one message may store.");
@@ -205,7 +205,7 @@ export const SupportSubmissionAttachmentsConfig = z
       .array(z.string().min(3).describe("One exact MIME type, lowercased, e.g. `image/png`. No wildcards."))
       .default(["image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf", "text/plain"])
       .describe(
-        "The exact types a submission may carry — **an allowlist, not a denylist**, so a type nobody considered is refused rather than accepted. The default is what a bug report is actually made of: screenshots, a PDF, a log paste. The declared type is recorded and never honoured when the bytes are served, so this bounds what lands in your bucket rather than standing in for that protection.",
+        "The exact types a submission may carry — **an allowlist, not a denylist**, so a type nobody considered is refused rather than accepted. The default is what a bug report is actually made of: screenshots, a PDF, a log paste. The declared type is recorded and never honored when the bytes are served, so this bounds what lands in your bucket rather than standing in for that protection.",
       ),
   })
   .describe(
@@ -221,7 +221,7 @@ export type SupportSubmissionAttachmentsConfig = z.output<typeof SupportSubmissi
  * message their user reads; the **schema** ceiling is what stops a megabyte of text reaching a handler
  * at all, and it cannot be config-derived because a request schema is built once at module load while
  * config is resolved per project. Bounding the config field by the same constant is what keeps them
- * from disagreeing: a setting above the ceiling would be a limit the route silently refused to honour.
+ * from disagreeing: a setting above the ceiling would be a limit the route silently refused to honor.
  */
 export const MAX_SUBMISSION_SUBJECT_CHARS = 500;
 /** The hard ceiling on a submission body, whatever `submission.maxBodyChars` is set to. */

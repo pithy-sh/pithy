@@ -169,7 +169,7 @@ describe("runSend", () => {
   test("a skipped send names the reason on the row and the event, not just the fact", async () => {
     // The half of this bug that made it invisible. The caller saw an outcome that was not a failure and
     // the person saw an empty inbox, so neither end had anything to look at. "Suppressed" alone still
-    // does not tell an operator whether to fix a typo, apologise, or leave it alone.
+    // does not tell an operator whether to fix a typo, apologize, or leave it alone.
     const jobId = await enqueue({
       to: "gone@example.com",
       template: "welcome",

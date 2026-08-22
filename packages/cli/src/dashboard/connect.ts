@@ -380,7 +380,7 @@ async function connectOffline(
   // file to identify itself with. Same id, same material, no change to what the connection trusts.
   const registered = existing.keys.find((key) => key.keyId === offline.keyId);
   if (registered && registered.publicKey.x !== offline.publicKey.x) {
-    // Same id, different key. Honouring it would swap the material under a name the Worker already
+    // Same id, different key. Honoring it would swap the material under a name the Worker already
     // trusts — a trust change disguised as a re-registration, and the loudest possible one to refuse.
     throw new ConflictError({
       message: "That key id is already registered with different key material.",

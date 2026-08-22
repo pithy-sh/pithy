@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import {
-  offence,
+  offense,
   recordedExecutable,
   repair,
   repairedMode,
@@ -45,7 +45,7 @@ const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
 const EXECUTABLE_ON_PURPOSE: Record<string, string> = {
   ".husky/commit-msg":
     "git runs the hook itself, by path. A hook without the bit is a hook that silently never runs, which is commitlint not enforcing anything.",
-  ".husky/pre-commit": "The same, for the hook that runs Biome and the licence stamp over staged files.",
+  ".husky/pre-commit": "The same, for the hook that runs Biome and the license stamp over staged files.",
   "packages/cli/src/bin.ts":
     "The `pithy` bin, opening `#!/usr/bin/env bun`. bun links a workspace bin by symlinking `node_modules/.bin/pithy` straight at this source file rather than at a shim, so clearing the bit makes the link bun just created unrunnable (#345).",
 };
@@ -115,7 +115,7 @@ describe("the detector says no", () => {
   test("to the mode bun leaves behind, for both reasons at once", () => {
     // 0777 against git's 100644 is the reported defect exactly: world-writable, and executable when git
     // says it is not.
-    const why = offence(file(0o777, false));
+    const why = offense(file(0o777, false));
     expect(why).toContain("world-writable");
     expect(why).toContain("100644");
   });
@@ -123,50 +123,50 @@ describe("the detector says no", () => {
   test("to world-writable even when git records the file executable", () => {
     // The half that would have been lost by fixing #345 with `git update-index --chmod=+x` alone: git
     // status goes quiet and `rwxrwxrwx` is still `rwxrwxrwx`.
-    expect(offence(file(0o777, true))).toContain("world-writable");
-    expect(offence(file(0o776, true))).toContain("world-writable");
+    expect(offense(file(0o777, true))).toContain("world-writable");
+    expect(offense(file(0o776, true))).toContain("world-writable");
   });
 
   test("and to group-write on a program, which is the tighter half of the rule", () => {
     // `0775` is what a checkout under umask 0002 writes, and it is refused on the three files git
     // records executable — the two hooks git runs by path, and the `pithy` entrypoint.
-    expect(offence(file(0o775, true))).toContain("group-writable");
-    expect(offence(file(0o755, true))).toBeNull();
+    expect(offense(file(0o775, true))).toContain("group-writable");
+    expect(offense(file(0o755, true))).toBeNull();
     // And permitted on everything else, which is 2,368 files this checkout wrote at 0664.
-    expect(offence(file(0o664, false))).toBeNull();
-    expect(offence(file(0o664, null))).toBeNull();
+    expect(offense(file(0o664, false))).toBeNull();
+    expect(offense(file(0o664, null))).toBeNull();
   });
 
   test("to setuid, setgid and sticky", () => {
-    expect(offence(file(0o4755, true))).not.toBeNull();
-    expect(offence(file(0o2755, true))).not.toBeNull();
-    expect(offence(file(0o1644, false))).not.toBeNull();
+    expect(offense(file(0o4755, true))).not.toBeNull();
+    expect(offense(file(0o2755, true))).not.toBeNull();
+    expect(offense(file(0o1644, false))).not.toBeNull();
   });
 
   test("to an exec bit git does not record, and to a missing one it does", () => {
-    expect(offence(file(0o755, false))).toContain("100644");
-    expect(offence(file(0o644, true))).toContain("100755");
+    expect(offense(file(0o755, false))).toContain("100644");
+    expect(offense(file(0o644, true))).toContain("100755");
     // Any of the three is enough to make a file runnable by somebody.
-    expect(offence(file(0o645, false))).not.toBeNull();
-    expect(offence(file(0o654, false))).not.toBeNull();
+    expect(offense(file(0o645, false))).not.toBeNull();
+    expect(offense(file(0o654, false))).not.toBeNull();
   });
 
   test("and yes to what a checkout actually writes for an ordinary file, under either umask", () => {
     // 0002 and 0022 are the two this repository has seen. A gate red on the modes git itself writes for
     // 2,368 files is a gate muted within a day, and a muted gate is the defect it was built to catch,
     // shipping. The three it records executable are few enough to hold to 0755 instead.
-    expect(offence(file(0o664, false))).toBeNull();
-    expect(offence(file(0o644, false))).toBeNull();
-    expect(offence(file(0o600, false))).toBeNull();
+    expect(offense(file(0o664, false))).toBeNull();
+    expect(offense(file(0o644, false))).toBeNull();
+    expect(offense(file(0o600, false))).toBeNull();
     // And an untracked file, which git records nothing about, is judged on width alone.
-    expect(offence(file(0o755, null))).toBeNull();
-    expect(offence(file(0o775, null))).toBeNull();
-    expect(offence(file(0o777, null))).toContain("world-writable");
+    expect(offense(file(0o755, null))).toBeNull();
+    expect(offense(file(0o775, null))).toBeNull();
+    expect(offense(file(0o777, null))).toContain("world-writable");
   });
 
   test("and a path it cannot stat is not a finding", () => {
-    expect(offence(file(0, null))).toBeNull();
-    expect(offence({ path: "gone", recorded: false, mode: null })).toBeNull();
+    expect(offense(file(0, null))).toBeNull();
+    expect(offense({ path: "gone", recorded: false, mode: null })).toBeNull();
   });
 });
 
@@ -205,7 +205,7 @@ describe("the repair only ever narrows", () => {
       for (const executable of [true, false]) {
         const repaired = repairedMode(executable, mode);
         expect(repaired & ~mode & ~(executable ? 0o111 : 0), `0${mode.toString(8)}`).toBe(0);
-        expect(offence({ path: "probe", recorded: executable, mode: repaired }), `0${mode.toString(8)}`).toBeNull();
+        expect(offense({ path: "probe", recorded: executable, mode: repaired }), `0${mode.toString(8)}`).toBeNull();
       }
     }
   });
@@ -229,7 +229,7 @@ describe("and it repairs a real tree", () => {
     writeFileSync(join(scratch, "bin.ts"), "#!/usr/bin/env bun\n", { mode: 0o755 });
     run("add", "plain.ts", "bin.ts");
 
-    // Exactly what the install does to the entrypoint, and what it would do to a neighbour.
+    // Exactly what the install does to the entrypoint, and what it would do to a neighbor.
     chmodSync(join(scratch, "bin.ts"), 0o777);
     chmodSync(join(scratch, "plain.ts"), 0o777);
     expect(Object.keys(violations(trackedFiles(scratch)))).toEqual(["bin.ts", "plain.ts"]);

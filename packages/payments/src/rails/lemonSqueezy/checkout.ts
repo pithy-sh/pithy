@@ -57,7 +57,7 @@ import {
 export interface LemonSqueezyCheckoutOptions {
   /** The rail's credentials. `apiKey` creates the checkout; `storeId` says which store it belongs to. */
   credentials: PaymentsLemonSqueezyCredentials;
-  /** This deployment's `ENVIRONMENT`, stamped so its own webhooks are recognisable. */
+  /** This deployment's `ENVIRONMENT`, stamped so its own webhooks are recognizable. */
   deployment?: string;
   /** The HTTP seam. Defaults to the runtime's `fetch`. */
   transport?: LemonSqueezyHttpFetch;

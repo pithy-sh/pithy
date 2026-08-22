@@ -93,7 +93,7 @@ function stringVar(env: Record<string, unknown>, name: string): string | undefin
  * **In `dev`, a published origin wins over the binding.** The deliberate order, and the one that
  * closes #410 whatever wrangler decides to hand a local Worker for a script it is not running: a
  * binding that is present but cannot reach anything is indistinguishable at runtime from one that
- * works, so preferring it would leave the silence in place and depend on a wrangler behaviour nothing
+ * works, so preferring it would leave the silence in place and depend on a wrangler behavior nothing
  * here controls. Preferring the origin costs nothing, because a published origin is not something a
  * composition can have by accident — see the next rule.
  *

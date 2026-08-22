@@ -15,8 +15,8 @@ import { resourceNames } from "./resourceNames";
  * **What a provisioning run names its resources, and which `env.<name>` stanza it writes them into —
  * as one object, never two arguments.**
  *
- * Provisioning was specified for ephemeral feature environments and parameterised by `--env` before it
- * was generalised to named ones. That left the namer and the target stanza as independent inputs, and
+ * Provisioning was specified for ephemeral feature environments and parameterized by `--env` before it
+ * was generalized to named ones. That left the namer and the target stanza as independent inputs, and
  * A feature's namer with a declared environment beside it was the reachable consequence: it composed
  * `<project>-f<issue>-<slug>-db` and wrote it in as `staging`'s `DB`. Nothing refused it, the ids went
  * into a checked-in `wrangler.jsonc`, and a remote migrate ran against them.

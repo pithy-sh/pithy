@@ -463,7 +463,7 @@ describe("CloudflareTurnstileProvisioner.assertDomainAvailable", () => {
     await expect(p.assertDomainAvailable("app.example.com")).resolves.toBeUndefined();
   });
 
-  test("a neighbouring project's widget on the same domain IS foreign, and is refused", async () => {
+  test("a neighboring project's widget on the same domain IS foreign, and is refused", async () => {
     const { cf, listTurnstilesByDomain } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const p = new CloudflareTurnstileProvisioner({
@@ -628,7 +628,7 @@ describe("CloudflareTurnstileDeprovisioner", () => {
  * "The domain is free" and "I asked an account nobody claims" are the same empty listing (#378).
  *
  * This one is the worst of the creative sites: the guard's *passing* is what mints a live production
- * widget, so an unconfirmed account turns a safety check into the thing that authorises the mistake.
+ * widget, so an unconfirmed account turns a safety check into the thing that authorizes the mistake.
  * The account id below is a literal, and the plant is one word.
  */
 describe("CloudflareTurnstileProvisioner.assertDomainAvailable on an unconfirmed account", () => {

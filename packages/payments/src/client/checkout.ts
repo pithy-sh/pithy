@@ -28,7 +28,7 @@ import {
  *
  * **This kit only ever opens a transaction, and the reason is the price and the buyer — not the stamp.**
  * `items[]` lets the page name what is being sold and to whom, and every other route in this capability
- * takes the price from the catalogue entry a product id resolves to precisely so a client cannot buy Pro
+ * takes the price from the catalog entry a product id resolves to precisely so a client cannot buy Pro
  * for the price of a coin pack. There is no reading under which that rule holds at `POST /checkout` and
  * stops holding here. So the cost is one round trip before the overlay appears, paid once per purchase.
  *
@@ -61,9 +61,9 @@ import {
  * the Paddle dashboard. {@link settingsFor} builds them one at a time for that reason, and the tests assert
  * on `Object.keys` rather than on values.
  *
- * **Colours and fonts are not here because they are not anywhere in code.** Paddle configures them in its
+ * **Colors and fonts are not here because they are not anywhere in code.** Paddle configures them in its
  * own dashboard — *Checkout → Branded inline checkout* for the 50-odd inline options, logo and brand
- * colour for the overlay. That is Paddle's product decision rather than a missing endpoint, and the one
+ * color for the overlay. That is Paddle's product decision rather than a missing endpoint, and the one
  * API that writes `primary_checkout_color` is a Partners route for a platform configuring another
  * seller's account. Nothing to add here, and nothing to go looking for.
  *
@@ -122,7 +122,7 @@ export interface PaddleCheckoutOptions extends PaddleOptions {
    * toggle would open a light card form over a dark page for a reader who chose dark. The screen already
    * knows which theme it rendered; that is the only source that is right every time.
    *
-   * Theme is the whole of what code may set. Colours and fonts live in the Paddle dashboard, deliberately.
+   * Theme is the whole of what code may set. Colors and fonts live in the Paddle dashboard, deliberately.
    */
   theme?: PaddleCheckoutTheme;
   /**

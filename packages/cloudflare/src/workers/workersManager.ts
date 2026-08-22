@@ -109,7 +109,7 @@ export class CloudflareWorkersManager extends CloudflareManager {
    * because it is TypeScript rather than a `wrangler.jsonc`, and the gate reads manifests.
    *
    * Moving it to the floor was the obvious answer and it is the wrong one. **A compatibility date is a
-   * behaviour contract, not a version number** — it is the date workerd pretends it is — and this one
+   * behavior contract, not a version number** — it is the date workerd pretends it is — and this one
    * lands on Workers in accounts that are not ours. Re-picking the number changes what an existing
    * caller's Workers run, silently, for somebody who never asked; and the new number is stale on
    * exactly the schedule the old one was, with the same gate unable to see it. `compatibility.ts` makes
@@ -119,7 +119,7 @@ export class CloudflareWorkersManager extends CloudflareManager {
    * Requiring the date removes the class instead of re-picking the number, which is the move #377, #366
    * and #394 each took. It is also the cheaper break: a caller who wanted `2026-04-07` writes
    * `2026-04-07` and gets precisely what they had, and everyone else finds out at compile time rather
-   * than from a behaviour change in production. `WorkersProvisioner` already promised this — *"it
+   * than from a behavior change in production. `WorkersProvisioner` already promised this — *"it
    * carries no environment- or product-specific defaults — every name, command, and env var is supplied
    * by the caller"* — and the manager under it was the one place that was untrue.
    *
@@ -155,7 +155,7 @@ export class CloudflareWorkersManager extends CloudflareManager {
       throw new ValidationError({
         message: "A Worker's compatibility date is named once, as an argument.",
         action: "Remove `compatibility_date` from the metadata and pass it as the second argument.",
-        detail: `createWorker('${scriptName}') was given a 'compatibility_date' in metadata as well as an argument. Two statements of one behaviour contract is a precedence rule nobody should have to know.`,
+        detail: `createWorker('${scriptName}') was given a 'compatibility_date' in metadata as well as an argument. Two statements of one behavior contract is a precedence rule nobody should have to know.`,
       });
     }
 

@@ -146,7 +146,7 @@ earns its keep only while there have to be two. What is kept, in `@pithy-sh/vite
 current emit.
 
 **Can the gate run where it would be seeded?** This is the practical half, and it is a wall you find by
-trying rather than a judgement you make in advance. A seeded gate must pass under the plain `vitest run`
+trying rather than a judgment you make in advance. A seeded gate must pass under the plain `vitest run`
 an adopter already has — which is why the seeded gates stub `pithy-config.tsx` rather than
 `virtual:pithy/*`, and why a gate needing a spawned compiler cannot be one. #391 found the sharper case:
 the palette invariant lives in CSS text, and **Vitest stubs CSS modules to the empty string**, so
@@ -190,7 +190,7 @@ project is an act a person performs. What it does is make the question due at th
 answered well, and refuse to let the answer rot: a ledger entry for a file that has left the tree, a
 seeded gate nothing claims, or a gate shipped in a different group from its subject are each red.
 
-Property 2 is the one part that mechanises. A seeded gate must declare a canary and refuse one having
+Property 2 is the one part that mechanizes. A seeded gate must declare a canary and refuse one having
 drifted onto a real value, and a kept gate must be a file that exists outside the tree with a reason
 that says which wall it hit — because a ledger entry pointing at a renamed file rots into a subject
 that reads as held.

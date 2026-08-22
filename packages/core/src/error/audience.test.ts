@@ -15,7 +15,7 @@ import { InternalError, NotFoundError } from "./pithyError";
  * `pithy` command, a file in the adopter's repo, a wrangler binding, or a provider console —
  * `Run \`pithy vector provision\``, `Bind a D1 database named DB in wrangler.jsonc`, `Set \`name\` in
  * pithy.config.ts`. That is a sentence for somebody with the project checked out. Sent to a browser it
- * is a description of the deployment, and it was travelling in the one field nobody had classified.
+ * is a description of the deployment, and it was traveling in the one field nobody had classified.
  *
  * So the audience is the operator, and the boundary is the one already written: `action` sits beside
  * `detail` on `ErrorPayload` and is absent from `PublicErrorPayload`. A caller remedy has a field of

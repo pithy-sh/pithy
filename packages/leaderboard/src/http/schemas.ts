@@ -87,7 +87,7 @@ export const AroundQuery = WindowQuery.extend({
     .max(25)
     .default(5)
     .describe("How many entries to return either side of the player."),
-}).describe("The slice of a board centred on the calling player.");
+}).describe("The slice of a board centered on the calling player.");
 export type AroundQuery = z.infer<typeof AroundQuery>;
 
 export const SegmentBody = z

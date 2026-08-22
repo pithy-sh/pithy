@@ -391,7 +391,7 @@ describe("the shared-store fence", () => {
     // and the environment is one of three words. So the attacker sets `pithy_account_reference` to a victim
     // and `pithy_env` to "prod" and has guessed nothing — a MAC is the only part they cannot produce.
     //
-    // `linkProviderAccount` never rebinds, so honouring this would be a permanent, unauthenticated write
+    // `linkProviderAccount` never rebinds, so honoring this would be a permanent, unauthenticated write
     // into the provider-account map.
     const forged = await parse(await orderDelivery("order_created", {}, { deployment: "prod", forge: true }), {
       deployment: "prod",
@@ -419,11 +419,11 @@ describe("the shared-store fence", () => {
     expect(replayed.accountReference).toBeNull();
   });
 
-  test("an account reference without our own env stamp beside it is not honoured", async () => {
+  test("an account reference without our own env stamp beside it is not honored", async () => {
     // Lemon Squeezy's public storefront buy links accept `checkout[custom][...]` parameters, so a stranger
     // can put any string in `custom_data` and the webhook echoes it exactly as one of ours would. The route
     // writes the provider-account link from `accountReference`, and `linkProviderAccount` never rebinds —
-    // so honouring an unstamped one is an unauthenticated, permanent write into the account map.
+    // so honoring an unstamped one is an unauthenticated, permanent write into the account map.
     const forged = await parse(await subscriptionDelivery("subscription_created", {}, { stamped: false }), {
       deployment: "prod",
     });
@@ -432,7 +432,7 @@ describe("the shared-store fence", () => {
     expect(forged.event).not.toBeNull();
   });
 
-  test("an account reference stamped for another deployment is not honoured either", async () => {
+  test("an account reference stamped for another deployment is not honored either", async () => {
     // Fenced out entirely, so it never reaches the account map by any path.
     const other = await parse(await subscriptionDelivery("subscription_created", {}, { deployment: "dev" }), {
       deployment: "prod",

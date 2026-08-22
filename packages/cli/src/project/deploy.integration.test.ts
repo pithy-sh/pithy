@@ -49,7 +49,7 @@ type Worker = (typeof WORKERS)[number];
  * teardown all name the same thing.
  *
  * Through `uniqueName`, so a deploy this run cannot collide with a concurrent one *and* — the part that
- * matters — an interrupted run leaves a script the reaper recognises. These are live endpoints on a real
+ * matters — an interrupted run leaves a script the reaper recognizes. These are live endpoints on a real
  * account; the previous `pithyit-dep-…` naming was neither reserved nor reapable, so a run killed before
  * `afterAll` left one serving traffic until somebody noticed it in the dashboard.
  */

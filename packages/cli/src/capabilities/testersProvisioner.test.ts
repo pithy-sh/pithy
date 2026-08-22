@@ -12,7 +12,7 @@ import { CloudflareTestersProvisioner } from "./testersProvisioner";
 const PROJECT = "acme";
 
 /**
- * The live provisioner's Cloudflare-facing behaviour.
+ * The live provisioner's Cloudflare-facing behavior.
  *
  * `provisionTesters.test.ts` in the capability covers the *orchestration* — order, fan-out, what runs
  * before what — against a fake seam. This covers the seam's own implementation, which that fake by

@@ -42,7 +42,7 @@ export type MetadataIndexDescriptor = z.infer<typeof MetadataIndexDescriptor>;
 export interface MetadataIntrospection {
   /** The metadata indexes, in declaration order. Empty when nothing is marked filterable. */
   indexes: MetadataIndexDescriptor[];
-  /** Human-readable reasons the schema cannot be honoured. Empty means the schema is good. */
+  /** Human-readable reasons the schema cannot be honored. Empty means the schema is good. */
   problems: string[];
 }
 

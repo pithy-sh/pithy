@@ -105,7 +105,7 @@ describe("addCapability", () => {
     expect(after).toContain('import { auth } from "@pithy-sh/auth/src/capability";');
   });
 
-  test("recognises an existing import that does not start at column zero", async () => {
+  test("recognizes an existing import that does not start at column zero", async () => {
     await addCapability({ workerDir: worker, manifest });
     const path = join(worker, "pithy.config.ts");
     await writeFile(path, (await readFile(path, "utf8")).replace("import { auth }", "  import { auth }"));
@@ -514,7 +514,7 @@ describe("addCapability", () => {
 
     test("a D1 name is composed against D1's budget, not R2's — the longest binding survives whole", async () => {
       // 25 + `-prod-` + 33 = 64: over the 63 this used to be truncated at, and nowhere near a D1 cap,
-      // because Cloudflare publishes none. The binding is the thing an operator recognises in
+      // because Cloudflare publishes none. The binding is the thing an operator recognizes in
       // `wrangler d1 list`, so hashing it away to satisfy another namespace's limit bought nothing.
       const project = "a".repeat(MAX_PROJECT_NAME);
       const longBinding = CapabilityManifest.parse({

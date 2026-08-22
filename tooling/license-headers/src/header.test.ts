@@ -99,13 +99,13 @@ describe("applyHeader", () => {
 
   // The copyright line is free-form on purpose: `2026 Pithy` becomes an entity name one day, and
   // that edit must not be reverted by the next --fix run.
-  test("leaves a customised copyright line alone when the identifier is already right", () => {
+  test("leaves a customized copyright line alone when the identifier is already right", () => {
     const custom =
       "// SPDX-FileCopyrightText: 2026 Pithy, LLC\n// SPDX-License-Identifier: MIT\n\nexport const a = 1;\n";
     expect(applyHeader(custom, "MIT")).toBe(custom);
   });
 
-  test("preserves a customised copyright line while correcting the identifier", () => {
+  test("preserves a customized copyright line while correcting the identifier", () => {
     const custom =
       "// SPDX-FileCopyrightText: 2026 Pithy, LLC\n// SPDX-License-Identifier: MIT\n\nexport const a = 1;\n";
     expect(applyHeader(custom, "FSL-1.1-MIT")).toBe(

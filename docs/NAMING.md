@@ -71,7 +71,7 @@ Sorting by name should group a project's resources, and then that project's envi
 
 **An environment stops at 7 characters** — the length of `staging`, the longest of the three. This is not a preference, it is a derivation input. Every project-name budget on this page is computed against a 7-character environment, so a longer one would retroactively shrink a cap that projects have already been accepted under, and a provisioned project cannot be renamed. `--env` is validated at the flag, before any config is loaded or any Cloudflare call is made.
 
-An environment is lowercase, digits, and single inner hyphens, starting with a letter. It is read **verbatim, never kebab-cased** — unlike the project name. A project name is prose typed once into a config file, so `Acme Corp` is politely composed into `acme-corp`. An environment is an identifier repeated in `--env`, in `.dev.vars.<environment>`, and in a wrangler environment key; normalising `Prod` into `prod` would make one environment answer to two spellings in some places and to one in others.
+An environment is lowercase, digits, and single inner hyphens, starting with a letter. It is read **verbatim, never kebab-cased** — unlike the project name. A project name is prose typed once into a config file, so `Acme Corp` is politely composed into `acme-corp`. An environment is an identifier repeated in `--env`, in `.dev.vars.<environment>`, and in a wrangler environment key; normalizing `Prod` into `prod` would make one environment answer to two spellings in some places and to one in others.
 
 A custom environment is allowed, and held to the same two rules. `live` is fine. `eu-prod` is fine. `preprod-eu` is 10 characters and is refused. `global` is refused for a different reason: it occupies the same slot for a different purpose, and a project cannot have one set of names covering two scopes.
 
@@ -135,7 +135,7 @@ Two guards exist, and neither of them is an undo.
 
 Both fail the exit code, so CI gates on them. A lone foreign name, a mix of names, or two unrelated foreign projects do not: none of those is something a rename can produce, and none of them is proven.
 
-Its evidence is your wiring plus that stamp, never a scan of the account — deliberately, because a resource carrying a *neighbouring* project's segment is the neighbour, not an orphan. The costs: it sees only what `wrangler.jsonc` names (D1 databases and R2 buckets), so an orphaned KV namespace (wrangler records no title), Worker script, Secrets Store entry, or API token is invisible to it; and the stamp covers only databases Pithy has migrated, which is why the wholesale check remains beside it.
+Its evidence is your wiring plus that stamp, never a scan of the account — deliberately, because a resource carrying a *neighboring* project's segment is the neighbor, not an orphan. The costs: it sees only what `wrangler.jsonc` names (D1 databases and R2 buckets), so an orphaned KV namespace (wrangler records no title), Worker script, Secrets Store entry, or API token is invisible to it; and the stamp covers only databases Pithy has migrated, which is why the wholesale check remains beside it.
 
 `pithy migrate` stamps the project into a `pithy_migrations_owner` row beside the migration ledger, and refuses to write to a database another project owns. Every database in the run is claimed before any of them is written to, so a foreign database aborts the run rather than being found halfway through. Nothing clears the stamp; handing a database to another project means dropping that table by hand.
 

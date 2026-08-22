@@ -126,7 +126,7 @@ export interface EmailAdminRoutesOptions {
    * Required, with no default of its own. The manifest advertises these paths and a client composes its
    * calls from the manifest, so the mount point and the advertised path must come from one value — a
    * default here and a default in the config is two, and the day they disagree every management call
-   * 404s against exactly the adopters who customised anything.
+   * 404s against exactly the adopters who customized anything.
    */
   basePath: string;
   /** The clock. Injected so retried timestamps are deterministic in tests. */

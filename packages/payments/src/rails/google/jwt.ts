@@ -88,7 +88,7 @@ const PKCS8_HEADER = "-----BEGIN PRIVATE KEY-----";
 /**
  * PKCS#8 DER from the PEM a Google service-account key file carries.
  *
- * Two accommodations, both earned. Escaped `\n` sequences are honoured because the key lives inside the
+ * Two accommodations, both earned. Escaped `\n` sequences are honored because the key lives inside the
  * downloaded JSON as a single line and arrives that way whenever a credential is moved by hand — refusing it
  * would read as a bug in us. And a PKCS#1 body (`BEGIN RSA PRIVATE KEY`) is named rather than passed on,
  * because WebCrypto's answer to one is an opaque `DataError` with nothing an operator can act on.

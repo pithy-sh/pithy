@@ -30,9 +30,9 @@ export interface VectorizeVector {
   namespace?: string;
 }
 
-/** Options narrowing a nearest-neighbour query. */
+/** Options narrowing a nearest-neighbor query. */
 export interface VectorizeQueryOptions {
-  /** The number of nearest neighbours to return. */
+  /** The number of nearest neighbors to return. */
   topK?: number;
   /** Whether to return the matched vectors' values. */
   returnValues?: boolean;
@@ -44,7 +44,7 @@ export interface VectorizeQueryOptions {
 
 /**
  * Out-of-Worker Vectorize access over the REST API: insert/upsert vectors, query nearest
- * neighbours, fetch and delete by id, and describe the index from a CLI/CI/provisioning context.
+ * neighbors, fetch and delete by id, and describe the index from a CLI/CI/provisioning context.
  * Inside a Worker you use the `Vectorize` binding directly — this manager is the REST counterpart,
  * addressed by index name.
  */
@@ -85,7 +85,7 @@ export class CloudflareVectorizeManager extends CloudflareManager {
     );
   }
 
-  /** Query the index for the nearest neighbours of a vector. */
+  /** Query the index for the nearest neighbors of a vector. */
   async query(vector: number[], options?: VectorizeQueryOptions): Promise<IndexQueryResponse | null> {
     return cloudflareRequest("Vectorize query", () =>
       this.getClient().vectorize.indexes.query(this.indexName, {
@@ -100,7 +100,7 @@ export class CloudflareVectorizeManager extends CloudflareManager {
   }
 
   /**
-   * Query by an existing vector's id: fetch its values, then run a nearest-neighbour query with
+   * Query by an existing vector's id: fetch its values, then run a nearest-neighbor query with
    * them. Returns an empty result when the id is absent or has no values.
    */
   async queryById(vectorId: string, options?: VectorizeQueryOptions): Promise<IndexQueryResponse | null> {

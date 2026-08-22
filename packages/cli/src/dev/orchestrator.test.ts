@@ -1287,7 +1287,7 @@ describe("startDev — capability hosts", () => {
     const handle = await startDev(h.options);
     expect(handle.workers).toContainEqual({ name: "email", port: 8789, origin: "http://localhost:8789" });
     expect(h.written[0]?.workers.email?.port).toBe(8789);
-    // Every child, host included, is signalled on shutdown — no orphaned workerd after a session.
+    // Every child, host included, is signaled on shutdown — no orphaned workerd after a session.
     await handle.shutdown("done");
     const hostPid = h.spawned[2]?.child.pid ?? 0;
     expect(h.killCalls.map((k) => k.pid)).toContain(-hostPid);
@@ -1402,7 +1402,7 @@ describe("startDev — capability hosts", () => {
     expect(h.stdoutLines.join("\n")).toContain("pithy init");
   });
 
-  test("its output is labelled and tee'd like every other worker's", async () => {
+  test("its output is labeled and tee'd like every other worker's", async () => {
     const h = hosted();
     await startDev(h.options);
     h.spawned[2]?.child.stdout.write("workflow started\n");

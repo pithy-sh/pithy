@@ -184,7 +184,7 @@ function mergeMissing(target: Record<string, string>, incoming: Record<string, s
  *
  * **There is no such version yet.** A stub declares a `null` range for a package the registry cannot
  * serve at all — every `@pithy-sh/*` one, until the scope publishes. That case is the checkout case
- * generalised: `alreadyProvided` only ever caught the adopter who linked one in, and a plain project
+ * generalized: `alreadyProvided` only ever caught the adopter who linked one in, and a plain project
  * kept the literal and broke. `kitRange` decides it once, for every producer, and stops deciding it the
  * day the version is real.
  */

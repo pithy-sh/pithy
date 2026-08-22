@@ -319,7 +319,7 @@ describe("playSubscriptionEvent", () => {
   });
 
   test("a test purchase is sandbox, whatever the deployment thinks", () => {
-    // The most common in-app-purchase security defect there is. Play marks a licence-test subscription with a
+    // The most common in-app-purchase security defect there is. Play marks a license-test subscription with a
     // `testPurchase` object, and the writer refuses it against a production deployment.
     const purchase = { ...playSubscription, testPurchase: {} };
     expect(playSubscriptionEvent(purchase, context).event.environment).toBe("sandbox");
@@ -446,7 +446,7 @@ describe("playProductEvent", () => {
     });
   });
 
-  test("a licence-test purchase is sandbox", () => {
+  test("a license-test purchase is sandbox", () => {
     expect(playProductEvent({ ...playProduct, purchaseType: 0 }, context).event.environment).toBe("sandbox");
   });
 

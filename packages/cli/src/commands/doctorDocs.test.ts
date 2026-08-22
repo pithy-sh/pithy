@@ -33,7 +33,7 @@ import { buildDoctorReport, type DoctorReportOptions, renderDoctorJson, renderDo
  *
  * It lives beside `doctor.test.ts` and shares its fixtures (`test-utils/doctorHarness`) for the same
  * reason: the suite that says what the renderer prints and the pin that says the doc prints the same thing
- * must start from one report builder, or the pin drifts from the behaviour it is quoting.
+ * must start from one report builder, or the pin drifts from the behavior it is quoting.
  *
  * The page was `docs/CLI.md` §5.6 until #223 split the reference one page per command. Nothing about the
  * pins changed with it: they were always scoped to one section's fenced blocks, and a page is a section
@@ -57,8 +57,8 @@ import { buildDoctorReport, type DoctorReportOptions, renderDoctorJson, renderDo
  *   module per page: the page's name picks the source, and the source decides the keys.
  * - **Every command has a page.** The ratchet #186 could not express, closed by #223.
  *
- * **Enrolment is what triggers the third one, and that is deliberate.** #186 enrolled a section by having it
- * mention a command; #223 enrols a command by giving it a page, which is the same property with a filename
+ * **Enrollment is what triggers the third one, and that is deliberate.** #186 enrolled a section by having it
+ * mention a command; #223 enrolls a command by giving it a page, which is the same property with a filename
  * instead of a sentence. A page that half-describes a payload is how an adopter learns three fields of five
  * and discovers the rest from a stack trace, so partial is the state worth failing — while a command with no
  * page at all is not failed by this gate, and was not, right up until the last page landed. The backlog
@@ -173,7 +173,7 @@ function docOptions(options: DoctorReportOptions): DoctorReportOptions {
       path: join(harness.dir, ".config", "pithy", "acme", "dev.json"),
       user: null,
     }),
-    // Its neighbour, and stubbed for the same reason: the doc transcript pins one path, and the real
+    // Its neighbor, and stubbed for the same reason: the doc transcript pins one path, and the real
     // check resolves it from a `pithy.config.ts` this harness has none of. Present, because the line
     // prints on every run whether or not there is a file — that is the whole point of it (#156).
     checkDevSecretsFile: async () => ({
@@ -181,7 +181,7 @@ function docOptions(options: DoctorReportOptions): DoctorReportOptions {
       present: true,
       orphans: [],
     }),
-    // And its neighbour once more, resolved under the same home so the transcript's path tilde-abbreviates
+    // And its neighbor once more, resolved under the same home so the transcript's path tilde-abbreviates
     // like every other one on the page. Present with nothing stray, which is the state that prints the bare
     // path — the healthy machine the transcript is of.
     checkPortsRegistry: async () => ({
@@ -298,7 +298,7 @@ describe("docs/commands/doctor.md", () => {
    *
    * The page has to show it because it is the one thing a count cannot say. Before this, an unreachable D1
    * contributed nothing to the sum and the line read `none pending ✓` about a schema nobody had compared —
-   * so the fragment an adopter needs to recognise is precisely the one no count could produce.
+   * so the fragment an adopter needs to recognize is precisely the one no count could produce.
    */
   test("the unreadable-database fragment is what the renderer prints for a ledger read that came up short", async () => {
     const report = await buildDoctorReport(
@@ -695,7 +695,7 @@ describe("the docs say what the code emits", () => {
 
   /**
    * The ratchet #186 named and could not close: it enrolled a *section* by having it mention a command, so
-   * a command nobody had written about was free. One page per command makes the enrolment a filename, and a
+   * a command nobody had written about was free. One page per command makes the enrollment a filename, and a
    * filename can be required. Every command module has a page, and this is what says so.
    *
    * A new command therefore lands with its page or fails here, which is the point: the reference is
@@ -754,7 +754,7 @@ describe("the docs say what the code emits", () => {
   /**
    * §5.7 stays in `docs/CLI.md`: it specifies the *distinction* between a CLI update and a capability
    * update, which is one command's business no more than the flag conventions are. It keeps #186's own
-   * enrolment rule — the section names its own commands, every `pithy <name> … --json` it puts in backticks
+   * enrollment rule — the section names its own commands, every `pithy <name> … --json` it puts in backticks
    * — so a payload it half-describes fails here exactly as it did before the split.
    */
   test("docs/CLI.md §5.7 names every --json field of every command it specifies", () => {
@@ -786,7 +786,7 @@ describe("the docs say what the code emits", () => {
  * would fail on pages that agree and pass on any pair that happened to be copied — the two errors a gate
  * can make, at once.
  *
- * So the enforceable half is **enrolment**. A key documented on more than one page is declared here with
+ * So the enforceable half is **enrollment**. A key documented on more than one page is declared here with
  * the pages that document it, and the declaration is asserted equal to the scan in both directions. A
  * shared name therefore cannot appear silently: it fails until someone writes it down beside the command
  * that already uses it, and that is exactly the moment the comparison nobody was making has to be made.
@@ -989,11 +989,11 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
  * The paragraph above is right that meaning cannot be read. **Type can**, for most of these rows, and a
  * type collision is the half of the problem that fails silently: `if (result.removed)` was true for
  * `alias`'s `boolean` and for `feature sync`'s non-empty `string[]`, and a consumer that guessed wrong got
- * a wrong answer rather than an error (#235). Five names each carried two types when the enrolment record
+ * a wrong answer rather than an error (#235). Five names each carried two types when the enrollment record
  * was first populated. Four of them were real and were renamed on the outlier's side — `feature.create`'s
  * `created` → `worktreeCreated`, `feature.sync`'s `added`/`removed` → `addedWorkers`/`removedWorkers`,
  * `feature.destroy`'s `deleted` → `deletedResources`, `token revoke`'s `revoked` → `revokedCount`. The
- * fifth, `skipped`, was an artefact of this scan reading a passthrough object's table as a payload's own,
+ * fifth, `skipped`, was an artifact of this scan reading a passthrough object's table as a payload's own,
  * and `documentedKeys` above is where that was fixed rather than in any command.
  *
  * So the type each shared key carries is declared, and asserted against the pages. Two pages that describe
@@ -1080,7 +1080,7 @@ describe("the --json contract agrees with itself", () => {
       .filter(([, rows]) => rows.length > 0),
   );
 
-  /** The same, reduced to names, which is what enrolment is asserted on. */
+  /** The same, reduced to names, which is what enrollment is asserted on. */
   const PAGE_KEYS: Record<string, string[]> = Object.fromEntries(
     Object.entries(PAGE_ROWS).map(([page, rows]) => [page, rows.map((row) => row.key)]),
   );

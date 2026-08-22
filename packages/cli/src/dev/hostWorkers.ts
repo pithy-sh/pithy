@@ -28,7 +28,7 @@ import type { WorkerTarget } from "../project/workers";
  * resolved through the same seam the provisioners use ({@link HOST_WORKERS}), materialised into a
  * git-ignored directory, and handed to the orchestrator as an ordinary {@link WorkerTarget}. From
  * there it is not a special case: it gets a pinned port out of `.dev.config.json`, a label and a
- * colour, an entry in `.dev-state.json`, and it is reaped with everything else.
+ * color, an entry in `.dev-state.json`, and it is reaped with everything else.
  *
  * ## The name is the wire
  *

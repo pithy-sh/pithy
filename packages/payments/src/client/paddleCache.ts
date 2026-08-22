@@ -210,7 +210,7 @@ export function cachedAnswer(cache: PaddleQuoteCache, of: string): unknown | nul
  * Throw away this cache's own expired entries.
  *
  * **Its own, and judged by its own lifetime.** Two surfaces can share one store under different names
- * and different ttls, and sweeping a neighbour's entries against *this* cache's number would throw away
+ * and different ttls, and sweeping a neighbor's entries against *this* cache's number would throw away
  * answers that are perfectly fresh by the rule they were kept under. Anything outside the namespace —
  * another cache's, or the page's own — is not this module's to read or to delete.
  *

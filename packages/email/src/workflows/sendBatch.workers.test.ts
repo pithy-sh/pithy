@@ -27,7 +27,7 @@ import { runSendBatch, type SendBatchDeps, type SendBatchStep } from "./sendBatc
  *     and re-drives it after `stuckMs`. Freezing that is a live batch declared stuck, a second send
  *     Workflow started against a job the first is still working, and both of them calling `send`.
  *
- * A sweep journalled the one variable and was reverted for the second reason. Both properties are driven
+ * A sweep journaled the one variable and was reverted for the second reason. Both properties are driven
  * here, over a real journal and a real scheduler tick — the double-send is the criterion that outranks
  * the other, so it is stated as a dispatch that must not happen rather than as a timestamp.
  */
@@ -291,7 +291,7 @@ describe("runSendBatch — the heartbeat", () => {
     // **One journal across both attempts**, which is what makes the second a resume rather than a second
     // instance. A fresh journal per attempt re-reads `pass-instant` on the newer clock, so the pass
     // instant and the heartbeat agree by accident and this test cannot tell them apart — it passed a
-    // planted journalled heartbeat before the journal was shared.
+    // planted journaled heartbeat before the journal was shared.
     const journal = new Map<string, unknown>();
 
     // The step fails and is contained, so the body completes with that job `unfinished` (#380). What
@@ -316,7 +316,7 @@ describe("runSendBatch — the heartbeat", () => {
 
   test("and the heartbeat still carries the row on its own, with nothing vouching for the batch", async () => {
     // The same drive with the veto taken away, because a test that leaves it in place proves nothing
-    // about `updatedAt`: the batch would be spared whatever the row said, and a sweep that journalled
+    // about `updatedAt`: the batch would be spared whatever the row said, and a sweep that journaled
     // the clock — the defect #327 was opened for, and reverted for — would pass it. Here the row's own
     // freshness is the only thing between the job and a second Workflow.
     const jobId = await enqueue("ada@example.com", "job-1");

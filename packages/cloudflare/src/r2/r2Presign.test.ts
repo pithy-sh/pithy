@@ -9,7 +9,7 @@ import { CloudflareR2Manager } from "./r2Manager";
  *
  * `r2Manager.test.ts` mocks `@aws-sdk/s3-request-presigner` to check *which* command the manager
  * sends, which is the right test for that concern and useless for this one. The claim here is about
- * the SDK's own behaviour: `S3RequestPresigner.prepareRequest` calls
+ * the SDK's own behavior: `S3RequestPresigner.prepareRequest` calls
  * `unsignableHeaders.add("content-type")` before signing, so a content type can never be enforced by
  * a presigned URL, while `content-length` can and is.
  *

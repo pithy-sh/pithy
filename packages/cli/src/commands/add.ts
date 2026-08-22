@@ -87,7 +87,7 @@ export async function promptWorker(choices: ResolvedWorker[]): Promise<string> {
     options: choices.map((choice) => ({ value: choice.name, label: choice.name })),
   });
   if (isCancel(answer)) {
-    process.stderr.write("Cancelled.\n");
+    process.stderr.write("Canceled.\n");
     process.exit(1);
   }
   return answer as string;
@@ -220,7 +220,7 @@ const promptConfigValues: ConfigPrompt = async (manifest, provided) => {
             : { defaultValue: String(option.default), placeholder: String(option.default) }),
         });
     if (isCancel(answer)) {
-      process.stderr.write("Cancelled.\n");
+      process.stderr.write("Canceled.\n");
       process.exit(1);
     }
     // An unanswered required option is refused rather than written. `text` returns "" for a bare enter and
@@ -248,7 +248,7 @@ const promptPrerequisites: PrerequisitePrompt = async ({ capability, missing }) 
     message: `${capability} requires ${missing.join(", ")}. Compose ${one ? "it" : "them"} too?`,
   });
   if (isCancel(answer)) {
-    process.stderr.write("Cancelled.\n");
+    process.stderr.write("Canceled.\n");
     process.exit(1);
   }
   return answer === true;

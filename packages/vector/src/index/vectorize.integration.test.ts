@@ -293,7 +293,7 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
         );
 
         // One model serves writes and queries. That is the point of pinning it per index: an index built with
-        // one model and queried with another returns plausible neighbours from a space the query vector does
+        // one model and queried with another returns plausible neighbors from a space the query vector does
         // not live in, and nothing errors.
         const texts = ["a bright red apple", "a ripe yellow banana", "a diesel locomotive"];
         const embeddings = await embedForIndex(ai, indexConfig, texts);
@@ -389,7 +389,7 @@ describe.skipIf(!creds.hasCreds || !vectorizeReachable)("@pithy-sh/vector agains
           DATA_PLANE_TIMEOUT_MS,
         );
         // Only the vector written after the metadata index existed matches. No error, no warning — the filter
-        // simply returns less than the corpus holds. This is the behaviour the whole package is built around,
+        // simply returns less than the corpus holds. This is the behavior the whole package is built around,
         // confirmed against the real service.
         expect(early.matches.map((match) => match.id)).toEqual(["apple-late"]);
         expect(early.count).toBe(1);

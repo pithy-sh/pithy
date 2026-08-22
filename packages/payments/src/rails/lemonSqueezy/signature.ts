@@ -14,13 +14,13 @@ import { PaymentsVerificationFailedError } from "../../error/errors";
  * That primitive implements Stripe's format — `t=…,v1=…` — and every security property it enforces is a
  * property *of that format*: the freshness window in both directions, the timestamp being inside the signed
  * payload, a cap on how many signatures a header may list. Lemon Squeezy's scheme has none of them to
- * enforce. Generalising the primitive to carry a scheme would mean giving it a variant whose `now` and
+ * enforce. Generalizing the primitive to carry a scheme would mean giving it a variant whose `now` and
  * `toleranceSeconds` are accepted and ignored, and a parameter a caller can set that changes nothing is
  * worse than no parameter: somebody eventually reads the call site and believes the window is there.
  *
  * So the absence is expressed in the type. {@link verifyLemonSqueezySignature} takes no options bag and no
  * clock — there is nowhere to pass a tolerance, so no call site can claim a window this rail does not
- * honour, and the refusal union below has two members where Stripe's has three. There is no `stale`.
+ * honor, and the refusal union below has two members where Stripe's has three. There is no `stale`.
  *
  * ## Where replay protection actually lives
  *

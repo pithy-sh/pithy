@@ -112,7 +112,7 @@ function linkFor(config: TestersConfig): (kind: NudgeKind, member: TestersMember
 export default {
   /**
    * Cron entry: start one pass per fire, with empty parameters — the defaults are the scheduled
-   * behaviour.
+   * behavior.
    *
    * Through the same dispatcher an on-demand pass uses, rather than `env.TESTERS_DAILY.create()`: the
    * parameters are validated against the job's own schema before the binding is touched, and a host

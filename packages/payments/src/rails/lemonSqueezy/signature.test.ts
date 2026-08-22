@@ -77,7 +77,7 @@ describe("verifyLemonSqueezySignature", () => {
   test("verification carries no clock and no window, because this scheme has neither", async () => {
     // Lemon Squeezy signs the bare body with no timestamp, so there is no freshness property to enforce
     // and none to pretend to. The absence is in the signature: there is no options bag to hand a
-    // tolerance to, so no call site can configure a window this rail does not honour. Replay protection
+    // tolerance to, so no call site can configure a window this rail does not honor. Replay protection
     // rests entirely on the guard's `UNIQUE (rail, providerEventId)` insert.
     expect(verifyLemonSqueezySignature.length).toBe(3);
   });

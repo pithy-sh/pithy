@@ -8,7 +8,7 @@ import { reportSweep, type SweepResult } from "./sweep";
 
 /**
  * How a run reports itself. The tally is the sweep's only visible output, so what an operator can
- * query for is behaviour, not formatting: the counts must arrive as fields rather than inside a
+ * query for is behavior, not formatting: the counts must arrive as fields rather than inside a
  * message, and a capped run must be findable without reading every run that was not capped.
  */
 

@@ -35,7 +35,7 @@ import { sourceFiles } from "./sourceFiles";
  * before it has written a byte.
  *
  * The extractor is the other half, and it **refuses what it cannot name**. A `comment-json` import in a
- * form it does not recognise throws rather than returning "does not reach stringify" — a sweep whose
+ * form it does not recognize throws rather than returning "does not reach stringify" — a sweep whose
  * unrecognised case is silently empty cannot observe the thing it was built for.
  */
 
@@ -60,7 +60,7 @@ const ALLOWED = new Map<string, string>([
     // Pithy's own files, and this writer still emits `stringify`'s shape. It is `0o600` and hand-edited,
     // so the diff cost is lower than `wrangler.jsonc`'s — which is why it is a backlog item and not a
     // reason to weaken the rule.
-    "still writes `stringify`'s shape for .dev.secrets.jsonc — open, tracked, and not a licence",
+    "still writes `stringify`'s shape for .dev.secrets.jsonc — open, tracked, and not a license",
   ],
 ]);
 

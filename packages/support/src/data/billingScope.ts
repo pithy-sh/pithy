@@ -5,7 +5,7 @@
  * The one payments subject kind support reads.
  *
  * `@pithy-sh/payments` keys a purchase on a **subject pair** — a user or an organization, plus an id —
- * and which of the two a project uses is its `billingSubject` config. Support cannot honour that choice.
+ * and which of the two a project uses is its `billingSubject` config. Support cannot honor that choice.
  * It starts from a `From:` header, resolves it to a *person*, and does its billing lookup at thread-read
  * time, where there is no Hono `Context` to hand the adopter's subject resolver: the seam's whole job is
  * to answer "which organization is *this caller* acting for", and a support thread has no caller. So the

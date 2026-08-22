@@ -107,7 +107,7 @@ export function classificationPrompt(categories: SupportCategories): string {
  *
  * **The body is attacker-controlled and the model is being asked to follow instructions**, which is
  * the definition of a prompt-injection surface. Nothing here can make that impossible — no framing
- * defeats a determined injection against a small instruct model — so the real defence is downstream
+ * defeats a determined injection against a small instruct model — so the real defense is downstream
  * and structural: the output is validated against a closed enum, the worst achievable outcome is a
  * wrong label on one thread, and a wrong label is recomputed rather than repaired. Delimiting the
  * body is worth doing anyway, because it removes the *accidental* case, which is most of them.

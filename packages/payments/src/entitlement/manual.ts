@@ -65,7 +65,7 @@ import { PaymentsEntitlementNotInCatalogError } from "../error/errors";
  * A comp is a contract somebody signed, and under organization billing the party to it is the company rather
  * than whoever at the company asked. So these take a {@link PaymentsSubject} — the pair, never an id on its
  * own. The pair is the upsert's conflict target, the read-back's predicate and the row's identity, and it is
- * the same pair the read path filters on, so a grant and the gate that honours it cannot disagree about who
+ * the same pair the read path filters on, so a grant and the gate that honors it cannot disagree about who
  * was meant. `user:acme` and `organization:acme` are two holders: nothing in the kit makes those id spaces
  * disjoint, and support revoking the right id under the wrong kind must take nothing away from the other.
  */

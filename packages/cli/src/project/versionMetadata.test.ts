@@ -14,7 +14,7 @@ async function worker(wrangler: string): Promise<string> {
 }
 
 describe("hasVersionMetadata", () => {
-  it("recognises the declaration the runtime actually reads", () => {
+  it("recognizes the declaration the runtime actually reads", () => {
     expect(hasVersionMetadata({ version_metadata: { binding: "CF_VERSION_METADATA" } })).toBe(true);
   });
 

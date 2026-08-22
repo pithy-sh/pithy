@@ -15,7 +15,7 @@ describe("defaults", () => {
     expect(config.basePath).toBe("/testers");
   });
 
-  test("the roster cap defaults to a hundred as a management judgement, not a store limit", () => {
+  test("the roster cap defaults to a hundred as a management judgment, not a store limit", () => {
     // Play's closed-testing ceiling is 2,000 per email list; the widely-repeated 100 is the *internal*
     // track's cap and does not apply here. A hundred is the size of roster one person can chase.
     const config = TestersConfig.parse({});

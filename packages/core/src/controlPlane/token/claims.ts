@@ -23,7 +23,7 @@ import { ControlPlaneScope } from "../scope/scope";
  * A minute is the whole budget: mint, send, verify. Nothing legitimate needs more, because the client
  * mints per call rather than caching a credential.
  *
- * **This cap is what makes the replay window sound.** Replay defence is a `jti` held in a KV set with
+ * **This cap is what makes the replay window sound.** Replay defense is a `jti` held in a KV set with
  * a TTL, and a set with a TTL only covers tokens that expire inside it. Without a cap, a client could
  * mint an `exp` an hour out; the `jti` would age out after {@link CONTROL_PLANE_JTI_TTL_SECONDS} and
  * the same token would then replay freely for the remaining fifty-odd minutes. So the cap is enforced
@@ -63,7 +63,7 @@ const BODY_SHA256_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 /**
  * The JWS protected header.
  *
- * **`alg` is a pinned literal, and that is the algorithm-confusion defence.** The classic JWT breaks
+ * **`alg` is a pinned literal, and that is the algorithm-confusion defense.** The classic JWT breaks
  * are both header-driven: `"alg":"none"` asking the verifier to skip verification, and swapping RS256
  * for HS256 so a *public* key is used as an HMAC secret. Both need the verifier to take its algorithm
  * from the token. Here the schema decides and the token merely has to agree, so neither attack has a
@@ -135,7 +135,7 @@ export const ControlPlaneClaims = z
     exp: z
       .int()
       .describe(
-        "When the token stops being accepted, in seconds since the epoch. Honoured within CONTROL_PLANE_CLOCK_SKEW_SECONDS, and never further out than the max lifetime allows.",
+        "When the token stops being accepted, in seconds since the epoch. Honored within CONTROL_PLANE_CLOCK_SKEW_SECONDS, and never further out than the max lifetime allows.",
       ),
     bodySha256: z
       .string()

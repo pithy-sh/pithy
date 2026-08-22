@@ -91,7 +91,7 @@ async function subscription(overrides: Record<string, unknown> = {}): Promise<Re
 describe("the transaction map", () => {
   test("a completed subscription transaction is a closed, paid period — not `active`", async () => {
     // The departure from the issue's table, pinned. `active` with no expiry on a money row outranks the
-    // subscription's own state row, so a cancelled subscriber would keep their entitlement forever.
+    // subscription's own state row, so a canceled subscriber would keep their entitlement forever.
     // `expired` grants nothing and still credits a `grants` clause, which is what makes N renewals credit
     // exactly N times.
     const read1 = await read(event("transaction.completed", await transaction()));
@@ -469,10 +469,10 @@ describe("the payload the map hands the recorder", () => {
   });
 
   test("every published type this map does not act on comes back as an envelope", async () => {
-    // The population is Paddle's own catalogue, transcribed above from the API reference. A candidate list
+    // The population is Paddle's own catalog, transcribed above from the API reference. A candidate list
     // built from this package's own sets could only rediscover them.
     const unlisted = PADDLE_PUBLISHED_EVENT_TYPES.filter((type) => !PADDLE_RECORDED_EVENT_TYPES.has(type));
-    // Anti-vacuity against the real catalogue rather than against zero: an allowlist grown toward `*` would
+    // Anti-vacuity against the real catalog rather than against zero: an allowlist grown toward `*` would
     // empty this list, and an empty list is a loop that cannot fail.
     expect(PADDLE_PUBLISHED_EVENT_TYPES.length).toBeGreaterThanOrEqual(55);
     expect(unlisted.length).toBeGreaterThanOrEqual(30);
@@ -503,7 +503,7 @@ describe("the payload the map hands the recorder", () => {
 });
 
 /**
- * Paddle's whole published catalogue of event types, transcribed from the API reference.
+ * Paddle's whole published catalog of event types, transcribed from the API reference.
  *
  * **Independent of {@link PADDLE_SWEPT_EVENT_TYPES} on purpose.** The agreement test below asks the map what
  * it acts on, and a candidate list built out of the sweep list can only ever rediscover the sweep list — the
@@ -599,7 +599,7 @@ describe("the sweep asks for exactly what the map acts on", () => {
 
   test("every type the map projects is a type the sweep fetches", async () => {
     // The direction that matters, and the one a candidate list built from the sweep list cannot test. The
-    // population is Paddle's published catalogue, so a case added to the map for a type nobody added to
+    // population is Paddle's published catalog, so a case added to the map for a type nobody added to
     // `events.ts` is found here — that type would repair through the webhook path and not through the
     // sweep, which is the asymmetry the sweep exists to remove.
     const projecting: string[] = [];
@@ -617,14 +617,14 @@ describe("the sweep asks for exactly what the map acts on", () => {
   });
 
   test("every type the sweep fetches is a type the map projects", async () => {
-    // The other direction, asserted against behaviour rather than against membership. A type in the query
+    // The other direction, asserted against behavior rather than against membership. A type in the query
     // that the map ignores is a page of the stream fetched and recorded for nothing — and on this rail
     // "recorded for nothing" is how a client token gets into a table an operator greps.
     expect(PADDLE_SWEPT_EVENT_TYPES.length).toBeGreaterThan(15);
     for (const type of PADDLE_SWEPT_EVENT_TYPES) expect(await projects(type), type).toBe(true);
   });
 
-  test("the published catalogue this is checked against covers every type the sweep names", async () => {
+  test("the published catalog this is checked against covers every type the sweep names", async () => {
     // The gate on the gate. The first test's population is a transcription, so a swept type missing from it
     // would quietly shrink what the equality above compares.
     for (const type of PADDLE_SWEPT_EVENT_TYPES) expect(PADDLE_PUBLISHED_EVENT_TYPES, type).toContain(type);

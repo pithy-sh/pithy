@@ -219,7 +219,7 @@ describe("writeDevSecrets", () => {
   });
 
   test("a project whose checkout cannot be written to still gets its secret — the file is not in it", async () => {
-    // This is the acceptance criterion of the move, stated as a behaviour. The write used to be gated
+    // This is the acceptance criterion of the move, stated as a behavior. The write used to be gated
     // on making the project's `.gitignore` cover the file, so a read-only checkout refused the mint
     // outright. There is nothing in the repository to ignore now, and nothing in the repository to
     // write, so the checkout's state has no say at all.

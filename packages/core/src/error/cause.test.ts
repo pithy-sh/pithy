@@ -77,7 +77,7 @@ describe("rootCause", () => {
  * on the `pithy doctor` path that is the caller whose sentence an adopter reads.
  */
 describe("isBuildFailureWrapper", () => {
-  test("recognises the wrapper by its own message, with or without diagnostics attached", () => {
+  test("recognizes the wrapper by its own message, with or without diagnostics attached", () => {
     expect(isBuildFailureWrapper({ name: "AggregateError", message: '4 errors building "/a/x.ts"' })).toBe(true);
     expect(isBuildFailureWrapper({ message: '1 error building "/a/x.ts"' })).toBe(true);
     expect(isBuildFailureWrapper({ message: '2 errors building "/a/x.ts"', errors: [{ name: "BuildMessage" }] })).toBe(
@@ -111,7 +111,7 @@ describe("prop", () => {
 });
 
 /**
- * The de-coloured message. Escape sequences are formatting a runtime added on its way out, and they are
+ * The de-colored message. Escape sequences are formatting a runtime added on its way out, and they are
  * the same formatting in every package that catches one — so they come off here rather than in each.
  */
 describe("causeMessage", () => {
@@ -120,7 +120,7 @@ describe("causeMessage", () => {
     expect(causeMessage(new Error("boom"))).toBe("boom");
   });
 
-  test("strips the colours a runtime paints its diagnostics with", () => {
+  test("strips the colors a runtime paints its diagnostics with", () => {
     expect(causeMessage({ message: "\u001b[31m[PARSE_ERROR] \u001b[0mUnexpected token" })).toBe(
       "[PARSE_ERROR] Unexpected token",
     );

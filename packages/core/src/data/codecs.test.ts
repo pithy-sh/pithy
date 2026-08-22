@@ -213,7 +213,7 @@ describe("a codec reports, it does not throw", () => {
     expect(JSON.stringify(issue?.message)).not.toContain("not-a-date");
   });
 
-  test("`fromZodError` still maps it — a labelled validation failure, not an unlabelled one", () => {
+  test("`fromZodError` still maps it — a labeled validation failure, not an unlabeled one", () => {
     const result = SQLiteDate.safeParse("not-a-date");
     if (result.success) throw new Error("expected a failed parse");
     const mapped = fromZodError(result.error);

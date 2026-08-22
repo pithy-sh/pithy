@@ -38,7 +38,7 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
  *
  * `reconcile` runs the same pass on demand, in a deployed environment, and waits for its report. It is the
  * support tool the issue names — "my subscription isn't showing up" is answered by `--subject`, through exactly
- * the steps the cron runs, so an answer here is an answer about production behaviour rather than about a
+ * the steps the cron runs, so an answer here is an answer about production behavior rather than about a
  * script somebody wrote for the occasion.
  */
 

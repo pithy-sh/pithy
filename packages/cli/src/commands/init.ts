@@ -52,7 +52,7 @@ async function ask(message: string, fallback: string, json: boolean): Promise<{ 
   const { isCancel, text } = await import("@clack/prompts");
   const answer = await text({ message, defaultValue: fallback, placeholder: fallback });
   if (isCancel(answer)) {
-    process.stderr.write("Cancelled.\n");
+    process.stderr.write("Canceled.\n");
     process.exit(1);
   }
   return { value: answer, prompted: true };
@@ -154,7 +154,7 @@ export async function askEnvironments(options: AskEnvironmentsOptions): Promise<
       }),
       prompt,
     );
-    // Cancelled. The default is the honest fallback: it is what the template holds, and it is what a
+    // Canceled. The default is the honest fallback: it is what the template holds, and it is what a
     // non-interactive run gets, so nothing is scaffolded that an unanswered question decided.
     if (answer === null) return { ...fallback, prompted: true };
 
@@ -246,7 +246,7 @@ export async function askCloudflareAccount(options: AskCloudflareAccountOptions)
   // nothing asks for a credential the machine already holds.
   const apiToken =
     existing.CLOUDFLARE_API_TOKEN ?? asString(await prompt.password({ message: "Cloudflare API token:" }), prompt);
-  // Cancelled, or skipped with an empty answer. Both are legitimate: a project scaffolded before the
+  // Canceled, or skipped with an empty answer. Both are legitimate: a project scaffolded before the
   // account exists is an ordinary thing to do, and `pithy doctor` names the missing keys until they are set.
   if (!apiToken) return nothing;
 
@@ -381,7 +381,7 @@ async function askAccountName(
   return null;
 }
 
-/** A prompt's answer as a string, or `null` when the operator cancelled. */
+/** A prompt's answer as a string, or `null` when the operator canceled. */
 function asString(value: string | symbol, prompt: InitPrompt): string | null {
   if (prompt.isCancel(value)) return null;
   return typeof value === "string" ? value : null;

@@ -70,7 +70,7 @@ function migrator(database: D1Database, provider: MigrationProvider): Migrator {
  * runner is the only place that can answer it in the same breath as the error (#282).
  */
 export interface MigrationTarget {
-  /** The D1 binding, as `wrangler.jsonc` declares it — the name an adopter recognises. */
+  /** The D1 binding, as `wrangler.jsonc` declares it — the name an adopter recognizes. */
   binding: string;
   /** The database name: a capability's `databases` key. Throw-site context, not the adopter's handle. */
   database: string;
@@ -105,7 +105,7 @@ export interface MigrationLedger {
  * each one up in the ledger, so a row the provider does not carry is not in the result at all. A
  * subtraction cannot see an extra. A database holding a migration the project has since deleted
  * therefore reported `none pending ✓` while the migrator refused to run against it at all — Kysely
- * reads an unrecognised applied migration as a corrupted chain and applies nothing (#282).
+ * reads an unrecognized applied migration as a corrupted chain and applies nothing (#282).
  *
  * Asking both halves in one function is the point. Two functions — one counting pending, one hunting
  * undeclared — is how the first half shipped alone, and the caller reaching for the count is exactly
@@ -258,7 +258,7 @@ function where(target: MigrationTarget | undefined): string {
  * not a security boundary, it is the bug.
  *
  * Deliberately not through `safeReason`: that filter drops anything over 160 characters, and a silent
- * drop is what this whole path is being fixed for. Colour codes come off, because they are formatting
+ * drop is what this whole path is being fixed for. Color codes come off, because they are formatting
  * a runtime added.
  */
 function reasonOf(error: unknown): string {

@@ -13,7 +13,7 @@ import { CloudflareVectorProvisioner } from "./vectorProvisioner";
 const PROJECT = "acme";
 
 /**
- * The live provisioner against fake Cloudflare clients. The behaviour worth pinning is the eventual
+ * The live provisioner against fake Cloudflare clients. The behavior worth pinning is the eventual
  * consistency handling: a created metadata index is *accepted*, not live, so `ensureMetadataIndexes` polls
  * until it is visible and refuses to return early. Returning early would hand the caller a green light to
  * deploy the worker that writes vectors — and a vector written before its metadata index exists is

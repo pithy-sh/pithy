@@ -54,7 +54,7 @@ export interface UnresolvableWorker {
  * generated `.dev.vars` is written down to its header and the Worker starts with **no bindings at all**.
  * `pithy dev` did exactly that and printed `Starting replay-board.` and nothing else.
  *
- * Behaviour is unchanged and correct — a registry nobody can read has no honest answer, and the old
+ * Behavior is unchanged and correct — a registry nobody can read has no honest answer, and the old
  * answer came from the `dev.json` copy #179 exists to delete. What changes is that the failure is now a
  * field rather than an absence, so a caller has to drop it on purpose instead of by taking the only
  * thing there was to take.
@@ -181,7 +181,7 @@ export function mergedSecretRegistry(targets: readonly DevSecretsTarget[]): Secr
  * and the cache key does not.
  *
  * **The specifier is the absolute path, not `pathToFileURL`, and that is load-bearing under Bun.** Bun
- * honours the query as part of the cache key for a path specifier and ignores it for a `file://` URL:
+ * honors the query as part of the cache key for a path specifier and ignores it for a `file://` URL:
  * `import("/abs/pithy.config.ts?v=2")` re-evaluates, `import("file:///abs/pithy.config.ts?v=2")` hands
  * back the first instance. The URL form is what {@link loadWorkerConfig} uses and is right there — it
  * *wants* the cache. Written the same way here, `pithy add auth` seeded nothing and said nothing about

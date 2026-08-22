@@ -22,7 +22,7 @@ import { sep } from "node:path";
  * The paths git has committed under `dir`, relative to it, sorted — or `null` when there is no index to
  * read: `dir` is not in a checkout, or git is not installed, or nothing under it is tracked.
  *
- * **The allowlist, and it inverts the burden.** An exclusion filter has to predict the next artefact
+ * **The allowlist, and it inverts the burden.** An exclusion filter has to predict the next artifact
  * somebody drops in the directory, and nobody predicted `.dev.vars` — the file `pithy add` and
  * `pithy token mint` write `CLOUDFLARE_API_TOKEN` and `SECRETS_ENCRYPTION_KEYS` into. It was published
  * straight past `.gitignore` by `files`, and copied straight past it into an adopter's brand-new project

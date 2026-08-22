@@ -24,7 +24,7 @@ import { devPreferencesPath } from "../seed/prepare";
 export type DevPreferencesState =
   /**
    * No file. **The documented default, and never a fault.** "There is no way in but a magic link" is the
-   * behaviour auth ships, and opting out of it is a choice a developer makes per machine. Reported anyway,
+   * behavior auth ships, and opting out of it is a choice a developer makes per machine. Reported anyway,
    * because the path is the whole answer to "where do I put one".
    */
   | "absent"

@@ -318,7 +318,7 @@ describe("the action binding and Cloudflare's test keys", () => {
   });
 });
 
-describe("a secret Cloudflare does not recognise", () => {
+describe("a secret Cloudflare does not recognize", () => {
   test("is 500 turnstile/config — the deployment is at fault, not the caller", async () => {
     stubSiteverify({ success: false, "error-codes": ["invalid-input-secret"] }, false, 400);
     const res = await app()({

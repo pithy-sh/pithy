@@ -15,8 +15,8 @@ import type { Finding } from "./audit";
  *
  * The action line is a contract (CLAUDE.md §CLI): pointing a developer at `--fix` for a finding it
  * cannot touch sends them to a command that prints "Nothing to do." and exits 0 while the gate stays
- * red. Only headers and an absent LICENSE are repairable — a drifted licence body, an undeclared or
- * unknown licence, and a stamped template all need a person.
+ * red. Only headers and an absent LICENSE are repairable — a drifted license body, an undeclared or
+ * unknown license, and a stamped template all need a person.
  */
 export function isFixable(finding: Finding): boolean {
   return (

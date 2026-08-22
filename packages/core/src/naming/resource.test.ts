@@ -173,7 +173,7 @@ describe("resourceName", () => {
     expect(() => resourceName({ project, env: "prod", thing: "media" })).toThrowError(ValidationError);
   });
 
-  it("honours a caller-supplied budget, for a namespace with its own limit", () => {
+  it("honors a caller-supplied budget, for a namespace with its own limit", () => {
     const name = resourceName({ project: "acme", env: "prod", thing: "storage-credentials" }, 24);
     expect(name.length).toBeLessThanOrEqual(24);
   });

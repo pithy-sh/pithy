@@ -176,7 +176,7 @@ export async function checkCloudflareAccess(options: CloudflareConfigOptions): P
 
   const missing = REQUIRED_KEYS.filter((key) => !vars[key]);
 
-  // Offline, and this is the whole of doctor's honouring of it: no probe, and a state that says so.
+  // Offline, and this is the whole of doctor's honoring of it: no probe, and a state that says so.
   //
   // **After the mismatch and not before it.** That fault is decided from this machine's own files — a
   // config's pin against a file's account id — so it costs no network and no ambient credential, and

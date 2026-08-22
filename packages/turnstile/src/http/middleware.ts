@@ -18,7 +18,7 @@ const SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverif
  * The siteverify error codes that name the **secret** rather than the token.
  *
  * The distinction is the whole point: every other code is a verdict about the caller, and these two are
- * a verdict about the deployment. Cloudflare answers HTTP 400 for a secret it does not recognise, which
+ * a verdict about the deployment. Cloudflare answers HTTP 400 for a secret it does not recognize, which
  * the fail-closed branch used to render as `turnstile/failed` — a 403 telling an operator that a user
  * failed a challenge, when the truth was that nobody could ever pass one here.
  */
@@ -58,19 +58,19 @@ function fromTestingKey(result: SiteverifyResult): boolean {
 }
 
 /**
- * A secret Cloudflare does not recognise is a deployment fault, and is reported as one.
+ * A secret Cloudflare does not recognize is a deployment fault, and is reported as one.
  *
  * `turnstile/config` (500) rather than `turnstile/failed` (403), because the two go to different people:
  * a 403 sends the operator looking at the user who was refused, and every such request is refused, so
  * the search never converges. The `action` line names the command that fixes it.
  */
-function assertSecretRecognised(codes: string[], status: number): void {
+function assertSecretRecognized(codes: string[], status: number): void {
   const fault = codes.find((code) => SECRET_FAULT_CODES.includes(code));
   if (fault === undefined) return;
   throw new TurnstileConfigError({
     message: "The humanity check is not configured.",
     action:
-      "Cloudflare does not recognise this widget's secret key. Run `pithy turnstile provision` for this environment.",
+      "Cloudflare does not recognize this widget's secret key. Run `pithy turnstile provision` for this environment.",
     detail: `siteverify answered ${status} with "${fault}" — the secret, not the token, was refused.`,
   });
 }
@@ -135,8 +135,8 @@ export interface TurnstileOptions {
  * token passed or not) is returned for the caller to act on.
  *
  * The one failure that does **not** come back as `turnstile/failed` is a secret Cloudflare does not
- * recognise: that is `turnstile/config`, because it is a verdict about the deployment rather than about
- * the caller. See {@link assertSecretRecognised}. Both directions still deny.
+ * recognize: that is `turnstile/config`, because it is a verdict about the deployment rather than about
+ * the caller. See {@link assertSecretRecognized}. Both directions still deny.
  */
 export async function siteverify(
   secret: string,
@@ -163,7 +163,7 @@ export async function siteverify(
   }
 
   if (!response.ok) {
-    assertSecretRecognised(await errorCodesOf(response), response.status);
+    assertSecretRecognized(await errorCodesOf(response), response.status);
     throw new TurnstileFailedError({ detail: `siteverify responded ${response.status} ${response.statusText}.` });
   }
 
@@ -180,7 +180,7 @@ export async function siteverify(
   }
   // A 200 carrying a secret-side code is not what Cloudflare answers today (it uses 400), but the
   // classification belongs to the code rather than to the status, so both routes reach the same verdict.
-  assertSecretRecognised(parsed.data["error-codes"], response.status);
+  assertSecretRecognized(parsed.data["error-codes"], response.status);
   return parsed.data;
 }
 
@@ -230,8 +230,8 @@ async function readToken(c: Context, field: string, header?: string): Promise<st
  * a bot gate never silently opens. Register `pithyErrorHandler` on the app to map these to HTTP responses.
  *
  * **Two failures are the deployment's, not the caller's, and say so.** A secret Cloudflare does not
- * recognise, and a documented test key outside dev/staging, both raise `turnstile/config` — see
- * {@link assertSecretRecognised} and {@link testKeyCarriesNoAction} for why blaming the caller for
+ * recognize, and a documented test key outside dev/staging, both raise `turnstile/config` — see
+ * {@link assertSecretRecognized} and {@link testKeyCarriesNoAction} for why blaming the caller for
  * either one costs an operator an hour.
  *
  * @throws {@link TurnstileMissingTokenError} (`turnstile/missing_token`, 400) — no token in the request.
@@ -239,7 +239,7 @@ async function readToken(c: Context, field: string, header?: string): Promise<st
  *   action did not match a configured `action`, or the check could not complete (an unreachable/malformed
  *   siteverify response also lands here, fail-closed).
  * @throws {@link TurnstileConfigError} (`turnstile/config`, 500) — the secret is missing, malformed, has
- *   no entry for the route's widget mode, is one Cloudflare does not recognise, or is a test key in an
+ *   no entry for the route's widget mode, is one Cloudflare does not recognize, or is a test key in an
  *   environment that has no business holding one (the `secretsStore` read is rewrapped to this too, so
  *   the gate's contract stays `turnstile/*`).
  */

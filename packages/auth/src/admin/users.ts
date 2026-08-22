@@ -220,7 +220,7 @@ export async function getUsers(db: AuthDatabase, userIds: readonly string[]): Pr
  * passwordless-only account.
  *
  * **Selects `providerId` and nothing else, and that is the security property rather than an
- * optimisation.** `pithy_auth_accounts` also holds the provider's `accessToken`, `refreshToken`, and
+ * optimization.** `pithy_auth_accounts` also holds the provider's `accessToken`, `refreshToken`, and
  * `idToken` — live credentials against a third party, on the user's behalf. Those must never reach a
  * management client, and the strongest way to guarantee it is for them never to be loaded: a projection
  * cannot leak a column that was not selected, however the view function is later edited.

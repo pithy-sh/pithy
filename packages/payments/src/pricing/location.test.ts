@@ -10,7 +10,7 @@ import { type PriceVisitor, priceQueryFor, quoteIsEstimated, resolvePriceLocatio
  *
  * The cases that matter are the ones where a caller *nearly* knows something — an empty customer id, an
  * address with no country, a postal code that is the empty string a blank form field produces. Each is
- * "nothing known" wearing the shape of an answer, and each has to resolve to the IP and be labelled.
+ * "nothing known" wearing the shape of an answer, and each has to resolve to the IP and be labeled.
  */
 
 /** One line, so the query cases are about location and never about what is being priced. */
@@ -27,7 +27,7 @@ describe("resolvePriceLocation", () => {
   });
 
   test("a customer beats an address the caller also holds", () => {
-    // A traveller, or a VPN, or an address the app collected before the purchase. Paddle charges the
+    // A traveler, or a VPN, or an address the app collected before the purchase. Paddle charges the
     // address it holds against the customer, so that is what the screen must quote.
     const both: PriceVisitor = {
       customerId: "ctm_01hv8wptq8987qeep44cyrewp9",

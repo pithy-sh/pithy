@@ -116,7 +116,7 @@ describe("deriveWorkerFirst", () => {
 });
 
 /**
- * The invariant, stated over behaviour: **a route the Worker mounts in any environment the project
+ * The invariant, stated over behavior: **a route the Worker mounts in any environment the project
  * declares is a route the asset handler does not answer first.**
  *
  * Every test here plants a conditionally-mounted route — the one shape the old derivation could not
@@ -157,7 +157,7 @@ describe("a conditionally-mounted route", () => {
   });
 
   test("is covered identically under CI, so the file CI checks is the file a laptop writes", () => {
-    // The second gate on the dev-login route is `CI`. Honouring it here would make `ui sync --check`
+    // The second gate on the dev-login route is `CI`. Honoring it here would make `ui sync --check`
     // demand a shorter list than `ui sync` writes — a project permanently drifted, failing on the
     // correct file. An allowlist entry nothing serves costs a 404; a missing one costs a 200.
     process.env[CI_ENV] = "true";

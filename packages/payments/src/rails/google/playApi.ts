@@ -31,7 +31,7 @@ import type { GoogleNotificationPointer } from "./rtdn";
  * grants. **Paused** is a subscription the *user* suspended, usually with an `autoResumeTime` set; they will
  * come back, and until they do they are not entitled — so that date lands on the row as `resumesAt`, and its
  * absence is Play reporting an indefinite pause rather than this rail declining to look (`data/pause.ts`).
- * Neither state has an Apple analogue, and both would be lost by a status set built from Apple's
+ * Neither state has an Apple analog, and both would be lost by a status set built from Apple's
  * notifications alone.
  *
  * ## What Play does not report, and what follows
@@ -47,7 +47,7 @@ import type { GoogleNotificationPointer } from "./rtdn";
  *
  * ## The environment check
  *
- * A test purchase is a real Play purchase made by a licence-tested account, and it must never grant a
+ * A test purchase is a real Play purchase made by a license-tested account, and it must never grant a
  * production entitlement. Play marks one differently in each shape: `testPurchase` is present on a
  * subscription, `purchaseType: 0` on a one-time product. Both are read, and anything unmarked is production —
  * which is safe because Play only ever omits the marker on a real purchase.
@@ -68,7 +68,7 @@ const RS256 = { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" } as const;
 /** How long an assertion claims to be good for. Google's ceiling is an hour and there is no reason to ask less. */
 const ASSERTION_LIFETIME_SECONDS = 3600;
 
-/** Play's `purchaseType` for a licence-test purchase. The one-time equivalent of `testPurchase`. */
+/** Play's `purchaseType` for a license-test purchase. The one-time equivalent of `testPurchase`. */
 const PLAY_PURCHASE_TYPE_TEST = 0;
 
 /**
@@ -100,9 +100,9 @@ const SUBSCRIPTION_STATES: Readonly<Record<string, PurchaseStatus>> = {
  * `1` is Play's `Canceled`, and it is the trap in this table. It must **not** become the normalized `canceled`,
  * which means "auto-renew off, still granting" — Play means the order was taken back. It is mapped to
  * `refunded`, which is the normalized member for "taken back", does not grant, and is the state an opt-in
- * clawback acts on. Play cannot distinguish a refunded order from a deferred purchase that was cancelled before
+ * clawback acts on. Play cannot distinguish a refunded order from a deferred purchase that was canceled before
  * payment, so a clawback on the latter finds nothing to debit and is refused into a recorded state — which is
- * the designed behaviour for a failed clawback rather than a defect.
+ * the designed behavior for a failed clawback rather than a defect.
  *
  * `2` is `Pending`: awaiting a deferred payment, so it does not grant, and `on_hold` is the member that says so
  * without claiming the purchase is over.
@@ -178,7 +178,7 @@ export const PlaySubscriptionPurchase = z
       .loose()
       .optional()
       .describe(
-        "Present only for a licence-test purchase. Its presence is the whole environment decision for a subscription.",
+        "Present only for a license-test purchase. Its presence is the whole environment decision for a subscription.",
       ),
     pausedStateContext: z
       .object({

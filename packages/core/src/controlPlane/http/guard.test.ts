@@ -65,7 +65,7 @@ beforeAll(async () => {
   };
 });
 
-/** A replay guard that lets every distinct jti through once — the real one's behaviour, without KV. */
+/** A replay guard that lets every distinct jti through once — the real one's behavior, without KV. */
 function replayGuard(): ReplayGuard {
   const seen = new Set<string>();
   return {

@@ -44,7 +44,7 @@ import { ControlPlaneScope } from "../scope/scope";
  *
  * #317 got three states right and left the fourth to a reviewer, deliberately: a producer that throws
  * is neither a withheld number nor a zero, and returning null for it would have made a sick store
- * indistinguishable from one this caller may not look at. The reasoning was right. The behaviour was
+ * indistinguishable from one this caller may not look at. The reasoning was right. The behavior was
  * that the throw propagated, the whole manifest read failed, and one sick capability blanked Overview
  * for every capability beside it — with nothing on screen saying which one.
  *

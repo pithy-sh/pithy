@@ -66,7 +66,7 @@ export type PaymentsOptions = PaymentsConfigInput & {
 /**
  * The slice of `@pithy-sh/ledger`'s capability the grants check reads — its declared currency codes.
  *
- * Structural, and recognised by a copied three-line predicate rather than by importing the ledger's own
+ * Structural, and recognized by a copied three-line predicate rather than by importing the ledger's own
  * `isLedgerCapability`. Two reasons, and both are binding. `compose` is **synchronous**, so the guarded
  * dynamic import that keeps the ledger optional everywhere else is not available here. And a static import
  * would make an optional peer a hard one for every project, including the great majority whose catalogs sell
@@ -170,7 +170,7 @@ function requireResolvableSubject(config: PaymentsConfig, resolveSubject: Paymen
  * What a browser may know about this project's payments — the `virtual:pithy/payments` module.
  *
  * The list is short and each entry earns its place. **Enabled rails**, so a paywall can show an Apple-only
- * product as owned-elsewhere rather than offering a buy button nothing on the web can honour. **The base
+ * product as owned-elsewhere rather than offering a buy button nothing on the web can honor. **The base
  * path**, because the client calls these routes. And **per product** its id, type, entitlement keys,
  * display name, and its SKU on each web rail — a price id is publishable by design, since it is the thing
  * a checkout names and the store's own page shows back to the buyer. Plus, for Paddle, the three facts

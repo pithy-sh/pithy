@@ -27,7 +27,7 @@ export const SupportSentiment = z
   );
 export type SupportSentiment = z.infer<typeof SupportSentiment>;
 
-/** Which way a message travelled. */
+/** Which way a message traveled. */
 export const SupportMessageDirection = z
   .enum(["inbound", "outbound"])
   .describe("`inbound` arrived from the customer; `outbound` is a reply this Worker sent on the send path.");
@@ -81,10 +81,10 @@ export type SupportAccountLinkSource = z.infer<typeof SupportAccountLinkSource>;
 export const UNCATEGORIZED = "uncategorized";
 
 /**
- * The one other category key the code names directly, because a behaviour hangs off it: a thread the
+ * The one other category key the code names directly, because a behavior hangs off it: a thread the
  * classifier calls spam is archived on sight when `guard.archiveSpam` is on.
  *
  * Naming it here rather than inline keeps the string in one place — an adopter may reword the
- * *description* the model reads, but the key is the join between the taxonomy and that behaviour.
+ * *description* the model reads, but the key is the join between the taxonomy and that behavior.
  */
 export const SPAM = "spam";

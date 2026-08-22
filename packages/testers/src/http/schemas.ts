@@ -84,7 +84,7 @@ export const CreateCohortRequest = z
     targetPlatform: z
       .enum(["android", "ios"])
       .optional()
-      .describe("Which store's programme this cohort serves. Defaults to the configured value."),
+      .describe("Which store's program this cohort serves. Defaults to the configured value."),
   })
   .describe(
     "Create a testing cohort. Omitted fields inherit the project's configured defaults and are then frozen on the row.",

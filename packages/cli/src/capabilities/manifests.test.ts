@@ -55,7 +55,7 @@ describe("the payments manifest", () => {
     expect(option?.choices).toEqual(["user", "organization"]);
   });
 
-  test("every other option still carries a default — nothing about their behaviour moved", () => {
+  test("every other option still carries a default — nothing about their behavior moved", () => {
     const manifest = CapabilityManifest.parse(JSON.parse(raw));
     for (const option of manifest.configOptions) {
       if (option.key === "billingSubject") continue;

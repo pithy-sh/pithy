@@ -633,7 +633,7 @@ export async function reconcilePayments(
         startedAt: now,
         finishedAt: deps.now(),
         environment: deps.environment,
-        // Null is the scheduled behaviour — every enabled rail. A value means somebody narrowed the pass.
+        // Null is the scheduled behavior — every enabled rail. A value means somebody narrowed the pass.
         rail: params.rail ?? null,
         report,
       },

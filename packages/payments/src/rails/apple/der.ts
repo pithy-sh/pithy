@@ -17,7 +17,7 @@ import { PaymentsInvalidReceiptError } from "../../error/errors";
  * is the whole point of verifying them, so every length is checked against the buffer it claims to live in
  * before it is trusted. A length that overruns its buffer or its parent is refused rather than clamped —
  * clamping would let a crafted certificate present bytes that were never inside it. Indefinite lengths are
- * refused outright: DER forbids them, and honouring BER's end-of-contents marker is how a parser is made
+ * refused outright: DER forbids them, and honoring BER's end-of-contents marker is how a parser is made
  * to disagree with the verifier about where a structure ends.
  *
  * Failures throw `payments/invalid_receipt` — malformed, not merely unverified. A caller on the webhook

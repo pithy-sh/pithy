@@ -116,7 +116,7 @@ export interface MigrateProjectOptions extends MigrationFanOutOptions {
    * merging two schemas (`claimMigrationOwnership`).
    *
    * **Required, on every entry point that can change a database.** It was optional once, and the result
-   * was a guard `pithy migrate` honoured while `pithy add`, `pithy remove`, `pithy upgrade --migrate`,
+   * was a guard `pithy migrate` honored while `pithy add`, `pithy remove`, `pithy upgrade --migrate`,
    * and the three `pithy feature` paths quietly wrote unstamped — a database no project owns is one any
    * project may later claim. A caller that cannot resolve a stable name has no business writing here.
    */
@@ -619,7 +619,7 @@ async function scopedGroups(context: RunContext): Promise<DatabaseGroup[]> {
  * **This is the single choke point, and it refuses rather than shrugs.** Every entry point that can
  * change a database — forward, rollback, reset, capability drop — runs through {@link runGroups} and so
  * through here, which is why the check lives at this one line instead of at each of the eight callers.
- * It used to return quietly on a missing project, and that is precisely how the guard shipped honoured
+ * It used to return quietly on a missing project, and that is precisely how the guard shipped honored
  * by two commands and ignored by six. A nameless run is now impossible to *reach* the write with.
  */
 async function claimGroups(context: RunContext, driver: MigrationDriver, groups: DatabaseGroup[]): Promise<void> {
@@ -772,7 +772,7 @@ async function runGroups(context: RunContext, pass: MigrationPass): Promise<Work
  * also hand over an **already narrowed** set: `pithy add`/`remove`/`upgrade --migrate` pass the single
  * Worker they just wired. A database that Worker shares still migrates as a whole, so the rest of the
  * project is discovered alongside it. Best effort by design — a project with nothing importable (a test
- * fixture, an uninstalled checkout) contributes no neighbours and the caller's set stands alone, exactly
+ * fixture, an uninstalled checkout) contributes no neighbors and the caller's set stands alone, exactly
  * as it did before.
  */
 async function projectWorkers(options: MigrationFanOutOptions): Promise<WorkerScope[]> {
@@ -872,7 +872,7 @@ export const UnreadableLedger = z
     database: z.string().describe("The database name — a capability's `databases` key."),
     binding: z
       .string()
-      .describe("The D1 binding it resolves to, as wrangler.jsonc declares it — the name an adopter recognises."),
+      .describe("The D1 binding it resolves to, as wrangler.jsonc declares it — the name an adopter recognizes."),
   })
   .describe(
     "One database whose ledger could not be read on this pass. It carries no reason: what the read threw is throw-site context about somebody's database, and the actionable fact is which database went unread.",

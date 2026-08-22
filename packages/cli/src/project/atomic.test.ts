@@ -541,7 +541,7 @@ describe("writeFileAtomic — a target somebody else left in the way", () => {
  * traversed by the open with nothing asked about any of them. The gate above is component by component
  * precisely so that cannot happen, and this is the door beside it.
  *
- * Do not lexically normalise a path you are about to hand to a syscall. Past the first component that is
+ * Do not lexically normalize a path you are about to hand to a syscall. Past the first component that is
  * not there, the walk resolves nothing and lets the syscall judge the path it was actually given.
  */
 describe("writeFileAtomic — a path through something that is not there", () => {
@@ -555,7 +555,7 @@ describe("writeFileAtomic — a path through something that is not there", () =>
     await rm(outside, { recursive: true, force: true });
   });
 
-  /** `join` normalises, so the paths under test have to be spelled without it. That is the whole point. */
+  /** `join` normalizes, so the paths under test have to be spelled without it. That is the whole point. */
   function literal(...parts: string[]): string {
     return parts.join(sep);
   }

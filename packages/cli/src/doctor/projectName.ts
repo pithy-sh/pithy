@@ -44,7 +44,7 @@ import { readWranglerConfig } from "../project/wrangler";
  *    whoever caused it. That is {@link wholesaleRename}, and it is what `drifted` means now.
  *
  * The account is still asked whether a name is live, but existence is *not* evidence of ownership: a
- * database that exists under a name the adopter chose is just their database. It only colours the report.
+ * database that exists under a name the adopter chose is just their database. It only colors the report.
  */
 export type ProjectNameState =
   /**
@@ -118,7 +118,7 @@ export interface ProjectNameCheck {
   /**
    * The configured project name, or `null` when there is none to report. Kebabed — the form every
    * resource name is composed from — except under `invalid`, where it is the raw configured value: an
-   * illegal name is never composed with, and the operator has to recognise the string they typed.
+   * illegal name is never composed with, and the operator has to recognize the string they typed.
    */
   project: string | null;
   /** Every declared resource name leading with a different project segment. Empty unless drifted or orphaned. */

@@ -114,7 +114,7 @@ describe("rememberAnswer sweeps what it can see", () => {
   });
 
   test("never touches another namespace, whose lifetime is not this one's to judge", () => {
-    // Two surfaces can share one store with different lifetimes. Sweeping a neighbour's entries against
+    // Two surfaces can share one store with different lifetimes. Sweeping a neighbor's entries against
     // *our* ttl would throw away answers that are still perfectly fresh by the rule they were kept under.
     const store = memoryStore();
     rememberAnswer({ key: "marketing", store, ttlMs: FIVE_MINUTES * 12 }, QUERY, ANSWER);

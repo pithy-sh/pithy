@@ -108,7 +108,7 @@ export const DEFAULT_SUPPORT_REPLIES = {
   feature_noted: {
     label: "Feature request noted",
     category: "feature_request",
-    body: "Hi {{name}},\n\nThanks — that's a good idea and I've written it down. I can't promise a date, but ___.\n\nIf you can tell me a bit about how you'd use it, that genuinely helps me prioritise.\n",
+    body: "Hi {{name}},\n\nThanks — that's a good idea and I've written it down. I can't promise a date, but ___.\n\nIf you can tell me a bit about how you'd use it, that genuinely helps me prioritize.\n",
   },
   need_more_detail: {
     label: "Ask for more detail",

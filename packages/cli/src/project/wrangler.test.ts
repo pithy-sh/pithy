@@ -13,7 +13,7 @@ const NODE = "node";
 
 /**
  * The read behind every `wrangler.jsonc` caller in the CLI — nineteen of them, and the one the ENOENT
- * gate could not see, because the scan recognises leaf reads and this is a wrapper (#204).
+ * gate could not see, because the scan recognizes leaf reads and this is a wrapper (#204).
  *
  * It goes through `readOptionalFile` now, so the errno decision has one home rather than being made again
  * at whichever caller happened to catch. Absent and unreadable are different answers, and both are a

@@ -70,7 +70,7 @@ function locateIdentifier(lines: string[]): { index: number; license: string } |
 }
 
 /**
- * Does this file mention an SPDX licence identifier at all, in any comment syntax?
+ * Does this file mention an SPDX license identifier at all, in any comment syntax?
  *
  * Deliberately laxer than {@link readIdentifier}, and used for the opposite purpose: the scaffolded
  * template trees are checked for the *absence* of a header, and they hold `.css`, `.html` and

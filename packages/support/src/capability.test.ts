@@ -111,7 +111,7 @@ describe("the admin surface support advertises", () => {
 
   test("a moved base path moves the advertised routes with it", () => {
     // The case that motivated describing routes at all: a manifest naming the default path would
-    // 404 every management call for exactly the adopters who customised anything.
+    // 404 every management call for exactly the adopters who customized anything.
     const capability = composed({ basePath: "/inbox" });
     expect(capability.basePath).toBe("/inbox");
     expect((capability.adminRoutes ?? []).map((route) => route.path)).toEqual([

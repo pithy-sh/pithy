@@ -68,7 +68,7 @@ export const PaymentsReconcileRun = z
       "The store environment the host was deployed to. A sandbox pass and a production pass are different facts about different money, and a table that mixed them would answer the health question wrong.",
     ),
     rail: PaymentsRail.nullable().describe(
-      "The single store this pass was narrowed to, or null for every enabled rail. Null is the scheduled behaviour; a value means somebody ran it by hand against one store.",
+      "The single store this pass was narrowed to, or null for every enabled rail. Null is the scheduled behavior; a value means somebody ran it by hand against one store.",
     ),
     pages: z.number().int().describe("Durable steps read — one per page of purchases."),
     scanned: z.number().int().describe("Purchases examined."),

@@ -68,7 +68,7 @@ export const ControlPlaneConfig = z
       .max(MAX_WINDOW_SECONDS)
       .default(CONTROL_PLANE_MAX_TOKEN_LIFETIME_SECONDS)
       .describe(
-        "The longest `exp - iat` this Worker will honour, whatever the token asks for. The adopter's ceiling, not the management client's choice: a client that mints hour-long tokens still gets one minute of them here.",
+        "The longest `exp - iat` this Worker will honor, whatever the token asks for. The adopter's ceiling, not the management client's choice: a client that mints hour-long tokens still gets one minute of them here.",
       ),
     jtiTtlSeconds: z
       .number()
@@ -108,12 +108,12 @@ export const ControlPlaneConfig = z
     "Configuration for the inbound `control-plane` seam: where its routes mount, which management-client origin new connections trust, and the token and key-lifecycle bounds this Worker enforces.",
   )
   .check((ctx) => {
-    // The replay set is only a defence while it still remembers a token that is still valid. If the
+    // The replay set is only a defense while it still remembers a token that is still valid. If the
     // `jti` is forgotten first, the same signed token replays cleanly for the rest of its window — the
     // one misconfiguration that quietly reopens exactly what the set was added to close.
     //
     // The window is `lifetime + 2 × skew`, not `lifetime + skew`. Skew is allowed on **both** ends:
-    // `iat` may be up to a skew in the future and `exp` is honoured up to a skew after it passes, so a
+    // `iat` may be up to a skew in the future and `exp` is honored up to a skew after it passes, so a
     // token minted at the earliest instant this Worker would accept it is still accepted a full
     // `lifetime + 2 × skew` later. The check used to count one skew and was therefore satisfied by
     // settings that still left a replay window open.

@@ -456,7 +456,7 @@ describe("GET /control-plane/manifest", () => {
   test("describes how to call each route, not merely that a capability exists", async () => {
     // The whole point of the manifest. Knowing `controlplane` is composed does not tell a client where
     // it is mounted or which scope each route needs — and `basePath` is configurable, so assuming is
-    // how a client 404s against every adopter who customised anything.
+    // how a client 404s against every adopter who customized anything.
     await connect([registered(alice)]);
 
     const response = await call("GET", "/control-plane/manifest", { key: alice, scope: MANIFEST_READ_SCOPE });
@@ -470,7 +470,7 @@ describe("GET /control-plane/manifest", () => {
       "POST /control-plane/keys",
       "POST /control-plane/keys/:keyId/expire",
     ]);
-    // Every route says what it needs, so a client can grey out what this connection cannot do rather
+    // Every route says what it needs, so a client can gray out what this connection cannot do rather
     // than discovering a 403 by pressing the button.
     expect(seam?.adminRoutes.find((route) => route.path.endsWith("/ping"))?.scope).toBeNull();
     expect(seam?.adminRoutes.find((route) => route.method === "POST" && route.path.endsWith("/keys"))?.scope).toBe(

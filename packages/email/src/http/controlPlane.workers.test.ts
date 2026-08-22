@@ -361,7 +361,7 @@ describe("POST /email/jobs/:id/retry", () => {
 
   test("attempts really are reset, or the button changes nothing", async () => {
     // `runSend` gives up once `attempts >= maxAttempts`, so a retry that left the count alone would
-    // take one retryable error to fail terminally again — and this whole route would be theatre.
+    // take one retryable error to fail terminally again — and this whole route would be theater.
     const job = await failedJob({ attempts: 99 });
     await call(makeApp([EMAIL_JOBS_RETRY_SCOPE]), "POST", `/email/jobs/${job.id}/retry`, EMAIL_JOBS_RETRY_SCOPE);
     expect((await jobStatus(job.id)).attempts).toBe(0);
@@ -383,7 +383,7 @@ describe("POST /email/jobs/:id/retry", () => {
     expect((await jobStatus(job.id)).status).toBe("pending");
   });
 
-  test.each(["sent", "pending", "sending", "scheduled", "cancelled", "bounced", "suppressed"] as const)(
+  test.each(["sent", "pending", "sending", "scheduled", "canceled", "bounced", "suppressed"] as const)(
     "refuses a job that is %s",
     async (status) => {
       const job = await seedJob({ status });
@@ -519,7 +519,7 @@ describe("the suppression list", () => {
       EMAIL_SUPPRESSIONS_READ_SCOPE,
     );
     const body = await response.text();
-    // Normalised on the way in, so an operator typing it with capitals still finds the row.
+    // Normalized on the way in, so an operator typing it with capitals still finds the row.
     expect(body).toContain("wanted@example.com");
     expect(body).not.toContain("other@example.com");
   });
@@ -617,7 +617,7 @@ describe("POST /email/suppressions", () => {
     );
     expect(response.status).toBe(200);
     const { suppression } = await response.json<{ suppression: { email: string; reason: string; detail: string } }>();
-    // Normalised, so the send path's check finds the same key this wrote.
+    // Normalized, so the send path's check finds the same key this wrote.
     expect(suppression.email).toBe("nuisance@example.com");
     // `manual`, and not negotiable: the other three reasons are observations the system made, and a
     // management client made none of them. An operator's assertion must not enter the record as one.
@@ -635,7 +635,7 @@ describe("POST /email/suppressions", () => {
     );
     // The schema has no `reason`, so the claim is dropped at the boundary and never reaches `suppress`.
     // The response echoes the row that was actually stored, so a client that tried is told what
-    // happened in the same breath rather than being left believing its value was honoured.
+    // happened in the same breath rather than being left believing its value was honored.
     expect(response.status).toBe(200);
     const { suppression } = await response.json<{ suppression: { reason: string } }>();
     expect(suppression.reason).toBe("manual");

@@ -45,7 +45,7 @@ describe("SupportConfig defaults", () => {
 
   test("a configured bound may not exceed the ceiling the route's own schema is written to", () => {
     // The two layers must not disagree. A setting above the ceiling would be a limit the route
-    // silently refused to honour, which is worse than a refusal at config time.
+    // silently refused to honor, which is worse than a refusal at config time.
     expect(() => SupportConfig.parse({ submission: { maxSubjectChars: MAX_SUBMISSION_SUBJECT_CHARS + 1 } })).toThrow();
     expect(() => SupportConfig.parse({ submission: { maxBodyChars: MAX_SUBMISSION_BODY_CHARS + 1 } })).toThrow();
     expect(() => SupportConfig.parse({ submission: { maxSubjectChars: MAX_SUBMISSION_SUBJECT_CHARS } })).not.toThrow();

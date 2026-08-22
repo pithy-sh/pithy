@@ -153,8 +153,8 @@ export class SystemSecretsStore {
    * throws `secrets/crypto_failed`.
    *
    * **The union collapses here, and only here, because a batch of one has nothing to protect.** The state
-   * rides on the value in {@link getValues} so that one bad row cannot cost its neighbours; asking for a
-   * single name there are no neighbours, and every caller of this one — a keyspace member read, a rotate's
+   * rides on the value in {@link getValues} so that one bad row cannot cost its neighbors; asking for a
+   * single name there are no neighbors, and every caller of this one — a keyspace member read, a rotate's
    * baseline, the dev seeder — wants the value or an exception. What it must *not* do is answer
    * `undefined`, which means "nothing is stored" and sends the reader to provision a row that is already
    * there.

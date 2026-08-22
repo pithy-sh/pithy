@@ -502,7 +502,7 @@ describe("ingestInbound, attachments", () => {
 
   test("the stored object is application/octet-stream, never the type the sender declared", async () => {
     // R2 echoes the stored content type back on a presigned GET, and a browser handed `text/html`
-    // from an object URL renders it — so honouring a declared type would turn every attachment into
+    // from an object URL renders it — so honoring a declared type would turn every attachment into
     // stored XSS with a signed URL as the exploit. The declared type stays in D1, where it is data.
     const { deps } = harness();
     const outcome = stored(
@@ -570,7 +570,7 @@ describe("ingestInbound, attachments", () => {
 describe("ingestInbound, the raw MIME", () => {
   test("the bytes as they arrived are written to R2 and the row points at them", async () => {
     // Everything stored on the row is derived. Keeping the original is what makes a parser fix or a
-    // sanitiser improvement re-runnable rather than a decision taken once, inside an email handler.
+    // sanitizer improvement re-runnable rather than a decision taken once, inside an email handler.
     const { deps } = harness();
     const text = plain({ messageId: "one@example.com" });
     const outcome = stored(await ingest(deps, text));
@@ -586,7 +586,7 @@ describe("ingestInbound, bodies", () => {
   const html =
     '<p onclick="steal()">Please refund me<script>alert(1)</script></p><img src="https://tracker.test/p.gif">';
 
-  test("an HTML-only message gets a derived text body and a sanitised HTML body", async () => {
+  test("an HTML-only message gets a derived text body and a sanitized HTML body", async () => {
     const { deps } = harness();
     const outcome = stored(
       await ingest(

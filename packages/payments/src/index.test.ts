@@ -26,7 +26,7 @@ import {
  * That is stated as an invariant rather than as a list of names on purpose. The defect this replaces was
  * three input types where only some were reachable from the barrel — `PaymentsStripeSettingsInput` was,
  * `PaymentsPaddleSettingsInput` was not — and a list would have had to be remembered rather than derived.
- * A new export in `config.ts` enrols itself here; a barrel edit that drops one goes red.
+ * A new export in `config.ts` enrolls itself here; a barrel edit that drops one goes red.
  */
 describe("the barrel publishes the config module whole (#357)", () => {
   const src = join(import.meta.dirname, "config", "config.ts");

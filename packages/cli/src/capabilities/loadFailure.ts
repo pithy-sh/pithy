@@ -52,13 +52,13 @@ export interface CapabilityLoadFailure {
 }
 
 /**
- * The message, de-coloured, for this classifier's own pattern tests — never for output.
+ * The message, de-colored, for this classifier's own pattern tests — never for output.
  *
  * What may be *said* is core's {@link safeReason}, and only core's. The filter that decides whether a
  * runtime's string is fit to show lived here, in `project/config.ts` and in the vite plugin, in three
  * near-verbatim copies; whether a string carries a path or a stack frame is a property of the string, and
  * three surfaces cannot hold three answers to it without two of them being wrong (#228). What stays here
- * is the policy: which causes this loader recognises, and what it tells an adopter about each.
+ * is the policy: which causes this loader recognizes, and what it tells an adopter about each.
  */
 function rawMessage(cause: unknown): string {
   return causeMessage(cause) ?? "";

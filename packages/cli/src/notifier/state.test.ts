@@ -228,7 +228,7 @@ describe("setNotifierFlag", () => {
  * which is the #183 shape (#171 narrowed a manifest's default values, #174 an option's key and describe,
  * #183 the capability's own name: three rounds for one rule that was never stated where it belonged).
  * #206 added a caller to this family within a day of the last one, so "every caller happens to have
- * normalised earlier" is a property of the call graph rather than of the value.
+ * normalized earlier" is a property of the call graph rather than of the value.
  */
 describe("projectConfigDir", () => {
   const options = { platform: "linux" as const, homedir: "/home/u", env: { PITHY_CONFIG_DIR: "/cfg" } };
@@ -243,7 +243,7 @@ describe("projectConfigDir", () => {
     return null;
   }
 
-  test("a normalised project name is a directory under the config directory", () => {
+  test("a normalized project name is a directory under the config directory", () => {
     expect(projectConfigDir("replay", options)).toBe("/cfg/replay");
     expect(projectConfigDir("acme-dash", options)).toBe("/cfg/acme-dash");
   });
@@ -288,7 +288,7 @@ describe("projectConfigDir", () => {
  * **What the directory is worth.** `<config>/<project>/` holds `secrets.jsonc`, `dev.json`,
  * `tokens.json` and, beside it, the account-scoped `cloudflare*.json` — every dev secret a project has
  * and the credentials that mint more. It is outside every checkout, so `ensureScaffoldPath` (which
- * guards writes *inside a project*) does not reach it. There is no second line of defence, which is why
+ * guards writes *inside a project*) does not reach it. There is no second line of defense, which is why
  * the first one is a rule rather than a habit.
  *
  * **The rule is decidable from the text.** A segment joined onto `stateDir()` is either a literal
@@ -335,7 +335,7 @@ describe("no config string is joined into the config directory without passing a
    *
    * Its own scanner rather than a regex: an argument may hold nested calls, and a comma inside one of
    * them is not an argument boundary. Quotes are tracked for the same reason, and so that a literal
-   * segment can still be recognised as one afterwards.
+   * segment can still be recognized as one afterwards.
    */
   function joinCalls(text: string): string[][] {
     const calls: string[][] = [];

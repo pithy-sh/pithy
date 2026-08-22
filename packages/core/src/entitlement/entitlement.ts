@@ -13,7 +13,7 @@ import { z } from "zod";
  * door. Audit's `emit()` no-ops when no audit capability is composed, and that is safe — a missing
  * audit write cannot grant anyone access. An entitlement check is a gate, so a missing provider must
  * fail closed: {@link noEntitlementProvider} resolves to nothing, and every `requireEntitlement()`
- * denies. Runtime denial is the backstop rather than the primary defence — a Worker whose routes gate
+ * denies. Runtime denial is the backstop rather than the primary defense — a Worker whose routes gate
  * on entitlements while composing no provider is a composition error `pithy doctor` reports, not
  * something an adopter is meant to discover as production 403s.
  */

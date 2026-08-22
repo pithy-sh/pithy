@@ -20,7 +20,7 @@ import { PaymentsVerificationFailedError } from "../../error/errors";
  * must never become a caller-supplied template, because a payload a caller can shape is a payload a caller
  * can shape into one that matches.
  *
- * So there were two options, and this is the one taken out loud: generalise the core primitive — editing a
+ * So there were two options, and this is the one taken out loud: generalize the core primitive — editing a
  * package this issue does not scope, against its own written reasoning — or write the scheme here, as the
  * Lemon Squeezy rail already did for its own. This is the sibling precedent, and it keeps the change inside
  * `@pithy-sh/payments`.

@@ -47,7 +47,7 @@ import { createAuthRoutes } from "./routes";
  * easily breaks.
  *
  * **Row three was once asserted without dispatching, and that hole is now closed (#385).** Under
- * workerd's pre-2026-03-03 behaviour an `async` function that *returned* a rejected promise rather than
+ * workerd's pre-2026-03-03 behavior an `async` function that *returned* a rejected promise rather than
  * awaiting it fired `unhandledrejection` even where the caller awaited and caught it — Better Auth's
  * `runWithEndpointContext` is that shape, so asking for a provider the instance does not hold left two
  * phantom rejections behind and vitest counted them. The runtime fix is already shipped and default-on
@@ -295,7 +295,7 @@ describe("the preconditions keep failing the whole instance", () => {
    * The other half of the argument, and the half a fix like this most easily breaks. A provider is a
    * contributor; the session secret is not. Nothing signs a session without it, so degrading past it
    * would mean serving sign-in with no signing key — and the moment "one failure no longer fails
-   * everything" becomes a habit rather than a judgement, that is the shape it takes.
+   * everything" becomes a habit rather than a judgment, that is the shape it takes.
    *
    * The status is the secrets reader's own `secrets/not_found`, unchanged by this branch, and it is
    * asserted rather than merely "not 200" so that a later change quietly turning it into a degraded

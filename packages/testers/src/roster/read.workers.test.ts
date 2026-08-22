@@ -95,7 +95,7 @@ describe("an activity read that cannot be made", () => {
 
     const warned = records.filter((record) => record.level === "warn");
     expect(warned).toHaveLength(1);
-    // `name` and `request` are the caller's, not this module's: proof the logger travelled rather than
+    // `name` and `request` are the caller's, not this module's: proof the logger traveled rather than
     // one being built inside `resolveActivity`.
     expect(warned[0]?.name).toBe("app");
     expect(warned[0]?.fields).toMatchObject({ request: "req_1", addresses: 1 });

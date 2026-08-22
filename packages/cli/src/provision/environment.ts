@@ -19,7 +19,7 @@ import { applyProvisionedEnv, type ServiceEntry } from "./wranglerEnv";
 /**
  * **Standing up one environment's own Cloudflare resources — for any environment a project has.**
  *
- * This was written for ephemeral feature environments and was never generalised, which is the single
+ * This was written for ephemeral feature environments and was never generalized, which is the single
  * cause of three reported defects: a declared `staging` got no resources at all (#240), a feature got
  * every resource except its secrets (#239), and a deployed Worker got no Secrets Store bindings (#238).
  * The machinery was always general — it resolves the Worker set, provisions one resource per binding

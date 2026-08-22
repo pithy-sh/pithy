@@ -18,9 +18,9 @@ import { templates } from "../src/templates/registry";
 const here = dirname(fileURLToPath(import.meta.url));
 const outPath = join(here, "..", "src", "templates", "precompiled.generated.ts");
 
-// Read the licence rather than hard-code it, for the same reason `scripts/license-headers.ts` does:
+// Read the license rather than hard-code it, for the same reason `scripts/license-headers.ts` does:
 // the `license` field is the single source of truth. Hard-coding `MIT` here would survive right up
-// until this package's licence changed, at which point the gate would report `wrong-header`, `--fix`
+// until this package's license changed, at which point the gate would report `wrong-header`, `--fix`
 // would correct it, and the next `bun run precompile` would put it back — and precompile runs inside
 // both `build` and `test:node`, so the repo would oscillate and CI would flap.
 const { license } = JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8")) as { license: string };

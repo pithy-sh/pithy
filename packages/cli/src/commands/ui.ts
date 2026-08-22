@@ -32,7 +32,7 @@ async function promptScreens(request: { screens: UiScreenSet; suggestion: boolea
     initialValue: request.suggestion,
   });
   if (isCancel(answer)) {
-    process.stderr.write("Cancelled.\n");
+    process.stderr.write("Canceled.\n");
     process.exit(1);
   }
   return answer;

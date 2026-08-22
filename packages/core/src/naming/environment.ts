@@ -72,7 +72,7 @@ export const MAX_ENVIRONMENT_NAME = Math.max(...ENVIRONMENTS.map((environment) =
  * **Read raw, never kebabbed** — and that is the difference between this rule and the project rule.
  * A project name is prose an adopter types once into `pithy.config.ts`, so `Acme Corp` is politely
  * composed into `acme-corp`. An environment is an identifier repeated in `--env`, in
- * `.dev.vars.<environment>`, and in a wrangler environment key; normalising `Prod` to `prod` would
+ * `.dev.vars.<environment>`, and in a wrangler environment key; normalizing `Prod` to `prod` would
  * make two spellings name one environment in some places and two in others.
  */
 export function isValidEnvironment(name: string): boolean {

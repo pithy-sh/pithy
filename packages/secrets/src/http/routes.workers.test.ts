@@ -793,7 +793,7 @@ describe("POST {base}/admin/status/:name/rotate — what a Worker refuses, befor
     const error = (await response.json()) as { error?: { code?: string; message?: string } };
     expect(error.error?.code).toBe("secrets/rotation_unsupported");
     expect(error.error?.message).toContain("pithy secrets rotate");
-    // And it wrote nothing: a partial success labelled `rotated` is the shape being refused, so the store
+    // And it wrote nothing: a partial success labeled `rotated` is the shape being refused, so the store
     // must be untouched rather than merely reported as untouched.
     expect(await ciphertextOf("global-signing-key")).toBe(`${CIPHERTEXT}-global-signing-key`);
     expect(await historyOf("global-signing-key")).toEqual([]);

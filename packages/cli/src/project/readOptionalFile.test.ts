@@ -354,7 +354,7 @@ describe("readMergeBase", () => {
  * The gate — **two rules over one walk**, because the defect has two spellings.
  *
  * 1. **Only `readOptionalFile.ts` may name `ENOENT` where a file's contents were read.** No allowlist,
- *    no judgement about which modules write, no per-entry reasoning: a hand-written errno branch on a
+ *    no judgment about which modules write, no per-entry reasoning: a hand-written errno branch on a
  *    read is a copy of the primitive, and there is exactly one place that decision is allowed to live.
  * 2. **A module that puts bytes on disk must not read a file and discard the failure.** The shape that
  *    names no errno at all — `.catch(() => null)` — which rule 1 cannot see and which is *shorter* than
@@ -382,7 +382,7 @@ describe("readMergeBase", () => {
  * allowlist is a muted tripwire with extra steps. Some are correct and permanent: the `doctor` surface
  * throws six read failures away on purpose, because a diagnostic has to work in the broken environment
  * it exists to diagnose, and it writes nothing. That is the distinction rule 2's scope draws
- * structurally rather than by judgement — **reading a file you are about to act on, against reading one
+ * structurally rather than by judgment — **reading a file you are about to act on, against reading one
  * to report on.** A module that cannot write cannot destroy what it failed to read. So the two lists
  * below belong to rule 2 alone; rule 1 has none and must never grow one.
  *
@@ -401,7 +401,7 @@ describe("readMergeBase", () => {
  * on the list below for its own `readFile`. Rule 1 has none: `project/envInventory.ts` was the one, and
  * `readWranglerConfig` goes through the primitive now, so the branch it spelled out by hand is gone.
  *
- * **So the gate is not extended to recognise wrappers, and that is a decision rather than an omission.**
+ * **So the gate is not extended to recognize wrappers, and that is a decision rather than an omission.**
  * Doing it means a second pass resolving every local import to the function it names and asking whether
  * that function reads — writable, but a whole-tree symbol resolution living inside a test, and what it
  * would have found is one site that was already correct and one module already declared. What the survey

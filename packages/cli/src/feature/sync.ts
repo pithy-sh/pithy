@@ -96,7 +96,7 @@ export interface SyncFeatureOptions {
  * which permanently lost git-ignored content, and this guard was the only thing standing in front of it —
  * for one caller. A worktree generates its own from the same machine-local sources now (#154), so there is
  * nothing here to share and nothing to lose. This guard stays because syncing the main checkout as a
- * feature is still wrong, not because it is the last line of defence.
+ * feature is still wrong, not because it is the last line of defense.
  */
 export async function syncFeatureDevConfig(options: SyncFeatureOptions): Promise<SyncReport> {
   if (options.worktreePath === options.mainRoot) {

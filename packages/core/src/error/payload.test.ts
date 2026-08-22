@@ -327,7 +327,7 @@ describe("kitErrorStatus", () => {
   });
 
   test("a code the kit does not define answers nothing, rather than a guess", () => {
-    // An adopter's own, a D1 fault class, `classifiedSteps`' word for a throw nothing recognises, and
+    // An adopter's own, a D1 fault class, `classifiedSteps`' word for a throw nothing recognizes, and
     // a typo. None has a pinned status, and inventing one is how a 502 got attached to a 409.
     expect(kitErrorStatus("connect/device_code_expired")).toBeUndefined();
     expect(kitErrorStatus("d1/transient")).toBeUndefined();

@@ -11,7 +11,7 @@ import { LeaderboardBoardImmutableError } from "../error/errors";
  *
  * `store`, `direction`, `aggregation`, and `window` are create-time and immutable on every vendor
  * surveyed, and for good reason: each one is the lens through which stored scores are read, so changing
- * one reinterprets data rather than reconfiguring behaviour. Flip `direction` and last place becomes
+ * one reinterprets data rather than reconfiguring behavior. Flip `direction` and last place becomes
  * first. Switch `best` to `sum` and the number in the column stops meaning what it meant. Change `window`
  * and new scores key into windows that do not line up with the stored ones. Move a board to a different
  * `store` and its scores live in a different place entirely.

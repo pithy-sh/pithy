@@ -15,7 +15,7 @@
  * bug than a keypress that is missing. So the reader answers `active: false` and does nothing at all.
  *
  * One binding is registered today. The shape takes a list so a second is one line, and deliberately
- * offers no default set: `r` to restart and `o` to open the app are obvious neighbours and neither is
+ * offers no default set: `r` to restart and `o` to open the app are obvious neighbors and neither is
  * this issue.
  */
 

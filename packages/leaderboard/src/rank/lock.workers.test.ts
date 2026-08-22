@@ -63,7 +63,7 @@ describe("acquireRefreshLock", () => {
     expect(await acquireRefreshLock(db(), "B", later(DEFAULT_LOCK_STALE_MS + 1))).toBe(true);
   });
 
-  test("honours a custom stale horizon", async () => {
+  test("honors a custom stale horizon", async () => {
     expect(await acquireRefreshLock(db(), "A", NOW, 1000)).toBe(true);
     expect(await acquireRefreshLock(db(), "B", later(500), 1000)).toBe(false);
     expect(await acquireRefreshLock(db(), "B", later(1001), 1000)).toBe(true);

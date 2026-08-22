@@ -157,7 +157,7 @@ const DELIVERY_FAILURES: readonly { pattern: RegExp; message: string; action: st
 /**
  * A rendered problem + action block for a host output line that reports a delivery failure, or
  * `undefined` for every other line. Rendered through `renderTerminal` so it reads exactly like every
- * other operator-facing failure, rather than being a second error format nobody recognises.
+ * other operator-facing failure, rather than being a second error format nobody recognizes.
  */
 export function deliveryFailureNote(line: string): string | undefined {
   const match = DELIVERY_FAILURES.find((failure) => failure.pattern.test(line));

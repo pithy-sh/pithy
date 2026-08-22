@@ -56,7 +56,7 @@ async function resetKv(): Promise<void> {
   await Promise.all(keys.map((key) => env.MEDIA.delete(key.name)));
 }
 
-/** The behavioural contract both stores satisfy — run once per backend. */
+/** The behavioral contract both stores satisfy — run once per backend. */
 function storeContract(name: string, make: () => RecordStore, reset: () => Promise<void>): void {
   describe(`RecordStore — ${name}`, () => {
     beforeEach(reset);

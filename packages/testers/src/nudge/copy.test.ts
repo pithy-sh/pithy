@@ -143,7 +143,7 @@ describe("sanitizing a supplied subject", () => {
   });
 
   test("leaves markup alone, because a subject is text and escaping it would render entities in inboxes", () => {
-    // The division of labour with the email renderer: it precompiles subjects with escaping off, and
+    // The division of labor with the email renderer: it precompiles subjects with escaping off, and
     // this function owns the only threat that actually applies there.
     expect(sanitizeSubject("<b>Still testing?</b>")).toBe("<b>Still testing?</b>");
   });

@@ -23,7 +23,7 @@ export const Ed25519PublicJwk = z
     crv: z
       .literal("Ed25519")
       .describe(
-        "The curve, pinned to Ed25519. Pinned rather than accepted from the key so a weaker curve cannot be smuggled in at registration and honoured at verification.",
+        "The curve, pinned to Ed25519. Pinned rather than accepted from the key so a weaker curve cannot be smuggled in at registration and honored at verification.",
       ),
     x: z
       .string()

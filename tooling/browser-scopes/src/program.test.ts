@@ -19,7 +19,7 @@ import { browserProgram } from "./program";
  * repository today** — nothing writes a `.js`-suffixed specifier into a reached module, no reached `.ts`
  * carries a reference directive — so a real-tree assertion about either would pass on an empty set
  * forever. This file is the other half, and the division is the one that makes both worth having: **the
- * real tree proves the gate is pointed at the repository; the fixtures prove it recognises what it finds
+ * real tree proves the gate is pointed at the repository; the fixtures prove it recognizes what it finds
  * there.**
  *
  * ## Every fixture here is a defect that was reproduced, not a shape somebody imagined
@@ -31,8 +31,8 @@ import { browserProgram } from "./program";
  *
  * - **A named import of the Workers types.** Compiles anywhere, so `types: []` never objected.
  * - **A reference directive.** Defeated the old walk and `tsc` at the same time: the specifier pattern
- *   matched statements, and `tsc` honours a directive whatever `types: []` says. That second half is
- *   precisely *why* the compiler catches it now — honouring it and listing the file are one event.
+ *   matched statements, and `tsc` honors a directive whatever `types: []` says. That second half is
+ *   precisely *why* the compiler catches it now — honoring it and listing the file are one event.
  * - **A directive inside a template literal.** `@pithy-sh/vite` emits one into a declaration file it
  *   writes. Text a module produces is not ambient types a module acquires, and a gate that cannot tell
  *   them apart is a gate somebody turns off.
@@ -158,7 +158,7 @@ describe("what a browser's program includes, asked of the compiler", () => {
 
   it("names them through a reference directive, which `types: []` has no power to refuse", () => {
     // The spelling that defeated both halves of the old gate at once. It is caught now for the same
-    // reason it was dangerous: `tsc` honours the directive, and honouring it *is* putting the file in
+    // reason it was dangerous: `tsc` honors the directive, and honoring it *is* putting the file in
     // the program. There is no separate detector to keep in step.
     const program = included("directive", {
       "alpha/src/http/responses.ts": `${HEADER}export { SCOPE } from "../data/leak";\n`,

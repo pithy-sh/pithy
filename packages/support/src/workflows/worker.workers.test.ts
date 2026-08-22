@@ -23,7 +23,7 @@ import { SupportClassifyWorkflow, type SupportWorkerEnv } from "./worker";
  * The unit tests beside `retryPolicy.ts` prove what `supportWorkflowRetry` decides. This proves the
  * decision is wired into the class the platform actually runs, against real D1 and the real
  * `NonRetryableError` from `cloudflare:workflows` — the two things a fake cannot stand in for, because
- * the engine recognises a terminal error by that class's own name and #338 measured what happens when
+ * the engine recognizes a terminal error by that class's own name and #338 measured what happens when
  * it does not: 32.6 seconds against 0.92.
  *
  * **The attempt count is the assertion.** "It threw" was true before any of this — the platform default

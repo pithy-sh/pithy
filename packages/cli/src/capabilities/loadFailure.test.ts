@@ -24,7 +24,7 @@ describe("classifyCapabilityLoadFailure", () => {
     expect(action).toContain("pithy add payments");
   });
 
-  test("Bun's ResolveMessage is not an Error, and the capability is still recognised as absent", () => {
+  test("Bun's ResolveMessage is not an Error, and the capability is still recognized as absent", () => {
     const cause = {
       name: "ResolveMessage",
       message: "Cannot find package '@pithy-sh/vector' from '/home/a/x.ts'",

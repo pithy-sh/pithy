@@ -151,7 +151,7 @@ export const PAYMENTS_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  * manifest advertises are the same constant, read from one place. `basePath` is a parameter and never a
  * default: an adopter who mounted payments at `/billing` must get a manifest naming
  * `/billing/entitlements/grant`, or a management client composing its calls from it would 404 against
- * exactly the adopters who customised anything.
+ * exactly the adopters who customized anything.
  *
  * The summaries say what the operation *is for*, not what it does mechanically. A client renders these
  * next to a button somebody is about to press on a paying customer's account.

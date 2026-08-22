@@ -15,8 +15,8 @@ import type { NotificationNote, UnboundProviderEvent } from "../contract";
  *
  * A subscription row is keyed on the **invoice**, not on the subscription. Stripe keeps one subscription id
  * across every renewal, so keying on it would make one row for the lifetime of a subscription — and a `grants`
- * clause would then credit once ever rather than once per billing period, which is the behaviour issue #79
- * specifies and the behaviour Apple and Google already have. The invoice changes each period, so each period is
+ * clause would then credit once ever rather than once per billing period, which is the behavior issue #79
+ * specifies and the behavior Apple and Google already have. The invoice changes each period, so each period is
  * its own purchase row. The subscription id becomes `originalTransactionId`, the family key, exactly as Play's
  * purchase token does: a renewal's owner resolves through the purchase that started the subscription.
  *
@@ -381,7 +381,7 @@ export function mapStripeSubscription(subscription: StripeSubscription, eventAt:
       purchasedAt: seconds(periodStart ?? subscription.start_date ?? subscription.created),
       expiresAt: periodEnd === null ? null : seconds(periodEnd),
       // A Stripe subscription has no refunded state — a refund is an invoice's business, and access is ended by
-      // cancelling. So nothing on this path is a revocation, and dating one would be inventing it.
+      // canceling. So nothing on this path is a revocation, and dating one would be inventing it.
       revokedAt: null,
       originalTransactionId: subscription.id,
       amountMinor: minorUnits(item.price.unit_amount ?? null, currency),
@@ -553,7 +553,7 @@ export function mapStripeCharge(charge: StripeCharge, options: { eventAt: Date }
 /**
  * One Stripe event, mapped — the whole of "which event types this build acts on", in one place.
  *
- * An unhandled type produces nothing at all, with no note: `invoice.paid` and its neighbours are authentic and
+ * An unhandled type produces nothing at all, with no note: `invoice.paid` and its neighbors are authentic and
  * duplicate what the subscription events already report, so throwing would make Stripe retry forever and a note
  * would fill the table with rows nobody acts on. The delivery is still recorded — that is the guard's job — so a
  * reconciliation pass can see everything that arrived.
@@ -587,7 +587,7 @@ export function mapStripeEvent(event: StripeEvent): StripeMappedEvent {
  * is not divisible, and the catalog's clawback policy is what decides whether a balance follows.
  *
  * One predicate for both paths — the `charge.refunded` event and the charge a retrieve expanded — because a
- * refund that one path recognised and the other did not is a purchase whose access depends on which delivery
+ * refund that one path recognized and the other did not is a purchase whose access depends on which delivery
  * arrived first.
  */
 function chargeIsRefunded(charge: StripeCharge): boolean {

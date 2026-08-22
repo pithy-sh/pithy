@@ -32,7 +32,7 @@ import { verifyLemonSqueezySignature } from "./signature";
  *
  * **Nothing outside the signed body may contribute to it.** The HMAC covers the body alone, so the
  * `X-Event-Name` header Lemon Squeezy also sends is attacker-controlled on a replayed delivery; composing the
- * id from it would let one captured body be resent under any name, defeating the only replay defence this
+ * id from it would let one captured body be resent under any name, defeating the only replay defense this
  * rail has. Every other rail derives its id from signed content too — Stripe's `event.id`, Apple's
  * `notificationUUID` from inside the JWS — and this one is no exception.
  *
@@ -64,7 +64,7 @@ export interface ParseLemonSqueezyNotificationOptions {
    * The rail cannot answer it — a Lemon Squeezy order carries no subscription marker — and it must not
    * guess, because guessing wrong either double-credits a subscriber's first period or drops a one-off
    * sale. `resolveRailProvider` has the config, so it supplies the answer. Absent means "assume one-off",
-   * which is the behaviour for a project whose catalog the rail was built without.
+   * which is the behavior for a project whose catalog the rail was built without.
    */
   sellsSubscription?: (variantId: string) => boolean;
 }
@@ -157,7 +157,7 @@ export async function parseLemonSqueezyNotification(
   // **The signed body, and never the header.** The HMAC covers `delivery.body` and nothing else, so every
   // header on the request is unauthenticated attacker input — including `X-Event-Name`, which Lemon Squeezy
   // also sends. Preferring it would hand a replay adversary two things at once: `name` composes
-  // `providerEventId`, which is this rail's entire replay defence, and it selects the domain handler,
+  // `providerEventId`, which is this rail's entire replay defense, and it selects the domain handler,
   // including the refund branch that revokes a subscription. One captured authentic body could then be
   // resent under any event name, evading the guard's UNIQUE insert and steering the handler.
   //
@@ -173,7 +173,7 @@ export async function parseLemonSqueezyNotification(
   if (INVOICE_EVENTS.has(name)) return await invoiceNotification(webhook, providerEventId, name, options);
   if (ORDER_EVENTS.has(name)) return await orderNotification(webhook, providerEventId, options);
 
-  // A type Lemon Squeezy shipped after this package did — a licence key, an affiliate payout. Authentic,
+  // A type Lemon Squeezy shipped after this package did — a license key, an affiliate payout. Authentic,
   // recorded, and projecting nothing. Never a throw: the store would redeliver it forever.
   return nothing(webhook, providerEventId);
 }

@@ -19,7 +19,7 @@
  *
  * **A symbol, non-enumerable, and not a payload field.** The payload is what the HTTP codec encodes and
  * what `--json` prints as `{ error }`; this is the command's own output, on its own stream. Non-enumerable
- * so nothing serialising an error picks it up by accident.
+ * so nothing serializing an error picks it up by accident.
  *
  * **The one thing it cannot carry: a thrown primitive.** Nothing can be attached to a thrown string, so a
  * caller that throws one loses its report. Replacing it with a wrapper would fix that and break the rule

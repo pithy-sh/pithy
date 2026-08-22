@@ -19,7 +19,7 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  *
  * `scopeCovers` matches exactly, with no prefix or wildcard rule, so these two confer nothing about
  * each other — and they should not, because they disclose different things. A **balance** is a number:
- * what an account holds right now. An **entry log** is a behavioural record: every wager placed, every
+ * what an account holds right now. An **entry log** is a behavioral record: every wager placed, every
  * payout taken, every purchase, in order, with whatever note the adopter's own code wrote on it. A
  * balances pane and a support tool answering "why is my chip count wrong" need different halves of
  * that, and an adopter who wants to hand out only the shallower one must have a way to say so.
@@ -63,7 +63,7 @@ export const LEDGER_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  * manifest advertises are the same constant, read from one place. `basePath` is a parameter and never a
  * default: an adopter who mounted the ledger at `/wallet` must get a manifest naming
  * `/wallet/admin/accounts`, or a management client composing its calls from it would 404 against
- * exactly the adopters who customised anything.
+ * exactly the adopters who customized anything.
  *
  * **Everything sits under an `admin/` segment because the player surface already owns the one-segment
  * space.** `GET ${basePath}/:currency` matches any single segment, so a management route mounted at

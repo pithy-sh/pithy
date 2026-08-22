@@ -110,7 +110,7 @@ describe("payments' control-plane read coverage (#247)", () => {
 
   test("every table payments stores is either readable through a declared scope or withheld for a stated reason", () => {
     // `Record<keyof PaymentsTables, …>` is the structural half: a fifth table does not typecheck until it
-    // is decided. This is the half that checks the decision was honoured — a table declaring a scope with
+    // is decided. This is the half that checks the decision was honored — a table declaring a scope with
     // no route behind it is a promise nothing keeps.
     const routes = advertised();
     const scopes = new Set(routes.filter((route) => route.method === "GET").map((route) => route.scope));

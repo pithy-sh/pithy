@@ -29,7 +29,7 @@ import {
  * is over the serialized response rather than over a key set.
  */
 
-/** A recognisable ciphertext, so a leak is visible in a string search rather than only in a field name. */
+/** A recognizable ciphertext, so a leak is visible in a string search rather than only in a field name. */
 const CIPHERTEXT = "CIPHERTEXT-DO-NOT-LEAK";
 const IV = "IV-DO-NOT-LEAK";
 const NOW = new Date("2026-08-11T00:00:00.000Z");
@@ -243,7 +243,7 @@ describe("readSecretStatus", () => {
     expect(entries).toHaveLength(4);
     // The planted row refuses by name, and only it.
     expect(unreadable(entries)).toEqual(["auth-signing-key"]);
-    // Its neighbour resolved, with its real facts rather than a null standing in for a lost chunk.
+    // Its neighbor resolved, with its real facts rather than a null standing in for a lost chunk.
     const healthy = readable(entries).find((status) => status.name === "stripe-live-key");
     expect(healthy?.createdAt).toEqual(new Date(daysAgo(10)));
     expect(healthy?.overdue).toBe(false);
@@ -358,7 +358,7 @@ describe("readSecretRotations", () => {
     expect(JSON.stringify(rotations)).not.toContain("SNAPSHOT-DO-NOT-LEAK");
   });
 
-  test("honours the cap, keeping the newest", async () => {
+  test("honors the cap, keeping the newest", async () => {
     for (let day = 1; day <= 10; day += 1) {
       await recordRotation("auth-signing-key", daysAgo(day), daysAgo(day), "success", "cron", `wf-${day}`);
     }

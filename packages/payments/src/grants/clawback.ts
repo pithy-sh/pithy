@@ -13,7 +13,7 @@ import { ledgerAccountId, type PaymentsLedger } from "./ledgerSeam";
  * The refund clawback: taking back what a `grants` clause credited, where — and only where — the catalog says
  * to.
  *
- * **A clawback can fail, and that failure is correct behaviour.** The ledger's `CHECK (balance >= 0)` refuses
+ * **A clawback can fail, and that failure is correct behavior.** The ledger's `CHECK (balance >= 0)` refuses
  * a debit the balance cannot cover, and a player who spent their coins before the refund arrived is exactly
  * that case. There are only three things to do about it and two are wrong: allow a negative balance, which
  * breaks the invariant the ledger exists to hold; write the difference off silently, which leaves nothing
@@ -41,7 +41,7 @@ const INSUFFICIENT_FUNDS_CODE = "ledger/insufficient_funds";
  */
 export type ClawbackOutcome =
   | {
-      /** The debit applied, or was recognised as one already applied. */
+      /** The debit applied, or was recognized as one already applied. */
       outcome: "reversed";
       /** The ledger currency debited. */
       currency: string;

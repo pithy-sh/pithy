@@ -63,7 +63,7 @@ export async function blockingSuppression(
   const row = await db
     .selectFrom("pithyEmailSuppressions")
     .select(["reason", "expiresAt"])
-    // The same key `suppress` writes under. A read normalised differently from the write is a
+    // The same key `suppress` writes under. A read normalized differently from the write is a
     // suppression that silently stops suppressing.
     .where("email", "=", normalizeAddress(email))
     .executeTakeFirst();
@@ -71,7 +71,7 @@ export async function blockingSuppression(
   const live =
     row.expiresAt === null || row.expiresAt === undefined || SQLiteDate.parse(row.expiresAt).getTime() > now.getTime();
   if (!live) return null;
-  // Parsed, not cast: this crosses the D1 boundary, and an unrecognised reason must not fall through the
+  // Parsed, not cast: this crosses the D1 boundary, and an unrecognized reason must not fall through the
   // `=== "unsubscribe"` test into "send it anyway". A row nobody can read is reported as `manual`, the
   // one reason that claims no observed fact — it blocks, and it does not pretend to know why.
   const parsed = SuppressionReason.safeParse(row.reason);
@@ -179,7 +179,7 @@ export async function listSuppressions(
 
   if (filter.reason) query = query.where("reason", "=", filter.reason);
   // Exact equality on the normalized key, never a prefix or a LIKE: a lookup that also matched
-  // neighbours would be a way to enumerate the list one query at a time while looking like a question
+  // neighbors would be a way to enumerate the list one query at a time while looking like a question
   // about a single address.
   if (filter.email) query = query.where("email", "=", normalizeAddress(filter.email));
   if (after) {

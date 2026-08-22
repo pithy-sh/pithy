@@ -22,7 +22,7 @@
  * A call that takes no arguments cannot compute its result from its input, because it has none. Whatever it
  * returns therefore came from outside the program — a clock, an entropy source, a counter, a queue. That is
  * the whole population of things a replay must not re-read, and it is closed under the next author's
- * favourite spelling of it: `Date.now()`, `new Date()`, `crypto.randomUUID()`, `performance.now()`,
+ * favorite spelling of it: `Date.now()`, `new Date()`, `crypto.randomUUID()`, `performance.now()`,
  * `deps.now()` and the sixth thing nobody has written yet are all nullary, necessarily, because a source
  * takes no input. A deny-list of names would have caught the first five and not the sixth — which is
  * pithy-sh/pithy#326 finding 4 in miniature, and precisely what this refuses to be.
@@ -46,7 +46,7 @@
  * The population is discovered, never declared: a driver is the `run` of a class extending
  * `WorkflowEntrypoint`, or any function taking a parameter typed as a step runner — and a step runner is
  * itself discovered, as any interface in the tree whose one member is `do(name, callback)`. A capability
- * that adds a Workflow tomorrow is analysed tomorrow, with nothing to remember.
+ * that adds a Workflow tomorrow is analyzed tomorrow, with nothing to remember.
  *
  * ## A second rule, off the same walk (#426)
  *
@@ -115,7 +115,7 @@ export interface DriverAnalysis {
   readonly entrypoints: string[];
   /** Every module holding one or more of those classes, sorted by path. See {@link WorkflowHostModule}. */
   readonly hosts: WorkflowHostModule[];
-  /** Every driver body analysed. */
+  /** Every driver body analyzed. */
   readonly drivers: WorkflowDriver[];
   /** Every `WorkflowSpec.className` declared anywhere in the tree, sorted. */
   readonly declaredClassNames: string[];
@@ -223,7 +223,7 @@ function memberPath(node: Node): string | undefined {
  *
  * Structurally: one member, called `do`, taking a name and a callback. That is the whole of the seam every
  * package declares for itself — `ReconcileStep`, `ReprocessStep`, `StepRunner` — and it is how a fourth one
- * added tomorrow is recognised without being written down here.
+ * added tomorrow is recognized without being written down here.
  */
 function isStepRunnerInterface(node: Node): boolean {
   if (node.type !== "TSInterfaceDeclaration" || !isNode(node.body)) return false;
@@ -317,7 +317,7 @@ function boundNames(pattern: unknown, into: Set<string>): void {
  * The bindings a scope holds that carry a value it already has, rather than a way of getting one.
  *
  * This is the line between `now.getTime()` and `deps.now()`, and it is the only thing in this file that has to
- * be careful. `now` is a `const` the body computed from a journalled step; calling a method on it reads a
+ * be careful. `now` is a `const` the body computed from a journaled step; calling a method on it reads a
  * value already in hand and answers the same on every replay. `deps` is a *parameter* — the injected effect
  * surface — and `Date` is a free identifier the module never declared. Both of those reach outside.
  *
@@ -401,13 +401,13 @@ function walkScope(
 }
 
 /**
- * Analyse a set of source files for Workflow driver bodies and the sources they evaluate.
+ * Analyze a set of source files for Workflow driver bodies and the sources they evaluate.
  *
  * Everything is derived from the files: the Workflow classes, the modules that hold them, the step-runner
  * interfaces, the delegates that take one, and the class names the `WorkflowSpec` maps declare. Nothing about
  * the shipped population is written down here, which is the point — see the module doc.
  */
-export function analyseDrivers(sources: readonly DriverSource[], parseModule: ParseModule): DriverAnalysis {
+export function analyzeDrivers(sources: readonly DriverSource[], parseModule: ParseModule): DriverAnalysis {
   const programs: { source: DriverSource; program: Node }[] = [];
   for (const source of sources) programs.push({ source, program: parseModule(source.text) });
 
@@ -480,7 +480,7 @@ export function analyseDrivers(sources: readonly DriverSource[], parseModule: Pa
 
       // A `WorkflowSpec`'s `className` — the second, independent enumeration of the shipped population.
       //
-      // Recognised by the spec's own shape rather than by the key alone: `className` is also what a
+      // Recognized by the spec's own shape rather than by the key alone: `className` is also what a
       // `durable_object` binding names its class with, so a bare key search collects `MatchmakingPresence`
       // and asserts that a Durable Object is a Workflow. A `WorkflowSpec` is the object that carries a
       // `binding`, a `params` schema and a `className` together.

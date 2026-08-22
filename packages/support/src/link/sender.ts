@@ -29,7 +29,7 @@ import { SUPPORT_BILLING_SCOPE } from "../data/billingScope";
  * ## The billing half links people, and only people
  *
  * `@pithy-sh/payments` keys a purchase on a **subject pair** — a user or an organization, plus an id —
- * and which of the two a project uses is its `billingSubject` config. Support cannot honour that choice.
+ * and which of the two a project uses is its `billingSubject` config. Support cannot honor that choice.
  * It starts from a `From:` header, resolves it to a *person*, and does its billing lookup at thread-read
  * time, where there is no Hono `Context` to hand the adopter's subject resolver: the seam's whole job is
  * to answer "which organization is *this caller* acting for", and a support thread has no caller.
@@ -43,7 +43,7 @@ import { SUPPORT_BILLING_SCOPE } from "../data/billingScope";
  *
  * **The scope constant used to be declared here, and is now `data/billingScope.ts` (Jim, 2026-08-21).**
  * The old argument was that the query and the wire must read one value, which is right and unchanged —
- * but `http/responses.ts` honouring it by importing from *this* file pulled the whole server data layer
+ * but `http/responses.ts` honoring it by importing from *this* file pulled the whole server data layer
  * into a browser program, because that is what this file's imports are (#419). One value, in a module
  * neither half owns.
  */
@@ -280,9 +280,9 @@ export async function resolveSenderContext(
 
   // **An unverified match is reported; its billing history is not.**
   //
-  // The two halves carry very different risk. A name beside an address is a labelled guess an
+  // The two halves carry very different risk. A name beside an address is a labeled guess an
   // operator can sanity-check, and withholding it would make the panel useless for the majority of
-  // real senders, since most domains publish no verdict this Worker can trust. An itemised purchase
+  // real senders, since most domains publish no verdict this Worker can trust. An itemized purchase
   // history is what somebody decides to issue a refund or reset an account on — presenting a real
   // customer's on a thread that merely *claims* to be them is the whole account-takeover path.
   //

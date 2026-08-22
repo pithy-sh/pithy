@@ -37,7 +37,7 @@ export const PAYMENTS_RAILS: readonly PaymentsRail[] = PaymentsRail.options;
  *
  * The day a rail sells without a portal, `CheckoutRail` splits first — and `providers.test.ts`, which
  * compares this list against the rails that actually satisfy `isCheckoutRail`, goes red. That is the
- * moment a second name is earned, and it arrives with a failing test rather than a judgement call.
+ * moment a second name is earned, and it arrives with a failing test rather than a judgment call.
  *
  * **Written out rather than derived**, because the browser reads it. A screen cannot construct a rail
  * provider to discover what it implements, and `PaymentsRail.options` cannot answer it — Apple and

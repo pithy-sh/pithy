@@ -36,7 +36,7 @@ import type { ObjectConditions, ObjectMetadata, ObjectRange } from "../object/st
  *   non-negotiable rather than belt-and-braces: it is *meant* to render inline, and a CSP on this
  *   response does not travel with it when another origin loads it as an `<img>`.
  * - **`Content-Disposition` is derived, never replayed.** A stored disposition is a string the uploader
- *   chose, and honouring it would let them pin `inline` on the very content the rule above forces down.
+ *   chose, and honoring it would let them pin `inline` on the very content the rule above forces down.
  *
  * The cost is that this route will not host an adopter's own HTML or JavaScript assets. That is the
  * right trade: it is a store for user files, and Workers Assets or a bucket on its own domain is where
@@ -102,7 +102,7 @@ export function toObjectRange(request: RangeRequest): ObjectRange | undefined {
 }
 
 /**
- * The conditional-read preconditions a request's headers imply. Only `If-None-Match` is honoured: it
+ * The conditional-read preconditions a request's headers imply. Only `If-None-Match` is honored: it
  * is the one that saves a transfer, and the one every cache and browser actually sends. `If-Match`
  * guards writes, which this route does not perform.
  */
@@ -221,7 +221,7 @@ function baseHeaders(options: ServeOptions): Headers {
 
 /**
  * The `Content-Disposition` value, always built from the logical path's last segment. The stored
- * disposition is deliberately ignored: the uploader wrote it, so honouring it would hand them back the
+ * disposition is deliberately ignored: the uploader wrote it, so honoring it would hand them back the
  * `inline` this module just took away — and it would replay an unsanitised string into a response
  * header. The server decides how its own origin presents bytes.
  *

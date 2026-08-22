@@ -16,15 +16,15 @@ import { discoverPackages, sourceFiles } from "./workspace";
 export type Finding =
   /** A manifest declares no `license` at all. */
   | { kind: "missing-license-field"; package: string }
-  /** A manifest declares a licence we hold no canonical text for. */
+  /** A manifest declares a license we hold no canonical text for. */
   | { kind: "unknown-license"; package: string; license: string }
   /** A package ships no `LICENSE` file. */
   | { kind: "missing-license-file"; package: string; path: string }
-  /** A `LICENSE` file's text is not the licence its manifest declares. */
+  /** A `LICENSE` file's text is not the license its manifest declares. */
   | { kind: "license-file-mismatch"; package: string; path: string }
   /** A source file carries no SPDX header. */
   | { kind: "missing-header"; path: string; expected: string; actual: null }
-  /** A source file's header names a licence its package does not declare. */
+  /** A source file's header names a license its package does not declare. */
   | { kind: "wrong-header"; path: string; expected: string; actual: string }
   /** A scaffolded template carries a header it must not have. */
   | { kind: "unexpected-header"; path: string };
@@ -32,7 +32,7 @@ export type Finding =
 /**
  * What a finding calls the repo root, which has no package name of its own.
  *
- * Named rather than written twice: `applyFixes` keys on it to know a licence has to come from the
+ * Named rather than written twice: `applyFixes` keys on it to know a license has to come from the
  * root manifest instead of the package list, so the two spellings must never drift apart.
  */
 const ROOT_NAME = "<root>";
@@ -90,7 +90,7 @@ function auditUnit(
   else if (expected === null) findings.push({ kind: "unknown-license", package: name, license });
 
   // Whether the file exists is true independently of what the manifest says, so it is reported
-  // either way. Only comparing its *body* needs a known licence — reporting the two together is
+  // either way. Only comparing its *body* needs a known license — reporting the two together is
   // what stops a bare package costing two fix-and-rerun rounds to diagnose.
   const licensePath = join(dir, "LICENSE");
   if (!existsSync(licensePath)) {
@@ -102,7 +102,7 @@ function auditUnit(
     findings.push({ kind: "license-file-mismatch", package: name, path: rel(root, licensePath) });
   }
 
-  // Headers hang off the declared licence. With none resolved there is nothing to compare against,
+  // Headers hang off the declared license. With none resolved there is nothing to compare against,
   // and flagging all 60 files in a package as headerless would bury the one finding that matters.
   if (!options.headers || license === undefined || expected === null) return findings;
 
@@ -231,7 +231,7 @@ export function fixFiles(root: string, paths: string[]): string[] {
   return changed;
 }
 
-/** The licence the repo root itself declares, or `null` when its manifest omits one. */
+/** The license the repo root itself declares, or `null` when its manifest omits one. */
 function rootLicense(root: string): string | null {
   const manifestPath = join(root, "package.json");
   if (!existsSync(manifestPath)) return null;

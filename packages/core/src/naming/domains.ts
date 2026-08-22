@@ -151,7 +151,7 @@ export interface ResolvedOrigin {
  *
  * **The fallback never reaches for another environment's origin.** An environment absent from `domains`
  * is one that is not published, so it resolves to {@link LOCAL_ORIGIN} and nothing else. Falling back to
- * production's is what the shape being replaced did, and it is the one behaviour here that was actively
+ * production's is what the shape being replaced did, and it is the one behavior here that was actively
  * dangerous rather than merely wrong.
  *
  * **A deployed environment must never *keep* that fallback**, and it is not this function's job to say

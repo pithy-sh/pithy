@@ -10,7 +10,7 @@
  *
  * It binds over every row in a status `runScheduler` queries — `scheduled`, `pending`, `sending` — which
  * is every row the id can be read from. A terminal row (`sent`, `failed`, `suppressed`, `bounced`,
- * `cancelled`) keeps whatever it last carried, because no tick will ever look at it and clearing it
+ * `canceled`) keeps whatever it last carried, because no tick will ever look at it and clearing it
  * would be a write bought for nobody. What that costs is exactly one obligation, and it is `retryJob`'s:
  * the write that brings a terminal row back into the queried set must set this in the same statement.
  *

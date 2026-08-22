@@ -181,7 +181,7 @@ describe("ledger route contract", () => {
   });
 
   test("the advertised admin surface names the same scope the route checks", () => {
-    // Drift here means a management client greys out an action it may perform, or offers one it may not.
+    // Drift here means a management client grays out an action it may perform, or offers one it may not.
     const declared = new Map(
       LEDGER_ROUTES.filter((route) => route.scope).map((route) => [`/ledger${route.path}`, route.scope]),
     );

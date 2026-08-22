@@ -180,7 +180,7 @@ describe("entryStore.submit — aggregation", () => {
     expect(entry?.score).toBe(50);
   });
 
-  test("honours the configured default visibility on a new entry", async () => {
+  test("honors the configured default visibility on a new entry", async () => {
     const s = store();
     await s.submit(board(), WINDOW, "u1", 50, T0, false);
     expect((await s.get("b1", WINDOW, "u1"))?.visible).toBe(false);

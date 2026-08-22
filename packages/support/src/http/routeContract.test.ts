@@ -68,7 +68,7 @@ function mountedRoutes(): { method: string; path: string }[] {
  * The routes that actually answer `controlplane/not_connected` to a request carrying no credential —
  * the management surface as the router behaves, not as `scopes.ts` describes it.
  *
- * Read from behaviour on purpose. A set computed from `supportAdminRoutes` cannot observe a route
+ * Read from behavior on purpose. A set computed from `supportAdminRoutes` cannot observe a route
  * mounted with `requireControlPlane` and never declared, and that is the whole failure this exists for.
  * A path-prefix rule would be no better: `/support/threads` and `/support/feedback` are told apart by
  * their guard, not by their shape, so the guard is what gets asked.

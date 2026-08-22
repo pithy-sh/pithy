@@ -50,9 +50,9 @@ describe("resolveWorkerAddress", () => {
     ).toBe("api.acme.test");
   });
 
-  it("falls back to a hand-set BASE_URL last, and normalises it to an absolute URL", () => {
+  it("falls back to a hand-set BASE_URL last, and normalizes it to an absolute URL", () => {
     // Last because it is the input an adopter most easily leaves stale — it used to be the only one.
-    // Normalised because `dashboard connect` validates the stored address with `z.url()`, and the old
+    // Normalized because `dashboard connect` validates the stored address with `z.url()`, and the old
     // readers accepted a bare hostname that would fail there.
     expect(resolveWorkerAddress({ environment: "prod", stanza: { vars: { BASE_URL: "api.acme.test" } } })).toEqual({
       url: "https://api.acme.test",

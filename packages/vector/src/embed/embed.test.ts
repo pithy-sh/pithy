@@ -83,7 +83,7 @@ describe("embedForIndex", () => {
 /**
  * **A binding that throws is an outage, not a bad answer** (pithy-sh/pithy#348).
  *
- * `core/internal` covers a model that answered in a shape nobody recognises, and
+ * `core/internal` covers a model that answered in a shape nobody recognizes, and
  * `vector/dimension_mismatch` a model pinned wrong — both deterministic, both terminal. A binding
  * that *rejects* is Workers AI being unreachable, and a reprocess run is thousands of journalled
  * pages: losing one to a blip throws away the whole instance's remaining work.

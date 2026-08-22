@@ -82,7 +82,7 @@ describe("clientError — the one projection toward a client", () => {
  * mutation it names is worse than none: it reports a boundary it is not holding.
  *
  * The schema is the HTTP surface's second line, and it is genuinely there. What has no second line is a
- * transport that serialises by hand and never parses — which is exactly what the socket did. So that
+ * transport that serializes by hand and never parses — which is exactly what the socket did. So that
  * transport is gated where it can fail: end-to-end, over a real socket, in
  * `packages/multiplayer/src/session/websocket.workers.test.ts`. The next transport needs its own, for the
  * same reason.

@@ -75,7 +75,7 @@ export interface ControlPlaneHandlerDeps {
 function caller(c: Context<PithyHonoEnv>): ControlPlaneContext {
   const context = c.var.controlPlane;
   if (!context) {
-    // Defence in depth against a route line assembled without the gate. It cannot happen through
+    // Defense in depth against a route line assembled without the gate. It cannot happen through
     // `registerControlPlaneRoutes`, and if it ever did the failure must be a denial rather than a
     // handler reading `undefined` and carrying on.
     throw new ControlPlaneInvalidCredentialError({ detail: "handler reached with no verified control-plane caller" });

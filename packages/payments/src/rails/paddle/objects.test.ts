@@ -60,12 +60,12 @@ describe("a stamp a browser wrote binds nobody", () => {
       expect(forged[PADDLE_CUSTOM_ENV]).toBe("prod");
       expect(typeof forged[PADDLE_CUSTOM_ACCOUNT]).toBe("string");
 
-      // And with the one value they could not produce, the identical object is honoured. So the field
+      // And with the one value they could not produce, the identical object is honored. So the field
       // that decides is the proof, and every other field in these fixtures is already right.
       //
       // The owner the fixtures carry is a bare id — they were recorded before subjects existed, and a
-      // browser writes whatever it likes anyway — so the honoured form encodes it. That is the shape our
-      // own checkout stamps, and the only shape the reader honours.
+      // browser writes whatever it likes anyway — so the honored form encodes it. That is the shape our
+      // own checkout stamps, and the only shape the reader honors.
       const reference = encodeSubjectReference({
         subjectType: "user",
         subjectId: String(forged[PADDLE_CUSTOM_ACCOUNT]),

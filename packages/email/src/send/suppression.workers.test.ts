@@ -84,7 +84,7 @@ describe("blockingSuppression", () => {
     expect(await blockingSuppression(db(), "temp@example.com", earlier, "elective")).toBe("hard_bounce");
   });
 
-  test("a reason nothing recognises blocks, rather than falling through to send", async () => {
+  test("a reason nothing recognizes blocks, rather than falling through to send", async () => {
     // The row crosses a trust boundary, and a value this code cannot read must not slip past the
     // `unsubscribe` test into "send it anyway". Written through raw SQL because the typed writer exists
     // precisely to make this unreachable — a future migration or a hand-edited row is what it guards.

@@ -146,7 +146,7 @@ describe("sentSince — has this template already gone to this person", () => {
    * `pithy_email_jobs.to_address` holds the string the caller typed, on purpose — an operator
    * diagnosing a send needs the address that was actually addressed. So a reader matching on it would
    * answer "never sent" for a person enqueued as `Ada@` and asked about as `ada@`, and answering
-   * "never sent" is the direction that sends a second copy. `recipientKey` is the normalised column
+   * "never sent" is the direction that sends a second copy. `recipientKey` is the normalized column
    * both sides agree on, and this is the test that it is written by the real path.
    */
   test("case and surrounding whitespace do not split one mailbox into two", async () => {
@@ -426,7 +426,7 @@ describe("bounds", () => {
     expect(detail).not.toContain("SCAN pithy_email_jobs");
   });
 
-  test("an unreasonable limit is clamped, not honoured — the log is unbounded", async () => {
+  test("an unreasonable limit is clamped, not honored — the log is unbounded", async () => {
     await threeJobs();
 
     const log = await sentSince(db(), { to: "ada@example.com", template: "magicLink", since, limit: 10_000 });
@@ -472,7 +472,7 @@ describe("the trust boundary", () => {
   /**
    * A row this schema cannot read stops the decision instead of quietly biasing it.
    *
-   * Skipping it would be the friendlier code and the worse behaviour: the caller would be told the
+   * Skipping it would be the friendlier code and the worse behavior: the caller would be told the
    * message never went, and would send it again.
    */
   test("a status outside the enum throws rather than being dropped from the answer", async () => {

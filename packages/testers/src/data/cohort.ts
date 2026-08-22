@@ -19,13 +19,13 @@ export const TestersCohort = z
     id: z
       .string()
       .describe(
-        "The cohort's UUID. Text rather than an autoincrement integer because cohort ids appear in control-plane responses and CLI output, and a sequential id would leak how many test programmes a project has run.",
+        "The cohort's UUID. Text rather than an autoincrement integer because cohort ids appear in control-plane responses and CLI output, and a sequential id would leak how many test programs a project has run.",
       ),
     name: z
       .string()
       .describe("A human label for the cohort, e.g. `launch-closed-test`. Shown in the CLI and the dashboard."),
     targetPlatform: TesterPlatform.describe(
-      "Which store's programme this cohort serves. Decides which registered device counts as usable when scoring a tester's health, and nothing else.",
+      "Which store's program this cohort serves. Decides which registered device counts as usable when scoring a tester's health, and nothing else.",
     ),
     targetSize: z
       .number()
@@ -52,7 +52,7 @@ export const TestersCohort = z
       .string()
       .nullable()
       .describe(
-        "The store's own opt-in page — `https://play.google.com/apps/testing/<package>` for Play, a `https://testflight.apple.com/join/<code>` public link for TestFlight. THIS is where a tester actually enrols; Pithy's confirmation link only records that they went. Pasted from the console rather than derived, because Google documents no format for it. Null until set, and the invitation says so rather than sending anyone nowhere.",
+        "The store's own opt-in page — `https://play.google.com/apps/testing/<package>` for Play, a `https://testflight.apple.com/join/<code>` public link for TestFlight. THIS is where a tester actually enrolls; Pithy's confirmation link only records that they went. Pasted from the console rather than derived, because Google documents no format for it. Null until set, and the invitation says so rather than sending anyone nowhere.",
       ),
     resetPolicy: ResetPolicy.describe(
       "Pithy's assumption about what a dip below target does to the streak. Stored per cohort so changing the project default never silently re-reads a finished cohort's history.",

@@ -14,7 +14,7 @@ export interface MediaInitOptions {
 }
 
 /**
- * The whole media schema in the app database, in one migration — parameterised rather than chained,
+ * The whole media schema in the app database, in one migration — parameterized rather than chained,
  * because what media creates there is a function of its record store and not of its history.
  *
  * `pithy_media_hashes` is created in **both** modes: dedup is a query workload (an exact `sha256`

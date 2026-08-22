@@ -61,7 +61,7 @@ export const DeviceAuthorization = z
       .number()
       .int()
       .positive()
-      .describe("How long to wait between polls. The dashboard's rate limit, honoured rather than guessed."),
+      .describe("How long to wait between polls. The dashboard's rate limit, honored rather than guessed."),
   })
   .describe("A started device-authorization request: what to show the human, and how to poll for the result.");
 export type DeviceAuthorization = z.infer<typeof DeviceAuthorization>;
@@ -88,7 +88,7 @@ export const CreateConnectionRequest = z
     project: z
       .string()
       .min(1)
-      .describe("The project's stable name, from the root pithy.config.ts. What the connection is labelled with."),
+      .describe("The project's stable name, from the root pithy.config.ts. What the connection is labeled with."),
     environment: z
       .string()
       .min(1)

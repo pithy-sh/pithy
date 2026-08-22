@@ -68,7 +68,7 @@ export interface PaddleCheckoutOptions {
   clientToken: string;
   /** Which of the three modes this project uses. */
   checkout: "overlay" | "inline" | "hosted";
-  /** This deployment's `ENVIRONMENT`, stamped so its own webhooks are recognisable. */
+  /** This deployment's `ENVIRONMENT`, stamped so its own webhooks are recognizable. */
   deployment?: string;
   /** The HTTP seam. Defaults to the runtime's `fetch`. */
   transport?: PaddleHttpFetch;

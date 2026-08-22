@@ -15,10 +15,10 @@ import { truncateToBytes } from "./truncate";
  * headers, to classify a bounce. Everything below the headers is untouched there, so multipart
  * bodies, attachments, and the threading chain are parsed here for the first time.
  *
- * **This module does not sanitise.** `html` comes back exactly as it arrived, and the caller runs it
+ * **This module does not sanitize.** `html` comes back exactly as it arrived, and the caller runs it
  * through `sanitizeHtml` before anything stores or renders it. Keeping the two apart is what lets
  * this file be unit-tested under node against real messages — `HTMLRewriter` is a Workers global —
- * and it keeps the parse honest: a sanitiser that ran here would quietly make the raw bytes and the
+ * and it keeps the parse honest: a sanitizer that ran here would quietly make the raw bytes and the
  * parsed form disagree about what arrived.
  */
 
@@ -26,7 +26,7 @@ import { truncateToBytes } from "./truncate";
 export interface ParsedAttachment {
   /** The filename the sender declared, already stripped of path separators and control characters. */
   filename: string;
-  /** The MIME type the sender declared. Recorded, never honoured by a serve path. */
+  /** The MIME type the sender declared. Recorded, never honored by a serve path. */
   contentType: string;
   /** The decoded bytes. */
   bytes: Uint8Array;

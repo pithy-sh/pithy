@@ -122,7 +122,7 @@ export type SignedWebhookSecret = string | readonly string[];
 
 /** Everything {@link verifySignedWebhook} needs beyond the bytes and the header value. */
 export interface VerifySignedWebhookOptions extends SignedWebhookScheme {
-  /** The signing secret, or every secret still honoured during a rotation. */
+  /** The signing secret, or every secret still honored during a rotation. */
   secret: SignedWebhookSecret;
   /** The clock. Injectable so the freshness window is deterministic in tests rather than wall-clock dependent. */
   now?: Date;

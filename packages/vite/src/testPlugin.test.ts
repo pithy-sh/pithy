@@ -85,7 +85,7 @@ export function mount() {
 `;
 
 /**
- * What the child asserts: the module it imported, serialised, against the module the **build** plugin
+ * What the child asserts: the module it imported, serialized, against the module the **build** plugin
  * renders — passed in as a string by the parent.
  *
  * `JSON.stringify` rather than `toEqual`, on purpose. Key order survives the round trip, so this is a

@@ -415,7 +415,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   //    capabilities ship a prebuilt host that `pithy <capability> provision` deploys, none of them
   //    lives in `apps/`, and until now not one had ever run under `pithy dev` — which is why every
   //    email enqueued locally sat `pending` forever while the UI reported success. A host joins as an
-  //    ordinary member: its own pinned port, label, colour, state entry, and teardown. Discovery is
+  //    ordinary member: its own pinned port, label, color, state entry, and teardown. Discovery is
   //    through the shared registry, so the dev command names no capability.
   //
   //    The project name is settled first, and `requireProjectName` rather than a guess: it is stamped
@@ -719,7 +719,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   };
 
   // Scoped to `l`. A second binding is one more entry here — `r` to restart and `o` to open the app are
-  // the obvious neighbours — and neither is this issue.
+  // the obvious neighbors — and neither is this issue.
   let keys: KeyReader = { active: false, stop: () => {} };
   const startKeys = () => {
     keys = readKeys({

@@ -249,7 +249,7 @@ function isProjectConfig(value: unknown): value is ProjectConfig {
 
 /**
  * Why a `pithy.config.ts` would not import. Three causes an adopter fixes three different ways, plus the
- * honest fourth: the classifier does not recognise this one and will not invent a remedy for it.
+ * honest fourth: the classifier does not recognize this one and will not invent a remedy for it.
  */
 export type ConfigLoadFailureKind = "unresolved-import" | "parse-error" | "threw-on-load" | "unknown";
 
@@ -262,12 +262,12 @@ export interface ConfigLoadFailure {
 }
 
 /**
- * The message, de-coloured, for this classifier's own pattern tests — never for output.
+ * The message, de-colored, for this classifier's own pattern tests — never for output.
  *
  * What may be *said* is core's {@link safeReason}, and only core's: the filter that decides whether a
  * runtime's string is fit to show lived here, in the capability loaders, and in the vite plugin, in three
  * near-verbatim copies, and the hole #223 found in it had to be closed in all three (#228). What stays
- * here is the policy — which causes this classifier recognises, and what it says about each.
+ * here is the policy — which causes this classifier recognizes, and what it says about each.
  */
 function rawMessage(cause: unknown): string {
   return causeMessage(cause) ?? "";

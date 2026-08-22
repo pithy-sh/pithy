@@ -21,7 +21,7 @@ const bin = join(import.meta.dirname, "bin.ts");
  * fails `pithy && next` and fails a CI step. Every group took the same path for the same reason.
  *
  * The complement is the half that must keep working: `pithy nonsense` is a mistake, not a question, and
- * still names what it did not recognise and still exits non-zero. So is `pithy valueOf`, which is not a
+ * still names what it did not recognize and still exits non-zero. So is `pithy valueOf`, which is not a
  * name anybody typed on purpose but is a name every object literal answers to.
  */
 

@@ -108,7 +108,7 @@ function composeFeatureName(headSegment: string, slug: string, tail: string, fix
  *
  * Held to **R2's 63**, the strictest of the three kinds a feature provisions, so one shape is legal for
  * all of them: lowercase, hyphenated, alphanumeric at both ends. A D1 or KV name could be longer, but a
- * feature that provisions a bucket and a database wants them recognisably the same name.
+ * feature that provisions a bucket and a database wants them recognizably the same name.
  */
 export function featureResourceName(identity: FeatureIdentity, binding: string, kind: FeatureResourceKind): string {
   return composeFeatureName(

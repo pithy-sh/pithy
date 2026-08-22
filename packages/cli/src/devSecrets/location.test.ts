@@ -37,7 +37,7 @@ async function project(name: string): Promise<void> {
 }
 
 describe("devSecretsFile", () => {
-  test("is <config>/<project>/secrets.jsonc, the same neighbourhood dev.json already lives in", () => {
+  test("is <config>/<project>/secrets.jsonc, the same neighborhood dev.json already lives in", () => {
     expect(devSecretsFile("replay", options())).toBe(join(config, "replay", DEV_SECRETS_FILE_NAME));
     expect(devSecretsDir("replay", options())).toBe(join(config, "replay"));
   });

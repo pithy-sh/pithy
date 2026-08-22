@@ -9,7 +9,7 @@ import type { AdminRoute } from "./adminRoute";
  * The gate that keeps `GET /control-plane/manifest` honest.
  *
  * A capability declares its admin routes by hand, and a hand-maintained list beside generated
- * behaviour is a list that rots: someone renames a path, changes a `basePath` default, moves an
+ * behavior is a list that rots: someone renames a path, changes a `basePath` default, moves an
  * operation behind a different scope, and the declaration keeps confidently describing the old shape.
  *
  * **That failure is worse than having no manifest at all.** With no manifest a client knows it is

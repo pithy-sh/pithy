@@ -121,7 +121,7 @@ describe("sourcePaths — what the walk never descends into", () => {
  *
  * The rule above is what keeps `.smoke-*`, `.e2e-*` and `.worktrees/` out of every tripwire in this
  * repository, so it stays the default and no caller loses it by someone else's change. But a caller can
- * want the opposite: the licence audit checks that **every shipped file** carries its header, and a
+ * want the opposite: the license audit checks that **every shipped file** carries its header, and a
  * template that grew a `.vscode/`, a `.husky/` or a `.github/` would ship every file in it unchecked. A
  * gate whose reach is narrower than the rule it enforces under-reports in silence, which is worse than
  * one that fails loudly.

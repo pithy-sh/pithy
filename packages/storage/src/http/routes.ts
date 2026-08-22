@@ -170,7 +170,7 @@ export function registerStorageRoutes(options: StorageRoutesOptions): (app: Hono
   const share = options.sharePath ?? "/s";
   const resolve = options.resolveDeps ?? defaultResolveDeps(options.config);
 
-  /** Stream one object, honouring `Range` and `If-None-Match`. Shared by the id route and the share route. */
+  /** Stream one object, honoring `Range` and `If-None-Match`. Shared by the id route and the share route. */
   const stream = async (
     c: Context<PithyHonoEnv>,
     deps: HandlerDeps,

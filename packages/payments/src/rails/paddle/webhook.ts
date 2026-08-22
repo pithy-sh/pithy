@@ -68,7 +68,7 @@ import { PADDLE_SIGNATURE_HEADER, verifyPaddleSignature } from "./signature";
  * ## Recording is not storing whatever arrives
  *
  * Every payload written here goes through {@link recordedPayload}. A destination subscribed to `*` — or a
- * sweep whose query filter was not honoured — carries `client_token.created`, whose `token` Paddle does
+ * sweep whose query filter was not honored — carries `client_token.created`, whose `token` Paddle does
  * not redact. See `recorded.ts` for why the control is an allowlist here rather than a filter upstream.
  */
 

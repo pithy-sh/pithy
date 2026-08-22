@@ -5,7 +5,7 @@ import { describe, expect, test } from "vitest";
 import { htmlToText, isSafeHref, MAX_HTML_BYTES, sanitizeHtml } from "./sanitize";
 
 /**
- * The sanitiser is the one place in this package where a stranger's bytes meet an operator's browser,
+ * The sanitizer is the one place in this package where a stranger's bytes meet an operator's browser,
  * so these tests are written from the attacker's side of the wire: each one is a payload somebody has
  * actually mailed a support inbox, and the assertion is what the dashboard must never render.
  *
@@ -70,7 +70,7 @@ describe("sanitizeHtml keeps only allowlisted attributes", () => {
 
   test("an attribute nobody has heard of is gone too, which is the whole reason the policy is an allowlist", async () => {
     // No denylist contains `onbeforetoggle` or `ontransitionrun` — they were invented after most
-    // sanitisers were written. Nothing here names them either: they are dropped because they are not
+    // sanitizers were written. Nothing here names them either: they are dropped because they are not
     // on the short list of attributes that survive, which is a rule that holds for the handler HTML
     // ships next year as firmly as for the ones it shipped last year.
     const result = await sanitizeHtml(
@@ -144,7 +144,7 @@ describe("sanitizeHtml and href schemes", () => {
 
   test("a character reference naming no character leaves ingest standing", async () => {
     // `&#99999999;` is past U+10FFFF. Decoding it with `String.fromCodePoint` raises a `RangeError`,
-    // which escapes the attribute walk and rejects the whole sanitise — so one crafted href would fail
+    // which escapes the attribute walk and rejects the whole sanitize — so one crafted href would fail
     // ingest for the message carrying it. A browser shows U+FFFD and moves on; so does this.
     await expect(sanitizeHtml(`<a href="&#99999999;">x</a><p>rest of the mail</p>`)).resolves.toContain(
       "rest of the mail",

@@ -80,7 +80,7 @@ import {
  * 400 and tells an unverified caller which requests were well-formed — and on this surface that is a
  * live oracle for the shape of an adopter's support tooling.
  *
- * ## An adopter's own authorisation on the submission route
+ * ## An adopter's own authorization on the submission route
  *
  * **This capability gates `POST {base}/feedback` on a session and same-origin, and on nothing else,
  * permanently.** Writing to support must not be role-gated or it stops being a general intake: the
@@ -125,7 +125,7 @@ import {
  * **A `beforeSubmit` callback in `SupportConfig` was the tempting alternative and is the wrong shape.**
  * The need is not support's — every capability with a write route has it — so solving it once per
  * capability would give an adopter a different mechanism per package, each with its own signature and
- * its own answer to "what is in scope here". A config file is also the wrong home for an authorisation
+ * its own answer to "what is in scope here". A config file is also the wrong home for an authorization
  * decision that wants `c.var`, and a second place to look for the gates on a route is how a Worker ends
  * up with two of them, free to disagree.
  */

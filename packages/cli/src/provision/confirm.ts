@@ -10,7 +10,7 @@ import { isProductionEnv } from "../seed/safety";
  * Provisioning creates real account resources and runs migrations against them. Everything else in the
  * kit that reaches production behind one flag is gated the same way, and for the same reason `--redo`
  * is: `--yes` means "yes, this is not dev", and it is the flag every CI job already passes. It cannot
- * also be what authorises a first write against the environment paying customers are on.
+ * also be what authorizes a first write against the environment paying customers are on.
  *
  * So production takes an exact phrase, **and the phrase names its environment** — a phrase typed for
  * `staging` cannot be pasted into a command targeting `prod`, which one fixed sentence would allow. Who
@@ -41,7 +41,7 @@ export interface ConfirmProvisionOptions {
 }
 
 /**
- * Enforce the gate. Resolves when the run is authorised, throws a `ValidationError` otherwise.
+ * Enforce the gate. Resolves when the run is authorized, throws a `ValidationError` otherwise.
  *
  * - Any environment → requires `--yes`. Provisioning is never the accidental result of a bare command.
  * - Production → requires `--yes` **and** the exact {@link provisionConfirmPhrase}, from `--confirm` or,

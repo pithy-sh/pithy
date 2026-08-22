@@ -302,8 +302,8 @@ export async function ingestInbound(deps: IngestDeps, input: IngestInput): Promi
     }
   }
 
-  // 5. Derive the stored bodies. Sanitisation happens exactly here, once, on the way in — and the
-  // raw form is kept, so a sanitiser improvement can be re-run over what actually arrived.
+  // 5. Derive the stored bodies. Sanitization happens exactly here, once, on the way in — and the
+  // raw form is kept, so a sanitizer improvement can be re-run over what actually arrived.
   const html = parsed.html !== undefined ? await sanitizeHtml(parsed.html) : undefined;
   // Bounded on both paths. `parseInbound` already caps the text part, but the HTML-only fallback is
   // derived here and was not — and an HTML-only message just under `guard.maxRawBytes` renders to a
@@ -351,7 +351,7 @@ export async function ingestInbound(deps: IngestDeps, input: IngestInput): Promi
   }
 
   // 7. The message first, and the ordering is deliberate. Its unique `mimeMessageId` index is the
-  // last line of defence against a redelivery that raced past the read above — and when it fires,
+  // last line of defense against a redelivery that raced past the read above — and when it fires,
   // this insert throws. Writing the thread first would leave that failure behind a thread row with a
   // message count and no messages, showing in the inbox as an empty conversation nobody can act on.
   // With the message first, a lost race writes nothing at all.
@@ -414,7 +414,7 @@ export async function ingestInbound(deps: IngestDeps, input: IngestInput): Promi
       // Attempted regardless of authenticity, because the match is the useful part and every mail
       // client makes it. What authenticity changes is what we *claim*: the verdict is stored on the
       // thread, and the read path withholds the billing history an operator would act on when it is
-      // false. A labelled guess is honest; a guess dressed as a verified fact is account takeover.
+      // false. A labeled guess is honest; a guess dressed as a verified fact is account takeover.
       let userId: string | null = null;
       try {
         userId = await deps.linkSender(parsed.fromAddress);

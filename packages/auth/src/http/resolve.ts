@@ -69,7 +69,7 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
   // single unreadable `auth-github-credentials` rejected the whole `Promise.all` and every magic-link
   // and OTP caller in the deployment got the secrets reader's own refusal instead of a sign-in:
   // measured, `404 secrets/not_found`, message `Secret 'auth-github-credentials' is declared but not
-  // provisioned.` So the old behaviour named the secret loudly and named it to *the browser*, on a
+  // provisioned.` So the old behavior named the secret loudly and named it to *the browser*, on a
   // route that has nothing to do with GitHub. Both halves of that are fixed here.
   //
   // `resolveProvider` catches per provider and hands back a state rather than a rejection, so this

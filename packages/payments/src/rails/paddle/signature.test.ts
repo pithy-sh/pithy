@@ -15,7 +15,7 @@ import {
  * refusal is a signature this file constructed on purpose.
  *
  * Nothing is stubbed. A test that asserted `verifyPaddleSignature` "would" refuse a forgery is the shape
- * pithy-sh/pithy#326 catalogues — a gate structurally incapable of failing. So each refusal below builds
+ * pithy-sh/pithy#326 catalogs — a gate structurally incapable of failing. So each refusal below builds
  * the exact bytes an attacker would send and watches the verifier throw on them.
  */
 
@@ -111,7 +111,7 @@ describe("verifyPaddleSignature", () => {
   });
 
   test("accepts more than one h1, because Paddle may list several during a rotation", async () => {
-    // Documented behaviour: a header may carry several `h1` values while a secret is being rotated. A
+    // Documented behavior: a header may carry several `h1` values while a secret is being rotated. A
     // verifier that read only the first would drop every delivery for the length of the rotation.
     const ts = Math.floor(NOW.getTime() / 1000);
     const real = await signPaddleBody(ts, BODY, SECRET);

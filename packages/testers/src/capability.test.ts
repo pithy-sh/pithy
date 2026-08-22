@@ -144,7 +144,7 @@ describe("configuration is validated at assembly", () => {
   });
 
   test("the reset policy defaults to the pessimistic reading", () => {
-    // Google documents neither behaviour. Being told day fourteen while actually on day three is the
+    // Google documents neither behavior. Being told day fourteen while actually on day three is the
     // expensive mistake; the reverse costs a shrug.
     expect(testers(BASE).testersConfig.cohortDefaults.resetPolicy).toBe("reset");
   });

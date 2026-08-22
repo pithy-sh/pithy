@@ -138,7 +138,7 @@ describe("turnstile({ action }) with a documented test key (Workers runtime)", (
   });
 });
 
-describe("a secret Cloudflare does not recognise (Workers runtime)", () => {
+describe("a secret Cloudflare does not recognize (Workers runtime)", () => {
   test("is reported as a misconfiguration, from the real 400", async () => {
     // Live, because the whole finding is that siteverify answers HTTP 400 here rather than a 200 with
     // a verdict — which is what used to render a wrong secret as a user failing a challenge.

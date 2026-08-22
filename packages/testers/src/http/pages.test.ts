@@ -71,7 +71,7 @@ describe("the store page", () => {
   });
 
   test("escapes the developer-supplied URL in both places it appears", async () => {
-    // Host-allowlisted upstream, so this is defence in depth — but it is a developer-supplied string
+    // Host-allowlisted upstream, so this is defense in depth — but it is a developer-supplied string
     // interpolated into an `href` on a page shown to a stranger.
     const html = await body(
       storePage('https://play.google.com/apps/testing/"><img src=x onerror=alert(1)>', "android"),

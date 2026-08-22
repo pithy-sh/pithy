@@ -71,7 +71,7 @@ describe("the reprocess classification", () => {
     }
   });
 
-  test("a shape nobody recognises is terminal — a shape is not a transient", () => {
+  test("a shape nobody recognizes is terminal — a shape is not a transient", () => {
     expect(classifyWorkflowFault(new InternalError({ detail: "unexpected" }), vectorWorkflowRetry).disposition).toBe(
       "terminal",
     );

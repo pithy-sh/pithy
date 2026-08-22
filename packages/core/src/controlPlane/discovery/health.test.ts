@@ -190,7 +190,7 @@ describe("the produced summary is the declaration, and anything else is unavaila
 
   /**
    * A violated declaration lands on `unavailable` rather than rejecting, and that is the #350 change to
-   * #317's behaviour, made deliberately: the blast radius of a rejection is every other capability's
+   * #317's behavior, made deliberately: the blast radius of a rejection is every other capability's
    * number, and from a caller's side "the producer threw" and "what it produced was not permitted" are
    * one fact — this capability could not say. The shape of a declaration is still a hard failure, at
    * assembly, before any request; what reaches here is data-dependent.

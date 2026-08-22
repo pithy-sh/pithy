@@ -25,7 +25,7 @@ import {
  * real resource. Every test below is really about one of those two directions.
  */
 describe("the reserved namespace", () => {
-  it("is the prefix the reaper recognises, and the head of the reserved project name", () => {
+  it("is the prefix the reaper recognizes, and the head of the reserved project name", () => {
     expect(RESERVED_TEST_PREFIX).toBe("pithy-int-");
     expect(RESERVED_TEST_PROJECT.startsWith(RESERVED_TEST_PREFIX)).toBe(true);
   });
@@ -367,7 +367,7 @@ describe("reapStaleTestResources", () => {
     expect(removed).toEqual([]);
   });
 
-  it("honours a caller-supplied threshold, so a suite can reap aggressively on purpose", async () => {
+  it("honors a caller-supplied threshold, so a suite can reap aggressively on purpose", async () => {
     const { kind, removed } = fakeKind([fresh]);
     await reapStaleTestResources(kind, { now: NOW_, staleAfterMs: 0 });
     expect(removed).toEqual([fresh]);

@@ -231,7 +231,7 @@ describe("rankOf (materialized)", () => {
 });
 
 describe("entriesAround", () => {
-  test("centres the page on the player", async () => {
+  test("centers the page on the player", async () => {
     const s = store();
     for (let i = 1; i <= 9; i++) await s.submit(board(), WINDOW, `u${i}`, 100 - i, T0, true);
     const around = await entriesAround(db(), board(), WINDOW, "u5", 2);

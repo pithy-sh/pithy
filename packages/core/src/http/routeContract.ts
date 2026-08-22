@@ -16,7 +16,7 @@ import type { Context, Hono, Next } from "hono";
  *
  * Identifying a param validator is the awkward part. `@hono/zod-validator` returns the same
  * anonymous closure whatever its target, so there is nothing to inspect: no name, no property, no
- * distinguishing shape. What does differ is *behaviour* — `hono/validator` reads `c.req.param()`
+ * distinguishing shape. What does differ is *behavior* — `hono/validator` reads `c.req.param()`
  * for the `param` target and nothing else does. So each middleware is invoked once against a probe
  * context that records which accessor it touched. It is a real call, which is why only middleware
  * are probed (never the terminal handler) and why every throw is swallowed: a guard meeting an

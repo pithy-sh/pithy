@@ -337,7 +337,7 @@ describe("the provider marks", () => {
     return svg as SVGElement;
   }
 
-  /** Every colour any shape in `svg` is filled with. */
+  /** Every color any shape in `svg` is filled with. */
   function fills(svg: SVGElement): string[] {
     return [...svg.querySelectorAll("path, circle")]
       .map((shape) => shape.getAttribute("fill"))
@@ -351,9 +351,9 @@ describe("the provider marks", () => {
     }
   });
 
-  test("a mark whose owner forbids recolouring carries its own colours, in both themes", () => {
+  test("a mark whose owner forbids recoloring carries its own colors, in both themes", () => {
     const container = mount(<SignInScreen auth={ALL_PROVIDERS} fetch={recorder().fetch} origin="https://x" />);
-    // Google's four-colour "G". Their brand terms forbid recolouring it, so no part of it may inherit.
+    // Google's four-color "G". Their brand terms forbid recoloring it, so no part of it may inherit.
     const google = fills(mark(container, "Google"));
     expect(google).toHaveLength(4);
     expect(google.every((value) => /^#[0-9A-Fa-f]{6}$/.test(value))).toBe(true);
@@ -364,7 +364,7 @@ describe("the provider marks", () => {
     expect(facebook).not.toContain("currentColor");
   });
 
-  test("a mark whose owner permits the two ink colours takes the page's, so it follows the theme", () => {
+  test("a mark whose owner permits the two ink colors takes the page's, so it follows the theme", () => {
     const container = mount(<SignInScreen auth={ALL_PROVIDERS} fetch={recorder().fetch} origin="https://x" />);
     expect(fills(mark(container, "GitHub"))).toEqual(["currentColor"]);
     expect(fills(mark(container, "Apple"))).toEqual(["currentColor"]);

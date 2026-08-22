@@ -347,7 +347,7 @@ describe("D1's bound-parameter cap", () => {
    * chunking at all.
    *
    * **Serial setup is the fast path, which was measured rather than assumed.** Replacing the `put` loop
-   * with `Promise.all` — the obvious optimisation — made it *slower*: 5392ms, 5588ms, 6190ms across three
+   * with `Promise.all` — the obvious optimization — made it *slower*: 5392ms, 5588ms, 6190ms across three
    * idle runs, failing every time. 150 concurrent writes contend inside one workerd more than they
    * overlap. The loop stays.
    *

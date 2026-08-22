@@ -290,11 +290,11 @@ describe("what the submitter said it was about", () => {
     }
   });
 
-  test("a category on a follow-up is refused rather than ignored or honoured", async () => {
+  test("a category on a follow-up is refused rather than ignored or honored", async () => {
     const first = await submit({ declaredCategory: "billing" });
     clock = T0 + 60_000;
 
-    // Ignoring it is a chooser that does nothing, which is the whole defect this closes. Honouring it
+    // Ignoring it is a chooser that does nothing, which is the whole defect this closes. Honoring it
     // would let a later message rewrite the premise the conversation was opened on, the way `subject`
     // deliberately cannot. So it is refused, and the claim the thread was filed under stands.
     expect(await codeOf(() => submit({ threadId: first.threadId, declaredCategory: "bug_report" }))).toBe(
@@ -481,12 +481,12 @@ describe("attachments on a submission", () => {
   const png = { filename: "shot.png", contentType: "image/png", bytes: new Uint8Array([1, 2, 3, 4]) };
 
   /**
-   * A filename carrying both tricks the sanitiser exists for: path separators, and a right-to-left
+   * A filename carrying both tricks the sanitizer exists for: path separators, and a right-to-left
    * override that renders the rest backwards so `.exe` reads as `.png`.
    *
    * **Built from an escape rather than written literally.** A raw U+202E is invisible in a diff — it
    * reorders the source around it — so `sourceFiles.test.ts` refuses one anywhere this repository
-   * commits. A test for the bidi defence that smuggled a bidi character into the codebase would be
+   * commits. A test for the bidi defense that smuggled a bidi character into the codebase would be
    * the joke writing itself.
    */
   const HOSTILE_FILENAME = "../../etc/shot\u202Egnp.exe";
@@ -503,7 +503,7 @@ describe("attachments on a submission", () => {
   });
 
   test("the bytes are stored as octet-stream whatever the client declared", async () => {
-    // R2 echoes the stored type back on a presigned GET, and a browser renders `text/html`. Honouring
+    // R2 echoes the stored type back on a presigned GET, and a browser renders `text/html`. Honoring
     // a declared type would make every attachment a stored-XSS delivery mechanism.
     await submit({ attachments: [png] }, { bucket: env.SUPPORT_BUCKET });
     const row = await db.selectFrom(SUPPORT_ATTACHMENTS_TABLE).selectAll().executeTakeFirstOrThrow();
@@ -532,7 +532,7 @@ describe("attachments on a submission", () => {
     expect(await db.selectFrom(SUPPORT_ATTACHMENTS_TABLE).selectAll().execute()).toEqual([]);
   });
 
-  test("a declared filename is sanitised on the way in, exactly as the mail path sanitises one", async () => {
+  test("a declared filename is sanitized on the way in, exactly as the mail path sanitizes one", async () => {
     // `SupportAttachment.filename` states the column holds a name "after stripping path separators and
     // control characters". Two producers of one column must guarantee the same thing about it — and
     // this channel is the more attacker-friendly of the two, because the name is a JSON string a

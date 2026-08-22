@@ -16,7 +16,7 @@ import { mintDeclaredSecrets, mintedBeforeFailure, mintReportLines, storeSecretM
  *
  * Every other property here is observable in what was dispatched. This one is not: a value minted
  * before absence is known, handed to a Workflow, and discarded unread leaves no trace in any request —
- * which is exactly why it survived a review. `mintSecretValue` keeps its real behaviour (the entropy
+ * which is exactly why it survived a review. `mintSecretValue` keeps its real behavior (the entropy
  * assertions elsewhere in this file still hold); the wrapper only counts.
  */
 const mints = vi.hoisted(() => ({ count: 0 }));
@@ -126,7 +126,7 @@ describe("storeSecretMinter", () => {
   });
 
   /**
-   * Defence in depth. The caller already asks {@link isMintableSecret} first, so reaching this is a bug —
+   * Defense in depth. The caller already asks {@link isMintableSecret} first, so reaching this is a bug —
    * and a bug that would put a random string where a real credential was meant, authenticating against
    * nothing. It refuses rather than inventing.
    */
@@ -158,10 +158,10 @@ function recordingDispatcher() {
 }
 
 /**
- * **The deployed managers, one per environment, modelled to their contract and no further.**
+ * **The deployed managers, one per environment, modeled to their contract and no further.**
  *
  * Each environment's manager owns a separate store keyed by a separate master key, and the CLI can
- * neither read one nor coordinate two. So the only two behaviours that matter here are the two the
+ * neither read one nor coordinate two. So the only two behaviors that matter here are the two the
  * manager guarantees, and each is pinned in the worker runtime by `writeSecret.workers.test.ts` rather
  * than assumed here: `create` refuses a name that is already present, and `probe` reports presence
  * without writing anything.

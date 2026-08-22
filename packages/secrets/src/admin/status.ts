@@ -398,7 +398,7 @@ export async function readSecretStatus(
     const reference = lastRotatedAt ?? row?.createdAt ?? null;
     // **Left unguarded on purpose, and this is the note saying so.** `#387` was filed naming this parse as
     // a third site and the claim was withdrawn on checking. It runs over registry declarations
-    // `defineSecretRegistry` already refused at define time, plus facts normalised above — so a throw here
+    // `defineSecretRegistry` already refused at define time, plus facts normalized above — so a throw here
     // is an author error in a registry, not a bad row in a database. Guarding it would convert a defect
     // that should be loud into a secret quietly reporting as unreadable.
     const status = SecretStatus.parse({
@@ -408,7 +408,7 @@ export async function readSecretStatus(
       rotatable: entry.rotatable,
       // Null rather than absent, and the declaration verbatim. `defineSecretRegistry` has already refused
       // a malformed one, so this is a copy of something checked at define time rather than a second
-      // judgement about it — and a secret that declares nothing says so, instead of being reported as the
+      // judgment about it — and a secret that declares nothing says so, instead of being reported as the
       // kind a client would guess.
       rotation: entry.rotation ?? null,
       keyVersion: row?.keyVersion ?? null,
@@ -450,7 +450,7 @@ export async function readSecretRotations(
     .execute();
   return rows.map((row): SecretRotationEntry => {
     // The `catch` takes no binding. A `ZodError` from this parse carries the offending column value as its
-    // issue `input`, and the row it came from is one whose neighbouring columns are `error_message` and
+    // issue `input`, and the row it came from is one whose neighboring columns are `error_message` and
     // `metadata_snapshot` — free text written at a failure site. Nothing derived from the rejection may
     // travel, and with nothing in scope there is nothing that could.
     try {

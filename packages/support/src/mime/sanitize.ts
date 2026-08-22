@@ -4,11 +4,11 @@
 import { truncateToBytes } from "./truncate";
 
 /**
- * HTML sanitisation for inbound mail, through the runtime's own streaming parser.
+ * HTML sanitization for inbound mail, through the runtime's own streaming parser.
  *
  * This capability ingests attacker-controlled content and a dashboard renders it. That is the
- * highest-risk sentence in the package, so the sanitiser is built on `HTMLRewriter` — workerd's real
- * HTML parser — rather than on regular expressions. A regex sanitiser is a list of the tricks its
+ * highest-risk sentence in the package, so the sanitizer is built on `HTMLRewriter` — workerd's real
+ * HTML parser — rather than on regular expressions. A regex sanitizer is a list of the tricks its
  * author thought of; a parser-based one strips what the browser will actually see, which is the only
  * question that matters. It is also why this file has no dependencies: the safest HTML parser
  * available here already ships in the runtime.
@@ -69,7 +69,7 @@ const ALLOWED_ATTRIBUTES = new Set(["href", "alt", "title", "colspan", "rowspan"
 /** URL schemes a surviving `href` may use. Everything else — `javascript:`, `data:`, `vbscript:` — is dropped. */
 const ALLOWED_SCHEMES = ["http:", "https:", "mailto:", "tel:"];
 
-/** The largest sanitised body kept, **in bytes**. A dashboard rendering 5 MB of markup has already lost. */
+/** The largest sanitized body kept, **in bytes**. A dashboard rendering 5 MB of markup has already lost. */
 export const MAX_HTML_BYTES = 512 * 1024;
 
 /**
@@ -131,7 +131,7 @@ export function isSafeHref(value: string): boolean {
 }
 
 /**
- * Sanitise an HTML body for storage and later rendering.
+ * Sanitize an HTML body for storage and later rendering.
  *
  * **Remote images are stripped, not merely sandboxed.** An `<img src="https://…">` in a support
  * message is a read receipt: it tells the sender the exact moment somebody opened their mail and

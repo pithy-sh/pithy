@@ -8,7 +8,7 @@ import { z } from "zod";
 export const HoldStatus = z
   .enum(["open", "released", "captured"])
   .describe(
-    "A hold's state: `open` (funds reserved), `released` (cancelled, funds returned), `captured` (finalized, funds taken).",
+    "A hold's state: `open` (funds reserved), `released` (canceled, funds returned), `captured` (finalized, funds taken).",
   );
 export type HoldStatus = z.infer<typeof HoldStatus>;
 

@@ -35,7 +35,7 @@ leaderboard({
 
 The board set lives in `pithy.config.ts`, reviewed and deployed like the rest of your app. There is no board admin screen and no board table to seed.
 
-What the database records is only what config cannot: the entries, and a fingerprint of each board's `store`, `direction`, `aggregation`, and `window`. Those are immutable once a board has taken an entry, on every vendor surveyed and here — each one is the lens stored scores are read through, so changing one reinterprets data rather than reconfiguring behaviour. Flip `direction` and last place becomes first. Change one and the next submission fails with `leaderboard/board_immutable` instead of silently corrupting the board.
+What the database records is only what config cannot: the entries, and a fingerprint of each board's `store`, `direction`, `aggregation`, and `window`. Those are immutable once a board has taken an entry, on every vendor surveyed and here — each one is the lens stored scores are read through, so changing one reinterprets data rather than reconfiguring behavior. Flip `direction` and last place becomes first. Change one and the next submission fails with `leaderboard/board_immutable` instead of silently corrupting the board.
 
 **A board definition is not migratable.** Changing one of those fields means a new board key. The old board keeps its scores.
 

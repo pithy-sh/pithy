@@ -241,7 +241,7 @@ export const payments_0001_purchases: Migration = {
       .addColumn("startedAt", "integer", (c) => c.notNull())
       .addColumn("finishedAt", "integer", (c) => c.notNull())
       .addColumn("environment", "text", (c) => c.notNull())
-      // Null is the scheduled behaviour — every enabled rail. A value means somebody narrowed the pass.
+      // Null is the scheduled behavior — every enabled rail. A value means somebody narrowed the pass.
       .addColumn("rail", "text")
       .addColumn("pages", "integer", (c) => c.notNull().defaultTo(0))
       .addColumn("scanned", "integer", (c) => c.notNull().defaultTo(0))

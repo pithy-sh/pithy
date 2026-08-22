@@ -61,7 +61,7 @@ export interface DeployProjectOptions {
    * Test seam: probe a declared domain for the version just shipped. Defaults to the real HTTP probe.
    *
    * Injected rather than reached for, so the deploy tests never touch the network and the retry/backoff
-   * behaviour is exercised without waiting for it.
+   * behavior is exercised without waiting for it.
    */
   verifyDeploy?: VerifyDeploy;
 }
@@ -344,7 +344,7 @@ export function summarizeDeploy(deploy: WorkerDeploy): string {
   if (!deploy.verification || deploy.verification === "verified") return line;
   const note = deploy.verificationDetail ?? "";
   // Red for the two that fail the command, plain for the two that do not — one rule, `isDeployFailure`,
-  // so the colour and the exit code can never disagree about which is which.
+  // so the color and the exit code can never disagree about which is which.
   return isDeployFailure(deploy.verification) ? `${line}\n  ${red(note)}` : `${line}\n  ${note}`;
 }
 

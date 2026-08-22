@@ -924,7 +924,7 @@ describe("cloudflare credentials", () => {
       }),
     );
     // The whole report stays terse — the split earns its one line, and nothing else is dragged out with
-    // it. `Project name:` is the neighbouring verbose-only block, and it is still absent.
+    // it. `Project name:` is the neighboring verbose-only block, and it is still absent.
     expect(renderDoctorText(report, "/home/u")).toBe(
       [
         "",

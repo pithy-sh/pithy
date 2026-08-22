@@ -45,7 +45,7 @@ export const TestersMember = z
       "When the first invitation was sent. Every member has one; it is how they got here.",
     ),
     acceptedAt: SQLiteDate.nullable().describe(
-      "When they answered the first email saying they will test, or null. Consent, not enrolment: it is a tap on a link, needs no account, and proves nothing about installing or opting in at the store — that is `optedInAt`.",
+      "When they answered the first email saying they will test, or null. Consent, not enrollment: it is a tap on a link, needs no account, and proves nothing about installing or opting in at the store — that is `optedInAt`.",
     ),
     optedInAt: SQLiteDate.nullable().describe(
       "When they followed Pithy's confirmation link, or null. PITHY'S ESTIMATE of their opt-in date — it records that they clicked our link, not that Google recorded an opt-in. The two can differ and no API exposes Google's.",

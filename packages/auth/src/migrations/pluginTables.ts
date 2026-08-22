@@ -53,7 +53,7 @@ export function authSchemaOptions(plugins: readonly BetterAuthPlugin[]): BetterA
     rateLimit: { enabled: true, storage: "database", modelName: "pithyAuthRateLimit" },
     plugins: [
       // The kit's own four, from the one definition the live instance also composes. The callbacks are
-      // never invoked here — a schema is a shape, and `getSchema` reads `plugin.schema`, not behaviour.
+      // never invoked here — a schema is a shape, and `getSchema` reads `plugin.schema`, not behavior.
       ...kitPlugins({
         verificationExpiresIn: 300,
         otpLength: 6,
@@ -141,7 +141,7 @@ const KIT_TABLE_NAMES: readonly string[] = Object.keys(authTables);
  *
  * **Every added column is nullable, deliberately.** SQLite refuses `ALTER TABLE … ADD COLUMN … NOT NULL`
  * without a constant default, and the table it is being added to is a live one that already has rows —
- * so a plugin's `required` on a *new* column of an *existing* table cannot be honoured by any migration,
+ * so a plugin's `required` on a *new* column of an *existing* table cannot be honored by any migration,
  * whatever it claims. Better Auth writes the value on every insert it makes, so the constraint is
  * enforced where the plugin enforces it; the column simply does not also declare it. A column of a table
  * the plugin creates itself is `NOT NULL` normally — there are no rows to contradict it.

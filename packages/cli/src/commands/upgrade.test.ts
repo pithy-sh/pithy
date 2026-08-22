@@ -166,7 +166,7 @@ describe("applied rendering", () => {
 });
 
 describe("worker grouping", () => {
-  test("every worker gets a labelled block, its lines indented beneath", () => {
+  test("every worker gets a labeled block, its lines indented beneath", () => {
     const collab: ReconcilePlan = {
       worker: "collab",
       deployedAs: "acme-collab",
@@ -246,7 +246,7 @@ describe("runUpgrade — fan-out over apps/", () => {
     { name: "collab", dir: collabDir, capabilities: composes("auth") },
   ];
 
-  /** Resolve the fixture Workers without importing a `pithy.config.ts`, honouring `--worker`. */
+  /** Resolve the fixture Workers without importing a `pithy.config.ts`, honoring `--worker`. */
   async function resolve({ worker }: { projectDir: string; worker?: string }): Promise<UpgradeWorker[]> {
     const all = workers();
     return worker === undefined ? all : all.filter((candidate) => candidate.name === worker);

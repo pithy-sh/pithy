@@ -6,10 +6,10 @@ import { z } from "zod";
 /**
  * How urgent an operational notice is, and how that urgency is said out loud.
  *
- * **Severity is words first and colour second, and the order matters.** A notice is read in an inbox
- * list before it is opened, in a plain-text client that has no colours at all, and by people who cannot
+ * **Severity is words first and color second, and the order matters.** A notice is read in an inbox
+ * list before it is opened, in a plain-text client that has no colors at all, and by people who cannot
  * tell the red one from the amber one. So each level owns a *label* — which goes in the subject line,
- * in the body, and in the text part — and a colour that only ever reinforces it. A design where the
+ * in the body, and in the text part — and a color that only ever reinforces it. A design where the
  * only difference between "a release is out" and "your sign-in is broken" is a hex value has flattened
  * them, and a reader who cannot see the difference learns to ignore both.
  *
@@ -24,22 +24,22 @@ export const NoticeSeverity = z
   );
 export type NoticeSeverity = z.output<typeof NoticeSeverity>;
 
-/** One severity's presentation: the word it is called, and the colour that reinforces it in each mode. */
+/** One severity's presentation: the word it is called, and the color that reinforces it in each mode. */
 interface SeverityPresentation {
   /** The word in the subject line, the body, and the text part. */
   label: string;
-  /** The light-mode colour, applied inline. Contrast-checked against the card white every preset uses. */
+  /** The light-mode color, applied inline. Contrast-checked against the card white every preset uses. */
   light: string;
-  /** The dark-mode colour, swapped in by class under `prefers-color-scheme: dark`. */
+  /** The dark-mode color, swapped in by class under `prefers-color-scheme: dark`. */
   dark: string;
 }
 
 /**
  * The one place a severity's presentation is decided.
  *
- * Colours are fixed rather than themed, deliberately: an accent belongs to a brand, but "this is on
+ * Colors are fixed rather than themed, deliberately: an accent belongs to a brand, but "this is on
  * fire" belongs to the reader. A project whose accent is red would otherwise render a routine notice
- * in the colour of an emergency. Both ramps are contrast-checked — the light values against the white
+ * in the color of an emergency. Both ramps are contrast-checked — the light values against the white
  * card every preset ships, the dark values against the near-black one.
  */
 const PRESENTATION = {
@@ -67,17 +67,17 @@ export function severityLabel(severity: unknown): string {
   return presentationOf(severity).label;
 }
 
-/** The `{{severityColor severity}}` helper: the light-mode colour, applied inline like every other one. */
+/** The `{{severityColor severity}}` helper: the light-mode color, applied inline like every other one. */
 export function severityColor(severity: unknown): string {
   return presentationOf(severity).light;
 }
 
 /**
- * The dark-mode overrides for the severity colours, generated from the same table.
+ * The dark-mode overrides for the severity colors, generated from the same table.
  *
  * The shared head partial carries the light values inline and swaps these in under
  * `prefers-color-scheme: dark`, exactly as it does for the theme's own palette. Generated rather than
- * written out so a colour changed here cannot leave dark mode showing the old one.
+ * written out so a color changed here cannot leave dark mode showing the old one.
  */
 export const severityDarkModeCss: string = Object.entries(PRESENTATION)
   .map(([name, { dark }]) => `    .sev-${name} { color: ${dark} !important; }`)

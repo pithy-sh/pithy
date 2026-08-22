@@ -410,7 +410,7 @@ describe("SystemSecretsStore and a row that will not open (#384)", () => {
    *
    * The guard's `catch` takes no binding (#350), so there is no error object in scope to attach, log, or
    * fold into a `detail`. What that buys is checked here against the row's real ciphertext and IV, read
-   * straight out of D1: neither appears in the serialised batch, in the serialised error, or on any console
+   * straight out of D1: neither appears in the serialized batch, in the serialized error, or on any console
    * channel — and the error carries no `cause`, because there was nothing to carry.
    */
   test("no ciphertext, no IV, and no decryption error text reaches the value, the error, or a console", async () => {

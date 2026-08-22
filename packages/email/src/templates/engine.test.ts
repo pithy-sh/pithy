@@ -260,10 +260,10 @@ describe("the testers envelope refuses to render supplied markup", () => {
 
   test("a subject passes through unescaped, which is correct — and is why the caller sanitizes it", async () => {
     // Subjects are precompiled with escaping off, deliberately: a subject is plain text in an inbox,
-    // not an HTML context, so `&lt;script&gt;` there would be a rendering bug rather than a defence.
+    // not an HTML context, so `&lt;script&gt;` there would be a rendering bug rather than a defense.
     // The real threat in a subject is header injection, and it is answered upstream — `sanitizeSubject`
     // in `@pithy-sh/testers` strips CR, LF, and every other control character before a supplied subject
-    // ever reaches this renderer. This test pins the division of labour so neither side assumes the
+    // ever reaches this renderer. This test pins the division of labor so neither side assumes the
     // other is doing the work.
     const result = await renderEmail(
       "testerNudge",
@@ -274,7 +274,7 @@ describe("the testers envelope refuses to render supplied markup", () => {
   });
 
   test("the heading is escaped as well, even though a caller cannot set it", async () => {
-    // Defence in depth: the capability owns the heading today, and this test is what keeps a future
+    // Defense in depth: the capability owns the heading today, and this test is what keeps a future
     // change that opened it up from silently becoming an injection.
     const result = await renderEmail(
       "testerNudge",
@@ -320,7 +320,7 @@ describe("the testers envelope refuses to render supplied markup", () => {
  * The operational notice is the template an adopter sends about their *own* infrastructure, and the
  * property that makes it worth sending is that its urgency survives the trip. These tests hold that
  * severity is carried in words — into the subject line, where it is read before the message is opened —
- * rather than in a colour a plain-text client, a monochrome screen or a colour-blind reader never sees.
+ * rather than in a color a plain-text client, a monochrome screen or a color-blind reader never sees.
  */
 describe("the operational notice expresses severity rather than flattening it", () => {
   const notice = {
@@ -343,7 +343,7 @@ describe("the operational notice expresses severity rather than flattening it", 
     expect(new Set(subjects).size).toBe(3);
   });
 
-  test("both MIME parts say the level in words, and the HTML colours it as well as says it", async () => {
+  test("both MIME parts say the level in words, and the HTML colors it as well as says it", async () => {
     const critical = await renderEmail("operationalNotice", { ...notice, severity: "critical" }, theme);
     const info = await renderEmail("operationalNotice", { ...notice, severity: "info" }, theme);
 
@@ -351,7 +351,7 @@ describe("the operational notice expresses severity rather than flattening it", 
     expect(critical.html).toContain("Critical");
     expect(info.text).toContain("Notice —");
 
-    // The colour reinforces the word; it never replaces it. Different levels, different hues, and a
+    // The color reinforces the word; it never replaces it. Different levels, different hues, and a
     // dark-mode hook the shared head partial can swap.
     expect(critical.html).toContain('class="sev-critical"');
     expect(info.html).toContain('class="sev-info"');

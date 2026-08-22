@@ -94,7 +94,7 @@ describe.skipIf(!creds.hasCreds || !creds.r2)("ObjectStore — LIVE against real
         const put = await fetch(url, { method: "PUT", body });
         expect(put.ok).toBe(true);
         // R2 answers a part PUT with a *quoted* ETag. Reported verbatim, quotes included — the seam
-        // never normalises it, and R2 compares it byte for byte at completion.
+        // never normalizes it, and R2 compares it byte for byte at completion.
         const etag = put.headers.get("etag") ?? "";
         expect(etag).toMatch(/^"[0-9a-f]{32}"$/);
         reported.push({ partNumber: part.partNumber, etag });
@@ -147,7 +147,7 @@ describe.skipIf(!creds.hasCreds || !creds.r2)("ObjectStore — LIVE against real
     });
   });
 
-  test("serves ranges and honours conditional reads exactly as R2 defines them", async () => {
+  test("serves ranges and honors conditional reads exactly as R2 defines them", async () => {
     await withLiveBucket(creds, async ({ store }) => {
       const key = deriveObjectKey();
       const put = await fetch(await store.presignPut(key, "text/plain", BODY.byteLength), {

@@ -44,7 +44,7 @@ describe("generateDevVars", () => {
     }
   });
 
-  test("the header names .dev.vars.local, so the mechanism is discoverable from the artefact", async () => {
+  test("the header names .dev.vars.local, so the mechanism is discoverable from the artifact", async () => {
     // An adopter who is going to edit anything edits the file in front of them. The supported answer has
     // to be in it, not in a doc they have not read.
     const board = await worker("board");

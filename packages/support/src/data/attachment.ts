@@ -34,7 +34,7 @@ export const SupportAttachment = z
       ),
     contentType: z
       .string()
-      .describe("The MIME type as the sender declared it. Recorded, never honoured — a serve path derives its own."),
+      .describe("The MIME type as the sender declared it. Recorded, never honored — a serve path derives its own."),
     size: z
       .number()
       .int()

@@ -66,7 +66,7 @@ export interface HealthInput {
 export interface HealthResult {
   /** 0–100, or null for a tester we cannot observe. Null is not zero — absence of evidence is not evidence of risk. */
   readonly health: number | null;
-  /** Why the score is null when it is null. A UI must render `unobservable` grey, never red. */
+  /** Why the score is null when it is null. A UI must render `unobservable` gray, never red. */
   readonly basis: "scored" | "unobservable" | "unreachable";
   /** The band the score falls in, which selects the survival prior. */
   readonly riskBand: RiskBand;
@@ -166,8 +166,8 @@ export function scoreHealth(input: HealthInput, penalties: HealthPenalties, cred
     factors.push({ code: band.code, points: -penalties[band.key], reason: band.reason });
   }
 
-  // Gated on the cohort declaring a target platform. An `ios` cohort penalising a missing Android
-  // device, or a cohort with no platform at all penalising everybody, would both be noise.
+  // Gated on the cohort declaring a target platform. An `ios` cohort penalizing a missing Android
+  // device, or a cohort with no platform at all penalizing everybody, would both be noise.
   if (input.targetPlatform !== null && !input.hasTargetPlatformDevice) {
     factors.push({
       code: "no_target_platform_device",

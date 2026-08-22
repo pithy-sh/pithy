@@ -5,10 +5,10 @@ import { z } from "zod";
 import { cloudflareRequest, decodeResponse, isNotFoundError } from "../client/errors";
 import { CloudflareManager } from "../client/manager";
 
-/** The distance metric an index scores nearest neighbours with. Fixed at creation — it cannot be changed later. */
+/** The distance metric an index scores nearest neighbors with. Fixed at creation — it cannot be changed later. */
 export const VectorizeMetric = z
   .enum(["cosine", "euclidean", "dot-product"])
-  .describe("The distance metric a Vectorize index scores nearest neighbours with. Fixed at index creation.");
+  .describe("The distance metric a Vectorize index scores nearest neighbors with. Fixed at index creation.");
 export type VectorizeMetric = z.infer<typeof VectorizeMetric>;
 
 /**
@@ -81,7 +81,7 @@ export type VectorizeMetadataIndex = z.output<typeof VectorizeMetadataIndex>;
 
 /**
  * How a new index is shaped: either an explicit dimensions/metric pair, or a Cloudflare embedding preset
- * that resolves to one. Both are modelled because a caller that owns its embedding model wants the explicit
+ * that resolves to one. Both are modeled because a caller that owns its embedding model wants the explicit
  * pair, while a caller using a stock Cloudflare model is better served by the preset — naming the model once
  * instead of restating its dimensions and risking a mismatch.
  */

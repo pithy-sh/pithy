@@ -185,7 +185,7 @@ const TesterNudgePayload = z
       .string()
       .optional()
       .describe(
-        "The tester's own way out, rendered as a footer link. Transactional mail carries no unsubscribe by default, but a testing programme asks one person for something repeatedly over a fortnight, so someone being chased must be able to stop it.",
+        "The tester's own way out, rendered as a footer link. Transactional mail carries no unsubscribe by default, but a testing program asks one person for something repeatedly over a fortnight, so someone being chased must be able to stop it.",
       ),
     optOutLabel: z
       .string()
@@ -208,7 +208,7 @@ const PasswordChangedPayload = z
   })
   .describe("Inputs for the account-credential-changed security notice.");
 
-/** One labelled fact in an operational notice — what makes the notice specific rather than a mood. */
+/** One labeled fact in an operational notice — what makes the notice specific rather than a mood. */
 const OperationalNoticeFact = z
   .object({
     label: z.string().describe("What this fact is: `Environment`, `Last rotated`, `Version`, `Owner`."),
@@ -246,7 +246,7 @@ export const OperationalNoticePayload = z
     thing: z
       .string()
       .describe(
-        "What it happened to, named the way an operator would recognise it: `STRIPE_SECRET_KEY`, `@pithy-sh/auth`, `acme-prod-db`. A notice that does not name its subject cannot be acted on.",
+        "What it happened to, named the way an operator would recognize it: `STRIPE_SECRET_KEY`, `@pithy-sh/auth`, `acme-prod-db`. A notice that does not name its subject cannot be acted on.",
       ),
     when: z
       .string()
@@ -427,7 +427,7 @@ export const templates: Record<string, EmailTemplate> = {
     id: "testerNudge",
     category: "transactional",
     // Elective, though the category is transactional — the two axes genuinely disagree here and this is
-    // the template that proves they are separate. A testing programme chases one person repeatedly over
+    // the template that proves they are separate. A testing program chases one person repeatedly over
     // a fortnight, so somebody who said "stop emailing me" means this mail, and it is the mail an
     // unsubscribe must stop. Nothing is locked by withholding it: a tester who never confirms simply
     // lapses, which is already a state the cohort handles.
@@ -468,9 +468,9 @@ export const templates: Record<string, EmailTemplate> = {
     // the width of a phone.
     subject: "{{severityLabel severity}}: {{summary}}",
     html: layout(
-      // The severity renders as a word in colour, not as a colour. `sev-{{severity}}` is the dark-mode
+      // The severity renders as a word in color, not as a color. `sev-{{severity}}` is the dark-mode
       // hook (the class is safe to interpolate: the value is enum-constrained before it reaches here),
-      // and `severityColor` supplies the light value inline, the way every other colour in this shell
+      // and `severityColor` supplies the light value inline, the way every other color in this shell
       // is applied.
       `<p class="sev-{{severity}}" style="margin:0 0 10px; font-size:12px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:{{severityColor severity}}">{{severityLabel severity}}</p>${heading("{{summary}}")}<p class="t-subtle" style="margin:0 0 20px; font-size:13px; color:{{theme.light.textSubtle}}">{{thing}} &middot; {{when}}</p>{{#if detail}}<p style="margin:0 0 16px">{{detail}}</p>{{/if}}{{#if facts.length}}<table cellpadding="0" cellspacing="0" role="none" style="width:100%; margin:0 0 8px">{{#each facts}}<tr><td class="t-subtle" style="padding:4px 16px 4px 0; font-size:13px; color:{{../theme.light.textSubtle}}; vertical-align:top">{{label}}</td><td class="t-ink" style="padding:4px 0; font-size:13px; color:{{../theme.light.text}}; vertical-align:top">{{value}}</td></tr>{{/each}}</table>{{/if}}{{#if actionUrl}}${button("actionUrl", "{{actionLabel}}")}{{/if}}`,
     ),

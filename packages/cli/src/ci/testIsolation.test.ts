@@ -23,7 +23,7 @@ import { readSource, sourcePaths } from "./sourceFiles";
  * **It loads the configs; it does not read them.** A source scan would have passed the exact bug #198
  * records: the guard was added as a *second* `env:` key on one object literal, which JavaScript discards
  * without a word, so the text said covered and the run was not. This imports each config and inspects
- * the object vitest will actually be handed, which is the only artefact that cannot lie about what took
+ * the object vitest will actually be handed, which is the only artifact that cannot lie about what took
  * effect. A guard that is present but inert fails here exactly like a missing one — and that is worth
  * more than the missing case, because an inert guard reads as covered to everyone who checks.
  *
@@ -32,7 +32,7 @@ import { readSource, sourcePaths } from "./sourceFiles";
  * accepted from either level and `setupFiles` is required on the project itself. Getting that backwards
  * is how a config acquires a guard that never runs.
  *
- * **Workers projects are exempt, and the exemption is structural rather than a judgement.** workerd does
+ * **Workers projects are exempt, and the exemption is structural rather than a judgment.** workerd does
  * not inherit the host environment, so there is no ambient credential to blank and no real home
  * directory to resolve. A guard there would be inert by construction, which is the thing this file
  * exists to refuse. A test under `@cloudflare/vitest-plugin` sees Vite's `import.meta.env` shims and

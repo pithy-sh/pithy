@@ -202,7 +202,7 @@ Every rail's vocabulary maps into nine normalized statuses. Each answers two que
 | `revoked` | no | no | The store took it back. |
 | `paused` | no | yes | A subscription the user suspended. `resumesAt` says when it comes back. |
 
-**`expired` and `never_paid` are the pair to read twice.** They look alike — both are over, neither grants — and they differ on the only question a balance cares about. A bank debit that bounced (`checkout.session.async_payment_failed`), a Stripe subscription abandoned at `incomplete_expired`, a Play deferred purchase cancelled before payment: all three end with no charge, and reading them as `expired` credits a 100-coin pack for money that never arrived — with no clawback ever to follow, because there is nothing to reverse. Apple maps nothing to `never_paid`: StoreKit issues no transaction until the money moves.
+**`expired` and `never_paid` are the pair to read twice.** They look alike — both are over, neither grants — and they differ on the only question a balance cares about. A bank debit that bounced (`checkout.session.async_payment_failed`), a Stripe subscription abandoned at `incomplete_expired`, a Play deferred purchase canceled before payment: all three end with no charge, and reading them as `expired` credits a 100-coin pack for money that never arrived — with no clawback ever to follow, because there is nothing to reverse. Apple maps nothing to `never_paid`: StoreKit issues no transaction until the money moves.
 
 **`paused` is a status and a date too, and the date is the answer to the only question a pause raises.** A paused purchase carries `resumesAt`: the instant the *store* said it comes back, never one computed here. Null on a paused row means the store put no end on the pause — Play omits `autoResumeTime`, Paddle leaves `scheduled_change` null, Lemon Squeezy sends `pause.resumes_at: null` — so "paused until the 1st" and "paused indefinitely" stay different sentences, and a row that is not paused can never carry the field at all (a check constraint enforces it). Where each rail reads it, and why Apple and Stripe have nothing to read, is declared once in `PAYMENTS_PAUSE_RESUMPTION` (`data/pause.ts`).
 
@@ -240,7 +240,7 @@ A sandbox StoreKit transaction granting a real entitlement is the most common in
 | `GET /payments/admin/entitlements/:subjectType/:subjectId` | One subject's entitlements | control-plane: `payments:entitlements:read` |
 | `GET /payments/admin/reconcile-runs` | The reconciliation passes this deployment has run | control-plane: `payments:reconcile:read` |
 
-**Every route this capability registers is in that table, and a test holds it there.** The management reads shipped without rows for long enough that the next person to add one withheld theirs too — a table missing four peers reads as complete, so one more row would have read as a lie. `routeContract.test.ts` now parses this table and compares it against the real registrations in both directions, which makes the omission a failing build rather than a judgement call.
+**Every route this capability registers is in that table, and a test holds it there.** The management reads shipped without rows for long enough that the next person to add one withheld theirs too — a table missing four peers reads as complete, so one more row would have read as a lie. `routeContract.test.ts` now parses this table and compares it against the real registrations in both directions, which makes the omission a failing build rather than a judgment call.
 
 That gate checked the method and the path and nothing else, so a response could change shape under a row that still read as correct — which is how `quotedFrom` shipped undescribed. It now also holds `GET /payments/pricing`'s response envelope against the section below, field by field.
 
@@ -277,7 +277,7 @@ A browser reads three states off it, and they are not the same answer:
 
 | What arrives | What it means | What to quote from |
 | --- | --- | --- |
-| the field is absent | the Worker is older than the bundle asking it | the IP, labelled an estimate |
+| the field is absent | the Worker is older than the bundle asking it | the IP, labeled an estimate |
 | `null` | no store holds a customer for this caller yet — the ordinary state of somebody who has not bought anything | a billing address you hold, else the IP |
 | `{ "rail": "paddle", "providerAccountId": "ctm_…" }` | the store customer this caller is charged as | that customer |
 
@@ -307,7 +307,7 @@ Nothing is recorded for a delivery that fails verification, so a forger cannot f
 
 A grant is **held** against the projection. Every other row in the entitlements table is recomputed from the purchases table whenever a write touches its key, which is what keeps the read model from disagreeing with the money — and it is also what would have erased a comp of `pro` the moment the holder's next renewal arrived. So a grant sets a flag the derivation skips, and a comp lasts whether or not the catalog also sells the key.
 
-**A grant must name a key this project defines.** `GET /payments/admin/catalog` is the read behind it, on its own scope — `payments:catalog:read` — and it publishes each product's id, kind, display name, and entitlement keys. Strictly less than the client projection a browser already gets: no price, no store SKU, no rail identifier, because a management client is filling a list of things that can be comped and a comp names a key. An empty catalog answers `{ enabled: false }`, the same modelled state the client projection uses, so "nothing to sell" reads as itself rather than as a dropdown that came back broken.
+**A grant must name a key this project defines.** `GET /payments/admin/catalog` is the read behind it, on its own scope — `payments:catalog:read` — and it publishes each product's id, kind, display name, and entitlement keys. Strictly less than the client projection a browser already gets: no price, no store SKU, no rail identifier, because a management client is filling a list of things that can be comped and a comp names a key. An empty catalog answers `{ enabled: false }`, the same modeled state the client projection uses, so "nothing to sell" reads as itself rather than as a dropdown that came back broken.
 
 The read makes a good control possible; the check on the grant makes a bad one impossible. A grant of a key outside that set is refused with `payments/entitlement_not_in_catalog`, naming the key. Before it was, an operator who meant `pro` and typed `pr` got a success, a row, and a customer who stayed locked out — invisible on both sides until somebody read the table.
 
@@ -346,7 +346,7 @@ The contract lives in `@pithy-sh/core`, not here: the `Entitlement` shape, an `E
 
 **The uncomposed default denies**, which is the one deliberate difference from the audit seam. A missing audit write cannot grant anyone access; a missing entitlement check can. So the gate lives in core for the same reason `requireAuth()` is re-declared per capability rather than imported from `@pithy-sh/auth` — a gate that arrives with a package fails **open** when that package is absent. Denials are audited through `emit()` as `entitlement/denied`, and the reason (genuinely unentitled, or nothing wired) rides in `detail` where an operator sees it and a client does not.
 
-Runtime denial is the backstop, not the primary defence. `pithy doctor` and `pithy dev` compare the `requireEntitlement()` calls in a Worker's own source against whether any composed capability declares `providesEntitlements`, so a Worker gating on entitlements with no provider surfaces as a composition error rather than as production 403s.
+Runtime denial is the backstop, not the primary defense. `pithy doctor` and `pithy dev` compare the `requireEntitlement()` calls in a Worker's own source against whether any composed capability declares `providesEntitlements`, so a Worker gating on entitlements with no provider surfaces as a composition error rather than as production 403s.
 
 ## Ledger fulfillment
 
@@ -356,7 +356,7 @@ When a product declares one and both capabilities are composed, the credit goes 
 
 Every `grants.currency` is validated against the composed ledger's declared currencies at assembly. That check exists because the failure is otherwise invisible: `openLedger` validates nothing, so a typo opens a real account row nobody can reach — the ledger's own routes resolve a currency from config and 404 an unknown code — and the player is told their purchase worked.
 
-**Clawback on a refunded consumable is opt-in too**, and off by default. The debit can be refused by the ledger's overdraft guard, and that refusal is correct behaviour: routing around it would mean a negative balance or a silent write-off. So payments records the refund and audits it unconditionally, and a failed clawback becomes a recorded, queryable, alertable state rather than an exception.
+**Clawback on a refunded consumable is opt-in too**, and off by default. The debit can be refused by the ledger's overdraft guard, and that refusal is correct behavior: routing around it would mean a negative balance or a silent write-off. So payments records the refund and audits it unconditionally, and a failed clawback becomes a recorded, queryable, alertable state rather than an exception.
 
 ## Reconciliation
 
@@ -364,7 +364,7 @@ A Cloudflare Workflow on a daily cron, because **webhook-only systems rot silent
 
 Steps: select subscriptions near expiry or not recently verified, re-fetch current state from the rail, and project it through the same idempotent writer. Drift found is itself audited, because repeated drift means the webhook path is broken and the number is the signal.
 
-A repair also **fulfils**. A renewal the webhook never delivered is the case this pass exists to find, and a `grants` product's coins have to be credited by whoever finds the period or they are never credited at all. Fulfillment runs on drift only: every rail dates a refresh `now`, so the writer reports a write for every row a pass touches, and keying on that would mean one ledger call per scanned row per pass against a ref that already exists. The credit is safe to attempt twice regardless — the ref is a pure function of the purchase and the currency, and the ledger's `UNIQUE (ref)` makes the second one a no-op.
+A repair also **fulfills**. A renewal the webhook never delivered is the case this pass exists to find, and a `grants` product's coins have to be credited by whoever finds the period or they are never credited at all. Fulfillment runs on drift only: every rail dates a refresh `now`, so the writer reports a write for every row a pass touches, and keying on that would mean one ledger call per scanned row per pass against a ref that already exists. The credit is safe to attempt twice regardless — the ref is a pure function of the purchase and the currency, and the ledger's `UNIQUE (ref)` makes the second one a no-op.
 
 The same steps run for one holder on demand, which is the support tool for "my subscription isn't showing up":
 

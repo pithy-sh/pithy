@@ -31,7 +31,7 @@ import type { PriceVisitor } from "./location";
  * failure directions — which is the drift this kit keeps paying for (#346).
  *
  * **A failure is not an answer, and this one fails honest.** Unreachable, refused, or unreadable all
- * return `null`, which resolves to the IP location and renders the figure labelled `Estimated.` A guess
+ * return `null`, which resolves to the IP location and renders the figure labeled `Estimated.` A guess
  * that says it is a guess is the safe direction; the unsafe one would be treating a failed read as
  * proof there is no address on file.
  */

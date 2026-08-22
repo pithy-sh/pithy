@@ -27,7 +27,7 @@ import { z } from "zod";
  * class cannot be closed by changing what the object is; it can only be closed in front of the schema,
  * which is what this is.
  *
- * **Refuse, not degrade.** The surrounding design degrades an unrecognised *issuer* to `other` so a client
+ * **Refuse, not degrade.** The surrounding design degrades an unrecognized *issuer* to `other` so a client
  * built today can read a manifest written tomorrow, and that is right for a value. It is wrong here twice
  * over. `__proto__` is not a name a future issuer will be called; it is a mistake or an attack. And
  * degrading a key is a merge — the defect the issuer-key rule was written to close, where two unknown keys

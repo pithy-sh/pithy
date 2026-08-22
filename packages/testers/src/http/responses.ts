@@ -179,7 +179,7 @@ export const MemberView = z
       ),
     healthBasis: z
       .enum(["scored", "unobservable", "unreachable"])
-      .describe("Why the health is null when it is null. A UI must render `unobservable` grey, never red."),
+      .describe("Why the health is null when it is null. A UI must render `unobservable` gray, never red."),
     riskBand: RiskBand.describe("The band the score falls in, which selects the survival prior."),
     dailySurvival: z.number().describe("The published daily-survival prior used for this tester in the forecast."),
     factors: z
@@ -369,14 +369,14 @@ export const CohortView = z
   .object({
     id: z.string().describe("The cohort id."),
     name: z.string().describe("The cohort's human label."),
-    targetPlatform: z.enum(["android", "ios"]).describe("Which store's programme this cohort serves."),
+    targetPlatform: z.enum(["android", "ios"]).describe("Which store's program this cohort serves."),
     targetSize: z.number().int().describe("Testers required simultaneously. Twelve for Google Play."),
     windowDays: z.number().int().describe("Continuous days required. Fourteen for Google Play."),
     maxRosterSize: z.number().int().describe("The cohort's roster cap."),
     resetPolicy: z
       .enum(["reset", "pause"])
       .describe(
-        "Pithy's ASSUMPTION about what a dip below target does to the streak. Google documents neither behaviour.",
+        "Pithy's ASSUMPTION about what a dip below target does to the streak. Google documents neither behavior.",
       ),
     createdAt: z.iso.datetime().describe("When the cohort was created."),
     closedAt: z.iso.datetime().nullable().describe("When it was closed, or null while running."),
@@ -496,7 +496,7 @@ export const MembershipView = z
       .nullable()
       .describe("When they followed Pithy's confirmation link, or null. OUR record, not Google's."),
     estimatedDaysRemaining: z.number().int().describe("Window days still to hold, on Pithy's estimate."),
-    windowDays: z.number().int().describe("Continuous days the programme requires."),
+    windowDays: z.number().int().describe("Continuous days the program requires."),
   })
   .describe("One cohort a tester belongs to, as that tester sees it — never the roster, never the forecast.");
 export type MembershipView = z.output<typeof MembershipView>;

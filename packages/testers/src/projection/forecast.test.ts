@@ -284,7 +284,7 @@ describe("hold is conditional on reaching the target", () => {
     expect(result.probabilityHoldWindow).toBeGreaterThan(0);
   });
 
-  test("padding assumes the behaviour of who is already in, so a sick cohort forecasts worse", () => {
+  test("padding assumes the behavior of who is already in, so a sick cohort forecasts worse", () => {
     const healthy = forecast({ optedInCount: 8, members: members(8, 0.998) });
     const ailing = forecast({ optedInCount: 8, members: members(8, 0.93) });
     expect(ailing.probabilityHoldWindow as number).toBeLessThan(healthy.probabilityHoldWindow as number);

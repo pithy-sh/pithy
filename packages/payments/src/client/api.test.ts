@@ -31,7 +31,7 @@ import {
   submitPurchase,
 } from "./api";
 
-/** One recorded call, so a test can assert the method, the path, and the cookie behaviour together. */
+/** One recorded call, so a test can assert the method, the path, and the cookie behavior together. */
 interface Call {
   url: string;
   init: PaymentsRequestInit | undefined;
@@ -142,7 +142,7 @@ describe("the guards", () => {
    *
    * The type `PaymentsClientRail` had a drift guard; the runtime set the guard actually compares against
    * did not, and Paddle fell out of it — a real Paddle purchase read back as unreadable while the type
-   * test stayed green. Asserting on the exported behaviour rather than on the internal array is what
+   * test stayed green. Asserting on the exported behavior rather than on the internal array is what
    * makes this hold: the set is private, and the only thing that matters about it is what it accepts.
    */
   test("accept a purchase on every rail — a rail missing from the set reads as unreadable", () => {
@@ -175,7 +175,7 @@ describe("getEntitlements", () => {
     expect(JSON.stringify(call?.init?.headers ?? {})).not.toMatch(/authorization/i);
   });
 
-  test("honours a project that mounted the routes somewhere else", async () => {
+  test("honors a project that mounted the routes somewhere else", async () => {
     const fetcher = stubFetch(200, ENTITLEMENTS);
     await getEntitlements({ fetch: fetcher, basePath: "/billing" });
     expect(fetcher.calls[0]?.url).toBe("/billing/entitlements");
@@ -222,7 +222,7 @@ describe("getEntitlements", () => {
   });
 
   test("fail-shut is one line the caller writes, and it reads as the decision it is", async () => {
-    // The behaviour the old signature hard-coded, kept by whoever wants it — `holdsEntitlement` does
+    // The behavior the old signature hard-coded, kept by whoever wants it — `holdsEntitlement` does
     // exactly this. The point is that it is now visible at the call site instead of buried in the reader.
     const result = await getEntitlements({ fetch: offline });
     expect(result.ok ? result.value : []).toEqual([]);
@@ -497,7 +497,7 @@ describe("returnedCheckoutSession", () => {
     expect(returnedCheckoutSession({ search: "?session=cs_test_1&utm=x" })).toBe("cs_test_1");
   });
 
-  test("honours a project that named the query parameter something else", () => {
+  test("honors a project that named the query parameter something else", () => {
     expect(returnedCheckoutSession({ search: "?checkout=cs_test_1", param: "checkout" })).toBe("cs_test_1");
   });
 

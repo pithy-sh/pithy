@@ -107,7 +107,7 @@ describe("parseInbound, multipart/alternative", () => {
   });
 
   test("returns the HTML exactly as it arrived, unsanitised — that is this module's contract", async () => {
-    // The caller runs `sanitizeHtml` (a Workers global, `HTMLRewriter`) afterwards. If a sanitiser ever
+    // The caller runs `sanitizeHtml` (a Workers global, `HTMLRewriter`) afterwards. If a sanitizer ever
     // crept in here, the raw bytes and the parsed form would quietly disagree about what was sent, and
     // this file could no longer run under node at all.
     const parsed = await parseInbound(raw);
@@ -445,7 +445,7 @@ describe("Authentication-Results, when a sender forges one of their own", () => 
   });
 
   test("an authserv-id that does not match the configured one is discarded entirely", async () => {
-    // Defence in depth for the residual case: the MTA stamped nothing, so the forgery is topmost.
+    // Defense in depth for the residual case: the MTA stamped nothing, so the forgery is topmost.
     const parsed = await parseInbound(
       message(
         [

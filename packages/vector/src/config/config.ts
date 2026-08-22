@@ -18,7 +18,7 @@ import { introspectMetadata } from "../index/metadata";
  * fails loudly instead of returning partial results.
  *
  * The model is pinned per index because an index built with one model and queried with another does not
- * fail. It returns neighbours in a space the query vector does not live in — plausible results, quietly
+ * fail. It returns neighbors in a space the query vector does not live in — plausible results, quietly
  * wrong. Dimensions and metric are fixed at index creation and cannot be changed afterwards, so they are
  * validated here, where the fix is an edit rather than a migration.
  */
@@ -32,11 +32,11 @@ const BINDING_NAME_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 /** The binding an index arrives on when it does not name its own. The single-index case, which is most of them. */
 export const DEFAULT_VECTORIZE_BINDING = "VECTORIZE";
 
-/** How nearest neighbours are scored. Fixed when the index is created — changing it means a new index. */
+/** How nearest neighbors are scored. Fixed when the index is created — changing it means a new index. */
 export const VectorMetric = z
   .enum(["cosine", "euclidean", "dot-product"])
   .describe(
-    "How this index scores nearest neighbours. `cosine` for text embeddings (the usual choice), `euclidean` for spatial distance, `dot-product` for magnitude-sensitive scoring. Fixed at index creation.",
+    "How this index scores nearest neighbors. `cosine` for text embeddings (the usual choice), `euclidean` for spatial distance, `dot-product` for magnitude-sensitive scoring. Fixed at index creation.",
   );
 export type VectorMetric = z.infer<typeof VectorMetric>;
 

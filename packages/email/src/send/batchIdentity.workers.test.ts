@@ -47,7 +47,7 @@ const LATER = new Date(STARTED.getTime() + 20 * MINUTE_MS);
 /**
  * The Workflows runtime, structurally — as a **binding**, not as a status table.
  *
- * `create` and `get` are the two calls `worker.ts` makes, with the platform's behaviour on each: an
+ * `create` and `get` are the two calls `worker.ts` makes, with the platform's behavior on each: an
  * instance is created under the id it was given, and `get` on an id nothing was created under *rejects*.
  * That rejection is the case the whole safety net rests on, so a fake that returned "no such status"
  * instead would be answering a friendlier question than production asks.

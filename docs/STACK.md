@@ -975,7 +975,7 @@ bun install && bun audit
 Run before the first release, that check reported **36 vulnerabilities — 2 critical, 16 high, 14
 moderate, 4 low** against a lockfile audit of 5. Four floors accounted for all of the difference,
 and **none of them moved a version we install** — every one was already resolving above its own floor,
-so the fix is a declaration change with no behaviour change at all:
+so the fix is a declaration change with no behavior change at all:
 
 | Floor | Was | Now | What the old floor handed an adopter |
 |---|---|---|---|
@@ -1019,7 +1019,7 @@ contradicts a stated constraint rather than satisfying it.
 
 So the two are no longer one decision. `@cloudflare/vitest-plugin` is a devDependency in all eighteen manifests that declare it — seventeen capability packages here, and `templates/starter`, where it is the adopter's own. Nothing puts it in a `dependencies` block, so it never reaches a `node_modules` a Worker is bundled from. The workerd it spawns for `*.workers.test.ts` is now `1.20260820.1` rather than `1.20260730.1`. It is also not the first alpha in this tree. `wrangler` is a **devDependency** of eighteen of the twenty-one packages under `packages/`, every one of them at `^4.115.0`, and `templates/starter/apps/api` declares `^4.123.0` as the adopter's own. They hoist to a single `wrangler@4.123.0`, which has been carrying a nested `miniflare@5.20260811.1-alpha` for our own suites all along. It is a devDependency everywhere deliberately: the kit does not ship a wrangler. `pithy dev` and `pithy deploy` exec `wrangler` through the adopter's own package manager, so an adopter drives the wrangler in their repository, not one of ours. Both alphas here are dev-side, and one of them was already.
 
-**The exposure this leaves is real and worth naming, and nothing narrows it.** The harness now runs a newer workerd than the `miniflare` `pithy migrate` drives, so a behaviour difference between them is a difference the tests cannot see. The two halves differ in build **and** in compatibility date. `compatibility.ts` reaches the harness — all seventeen `vitest.workers.config.ts` under `packages/` import `COMPATIBILITY_DATE` — and it does not reach the migrator: the four `new Miniflare(` outside the CLI's own suites (`migrations/run.ts`, `seed/drivers.ts`, `devSecrets/store.ts`, `test-utils/seedHarness.ts`) pass no `compatibilityDate` between them, so `pithy migrate` and `pithy seed` run on whatever date that miniflare defaults to. Handing those four the constant would close the date half and leave the build half; it is a runtime change and wants its own issue, not this one. Revisit the whole thing the day `miniflare` 5 has a stable release: promote both 4.x declarations, and the two halves are one line again.
+**The exposure this leaves is real and worth naming, and nothing narrows it.** The harness now runs a newer workerd than the `miniflare` `pithy migrate` drives, so a behavior difference between them is a difference the tests cannot see. The two halves differ in build **and** in compatibility date. `compatibility.ts` reaches the harness — all seventeen `vitest.workers.config.ts` under `packages/` import `COMPATIBILITY_DATE` — and it does not reach the migrator: the four `new Miniflare(` outside the CLI's own suites (`migrations/run.ts`, `seed/drivers.ts`, `devSecrets/store.ts`, `test-utils/seedHarness.ts`) pass no `compatibilityDate` between them, so `pithy migrate` and `pithy seed` run on whatever date that miniflare defaults to. Handing those four the constant would close the date half and leave the build half; it is a runtime change and wants its own issue, not this one. Revisit the whole thing the day `miniflare` 5 has a stable release: promote both 4.x declarations, and the two halves are one line again.
 
 ### The kit does not read Babel
 
@@ -1043,12 +1043,12 @@ copy. Nineteen platform-binding entries and roughly 3.6 MB, to remove a declarat
 nothing on disk. That is a swap dressed as a removal.
 
 Two things this is *not*. It is not a way round `@babel/parser@8`, which still fails on an `async`
-arrow with a return type inside a parenthesised object literal — see #403, which this makes moot
+arrow with a return type inside a parenthesized object literal — see #403, which this makes moot
 rather than fixes. And it is not a claim that Babel left the tree: `@vitest/coverage-v8` reaches
 `@babel/parser` through `magicast`, and will keep doing so. What went is the kit's own declaration
 and the kit's own use of it.
 
-**The analyser speaks ESTree now.** `MethodDefinition` and `Property` where Babel wrote `ClassMethod`
+**The analyzer speaks ESTree now.** `MethodDefinition` and `Property` where Babel wrote `ClassMethod`
 and `ObjectMethod`, `Literal` where it wrote `StringLiteral`, a `CallExpression` inside a
 `ChainExpression` where it wrote `OptionalCallExpression`, and a byte offset where it wrote a `loc`.
 The one that bites: a method is a *wrapper* around a `FunctionExpression` in ESTree, so the walked
@@ -1093,7 +1093,7 @@ not use undici, and the adopter-facing runtime is untouched by any of this. It i
 left is a local simulator on a developer's machine, reading a local database, and five advisories that
 are HTTP-client and cache-directive faults needing an attacker-controlled upstream to reach.
 
-Accepted, not ignored. It closes when miniflare 5 stabilises and **both** declarations are promoted —
+Accepted, not ignored. It closes when miniflare 5 stabilizes and **both** declarations are promoted —
 `@pithy-sh/cli`'s runtime dependency and `@pithy-sh/auth`'s devDependency. Moving cli's alone leaves
 auth resolving 4.x and `bun audit` reporting the same five advisories under the same path it prints
 today. That is the same revisit as above.

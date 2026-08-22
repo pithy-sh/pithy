@@ -36,12 +36,12 @@ import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
  * ## The one date this gate could not hold, and why it no longer exists
  *
  * `@pithy-sh/cloudflare`'s `workersManager` used to default an API-created Worker to `2026-04-07` when
- * the caller named none. It was past #385's fix, it was product behaviour with its own test, and it was
+ * the caller named none. It was past #385's fix, it was product behavior with its own test, and it was
  * unreachable from here — this gate reads `wrangler.jsonc` manifests, and that was a TypeScript
  * constant. #388 named it rather than moving it in passing.
  *
  * #396 settled it by **removing the default rather than re-picking the number**. `createWorker` now
- * requires a compatibility date, so the caller states the behaviour contract for the Worker landing in
+ * requires a compatibility date, so the caller states the behavior contract for the Worker landing in
  * their account and there is no unchosen date left to drift below a floor. There is no exception to
  * this gate any more.
  */

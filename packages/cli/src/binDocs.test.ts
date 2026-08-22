@@ -29,7 +29,7 @@ import { describe, expect, test } from "vitest";
  *   reads (`env.NO_COLOR === "1"`), and it is set on the child. `bin.ts` now sets that itself whenever
  *   Pithy's own rule says color is off, so this is belt to those braces — deliberately kept, because a
  *   transcript pinned byte for byte should not also be the thing that fails when the bin's translation
- *   regresses. That behaviour has its own test: `bin.test.ts` "help into a pipe carries no ANSI", which
+ *   regresses. That behavior has its own test: `bin.test.ts` "help into a pipe carries no ANSI", which
  *   scrubs `NO_COLOR`, `TEST` and `CI` from the child so the bin has to make the decision on its own.
  * - **Version.** The first line carries `(pithy v0.0.0)` — the workspace's unpublished version, which will
  *   change. The document writes `v<version>`; the expectation substitutes the version read from the CLI's
@@ -122,7 +122,7 @@ describe("docs/CLI.md §4", () => {
 
   /**
    * §4.1's prose says `-h, --help` and `-v, --version` work even though citty lists neither in the help it
-   * renders. That is a claim about behaviour, not layout, so it is checked directly: the version flags
+   * renders. That is a claim about behavior, not layout, so it is checked directly: the version flags
    * print the bare version and nothing else.
    */
   test("`-v` and `--version` print the bare version, as §4.1 says", async () => {

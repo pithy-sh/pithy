@@ -48,7 +48,7 @@ import type { OpenRotation, RotationLedger } from "./rotationLedger";
  * ## The attempt is recorded here, and only here
  *
  * A rotation that succeeds and records nothing leaves the secret reporting **overdue forever** — `#379`,
- * which reached production behaviour precisely because the recording lived at a *call site* rather than at
+ * which reached production behavior precisely because the recording lived at a *call site* rather than at
  * the act. So the {@link RotationLedger} is an argument to this function and it is **required**: refuse,
  * open the row, produce once, store with retries, close the row. A third caller inherits the ordering by
  * calling this, and cannot opt out of it by forgetting. `./rotationLedger.ts` holds the seam and the

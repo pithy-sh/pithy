@@ -45,7 +45,7 @@ import type { SecretRotationRecorder } from "./dispatch";
  */
 export const CLI_ROTATED_BY = "pithy secrets rotate";
 
-/** What a dispatched ledger needs: where the rotation lands, and how the rows are labelled. */
+/** What a dispatched ledger needs: where the rotation lands, and how the rows are labeled. */
 export interface DispatchedRotationLedgerOptions {
   /** Every environment this rotation writes to. One row is opened in each. */
   targets: readonly ManagedEnvironment[];

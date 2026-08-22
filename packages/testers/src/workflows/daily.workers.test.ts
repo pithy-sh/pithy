@@ -362,7 +362,7 @@ describe("the two-email journey, end to end", () => {
     const asked = sent[0]?.payload as { ctaUrl?: string } | undefined;
     expect(asked?.ctaUrl).toContain(`/testers/confirm/${member.optInToken}`);
 
-    // They say yes. Consent, not enrolment — the count must not move.
+    // They say yes. Consent, not enrollment — the count must not move.
     const dayTwo = new Date("2026-06-02T05:00:00.000Z");
     await recordAccepted(write(dayTwo), member.id);
     const afterAgreeing = await runCohortPass(deps(dayTwo), cohort.id);

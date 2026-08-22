@@ -75,7 +75,7 @@ export const SupportThreadView = z
       .string()
       .nullable()
       .describe(
-        "**What the submitter said this is about**, or null when nobody said — every mail thread, and every app thread filed without a chooser. **Render this and `category` differently, and never fold one into the other.** They are two facts with two authors: this is a claim by the person writing, `category` is a machine's judgement about them, and an operator deciding what to do needs to know which is on screen. Where they disagree, that disagreement is the most useful thing on the row. Where `classifiedAt` is null this is the only category anybody stated.",
+        "**What the submitter said this is about**, or null when nobody said — every mail thread, and every app thread filed without a chooser. **Render this and `category` differently, and never fold one into the other.** They are two facts with two authors: this is a claim by the person writing, `category` is a machine's judgment about them, and an operator deciding what to do needs to know which is on screen. Where they disagree, that disagreement is the most useful thing on the row. Where `classifiedAt` is null this is the only category anybody stated.",
       ),
     category: z
       .string()
@@ -129,7 +129,7 @@ export const SupportMessageView = z
     id: z.string().describe("The message's UUID — Pithy's id, not the sender's."),
     direction: SupportMessageDirection.describe("`inbound` from the customer, `outbound` from this Worker."),
     channel: SupportChannel.describe(
-      "How this message travelled, which on an outbound row says how the answer was delivered: `email` means it went out, `app` means it is waiting for the submitter to read it and no mail was sent.",
+      "How this message traveled, which on an outbound row says how the answer was delivered: `email` means it went out, `app` means it is waiting for the submitter to read it and no mail was sent.",
     ),
     context: SupportSubmissionContext.nullable().describe(
       "The bounded context an app submission carried — screen, build, platform, environment, locale. Null on every mail-path message.",
@@ -151,7 +151,7 @@ export const SupportMessageView = z
       .string()
       .nullable()
       .describe(
-        "The sanitised HTML body, or null. Sanitised at ingest; the raw original stays in R2 and is never served.",
+        "The sanitized HTML body, or null. Sanitized at ingest; the raw original stays in R2 and is never served.",
       ),
     emailJobId: z
       .string()
@@ -168,7 +168,7 @@ export type SupportMessageView = z.output<typeof SupportMessageView>;
 export const SupportAttachmentView = z
   .object({
     id: z.string().describe("The attachment's UUID."),
-    filename: z.string().describe("The filename as it arrived, sanitised."),
+    filename: z.string().describe("The filename as it arrived, sanitized."),
     contentType: z.string().describe("The declared content type."),
     size: z.number().int().describe("The size in bytes."),
     sha256: z.string().describe("The content digest, so a client can tell two identical attachments apart from one."),
@@ -359,7 +359,7 @@ export type SupportFlagsResponse = z.output<typeof SupportFlagsResponse>;
  * not control**. That client is crossing a trust boundary — a fork, a bug, a half-finished deploy, or a
  * hostile Worker each put a member here that no enum of ours declares — and under the strict schema one
  * such token costs it the entire response. It cost `pithy-sh/dashboard#15` exactly that: one
- * unrecognised `channel` and the support pane rendered zero of twenty-five conversations. The client
+ * unrecognized `channel` and the support pane rendered zero of twenty-five conversations. The client
  * then had to widen our shape locally, which is the hand-held mirror `#113` exists to forbid.
  *
  * So the tolerance is published rather than reimplemented, by the one pattern
@@ -411,7 +411,7 @@ export type SupportArchiveResponseAsRead = z.output<typeof SupportArchiveRespons
  * the first time somebody adds a column and forgets which of the two callers is reading.
  *
  * A submitter is shown their own words, the answers to them, and whether the thread is done. They are
- * never shown the classification (a machine's judgement about them, and a filter on it is the inbox's
+ * never shown the classification (a machine's judgment about them, and a filter on it is the inbox's
  * business), the priority or sentiment (the same, and `angry` rendered back to the person it describes
  * is its own kind of disaster), the per-viewer flags (private to an operator), the account link or its
  * provenance (they know who they are), or anything at all about another account.
@@ -444,7 +444,7 @@ export const SupportMyMessageView = z
     body: z
       .string()
       .describe(
-        "The message text. Plain text on both sides — what they sent, and what was sent back. Never HTML, so a client renders it escaped and there is nothing here to sanitise.",
+        "The message text. Plain text on both sides — what they sent, and what was sent back. Never HTML, so a client renders it escaped and there is nothing here to sanitize.",
       ),
     context: SupportSubmissionContext.nullable().describe(
       "The context their app attached to this message, so a client can show what was sent on their behalf. Null on an answer.",

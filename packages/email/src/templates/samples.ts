@@ -27,7 +27,7 @@ export const samplePayloads: Record<string, unknown> = {
     subject: "One step left to join the test",
     heading: "Confirm your place",
     paragraphs: [
-      "You were invited to test an early build. Confirming takes one tap, and it is the step that actually enrols you.",
+      "You were invited to test an early build. Confirming takes one tap, and it is the step that actually enrolls you.",
       "The test runs for a fixed period, and it needs everyone who joined to stay joined for the whole of it.",
     ],
     ctaUrl: "https://example.com/testers/opt-in/sample-token",

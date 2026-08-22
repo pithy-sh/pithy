@@ -51,7 +51,7 @@ import { type LoadedWorkerConfig, loadWorkerConfig } from "./workerConfig";
  * carries `rolldownVersion` in one and not the other. A single object cannot be written `satisfies
  * Plugin` against both; restoring `pithy(): Plugin` reports exactly that at 6.1.6 and 7.0.0, and it is
  * a fact about the two Vites rather than about this plugin. What is checked across the range is the
- * hook *set* and the hook *behaviour*: a name Vite 6 never calls is a red build, and a build that does
+ * hook *set* and the hook *behavior*: a name Vite 6 never calls is a red build, and a build that does
  * not inline the projection at 6.1.6 is a red test. What is taken on trust across the range is that a
  * hook Vite 6 calls with an argument of its own shape reaches the same field.
  *

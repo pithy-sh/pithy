@@ -9,7 +9,7 @@ import type { PaddleEvent } from "./objects";
  * ## The hazard
  *
  * Paddle's notification destinations and its `/events` stream are **account-wide**. A destination
- * subscribed to `*`, or a sweep whose query filter is not honoured, carries `api_key.*`,
+ * subscribed to `*`, or a sweep whose query filter is not honored, carries `api_key.*`,
  * `client_token.*`, `product.*`, `price.*` and `discount.*` alongside the events this package acts on.
  * Verified against the assigned sandbox's own stream: it carries `api_key.created` and
  * `client_token.created`, and while Paddle redacts the api key's `key`, **it does not redact the client
@@ -22,7 +22,7 @@ import type { PaddleEvent } from "./objects";
  * ## Why the control is here rather than in the query
  *
  * The sweep does ask Paddle for only the types below, and that filter is worth having. But a query
- * parameter is a *request*: it is honoured by someone else's service, on someone else's release cadence,
+ * parameter is a *request*: it is honored by someone else's service, on someone else's release cadence,
  * and it does not exist at all on the webhook path, where the subscribed-event list is set in Paddle's
  * dashboard by a human. An allowlist on what is **recorded** is a control this package owns and can prove.
  *

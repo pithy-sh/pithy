@@ -143,7 +143,7 @@ export const LemonSqueezySubscription = z
     variant_id: z.number().optional().describe("The variant sold, which is this rail's SKU."),
     status: z.string().describe("Lemon Squeezy's own status vocabulary, normalized by `subscriptionStatus`."),
     renews_at: z.string().nullish().describe("When the current period renews, if it is going to."),
-    ends_at: z.string().nullish().describe("When access ends for a cancelled subscription, if it is ending."),
+    ends_at: z.string().nullish().describe("When access ends for a canceled subscription, if it is ending."),
     pause: z
       .object({
         mode: z.string().nullish().describe("`void` or `free` — what the subscriber keeps while paused. Recorded."),
@@ -384,7 +384,7 @@ export function orderEvent(id: string, order: LemonSqueezyOrder): UnboundProvide
 /**
  * The account reference this deployment stamped into the checkout, or null.
  *
- * **Honoured only when this deployment's own environment stamp is beside it**, and that condition is the
+ * **Honored only when this deployment's own environment stamp is beside it**, and that condition is the
  * whole security of the field. `accountReference`'s contract says it is "a value this deployment's own
  * server wrote and the store returned unchanged" — the route writes the provider-account link from it, and
  * `linkProviderAccount` never rebinds, so the first pairing is permanent.

@@ -35,7 +35,7 @@ import type { WorkflowRetryPolicy } from "@pithy-sh/core/src/workflow/faults";
  *   re-embedded.
  * - **`vector/metadata_index_drift`** — Vectorize is missing an index the config declares. Provisioning,
  *   not weather.
- * - **`core/internal`** — the model or the store answered in a shape nobody recognises, or the binding
+ * - **`core/internal`** — the model or the store answered in a shape nobody recognizes, or the binding
  *   does not expose the method. A shape is not a transient.
  * - **`validation/invalid_input`** — an empty batch, a `topK` below one, a namespace the schema refuses.
  *

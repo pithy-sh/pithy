@@ -44,7 +44,7 @@ export interface LemonSqueezyDiscountOptions {
    * The currency this store prices in, when it is known.
    *
    * Supplied so a fixed amount in another currency is refused here rather than at redemption. Absent means
-   * the check cannot be made and the store's own judgement stands — better than inventing a currency.
+   * the check cannot be made and the store's own judgment stands — better than inventing a currency.
    */
   storeCurrency?: string;
   /** The HTTP seam. Defaults to the runtime's `fetch`. */

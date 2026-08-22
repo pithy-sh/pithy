@@ -228,7 +228,7 @@ export async function sendReply(deps: ReplyDeps, input: ReplyInput): Promise<Rep
     id: messageId,
     threadId: input.threadId,
     direction: "outbound",
-    // How the answer actually travelled, which is the whole reason this column is per message rather
+    // How the answer actually traveled, which is the whole reason this column is per message rather
     // than only per thread: one `app` thread can hold a reply that was mailed and a reply that was
     // stored, and those are different promises about when the person reads them.
     channel: inApp ? "app" : "email",

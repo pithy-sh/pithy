@@ -58,7 +58,7 @@ import type { WorkerConfig } from "../project/config";
  * **A route the adopter mounts at `/` is deliberately not allowlisted.** In a Worker that serves a
  * SPA, `/` is the app shell — that is what `not_found_handling` is for. An adopter wanting an API
  * response at the root of a UI-bearing Worker has a real conflict with the front end, and this
- * resolves it in the front end's favour rather than shadowing the app's own entry point. It is
+ * resolves it in the front end's favor rather than shadowing the app's own entry point. It is
  * silent, so `docs/UI.md` says so as well.
  */
 export function firstSegment(path: string): string | null {
@@ -111,9 +111,9 @@ export function workerFirstPatterns(paths: readonly string[]): string[] {
  * composition and restoring it in a `finally` is therefore not a trick played on the capability; it is
  * the only way to ask it the question it answers.
  *
- * ## Why `CI` is cleared rather than honoured
+ * ## Why `CI` is cleared rather than honored
  *
- * `ui sync --check` is a CI gate, and `ui sync` runs on a laptop. If the derivation honoured `CI`, those
+ * `ui sync --check` is a CI gate, and `ui sync` runs on a laptop. If the derivation honored `CI`, those
  * two would derive different lists from the same repository: CI would demand the shorter one and fail on
  * the file a developer correctly wrote. A list is only checkable if it is a function of the project.
  *

@@ -103,7 +103,7 @@ export const EMAIL_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  * Declared beside the scopes so the scope a route demands and the scope a manifest advertises are the
  * same constant, read from one place. `basePath` is a parameter and never a default: an adopter who
  * mounted email at `/mail` must get a manifest naming `/mail/jobs`, or a management client composing
- * its calls from it would 404 against exactly the adopters who customised anything.
+ * its calls from it would 404 against exactly the adopters who customized anything.
  *
  * The callback routes are **not** here. They are a recipient's tracking and unsubscribe links, mounted
  * at a fixed prefix and gated by a signature; they are not management surface and a dashboard has no

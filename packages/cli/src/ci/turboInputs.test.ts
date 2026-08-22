@@ -59,8 +59,8 @@ import { isTestFile, sourcePaths } from "./sourceFiles";
  * probes are invented instead. Every rule of every ignore file git consults becomes one path that rule
  * and no other decides ({@link probeFor}), planted for the length of the assertion.
  *
- * **A catalogue of artifacts kept by hand is the defect this file refuses one level up, and it had both
- * halves of it.** The catalogue read the root `.gitignore` alone, so `packages/cli/.gitignore` was
+ * **A catalog of artifacts kept by hand is the defect this file refuses one level up, and it had both
+ * halves of it.** The catalog read the root `.gitignore` alone, so `packages/cli/.gitignore` was
  * invisible and the vendored `packages/cli/templates/` it ignores sat inside all four whole-tree keys —
  * a directory `prepack` writes, `postpack` removes, and a pack that fails between them leaves behind for
  * good. And a probe narrower than its rule counted as covering it: `.dev.vars.*` was exercised by
@@ -164,7 +164,7 @@ function tracked(target: string): string[] {
  * `check-ignore -v` names the file and line that decided, which is what turns "these paths are
  * ignored" into "these *rules* are exercised". It exits 1 when it matched nothing, which is the answer
  * rather than a failure, so the empty case arrives through the catch. A file that is both tracked and
- * matched by an ignore rule is tracked, and tracked is what turbo hashes, so the default behaviour —
+ * matched by an ignore rule is tracked, and tracked is what turbo hashes, so the default behavior —
  * untracked matches only — is the one wanted here.
  */
 function ignoreRules(paths: readonly string[]): Map<string, string> {
@@ -293,15 +293,15 @@ function probeFor(rule: Rule): string {
   const directoryRule = rule.pattern.endsWith("/");
   const body = directoryRule ? rule.pattern.slice(0, -1) : rule.pattern;
   const anchored = body.includes("/");
-  const spelt = body.replace(/^\//, "").replaceAll("*", ANY);
-  return [rule.directory, anchored ? "" : PROBE, spelt, directoryRule ? ANY : ""].filter(Boolean).join("/");
+  const spelled = body.replace(/^\//, "").replaceAll("*", ANY);
+  return [rule.directory, anchored ? "" : PROBE, spelled, directoryRule ? ANY : ""].filter(Boolean).join("/");
 }
 
 /**
  * The artifacts a run of this repository writes **inside a package**, at the paths it writes them to.
  *
  * The derived probes above are what discharges coverage: every rule of every ignore file is exercised by
- * a path only that rule decides. This list is a second subject, not a second catalogue. A key scoped to
+ * a path only that rule decides. This list is a second subject, not a second catalog. A key scoped to
  * `packages/**` — `@pithy-sh/browser-scopes`' three — can only ever hold an artifact that sits inside a
  * package, and the probes above sit in a directory of their own at the root, where such a key never
  * looks. So the seven are named here: an install, a build, a coverage report, turbo's own task log,
@@ -323,7 +323,7 @@ const PACKAGE_ARTIFACTS: readonly string[] = [
   "packages/core/.dev.vars.dev",
 ];
 
-/** What a planted file holds, so residue from a run that was killed can be recognised as this file's. */
+/** What a planted file holds, so residue from a run that was killed can be recognized as this file's. */
 const SENTINEL = "planted by turboInputs.test.ts\n";
 
 /** The probe directory `path` sits under, when it sits under one. */

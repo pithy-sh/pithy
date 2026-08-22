@@ -196,7 +196,7 @@ describe("editDevSecrets — the ordinary edit", () => {
 
 describe("editDevSecrets — an edit that does not parse", () => {
   test("it is re-opened on the adopter's own text, not on the original", async () => {
-    // The unforgivable behaviour: re-opening the *file* would silently drop everything they typed,
+    // The unforgivable behavior: re-opening the *file* would silently drop everything they typed,
     // and the value they were pasting in may be the only copy of it that exists.
     await seed();
     const malformed = `${SEEDED.trimEnd()}\n// unclosed`;

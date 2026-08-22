@@ -94,7 +94,7 @@ declare module "virtual:pithy/payments" {
         /**
          * Which rails this project sells through. Apple and Google are display-only on the web — a
          * paywall shows such a product as owned-elsewhere rather than offering a buy button nothing on
-         * the web can honour.
+         * the web can honor.
          */
         rails: {
           /** Whether the App Store rail is on. Display-only in a browser. */
@@ -133,7 +133,7 @@ declare module "virtual:pithy/payments" {
         /**
          * The catalog, browser-safe, in the order the adopter wrote it. A web rail's price id is
          * publishable by design — a checkout names one. Apple's and Google's SKUs, and anything a
-         * purchase fulfils beyond its entitlements, stay server-side.
+         * purchase fulfills beyond its entitlements, stay server-side.
          */
         products: {
           /** The logical product id — what `/payments/checkout` is asked for. */

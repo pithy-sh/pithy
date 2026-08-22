@@ -23,7 +23,7 @@ import { fromZodError } from "../error/pithyError";
 
 /**
  * The outcome `@hono/zod-validator` hands a hook. Declared structurally rather than by importing
- * the library's `Hook` generic: `Hook` is parameterised by env, path, target and schema, so a
+ * the library's `Hook` generic: `Hook` is parameterized by env, path, target and schema, so a
  * single shared hook value could not name it without pinning all four. Every real outcome is
  * assignable to this.
  */

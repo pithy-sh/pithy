@@ -74,7 +74,7 @@ function childPath(frame: Frame): string {
   return `${frame.path}/${frame.kind === "object" ? (frame.key ?? "") : frame.index}`;
 }
 
-/** Where a string literal starting at `start` ends, escapes honoured. Returns the index of its closing quote. */
+/** Where a string literal starting at `start` ends, escapes honored. Returns the index of its closing quote. */
 function endOfString(text: string, start: number): number {
   for (let index = start + 1; index < text.length; index += 1) {
     if (text[index] === "\\") {

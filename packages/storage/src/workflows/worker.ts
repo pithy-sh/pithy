@@ -94,7 +94,7 @@ export class StorageSweepWorkflow extends WorkflowEntrypoint<StorageWorkerEnv, S
 export default {
   /**
    * Cron entry: start one sweep instance per fire, with empty parameters — the defaults are the
-   * scheduled behaviour. The same Workflow stays dispatchable with a payload (`dryRun`, a shorter
+   * scheduled behavior. The same Workflow stays dispatchable with a payload (`dryRun`, a shorter
    * TTL, a page cap), which is how the sweep is exercised in staging without waiting for 03:00.
    */
   async scheduled(_controller: unknown, env: StorageWorkerEnv): Promise<void> {

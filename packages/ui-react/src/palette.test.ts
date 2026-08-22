@@ -9,11 +9,11 @@ import { TEMPLATE_DIR } from "./templates";
 /**
  * **The palette is declared as a set, or not at all** (#391, item I).
  *
- * `templates/src/pithy-screens.css` reads each of its colours out of a custom property an adopter may
+ * `templates/src/pithy-screens.css` reads each of its colors out of a custom property an adopter may
  * declare — `var(--fg, #111111)` — and stands up on the fallback when they declare none. Two states
  * work: their palette, or Pithy's. **The state that does not work is half of each**, and it is the one
- * no fallback can detect: a screen whose background is theirs and whose text is Pithy's renders grey on
- * grey, with a clean build, a green suite and nothing in any log.
+ * no fallback can detect: a screen whose background is theirs and whose text is Pithy's renders gray on
+ * gray, with a clean build, a green suite and nothing in any log.
  *
  * The kit shipped exactly that. `--danger` was read by `pithy-screens.css`, named as one of the seven in
  * `docs/UI.md` and in both stylesheets' own docblocks, and declared in `styles.css` by nobody.
@@ -22,7 +22,7 @@ import { TEMPLATE_DIR } from "./templates";
  *
  * By #391's rule it should travel: `src/styles.css` is the adopter's, editing it is the entire point of
  * the file, and every edit is a chance to drop a token out of the set. **It cannot travel, and the
- * reason is a wall rather than a judgement.**
+ * reason is a wall rather than a judgment.**
  *
  * The invariant is stated in CSS text, and a seeded gate would have to read that text from inside the
  * client program the screens compile in — which has no Node types, deliberately, because `.tsx` is what
@@ -101,7 +101,7 @@ test("the reading every case below depends on is calibrated before any of them i
   // A block after the at-rule is not swallowed with it.
   expect(unconditional(`${sheet}:root { --accent: #d4a017; }`)).toContain("--accent");
 
-  // And the seam is still a seam. A stylesheet rewritten to hardcoded colours, or a pattern that stopped
+  // And the seam is still a seam. A stylesheet rewritten to hardcoded colors, or a pattern that stopped
   // matching, would make every assertion below sweep an empty set and say nothing.
   const read = await tokensRead();
   expect(read.length, "pithy-screens.css reads no token with a fallback — the palette seam is gone").toBeGreaterThan(3);
@@ -122,13 +122,13 @@ test("every token Pithy's screens read is one the seeded stylesheet declares", a
   ).toEqual([]);
 });
 
-test("and declares them where they always apply, not only in one colour scheme", async () => {
+test("and declares them where they always apply, not only in one color scheme", async () => {
   const read = await tokensRead();
   const declared = await tokensDeclared();
   const text = await readFile(SHEET("styles.css"), "utf8");
 
   // The same rule, about the half nobody looks at. A palette declared only under
-  // `prefers-color-scheme: dark` is Pithy's colours in daylight and the adopter's at night — the
+  // `prefers-color-scheme: dark` is Pithy's colors in daylight and the adopter's at night — the
   // half-set failure split by visitor rather than by token, and it builds just as clean.
   const conditionalOnly = read.filter((token) => text.includes(`${token}:`) && !declared.has(token)).sort();
   expect(

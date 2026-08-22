@@ -222,7 +222,7 @@ describe("CloudflareAIManager", () => {
       // which is what broke `generateText` live — both must normalize to the same result.
       expect(TextGeneration.parse({ choices: [{ message: { content: "hi" } }] })).toEqual({ response: "hi" });
 
-      // A flat envelope wins when a model sends both, so behaviour does not depend on union order.
+      // A flat envelope wins when a model sends both, so behavior does not depend on union order.
       expect(TextGeneration.parse({ response: "flat", choices: [{ message: { content: "nested" } }] })).toEqual({
         response: "flat",
       });

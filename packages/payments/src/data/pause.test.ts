@@ -38,7 +38,7 @@ describe("pauseResumesAt", () => {
 
   test("no status but `paused` may carry one, whatever the provider reported", () => {
     // The fallback available when #369 was filed was a period end, and a period end is not a resumption.
-    // A live subscription's next date is its renewal; a cancelled one's is when access stops. Neither is
+    // A live subscription's next date is its renewal; a canceled one's is when access stops. Neither is
     // this field, and the rule is enforced here rather than trusted at eight call sites.
     for (const status of PurchaseStatus.options.filter((option) => option !== "paused")) {
       expect(pauseResumesAt({ rail: "paddle", status, reported: RESUME_AT }), status).toBeNull();

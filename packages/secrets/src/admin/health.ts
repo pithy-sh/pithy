@@ -80,7 +80,7 @@ export function secretsHealth(registry: () => SecretRegistry): CapabilityHealth 
         kind: "count",
         states: null,
         // The scope the status read is already behind. A count is a smaller disclosure than the listing
-        // it summarises, but it is a disclosure of the same thing — which credentials are stale is a map
+        // it summarizes, but it is a disclosure of the same thing — which credentials are stale is a map
         // of where to push — so an adopter who withheld the listing withholds the number with it.
         scope: SECRETS_STATUS_READ_SCOPE,
         cost: "indexed",

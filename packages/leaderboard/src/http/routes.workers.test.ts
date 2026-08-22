@@ -130,7 +130,7 @@ describe("server-authoritative submit", () => {
     expect((await req(app, "POST", "/leaderboard/b1", { user: "u1", body: { score: 10 } })).status).toBe(201);
   });
 
-  test("honours a custom submit scope", async () => {
+  test("honors a custom submit scope", async () => {
     const app = makeApp({ ...CONFIG, submitScope: "scores:write" });
     expect((await req(app, "POST", "/leaderboard/b1", { user: "u1", scopes: SUBMIT, body: { score: 1 } })).status).toBe(
       403,
@@ -151,7 +151,7 @@ describe("server-authoritative submit", () => {
     const before = Date.now();
     const app = makeApp(CONFIG);
     await req(app, "POST", "/leaderboard/b1", { user: "u1", scopes: SUBMIT, body: { score: 10, achievedAt: 0 } });
-    // The submission landed with the server's clock, not the epoch zero the client asked for. Honouring
+    // The submission landed with the server's clock, not the epoch zero the client asked for. Honoring
     // a client achievedAt would let anyone claim they reached a score first and take the tiebreak.
     const { results } = await env.DB.prepare("SELECT achieved_at FROM pithy_leaderboard_entries").all<{
       achieved_at: number;

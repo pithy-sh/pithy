@@ -84,14 +84,14 @@ describe("no scaffolded screen writes a price down", () => {
   });
 
   test("every template is free of money-shaped literals", async () => {
-    const offences: string[] = [];
+    const offenses: string[] = [];
     for (const path of await templateSources()) {
       const found = moneyLiterals(await readFile(join(TEMPLATE_DIR, path), "utf8"));
-      if (found.length > 0) offences.push(`${path} — ${[...new Set(found)].join(", ")}`);
+      if (found.length > 0) offenses.push(`${path} — ${[...new Set(found)].join(", ")}`);
     }
     expect(
-      offences,
-      `A scaffolded screen writes a figure down. Every price comes from the store, rendered by the store for the visitor — a literal here is wrong in every country whose tax convention differs from the one it was typed in, and wrong silently:\n${offences.map((offence) => `  ${offence}`).join("\n")}`,
+      offenses,
+      `A scaffolded screen writes a figure down. Every price comes from the store, rendered by the store for the visitor — a literal here is wrong in every country whose tax convention differs from the one it was typed in, and wrong silently:\n${offenses.map((offense) => `  ${offense}`).join("\n")}`,
     ).toEqual([]);
   });
 });
@@ -116,12 +116,12 @@ describe("no scaffolded screen decides for itself where a visitor lives", () => 
   });
 
   test("a screen that quotes builds its query through the one resolver", async () => {
-    const offences = (await quotingScreens())
+    const offenses = (await quotingScreens())
       .filter((screen) => !screen.source.includes("priceQueryFor") || !screen.source.includes(RESOLVER))
       .map((screen) => screen.path);
     expect(
-      offences,
-      `These screens ask a store for a price and build the request themselves. Where a visitor lives is one decision — \`resolvePriceLocation\` and \`priceQueryFor\` in ${RESOLVER} — and a screen that answers it its own way quotes from a location the checkout does not charge from:\n${offences.map((path) => `  ${path}`).join("\n")}`,
+      offenses,
+      `These screens ask a store for a price and build the request themselves. Where a visitor lives is one decision — \`resolvePriceLocation\` and \`priceQueryFor\` in ${RESOLVER} — and a screen that answers it its own way quotes from a location the checkout does not charge from:\n${offenses.map((path) => `  ${path}`).join("\n")}`,
     ).toEqual([]);
   });
 
@@ -129,12 +129,12 @@ describe("no scaffolded screen decides for itself where a visitor lives", () => 
     // `priceSummary().estimated` is only half the answer: it says the tax is unresolved and says nothing
     // about the location being a guess from an IP. A screen rendering it raw presents an estimate as the
     // charge the moment Paddle starts filling in a postal code it does not fill in today.
-    const offences = (await quotingScreens())
+    const offenses = (await quotingScreens())
       .filter((screen) => !screen.source.includes("quoteIsEstimated"))
       .map((screen) => screen.path);
     expect(
-      offences,
-      `These screens render a quote without asking \`quoteIsEstimated\` whether it is one. A figure from an IP is an estimate whatever fields the store filled in, and one rendered as final is the failure this rule exists to stop:\n${offences.map((path) => `  ${path}`).join("\n")}`,
+      offenses,
+      `These screens render a quote without asking \`quoteIsEstimated\` whether it is one. A figure from an IP is an estimate whatever fields the store filled in, and one rendered as final is the failure this rule exists to stop:\n${offenses.map((path) => `  ${path}`).join("\n")}`,
     ).toEqual([]);
   });
 });

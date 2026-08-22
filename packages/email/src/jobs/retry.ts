@@ -41,7 +41,7 @@ import { getJob } from "./read";
  *   never make.
  * - `bounced` — the recipient's server said permanently no, and the bounce handler only sets this
  *   state while suppressing the address, so a retry is the previous case wearing a different label.
- * - `cancelled` — somebody withdrew it. Reviving a withdrawal is a separate decision, not a retry, and
+ * - `canceled` — somebody withdrew it. Reviving a withdrawal is a separate decision, not a retry, and
  *   it should have to be made somewhere it is named.
  *
  * ## The attempt budget is reset, and it has to be
@@ -171,7 +171,7 @@ export async function retryJob(deps: RetryDeps, jobId: string): Promise<RetryRes
       // Workflow is still starting. A retried row's original `createdAt` is by definition old, so
       // leaving it would give the row *zero* grace: the next cron tick would claim it and dispatch a
       // second send Workflow for a job this function had already dispatched successfully. `runSend`
-      // short-circuits only on `sent`/`cancelled`, so both instances would render and send, and the
+      // short-circuits only on `sent`/`canceled`, so both instances would render and send, and the
       // recipient would get two copies. Re-stamping it puts the retry inside the same window a fresh
       // enqueue gets, which is exactly what a retry is.
       createdAt: SQLiteDate.encode(deps.now),

@@ -98,7 +98,7 @@ export const authClient = createAuthClient({
 
 The kit's own sign-in plugins have client halves too, and they go in the same list — nothing about the client is inherited from the server.
 
-The one thing that does need the server's type is `inferAdditionalFields`, which teaches the client about extra user and session fields. `AuthInstance` is parameterised in the plugin tuple for exactly that:
+The one thing that does need the server's type is `inferAdditionalFields`, which teaches the client about extra user and session fields. `AuthInstance` is parameterized in the plugin tuple for exactly that:
 
 ```ts
 import type { AuthInstance } from "@pithy-sh/auth/src/instance/auth";

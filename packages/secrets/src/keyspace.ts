@@ -15,7 +15,7 @@ import { z } from "zod";
  * A member is stored under `<entry>/<key>` in the same encrypted store as everything else, so at-rest
  * rotation, the audit and teardown all keep working with no second storage path. `/` is the one
  * separator, and `defineSecretRegistry` refuses it in an entry name — so a keyspace member can never
- * collide with a declared secret, and no key can compose its way into a neighbouring keyspace.
+ * collide with a declared secret, and no key can compose its way into a neighboring keyspace.
  *
  * That is the whole security argument, and it rests on {@link SecretKey}: every key is validated
  * before it is composed, so `../OTHER/victim` is refused at the call rather than resolved at the

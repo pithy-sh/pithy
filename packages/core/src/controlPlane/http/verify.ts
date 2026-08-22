@@ -141,7 +141,7 @@ export async function verifyControlPlaneCall(
     deny(`signature does not verify under kid ${header.kid}`);
   }
 
-  // 8. The lifetime this Worker is willing to honour, whatever the token asked for.
+  // 8. The lifetime this Worker is willing to honor, whatever the token asked for.
   const lifetime = claims.exp - claims.iat;
   if (lifetime <= 0 || lifetime > deps.config.maxTokenLifetimeSeconds) {
     deny(`token lifetime ${lifetime}s exceeds the ${deps.config.maxTokenLifetimeSeconds}s maximum`);

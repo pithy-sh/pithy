@@ -108,7 +108,7 @@ Filter size is checked before the call too. Vectorize caps a filter's compact JS
 
 The embedding model is pinned per index, in config, and applied to **writes and queries alike**.
 
-That is the one rule worth stating twice, because breaking it does not fail. An index built with one model and queried with another returns neighbours from a space the query vector does not live in — real scores, ranked confidently, quietly wrong. There is no error to catch and no metric that moves. So the model is not a per-call parameter here; it is a property of the index, and both paths read the same one.
+That is the one rule worth stating twice, because breaking it does not fail. An index built with one model and queried with another returns neighbors from a space the query vector does not live in — real scores, ranked confidently, quietly wrong. There is no error to catch and no metric that moves. So the model is not a per-call parameter here; it is a property of the index, and both paths read the same one.
 
 A model whose output does not match the index's `dimensions` fails on the first write or query with `vector/dimension_mismatch`, naming both numbers.
 

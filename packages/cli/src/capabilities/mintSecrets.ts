@@ -59,7 +59,7 @@ export function storeSecretMinter(options: {
 }): MintStoreSecret {
   const audit = options.audit ?? (async () => {});
   return async ({ binding, secretName, entry }) => {
-    // Defence in depth. `secretsStoreBindings` asks `isMintableSecret` before calling, so arriving here
+    // Defense in depth. `secretsStoreBindings` asks `isMintableSecret` before calling, so arriving here
     // with a supplied secret is a bug — and one that would write a random string where an OAuth client
     // secret was meant, leaving a gap that looks filled in. It refuses instead of inventing.
     if (!isMintableSecret(entry) || entry.devValue === undefined) {
@@ -195,7 +195,7 @@ function isManagerMinted(entry: SecretRegistryEntry | undefined): entry is Manag
  * close it: two runs can both see a global secret absent. `create` closes it — the loser is refused at
  * its first write instead of fanning its own value into the environments the winner has not reached.
  * That is also why `ensure` is gone from `management/writeSecret.ts` entirely: a mode whose whole
- * behaviour is to be quiet has no safe caller here.
+ * behavior is to be quiet has no safe caller here.
  *
  * `resolveWriteTargets` is the same routing `dispatchSecretWrite` applies, so where a value lands cannot
  * disagree with where `pithy secrets create` puts the same secret.

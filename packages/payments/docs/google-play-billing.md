@@ -147,7 +147,7 @@ A refunded **one-time** purchase takes a different route, because Play's voided-
 
 ## Testing without spending money
 
-Add licence testers under **Users and permissions** → **Licence testing** in the Play Console. Their purchases are real Play purchases marked as test purchases, and payments treats every one of them as **sandbox** — a subscription carrying `testPurchase`, a one-time purchase with `purchaseType: 0`. A test purchase reaching a production deployment is refused with `payments/environment_mismatch` and grants nothing. That is deliberate and it is the single most common in-app-purchase defect there is.
+Add license testers under **Users and permissions** → **License testing** in the Play Console. Their purchases are real Play purchases marked as test purchases, and payments treats every one of them as **sandbox** — a subscription carrying `testPurchase`, a one-time purchase with `purchaseType: 0`. A test purchase reaching a production deployment is refused with `payments/environment_mismatch` and grants nothing. That is deliberate and it is the single most common in-app-purchase defect there is.
 
 Point a staging deployment at the same Play app with its own Pub/Sub subscription and its own audience, and test purchases project there.
 
@@ -164,4 +164,4 @@ Point a staging deployment at the same Play app with its own Pub/Sub subscriptio
 - [ ] `setObfuscatedAccountId` set in the app's billing flow, from a **random per-subject value your server minted** — never the subject's id or anything derivable from it.
 - [ ] The app acknowledges purchases through Play Billing.
 - [ ] `packageName` + `serviceAccountEmail` + `privateKey` + `pubsubAudience` stored together via `pithy secrets create payments-provider-credentials`; `rails: { google: true }` in config.
-- [ ] Licence testers added, and a staging deployment with its own subscription and audience to project their purchases.
+- [ ] License testers added, and a staging deployment with its own subscription and audience to project their purchases.

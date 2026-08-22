@@ -24,7 +24,7 @@ import { type EmailTheme, widthPx } from "./theme";
  * **A transactional template can never be given one.** The affordance is gated on the kind the template
  * itself declares, so there is no argument a call site could pass to put an opt-out on a sign-in link —
  * and `renderEmail` reports the URL it minted, so the send path sets `List-Unsubscribe` from what was
- * actually rendered rather than from a second, drift-prone judgement of its own.
+ * actually rendered rather than from a second, drift-prone judgment of its own.
  */
 
 /** The mount prefix of the callback routes. Tracking URLs are built against `${baseUrl}${CALLBACK_BASE}`. */

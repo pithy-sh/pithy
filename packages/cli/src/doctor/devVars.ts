@@ -35,7 +35,7 @@ import { declaredVars } from "./wranglerVars";
  * **Every key in the root file is classified, and the classification is total.** That is what stops a
  * new shape of key from arriving unreported, which is the failure this module exists for: the misplaced
  * check next door reached `backend: "d1"` and every other kind of stranded value fell through it in
- * silence. A key is either read from that file, reported by a neighbouring check, or reported here.
+ * silence. A key is either read from that file, reported by a neighboring check, or reported here.
  *
  * **Reported, never fixed, and never fatal to the exit.** #154 said migration is reported rather than
  * automatic, and silently rewriting an adopter's `.dev.vars` is what #142 was about. Every project that

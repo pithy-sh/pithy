@@ -61,7 +61,7 @@ const CATALOG: PaymentsConfigInput = {
  *
  * Deliberately not reset inside {@link deps}: two sweeps in one test each minting `row-1` would collide on
  * the table's primary key for any event the second sweep had not already recorded, which is a fixture
- * artefact that would read as a product failure.
+ * artifact that would read as a product failure.
  */
 let seq = 0;
 
@@ -151,7 +151,7 @@ function streamAndTransaction(page: unknown[], txn: unknown): PaddleHttpFetch & 
 }
 
 /**
- * A transport that honours `after=`, so consecutive sweeps see the stream the way Paddle serves it.
+ * A transport that honors `after=`, so consecutive sweeps see the stream the way Paddle serves it.
  *
  * The fixed-page {@link stream} is right for a single run. A case that sweeps three times to watch an
  * attempt count climb needs the second run to resume where the first stopped, and a stub that ignores the
@@ -518,7 +518,7 @@ describe("sweepPaddle", () => {
    * is not a fact about the adjustment — a rotated key, a shared sandbox, and an adjustment swept ahead of
    * its own transaction all produce it — so it goes through the same bound a thrown read already used.
    *
-   * The neighbouring partial-refund case is the anti-vacuity: its note comes from a transaction the read
+   * The neighboring partial-refund case is the anti-vacuity: its note comes from a transaction the read
    * *returned*, and it still finishes the row with `ignored: 1`.
    */
   test("an adjustment whose transaction Paddle will not show is repairable, not finished", async () => {

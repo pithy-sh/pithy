@@ -31,7 +31,7 @@ import { tightenMode } from "./mode";
  * envelopes, seeded into a Worker's local `SECRETS` store. This holds the flat `KEY=value` set that has
  * to be a binding, because dev has no Secrets Store to read one from. A `d1` secret is never here.
  *
- * Same directory, same 0700, same 0600 as its neighbour — for the same reason: the dev master key is in
+ * Same directory, same 0700, same 0600 as its neighbor — for the same reason: the dev master key is in
  * it, and the umask is not a permission policy for a credential.
  */
 
@@ -125,7 +125,7 @@ export async function readBootstrapVars(projectDir: string, options: StatePathOp
  * preference along with every value this module had. Only `ENOENT` licenses starting from `{}`.
  *
  * A value is never removed here. A name that leaves the registry leaves a line nothing reads; `pithy
- * doctor` is where a value nobody declares gets named, in this file exactly as in its neighbour.
+ * doctor` is where a value nobody declares gets named, in this file exactly as in its neighbor.
  *
  * **An empty `values` returns before the read, and that is a decision (#222).** The refusal above exists
  * because a merge into an invented `{}` gets renamed over another tenant's keys; a call that writes

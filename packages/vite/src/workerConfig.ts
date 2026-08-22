@@ -46,7 +46,7 @@ export interface LoadedWorkerConfig {
  * quoting it — three near-verbatim copies of that filter meant the hole #223 found in it had to be closed
  * three times (#228).
  *
- * What stays restated here is the policy: which causes this loader recognises, and what it says about
+ * What stays restated here is the policy: which causes this loader recognizes, and what it says about
  * each. Those are genuinely per-surface, and this plugin still cannot import the CLI's.
  */
 export type WorkerConfigFailureKind =
@@ -68,7 +68,7 @@ export interface WorkerConfigFailure {
 }
 
 /**
- * The message, de-coloured, for this classifier's own pattern tests — never for output.
+ * The message, de-colored, for this classifier's own pattern tests — never for output.
  *
  * What may be *said* is core's {@link safeReason}, and only core's. This plugin cannot import the CLI's
  * refusals and never could, which is why the sentences below are restated here — but the *filter* those

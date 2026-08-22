@@ -244,7 +244,7 @@ const deprovision = defineCommand({
       const cf = new CloudflareClients({ accountId, apiToken });
       // The project name scopes both the widget names teardown recomputes and the dispatcher's
       // `<project>-<env>-secrets-write` target — and it is `requireProjectName`, because a guessed one
-      // would delete a neighbouring project's widget (docs/NAMING.md).
+      // would delete a neighboring project's widget (docs/NAMING.md).
       const projectConfig = await loadProject(projectDir);
       const project = requireProjectName(projectConfig);
       // The project's own environment set (#241): what this command fans out across, rather than a

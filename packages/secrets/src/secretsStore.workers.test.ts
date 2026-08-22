@@ -411,7 +411,7 @@ describe("secretsStore — an unreadable row costs its own name and no other (#3
     expect(missing).toBeInstanceOf(SecretNotFoundError);
   });
 
-  test("a subset carries the unreadable secret's failure and no neighbour's", async () => {
+  test("a subset carries the unreadable secret's failure and no neighbor's", async () => {
     await store().put("auth-session-secret", initialVersionedValue("seeded-session-key"));
     await store().put("auth-github-credentials", initialVersionedValue("the-github-secret"));
     await corrupt("auth-github-credentials");
@@ -421,7 +421,7 @@ describe("secretsStore — an unreadable row costs its own name and no other (#3
 
     const secrets = await secretsStore(envWith(), authRegistry);
 
-    // The slice a capability composes: the neighbour's unreadable row is not in it, and cannot trip it.
+    // The slice a capability composes: the neighbor's unreadable row is not in it, and cannot trip it.
     expect(secrets.subset(sessionOnly).get("auth-session-secret")).toBe("seeded-session-key");
   });
 

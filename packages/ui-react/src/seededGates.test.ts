@@ -52,7 +52,7 @@ type Held =
   | { readonly gate: string; readonly expectation: "canary" }
   /**
    * Held by a gate the kit **keeps**, named by its path from the repository root, with the reason it
-   * cannot travel. Two reasons have turned up so far and both are walls rather than judgements: the
+   * cannot travel. Two reasons have turned up so far and both are walls rather than judgments: the
    * party who can break the invariant is the kit rather than the adopter, or the gate cannot run where
    * it would be seeded. Either way the ledger says so, rather than looking complete.
    *

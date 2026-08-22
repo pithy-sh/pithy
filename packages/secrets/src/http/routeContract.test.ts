@@ -174,7 +174,7 @@ describe("secrets route contract", () => {
   });
 
   test("the advertised admin surface names the same scope the route checks", () => {
-    // Drift here means a management client greys out an action it may perform, or offers one it may not.
+    // Drift here means a management client grays out an action it may perform, or offers one it may not.
     const declared = new Map(SECRETS_ROUTES.map((route) => [`/secrets${route.path}`, route.scope]));
     for (const advertised of secretsAdminRoutes("/secrets")) {
       expect(declared.get(advertised.path), advertised.path).toBe(advertised.scope);

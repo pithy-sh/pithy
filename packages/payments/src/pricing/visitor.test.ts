@@ -11,8 +11,8 @@ import { fetchPriceVisitor, readPaddleCustomer } from "./visitor";
  *
  * The response is JSON off a network, and a reader that trusted it would put `undefined` into a Paddle
  * price request and a price nobody can read on the page. Everything below is a malformed, hostile or
- * absent answer, and the required behaviour is the same for all of them: `null`, which resolves to the
- * IP location and renders the figure labelled an estimate. **Failing to an honest guess is the safe
+ * absent answer, and the required behavior is the same for all of them: `null`, which resolves to the
+ * IP location and renders the figure labeled an estimate. **Failing to an honest guess is the safe
  * direction; the unsafe one is reading a failed request as proof there is no address on file.**
  */
 

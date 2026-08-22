@@ -132,7 +132,7 @@ export type BillingInterval = z.infer<typeof BillingInterval>;
  * Deliberately not a mirror of either provider's create body: the fields it does not have are as considered
  * as the ones it does. There is no "applies to these products" — that is a commercial policy an adopter owns
  * — and no "first-time customers only", which the two stores model incompatibly enough that supporting it
- * would mean promising behaviour on one rail we could not deliver on the other.
+ * would mean promising behavior on one rail we could not deliver on the other.
  */
 export const DiscountTerms = z
   .object({

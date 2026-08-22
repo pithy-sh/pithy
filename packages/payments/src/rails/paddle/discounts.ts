@@ -34,7 +34,7 @@ import { type PaddleEnvironment, type PaddleHttpFetch, paddleHttpFetch, paddleJs
  * `PITHY_RECON-25` was refused with a bare `"Invalid request."` and nothing else.
  *
  * **The shared schema is not narrowed, and the refusal lands here instead.** Narrowing `DiscountCode`
- * would be a behaviour change for every Stripe and Lemon Squeezy adopter, refusing codes those rails
+ * would be a behavior change for every Stripe and Lemon Squeezy adopter, refusing codes those rails
  * accept today, in service of a rail they do not run. So this rail checks its own rule and says what it
  * is — the adopter reads a sentence naming the two characters Paddle will not take, rather than an
  * opaque 400 from Paddle. `DiscountCode`'s promise is now conditional, and `docs/paddle.md` says so.
@@ -59,7 +59,7 @@ export interface PaddleDiscountOptions {
    * The currency this project's Paddle catalog prices in, when the project declared one.
    *
    * Only used to refuse a fixed discount in another currency before it reaches Paddle. Absent means the
-   * check cannot be made and Paddle's own judgement stands — better than inventing a currency.
+   * check cannot be made and Paddle's own judgment stands — better than inventing a currency.
    */
   storeCurrency?: string;
   /** The HTTP seam. Defaults to the runtime's `fetch`. */

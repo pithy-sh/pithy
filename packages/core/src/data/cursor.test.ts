@@ -48,7 +48,7 @@ describe("cursor encoding", () => {
   });
 
   it("treats anything malformed as a first page rather than an error", () => {
-    // A cursor that travelled through a URL, got truncated, or outlived a deploy must not turn an
+    // A cursor that traveled through a URL, got truncated, or outlived a deploy must not turn an
     // ordinary client bug into a page that never loads — and must not let a prober tell a parse failure
     // from a not-found.
     expect(decodeCursor(undefined)).toBeUndefined();

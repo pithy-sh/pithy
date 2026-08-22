@@ -105,7 +105,7 @@ describe("createLemonSqueezyCheckoutSession", () => {
     expect(stamped(transport)[LEMON_SQUEEZY_CUSTOM_ACCOUNT]).toBe("organization:ada");
   });
 
-  test("what checkout stamps is what the webhook reader honours — the loop, both ends visible", async () => {
+  test("what checkout stamps is what the webhook reader honors — the loop, both ends visible", async () => {
     const transport = stub();
     await createLemonSqueezyCheckoutSession(INPUT, { credentials: CREDENTIALS, deployment: "prod", transport });
     const custom = stamped(transport) as Record<string, string>;

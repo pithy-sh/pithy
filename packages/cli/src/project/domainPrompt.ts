@@ -76,7 +76,7 @@ export function zoneForHostname(hostname: string, zones: readonly ZoneInfo[]): Z
 }
 
 /**
- * How a zone reads in a picker. A zone that is not yet active is shown and labelled, never hidden:
+ * How a zone reads in a picker. A zone that is not yet active is shown and labeled, never hidden:
  * hiding it makes the account look like it does not have the domain, which is the more confusing failure.
  */
 export function describeZone(zone: ZoneInfo): string {

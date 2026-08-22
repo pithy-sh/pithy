@@ -26,7 +26,7 @@ import { z } from "zod";
 export const MemberState = z
   .enum(["invited", "accepted", "opted_in", "lapsed", "removed"])
   .describe(
-    "Roster state, replayed from the event log: `invited` (we sent the invitation), `accepted` (they answered it — they have agreed to test, so their address is ready to go on the store's tester list), `opted_in` (they followed the link through to the store's own opt-in page, which is the closest thing to enrolment Pithy can observe), `lapsed` (they opted out), `removed` (the developer took them off). Inactivity never writes any of these, and neither does signing in — that is activity, not membership.",
+    "Roster state, replayed from the event log: `invited` (we sent the invitation), `accepted` (they answered it — they have agreed to test, so their address is ready to go on the store's tester list), `opted_in` (they followed the link through to the store's own opt-in page, which is the closest thing to enrollment Pithy can observe), `lapsed` (they opted out), `removed` (the developer took them off). Inactivity never writes any of these, and neither does signing in — that is activity, not membership.",
   );
 export type MemberState = z.output<typeof MemberState>;
 
@@ -91,7 +91,7 @@ export type ActivityState = z.output<typeof ActivityState>;
 export const RiskBand = z
   .enum(["healthy", "watch", "at_risk", "critical", "unknown"])
   .describe(
-    "The band a tester's health score falls in, which selects their daily-survival prior. `unknown` is for a tester with no score at all — unobservable or unreachable — and must render grey rather than red.",
+    "The band a tester's health score falls in, which selects their daily-survival prior. `unknown` is for a tester with no score at all — unobservable or unreachable — and must render gray rather than red.",
   );
 export type RiskBand = z.output<typeof RiskBand>;
 

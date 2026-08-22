@@ -112,7 +112,7 @@ describe("linkProviderAccount", () => {
   });
 
   test("a store account already bound to someone else stays bound to them", async () => {
-    // `UNIQUE (rail, providerAccountId)` is the constraint; this is what it means in behaviour. Rebinding
+    // `UNIQUE (rail, providerAccountId)` is the constraint; this is what it means in behavior. Rebinding
     // would let a second holder capture the first one's renewal notifications.
     await linkProviderAccount(env.DB, "apple", "token-1", ADA, { now: NOW });
     expect(await linkProviderAccount(env.DB, "apple", "token-1", GRACE, { now: NOW })).toEqual(ADA);

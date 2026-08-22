@@ -93,7 +93,7 @@ const Limit = z.coerce
 const WritableAddress = z
   .email()
   .max(254)
-  .describe("The address to block. Normalised (trimmed, lowercased) before it is stored or compared.");
+  .describe("The address to block. Normalized (trimmed, lowercased) before it is stored or compared.");
 
 /**
  * An address as an admin route accepts it for a **read or an undo**, deliberately looser than
@@ -109,7 +109,7 @@ const AddressFilter = z
   .min(3)
   .max(254)
   .includes("@")
-  .describe("An address to match exactly, normalised the same way the stored key is.");
+  .describe("An address to match exactly, normalized the same way the stored key is.");
 
 /**
  * The `:id` of one job.

@@ -20,7 +20,7 @@ import { ensureOwnerOnlyDirFor } from "./mode";
  * every tool that follows one.
  *
  * **This is #131's directory, not a second convention.** `<config>/<project>/dev.json` was already
- * there; this is its neighbour, resolved through the same {@link stateDir} — `$PITHY_CONFIG_DIR`, then
+ * there; this is its neighbor, resolved through the same {@link stateDir} — `$PITHY_CONFIG_DIR`, then
  * `%APPDATA%\pithy`, then `$XDG_CONFIG_HOME/pithy`, then `~/.config/pithy`. Two implementations of
  * "where does config live" is the defect shape, and the Windows branch is the half a second one forgets.
  *

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { parseAst } from "rolldown/parseAst";
 import { describe, expect, test } from "vitest";
 import { sourceFiles } from "./sourceFiles";
-import { analyseDrivers, type DriverSource, type Node } from "./workflowDrivers";
+import { analyzeDrivers, type DriverSource, type Node } from "./workflowDrivers";
 
 /**
  * **No Workflow driver body reads a clock or a random source outside a step.** (#331)
@@ -15,7 +15,7 @@ import { analyseDrivers, type DriverSource, type Node } from "./workflowDrivers"
  *
  * Three things have to be true at once for a gate like this to mean anything, and each is a test below:
  *
- *   1. **The rule finds a violation when there is one.** Fixtures, run through the same analyser the tree
+ *   1. **The rule finds a violation when there is one.** Fixtures, run through the same analyzer the tree
  *      scan uses, with the defect present and then moved into a step.
  *   2. **It ranges over every shipped Workflow.** The population is discovered from the filesystem and then
  *      *cross-checked against a second, independent enumeration* — the `className` every `WorkflowSpec`
@@ -31,7 +31,7 @@ import { analyseDrivers, type DriverSource, type Node } from "./workflowDrivers"
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
 /**
- * The parser, supplied here rather than imported by the analyser — see `ParseModule`.
+ * The parser, supplied here rather than imported by the analyzer — see `ParseModule`.
  *
  * Rolldown's, which is oxc: ESTree-shaped and TypeScript-aware. It is the parser `vite` already downloads
  * for this repository's own test runner, so the gate costs no package and no byte that was not here anyway.
@@ -48,13 +48,13 @@ function packageSources(): DriverSource[] {
   }));
 }
 
-const analysis = analyseDrivers(packageSources(), parseModule);
+const analysis = analyzeDrivers(packageSources(), parseModule);
 
 /**
  * Every Workflow the kit ships, as `path#ClassName`.
  *
- * **This is a list, and it is meant to be.** Everything else is derived — the analyser re-reads the tree on
- * every run, so a Workflow added tomorrow is analysed tomorrow with nothing to remember. But "derived" and
+ * **This is a list, and it is meant to be.** Everything else is derived — the analyzer re-reads the tree on
+ * every run, so a Workflow added tomorrow is analyzed tomorrow with nothing to remember. But "derived" and
  * "unnoticed" are the same thing unless something says out loud what the derivation currently finds, so this
  * is the tripwire: a new Workflow fails here, and gets added by a human who has read the rule.
  *
@@ -127,9 +127,9 @@ describe("the population this gate ranges over", () => {
 });
 
 describe("the rule, proved against fixtures before it is trusted against the tree", () => {
-  /** Analyse one module's text as though it were a file in the tree. */
-  function analyse(text: string) {
-    return analyseDrivers([{ path: "fixture.ts", text }], parseModule);
+  /** Analyze one module's text as though it were a file in the tree. */
+  function analyze(text: string) {
+    return analyzeDrivers([{ path: "fixture.ts", text }], parseModule);
   }
 
   const CLASS_WITH_BODY_CLOCK = `
@@ -141,7 +141,7 @@ describe("the rule, proved against fixtures before it is trusted against the tre
     }
   `;
 
-  const CLASS_WITH_JOURNALLED_CLOCK = `
+  const CLASS_WITH_JOURNALED_CLOCK = `
     class FixtureWorkflow extends WorkflowEntrypoint<Env, P> {
       override async run(event: WorkflowEvent<P>, step: WorkflowStep): Promise<void> {
         const nowMs: number = await step.do("start", async () => Date.now());
@@ -152,7 +152,7 @@ describe("the rule, proved against fixtures before it is trusted against the tre
   `;
 
   test("a clock read in a driver body is named, with its line and the expression that did it", () => {
-    const { findings } = analyse(CLASS_WITH_BODY_CLOCK);
+    const { findings } = analyze(CLASS_WITH_BODY_CLOCK);
     expect(findings).toHaveLength(1);
     expect(findings[0]).toMatchObject({
       name: "FixtureWorkflow.run",
@@ -164,12 +164,12 @@ describe("the rule, proved against fixtures before it is trusted against the tre
   });
 
   test("the same read inside a step is not — which is the whole distinction the rule draws", () => {
-    expect(analyse(CLASS_WITH_JOURNALLED_CLOCK).findings).toEqual([]);
+    expect(analyze(CLASS_WITH_JOURNALED_CLOCK).findings).toEqual([]);
   });
 
   test("a thunk handed to a step is a definition, not an evaluation", () => {
     // `now: () => new Date()` is the correct pattern, and a gate that refused it would be unusable.
-    const { findings } = analyse(`
+    const { findings } = analyze(`
       class FixtureWorkflow extends WorkflowEntrypoint<Env, P> {
         override async run(event: WorkflowEvent<P>, step: WorkflowStep): Promise<void> {
           const deps = { now: () => new Date(), newId: () => crypto.randomUUID() };
@@ -183,7 +183,7 @@ describe("the rule, proved against fixtures before it is trusted against the tre
   test("a source reached through a module-local helper is named at the helper, not missed at the call", () => {
     // Email's clock was exactly this: one `await buildSendDeps(this.env)` in the body, and the read a frame
     // down. A walk that stopped at the call site would have reported this file clean.
-    const { findings } = analyse(`
+    const { findings } = analyze(`
       function buildDeps(env: Env) {
         return { db: database(env.DB), now: new Date() };
       }
@@ -201,7 +201,7 @@ describe("the rule, proved against fixtures before it is trusted against the tre
   test("an injected clock is a source too, however it is spelled", () => {
     // The #331 instance. `deps.now()` names no global, so nothing about `Date` could have caught it — and
     // that is the argument for a rule about arity rather than about names.
-    const { findings } = analyse(`
+    const { findings } = analyze(`
       export async function runPass(deps: PassDeps, step: FixtureStep): Promise<void> {
         const now = deps.now();
         await step.do("work", async () => write(now));
@@ -217,7 +217,7 @@ describe("the rule, proved against fixtures before it is trusted against the tre
   test("a delegate is found by the shape of its step runner, not by what the interface is called", () => {
     // `ReconcileStep`, `ReprocessStep` and `StepRunner` are three names for one seam. A fourth is found the
     // same way: one member, `do`, taking a name and a callback.
-    const { drivers } = analyse(`
+    const { drivers } = analyze(`
       export interface WhateverTheyCallIt {
         do<T>(name: string, callback: () => Promise<T>): Promise<T>;
       }
@@ -229,7 +229,7 @@ describe("the rule, proved against fixtures before it is trusted against the tre
   });
 
   test("an entropy source is caught by the same rule as a clock, with nothing added to catch it", () => {
-    const { findings } = analyse(`
+    const { findings } = analyze(`
       class FixtureWorkflow extends WorkflowEntrypoint<Env, P> {
         override async run(event: WorkflowEvent<P>, step: WorkflowStep): Promise<void> {
           const id = crypto.randomUUID();

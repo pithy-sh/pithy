@@ -32,7 +32,7 @@ export interface D1ReplayGuardOptions {
 }
 
 /**
- * Delete rows whose token could no longer be accepted under any clock this Worker honours.
+ * Delete rows whose token could no longer be accepted under any clock this Worker honors.
  *
  * **Pruning is the one thing KV gave for nothing** — its entries expired themselves, and a table does
  * not. A replay table that only grows is a slow leak in every adopter's database, so this is deliberate

@@ -91,7 +91,7 @@ export function messageView(message: SupportMessage): SupportMessageView {
     fromName: message.fromName ?? null,
     toAddress: message.toAddress ?? null,
     subject: message.subject,
-    // Already sanitised at ingest. The raw original stays in R2 and is never served here.
+    // Already sanitized at ingest. The raw original stays in R2 and is never served here.
     htmlBody: message.htmlBody ?? null,
     textBody: message.textBody,
     emailJobId: message.emailJobId ?? null,
@@ -129,7 +129,7 @@ export function myMessageView(message: SupportMessage, attachments: SupportAttac
     direction: message.direction,
     // `textBody` on both sides. An answer is composed as plain text by `reply/send.ts`, and a
     // submission was plain text when it arrived — so there is no `htmlBody` to hand back, and nothing
-    // here needs a sanitiser because nothing here is markup.
+    // here needs a sanitizer because nothing here is markup.
     body: message.textBody,
     context: message.context ?? null,
     attachments,

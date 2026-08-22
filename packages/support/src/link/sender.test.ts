@@ -10,7 +10,7 @@ import { resolveSenderContext, resolveSubmitterAccount, resolveSubmitterContext,
  *
  * The linkage is the capability's headline feature and its sharpest edge. `From:` is an
  * unauthenticated claim, so the panel it drives has to distinguish *matched* from *verified*: a name
- * beside an address is a guess an operator can sanity-check, while an itemised purchase history is
+ * beside an address is a guess an operator can sanity-check, while an itemized purchase history is
  * what somebody decides to issue a refund or reset an account on. These tests pin that split.
  *
  * `@pithy-sh/auth` and `@pithy-sh/payments` are reached by guarded dynamic import and are not

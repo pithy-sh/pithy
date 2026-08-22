@@ -118,7 +118,7 @@ export interface ClockInput {
   readonly targetSize: number;
   /** The window in force, in days. */
   readonly windowDays: number;
-  /** What a dip below target does to the run. Pithy's assumption, not Google's documented behaviour. */
+  /** What a dip below target does to the run. Pithy's assumption, not Google's documented behavior. */
   readonly resetPolicy: ResetPolicy;
 }
 

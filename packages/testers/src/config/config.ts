@@ -77,7 +77,7 @@ export function isStoreOptInUrl(value: string): boolean {
 export const TesterPlatform = z
   .enum(["android", "ios"])
   .describe(
-    "Which store's beta programme this cohort serves. `android` is the default because the 12-for-14 requirement that motivates this capability is Google Play's; `ios` covers a TestFlight cohort, which has no equivalent minimum.",
+    "Which store's beta program this cohort serves. `android` is the default because the 12-for-14 requirement that motivates this capability is Google Play's; `ios` covers a TestFlight cohort, which has no equivalent minimum.",
   );
 export type TesterPlatform = z.output<typeof TesterPlatform>;
 
@@ -90,7 +90,7 @@ export type TesterPlatform = z.output<typeof TesterPlatform>;
 export const ResetPolicy = z
   .enum(["reset", "pause"])
   .describe(
-    "Pithy's ASSUMPTION about a dip below target: `reset` restarts the streak from zero, `pause` holds it and resumes. Google's actual behaviour is undocumented. `reset` is the default deliberately — an estimate that errs toward 'you are not finished yet' fails safe, and being told day fourteen while actually on day three is the expensive mistake.",
+    "Pithy's ASSUMPTION about a dip below target: `reset` restarts the streak from zero, `pause` holds it and resumes. Google's actual behavior is undocumented. `reset` is the default deliberately — an estimate that errs toward 'you are not finished yet' fails safe, and being told day fourteen while actually on day three is the expensive mistake.",
   );
 export type ResetPolicy = z.output<typeof ResetPolicy>;
 
@@ -333,7 +333,7 @@ export const CohortDefaults = z
         "The roster cap for a new cohort. A hundred by default — not a store limit, but the size of roster one person can still chase by hand. Play's closed-testing ceiling is 2,000 per email list; the widely-repeated 100 figure is the *internal* track's cap and does not apply here.",
       ),
     targetPlatform: TesterPlatform.default("android").describe(
-      "Which store's programme new cohorts serve by default. Decides which registered device counts as usable, and nothing else.",
+      "Which store's program new cohorts serve by default. Decides which registered device counts as usable, and nothing else.",
     ),
     storeOptInUrl: z
       .string()
@@ -344,10 +344,10 @@ export const CohortDefaults = z
           "storeOptInUrl must be an https URL on play.google.com or testflight.apple.com — the opt-in route renders it as a link on a page served from your own domain, so anything else would put your domain behind a link you did not choose.",
       })
       .describe(
-        "The store's own opt-in page every new cohort inherits — `https://play.google.com/apps/testing/<package>` for Play, or a TestFlight public link. Copy it from the console; Google documents no format for it, so Pithy will not guess one. THIS is where a tester actually enrols: Pithy's confirmation link records that they went and then sends them here.",
+        "The store's own opt-in page every new cohort inherits — `https://play.google.com/apps/testing/<package>` for Play, or a TestFlight public link. Copy it from the console; Google documents no format for it, so Pithy will not guess one. THIS is where a tester actually enrolls: Pithy's confirmation link records that they went and then sends them here.",
       ),
     resetPolicy: ResetPolicy.default("reset").describe(
-      "What a dip below target does to the streak, for new cohorts. Pithy's assumption, not Google's documented behaviour.",
+      "What a dip below target does to the streak, for new cohorts. Pithy's assumption, not Google's documented behavior.",
     ),
   })
   .describe(
@@ -506,7 +506,7 @@ export function confirmUrl(config: TestersConfig, token: string): string {
  * The link in the second email: through to the store's own opt-in page.
  *
  * Sent only once the developer has added the address to the tester list. It records the strongest
- * enrolment signal Pithy can observe and then hands the tester the store's link.
+ * enrollment signal Pithy can observe and then hands the tester the store's link.
  */
 export function optInUrl(config: TestersConfig, token: string): string {
   return `${requireBaseUrl(config)}${config.basePath}/opt-in/${token}`;

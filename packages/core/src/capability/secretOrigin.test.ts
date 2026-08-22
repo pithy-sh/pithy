@@ -80,15 +80,15 @@ describe("SecretOrigin", () => {
     }
   });
 
-  test("an unrecognised kind fails rather than degrading — a consumer must branch, not guess", () => {
+  test("an unrecognized kind fails rather than degrading — a consumer must branch, not guess", () => {
     expect(SecretOrigin.safeParse({ kind: "conjured" }).success).toBe(false);
   });
 
-  test("an unrecognised issuer keeps its own key — the field degrades, the key cannot", () => {
+  test("an unrecognized issuer keeps its own key — the field degrades, the key cannot", () => {
     // A key is *not* a field. `SecretIssuer.catch("other")` rewrites what it parses, which is harmless
     // on a field and destructive on a key: the rewritten key lands on `other`, and whatever `other`
     // already held is overwritten with no error anywhere. So the key is preserved verbatim and the
-    // reader decides at render time whether it recognises the name.
+    // reader decides at render time whether it recognizes the name.
     const parsed = SecretOrigin.parse({
       kind: "helped",
       issuer: "vercel",
@@ -101,7 +101,7 @@ describe("SecretOrigin", () => {
     });
   });
 
-  test("two unrecognised issuers keep both sets of scopes — nothing collapses onto `other`", () => {
+  test("two unrecognized issuers keep both sets of scopes — nothing collapses onto `other`", () => {
     // The measured harm. Keyed by `SecretIssuer.catch("other")` this parsed to `{ other: ["b"] }`:
     // vercel's requirement was gone, and the parse succeeded, so nothing reported it. Requirements
     // silently lost are worse than a manifest that refuses to parse, because a refusal is visible.
@@ -156,7 +156,7 @@ describe("SecretOrigin", () => {
     expect(result.success ? Object.keys(result.data) : "refused").toBe("refused");
   });
 
-  test("an unrecognised issuer degrades to `other` rather than failing", () => {
+  test("an unrecognized issuer degrades to `other` rather than failing", () => {
     // A capability added tomorrow names an issuer a client built today has never heard of. The client
     // renders it as documented-only and keeps working; it does not blank the pane.
     const parsed = SecretOrigin.parse({
@@ -186,7 +186,7 @@ describe("SecretRotation", () => {
     expect(SecretRotation.safeParse({ kind: "manual", issuer: "github" }).success).toBe(false);
   });
 
-  test("an unrecognised issuer degrades here too", () => {
+  test("an unrecognized issuer degrades here too", () => {
     expect(SecretRotation.parse({ kind: "provider", issuer: "vercel" })).toMatchObject({ issuer: "other" });
   });
 });

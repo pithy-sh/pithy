@@ -14,7 +14,7 @@ Links in a tracked email are HMAC-signed callbacks. A click goes through `/_pith
 
 ### Sending from your own Workflow
 
-A route reaches `enqueue` through the `compose` hook, and should keep doing that — it is typed and explicit. **A Workflow class has no such route:** the runtime constructs it with the worker `env` and nothing else, `enqueue` is a closure rather than a binding, and Workflow params are serialised so a closure cannot travel in one either. Rebuilding the send identity inside the step would put your sending address in a second place, free to drift from `pithy.config.ts`.
+A route reaches `enqueue` through the `compose` hook, and should keep doing that — it is typed and explicit. **A Workflow class has no such route:** the runtime constructs it with the worker `env` and nothing else, `enqueue` is a closure rather than a binding, and Workflow params are serialized so a closure cannot travel in one either. Rebuilding the send identity inside the step would put your sending address in a second place, free to drift from `pithy.config.ts`.
 
 So a durable job asks for it by env alone:
 
@@ -196,7 +196,7 @@ Five scopes, not one admin flag, because these fail in five unrelated directions
 
 **The template payload is never projected. Anywhere.** A `magicLink` job's `payload` holds a working sign-in URL and an OTP job's holds the code, so returning it on a read scope would turn the least privileged credential here into account takeover. There is no flag for it.
 
-**The job list masks the recipient (`ad***@example.com`); the detail route returns the whole address.** That is a bulk-harvest control, not anonymisation: it takes the cost of exporting the list from one request per hundred addresses to one request per address, each individually audited. The domain survives masking, because that is what you read a deliverability problem off. The suppression list is the deliberate exception — an address *is* the record there, which is why reading it is its own scope.
+**The job list masks the recipient (`ad***@example.com`); the detail route returns the whole address.** That is a bulk-harvest control, not anonymization: it takes the cost of exporting the list from one request per hundred addresses to one request per address, each individually audited. The domain survives masking, because that is what you read a deliverability problem off. The suppression list is the deliberate exception — an address *is* the record there, which is why reading it is its own scope.
 
 **Every call is audited, reads included** (`email/jobs_read`, `email/job_read`, `email/job_retried`, `email/suppressions_read`, `email/suppression_added`, `email/suppression_removed`), through the `@pithy-sh/audit` seam. A block is silent to everyone it affects, so the trail is the only record it happened.
 
@@ -339,7 +339,7 @@ The one limit is cross-environment async bounces: because Cloudflare binds one i
 
 **The kind is declared by the template, never passed by a caller.** `transactional` answers something the person just did — a sign-in link, an invitation they are waiting on, a security notice. `elective` is mail somebody chose to receive. Only elective templates render an unsubscribe link, and only they carry `List-Unsubscribe` / `List-Unsubscribe-Post` (RFC 8058 one-click, which the callback route accepts as a POST). Transactional templates carry neither, structurally: there is no argument a call site can pass to put an opt-out on a sign-in link, because `List-Unsubscribe` on a login message publishes a mechanism for disabling authentication — and Gmail's and Yahoo's bulk-sender rules ask for one-click opt-out on *promotional* mail, which this is not.
 
-The two axes are separate on purpose. The category says what a message *is* (and a `marketing` one cannot render at all without an unsubscribe link); the kind says whether it may be *refused*. `testerNudge` is the case that proves they differ — transactional in style, elective in consent, because a testing programme chases one person repeatedly for a fortnight.
+The two axes are separate on purpose. The category says what a message *is* (and a `marketing` one cannot render at all without an unsubscribe link); the kind says whether it may be *refused*. `testerNudge` is the case that proves they differ — transactional in style, elective in consent, because a testing program chases one person repeatedly for a fortnight.
 
 ### The operational notice
 
@@ -364,7 +364,7 @@ await enqueueEmail(deps, {
 
 **It is not `securityAlert`.** That template is about a session — it describes a sign-in and closes with *"if this was you, no action is needed"*, which is the opposite of what an overdue secret means. This one assumes the recipient is the operator and that the fact is true. There is nothing to confirm, only something to do or to know.
 
-**Severity is expressed, not flattened.** Each level owns a word — `Notice:`, `Action needed:`, `Critical:` — and that word leads the subject line, so the urgency is legible in an inbox list before anything is opened. It is repeated in the body and in the plain-text part, and *then* reinforced by colour, which is the order that survives a text-only client, a monochrome screen, and a reader who cannot tell the red one from the amber one. A design where the only difference between "a release is out" and "sign-in is broken" is a hex value has flattened them, and a reader who cannot see that difference learns to ignore both. The severity has no default: a capability that forgot the field would otherwise send an outage at the volume of a release note.
+**Severity is expressed, not flattened.** Each level owns a word — `Notice:`, `Action needed:`, `Critical:` — and that word leads the subject line, so the urgency is legible in an inbox list before anything is opened. It is repeated in the body and in the plain-text part, and *then* reinforced by color, which is the order that survives a text-only client, a monochrome screen, and a reader who cannot tell the red one from the amber one. A design where the only difference between "a release is out" and "sign-in is broken" is a hex value has flattened them, and a reader who cannot see that difference learns to ignore both. The severity has no default: a capability that forgot the field would otherwise send an outage at the volume of a release note.
 
 **It renders with no link-signing key.** The template is transactional, so it never needs an unsubscribe link and never mints a token; nothing about it depends on configuration a project might not have finished. An operational notice that cannot render is the notice you needed most.
 

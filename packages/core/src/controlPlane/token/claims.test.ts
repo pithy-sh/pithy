@@ -57,7 +57,7 @@ describe("ControlPlaneClaims", () => {
     expect(ControlPlaneClaims.safeParse({ ...validClaims, exp: "1800000030" }).success).toBe(false);
   });
 
-  test("rejects a missing jti — replay defence needs an id to claim", () => {
+  test("rejects a missing jti — replay defense needs an id to claim", () => {
     const { jti: _jti, ...withoutJti } = validClaims;
     expect(ControlPlaneClaims.safeParse(withoutJti).success).toBe(false);
     expect(ControlPlaneClaims.safeParse({ ...validClaims, jti: "" }).success).toBe(false);
@@ -77,7 +77,7 @@ describe("ControlPlaneJwsHeader", () => {
     expect(ControlPlaneJwsHeader.parse(validHeader)).toEqual(validHeader);
   });
 
-  test("rejects every alg but EdDSA — the algorithm-confusion defence", () => {
+  test("rejects every alg but EdDSA — the algorithm-confusion defense", () => {
     // `none` and HMAC-verified-with-a-public-key are the two classic JWT breaks. A pinned literal makes
     // both unrepresentable: the header never selects the algorithm, the schema does.
     for (const alg of ["none", "None", "HS256", "RS256", "ES256", "EdDSA "]) {

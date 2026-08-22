@@ -265,7 +265,7 @@ export interface DoctorReport {
    * Whether every declared environment binds the `cf-secrets-store` secrets its Worker reads (#238).
    * `null` outside a project that composes `secrets` — with no registry there is nothing to bind.
    *
-   * It reports and never fails the exit, on the same rule its neighbours follow: every project that
+   * It reports and never fails the exit, on the same rule its neighbors follow: every project that
    * composed `secrets` and has not yet run `pithy secrets provision` is in this state, and so is every
    * project that predates the stanza existing at all. That is a step not yet taken rather than a
    * contradiction. What it must not be is silent — until this line the only thing that reported a
@@ -752,7 +752,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // step of the project block threw. The settings checks are adopter code reached through a live
   // `import()`, so they are guarded like every other probe rather than run inside the block.
   let resolvedWorkers: readonly ResolvedWorker[] = [];
-  // Whether that list is the project's composition or merely the value it was initialised to. An empty
+  // Whether that list is the project's composition or merely the value it was initialized to. An empty
   // list is a legitimate answer and an unresolved one is not, and the settings probe is the one reader
   // that cannot tell them apart on its own: over `[]` it answers `null`, which the JSON contract defines
   // as "no composed capability declares a check". A project whose `pithy.config.ts` would not import
@@ -1808,7 +1808,7 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
         }
       : null,
     // The path is absolute here, not tilde-abbreviated: `--json` is read by agents and scripts, which need
-    // a path they can open, not one a human recognises. The same `null` discipline as the two above.
+    // a path they can open, not one a human recognizes. The same `null` discipline as the two above.
     devPreferences: report.devPreferences
       ? { ...report.devPreferences, detail: describeDevPreferences(report.devPreferences) }
       : null,
@@ -1820,7 +1820,7 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
       : null,
     // Same `null` discipline, and each finding carries its own sentence so an agent fixing it never has to
     // reproduce the wording from the fields. `mode` is octal-formatted here for the same reason: `420` is
-    // not a permission anybody recognises.
+    // not a permission anybody recognizes.
     devSecretsFile: report.devSecretsFile === null ? null : { ...report.devSecretsFile },
     devSecrets: jsonDevSecrets(report.devSecrets),
     // Same `null` discipline once more, and each finding carries its own sentence: one command writes
@@ -1860,7 +1860,7 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
     devVarsLocal: reported(report.devVarsLocal)
       ? { ...report.devVarsLocal, detail: describeDevVarsLocal(report.devVarsLocal as DevVarsLocalCheck) }
       : report.devVarsLocal,
-    // Names only, never a value — the same discipline as its neighbour. The whole `root` classification
+    // Names only, never a value — the same discipline as its neighbor. The whole `root` classification
     // is carried rather than only the findings, because an agent asking "what is in that file and what
     // reads it" is asking the question the classification *is*, and a filtered list answers half of it.
     devVars: reported(report.devVars)

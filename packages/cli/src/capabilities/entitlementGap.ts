@@ -10,7 +10,7 @@ import { readSource, sourcePaths } from "../ci/sourceFiles";
  * The entitlement composition check — the CLI half of the entitlement seam.
  *
  * The seam fails closed: with no provider composed, `c.var.entitlements` holds nothing and every
- * `requireEntitlement()` denies. That is the right runtime behaviour and the wrong developer
+ * `requireEntitlement()` denies. That is the right runtime behavior and the wrong developer
  * experience, because the runtime cannot tell the two cases apart. A legitimately unentitled user and
  * a Worker that forgot to compose `payments` produce the identical 403, so the second one ships,
  * paywalls every paid route shut, and is diagnosed from support tickets.

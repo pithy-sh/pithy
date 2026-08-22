@@ -89,7 +89,7 @@ describe("askCloudflareAccount", () => {
       prompt: prompts({
         password: async () => "cfat_token",
         select: async (options) => {
-          // Both accounts are on offer, each labelled with the id it will pin.
+          // Both accounts are on offer, each labeled with the id it will pin.
           expect(options.options).toHaveLength(2);
           expect(options.options.map((choice) => choice.label).join(" ")).toContain("b2");
           return options.options[1]?.value as string;
@@ -397,7 +397,7 @@ describe("askEnvironments", () => {
     expect(answer.declared).toBe(false);
   });
 
-  test("a cancelled prompt keeps the default rather than proceeding on half an answer", async () => {
+  test("a canceled prompt keeps the default rather than proceeding on half an answer", async () => {
     const answer = await askEnvironments({
       interactive: true,
       prompt: prompts({ text: async () => Symbol("cancel") }),

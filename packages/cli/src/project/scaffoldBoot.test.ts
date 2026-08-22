@@ -41,7 +41,7 @@ import { scaffoldProject } from "./scaffold";
  * what `wrangler dev` reads. A binding no command wrote is a binding this env does not have, and the
  * request fails the way an adopter's did.
  *
- * Node-side rather than under Miniflare, deliberately: `/health` touches no binding's *behaviour*, only
+ * Node-side rather than under Miniflare, deliberately: `/health` touches no binding's *behavior*, only
  * its presence, and bundling a Worker that composes `better-auth` pulls an optional `@opentelemetry/api`
  * import that no bundler in this repo resolves. `project/scaffoldGates.test.ts` covers the compile and
  * `e2e.test.ts` the workerd boot; what is missing, and only missing, is the composition.

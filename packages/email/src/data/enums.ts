@@ -11,7 +11,7 @@ import { z } from "zod";
 export const TemplateCategory = z
   .enum(["transactional", "marketing"])
   .describe(
-    "What a template's message *is*. `transactional` is triggered by a user action (magic link, receipt); `marketing` is promotional, and cannot render at all without an unsubscribe link. The category drives tracking defaults and that hard requirement. Whether a person may *refuse* the message is a separate question, answered by `EmailKind` — a testing-programme nudge is transactional in style and elective in consent.",
+    "What a template's message *is*. `transactional` is triggered by a user action (magic link, receipt); `marketing` is promotional, and cannot render at all without an unsubscribe link. The category drives tracking defaults and that hard requirement. Whether a person may *refuse* the message is a separate question, answered by `EmailKind` — a testing-program nudge is transactional in style and elective in consent.",
   );
 export type TemplateCategory = z.output<typeof TemplateCategory>;
 
@@ -29,10 +29,27 @@ export const SendMode = z
   );
 export type SendMode = z.output<typeof SendMode>;
 
+/**
+ * **`canceled` has one `l` here, and `@pithy-sh/payments` spells it the same way for a different reason.**
+ *
+ * The kit writes American English (pithy-sh/pithy#434). This enum is the kit's own vocabulary — nobody
+ * else names these states, no wire format outside this package carries them — so the spelling was ours to
+ * pick, and we picked the one the rest of the prose uses. `PurchaseStatus` in `payments/src/data/status.ts`
+ * arrives at the same string from the other direction: `canceled` is Paddle's wire value, and rewriting a
+ * vendor's own string would be inventing a translation layer over somebody else's API.
+ *
+ * Two capabilities, two arguments, one spelling. That is the point — the kit stopped spelling one concept
+ * both ways, and neither side has to be re-derived by the next reader.
+ *
+ * **This was settled before the first publish, and that window is closed.** Every package was `0.0.0`,
+ * nothing was on npm, and `0001_init.ts` declares `status` as bare `text` with no CHECK, so no row and no
+ * migration ever held the old value. Changing one now would be a breaking change with a real migration
+ * behind it.
+ */
 export const EmailJobStatus = z
-  .enum(["pending", "scheduled", "sending", "sent", "failed", "suppressed", "bounced", "undispatched", "cancelled"])
+  .enum(["pending", "scheduled", "sending", "sent", "failed", "suppressed", "bounced", "undispatched", "canceled"])
   .describe(
-    "The lifecycle state of an email job. `pending` (immediate, awaiting dispatch) and `scheduled` (future sendAt) are pre-send; `sending` is in-flight; `sent` succeeded; `failed` exhausted retries; `suppressed` was skipped because the address is on the suppression list; `bounced` was reported undeliverable; `undispatched` means this composition binds no send Workflow, so nothing was started and nothing is coming while that holds — a configuration fact, not a transient one, and the scheduler claims those rows once a host worker exists; `cancelled` was withdrawn before sending.",
+    "The lifecycle state of an email job. `pending` (immediate, awaiting dispatch) and `scheduled` (future sendAt) are pre-send; `sending` is in-flight; `sent` succeeded; `failed` exhausted retries; `suppressed` was skipped because the address is on the suppression list; `bounced` was reported undeliverable; `undispatched` means this composition binds no send Workflow, so nothing was started and nothing is coming while that holds — a configuration fact, not a transient one, and the scheduler claims those rows once a host worker exists; `canceled` was withdrawn before sending.",
   );
 export type EmailJobStatus = z.output<typeof EmailJobStatus>;
 

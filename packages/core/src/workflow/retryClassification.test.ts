@@ -26,7 +26,7 @@ declare global {
  *
  * ## Three things have to be true at once, and each is a test below
  *
- *   1. **The check finds a violation when there is one.** Fixtures, through the same analyser the tree
+ *   1. **The check finds a violation when there is one.** Fixtures, through the same analyzer the tree
  *      scan uses, with the raw step used and then handed over.
  *   2. **It ranges over every shipped Workflow.** The population is discovered from the filesystem and
  *      asserted exactly against one hand-written list. The list is not derived from the code it

@@ -27,7 +27,7 @@ const CONNECTION_ID = "5f1f1c3e-6b2a-4d9f-8f2a-1c9d0e5b7a31";
  * An in-memory registry — the D1 half is proven in registry.test.ts against a real database.
  *
  * It mirrors the real gate (#287): a key may be added only while nothing live could have signed for one
- * at the seam. A permissive fake would let this file prove behaviour the actual registry refuses.
+ * at the seam. A permissive fake would let this file prove behavior the actual registry refuses.
  *
  * `seamRegister` is the *worker's* write, not the CLI's — what `POST {basePath}/keys` does to this row
  * when a management client calls it. Nothing in `connect.ts` may reach it; a test plays the worker.

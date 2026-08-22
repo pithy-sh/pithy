@@ -24,7 +24,7 @@ This is the only early-warning signal that exists. A tester dark for eight days 
 
 **Activity is never treated as opt-in continuity.** A tester who confirmed and never opens the app still counts toward Google's twelve — Google counts opt-ins, not engagement — so going quiet makes someone look alarming in the health column and never removes them from the count.
 
-The caveat, stated rather than discovered: **activity exists only for testers who authenticate.** Someone who installs and never signs in is invisible, and an app whose test flow requires no sign-in produces no activity data at all. Those testers report `never_linked` rather than `inactive`, their health is `null` rather than a low score, and the forecast widens its confidence band in exact proportion to how much of the cohort is unobservable. A UI must render them grey, never red — absence of evidence is not evidence of risk.
+The caveat, stated rather than discovered: **activity exists only for testers who authenticate.** Someone who installs and never signs in is invisible, and an app whose test flow requires no sign-in produces no activity data at all. Those testers report `never_linked` rather than `inactive`, their health is `null` rather than a low score, and the forecast widens its confidence band in exact proportion to how much of the cohort is unobservable. A UI must render them gray, never red — absence of evidence is not evidence of risk.
 
 ## Add it
 
@@ -90,7 +90,7 @@ A tester's journey is two links, and the order is forced by the store rather tha
 
 So: the first email asks whether they will help, and records their answer. You add the confirmed addresses to Play Console. The second email carries the link that leads them to the store's own opt-in page.
 
-That also keeps the count honest. Saying yes is consent; it is not enrolment, and counting it as one would inflate the estimate with people who agreed and never joined. `accepted` and `opted_in` are separate states for that reason.
+That also keeps the count honest. Saying yes is consent; it is not enrollment, and counting it as one would inflate the estimate with people who agreed and never joined. `accepted` and `opted_in` are separate states for that reason.
 
 **The store link is rendered, never redirected to.** A 302 would make your Worker a redirector, and it leaves nowhere to put the two instructions that prevent most failures: open the link in a browser rather than the store app, and sign in with the address the email reached you at.
 

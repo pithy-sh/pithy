@@ -228,7 +228,7 @@ describe("runClassification", () => {
     );
 
     // Append-only is what makes a backfill after a model upgrade legible: the history says which
-    // model produced which judgement and what changed, so "what did v2 disagree with v1 about" is a
+    // model produced which judgment and what changed, so "what did v2 disagree with v1 about" is a
     // query. Updating in place would make the upgrade a silent rewrite of the record.
     expect((await history()).map((row) => [row.model, row.category])).toEqual([
       ["@cf/test/classifier-v1", "billing"],

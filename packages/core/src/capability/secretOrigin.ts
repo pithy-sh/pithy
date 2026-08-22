@@ -39,14 +39,14 @@ export const SecretIssuer = z
     "other",
   ])
   .describe(
-    "Who issues this value. `project` means it is arbitrary and ours to make. Every other member is a third party whose console or API is the only source: payments rails, auth's social providers, `cloudflare` for R2, Turnstile and API tokens, and the repository hosts an adopter may rotate CI credentials against. `other` is the floor an unrecognised issuer lands on, so a capability added tomorrow is renderable by a client built today.",
+    "Who issues this value. `project` means it is arbitrary and ours to make. Every other member is a third party whose console or API is the only source: payments rails, auth's social providers, `cloudflare` for R2, Turnstile and API tokens, and the repository hosts an adopter may rotate CI credentials against. `other` is the floor an unrecognized issuer lands on, so a capability added tomorrow is renderable by a client built today.",
   );
 export type SecretIssuer = z.output<typeof SecretIssuer>;
 
 /**
  * The issuer **as a field**, with its one degradation rule attached.
  *
- * **An unrecognised issuer degrades to `other` rather than failing.** A manifest is read from
+ * **An unrecognized issuer degrades to `other` rather than failing.** A manifest is read from
  * `node_modules`, so it can be newer than the client reading it — and a client that threw on an issuer
  * it had not been built against would blank a pane over a name it did not need to understand. `other`
  * is the honest answer: *somebody issues this, and I cannot help you with them.*
@@ -87,7 +87,7 @@ const IssuerKey = z
   .string()
   .regex(ISSUER_KEY)
   .describe(
-    "An issuer, as the key of a record. Preserved exactly as written — unlike the field, which degrades to `other` — because two unrecognised issuers rewritten to one key overwrite each other's requirements with no error. A client that only knows the closed set narrows this with `SecretIssuer.safeParse` where it renders.",
+    "An issuer, as the key of a record. Preserved exactly as written — unlike the field, which degrades to `other` — because two unrecognized issuers rewritten to one key overwrite each other's requirements with no error. A client that only knows the closed set narrows this with `SecretIssuer.safeParse` where it renders.",
   );
 
 /** The characters a secret name may hold. Excludes `/`, which separates a keyspace from a member key. */
@@ -169,7 +169,7 @@ export const SecretOrigin = z
           ),
         issuer: issuedBy("Whose console or API issues it."),
         needs: manifestRecord(z.partialRecord(IssuerKey, z.array(z.string().regex(HELPER_NEED)))).describe(
-          "What a helper must supply, keyed by issuer. Cloudflare's key is its permission groups. Keyed rather than flat so a second issuer does not widen a shape every consumer must handle. An unrecognised key is kept verbatim rather than degraded — see `IssuerKey`: rewriting two of them onto `other` loses one issuer's requirements silently. Wrapped in `manifestRecord` so the key rule is given every key the manifest wrote, including the one a parse would otherwise drop before the rule ran.",
+          "What a helper must supply, keyed by issuer. Cloudflare's key is its permission groups. Keyed rather than flat so a second issuer does not widen a shape every consumer must handle. An unrecognized key is kept verbatim rather than degraded — see `IssuerKey`: rewriting two of them onto `other` loses one issuer's requirements silently. Wrapped in `manifestRecord` so the key rule is given every key the manifest wrote, including the one a parse would otherwise drop before the rule ran.",
         ),
         documentation: documentedAt(
           "Where the command's arguments come from, for an operator who would rather check them by hand.",

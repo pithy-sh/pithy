@@ -249,7 +249,7 @@ describe("failure semantics", () => {
 
     await expect(runMigrations(env.DB, providerFor(registry, "app"))).rejects.toBeInstanceOf(InternalError);
 
-    // **This is the behaviour change.** One statement per round trip left `alpha`, `beta` and `gamma`
+    // **This is the behavior change.** One statement per round trip left `alpha`, `beta` and `gamma`
     // behind with no ledger row — a half-applied migration, the thing a chain exists to prevent.
     // Under `batch` the transaction rolls back and the database is untouched.
     expect(await tableNames()).toEqual([]);

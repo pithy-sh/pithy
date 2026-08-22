@@ -336,7 +336,7 @@ describe("control-plane and auth isolation", () => {
   });
 
   test("a verified control-plane call never populates c.var.auth", async () => {
-    // The scope-escalation defence. `requireAuth()` reads exactly this variable, so if the seam ever
+    // The scope-escalation defense. `requireAuth()` reads exactly this variable, so if the seam ever
     // filled it, one management credential would satisfy every authenticated route in every composed
     // capability. Its own variable is what makes that impossible rather than merely unlikely.
     const app = buildApp();

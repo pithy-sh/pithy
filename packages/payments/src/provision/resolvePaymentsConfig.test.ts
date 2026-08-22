@@ -122,7 +122,7 @@ describe("resolvePaymentsConfig", () => {
   test("a var missing billingSubject refuses to parse — the reconcile worker fails at boot, not at a row", () => {
     // `workflows/worker.ts` runs `PaymentsConfig.parse(this.env.PAYMENTS_CONFIG ? JSON.parse(...) : {})`, and
     // `billingSubject` has no default, so both an unprovisioned worker and one deployed before the field
-    // existed now throw where a Workflow's own error reporting can see it. That is a deliberate behaviour
+    // existed now throw where a Workflow's own error reporting can see it. That is a deliberate behavior
     // change: the alternative is a pass that reconciles every row against a guessed holder, which rewrites
     // real entitlements and is invisible until somebody is refused what they paid for.
     expect(() => PaymentsConfig.parse({})).toThrow();

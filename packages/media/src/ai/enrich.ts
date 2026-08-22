@@ -28,7 +28,7 @@ export interface MediaAi {
  *
  * **The split this enforces is between a wrong answer and no answer** (pithy-sh/pithy#348). Everything
  * else in this module raises `media/enrichment_failed`, and every one of those is deterministic: a
- * shape the schema does not recognise, a conversion the converter refused, a binding with no
+ * shape the schema does not recognize, a conversion the converter refused, a binding with no
  * `toMarkdown`. A rejection out of the binding is the opposite — Workers AI unreachable, overloaded, or
  * out of time — and it is the only fault here a second attempt can answer differently.
  *

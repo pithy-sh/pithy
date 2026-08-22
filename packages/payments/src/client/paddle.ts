@@ -38,8 +38,8 @@ import { withoutZeroFraction } from "./wholeUnits";
  * which is the part neither adopter could do, because `totals` never leaves this package.
  *
  * **What "localized" actually means, measured rather than assumed.** With no `unit_price_overrides` on
- * the price, every country is billed in the catalogue's currency — a preview from a UK address on a USD
- * price comes back in dollars. Currency is a catalogue decision. What this delivers without one is tax
+ * the price, every country is billed in the catalog's currency — a preview from a UK address on a USD
+ * price comes back in dollars. Currency is a catalog decision. What this delivers without one is tax
  * and formatting, which is real: the US adds tax to the listed figure and settles it at the postal code,
  * while the EU, the UK and Japan take it out of an inclusive one. {@link priceSummary} is where that
  * difference stops being a footnote and becomes two different sentences.
@@ -123,7 +123,7 @@ export interface PaddlePriceQuery {
   customerId?: string;
   /** An IP to resolve location from, for a server that knows it better than the browser does. */
   customerIpAddress?: string;
-  /** Force a currency. Only meaningful where the catalogue has an override for it. */
+  /** Force a currency. Only meaningful where the catalog has an override for it. */
   currencyCode?: string;
   /** A resolved Paddle discount — `dsc_…`. Never a raw code; resolving one needs the API key. */
   discountId?: string;
@@ -156,7 +156,7 @@ export interface PaddleJs {
 /**
  * Light or dark. Paddle's whole theme surface, and the only one there is.
  *
- * Not a palette. Colours, fonts, borders and focus states are configured in the Paddle dashboard and are
+ * Not a palette. Colors, fonts, borders and focus states are configured in the Paddle dashboard and are
  * not expressible from code at all — see {@link PaddleCheckoutSettings.theme} for where and why.
  */
 export type PaddleCheckoutTheme = "light" | "dark";
@@ -178,7 +178,7 @@ export type PaddleCheckoutVariant = "one-page" | "multi-page";
  * a pricing panel must be able to open two checkouts differently without re-initializing Paddle — which
  * it cannot do, because `Initialize` runs once. Paddle's own documentation says `frameTarget` goes in
  * `Paddle.Initialize()`; its `Checkout.open` reference then passes exactly these fields per call, and the
- * live sandbox honours them on both forms. Where the two disagree, the measurement wins.
+ * live sandbox honors them on both forms. Where the two disagree, the measurement wins.
  *
  * **Every field here is optional and stays absent when nobody named one.** Paddle reads these over
  * account-level settings a seller configured in the dashboard, so a key present and `undefined` is not
@@ -196,9 +196,9 @@ export interface PaddleCheckoutSettings {
    * form contradicting the page it opened over. The adopter knows; guessing wrong is worse than
    * defaulting, and a wrong guess is harder to find than a missing option.
    *
-   * **This is the whole of the theming Paddle exposes to code.** Colours, fonts, borders, hover and focus
+   * **This is the whole of the theming Paddle exposes to code.** Colors, fonts, borders, hover and focus
    * states are set in the Paddle dashboard under *Checkout → Branded inline checkout* (and logo plus
-   * brand colour for the overlay). That is Paddle's deliberate product decision, not a missing endpoint,
+   * brand color for the overlay). That is Paddle's deliberate product decision, not a missing endpoint,
    * so there is no option to add here for it and nothing to go looking for.
    */
   theme?: PaddleCheckoutTheme;
@@ -223,7 +223,7 @@ export interface PaddleCheckoutSettings {
  *
  * `items[]` is what makes Paddle pleasant — no server call, a checkout in one click — and it is also a
  * checkout whose price and whose buyer are chosen by the page. This capability takes both from the
- * catalogue entry a product id resolves to, everywhere else, so that a client cannot buy Pro for the price
+ * catalog entry a product id resolves to, everywhere else, so that a client cannot buy Pro for the price
  * of a coin pack. A transaction the server minted is that same rule, kept here.
  *
  * `customData` is the harder one, because leaving it out does **not** make the stamp safe. Measured live:
@@ -365,7 +365,7 @@ export interface PriceTotals {
 }
 
 /**
- * How tax sits against the figure the catalogue lists, resolved for this visitor.
+ * How tax sits against the figure the catalog lists, resolved for this visitor.
  *
  * Not a country table, and not readable off `taxMode` either: a price set to `location` — Paddle's own
  * default — resolves to `added` in Denver and `included` in Berlin, and the mode says only that Paddle
@@ -384,7 +384,7 @@ export type PriceTaxTreatment = "added" | "included" | "none" | "unknown";
 export interface PriceLine {
   /** The Paddle price this quotes — `pri_…`. */
   priceId: string;
-  /** The product's name, as the catalogue has it. */
+  /** The product's name, as the catalog has it. */
   productName: string;
   /** The price's own name — "Monthly" — or null. */
   priceName: string | null;
@@ -408,7 +408,7 @@ export interface PriceLine {
 
 /** What Paddle quoted this visitor. */
 export interface PricePreview {
-  /** The currency the quote is in. The catalogue's, unless an override or `currencyCode` moved it. */
+  /** The currency the quote is in. The catalog's, unless an override or `currencyCode` moved it. */
   currencyCode: string;
   /** The country Paddle resolved, or null. */
   countryCode: string | null;
@@ -465,7 +465,7 @@ function listedAmount(
 }
 
 /**
- * Which of the quoted figures is the price the catalogue lists.
+ * Which of the quoted figures is the price the catalog lists.
  *
  * Per **unit**, so quantity never enters the comparison, and against the override that covers this
  * country where there is one. Every branch here was measured against the live sandbox; the fixtures
@@ -479,7 +479,7 @@ function taxTreatment(
 ): PriceTaxTreatment {
   if (unitTotals.tax === "0") return "none";
   const listed = listedAmount(price, countryCode);
-  // A converted quote is in a currency the catalogue never named an amount in, so there is nothing to
+  // A converted quote is in a currency the catalog never named an amount in, so there is nothing to
   // compare against and no honest answer but "cannot tell".
   if (listed === null || listed.currency !== currencyCode) return "unknown";
   if (unitTotals.subtotal === listed.amount) return "added";

@@ -1314,9 +1314,9 @@ const TestersInvalidTokenPublic = z
     code: z
       .literal("testers/invalid_token")
       .describe(
-        "The opt-in link could not be honoured. Deliberately one code for every failing step — malformed shape, a token matching no member, a member who has withdrawn or been removed, or an invitation older than the configured link lifetime — so someone holding a guess cannot use the response to learn which check it tripped, nor whether the tester they named exists. `detail` names the step for the log, and the HTTP codec strips it.",
+        "The opt-in link could not be honored. Deliberately one code for every failing step — malformed shape, a token matching no member, a member who has withdrawn or been removed, or an invitation older than the configured link lifetime — so someone holding a guess cannot use the response to learn which check it tripped, nor whether the tester they named exists. `detail` names the step for the log, and the HTTP codec strips it.",
       ),
-    status: z.literal(400).describe("Bad Request — the link could not be honoured."),
+    status: z.literal(400).describe("Bad Request — the link could not be honored."),
     ...publicFields,
   })
   .describe("An opt-in link failed verification (400).");
@@ -1386,7 +1386,7 @@ const TestersCohortClosedPublic = z
     code: z
       .literal("testers/cohort_closed")
       .describe(
-        "The cohort is closed. A closed cohort keeps its history and stays readable, but stops accruing snapshots and stops sending — so inviting onto it, chasing it, or running a pass over it are all refused rather than quietly honoured.",
+        "The cohort is closed. A closed cohort keeps its history and stays readable, but stops accruing snapshots and stops sending — so inviting onto it, chasing it, or running a pass over it are all refused rather than quietly honored.",
       ),
     status: z.literal(409).describe("Conflict — the cohort's state forbids this, not the request."),
     ...publicFields,

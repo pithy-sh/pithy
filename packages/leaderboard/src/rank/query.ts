@@ -202,11 +202,11 @@ export function rankCountQuery(
 }
 
 /**
- * The slice of the board centred on a player: `radius` entries either side of them.
+ * The slice of the board centered on a player: `radius` entries either side of them.
  *
  * Built on the total ordering — find the player's rank, then page the board around it — so it needs no
  * second index and no window function. Rank is always counted live here even when the board is
- * materialized: an "around me" page whose neighbours came from a stale rank column would show players
+ * materialized: an "around me" page whose neighbors came from a stale rank column would show players
  * who are no longer next to you.
  */
 export async function entriesAround(

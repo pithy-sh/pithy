@@ -49,7 +49,7 @@ vi.mock("cloudflare", () => ({
   },
 }));
 
-/** An AWS SDK 404 as the S3 client surfaces it — the shape `isS3NotFound` has to recognise. */
+/** An AWS SDK 404 as the S3 client surfaces it — the shape `isS3NotFound` has to recognize. */
 function s3NotFound(name: string): Error & { name: string; $metadata: { httpStatusCode: number } } {
   const error = new Error(name) as Error & { $metadata: { httpStatusCode: number } };
   error.name = name;
@@ -122,7 +122,7 @@ describe("CloudflareR2Manager", () => {
       );
     });
 
-    it("honours an explicit expiresIn", async () => {
+    it("honors an explicit expiresIn", async () => {
       mockGetSignedUrl.mockResolvedValue("https://url.example.com");
       await manager.createUploadUrl("k", "t", 1, { expiresIn: 60 });
       expect(mockGetSignedUrl).toHaveBeenCalledWith(expect.any(Object), expect.any(Object), { expiresIn: 60 });
@@ -150,7 +150,7 @@ describe("CloudflareR2Manager", () => {
       );
     });
 
-    it("honours an explicit expiresIn", async () => {
+    it("honors an explicit expiresIn", async () => {
       mockGetSignedUrl.mockResolvedValue("https://url.example.com");
       await manager.createDownloadUrl("k", { expiresIn: 120 });
       expect(mockGetSignedUrl).toHaveBeenCalledWith(expect.any(Object), expect.any(Object), { expiresIn: 120 });

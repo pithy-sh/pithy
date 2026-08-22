@@ -18,7 +18,7 @@ import type { AuthInstance } from "./auth";
  * below needs a cast.
  *
  * The one thing that genuinely needs the *server's* type is `inferAdditionalFields`, which teaches the
- * client about extra user/session fields. That is why {@link AuthInstance} is parameterised in the
+ * client about extra user/session fields. That is why {@link AuthInstance} is parameterized in the
  * plugin tuple — an adopter names the instance their own composition produces and hands it over.
  */
 

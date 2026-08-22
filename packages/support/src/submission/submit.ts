@@ -85,7 +85,7 @@ export interface SubmitOutcome {
 
 /** One file a submitter attached, already decoded. */
 export interface SubmittedAttachment {
-  /** The filename as the client declared it. Untrusted; recorded, never honoured. */
+  /** The filename as the client declared it. Untrusted; recorded, never honored. */
   filename: string;
   /** The MIME type as the client declared it, checked against the configured allowlist. */
   contentType: string;
@@ -219,7 +219,7 @@ async function resolveOwnThread(db: SupportDatabase, threadId: string, userId: s
  *
  * **A category may not ride along with a `threadId`.** A thread already carries what it was filed
  * under, and a second, later claim has no honest meaning: ignoring it is a chooser that does nothing —
- * which is the whole defect this seam exists to close — and honouring it would let a follow-up rewrite
+ * which is the whole defect this seam exists to close — and honoring it would let a follow-up rewrite
  * the premise a conversation was opened on, the way `subject` deliberately cannot. So it is refused,
  * loudly, and a chooser stays what it is: something offered on the form that opens a request.
  *
@@ -328,7 +328,7 @@ async function storeAttachments(
       id,
       messageId,
       threadId,
-      // The same sanitiser the mail path runs, and not optional here: `SupportAttachment.filename`
+      // The same sanitizer the mail path runs, and not optional here: `SupportAttachment.filename`
       // states the column holds a name "after stripping path separators and control characters", and
       // two producers of one column must guarantee the same thing about it. This channel is the more
       // attacker-friendly of the two for it — a MIME filename has to survive header encoding, while

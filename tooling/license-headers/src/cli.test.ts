@@ -53,7 +53,7 @@ describe("run --check", () => {
   });
 
   // CLAUDE.md makes the action line a contract. `--fix` repairs headers and absent LICENSE files and
-  // nothing else, so pointing at it for a mismatched licence body sends the developer to a command
+  // nothing else, so pointing at it for a mismatched license body sends the developer to a command
   // that prints "Nothing to do." and exits 0 while the gate stays red.
   test("does not send the developer to --fix when nothing is fixable", () => {
     put("packages/core/LICENSE", "MIT License\n\nedited by hand\n");

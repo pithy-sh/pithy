@@ -195,7 +195,7 @@ describe("payments_0001_purchases", () => {
     }
 
     // And a row written without them really does read back null on both, so "nullable" is the database's
-    // behaviour rather than the pragma's opinion.
+    // behavior rather than the pragma's opinion.
     await env.DB.prepare(
       "INSERT INTO pithy_payments_webhook_events (id, rail, provider_event_id, payload, received_at, created_at) VALUES ('w0', 'paddle', 'evt_pragma', '{}', 0, 0)",
     ).run();

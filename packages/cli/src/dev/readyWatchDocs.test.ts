@@ -74,7 +74,7 @@ describe("docs/commands/dev.md states the deadline the code enforces", () => {
 
   test("the `--json` sample is the record the watch emits, for the worker the page names", () => {
     // Keys and values both: `event` is what tells the two `pithy dev` lines apart, so a page that
-    // renamed it would be documenting a line no script could recognise.
+    // renamed it would be documenting a line no script could recognize.
     const sample = /```json\n(\{"command":"dev","event".*)\n```/.exec(PAGE)?.[1];
     if (sample === undefined) throw new Error(`${WHERE} no longer pastes a still-waiting sample. Repin or restore it.`);
     expect(JSON.parse(sample)).toEqual({ command: "dev", event: "still-waiting", waiting: ["support"] });

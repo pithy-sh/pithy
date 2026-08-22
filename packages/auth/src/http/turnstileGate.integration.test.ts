@@ -14,7 +14,7 @@ import { type LiveApp, resetLiveSecrets, startLiveApp } from "../test-utils/live
  *
  * A gate that has only ever been watched passing cannot tell you it is enforcing anything, so what is
  * asserted here is mostly refusal: a request with no token, a request with a token that is not one, and
- * — the case a real widget alone can answer — whether Cloudflare recognises the secret at all.
+ * — the case a real widget alone can answer — whether Cloudflare recognizes the secret at all.
  *
  * The two describes below run **the same helpers** against two different secrets:
  *
@@ -79,7 +79,7 @@ afterAll(() => {
 describe.skipIf(!WIDGET_READY)("turnstile gate, a real widget — LIVE", () => {
   const secretKey = (): string => fixtureValue("turnstile-widget", "TURNSTILE_SECRET_KEY");
 
-  test("Cloudflare recognises the secret, and it is not a documented test key", async () => {
+  test("Cloudflare recognizes the secret, and it is not a documented test key", async () => {
     const answer = await siteverify(secretKey());
     // A secret Cloudflare does not know answers HTTP 400 and `invalid-input-secret`; a registered one
     // answers 200 and gets as far as judging the token. So this separates a real widget's key from a
@@ -102,7 +102,7 @@ describe.skipIf(!WIDGET_READY)("turnstile gate, a real widget — LIVE", () => {
 });
 
 describe("turnstile gate, Cloudflare's documented test keys — LIVE", () => {
-  test("Cloudflare recognises the always-fail test secret, and says it is a testing key", async () => {
+  test("Cloudflare recognizes the always-fail test secret, and says it is a testing key", async () => {
     const answer = await siteverify(TURNSTILE_TEST_KEYS.secret.fail);
     expect(answer.status).toBe(200);
     expect(answer["error-codes"]).toContain("invalid-input-response");

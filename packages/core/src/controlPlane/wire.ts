@@ -63,7 +63,7 @@ export const CONTROL_PLANE_VERSION_HEADER = "pithy-worker-version";
  * `CF_VERSION_METADATA` binding reports the version, and **the runtime hands a Worker no binding for the
  * deployment**. So this header is the upload moment, and it is fixed for as long as that version exists.
  *
- * That mechanism predicts the behaviour rather than merely recording it: **a rollback creates a new
+ * That mechanism predicts the behavior rather than merely recording it: **a rollback creates a new
  * deployment aimed at an existing version, so nothing here moves** — the binding is not stale and not
  * ambiguous, the thing that changed was a different object. It answers the next question too. A traffic
  * split, a gradual rollout, which deployment is serving: none of it is visible from inside a Worker.

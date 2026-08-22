@@ -64,7 +64,7 @@ export const SUPPORT_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  * Declared beside the scopes so the scope a route demands and the scope a manifest advertises are
  * the same constant. `basePath` is a parameter and never a default: an adopter who mounted support
  * at `/inbox` must get a manifest naming `/inbox/threads`, or a client composing its calls from the
- * manifest would 404 against exactly the adopters who customised anything.
+ * manifest would 404 against exactly the adopters who customized anything.
  *
  * The summaries say what the operation is *for*. A client renders these next to a button somebody is
  * about to press on a real customer's conversation.

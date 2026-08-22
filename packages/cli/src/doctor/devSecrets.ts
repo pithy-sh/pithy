@@ -206,7 +206,7 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
       if (seen.has(name)) continue;
       seen.add(name);
       // What the file states for this name, read before anything is decided about it. Hoisted above the
-      // keyspace branch because that branch is a judgement now rather than a skip, and the file is what
+      // keyspace branch because that branch is a judgment now rather than a skip, and the file is what
       // decides which (#325). `Object.hasOwn` for the reason spelled out below.
       const envelope = Object.hasOwn(stated, name) ? stated[name] : undefined;
       // A keyspace has no single value: its members are written by the app at runtime, one per key.
@@ -459,6 +459,6 @@ export function describeDevSecretsLocation(check: DevSecretsLocationCheck): stri
   if (check.present) return null;
   if (check.orphans.length === 0) return "no file yet; pithy add mints one when a capability needs it";
   // Named rather than diagnosed. This cannot tell a rename from two unrelated projects on one machine,
-  // and guessing which would be worse than listing what is there and letting the reader recognise it.
+  // and guessing which would be worse than listing what is there and letting the reader recognize it.
   return `no file yet; secrets exist for ${check.orphans.join(", ")} — a renamed project leaves its old name here`;
 }

@@ -53,7 +53,7 @@ import {
  * file an unauthenticated "delete this resource" instruction — and `destroy` runs headlessly in CI, with a
  * live token, against a branch that may have come from anyone.
  *
- * So an entry is honoured only when its recorded name is exactly the name `provision` would have generated
+ * So an entry is honored only when its recorded name is exactly the name `provision` would have generated
  * for that binding and kind under this identity. The check needs nothing from the file but the entry's own
  * `binding`/`kind`, so a legitimate record still validates even after its capability is removed from config.
  */

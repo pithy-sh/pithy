@@ -124,7 +124,7 @@ describe("domainsAlign", () => {
     expect(domainsAlign("itv.co.uk", "bbc.co.uk")).toBe(false);
   });
 
-  test("the private section is honoured, so two sites on one host do not align", () => {
+  test("the private section is honored, so two sites on one host do not align", () => {
     // `github.io` is a boundary in the PSL's private section. Without it, every Pages site would
     // align with every other — which on this code path means one stranger's mail authenticating as
     // another's.

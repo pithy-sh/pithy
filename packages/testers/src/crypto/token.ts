@@ -23,8 +23,8 @@
  * same request regardless, so it was never avoiding a lookup. A shape check rejects garbage before the
  * query, which is the only part that mattered.
  *
- * What the token is *not*: it is not what enrols a tester with Google. It records that they followed our
- * link, and the route then sends them on to the store's own opt-in page, which is where enrolment
+ * What the token is *not*: it is not what enrolls a tester with Google. It records that they followed our
+ * link, and the route then sends them on to the store's own opt-in page, which is where enrollment
  * actually happens. See `docs/store-apis.md`.
  */
 

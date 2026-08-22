@@ -39,7 +39,7 @@ export const DEFAULT_SUPPORT_CATEGORIES = {
     "The sender cannot get in: a magic link that never arrived, a sign-in that fails, a lost or changed email address.",
   bug_report: "The sender is reporting that something is broken, wrong, or behaving differently than it should.",
   feature_request: "The sender is asking for something that does not exist yet, or for an existing thing to change.",
-  abuse_report: "The sender is reporting another user's behaviour — harassment, cheating, spam, or impersonation.",
+  abuse_report: "The sender is reporting another user's behavior — harassment, cheating, spam, or impersonation.",
   privacy_request:
     "The sender is exercising a data right: deletion, export, access, or correction of their personal data.",
   spam: "Unsolicited bulk mail, marketing, or an obvious phishing or scam attempt. Not a real support request.",

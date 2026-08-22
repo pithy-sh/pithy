@@ -52,7 +52,7 @@ export interface GrantableScope {
   scope: ControlPlaneScope;
   /** True when every declared route requiring this scope is a `GET`. */
   read: boolean;
-  /** The capability that first declared it — what an adopter recognises the grant by. */
+  /** The capability that first declared it — what an adopter recognizes the grant by. */
   capability: string;
   /** The first declared route's summary: one line on what holding it lets a client do. */
   summary: string;
@@ -113,7 +113,7 @@ export function grantableScopes(capabilities: readonly Capability[]): GrantableS
  * refuses every call it left out with `controlplane/insufficient_scope`. The scope that was missing is
  * in the refusal's `detail`, which the HTTP codec strips — so what names it to a client is the manifest,
  * where each route carries its own `scope` beside the connection's `grantedScopes`. That is the right
- * place for it: a client greys the operation out before trying, rather than learning from a 403.
+ * place for it: a client grays the operation out before trying, rather than learning from a 403.
  */
 export function defaultGrant(capabilities: readonly Capability[]): ControlPlaneScope[] {
   const grant = [...SEAM_SCOPES];

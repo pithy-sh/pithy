@@ -87,7 +87,7 @@ export async function readStripePricing(
   const amounts = invoice?.success === true ? invoice.data : undefined;
 
   // The list price falls back to the item's own unit amount when there is no upcoming invoice to read —
-  // a subscription cancelled at period end has none, and its list price is still a fact.
+  // a subscription canceled at period end has none, and its list price is still a fact.
   const listed = subscription.items?.data[0]?.price.unit_amount ?? null;
   const end = subscription.discount?.end;
 
@@ -110,7 +110,7 @@ export async function readStripePricing(
  * The customer-facing code off Stripe's `promotion_code` field, or null.
  *
  * Stripe returns either the id (`promo_…`) or, when expanded, the object carrying `code`. Only the second
- * is a code a customer would recognise; a bare id is reported as null, because "no code shown" is honest
+ * is a code a customer would recognize; a bare id is reported as null, because "no code shown" is honest
  * and "PROMO_1QxYz" on a billing screen is not.
  */
 function promotionCode(value: unknown): string | null {

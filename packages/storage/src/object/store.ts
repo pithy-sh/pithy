@@ -52,7 +52,7 @@ export const ObjectMetadata = z
       .min(1)
       .optional()
       .describe(
-        "The stored `Content-Disposition`, when one was written. Recorded, not honoured — the serve path derives its own, because this string is whatever the uploader sent.",
+        "The stored `Content-Disposition`, when one was written. Recorded, not honored — the serve path derives its own, because this string is whatever the uploader sent.",
       ),
     uploaded: z.date().describe("When R2 wrote this object version."),
     checksumSha256: z
@@ -206,7 +206,7 @@ export interface ObjectStore {
   abortMultipart(key: string, uploadId: string): Promise<void>;
   /** The parts already stored against an in-flight upload — what a resuming client asks for. */
   listParts(key: string, uploadId: string): Promise<UploadedPart[]>;
-  /** Read an object through the binding, honouring a range and conditional preconditions. `null` when absent. */
+  /** Read an object through the binding, honoring a range and conditional preconditions. `null` when absent. */
   get(key: string, options?: GetOptions): Promise<ObjectBody | null>;
   /** Read an object's metadata without its body. `null` when absent — a missing object is an answer. */
   head(key: string): Promise<ObjectMetadata | null>;

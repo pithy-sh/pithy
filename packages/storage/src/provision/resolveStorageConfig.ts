@@ -72,7 +72,7 @@ export function resolveStorageConfig(
   });
 
   // Only declare a cron block when a spec actually carries one. An empty `crons` array is a
-  // declaration wrangler honours, and a worker that advertises a schedule it does not have is a
+  // declaration wrangler honors, and a worker that advertises a schedule it does not have is a
   // deployment nobody can reason about.
   resolved.triggers = derived.crons.length > 0 ? { crons: derived.crons } : undefined;
 

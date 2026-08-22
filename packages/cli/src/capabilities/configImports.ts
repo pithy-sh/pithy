@@ -15,7 +15,7 @@ export interface ConfigImport {
   /** Where the statement starts in the source it was found in — the anchor every edit splices at. */
   start: number;
   /**
-   * The span to cut to drop this one binding: the name, plus the comma joining it to its neighbour.
+   * The span to cut to drop this one binding: the name, plus the comma joining it to its neighbor.
    * Meaningless on its own — {@link withoutBinding} is what reads it.
    */
   bindingStart: number;

@@ -98,7 +98,7 @@ Declare it in the Worker's pithy.config.ts — `domains: { prod: { pattern: "app
 
 **Several Workers, no `--worker`.** The same resolution error `pithy add` raises, naming the Workers it found.
 
-**The project has no name.** It scopes both the widget names and the dispatcher's target, and it is never guessed: a wrong one reuses another project's widget on provision and deletes a neighbour's on teardown.
+**The project has no name.** It scopes both the widget names and the dispatcher's target, and it is never guessed: a wrong one reuses another project's widget on provision and deletes a neighbor's on teardown.
 
 ## Examples
 

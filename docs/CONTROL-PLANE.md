@@ -22,7 +22,7 @@ The strategy literal on a route stays `control-plane`, hyphenated, because that 
 
 `control-plane` is a verification strategy, like `bearer` or `session`. A route declaring it accepts calls from a registered management client and nobody else.
 
-**It is present and denying by default.** A Worker that composes the capability and has never been connected answers every control-plane route with `controlplane/not_connected`. There is no flag to leave off, no backdoor, and nothing enabled silently. Connecting a client is a deliberate act, and until you perform it the seam's only behaviour is refusal.
+**It is present and denying by default.** A Worker that composes the capability and has never been connected answers every control-plane route with `controlplane/not_connected`. There is no flag to leave off, no backdoor, and nothing enabled silently. Connecting a client is a deliberate act, and until you perform it the seam's only behavior is refusal.
 
 **Your Worker is the authority.** The management client is a client. It holds a private key; you hold the public one, you decide what it may do, and you can revoke it without asking anyone.
 
@@ -115,7 +115,7 @@ The Worker refuses an expiry that names an unproven successor, and refuses one t
 
 **Your infrastructure stays passive.** Storing a new key is one D1 write in a route handler. There is no Workflow to run and no cron to schedule on your side. The durable retrying orchestration that drives rotation across many Workers is the management client's problem, and it lives in their infrastructure.
 
-**Rotation is a scope.** A client that was never granted `keys:rotate` cannot rotate, whatever it intends — better than a toggle somebody has to be trusted to honour.
+**Rotation is a scope.** A client that was never granted `keys:rotate` cannot rotate, whatever it intends — better than a toggle somebody has to be trusted to honor.
 
 ### Who makes the calls
 
@@ -149,7 +149,7 @@ Two checks, against different things. The connection row records what you grante
 
 Matching is exact. There is no prefix or wildcard rule: `payments:entitlements` does not confer `payments:entitlements:revoke`.
 
-`GET /control-plane/ping` requires a verified caller and no scope at all. It is not modelled as a scope, because granting or withholding it would change nothing: ping must work for a connection granted nothing, since it is how a new key is proven before the old one is expired.
+`GET /control-plane/ping` requires a verified caller and no scope at all. It is not modeled as a scope, because granting or withholding it would change nothing: ping must work for a connection granted nothing, since it is how a new key is proven before the old one is expired.
 
 ---
 
@@ -160,7 +160,7 @@ Every step default-denies, and every failure raises the same `controlplane/inval
 1. Read `kid` from the token header and `aud` from its claims. **Untrusted at this point** — a parsed token is a well-formed shape, never an authentic one.
 2. Load the connection named by `aud`. No connection registered for this environment: `controlplane/not_connected`.
 3. The key named by `kid` must exist on that connection, not be revoked, and be inside its validity window.
-4. Verify the EdDSA signature with that key, via WebCrypto. `alg` is pinned to the literal `EdDSA` at parse — the algorithm-confusion defence.
+4. Verify the EdDSA signature with that key, via WebCrypto. `alg` is pinned to the literal `EdDSA` at parse — the algorithm-confusion defense.
 5. `aud` must equal the loaded connection's id, and its `environment` must equal this Worker's. **A staging credential cannot reach production.**
 6. `iss` must equal the issuer that connection was registered against.
 7. `exp` and `iat` are checked with a bounded clock skew, and a token claiming a lifetime longer than the configured maximum is rejected outright.
@@ -227,7 +227,7 @@ The same federation as migrations, error codes, and audit actions. A capability 
 
 `@pithy-sh/payments` was the first: `POST /payments/entitlements/grant` and `/revoke`, the only way an entitlement appears without money moving. Five more followed, and between them they are what a dashboard's first panes read:
 
-- **`@pithy-sh/payments`** — read what the project sells; page the purchase log, the purchases that renew, and what subjects are entitled to; comp an entitlement or take one back. **A subject is the pair `(subjectType, subjectId)`** — a user, or an organization, depending on what the project bills — so the entitlement reads filter on both halves and the per-subject read is `GET /payments/admin/entitlements/:subjectType/:subjectId`. Both halves, always: nothing keeps an organization id from equalling some user's id, so a pane that keyed on the id alone would show one holder's plan under another's name. Scopes: `payments:catalog:read`, `payments:purchases:read`, `payments:subscriptions:read`, `payments:entitlements:read`, `payments:entitlements:grant`, `payments:entitlements:revoke`. **`payments:catalog:read` is its own grant because reading what a project sells is not reading what anybody bought** — it names no account and no transaction, and answers identically against a database with no rows in it, so a tool that needs a list of comp-able entitlements can hold that and nothing else. It is also what a grant is checked against: `entitlements/grant` refuses a key no product grants and the adopter did not declare in `manualEntitlements`, with `payments/entitlement_not_in_catalog`, naming the key. The read makes a good comp control possible; the refusal makes a bad one impossible (#300). The reads landed late and the cost is worth stating: for a while this capability shipped the two writes with no read beside them, so a console could comp an entitlement and never list one, and three panes in the first adopter computed **absent** and dropped out of the rail. Not blocked, not refused — absent, which no grant and no seed can repair, because there was no route to grant a scope to. The reads never project a stored provider payload; the queries behind them do not select it.
+- **`@pithy-sh/payments`** — read what the project sells; page the purchase log, the purchases that renew, and what subjects are entitled to; comp an entitlement or take one back. **A subject is the pair `(subjectType, subjectId)`** — a user, or an organization, depending on what the project bills — so the entitlement reads filter on both halves and the per-subject read is `GET /payments/admin/entitlements/:subjectType/:subjectId`. Both halves, always: nothing keeps an organization id from equaling some user's id, so a pane that keyed on the id alone would show one holder's plan under another's name. Scopes: `payments:catalog:read`, `payments:purchases:read`, `payments:subscriptions:read`, `payments:entitlements:read`, `payments:entitlements:grant`, `payments:entitlements:revoke`. **`payments:catalog:read` is its own grant because reading what a project sells is not reading what anybody bought** — it names no account and no transaction, and answers identically against a database with no rows in it, so a tool that needs a list of comp-able entitlements can hold that and nothing else. It is also what a grant is checked against: `entitlements/grant` refuses a key no product grants and the adopter did not declare in `manualEntitlements`, with `payments/entitlement_not_in_catalog`, naming the key. The read makes a good comp control possible; the refusal makes a bad one impossible (#300). The reads landed late and the cost is worth stating: for a while this capability shipped the two writes with no read beside them, so a console could comp an entitlement and never list one, and three panes in the first adopter computed **absent** and dropped out of the rail. Not blocked, not refused — absent, which no grant and no seed can repair, because there was no route to grant a scope to. The reads never project a stored provider payload; the queries behind them do not select it.
 - **`@pithy-sh/auth`** — find and read users with their sessions and devices; revoke a session, sign a user out everywhere, revoke a device. Scopes: `auth:users:read`, `auth:devices:read`, `auth:sessions:revoke`, `auth:users:logout`, `auth:devices:revoke`. **No impersonation** — the most dangerous administrative capability there is, and it gets its own design and security review rather than riding in on a batch.
 - **`@pithy-sh/audit`** — page the trail by actor, action, resource, outcome, severity, origin, tenant, and time; read one event in full. `tenant` is the one filter over a dimension the recorder does not stamp — it is whose action it was, and in a multi-tenant app it is the only column that separates one customer's history from another's, since project, environment, and Worker are constant across every row. Scopes: `audit:events:read`, `audit:events:read_detail`. The detail route is separate because IP, user-agent, and metadata one event at a time is a forensic read, and the same fields across a hundred rows is bulk harvesting. Read-only by construction: a credential that could erase an audit row could erase the evidence of its own use.
 - **`@pithy-sh/email`** — jobs by status and in detail, retry a failed one, read and amend the suppression list. Scopes: `email:jobs:read`, `email:jobs:retry`, `email:suppressions:read`, `email:suppressions:write`, `email:suppressions:delete`. Silent email failure costs a signup.
@@ -305,15 +305,15 @@ A management client composes its navigation **and its calls** from `GET /control
 }
 ```
 
-**Knowing a capability is installed is not enough to call it.** Note the paths above: this adopter mounted payments at `/billing`. `basePath` is configurable on every capability, so a client that hardcoded `/payments` would 404 against exactly the adopters who customised anything. Each capability builds its declaration from its *resolved* config, so the manifest names where things actually are.
+**Knowing a capability is installed is not enough to call it.** Note the paths above: this adopter mounted payments at `/billing`. `basePath` is configurable on every capability, so a client that hardcoded `/payments` would 404 against exactly the adopters who customized anything. Each capability builds its declaration from its *resolved* config, so the manifest names where things actually are.
 
-Each route also names the scope it needs. Against `grantedScopes`, that is what lets a client grey out `revoke` — not granted here — instead of offering a button that answers 403.
+Each route also names the scope it needs. Against `grantedScopes`, that is what lets a client gray out `revoke` — not granted here — instead of offering a button that answers 403.
 
 A capability with no management surface reports an empty list rather than being absent. "Composed, but nothing to administer" and "not installed" are different facts, and a client that cannot tell them apart renders the wrong thing for both.
 
 So a Worker that does not compose payments has no purchases pane, and that is a fact the client discovers. Run `pithy add support` and a **working** support pane appears on the next visit — panes *and* the calls behind them — with nothing for either side to configure.
 
-**The declaration is checked, not trusted.** A hand-maintained list beside generated behaviour is a list that rots, and a manifest that has drifted is worse than none: a client believes it, calls a path nothing serves, and the adopter sees a management client broken for reasons inside somebody else's package. So `missingAdminRoutes` compares every declared route against the router that actually mounted, and each capability asserts it in its own `routeContract.test.ts`.
+**The declaration is checked, not trusted.** A hand-maintained list beside generated behavior is a list that rots, and a manifest that has drifted is worse than none: a client believes it, calls a path nothing serves, and the adopter sees a management client broken for reasons inside somebody else's package. So `missingAdminRoutes` compares every declared route against the router that actually mounted, and each capability asserts it in its own `routeContract.test.ts`.
 
 There is deliberately **no manifest schema version**. With the routes described here, a client dispatches on what this Worker declares right now; a schema version would be a second source of truth to keep in sync with the first.
 
@@ -372,7 +372,7 @@ Measured on a real account, 2026-08-10, which is what turned that from a reading
 
 **So the third row above is not reachable on today's platform, and it stays anyway.** A total comparison is the correct shape: a rule that enumerates which fields are allowed to move is wrong the day the platform moves a different one, and it is wrong silently, as "nothing changed". It costs one branch. Do not read it as rollback detection.
 
-**Nothing inside a Worker can observe a deployment.** That is a boundary of what the runtime exposes, not a gap in this seam, and no header could close it — the only in-Worker signal anyone could synthesise is isolate boot time, which changes on every cold start and would report a redeploy dozens of times a day. A client that needs to know a deployment changed reads Cloudflare's deployments API, in the customer's own account.
+**Nothing inside a Worker can observe a deployment.** That is a boundary of what the runtime exposes, not a gap in this seam, and no header could close it — the only in-Worker signal anyone could synthesize is isolate boot time, which changes on every cold start and would report a redeploy dozens of times a day. A client that needs to know a deployment changed reads Cloudflare's deployments API, in the customer's own account.
 
 The `tag` the binding also carries stays off the wire. It is adopter-authored free text, this header crosses a trust boundary, and neither question a client asks is answered by it.
 

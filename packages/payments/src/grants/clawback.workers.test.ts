@@ -116,7 +116,7 @@ async function boughtThenRefunded(overrides: Partial<ProviderEventInput> = {}): 
 describe("clawbackRef", () => {
   test("is a pure function of the purchase id and the currency, and distinct from the grant's", () => {
     expect(clawbackRef("p-1", "coins")).toBe("payments:clawback:p-1:coins");
-    // Sharing the grant's ref would make the reversal a swallowed no-op — the ledger recognises it as a replay.
+    // Sharing the grant's ref would make the reversal a swallowed no-op — the ledger recognizes it as a replay.
     expect(clawbackRef("p-1", "coins")).not.toBe("payments:grant:p-1:coins");
   });
 });

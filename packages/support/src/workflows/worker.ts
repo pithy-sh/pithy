@@ -59,7 +59,7 @@ export class SupportClassifyWorkflow extends WorkflowEntrypoint<SupportWorkerEnv
       now: () => new Date(),
     };
 
-    // One step. The unit of retry is the whole judgement, because a classification that half-ran —
+    // One step. The unit of retry is the whole judgment, because a classification that half-ran —
     // a history row with no thread update — would leave the inbox disagreeing with its own audit
     // trail, and re-running the model is cheap enough that splitting it buys nothing.
     // Under `supportWorkflowRetry`: a model that could not be reached re-drives, and everything else

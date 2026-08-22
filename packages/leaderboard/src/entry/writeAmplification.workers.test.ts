@@ -26,7 +26,7 @@ import { submitQuery } from "./store";
  * the only way a cost model stays honest as the code moves under it.
  *
  * Caveat worth keeping in view: this runs on Miniflare's D1. Index maintenance is a SQLite-level
- * behaviour so it should carry to production, but `rows_written` accounting is Cloudflare's and could
+ * behavior so it should carry to production, but `rows_written` accounting is Cloudflare's and could
  * differ. This is evidence, not a Cloudflare guarantee — docs/costs.md says so.
  */
 

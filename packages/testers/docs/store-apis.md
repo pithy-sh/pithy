@@ -28,7 +28,7 @@ You will see "maximum 100 testers" repeated widely. It is real, and it is about 
 
 **Closed testing — the track the requirement actually runs on — has no such cap.** Its limits are 2,000 users per email list, 50 lists per track, and 200 lists per account. ([same page](https://support.google.com/googleplay/android-developer/answer/9845334)) Google states no maximum tester count on the requirement page at all.
 
-This capability defaults a cohort's roster cap to 100 anyway, and the config field says why: a hundred is roughly the number of people one developer can still chase by hand. That is a management judgement, not a store limit, and you can raise it to 2,000.
+This capability defaults a cohort's roster cap to 100 anyway, and the config field says why: a hundred is roughly the number of people one developer can still chase by hand. That is a management judgment, not a store limit, and you can raise it to 2,000.
 
 ---
 

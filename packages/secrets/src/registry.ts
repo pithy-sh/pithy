@@ -185,7 +185,7 @@ interface SecretRegistryEntryBase {
    *   naming it and the two ways out, which beats a define-time refusal that would make declaring the
    *   truth impossible.
    *
-   * **Never serialised.** `DeclaredSecret` — the manifest's projection — carries `name`, `origin` and
+   * **Never serialized.** `DeclaredSecret` — the manifest's projection — carries `name`, `origin` and
    * `rotation`, and parses rather than copies, so a function has no route into a JSON document. Held to
    * that by `registry.test.ts` rather than by this sentence.
    */

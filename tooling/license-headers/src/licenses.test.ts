@@ -15,14 +15,14 @@ describe("canonicalText", () => {
     expect(canonicalText("FSL-1.1-MIT")).toContain("Functional Source License");
   });
 
-  test("returns null for a licence it holds no text for", () => {
+  test("returns null for a license it holds no text for", () => {
     expect(canonicalText("Apache-2.0")).toBeNull();
   });
 
   // The id comes from a package.json `license` field, so it is a string from a file. Resolving it
   // into a path unchecked lets `../` walk out of `licenses/`; the allowlist is what stops it being
   // a path at all.
-  test("refuses an id that traverses out of the licences directory", () => {
+  test("refuses an id that traverses out of the licenses directory", () => {
     expect(canonicalText("../licenses/MIT")).toBeNull();
   });
 
@@ -35,7 +35,7 @@ describe("canonicalText", () => {
 });
 
 describe("KNOWN_LICENSES", () => {
-  test("covers every licence this repo declares", () => {
+  test("covers every license this repo declares", () => {
     expect([...KNOWN_LICENSES].sort()).toEqual(["FSL-1.1-MIT", "MIT"]);
   });
 });

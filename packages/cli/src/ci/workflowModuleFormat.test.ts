@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { parseAst } from "rolldown/parseAst";
 import { describe, expect, test } from "vitest";
 import { sourceFiles } from "./sourceFiles";
-import { analyseDrivers, type DriverSource, type Node } from "./workflowDrivers";
+import { analyzeDrivers, type DriverSource, type Node } from "./workflowDrivers";
 
 /**
  * **Every module in this kit that extends `WorkflowEntrypoint` has a default export.** (#426)
@@ -32,7 +32,7 @@ import { analyseDrivers, type DriverSource, type Node } from "./workflowDrivers"
  * the defect shape this repository keeps meeting: a rule satisfied at the call site by whoever happened to
  * need something else.
  *
- * So the population is **derived, never listed** — `analyseDrivers` re-reads the tree on every run, and a
+ * So the population is **derived, never listed** — `analyzeDrivers` re-reads the tree on every run, and a
  * host added tomorrow is judged tomorrow with nothing to remember. Its exact membership is pinned once, in
  * `workflowDeterminism.test.ts`'s `SHIPPED_WORKFLOWS`, off this same walk; restating it here would be a
  * second list to forget, which is the thing being fixed rather than a way of fixing it.
@@ -52,12 +52,12 @@ function packageSources(): DriverSource[] {
   }));
 }
 
-const analysis = analyseDrivers(packageSources(), parseModule);
+const analysis = analyzeDrivers(packageSources(), parseModule);
 
 describe("the rule, proved against fixtures before it is trusted against the tree", () => {
-  /** Analyse one module's text as though it were a file in the tree. */
-  function analyse(text: string) {
-    return analyseDrivers([{ path: "fixture.ts", text }], parseModule);
+  /** Analyze one module's text as though it were a file in the tree. */
+  function analyze(text: string) {
+    return analyzeDrivers([{ path: "fixture.ts", text }], parseModule);
   }
 
   const CLASSES_ONLY = `
@@ -68,25 +68,25 @@ describe("the rule, proved against fixtures before it is trusted against the tre
   `;
 
   test("a Workflow module with no default export is named, with the classes it hosts", () => {
-    expect(analyse(CLASSES_ONLY).hosts).toEqual([
+    expect(analyze(CLASSES_ONLY).hosts).toEqual([
       { file: "fixture.ts", classes: ["FixtureWorkflow"], defaultExport: false },
     ]);
   });
 
   test("the same module with a default export is not — which is the whole distinction", () => {
-    const { hosts } = analyse(`${CLASSES_ONLY}\nexport default { async fetch() { return new Response(); } };`);
+    const { hosts } = analyze(`${CLASSES_ONLY}\nexport default { async fetch() { return new Response(); } };`);
     expect(hosts).toEqual([{ file: "fixture.ts", classes: ["FixtureWorkflow"], defaultExport: true }]);
   });
 
   test("a renamed export counts — the build asks for a default binding, not for a literal", () => {
     // `export { entry as default }` and `export default entry` are the same module shape to esbuild, so a
     // gate that matched the second spelling alone would refuse a module that builds perfectly well.
-    const { hosts } = analyse(`${CLASSES_ONLY}\nconst entry = { fetch() {} };\nexport { entry as default };`);
+    const { hosts } = analyze(`${CLASSES_ONLY}\nconst entry = { fetch() {} };\nexport { entry as default };`);
     expect(hosts[0]?.defaultExport).toBe(true);
   });
 
   test("a re-exported default counts too, for the same reason", () => {
-    const { hosts } = analyse(`${CLASSES_ONLY}\nexport { default } from "./entry";`);
+    const { hosts } = analyze(`${CLASSES_ONLY}\nexport { default } from "./entry";`);
     expect(hosts[0]?.defaultExport).toBe(true);
   });
 
@@ -107,26 +107,26 @@ describe("the rule, proved against fixtures before it is trusted against the tre
       "export default interface HostEntry { fetch(): Promise<Response> }",
       "type Env2 = { a: 1 };\nexport { type Env2 as default };",
     ]) {
-      const { hosts } = analyse(`${CLASSES_ONLY}\n${spelling}`);
+      const { hosts } = analyze(`${CLASSES_ONLY}\n${spelling}`);
       expect({ spelling, defaultExport: hosts[0]?.defaultExport }).toEqual({ spelling, defaultExport: false });
     }
   });
 
   test("the words in a comment are not an export", () => {
     // Structural, not textual. This file itself quotes `export default { ... }` in its own prose.
-    const { hosts } = analyse(`${CLASSES_ONLY}\n// try adding \`export default { ... }\` in your entry-point`);
+    const { hosts } = analyze(`${CLASSES_ONLY}\n// try adding \`export default { ... }\` in your entry-point`);
     expect(hosts[0]?.defaultExport).toBe(false);
   });
 
   test("a module that hosts no Workflow is not in the population at all", () => {
     // The rule is about Workflow hosts. Every other module in the kit is a library module with no default
     // export and no business having one, and a gate that asked them the same question would be unusable.
-    expect(analyse(`export const helper = () => 1;`).hosts).toEqual([]);
+    expect(analyze(`export const helper = () => 1;`).hosts).toEqual([]);
   });
 
   test("both classes of a two-Workflow module are reported against the one file", () => {
     // The unit is the module: `main` names a file, and one default export serves every class in it.
-    const { hosts } = analyse(`
+    const { hosts } = analyze(`
       export class OneWorkflow extends WorkflowEntrypoint<Env, P> {}
       export class TwoWorkflow extends WorkflowEntrypoint<Env, P> {}
     `);

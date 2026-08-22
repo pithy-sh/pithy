@@ -112,7 +112,7 @@ describe("verifySignedWebhook — the freshness window, in both directions", () 
     expect((await refusal(verify(BODY, ahead))).code).toBe("core/webhook_unverified");
   });
 
-  test("honours a narrower tolerance", async () => {
+  test("honors a narrower tolerance", async () => {
     const delivery = await header(BODY, at(-60));
     await expect(verify(BODY, delivery, { toleranceSeconds: 120 })).resolves.toBeUndefined();
     expect((await refusal(verify(BODY, delivery, { toleranceSeconds: 30 }))).code).toBe("core/webhook_unverified");
@@ -176,7 +176,7 @@ describe("verifySignedWebhook — several candidates in one header", () => {
     await expect(verify(BODY, `t=${timestamp},v1=not-hex,v1=${good}`)).resolves.toBeUndefined();
   });
 
-  test("accepts a delivery signed with any secret the endpoint still honours", async () => {
+  test("accepts a delivery signed with any secret the endpoint still honors", async () => {
     const outgoing = "whsec_the_secret_being_rotated_out";
     const delivery = await header(BODY, NOW, outgoing);
     await expect(verify(BODY, delivery, { secret: [SECRET, outgoing] })).resolves.toBeUndefined();
@@ -213,7 +213,7 @@ describe("verifySignedWebhook — headers that prove nothing", () => {
 });
 
 describe("verifySignedWebhook — a sender that names the header keys differently", () => {
-  test("honours the configured timestamp and signature keys", async () => {
+  test("honors the configured timestamp and signature keys", async () => {
     const timestamp = epochSeconds(NOW);
     const signature = await sign(SECRET, timestamp, BODY);
     const keys = { timestampKey: "ts", signatureKey: "v0" };

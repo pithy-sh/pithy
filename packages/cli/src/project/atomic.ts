@@ -286,7 +286,7 @@ const ROOT_UID = 0;
  * **Nothing in this repository makes a symlink any more.** The shared `.dev.vars` linked into each
  * `apps/<worker>/` is generated per Worker instead (#154); `scripts/worktree.ts` links nothing and says so;
  * the dev secrets file is found by name outside every checkout rather than linked into one (#156). So there
- * is no arrangement of ours left for this to recognise. Every link the walk can meet is the adopter's own,
+ * is no arrangement of ours left for this to recognize. Every link the walk can meet is the adopter's own,
  * on their machine, for a reason they did not tell us — beside a planted `.dev.vars` → `/tmp/loot`, which
  * is indistinguishable from it by destination. Location cannot classify either: the writes that land in
  * `<config>/<project>/` are outside every checkout by design, so there is no project root to contain to,
@@ -342,11 +342,11 @@ function partsOf(path: string): string[] {
  * cycle is refused: following it never ends, and picking one link in it to overwrite would be a guess at
  * what the caller meant.
  *
- * **Nothing below a component the kernel could not walk through is normalised.** The walk used to hand the
+ * **Nothing below a component the kernel could not walk through is normalized.** The walk used to hand the
  * remainder to `join`, which collapses `..` *lexically* — `missing/../apps/.dev.vars` came back as
  * `apps/.dev.vars`, a path the kernel would have refused outright and, worse, one whose surviving
  * components were then traversed by the open with no ownership check on them at all. Plant the link at
- * `apps` and it is followed. Do not lexically normalise a path you are about to hand to a syscall — that is
+ * `apps` and it is followed. Do not lexically normalize a path you are about to hand to a syscall — that is
  * the same mistake as following a link because the name looked fine.
  *
  * A component that is *there* and is not a directory is the same case, and was missed by the first fix:
@@ -389,7 +389,7 @@ async function resolveWritePath(path: string): Promise<string> {
       if (!entry.isSymbolicLink()) {
         resolved = next;
         // A file, a socket, a device: real, and nothing below it exists to reach. Whatever follows is the
-        // kernel's ENOTDIR to give, not ours to normalise away.
+        // kernel's ENOTDIR to give, not ours to normalize away.
         opaque = !entry.isDirectory();
         continue;
       }

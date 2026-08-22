@@ -75,7 +75,7 @@ export const PAYMENTS_PAUSE_RESUMPTION = {
    * rather than on a date — Stripe publishes none for it.
    *
    * `pause_collection.resumes_at` is a **different mechanism**: pausing collection leaves the subscription
-   * `active`, so it never produces a row this field could sit on. Modelling that is a separate question
+   * `active`, so it never produces a row this field could sit on. Modeling that is a separate question
    * about a state this package does not have, and it is on #369's sweep rather than smuggled in here.
    */
   stripe: {
@@ -132,7 +132,7 @@ export interface PauseResumptionInput {
  * for the reconciliation pass rather than silently written.
  */
 export function pauseResumesAt(input: PauseResumptionInput): Date | null {
-  // A resume date belongs to a pause. A live subscription's next date is its renewal, and a cancelled
+  // A resume date belongs to a pause. A live subscription's next date is its renewal, and a canceled
   // one's is its period end; neither is a resumption, and neither may be written here.
   if (input.status !== "paused") return null;
   const { reported } = input;

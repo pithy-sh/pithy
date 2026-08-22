@@ -138,7 +138,7 @@ describe("the cohort clock, replayed from events", () => {
 
   test("`pause` banks every at-target day, where `reset` counts only the unbroken tail", () => {
     // The two policies differ by design, and the difference is stated on the wire as an assumption
-    // because Google documents neither behaviour.
+    // because Google documents neither behavior.
     const events = [
       ...optInCohort(12, "2026-06-02"),
       event("m0", "lapsed", "2026-06-05"),

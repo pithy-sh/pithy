@@ -23,7 +23,7 @@ import {
  * the current answer because that is what the inbox query reads.
  *
  * Idempotent by construction. Re-running over the same message appends a second row and overwrites
- * the same three thread columns with a fresh judgement — which is what makes a Workflow retry, a
+ * the same three thread columns with a fresh judgment — which is what makes a Workflow retry, a
  * manual reclassify, and a post-upgrade backfill the same operation.
  */
 

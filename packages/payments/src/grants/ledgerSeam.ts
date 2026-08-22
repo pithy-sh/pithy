@@ -22,7 +22,7 @@ import { encodeSubjectReference, type PaymentsSubject } from "../data/subject";
  */
 
 /**
- * The ledger operations payments performs: one to fulfil a purchase, one to reverse it.
+ * The ledger operations payments performs: one to fulfill a purchase, one to reverse it.
  *
  * A structural subset rather than `@pithy-sh/ledger`'s own `Ledger`, because a type imported from an optional
  * package would put that package on the typecheck path of every module that touches fulfillment. Holds,

@@ -71,7 +71,7 @@ export interface SourceWalk {
    * is what keeps `.smoke-*`, `.e2e-*` and `.worktrees/` out of every other caller (#185).
    *
    * For the caller whose question is about *shipped files* rather than about this repository's source: a
-   * licence audit asks that every file a template carries has the right header, and a template that grew
+   * license audit asks that every file a template carries has the right header, and a template that grew
    * a `.vscode/` or a `.husky/` would ship every file in it unchecked. A gate whose reach is narrower
    * than the rule it enforces under-reports in silence (#215).
    *
@@ -86,7 +86,7 @@ export interface SourceWalk {
    * a call site. It is that the exception recorded against that walk in `./sourceFiles.test.ts` states a
    * true reason: #202's entry named the `templates` skip as the blocker and #211 found that false, and
    * the real blocker it recorded in its place — this walker cannot enter a dotted directory, and the
-   * licence audit must — would be false in the other direction if this were removed. An exception list
+   * license audit must — would be false in the other direction if this were removed. An exception list
    * whose reasons have quietly stopped being true is the failure mode #211 corrected, and removing the
    * option to re-add it with the edge would cost the same work twice. One branch, asserted where it is.
    */

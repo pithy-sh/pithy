@@ -29,7 +29,7 @@ import { ledgerAccountId, openPaymentsLedger, type PaymentsLedger } from "./ledg
  *   drop the second, with nothing anywhere to read. The currency is in the ref for that reason alone.
  * - **A pure function of durable identifiers.** Never `crypto.randomUUID()`, never `Date.now()`. `purchaseId`
  *   is minted once, at first projection, and every later write keeps it — so a retry three days later derives
- *   the identical ref and the ledger recognises the replay. A ref that varied would double-credit.
+ *   the identical ref and the ledger recognizes the replay. A ref that varied would double-credit.
  * - **Per billing period on a subscription, for free.** Each renewal is a distinct provider transaction on all
  *   three rails, so it is a distinct purchase row with a distinct id, so it is a distinct ref. The same guard
  *   that makes a redelivery a no-op lets next month's renewal through, with no period arithmetic anywhere.
@@ -153,7 +153,7 @@ export async function applyGrants(
 }
 
 /**
- * Fulfil one projected purchase in both directions: credit what it bought, and reverse what a refund took
+ * Fulfill one projected purchase in both directions: credit what it bought, and reverse what a refund took
  * back where the catalog asks for it.
  *
  * The ledger is opened **lazily, and only when the catalog names a currency**. That laziness is the whole

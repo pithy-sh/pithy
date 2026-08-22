@@ -250,7 +250,7 @@ describe("listProfileTokens", () => {
 
   test("never lists another project's token, even for the same profile and env", async () => {
     // The account token list is account-wide. Anything listed here is something the CLI offers to
-    // rotate and revoke, so a neighbouring project's credential must never appear in it.
+    // rotate and revoke, so a neighboring project's credential must never appear in it.
     const tokens = fakeControl({
       listTokens: vi.fn(async () => [
         { id: "t1", name: "acme-staging-ci-system", status: "active" as const },

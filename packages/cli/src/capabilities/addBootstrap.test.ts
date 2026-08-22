@@ -113,7 +113,7 @@ describe("bootstrapAdd", () => {
 
     const configDir = process.env.PITHY_CONFIG_DIR;
     expect(configDir).toBeTruthy();
-    // Asserted on the real artefact — where the file this suite just wrote actually is. The version of
+    // Asserted on the real artifact — where the file this suite just wrote actually is. The version of
     // this suite that shipped #200 would have passed every other test in this file while writing a real
     // master key to `~/.config/pithy/bootstrap-1/secrets.jsonc`, because nothing looked.
     expect(await secretsPath(dir)).toContain(`${configDir}/`);

@@ -97,7 +97,7 @@ describe("the JSON columns are gated by Zod, because SQLite cannot CHECK inside 
     expect(ControlPlaneConnection.safeParse({ ...row, scopes: '["ping"]' }).success).toBe(false);
   });
 
-  it("rejects a key on a weaker curve, so a downgrade cannot be stored and later honoured", () => {
+  it("rejects a key on a weaker curve, so a downgrade cannot be stored and later honored", () => {
     const downgraded = [{ ...key, publicKey: { kty: "EC", crv: "P-256", x: key.publicKey.x } }];
     expect(ControlPlaneConnection.safeParse({ ...row, keys: JSON.stringify(downgraded) }).success).toBe(false);
     expect(Ed25519PublicJwk.safeParse({ kty: "OKP", crv: "P-256", x: "abc" }).success).toBe(false);

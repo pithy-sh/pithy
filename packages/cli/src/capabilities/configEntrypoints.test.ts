@@ -42,7 +42,7 @@ const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
  * runner's aliasing would be the one way to pass this while still being broken in the field.
  *
  * **Scope is {@link CATALOG}** — the set `pithy add` can write a config line for. A package that ships a
- * capability but is not yet catalogued is not reachable from a `pithy.config.ts` and so cannot break one;
+ * capability but is not yet cataloged is not reachable from a `pithy.config.ts` and so cannot break one;
  * it comes under this gate on the commit that adds its catalog entry, which is the right moment.
  */
 describe("every capability's config entry point loads outside workerd", () => {
@@ -53,7 +53,7 @@ describe("every capability's config entry point loads outside workerd", () => {
     specifier: capabilityImportSpecifier(capabilityPackageName(entry.name)),
   }));
 
-  test("every catalogued capability is covered, and its entry point exists", () => {
+  test("every cataloged capability is covered, and its entry point exists", () => {
     // A list that silently emptied — or a package whose `src/index.ts` was never written, the
     // `@pithy-sh/secrets` failure `catalog.test.ts` guards from the other side — would make the
     // import test below a no-op that passes.

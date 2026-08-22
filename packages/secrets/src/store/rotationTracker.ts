@@ -80,7 +80,7 @@ export class RotationTracker {
    * column on this table a failure site writes, `rotationLedger.ts` states that its text is fixed and
    * chosen by a code, and the at-rest rotation path composed it from `cause.message` anyway — from a catch
    * reached by decryption, envelope decoding and config parsing, which are the paths whose exception text
-   * can carry key material. Four files already refuse to publish this column; that refusal is defence in
+   * can carry key material. Four files already refuse to publish this column; that refusal is defense in
    * depth and was never the invariant. The invariant is that there is nothing here to publish.
    *
    * A comment asking for a code would have been the same comment that was already there. So the signature

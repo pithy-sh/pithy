@@ -203,7 +203,7 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
    *
    * Gated on attachments **or** raw retention, not attachments alone. The bucket holds both, so
    * keying only on `attachments.enabled` meant an adopter who turned off attachment storage also,
-   * silently, lost the immutable raw MIME that makes re-parsing and re-sanitising possible — a
+   * silently, lost the immutable raw MIME that makes re-parsing and re-sanitizing possible — a
    * property the message schema documents as load-bearing. Two settings, two reasons to need it.
    */
   async ensureBucket(): Promise<{ bucket: string; created: boolean; skipped: boolean }> {

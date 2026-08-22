@@ -62,7 +62,7 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
  *
  * The stored `contentType` is **`application/octet-stream`, never what the sender declared.** R2
  * echoes the stored type back on a presigned GET, and a browser that receives `text/html` from an
- * object URL will render it — so honouring a declared type here would turn every attachment into a
+ * object URL will render it — so honoring a declared type here would turn every attachment into a
  * stored-XSS delivery mechanism on whatever origin the bucket serves from, with a signed URL as the
  * exploit. The declared type is kept in D1, where it is data rather than an instruction.
  */

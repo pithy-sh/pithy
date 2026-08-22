@@ -607,13 +607,13 @@ Name it for the Worker, not for the capability that asked first. The first proje
 
 ## 4. Help text
 
-Help is **citty's everywhere but the root**. `pithy add --help` and every screen below it are rendered by citty's own `renderUsage` from the command tree in `packages/cli/src/main.ts`: the description line, the `USAGE` line, the `ARGUMENTS` / `OPTIONS` / `COMMANDS` blocks, the column alignment, and the closing pointer. The root screen — bare `pithy`, `pithy -h`, `pithy --help`, and the screen after an unrecognised name — is `packages/cli/src/help/rootUsage.ts`, because it groups its commands under headings and a heading is a thing we style (§4.3). Below the root, Pithy writes the copy and citty writes the layout. So the brevity rules bind where we actually hold the pen — each command's `meta.description` and each argument's `description` is one line, sentence case, no period unless it is a full sentence.
+Help is **citty's everywhere but the root**. `pithy add --help` and every screen below it are rendered by citty's own `renderUsage` from the command tree in `packages/cli/src/main.ts`: the description line, the `USAGE` line, the `ARGUMENTS` / `OPTIONS` / `COMMANDS` blocks, the column alignment, and the closing pointer. The root screen — bare `pithy`, `pithy -h`, `pithy --help`, and the screen after an unrecognized name — is `packages/cli/src/help/rootUsage.ts`, because it groups its commands under headings and a heading is a thing we style (§4.3). Below the root, Pithy writes the copy and citty writes the layout. So the brevity rules bind where we actually hold the pen — each command's `meta.description` and each argument's `description` is one line, sentence case, no period unless it is a full sentence.
 
 The two transcripts below are captured from the real binary and pinned by `packages/cli/src/binDocs.test.ts`. Reword a description in `main.ts`, add a command, or add a flag, and that test fails until this section is recaptured. `v<version>` stands in for the installed version — the one part of the output that varies.
 
 **A command that names no action is asking what it can do, and being answered is a success.** One rule, at every level: bare `pithy` prints the command list and exits 0, and so does a group with no subcommand — `pithy secrets`, `pithy worker`, all fourteen. Nothing is printed after the help, because the list *is* the answer to the missing command; repeating it as a complaint is the CLI arguing with a user it has just served. Exit 0 is what makes `pithy && next` and a bare invocation in a CI step work, and it is what keeps `bun run pithy` from adding `error: script "pithy" exited with code 1` under a successful help screen.
 
-A name that is **not** a command is a different thing. `pithy nonsense` is a mistake, not a question: it names what was not recognised, shows the help, and exits non-zero.
+A name that is **not** a command is a different thing. `pithy nonsense` is a mistake, not a question: it names what was not recognized, shows the help, and exits non-zero.
 
 **And a name is a command only when the tree declares it.** Every `subCommands` is an object literal, so `Object.prototype` used to be in scope for every lookup at every level: `pithy valueOf` called `Object.prototype.valueOf` with no receiver and died on a raw `TypeError` under a crash banner, and `pithy constructor` called `Object`, took the `{}` it returned for a command definition, ran nothing, and exited **0**. `ownNamesOnly` in `dispatch.ts` copies each record onto a null prototype on its way to citty, so an inherited name resolves to nothing and takes the `pithy nonsense` path — named, help shown, non-zero. Done once, for the whole tree, and lazily: a subcommand thunk is wrapped, never called.
 
@@ -621,7 +621,7 @@ The rule lives in `packages/cli/src/dispatch.ts`, once, and is applied before ci
 
 ### 4.1 Top-level help
 
-`-h` / `--help` resolves to the root, and `bin.ts` answers it with the screen below before citty parses; a `--help` one level down is still citty's builtin. `-v` / `--version` is answered by `bin.ts` too, because citty's builtin only fires when the flag is the sole argument (§1.2). Both work, neither is listed under `OPTIONS`, and `--version` prints the bare version and nothing else. There is no `Docs:` footer; the screen closes with a pointer at per-command help. Bare `pithy` prints this same screen and exits 0, and so does `pithy nonsense` — with the name it did not recognise on stderr, and a non-zero exit.
+`-h` / `--help` resolves to the root, and `bin.ts` answers it with the screen below before citty parses; a `--help` one level down is still citty's builtin. `-v` / `--version` is answered by `bin.ts` too, because citty's builtin only fires when the flag is the sole argument (§1.2). Both work, neither is listed under `OPTIONS`, and `--version` prints the bare version and nothing else. There is no `Docs:` footer; the screen closes with a pointer at per-command help. Bare `pithy` prints this same screen and exits 0, and so does `pithy nonsense` — with the name it did not recognize on stderr, and a non-zero exit.
 
 ```
 $ pithy --help
@@ -697,7 +697,7 @@ OPTIONS
 
 ### 4.3 Color in help
 
-**The root screen is ours. Every screen below it is citty's.** Bare `pithy`, `pithy -h`, `pithy --help` and the screen after an unrecognised name all resolve to the root, and `bin.ts` renders that one itself through `help/rootUsage.ts` — the group headings are the reason, and a heading is a thing we style. Nothing else moved: `pithy add --help`, `pithy secrets`, and every group screen are still citty's `renderUsage`, byte for byte.
+**The root screen is ours. Every screen below it is citty's.** Bare `pithy`, `pithy -h`, `pithy --help` and the screen after an unrecognized name all resolve to the root, and `bin.ts` renders that one itself through `help/rootUsage.ts` — the group headings are the reason, and a heading is a thing we style. Nothing else moved: `pithy add --help`, `pithy secrets`, and every group screen are still citty's `renderUsage`, byte for byte.
 
 So the table splits in two.
 

@@ -1507,7 +1507,7 @@ describe("POST /payments/webhooks/google", () => {
   });
 
   test("a test purchase against a production deployment is acknowledged and grants nothing", async () => {
-    // Sandbox isolation for the Google rail. Play marks a licence-test subscription with `testPurchase`, and the
+    // Sandbox isolation for the Google rail. Play marks a license-test subscription with `testPurchase`, and the
     // writer refuses it — a 5xx would only make Pub/Sub retry something that refuses identically every time.
     await linkProviderAccount(env.DB, "google", GOOGLE_ACCOUNT, user("ada"), { now: NOW });
     const response = await push(withSubscription({ ...playSubscription, testPurchase: {} }), rtdnRenewed);
@@ -3399,7 +3399,7 @@ describe("POST /payments/webhooks/paddle", () => {
       event_type: "client_token.created",
       occurred_at: "2026-08-12T09:00:00Z",
     });
-    // The claim as a grep, an export and a backup see it: the whole table, serialised.
+    // The claim as a grep, an export and a backup see it: the whole table, serialized.
     expect(JSON.stringify(rows)).not.toContain(TOKEN);
     expect(await purchases()).toHaveLength(0);
   });
@@ -3526,7 +3526,7 @@ describe("POST /payments/purchases — Paddle", () => {
     // — `custom_data` came back naming somebody else. See `../rails/paddle/fixtures/browserForged.ts`.
     //
     // It is here rather than only in `objects.test.ts` because the route is where the damage would be:
-    // `linkProviderAccount` never rebinds, so one honoured overwrite squats a Paddle customer against an
+    // `linkProviderAccount` never rebinds, so one honored overwrite squats a Paddle customer against an
     // account of the attacker's choosing, permanently, with nothing to undo it with.
     const overwritten = { ...(await transaction(user("ignored"))), custom_data: BROWSER_OVERWROTE_SERVER_STAMP };
     const app = makeApp(ONE_OFF, { paddle: { transaction: overwritten } });
@@ -3594,13 +3594,13 @@ describe("POST /payments/purchases — Paddle", () => {
       expect(await errorCode(response), name).toBe("payments/verification_failed");
       expect(await purchases(), name).toHaveLength(0);
       expect(await entitlements(), name).toHaveLength(0);
-      // And no binding. `linkProviderAccount` never rebinds, so one honoured forgery would squat this
+      // And no binding. `linkProviderAccount` never rebinds, so one honored forgery would squat this
       // Paddle customer against mallory permanently and there would be nothing to undo it with.
       expect(await db().selectFrom("pithyPaymentsProviderAccounts").selectAll().execute(), name).toHaveLength(0);
     }
 
     // Anti-vacuity, and the point of the whole case: change the proof and nothing else, and it projects.
-    // So the six refusals above are the MAC failing — not the catalogue, not the caller, not the id.
+    // So the six refusals above are the MAC failing — not the catalog, not the caller, not the id.
     const app = makeApp(ONE_OFF, { paddle: { transaction: await stamped(user("mallory"), genuine) } });
     const accepted = await request(app, "POST", "/payments/purchases", {
       user: "mallory",

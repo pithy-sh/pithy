@@ -74,7 +74,7 @@ export class CloudflareCustomHostnamesManager extends CloudflareManager {
   async getCustomHostname(hostname: string): Promise<CustomHostnameListResponse | null> {
     return cloudflareRequest(`get custom hostname '${hostname}'`, async () => {
       // `hostname` is a filter object in the v7 SDK; `exact` is the FQDN match (the loose
-      // `contain`/`startsWith` variants would return neighbours). The equality re-check below
+      // `contain`/`startsWith` variants would return neighbors). The equality re-check below
       // stays as a guard — the filter narrows the page, it does not guarantee a single result.
       for await (const candidate of this.getClient().customHostnames.list({
         zone_id: this.zoneId,

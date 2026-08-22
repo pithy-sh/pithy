@@ -7,7 +7,7 @@
  * (#228).
  *
  * Nothing here classifies anything. Classification is policy and belongs to the surface that refuses:
- * which causes a loader recognises, and what each refusal says, differ per surface and are meant to.
+ * which causes a loader recognizes, and what each refusal says, differ per surface and are meant to.
  * This module holds only what does not — the facts about the shapes a runtime hands over, and the filter
  * that decides whether one of its strings is safe to put in front of an adopter.
  *
@@ -88,7 +88,7 @@ const BUILD_FAILURE = /^\d+ errors? building "/;
  * Nothing else Bun throws degrades this way: a `ResolveMessage`, a bare `BuildMessage` and a module's own
  * `Error` are byte-identical on every import. Only the wrapper forgets.
  *
- * So the wrapper is recognised by its own message. **What it proves is narrow and worth stating:** the
+ * So the wrapper is recognized by its own message. **What it proves is narrow and worth stating:** the
  * module reached the builder and the builder produced diagnostics. It did not fail to resolve — Bun
  * throws the first `ResolveMessage` bare, wrapping nothing, even for a file with several bad imports —
  * and it did not run, so it cannot have thrown. It failed to parse or to build. A caller may say that
@@ -100,7 +100,7 @@ export function isBuildFailureWrapper(cause: unknown): boolean {
   return typeof message === "string" && BUILD_FAILURE.test(message);
 }
 
-/** Escape sequences a runtime colours its diagnostics with. They are formatting, and they never travel. */
+/** Escape sequences a runtime colors its diagnostics with. They are formatting, and they never travel. */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping the control characters is the point.
 const ANSI = /\u001b\[[0-9;]*m/g;
 
@@ -114,9 +114,9 @@ const STACK_FRAME = /\bat \S+:\d+:\d+/;
 const REASON_LIMIT = 160;
 
 /**
- * The thrown value's message, **de-coloured** — `undefined` when it has none.
+ * The thrown value's message, **de-colored** — `undefined` when it has none.
  *
- * Duck-typed for {@link prop}'s reason. The de-colouring is here rather than at each caller because an
+ * Duck-typed for {@link prop}'s reason. The de-coloring is here rather than at each caller because an
  * escape sequence is formatting the runtime added, not something a surface has an opinion about — and
  * because the three copies of this had already drifted: two stripped with `\u001b`, the third with a
  * literal escape character sitting in its source where no reviewer would see it (#228).

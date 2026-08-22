@@ -468,7 +468,7 @@ export type AdminReconcileRunsQuery = z.output<typeof AdminReconcileRunsQuery>;
  * **Two segments, not one encoded reference.** `encodeSubjectReference` exists for the single-field slots a
  * store gives us — Apple's `appAccountToken`, Stripe's `client_reference_id` — where there is exactly one
  * string to write and it comes back through a webhook. A URL has as many segments as it needs, and the
- * decoder for that wire format answers `undefined` for anything it does not recognise, which on a path
+ * decoder for that wire format answers `undefined` for anything it does not recognize, which on a path
  * would be a 404 that reads like a missing holder rather than the 400 a malformed address deserves. Two
  * validated segments say which half is wrong.
  *

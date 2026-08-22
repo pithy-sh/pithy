@@ -23,7 +23,7 @@ import { suppress } from "./suppression";
  * the worker `env` and nothing else, and `enqueue` is a closure rather than a binding — so the two ways
  * past it were to rebuild the send identity from `env` (this product's from-address in a second place,
  * free to drift from `pithy.config.ts`) or to pass the closure through Workflow params (which are
- * serialised, and a closure is not).
+ * serialized, and a closure is not).
  *
  * That is why `pithy-sh/dashboard`'s key-rotation notice was written, tested, and reachable by nothing:
  * a monthly unattended pass against credentials into other people's production systems, and the one

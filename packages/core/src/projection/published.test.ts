@@ -51,7 +51,7 @@ describe("unpublishedIn", () => {
     }
   });
 
-  test("a forbidden value under a permitted key is refused — a field is not a licence for its contents", () => {
+  test("a forbidden value under a permitted key is refused — a field is not a license for its contents", () => {
     // The other half. `entitlement` is declared, so the key check is satisfied; the value is not a fact
     // this surface publishes, which is the shape of a projection that started selecting a new column.
     expect(unpublishedIn({ ...CLEAN, entitlement: "sk_live_51NxSecret" }, PUBLISHED)).toEqual([
@@ -169,7 +169,7 @@ describe("unpublishedIn", () => {
   test("what a client receives still walks — the refusal is of live objects, not of documents", () => {
     // The anti-vacuity half. A gate that refused everything would pass every test above, so this says
     // the round-trip the message prescribes is a document this walk reads: the `Date` becomes the
-    // string it serialises as, and the string is caught by the leaf half rather than exempted.
+    // string it serializes as, and the string is caught by the leaf half rather than exempted.
     const live = { user: "ada", payload: new Date("2026-06-10T12:00:00.000Z") };
     const crossed: unknown = JSON.parse(JSON.stringify(live));
     expect(unpublishedIn(crossed, PUBLISHED)).toEqual([

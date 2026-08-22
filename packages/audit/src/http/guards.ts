@@ -70,7 +70,7 @@ export const AUDIT_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  * Declared beside the scopes so the scope a route demands and the scope a manifest advertises are the
  * same constant, read from one place. `basePath` is a parameter and never a default: an adopter who
  * mounted audit at `/trail` must get a manifest naming `/trail/events`, or a client composing its
- * calls from the manifest would 404 against exactly the adopters who customised anything.
+ * calls from the manifest would 404 against exactly the adopters who customized anything.
  *
  * The summaries say what the operation is *for*. A client renders these beside a pane somebody is
  * about to open over other people's activity.

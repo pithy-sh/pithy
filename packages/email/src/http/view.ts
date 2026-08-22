@@ -26,11 +26,11 @@ import type { EmailJobDetail, EmailJobListItem, EmailSuppressionView } from "./r
  *
  * `toAddress` is personal data on its own. The list is the bulk surface — a hundred rows a request,
  * paged, is precisely how a compromised credential turns a job log into a customer address book — so it
- * carries a masked address: enough for an operator to recognise the row they are looking for, and
+ * carries a masked address: enough for an operator to recognize the row they are looking for, and
  * useless for harvesting. The **detail** route returns the whole address, one job at a time, with an
  * audit event naming that job.
  *
- * This is a bulk-harvest control, not anonymisation, and it is not sold as one. `ad***@example.com`
+ * This is a bulk-harvest control, not anonymization, and it is not sold as one. `ad***@example.com`
  * identifies a person to anyone who already knows them. What it does is raise the cost of taking the
  * whole list from one request per hundred addresses to one request per address, each individually
  * recorded — which is the difference between an incident nobody can reconstruct and one whose every

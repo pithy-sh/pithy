@@ -41,7 +41,7 @@ function fakeClients() {
 const REFUSAL = "Nothing states that Cloudflare account acct-stranger is this project's. Nothing was changed.";
 
 describe("cloudflareProvisioners on an unconfirmed account", () => {
-  test("every kind's `find` refuses rather than returning the null that authorises a create", async () => {
+  test("every kind's `find` refuses rather than returning the null that authorizes a create", async () => {
     const { clients } = fakeClients();
     const provisioners = cloudflareProvisioners(clients, { accountId: "acct-stranger", confirmation: "ambient" });
 

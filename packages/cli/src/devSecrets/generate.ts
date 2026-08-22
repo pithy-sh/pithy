@@ -259,7 +259,7 @@ export async function generateDevVars(options: GenerateDevVarsOptions): Promise<
     const content = renderDevVars(values);
     const path = join(dir, ".dev.vars");
 
-    // A symlink is the old design's own artefact — nothing but pithy ever made one here — and it holds no
+    // A symlink is the old design's own artifact — nothing but pithy ever made one here — and it holds no
     // content, so removing it loses nothing. The file it pointed at is untouched and still on disk.
     const entry = await lstat(path).catch(() => null);
     if (entry?.isSymbolicLink()) {

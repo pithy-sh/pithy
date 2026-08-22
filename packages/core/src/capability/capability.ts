@@ -173,7 +173,7 @@ export type TokenProfileSeamMap = Record<string, TokenProfileSeam>;
  * `pithy doctor` reports these the way it reports capabilities, from this one field, so a new extension
  * point in any capability is a line in the report rather than a new branch in the CLI.
  *
- * Descriptive, never behavioural: nothing in the runtime reads it, and no command acts on it. A
+ * Descriptive, never behavioral: nothing in the runtime reads it, and no command acts on it. A
  * capability that lies here has told a diagnostic something untrue, which is why every field is
  * something the capability has already resolved rather than something it intends.
  */

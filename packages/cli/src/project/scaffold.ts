@@ -219,7 +219,7 @@ const THROUGH_A_LINK: Record<PathIntent, string> = {
 /**
  * What a filesystem probe established about a path — **three answers, never two.**
  *
- * The rule is {@link survivorsOf}'s, generalised: **only `ENOENT` means gone.** Anything else the probe
+ * The rule is {@link survivorsOf}'s, generalized: **only `ENOENT` means gone.** Anything else the probe
  * cannot answer — `EACCES`, `ELOOP`, a mount that went away — is `unanswerable`, and reading it as gone is
  * how a gate clears a path it never saw and a delete reports a tree it never removed.
  *
@@ -662,7 +662,7 @@ async function copyTemplate(targetDir: string): Promise<void> {
 /**
  * Throw if the target already holds anything `pithy init` would write, naming what.
  *
- * **Collision, not emptiness.** A directory holding only `.git`, a README, a licence, a CLAUDE.md, or an
+ * **Collision, not emptiness.** A directory holding only `.git`, a README, a license, a CLAUDE.md, or an
  * editor config is not a project — and refusing it meant `pithy init` could not scaffold into a repo the
  * adopter had just cloned, which is how projects normally start. What actually protects them is the
  * narrower question: is anything I am about to write already there. That still refuses to clobber a real
@@ -673,7 +673,7 @@ async function copyTemplate(targetDir: string): Promise<void> {
  * occupied destination and carries an occupied source wholesale into the new name. So those two paths
  * are held to emptiness, not to collision. Get that wrong and the run dies on a raw `ENOTEMPTY` from
  * `node:fs` — after the copy, with the root half-written, and outside the `PithyError` contract every
- * other refusal here honours.
+ * other refusal here honors.
  *
  * The precondition `pithy init` checks *before* prompting, so a doomed run fails fast instead of after
  * the user answers. A missing directory passes — `scaffoldProject` creates it, and re-checks, so the

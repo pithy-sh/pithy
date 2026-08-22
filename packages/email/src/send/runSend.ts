@@ -77,14 +77,14 @@ export interface SendDeps {
    */
   passStartedAt: Date;
   /**
-   * "This job is being worked on, now" — **read fresh on every call**, and never journalled.
+   * "This job is being worked on, now" — **read fresh on every call**, and never journaled.
    *
    * This is not a stamp with a tidier name. `updatedAt` is the scheduler's only evidence that a `sending`
    * job is alive: `runScheduler` claims and re-drives anything in `sending` older than `stuckMs`, on the
    * assumption its dispatch died. Freeze it and a batch that resumes past that window reports the job it
    * is actively retrying as stranded, so the next tick starts a second send Workflow against it — and
    * `runSend` short-circuits only a job already `sent`, so both attempts render and both call `send`. One
-   * person, two emails. A sweep journalled the single `now` this replaced and was reverted for exactly
+   * person, two emails. A sweep journaled the single `now` this replaced and was reverted for exactly
    * that.
    *
    * The suppression liveness read takes it too, because "is this address blocked *right now*" is a
@@ -136,9 +136,9 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
   if (!row) throw new NotFoundError({ detail: `email job '${jobId}' not found` });
   const job = EmailJob.parse(row);
 
-  // Idempotent: a job already sent or cancelled is a no-op (a Workflow can re-run a step).
+  // Idempotent: a job already sent or canceled is a no-op (a Workflow can re-run a step).
   if (job.status === "sent") return { jobId, status: "sent", messageId: job.messageId ?? undefined };
-  if (job.status === "cancelled") return { jobId, status: "cancelled", skipped: true };
+  if (job.status === "canceled") return { jobId, status: "canceled", skipped: true };
 
   const recipient = normalizeAddress(job.toAddress);
 
@@ -215,7 +215,7 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
   // would publish a mechanism for disabling authentication, one tap from the mail the account depends on.
   //
   // Both headers together, per RFC 8058: `List-Unsubscribe-Post` is what tells a client the URL will
-  // honour a POST, and the callback accepts one for that reason. Sending it without a POST route would
+  // honor a POST, and the callback accepts one for that reason. Sending it without a POST route would
   // advertise an opt-out that silently does nothing.
   if (rendered.unsubscribeUrl) {
     headers["List-Unsubscribe"] = `<${rendered.unsubscribeUrl}>`;

@@ -14,7 +14,7 @@ import usNewYork from "./price-preview-us-new-york.json" with { type: "json" };
  * They exist because the claim this rail makes — "prices render localized and tax-correct" — is a claim
  * about numbers Paddle chooses, and a test written against numbers *we* chose proves only that our
  * arithmetic agrees with itself. Each of these was fetched, not composed, and each pins a different
- * behaviour of Paddle's that the reader has to get right:
+ * behavior of Paddle's that the reader has to get right:
  *
  * | Fixture | Subtotal | Tax | Total | What it pins |
  * |---|---|---|---|---|
@@ -27,7 +27,7 @@ import usNewYork from "./price-preview-us-new-york.json" with { type: "json" };
  * Two facts these recordings carry that are easy to state wrongly from memory:
  *
  * **Currency is not localized.** Every response but the last is in USD, from a UK, German and Japanese
- * address alike. Currency comes from `unit_price_overrides` in the catalogue, and this price has none.
+ * address alike. Currency comes from `unit_price_overrides` in the catalog, and this price has none.
  * What localizes without them is tax and formatting.
  *
  * **A converted amount is not a stable number.** {@link JP_YEN} was fetched twice minutes apart and

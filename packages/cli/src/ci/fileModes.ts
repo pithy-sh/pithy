@@ -180,7 +180,7 @@ export function repairedMode(recordedExecutable: boolean, mode: number): number 
 }
 
 /** Why one file breaks the rule, in the words the gate prints. Null when it does not. */
-export function offence(file: TrackedFile): string | null {
+export function offense(file: TrackedFile): string | null {
   if (file.mode === null) return null;
   const found: string[] = [];
   const octal = `0${file.mode.toString(8).padStart(3, "0")}`;
@@ -200,7 +200,7 @@ export function offence(file: TrackedFile): string | null {
 export function violations(files: readonly TrackedFile[]): Record<string, string> {
   const found: Record<string, string> = {};
   for (const file of files) {
-    const why = offence(file);
+    const why = offense(file);
     if (why !== null) found[file.path] = why;
   }
   return found;
@@ -215,7 +215,7 @@ export function violations(files: readonly TrackedFile[]): Record<string, string
 export function repair(root: string): string[] {
   const fixed: string[] = [];
   for (const file of trackedFiles(root)) {
-    if (file.mode === null || offence(file) === null) continue;
+    if (file.mode === null || offense(file) === null) continue;
     chmodSync(join(root, file.path), repairedMode(file.recorded === true, file.mode));
     fixed.push(file.path);
   }

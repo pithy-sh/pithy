@@ -93,7 +93,7 @@ export const testersExampleSeed: SeedSet = defineSeed({
         targetSize: 12,
         windowDays: 14,
         maxRosterSize: 100,
-        // The store's own opt-in page, which is where a tester actually enrols. Fixed, and obviously a
+        // The store's own opt-in page, which is where a tester actually enrolls. Fixed, and obviously a
         // placeholder package name, so nobody mistakes the fixture for a real app.
         storeOptInUrl: "https://play.google.com/apps/testing/com.example.app",
         resetPolicy: "reset",

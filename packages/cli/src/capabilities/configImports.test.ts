@@ -166,7 +166,7 @@ describe("withoutBinding", () => {
     );
   });
 
-  test("takes the first name out without eating its neighbour's space", () => {
+  test("takes the first name out without eating its neighbor's space", () => {
     expect(without('import { auth, b } from "@pithy-sh/auth/src/index";', "auth")).toBe(
       'import { b } from "@pithy-sh/auth/src/index";',
     );

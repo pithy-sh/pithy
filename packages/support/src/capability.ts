@@ -95,7 +95,7 @@ export interface SupportWiring {
  *   verbatim — prompt input written for a classifier, not copy for a chooser. An adopter's UI wants
  *   its own words either way, and the descriptions are the closest thing here to authored internals.
  * - **`inboundAddresses` and `reply.replyToAddress`.** The inbox's own mail addresses. A browser never
- *   writes to them, and publishing an address into every bundle is a favour to nobody but a spammer.
+ *   writes to them, and publishing an address into every bundle is a favor to nobody but a spammer.
  * - **`reply.snippets`.** Canned copy an operator picks and edits in a dashboard. Staff-side, and the
  *   dashboard reads it through the control-plane route that already serves it.
  * - **`submission.maxPerAccountPerHour`.** A rate a client cannot pre-enforce honestly — the count

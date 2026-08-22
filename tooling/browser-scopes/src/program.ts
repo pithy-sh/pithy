@@ -35,7 +35,7 @@ import { fileURLToPath } from "node:url";
  * 1. `../link/sender.js`, which TypeScript's Bundler resolution follows to the `.ts` beside it. The
  *    resolver tried two candidates and dropped the rest in silence.
  * 2. `/// <reference types="@cloudflare/workers-types" />`, which the specifier pattern never matched
- *    and which `tsc` honours whatever `types: []` says.
+ *    and which `tsc` honors whatever `types: []` says.
  * 3. A comment inside a multi-line import list. The pattern was `^\s*(?:import|export)\b[^;]*?from…`,
  *    and `[^;]*?` means **one semicolon anywhere in the statement stops it matching at all**. Planted:
  *    `import {\n  MAX_LINKED_PURCHASES, // the cap on linked purchases; 25 rows\n} from "../link/sender";`
@@ -56,7 +56,7 @@ import { fileURLToPath } from "node:url";
  *
  * - A named import of `@cloudflare/workers-types` puts its `index.ts` in the list.
  * - So does a subpath of it, and so does a `.js`-suffixed re-export three modules down.
- * - So does `/// <reference types="…" />`, because honouring the directive is *how* it defeats
+ * - So does `/// <reference types="…" />`, because honoring the directive is *how* it defeats
  *   `types: []` — the injection and the entry in the list are the same event.
  * - A directive inside a template literal puts nothing in the list, because it is text the module
  *   emits, and the compiler does not read emitted text.
@@ -166,7 +166,7 @@ function packageOf(path: string): string | null {
  * most wanted. Whatever the exit code, the list is on stdout, which `execFileSync` hands back on the
  * error too.
  *
- * **`--listFilesOnly`, and two lines of defence behind it (Jim, 2026-08-21).** This was `--listFiles`
+ * **`--listFilesOnly`, and two lines of defense behind it (Jim, 2026-08-21).** This was `--listFiles`
  * first, and a full check writes its diagnostics to the same stream. Pointed at all 1,912 modules in
  * `packages/` — most of which do not compile in a browser's environment, which is the point — it reported
  * 88 "files" that were error text: `'T' could be instantiated with an arbitrary type…` and

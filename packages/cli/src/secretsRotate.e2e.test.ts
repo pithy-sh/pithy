@@ -29,7 +29,7 @@ const REPO = resolve(import.meta.dirname, "..", "..", "..");
  * registry loaded out of it, the adopter-supplied rotator, `WorkflowSecretDispatcher`,
  * `CloudflareWorkflowsClient`, and the Cloudflare SDK's HTTP transport.
  *
- * A stand-in: the Cloudflare account. The SDK honours `CLOUDFLARE_BASE_URL`, so the client talks to a
+ * A stand-in: the Cloudflare account. The SDK honors `CLOUDFLARE_BASE_URL`, so the client talks to a
  * local server that answers the Workflows API — which is also how the store is made to fail **after** a
  * roll has already succeeded, without a line of test-only code inside the CLI. A seam in the command for
  * "pretend the store failed" would be a backdoor in the one command that handles live credentials.
@@ -109,7 +109,7 @@ const LINKED = ["core", "auth", "email", "secrets", "turnstile", "audit", "cloud
  *
  * It also answers the **rotation ledger** modes (`#379`), because a rotation opens a row in the manager
  * before it rolls and closes it after — and `dispatched` records every payload it was sent, in order,
- * which is what lets a test read the CLI's behaviour off the wire rather than off the CLI's own report.
+ * which is what lets a test read the CLI's behavior off the wire rather than off the CLI's own report.
  */
 function fakeCloudflare(refused: Set<string>): Promise<{
   server: Server;

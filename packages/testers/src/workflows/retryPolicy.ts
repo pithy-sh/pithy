@@ -18,7 +18,7 @@ import type { WorkflowRetryPolicy } from "@pithy-sh/core/src/workflow/faults";
  *
  * ## Terminal, and why
  *
- * - **`testers/cohort_closed`** — the pass refusing to send from a finished programme. That is the
+ * - **`testers/cohort_closed`** — the pass refusing to send from a finished program. That is the
  *   refusal *working*: a closed cohort keeps its history and sends nothing further, and it does not
  *   reopen because the step asked again.
  * - **`testers/cohort_not_found`, `testers/member_not_found`** — a cohort or member deleted between the

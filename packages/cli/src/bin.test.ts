@@ -89,7 +89,7 @@ describe("root flags", () => {
 describe("pithy init", () => {
   test("scaffolds non-interactively into a cloned repo and prints one JSON line", async () => {
     const target = join(dir, "smoke");
-    // A freshly cloned repo — .git, a README, a licence. None of them is a project, and refusing them
+    // A freshly cloned repo — .git, a README, a license. None of them is a project, and refusing them
     // meant `pithy init` could not run in the repo the adopter had just made for it.
     await mkdir(join(target, ".git"), { recursive: true });
     await writeFile(join(target, "README.md"), "# smoke\n");

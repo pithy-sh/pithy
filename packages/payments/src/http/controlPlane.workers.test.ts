@@ -397,7 +397,7 @@ describe("GET /payments/admin/catalog", () => {
   });
 
   test("a project that defines nothing answers { enabled: false }, not an empty list", async () => {
-    // The same modelled answer `clientProjection` gives, and for the same reason: a client branches on
+    // The same modeled answer `clientProjection` gives, and for the same reason: a client branches on
     // `enabled`, so "composed with nothing to sell" reads as its own state rather than as a dropdown that
     // came back broken. A catalog that failed to *load* is a non-200 or a body that does not parse, which
     // no branch on `enabled` can be confused by.
@@ -1409,7 +1409,7 @@ describe("the reconciliation run log", () => {
     ).toEqual([]);
   });
 
-  test("the sweep reads the body the Worker sent, not one a schema has already sanitised", async () => {
+  test("the sweep reads the body the Worker sent, not one a schema has already sanitized", async () => {
     // The defect, planted. `PaymentsAdminReconcileRunsResponse.parse` drops an unknown key, so a sweep over
     // its output examines a document the offending field has already been removed from — a gate reading a
     // copy of its own subject, cleaned. Both directions are asserted here: the sweep sees the widening, and
@@ -1426,8 +1426,8 @@ describe("the reconciliation run log", () => {
     ]);
 
     // And through the schema it is simply gone, which is why the sweep must never be handed that copy.
-    const sanitised = PaymentsAdminReconcileRunsResponse.parse(widened);
-    expect(unpublishedIn(sanitised, { leaves: publishedFactsOf(RUN), keys: PERMITTED_KEYS })).toEqual([]);
+    const sanitized = PaymentsAdminReconcileRunsResponse.parse(widened);
+    expect(unpublishedIn(sanitized, { leaves: publishedFactsOf(RUN), keys: PERMITTED_KEYS })).toEqual([]);
   });
 
   test("the sweep is running against a run that really carries all of it", async () => {
@@ -1437,7 +1437,7 @@ describe("the reconciliation run log", () => {
     const raw = (await readRunsRaw()) as { runs: Record<string, unknown>[] };
     expect(raw.runs).toHaveLength(1);
     // Every value the permit list names is genuinely a **leaf** of the row. It read `toContain` over the
-    // serialised row until #332, and a substring is not a leaf: `"2026-06-09"` and `"apple"`'s own first
+    // serialized row until #332, and a substring is not a leaf: `"2026-06-09"` and `"apple"`'s own first
     // letter both pass that, so a permitted value the row does not carry could sit on the list as slack —
     // silently absolving a future field that happens to publish it. The walk is the same one the sweep
     // above descends with, so the two agree on what the document holds by construction.

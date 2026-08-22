@@ -246,7 +246,7 @@ export async function reclassifyConversation(
     });
   }
 
-  // Audited because it rewrites a judgement about a customer's message, and because a run of them is
+  // Audited because it rewrites a judgment about a customer's message, and because a run of them is
   // what somebody fishing for a different answer looks like.
   await deps.emit({
     action: SupportAuditActions.threadReclassified,

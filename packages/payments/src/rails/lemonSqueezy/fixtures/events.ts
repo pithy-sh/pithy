@@ -159,7 +159,7 @@ export async function orderDelivery(
   return await delivery(eventName, ORDER_ID, "orders", order(overrides), options);
 }
 
-/** A delivery of a type this build does not map — a licence key, say. */
+/** A delivery of a type this build does not map — a license key, say. */
 export async function unknownDelivery(): Promise<string> {
   return await delivery("license_key_created", "42", "license-keys", {
     status: "active",

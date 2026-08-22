@@ -166,7 +166,7 @@ describe("the scaffolded pricing screen", () => {
 
   test("does not call a resolved quote estimated", async () => {
     // New York, 10001 — the address the recording was fetched from, so the screen is handed it too. The
-    // postal code resolved, the tax is the real 8.875%, and there is nothing left to settle. Labelling
+    // postal code resolved, the tax is the real 8.875%, and there is nothing left to settle. Labeling
     // this one too would make the label mean nothing.
     const container = await screen(US_NEW_YORK, true, NEW_YORK);
     expect(container.textContent).toContain("$5.00");
@@ -190,7 +190,7 @@ describe("the scaffolded pricing screen", () => {
     expect(asked.map((query) => query.customerId)).toEqual([PADDLE_CUSTOMER]);
   });
 
-  test("an IP-derived figure is labelled an estimate even when the answer carries a postal code", async () => {
+  test("an IP-derived figure is labeled an estimate even when the answer carries a postal code", async () => {
     // #340. The label is a fact about *where the location came from*, not about which fields Paddle
     // filled in. An IP is a guess at where somebody lives; the charge settles on the billing address they
     // have not given yet. Deriving the label from `postalCode` alone made it right by accident — Paddle

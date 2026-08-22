@@ -599,7 +599,7 @@ describe("the submitter's read-back", () => {
     expect(second.nextCursor).toBeNull();
   });
 
-  test("a limit beyond the page cap is clamped rather than honoured", async () => {
+  test("a limit beyond the page cap is clamped rather than honored", async () => {
     await seedAppThread("t1", "user-ada", T0 + 100);
     await expect(listOwnThreads(db, "user-ada", { limit: MAX_PAGE_SIZE + 1000 })).resolves.toMatchObject({
       nextCursor: null,

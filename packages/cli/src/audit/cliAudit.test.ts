@@ -88,7 +88,7 @@ describe("resolveAuditDatabaseId", () => {
     expect(await resolveAuditDatabaseId(dir, "nope")).toBeUndefined();
   });
 
-  test("takes the first worker declaring DB, and honours an explicit worker name", async () => {
+  test("takes the first worker declaring DB, and honors an explicit worker name", async () => {
     // `web` sorts first and binds no database; `api` holds the app DB. Workers share a resource by
     // declaring the same binding name, so the first DB found IS the app database — no ambiguity error,
     // because auditing must never break the command it records.

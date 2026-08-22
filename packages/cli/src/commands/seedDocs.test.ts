@@ -20,7 +20,7 @@ import { renderSeedText } from "./seed";
  * binding rather than advisory — an adopter reads those blocks to learn what a run looks like before they
  * dare one against staging. Nothing checked them, and they rotted in four separate ways at once: every
  * text block dropped the per-worker name column `describeWorker` prefixes each line with, the skip line
- * was capitalised where the code lowercases it, the `--dry-run` blocks omitted the `Done.` the command
+ * was capitalized where the code lowercases it, the `--dry-run` blocks omitted the `Done.` the command
  * still prints, the `--redo` block omitted the `DESTRUCTIVE.` banner that opens a real reset, and the
  * text blocks spelled a set key `leaderboard_0001_demo_board` while the adjacent `--json` block spelled
  * the same key `0001_leaderboard_demo_board`. `composeSeeds` settles that one: the key is

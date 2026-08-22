@@ -217,7 +217,7 @@ describe("applyGrants", () => {
 
   test("a purchase that terminated before any money cleared credits nothing", async () => {
     // The one an `expired`-shaped termination hides: a delayed-payment checkout that failed, a Stripe
-    // subscription abandoned at `incomplete_expired`, a Play deferred purchase cancelled before payment. All
+    // subscription abandoned at `incomplete_expired`, a Play deferred purchase canceled before payment. All
     // three end without a charge, and crediting one hands out a 100-coin pack for money that never arrived —
     // with no clawback ever to follow, because there was no payment to reverse.
     const projection = await project(event({ status: "never_paid" }));
@@ -265,7 +265,7 @@ describe("fulfillPurchase", () => {
  */
 describe("a grant to an organization", () => {
   /**
-   * There is no such thing, and that is the behaviour.
+   * There is no such thing, and that is the behavior.
    *
    * `@pithy-sh/ledger` is a per-user model: an account is `(userId, currency)` and every route it serves
    * reads a user id. A company's credit has no account to land in that anything would read, so

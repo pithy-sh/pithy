@@ -37,7 +37,7 @@ import { InternalError } from "../error/pithyError";
  *
  * **It is not a mapping.** The token is handed back verbatim. The enum stays the authority on what a
  * value means — `SupportChannel.safeParse(value).success` is the question, and the answer is the
- * client's licence to *mark* the row. Reading an unrecognised value as the nearest one you know is a
+ * client's license to *mark* the row. Reading an unrecognized value as the nearest one you know is a
  * lie about a fact somebody is about to act on, and this pattern exists to make marking cheap enough
  * that nobody reaches for mapping.
  *
@@ -136,7 +136,7 @@ function describedLike<T extends z.ZodType>(rebuilt: T, original: z.ZodType): T 
 /**
  * One node of the rewrite. Returns the identical instance when nothing under it is an enum.
  *
- * The identity is not an optimisation. It is what keeps a reader's view from becoming a second opinion
+ * The identity is not an optimization. It is what keeps a reader's view from becoming a second opinion
  * about the fields it did not widen: a field it shares with the producer is the *same object*, so a
  * change upstream lands in both, and a client can assert that field by field.
  */

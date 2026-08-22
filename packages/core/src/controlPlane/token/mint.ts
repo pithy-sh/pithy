@@ -83,7 +83,7 @@ export async function mintControlPlaneToken(input: MintControlPlaneToken): Promi
  * Export a generated key pair's public half as the JWK the adopter registers.
  *
  * `crv` and `kty` are re-asserted from our own constants rather than trusted from the export, so a
- * runtime that spelled them differently produces a key this seam still recognises — or fails here,
+ * runtime that spelled them differently produces a key this seam still recognizes — or fails here,
  * where it is obvious, rather than at the first verification.
  */
 export async function exportPublicJwk(publicKey: CryptoKey): Promise<Ed25519PublicJwk> {

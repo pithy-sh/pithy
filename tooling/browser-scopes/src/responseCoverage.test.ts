@@ -22,18 +22,18 @@ import { browserProgram } from "./program";
  *   tree, not from a list: a capability landing tomorrow is covered by the commit that adds it. The
  *   path is the derivation because §HTTP makes it one — "every admin response is a Zod object,
  *   exported from the capability's `src/http/responses.ts`" — so there is exactly one such module per
- *   capability and no judgement about which files count.
+ *   capability and no judgment about which files count.
  * - **The structural half.** No response module's program pulls in a package a browser build cannot
  *   have. `tsc` under `types: []` refuses whatever fails in a browser's ambient environment; this
  *   refuses what compiles fine and is the server data layer anyway — a named import of
  *   `@cloudflare/workers-types`, a reference directive, `kysely`, `kysely-d1`. Neither half is
  *   hypothetical: `@pithy-sh/secrets` failed the second while compiling green, because its wire shapes
  *   imported a *type* out of a Kysely reader.
- * - **The detector works.** `link/sender.ts` — the module #419 travelled through, and legitimately a
+ * - **The detector works.** `link/sender.ts` — the module #419 traveled through, and legitimately a
  *   Worker's — is asserted to be caught, **by the same function that clears the eight above**. A gate
  *   that passes whether or not the thing it checks is true is worth less than no gate, because it is
  *   read as proof. That is the half proving the gate sees *this repository*; `program.test.ts` beside it
- *   proves it recognises each shape, on fixtures, including the ones this repository does not contain.
+ *   proves it recognizes each shape, on fixtures, including the ones this repository does not contain.
  *
  * Nothing here is derived from its own subject: the expected module set is read off `packages/`, the
  * actual set is read off the fixture, and the answer about what a program contains comes from `tsc`

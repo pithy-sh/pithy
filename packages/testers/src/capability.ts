@@ -22,7 +22,7 @@ import { testersWorkflows } from "./workflows/specs";
  * The testers capability: the roster, the invitations, and the fourteen-day clock.
  *
  * Composes into a Worker like any other capability. Its one hard dependency is `email` — an invitation
- * that cannot be sent is not a testing programme. `@pithy-sh/auth` is an **optional peer**: with it, testers who sign in
+ * that cannot be sent is not a testing program. `@pithy-sh/auth` is an **optional peer**: with it, testers who sign in
  * become observable and the early-warning signal works; without it every tester resolves as
  * unobservable, the forecast widens its band to say so, and everything else still runs.
  */

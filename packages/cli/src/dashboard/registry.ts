@@ -290,7 +290,7 @@ export function connectionRegistry(
           scopes: [...connection.scopes],
           registeredKeyIds: keyIds(connection),
           // Starting over replaces a connection rather than editing one, and the id that stopped
-          // working is what an adopter needs to recognise their own older rows by.
+          // working is what an adopter needs to recognize their own older rows by.
           ...(stored === null ? {} : { replacedConnectionId: stored.id }),
         }),
       );

@@ -60,7 +60,7 @@ async function tick(): Promise<number> {
     batchSize: 50,
     maxJobs: 500,
     // Both cases below hold `undispatched` rows, which carry no batch and so are never asked about
-    // (pithy-sh/pithy#342, pithy-sh/pithy#410 for the status). `false` is therefore the answer that reproduces the behaviour this seam was
+    // (pithy-sh/pithy#342, pithy-sh/pithy#410 for the status). `false` is therefore the answer that reproduces the behavior this seam was
     // written against: a liveness answer may only veto a re-drive, never cause one.
     newBatchId: () => "batch-nudge",
     batchIsAlive: async () => false,

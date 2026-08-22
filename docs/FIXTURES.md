@@ -175,7 +175,7 @@ register and no fixed origin to hold.
 driving a consent screen needs a human, a browser and whatever 2FA the account carries, and a nightly
 built on that fails for Google's reasons rather than for Pithy's. It asserts the two things only the
 real provider can answer: the `redirect_uri` this app hands the browser, composed from the port the OS
-assigned this run, and whether Google recognises the credential — posted to the token endpoint with a
+assigned this run, and whether Google recognizes the credential — posted to the token endpoint with a
 code that is not one, Google answers `invalid_grant` for a client it knows and `invalid_client` for one
 it does not. Register a URI only if you want to drive the flow by hand.
 

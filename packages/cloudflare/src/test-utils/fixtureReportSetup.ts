@@ -23,7 +23,7 @@ import { reportFixtureEstate } from "./fixtures";
  * **Switch a config to `integrationSetup` the moment one of its suites creates a Cloudflare resource.**
  * A suite that mints and a run that never sweeps is how debris becomes permanent.
  *
- * Never throws, for the same reason its neighbour does not: a report that fails the run it was meant to
+ * Never throws, for the same reason its neighbor does not: a report that fails the run it was meant to
  * explain is worse than no report.
  */
 export default function setup(): void {

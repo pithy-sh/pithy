@@ -60,7 +60,7 @@ describe("submission attachment bounds", () => {
 
   test("the type comparison is exact — no prefix or wildcard match", () => {
     // `image/png; charset=utf-8` and `IMAGE/PNG` both name something the allowlist arguably covers, and
-    // both are refused: a guard that normalises is a guard with a parser in it, and the parser is where
+    // both are refused: a guard that normalizes is a guard with a parser in it, and the parser is where
     // the bypass lives. The schema already constrains the string to lowercase `type/subtype`.
     expect(checkAttachment(CONFIG, { contentType: "image/png2", bytes: 10 }).accepted).toBe(false);
     expect(checkAttachment(CONFIG, { contentType: "image/", bytes: 10 }).accepted).toBe(false);
@@ -76,7 +76,7 @@ describe("submission attachment bounds", () => {
 
   test("a configured count above the absolute ceiling is refused at config time", () => {
     // The ceiling is what the route's own schema is written to. A setting above it would be a limit
-    // the validator silently refused to honour — the same two-layer rule the length bounds follow.
+    // the validator silently refused to honor — the same two-layer rule the length bounds follow.
     expect(() =>
       SupportSubmissionConfig.parse({ attachments: { maxCount: MAX_SUBMISSION_ATTACHMENTS + 1 } }),
     ).toThrow();

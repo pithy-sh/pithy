@@ -95,7 +95,7 @@ function inside(dir: string, path: string): boolean {
  * about the gate itself, for the same reason. The verdict on whether it compiles belongs to `typecheck`
  * — reporting it here too would name the same defect twice.
  *
- * **`--listFilesOnly`, and the same two lines of defence `program.ts` grew — Jim, 2026-08-21.** This was
+ * **`--listFilesOnly`, and the same two lines of defense `program.ts` grew — Jim, 2026-08-21.** This was
  * `--listFiles`, which runs the full check and writes diagnostics to the same stream the paths come out
  * of. So a response program with any error at all handed this function its error text as filenames, and
  * the guard then failed claiming a turbo cache-key defect that did not exist. An adversarial pass planted

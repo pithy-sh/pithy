@@ -34,7 +34,7 @@ export const HttpError = z.codec(PublicErrorPayload, ErrorPayload, {
   // reported here rather than raised, and the rule itself stays in ./client where every transport
   // reaches it.
   //
-  // **Defence in depth, not a live bug.** Reaching that parse means a payload that satisfies
+  // **Defense in depth, not a live bug.** Reaching that parse means a payload that satisfies
   // `ErrorPayload` and, stripped of `action` and `detail`, no longer satisfies `PublicErrorPayload` —
   // which today cannot happen, because the two are built from code sets that match member for member.
   // That they match is a property of a list somebody maintains by hand, and "cannot happen" is exactly

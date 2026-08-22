@@ -68,7 +68,7 @@ export const vectorExampleSeed: SeedSet = defineSeed({
         indexName: EXAMPLE_INDEX,
         namespace: null,
         content:
-          "A machine may be said to think if a person conversing with it cannot tell it from another person. The question is behaviour, not substance.",
+          "A machine may be said to think if a person conversing with it cannot tell it from another person. The question is behavior, not substance.",
         metadata: { ownerId: EXAMPLE_ALAN.id, title: "On machine intelligence" },
         model: null,
         createdAt: now(),

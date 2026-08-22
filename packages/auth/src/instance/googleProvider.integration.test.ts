@@ -20,7 +20,7 @@ import { type LiveApp, resetLiveSecrets, startLiveApp } from "../test-utils/live
  *    port this run happens to be listening on and the base path the suite pinned. This is the value a
  *    human copies into the Google console, and the one a change to `basePath` invalidates wholesale.
  * 2. **Whether Google knows the credential.** Posted to the real token endpoint with a code that is not
- *    one, Google answers `invalid_grant` for a client it recognises and `invalid_client` for one it does
+ *    one, Google answers `invalid_grant` for a client it recognizes and `invalid_client` for one it does
  *    not — so a single request separates "these are a registered client id and secret" from "these are
  *    two strings", without a consent screen anywhere.
  *
@@ -49,7 +49,7 @@ const MOVED_BASE_PATH = "/identity";
 /** Google's authorization endpoint, as Better Auth composes it. */
 const GOOGLE_AUTHORIZE = "https://accounts.google.com/o/oauth2/v2/auth";
 
-/** Google's token endpoint — where a code is exchanged, and where a credential is recognised or not. */
+/** Google's token endpoint — where a code is exchanged, and where a credential is recognized or not. */
 const GOOGLE_TOKEN = "https://oauth2.googleapis.com/token";
 
 /** Better Auth's session cookie, so a case can assert one was not set. */
@@ -109,7 +109,7 @@ describe.skipIf(!READY)("google provider — LIVE", () => {
     }
   });
 
-  test("Google recognises the client id and secret — invalid_grant, never invalid_client", async () => {
+  test("Google recognizes the client id and secret — invalid_grant, never invalid_client", async () => {
     // A code that is not one. Google validates the client before the code, so the error it returns
     // separates a registered credential from a pair of strings — and no consent screen is involved.
     const response = await fetch(GOOGLE_TOKEN, {

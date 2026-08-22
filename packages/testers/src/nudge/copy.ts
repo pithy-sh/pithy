@@ -125,7 +125,7 @@ export function toParagraphs(body: string, maxParagraphs = 20): string[] {
  * Flatten a supplied subject to a single safe line.
  *
  * **A subject is not an HTML context, so escaping it would be wrong** — `&lt;` in an inbox is a
- * rendering bug, not a defence, and the email engine precompiles subjects with escaping off for exactly
+ * rendering bug, not a defense, and the email engine precompiles subjects with escaping off for exactly
  * that reason. The threat in a subject is different and this is what answers it: a carriage return or
  * newline can terminate the header and let everything after it be read as another header, which is how
  * a supplied subject becomes an injected `Bcc`. Every control character goes, newlines included, and

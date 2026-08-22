@@ -124,7 +124,7 @@ describe.skipIf(!creds.hasCreds || !creds.r2)("CloudflareR2Manager — LIVE", ()
       expect(listed.map((part) => part.size)).toEqual([PART_SIZE, PART_SIZE, BODY.byteLength]);
       expect(listed.map((part) => part.etag)).toEqual(parts.map((part) => part.etag));
 
-      // Complete with the ETags verbatim — no unquoting, no normalising.
+      // Complete with the ETags verbatim — no unquoting, no normalizing.
       await manager.completeMultipartUpload(key, uploadId, parts);
 
       const head = await manager.headObject(key);
@@ -297,7 +297,7 @@ describe.skipIf(!creds.hasCreds || !creds.r2)("CloudflareR2Manager — LIVE", ()
     }
   });
 
-  test("honours expiresIn on every presigned URL, and defaults to an hour without it", async () => {
+  test("honors expiresIn on every presigned URL, and defaults to an hour without it", async () => {
     await withBucket(async (manager) => {
       // A short-lived upload URL still works right now — the expiry is a lifetime, not a delay. No
       // sleeping for a real expiry here: that buys one assertion at the cost of a slow, flaky suite.

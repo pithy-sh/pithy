@@ -254,7 +254,7 @@ function onPath(command: string): boolean {
 }
 
 /**
- * Split an editor variable into a command and its arguments, honouring quotes.
+ * Split an editor variable into a command and its arguments, honoring quotes.
  *
  * `EDITOR` is a command line, not a filename: `code --wait` is the value the refusal below asks people
  * to set, and `"/Applications/Sublime Text.app/…/subl" --wait` is what a macOS adopter has. Splitting on

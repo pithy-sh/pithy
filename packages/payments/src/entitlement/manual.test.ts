@@ -293,7 +293,7 @@ function mentionsIn(text: string): number[] {
   return offsets.sort((left, right) => left - right);
 }
 
-/** What a declaration's own text says it does to rows, and every mention that says nothing recognisable. */
+/** What a declaration's own text says it does to rows, and every mention that says nothing recognizable. */
 interface Derived {
   /** True when some mention sits in a form that changes rows. Compared against the census, never taken from it. */
   writes: boolean;

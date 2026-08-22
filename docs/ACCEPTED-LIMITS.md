@@ -83,5 +83,5 @@ For the record, so this is not read as a shrug. Each of these was reproduced wit
 
 - Node exposes `openat`, `renameat`, or any handle-relative equivalent.
 - A linter can express "this operation, in a module that does that". The rules leave the test suite the day one can.
-- TypeScript's parser is reachable from a string, or `typescript/unstable/sync` stabilises.
+- TypeScript's parser is reachable from a string, or `typescript/unstable/sync` stabilizes.
 - The threat model changes. A shared build agent whose project directory is writable by an account that cannot already run our code puts every item above back in scope.

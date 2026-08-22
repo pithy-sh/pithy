@@ -28,7 +28,7 @@ function compose(config: Partial<AuthConfigInput> = {}) {
   const app = new Hono<PithyHonoEnv>();
   app.onError(pithyErrorHandler);
   for (const middleware of capability.middleware ?? []) middleware(app);
-  // The adopter's own route, gated by a check it cannot parameterise.
+  // The adopter's own route, gated by a check it cannot parameterize.
   app.post("/organizations", requireSameOrigin(), (c) => c.text("ok"));
   return app;
 }
@@ -128,7 +128,7 @@ describe("an adopter's route wears auth's same-origin policy", () => {
 
     test("an origin that is not the one this request arrived at is still refused", async () => {
       const app = composeDev();
-      // The neighbouring worker in the same `pithy dev` run. Local is not a wildcard.
+      // The neighboring worker in the same `pithy dev` run. Local is not a wildcard.
       const response = await postTo(app, "http://localhost:41011/organizations", {
         cookie: "session=t",
         origin: "http://localhost:8787",

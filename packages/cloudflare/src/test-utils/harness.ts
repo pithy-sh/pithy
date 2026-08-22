@@ -120,7 +120,7 @@ export const RESERVED_TEST_PROJECT = `${RESERVED_TEST_PREFIX}test`;
 /**
  * The compatibility date every throwaway Worker a live suite uploads runs on.
  *
- * `createWorker` has no default any more (#396): a compatibility date is a behaviour contract in
+ * `createWorker` has no default any more (#396): a compatibility date is a behavior contract in
  * somebody's account, so the caller names it. That makes every live suite a caller, and one place for
  * them to read it from is the difference between one date and six.
  *
@@ -141,7 +141,7 @@ let nameCounter = 0;
  *
  * The caller supplies only the distinguishing part — {@link RESERVED_TEST_PREFIX} is composed on, never
  * passed in. That is the point: when the prefix was a *default* a caller could override, a suite could
- * silently create resources under a name the reaper does not recognise, which is exactly how orphans
+ * silently create resources under a name the reaper does not recognize, which is exactly how orphans
  * came to sit on a real account. A label that already carries the prefix is refused rather than doubled.
  *
  * The 6-char random suffix guarantees uniqueness across separate test files (Vitest isolates each file, so
@@ -231,7 +231,7 @@ export async function withNamedResource<T>(
  * running: a resource deleted mid-flight surfaces as an unexplained 404 in a test that was passing, which
  * is a far worse failure than debris. Cloudflare offers no way to mark a D1, KV namespace, bucket, or
  * index as owned by a live process — no lease, no tag our client can set on every kind — so the only
- * defence available is a window nothing plausible can cross.
+ * defense available is a window nothing plausible can cross.
  *
  * A single live test is capped at 120s and a hook at 120s (`vitest.integration.config.ts`); a whole
  * package's suite is minutes, and every package's suites together are well under an hour even when

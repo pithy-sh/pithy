@@ -75,7 +75,7 @@ const UNATTRIBUTED: ResolvedActor = {
 export type CliAuditEmit = (event: CliAuditEvent) => Promise<void>;
 
 /**
- * The emitter returned whenever auditing is unavailable: accept the event and drop it. The CLI analogue of
+ * The emitter returned whenever auditing is unavailable: accept the event and drop it. The CLI analog of
  * core's {@link noopEmit}, which cannot be reused directly only because the two seams carry different event
  * types — the intent, and the guarantee that calling it is always safe, are identical.
  */

@@ -181,7 +181,7 @@ async function readValue(name: string): Promise<string> {
   const { isCancel, password } = await import("@clack/prompts");
   const answer = await password({ message: `Value for '${name}'` });
   if (isCancel(answer)) {
-    process.stderr.write("Cancelled.\n");
+    process.stderr.write("Canceled.\n");
     process.exit(1);
   }
   return answer;
@@ -306,7 +306,7 @@ const rm = defineCommand({
  * The case that wants one is real: somebody has left, and every credential they could have seen needs
  * rolling today. The dashboard solved the same problem for connection signing keys and settled on *more
  * than one confirmation, plus an audit entry naming the operator* — and the second half is the half this
- * command cannot honour. `createCliAudit` resolves the actor from the Cloudflare API token and falls back
+ * command cannot honor. `createCliAudit` resolves the actor from the Cloudflare API token and falls back
  * to `system, actorResolutionFailed` when there is none, so the one act most certain to be reviewed
  * afterwards would be recorded as *somebody with the token*. A fleet path that cannot say who took it is
  * worse than no fleet path, because it is the difference between an incident with a name on it and an

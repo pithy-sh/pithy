@@ -132,7 +132,7 @@ export interface PaddleCheckoutHandoff {
 export interface PaymentsPortalSubscription {
   /** The store's own subscription id. */
   subscriptionId: string;
-  /** Where this subscription is cancelled. */
+  /** Where this subscription is canceled. */
   cancel: string;
   /** Where this subscription's payment method is changed. */
   updatePaymentMethod: string;

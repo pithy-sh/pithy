@@ -114,7 +114,7 @@ export class PaymentsReconcileWorkflow extends WorkflowEntrypoint<PaymentsWorker
         /**
          * The Paddle events sweep, supplied only when that rail is on.
          *
-         * Undefined otherwise, and the difference is a statement rather than an optimisation: a rail
+         * Undefined otherwise, and the difference is a statement rather than an optimization: a rail
          * nobody sells through did not sweep, where a rail that swept and found nothing is a healthy
          * integration. Collapsing the two makes "the webhooks are fine" indistinguishable from "we never
          * looked", which is the exact ambiguity this pass exists to remove.
@@ -150,7 +150,7 @@ export class PaymentsReconcileWorkflow extends WorkflowEntrypoint<PaymentsWorker
 
 export default {
   /**
-   * Cron entry: start one pass per fire, with empty parameters — the defaults are the scheduled behaviour.
+   * Cron entry: start one pass per fire, with empty parameters — the defaults are the scheduled behavior.
    *
    * Through the same dispatcher an on-demand pass uses, rather than `env.PAYMENTS_RECONCILE.create()`: the
    * parameters are validated against the job's own schema before the binding is touched, and a host deployed

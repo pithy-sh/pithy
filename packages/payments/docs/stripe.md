@@ -10,7 +10,7 @@ Everything below is created in the [Stripe Dashboard](https://dashboard.stripe.c
 
 ## 1. Create your products and prices
 
-Under **Product catalogue**, create a product and give it a price. Recurring for a subscription, one-off for anything else.
+Under **Product catalog**, create a product and give it a price. Recurring for a subscription, one-off for anything else.
 
 The **price id** — `price_1Abc…`, not the product id — is what goes in `pithy.config.ts`.
 

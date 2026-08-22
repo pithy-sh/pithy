@@ -36,7 +36,7 @@ import type { WorkflowRetryPolicy } from "@pithy-sh/core/src/workflow/faults";
  *
  * **Re-running is free, which is what makes the retryable entry safe.** Classification is idempotent by
  * construction: a second pass appends a second history row and overwrites the same three thread columns
- * with a fresh judgement, which is why a Workflow retry, a manual reclassify, and a post-upgrade
+ * with a fresh judgment, which is why a Workflow retry, a manual reclassify, and a post-upgrade
  * backfill are the same operation.
  */
 export const supportWorkflowRetry: WorkflowRetryPolicy = {

@@ -66,7 +66,7 @@ export interface VectorQueryOptions {
 export interface VectorStore {
   /** Insert or replace vectors. Asynchronous — the returned mutation id is an acknowledgement, not a write. */
   upsert(vectors: VectorUpsert[]): Promise<unknown>;
-  /** Find the nearest neighbours of a vector. */
+  /** Find the nearest neighbors of a vector. */
   query(vector: number[], options?: Record<string, unknown>): Promise<unknown>;
   /** Delete vectors by id. Optional here so a fake may omit it; guarded before use. */
   deleteByIds?: (ids: string[]) => Promise<unknown>;
@@ -87,7 +87,7 @@ const QueryMatch = z
       .describe("The matched vector's metadata, when metadata was requested."),
     namespace: z.string().nullish().describe("The namespace the match belongs to, when the index is partitioned."),
   })
-  .describe("One nearest-neighbour match Vectorize returned.");
+  .describe("One nearest-neighbor match Vectorize returned.");
 
 const QueryResponse = z
   .object({

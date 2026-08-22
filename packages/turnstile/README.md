@@ -38,7 +38,7 @@ Every failure throws a `PithyError` subclass — importantly, **a request that f
 |-------|------|--------|------|
 | `TurnstileMissingTokenError` | `turnstile/missing_token` | 400 | No token in the request where one was required. |
 | `TurnstileFailedError` | `turnstile/failed` | 403 | The token did not pass siteverify, **or** the check could not complete (fail closed). |
-| `TurnstileConfigError` | `turnstile/config` | 500 | The deployment is at fault: the secret is missing, malformed, has no entry for the route's widget, is one **Cloudflare does not recognise**, or is a **test key outside dev and staging** (a `secretsStore` read error is rewrapped to this). |
+| `TurnstileConfigError` | `turnstile/config` | 500 | The deployment is at fault: the secret is missing, malformed, has no entry for the route's widget, is one **Cloudflare does not recognize**, or is a **test key outside dev and staging** (a `secretsStore` read error is rewrapped to this). |
 
 Register `pithyErrorHandler` on your Hono app (`app.onError(pithyErrorHandler)`) to map these to their HTTP responses; the `detail` is stripped from the wire body.
 

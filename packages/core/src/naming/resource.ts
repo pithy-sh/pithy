@@ -229,7 +229,7 @@ export function assertValidProjectName(name: string): void {
  *
  * Every Cloudflare name a live test creates begins with it, no real project's name may, and the
  * test-debris reaper deletes nothing without it. The reservation is what makes automatic reaping safe
- * in both directions: without it the reaper is guessing — either it fails to recognise the names a
+ * in both directions: without it the reaper is guessing — either it fails to recognize the names a
  * suite invented, and debris accumulates silently on a real account, or it matches loosely enough to
  * one day delete a customer's database. With it, membership is decidable from the name alone.
  *
@@ -251,7 +251,7 @@ export const RESERVED_TEST_PREFIX = "pithy-int-";
  * with a name a human would type.
  *
  * **Kebabbing.** The composer kebabs the project before using it, so the raw string is not what
- * Cloudflare sees. `"Pithy Int Ruse"` is not prefixed by `pithy-int-`, and it normalises straight into
+ * Cloudflare sees. `"Pithy Int Ruse"` is not prefixed by `pithy-int-`, and it normalizes straight into
  * the reservation.
  *
  * **The trailing hyphen.** The composer appends one after the project. A project named exactly

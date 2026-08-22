@@ -158,7 +158,7 @@ The third is the only one that means anything, and here is why. `custom_data` is
 
 The overwrite lands when the checkout is **opened**, not when it is paid: a transaction left in `draft` had its `custom_data` replaced by a checkout nobody completed. So a stranger can write `pithy_user` and `pithy_env` — the key names are exported constants in an open-source package, the environment is one of three values, and under organization billing the reference is guessable from a company id the attacker may already know — and creating the transaction server-side does not protect them.
 
-What they cannot write is a MAC keyed on your notification destination's secret. So the rail honours a stamped reference only when the proof verifies, and refuses it otherwise. A delivery with no stamp at all — a transaction you created by hand in the dashboard — is not fenced out; it simply binds nobody.
+What they cannot write is a MAC keyed on your notification destination's secret. So the rail honors a stamped reference only when the proof verifies, and refuses it otherwise. A delivery with no stamp at all — a transaction you created by hand in the dashboard — is not fenced out; it simply binds nobody.
 
 ## 9. The dev-to-staging caveat
 
@@ -214,7 +214,7 @@ On a $5.00/month sandbox price with no `unit_price_overrides`, on 2026-08-13:
 
 Three things follow, and each of them changes what you should build.
 
-**Currency is not localized.** Every row but the last is in dollars, from a British and a German address alike. Currency comes from `unit_price_overrides` on the price — catalogue data, set per market in the dashboard. Without them, `PricePreview` gives you localized **tax and formatting**, which is real and worth having, and is not the same claim.
+**Currency is not localized.** Every row but the last is in dollars, from a British and a German address alike. Currency comes from `unit_price_overrides` on the price — catalog data, set per market in the dashboard. Without them, `PricePreview` gives you localized **tax and formatting**, which is real and worth having, and is not the same claim.
 
 **The tax convention differs, and it is not a formatting detail.** The United States adds tax to the listed price: the seller receives $5.00 and the buyer pays $5.44. The EU, the UK and Japan take it out of an inclusive one: the buyer pays $5.00 and the seller receives $4.17. A single hardcoded string cannot mean "before tax" in Denver and "including VAT" in Berlin. That is what `priceSummary` is for — it returns the figure to show and the sentence that makes it true, and the two differ by country because the convention does.
 
@@ -236,7 +236,7 @@ So the kit resolves it in one place. `resolvePriceLocation` in `src/pricing/loca
 
 **Who Paddle prices a signed-in visitor as comes from your own Worker, not from the browser.** `GET /payments/pricing` answers `quotedFrom` — `{ "rail": "paddle", "providerAccountId": "ctm_…" }`, or `null` for a caller no store holds a customer for yet, or nothing at all on a Worker older than the bundle asking. It is read from the same provider-account row that `POST /payments/checkout` hands Paddle as `customer_id`, so the figure quoted and the figure charged resolve location from one row. `fetchPriceVisitor` makes the read and `usePriceVisitor` holds it; `ctm_…` is an identifier and authorizes nothing, and the route is `requireAuth()` and answers only about its own caller. The README's Routes section carries the response in full.
 
-**An address-derived quote supersedes an IP-derived one**, and a screen renders both in turn on purpose. The pricing page paints before the session resolves, so the first figure is the IP estimate — labelled, because it is one — and the second is the price the card will be charged. A read that fails answers `null`, which quotes from the IP and says so: treating a failed request as proof there is no address on file is the unsafe direction, and it is the one that would print a final-looking figure that is wrong.
+**An address-derived quote supersedes an IP-derived one**, and a screen renders both in turn on purpose. The pricing page paints before the session resolves, so the first figure is the IP estimate — labeled, because it is one — and the second is the price the card will be charged. A read that fails answers `null`, which quotes from the IP and says so: treating a failed request as proof there is no address on file is the unsafe direction, and it is the one that would print a final-looking figure that is wrong.
 
 ### In flight, and failed
 
@@ -246,11 +246,11 @@ Both states are specified, because both are on screen for someone.
 
 **Failed**: `preview` is null, `failure` carries a renderable message, and **there is no fallback figure**. Falling back to a number written in a template reintroduces the whole defect — it is wrong in every country whose convention differs from the one it was written in, and it is wrong silently. The buy button still works; Paddle's own checkout quotes again on its own page.
 
-**Overlapping**: only the latest quote is rendered, whichever answers first. Two previews can be in flight at once — an anonymous visitor's location resolves under the query, or a country picker moves — and without a guard the slower one wins by landing last, putting a price for an address the visitor has left on the screen whose whole job is showing a correct one. Superseded answers are *ignored*, not cancelled: `Paddle.PricePreview` takes no `AbortSignal` and returns a bare promise, so there is nothing to cancel. A superseded *refusal* is ignored the same way, which is what stops a dead request blanking a price already on screen.
+**Overlapping**: only the latest quote is rendered, whichever answers first. Two previews can be in flight at once — an anonymous visitor's location resolves under the query, or a country picker moves — and without a guard the slower one wins by landing last, putting a price for an address the visitor has left on the screen whose whole job is showing a correct one. Superseded answers are *ignored*, not canceled: `Paddle.PricePreview` takes no `AbortSignal` and returns a bare promise, so there is nothing to cancel. A superseded *refusal* is ignored the same way, which is what stops a dead request blanking a price already on screen.
 
 ### What the scaffolded screen does with `estimated`
 
-It renders it. `priceSummary` returns `{ headline, note, estimated }`, and the screen puts *Estimated.* beside the figure when the flag is set — a quote short of tax must not look like a final one. The decision on record is **show what you know, label it, recalculate at the billing address**: an estimate that resolves at checkout is correct behaviour, and the label is what makes it honest rather than merely convenient.
+It renders it. `priceSummary` returns `{ headline, note, estimated }`, and the screen puts *Estimated.* beside the figure when the flag is set — a quote short of tax must not look like a final one. The decision on record is **show what you know, label it, recalculate at the billing address**: an estimate that resolves at checkout is correct behavior, and the label is what makes it honest rather than merely convenient.
 
 ### The anonymous visitor
 
@@ -356,7 +356,7 @@ A price id belongs to one Paddle account, so it is environment-specific and has 
 | `data-paddle-cache-ttl` | How long a quote may stand, **in seconds**. HTML counts a cache in seconds everywhere else. |
 | `data-paddle-whole-units` | `on` to drop a fraction that is entirely zero — `$6.00` as `$6`. Off by default, and off for any other value. §Prices in whole units above. |
 
-The three cache attributes go together or not at all; a tag naming some of them warns to the console and quotes from the network. A `data-paddle-customer` that is not a `ctm_…` is dropped rather than refused — the opposite call to the one a placeholder price id gets, and deliberately: a wrong price is unrecoverable, while a missing customer costs the visitor a quote resolved from their IP and labelled as the estimate it is, which is what every anonymous visitor already sees.
+The three cache attributes go together or not at all; a tag naming some of them warns to the console and quotes from the network. A `data-paddle-customer` that is not a `ctm_…` is dropped rather than refused — the opposite call to the one a placeholder price id gets, and deliberately: a wrong price is unrecoverable, while a missing customer costs the visitor a quote resolved from their IP and labeled as the estimate it is, which is what every anonymous visitor already sees.
 
 **Load it where you like.** The quote starts the moment the script runs and the paint waits for `DOMContentLoaded`, so a tag in `<head>` overlaps its round trip with parsing the page rather than racing it.
 
@@ -400,7 +400,7 @@ The screens are wired for you. `useCheckout().handoff` carries it, `usePaddleChe
 
 **Nothing infers your theme, deliberately.** Pithy does not read `prefers-color-scheme`, does not call `matchMedia`, and does not sample a computed style. The machine's preference is not your app's theme: an app with its own toggle, or one that is dark whatever the OS says, would get a card form contradicting the page it opened over — and a wrong guess is much harder to find than an option nobody passed. Your screen knows which theme it rendered. Tell it.
 
-**Colours, fonts, borders and focus states are not settable from code at all, and that is Paddle's decision rather than a missing endpoint.** They are configured in the Paddle dashboard: **Checkout → Branded inline checkout** carries over 50 options for the inline frame, and the overlay takes a logo and a brand colour. Paddle's pitch for it is "no engineering resource needed", which is the same sentence read from the other side. There is one API that writes `primary_checkout_color` — `PATCH /settings/account`, documented under **Partners → Embed Billing** — and it is for a platform configuring *another* seller's account with a seller API key. Not a route for an adopter, and not one for Pithy. So `theme` is the whole of the styling this kit can pass, and there is no other API to go looking for.
+**Colors, fonts, borders and focus states are not settable from code at all, and that is Paddle's decision rather than a missing endpoint.** They are configured in the Paddle dashboard: **Checkout → Branded inline checkout** carries over 50 options for the inline frame, and the overlay takes a logo and a brand color. Paddle's pitch for it is "no engineering resource needed", which is the same sentence read from the other side. There is one API that writes `primary_checkout_color` — `PATCH /settings/account`, documented under **Partners → Embed Billing** — and it is for a platform configuring *another* seller's account with a seller API key. Not a route for an adopter, and not one for Pithy. So `theme` is the whole of the styling this kit can pass, and there is no other API to go looking for.
 
 The frame is styled `width: 100%; min-width: 312px; background-color: transparent; border: none;` at 450px by default. The `min-width` is Paddle's requirement rather than taste: below it the footer naming Paddle as merchant of record is cut off.
 
@@ -410,7 +410,7 @@ The frame is styled `width: 100%; min-width: 312px; background-color: transparen
 
 ## 13. Testing checkout against a payment link in dev
 
-The sandbox account's default payment link is normalised by Paddle to `https://`. `wrangler dev` serves plain HTTP on 8787, so a Paddle-generated **hosted** payment link will not connect in dev unless you run `pithy dev` with `--local-protocol=https`. Overlay and inline never route through that link and are unaffected.
+The sandbox account's default payment link is normalized by Paddle to `https://`. `wrangler dev` serves plain HTTP on 8787, so a Paddle-generated **hosted** payment link will not connect in dev unless you run `pithy dev` with `--local-protocol=https`. Overlay and inline never route through that link and are unaffected.
 
 ## 14. Discounts
 

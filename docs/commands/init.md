@@ -19,7 +19,7 @@ pithy init [--name <name>] [--worker <name>] [--dir <path>] [--json]
 
 ## What it does
 
-**Check the target first.** Before a single question is asked, so a doomed run fails fast instead of after you have answered. The check is collision, not emptiness: a directory holding only `.git`, a README, a licence, or an editor config is not a project, and refusing it would mean `pithy init` could not scaffold into a repo you just cloned — which is how projects normally start. It refuses only if something `init` would write is already there. The two paths the scaffold *moves* rather than copies — `apps/api` and `apps/<worker>`, when `--worker` is not the default — are held to emptiness instead, because a rename is not a merge.
+**Check the target first.** Before a single question is asked, so a doomed run fails fast instead of after you have answered. The check is collision, not emptiness: a directory holding only `.git`, a README, a license, or an editor config is not a project, and refusing it would mean `pithy init` could not scaffold into a repo you just cloned — which is how projects normally start. It refuses only if something `init` would write is already there. The two paths the scaffold *moves* rather than copies — `apps/api` and `apps/<worker>`, when `--worker` is not the default — are held to emptiness instead, because a rename is not a merge.
 
 **Ask the names**, when a human is attached and a flag did not supply them. The project name comes with the reasoning printed above it, because both halves of it are hard to undo: the name leads every Cloudflare resource this project provisions, teardown recomputes those names rather than storing them, and the scope decision behind it — one project or two? — cannot be fixed by editing a string later. One project per set of apps that share users or data. Another app is another Worker, not another project. The first Worker is named too, because every Worker lives in `apps/<name>` and `api` is only a default.
 
@@ -99,7 +99,7 @@ Shorten `name` in pithy.config.ts to 26 characters or fewer.
 
 **A name in the reserved test namespace.** Refused before anything is written — the debris reaper deletes on that prefix alone.
 
-**A cancelled prompt.** `Cancelled.` on stderr, exit 1. Nothing proceeds on a value you did not choose.
+**A canceled prompt.** `Canceled.` on stderr, exit 1. Nothing proceeds on a value you did not choose.
 
 ## Examples
 

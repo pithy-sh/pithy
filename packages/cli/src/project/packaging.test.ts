@@ -63,7 +63,7 @@ async function trackedTemplateFiles(): Promise<string[]> {
 }
 
 /**
- * A throwaway checkout that packs like the real one, with a working tree a maintainer would recognise.
+ * A throwaway checkout that packs like the real one, with a working tree a maintainer would recognize.
  *
  * Isolated on purpose, and that is the second half of the fix. This test used to pack the live
  * `packages/cli`, so `prepack` and `postpack` created and deleted `packages/cli/templates/starter`

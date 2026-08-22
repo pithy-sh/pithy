@@ -59,7 +59,7 @@ describe("audit", () => {
     ]);
   });
 
-  test("flags a header naming a licence its package does not declare", () => {
+  test("flags a header naming a license its package does not declare", () => {
     goodRoot();
     goodPackage("core");
     put("packages/core/src/wrong.ts", `${buildHeader("FSL-1.1-MIT")}\n\nexport const b = 2;\n`);
@@ -77,7 +77,7 @@ describe("audit", () => {
     expect(kinds(root)).toEqual(["missing-license-file"]);
   });
 
-  test("flags a LICENSE whose text is not the licence the package declares", () => {
+  test("flags a LICENSE whose text is not the license the package declares", () => {
     goodRoot();
     goodPackage("core");
     put("packages/core/LICENSE", canonicalText("FSL-1.1-MIT") ?? "");
@@ -85,7 +85,7 @@ describe("audit", () => {
     expect(kinds(root)).toEqual(["license-file-mismatch"]);
   });
 
-  test("flags a package whose manifest omits the licence field", () => {
+  test("flags a package whose manifest omits the license field", () => {
     goodRoot();
     goodPackage("core");
     put("packages/core/package.json", JSON.stringify({ name: "@pithy-sh/core" }));
@@ -93,7 +93,7 @@ describe("audit", () => {
     expect(kinds(root)).toEqual(["missing-license-field"]);
   });
 
-  test("flags a licence we hold no canonical text for, rather than skipping the package", () => {
+  test("flags a license we hold no canonical text for, rather than skipping the package", () => {
     goodRoot();
     goodPackage("core");
     put("packages/core/package.json", JSON.stringify({ name: "@pithy-sh/core", license: "Apache-2.0" }));
@@ -101,9 +101,9 @@ describe("audit", () => {
     expect(kinds(root)).toEqual(["unknown-license"]);
   });
 
-  // A package with no resolvable licence has nothing to check headers against. Reporting the one
+  // A package with no resolvable license has nothing to check headers against. Reporting the one
   // root cause beats burying it under a finding for every file in the package.
-  test("does not report headers for a package whose licence cannot be resolved", () => {
+  test("does not report headers for a package whose license cannot be resolved", () => {
     goodRoot();
     goodPackage("core");
     put("packages/core/package.json", JSON.stringify({ name: "@pithy-sh/core" }));
@@ -154,7 +154,7 @@ describe("audit", () => {
    *
    * No template holds a dotted directory today — two dotted files, which were never affected — so this
    * is planted on purpose. A gate whose reach is narrower than the rule it enforces reports clean and
-   * says nothing, which is the one failure mode a licence gate cannot have.
+   * says nothing, which is the one failure mode a license gate cannot have.
    */
   test("sees a stamped file inside a dotted directory in a template — a `.vscode/` ships like any other", () => {
     goodRoot();
@@ -225,7 +225,7 @@ describe("audit of tooling packages", () => {
     expect(kinds(root)).toEqual(["missing-license-file"]);
   });
 
-  test("still requires a licence field on a tooling package, to derive the identifier from", () => {
+  test("still requires a license field on a tooling package, to derive the identifier from", () => {
     goodRoot();
     goodTooling("license-headers");
     put("tooling/license-headers/package.json", JSON.stringify({ name: "@pithy-sh/license-headers" }));
@@ -309,7 +309,7 @@ describe("applyFixes", () => {
     expect(readFileSync(join(root, "packages/core/LICENSE"), "utf8")).toBe(canonicalText("MIT"));
   });
 
-  // The root takes a different branch to a package: it is not in the package list, so its licence
+  // The root takes a different branch to a package: it is not in the package list, so its license
   // has to be read straight off the root manifest.
   test("writes the repo root's own LICENSE", () => {
     put("package.json", JSON.stringify({ name: "@pithy-sh/monorepo", license: "MIT" }));
@@ -318,7 +318,7 @@ describe("applyFixes", () => {
     expect(readFileSync(join(root, "LICENSE"), "utf8")).toBe(canonicalText("MIT"));
   });
 
-  test("cannot write a LICENSE for a package whose licence it cannot resolve", () => {
+  test("cannot write a LICENSE for a package whose license it cannot resolve", () => {
     goodRoot();
     put("packages/core/package.json", JSON.stringify({ name: "@pithy-sh/core" }));
 

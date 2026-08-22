@@ -506,7 +506,7 @@ export interface CloudflareCredentials {
  * **It exists so a caller can settle the account before it starts fanning out.** Both facts are
  * whole-project — true before any Worker, binding, or resource is considered — and a caller that consults
  * them per item collects them per item. #236 was exactly that: an account mismatch reached
- * `openConnectionRegistry`'s per-Worker refusal list and was summarised as "No worker resolves the DB
+ * `openConnectionRegistry`'s per-Worker refusal list and was summarized as "No worker resolves the DB
  * binding for this environment", a sentence about a `wrangler.jsonc` that was fine.
  */
 export function cloudflareCredentials(options: CloudflareConfigOptions): CloudflareCredentials {

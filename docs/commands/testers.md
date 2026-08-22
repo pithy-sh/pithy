@@ -46,7 +46,7 @@ pithy testers run [--cohort <cohort>] [--env <env>] [--skip-nudges] [--json]
 | `--target-size <n>` | the capability's `cohortDefaults.targetSize` (12, Play's floor) | Testers required simultaneously |
 | `--window-days <n>` | `cohortDefaults.windowDays` (14, Play's window) | Continuous days required |
 | `--max-roster <n>` | `cohortDefaults.maxRosterSize` (100) | Roster cap |
-| `--platform <android\|ios>` | `cohortDefaults.targetPlatform` (`android`) | Which store's programme this cohort serves |
+| `--platform <android\|ios>` | `cohortDefaults.targetPlatform` (`android`) | Which store's program this cohort serves |
 | `--store-url <url>` | `cohortDefaults.storeOptInUrl` | The store's own opt-in link, e.g. `https://play.google.com/apps/testing/<package>` |
 | `--json` | `false` | Machine-readable output |
 
@@ -160,14 +160,14 @@ Both emit the whole cohort row, under the same key and the same shape. `create` 
 |---|---|---|
 | `command` | `"testers create"` \| `"testers close"` | The subcommand that produced this line |
 | `cohort` | object | The cohort row |
-| `cohort.id` | string | The cohort's UUID. Text rather than a sequential id, which would leak how many test programmes a project has run |
+| `cohort.id` | string | The cohort's UUID. Text rather than a sequential id, which would leak how many test programs a project has run |
 | `cohort.name` | string | The human label |
-| `cohort.targetPlatform` | `"android" \| "ios"` | Which store's programme this cohort serves |
+| `cohort.targetPlatform` | `"android" \| "ios"` | Which store's program this cohort serves |
 | `cohort.targetSize` | integer | How many testers must be opted in simultaneously. Frozen on the row |
 | `cohort.windowDays` | integer | How many continuous days the target must hold. Frozen on the row |
 | `cohort.maxRosterSize` | integer | The most members this roster may hold |
 | `cohort.storeOptInUrl` | string \| null | The store's own opt-in page. `null` until set — and until it is, nobody can actually join the test |
-| `cohort.resetPolicy` | `"reset" \| "pause"` | Pithy's assumption about what a dip below target does to the streak. Google documents neither behaviour |
+| `cohort.resetPolicy` | `"reset" \| "pause"` | Pithy's assumption about what a dip below target does to the streak. Google documents neither behavior |
 | `cohort.closedAt` | ISO-8601 string \| null | When the cohort was closed, or `null` while it runs |
 | `cohort.createdAt` | ISO-8601 string | When the cohort was created. The zero point of its `dayIndex` axis |
 | `cohort.updatedAt` | ISO-8601 string | When the row was last written |
@@ -183,7 +183,7 @@ Both emit the whole cohort row, under the same key and the same shape. `create` 
 | `cohorts[].estimatedOptedIn` | integer | Pithy's estimate of the currently opted-in count |
 | `cohorts[].targetSize` | integer | The target in force for this cohort |
 | `cohorts[].estimatedHeldDays` | integer | The estimated unbroken at-target run ending today |
-| `cohorts[].windowDays` | integer | Continuous days the programme requires |
+| `cohorts[].windowDays` | integer | Continuous days the program requires |
 | `cohorts[].closed` | boolean | Whether the cohort has been closed |
 
 ### `pithy testers invite`
@@ -245,7 +245,7 @@ That difference reaches `cohort.trend`. `direction` and every delta come off the
 | `cohort` | object | The cohort view |
 | `cohort.id` | string | The cohort id |
 | `cohort.name` | string | The cohort's human label |
-| `cohort.targetPlatform` | `"android" \| "ios"` | Which store's programme this cohort serves |
+| `cohort.targetPlatform` | `"android" \| "ios"` | Which store's program this cohort serves |
 | `cohort.targetSize` | integer | Testers required simultaneously |
 | `cohort.windowDays` | integer | Continuous days required |
 | `cohort.maxRosterSize` | integer | The cohort's roster cap |
@@ -411,7 +411,7 @@ Each entry of `cohort.trend.series` is one day of the cohort's position as it wa
 | `cohort.members[].activity.devices[].lastSeenAt` | ISO-8601 string | When this device was last seen signing in |
 | `cohort.members[].activity.devices[].appVersion` | string \| null | The client app version at that sign-in |
 | `cohort.members[].health` | integer 0–100 \| null | `null` for a tester we cannot observe. Null is not zero — absence of evidence is not evidence of risk |
-| `cohort.members[].healthBasis` | `"scored" \| "unobservable" \| "unreachable"` | Why the health is null when it is null. Render `unobservable` grey, never red |
+| `cohort.members[].healthBasis` | `"scored" \| "unobservable" \| "unreachable"` | Why the health is null when it is null. Render `unobservable` gray, never red |
 | `cohort.members[].riskBand` | `"healthy" \| "watch" \| "at_risk" \| "critical" \| "unknown"` | The band the score falls in, which selects the survival prior |
 | `cohort.members[].dailySurvival` | number | The published daily-survival prior used for this tester in the forecast |
 | `cohort.members[].factors` | array | Every term that produced the score, so it can be audited line by line |

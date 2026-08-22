@@ -97,7 +97,7 @@ describe("the configured submission bounds", () => {
   });
 
   test("the validator accepts both base64 alphabets, so the decoder's tolerance is reachable", () => {
-    // `decodeBase64` normalises `-`/`_` and its docstring says a client whose encoder emits base64url
+    // `decodeBase64` normalizes `-`/`_` and its docstring says a client whose encoder emits base64url
     // "has not made a mistake worth a 400" — but `z.base64()` alone rejects exactly those characters,
     // so the route would have 400'd them before the decoder ever saw one. A validator that refuses
     // what the code behind it documents as fine is the validator that is wrong.
@@ -117,7 +117,7 @@ describe("the configured submission bounds", () => {
     ).toBe(false);
   });
 
-  test("an adopter's raised bound is honoured, and their lowered one bites", async () => {
+  test("an adopter's raised bound is honored, and their lowered one bites", async () => {
     const strict = SupportConfig.parse({ submission: { maxBodyChars: 10 } });
     expect(await codeOf(() => submitFeedbackRequest(deps(strict), body({ body: "x".repeat(11) }), "u-1"))).toBe(
       "validation/invalid_input",

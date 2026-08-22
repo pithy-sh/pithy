@@ -143,7 +143,7 @@ export function buildSnapshot(input: BuildInput): TestersCohortSnapshot {
   // The same floor `scoreAll` and `memberView` apply, and it has to be the same or the row disagrees
   // with itself. Opting in is a GET on a public route and creates no session, so any tester whose
   // confirmation is more recent than their last sign-in reads as long-dark to the histogram while the
-  // health score on the same row scores them as barely penalised.
+  // health score on the same row scores them as barely penalized.
   const darkDays = (entry: ScoredMember): number | null => {
     if (entry.activity.observability !== "observed" || !entry.activity.lastAuthenticatedAt) return null;
     return daysSince(lastSignOfLife(entry) ?? entry.activity.lastAuthenticatedAt, input.now);

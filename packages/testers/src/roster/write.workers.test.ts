@@ -31,7 +31,7 @@ import {
  * both are things a mock would only agree with. The idempotency tests matter most: a confirmation link
  * is followed from an email client, and email clients prefetch, scanners follow, and people click twice
  * when a page is slow — so "a second visit changes nothing" is the difference between a working cohort
- * and a streak that silently resets on ordinary user behaviour.
+ * and a streak that silently resets on ordinary user behavior.
  */
 
 const COHORT_ID = "cohort-1";
@@ -147,7 +147,7 @@ describe("confirming an opt-in", () => {
 
   test("a second visit is idempotent and does not move the date", async () => {
     // The failure this prevents: a prefetching mail client, a link scanner, or a double-click would
-    // otherwise reset the streak to zero on entirely ordinary behaviour.
+    // otherwise reset the streak to zero on entirely ordinary behavior.
     const { member } = await invite("ada@example.com");
     await confirmOptIn(deps(), member.id);
     const later = new Date("2026-06-20T12:00:00.000Z");
@@ -294,7 +294,7 @@ describe("guarantees the review found missing", () => {
     expect((await requireMember(testersDatabase(env.DB), member.id)).nudgeCount).toBe(0);
   });
 
-  test("opting out revokes the link, so a replay cannot re-enrol them", async () => {
+  test("opting out revokes the link, so a replay cannot re-enroll them", async () => {
     // A withdrawal that left the link live meant one prefetch of an older email silently undid it.
     const { member } = await invite("alan@example.com");
     await confirmOptIn(deps(), member.id);
@@ -316,7 +316,7 @@ describe("a cohort is refused rather than half-created", () => {
   test("a store link that is not a store link", async () => {
     // `--store-url` is the only way to set this per cohort, and it reached a bare `text` column
     // unvalidated. A present-but-unusable URL is worse than an absent one: the daily pass reads
-    // presence as readiness and mails every accepted tester a link that enrols nobody with Google,
+    // presence as readiness and mails every accepted tester a link that enrolls nobody with Google,
     // while the opt-in estimate climbs on the way through.
     for (const bad of [
       "http://play.google.com/apps/testing/com.example.app",

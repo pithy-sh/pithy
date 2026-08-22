@@ -56,9 +56,9 @@ support({
 
 Mail arrives at your app worker's single `email()` entry, which fans it to every capability that handles inbound mail. Support claims what is addressed to it — **on the SMTP envelope recipient, never on a `To:` header**, because anyone can put your support address in a header on a message routed somewhere else.
 
-From there: the guard bounds it, `postal-mime` parses it (multipart and attachments included), the HTML is sanitised through the runtime's own parser, the raw MIME goes to R2 unchanged, and the row lands in D1. Only then is classification dispatched — as a Workflow, because an inbound handler has a tight CPU budget and a model call does not fit in it. A model that is slow or briefly down must never take the persistence of somebody's support request with it.
+From there: the guard bounds it, `postal-mime` parses it (multipart and attachments included), the HTML is sanitized through the runtime's own parser, the raw MIME goes to R2 unchanged, and the row lands in D1. Only then is classification dispatched — as a Workflow, because an inbound handler has a tight CPU budget and a model call does not fit in it. A model that is slow or briefly down must never take the persistence of somebody's support request with it.
 
-Threading is on `In-Reply-To` and `References`, never on the subject. Subject matching is what puts two unrelated people who both wrote "Refund" in one thread, and what splits a real conversation the moment a client localises `Re:` to `Aw:`.
+Threading is on `In-Reply-To` and `References`, never on the subject. Subject matching is what puts two unrelated people who both wrote "Refund" in one thread, and what splits a real conversation the moment a client localizes `Re:` to `Aw:`.
 
 ## Writing in from inside the app
 
@@ -89,17 +89,17 @@ A submission may carry `declaredCategory` — the answer to your screen's own ch
 | Column | Whose | Written |
 |---|---|---|
 | `declaredCategory` | The person writing. A claim. | Once, when the thread opens. Never again, and never by the classifier. |
-| `category` | The model. A judgement. | On every classification — a first run, a retry, a manual reclassify, a post-upgrade backfill. |
+| `category` | The model. A judgment. | On every classification — a first run, a retry, a manual reclassify, a post-upgrade backfill. |
 
-**One column with a precedence rule loses a fact, whichever rule you pick.** A classification is idempotent by construction and overwrites `category` unconditionally, so a claim sharing that column is gone the first time a model looks at the thread; refusing the model's write instead loses the judgement. And a `categorySource` beside a single column only names which of the two is currently there — it cannot hold both. What an operator triaging an inbox actually needs is the pair, and specifically the pair when it disagrees: *they filed it as billing, the model calls it a bug report* is the most useful row on the screen, and no single column can say it.
+**One column with a precedence rule loses a fact, whichever rule you pick.** A classification is idempotent by construction and overwrites `category` unconditionally, so a claim sharing that column is gone the first time a model looks at the thread; refusing the model's write instead loses the judgment. And a `categorySource` beside a single column only names which of the two is currently there — it cannot hold both. What an operator triaging an inbox actually needs is the pair, and specifically the pair when it disagrees: *they filed it as billing, the model calls it a bug report* is the most useful row on the screen, and no single column can say it.
 
 `GET /support/threads` filters on either, independently. Filtering on both is asking for the threads where they agree. On a project with `ai: { enabled: false }` — no Workers AI binding, nothing provisioned — `category` is `uncategorized` forever and the declared one is the only category anybody stated, which is exactly the deployment that made this necessary.
 
 **A key outside your effective taxonomy is refused, not stored and not downgraded.** Stored, the column becomes a client-writable vocabulary and your filters grow a long tail of `Billing`, `billng`, and one-offs nobody declared. Downgraded to `uncategorized`, a broken chooser becomes indistinguishable from somebody who genuinely chose nothing. The model gets the fallback because a model cannot be told it was wrong; a client can, and a 400 is how it is told — your chooser was built from the taxonomy you declared, so a value outside it is your client's bug.
 
-Sent alongside `threadId`, it is refused too. A conversation carries what it was filed under; ignoring a second claim is a chooser that does nothing, and honouring it lets a follow-up rewrite the premise the thread was opened on — the way `subject` deliberately cannot.
+Sent alongside `threadId`, it is refused too. A conversation carries what it was filed under; ignoring a second claim is a chooser that does nothing, and honoring it lets a follow-up rewrite the premise the thread was opened on — the way `subject` deliberately cannot.
 
-### Your own authorisation on the submission route
+### Your own authorization on the submission route
 
 `POST {base}/feedback` takes a session and same-origin, and **nothing else, permanently**. Writing to support must not be role-gated or it stops being a general intake: the person who most needs to reach you is often the one whose access is broken.
 
@@ -151,7 +151,7 @@ support({
 
 Somebody else's thread answers **404, not 403**. The two are the same answer on purpose — a 403 confirms the id names a real conversation, and on an inbox of other people's correspondence that confirmation is itself the disclosure.
 
-The submitter's view is built from scratch rather than by nulling fields on the operator's, because a projection that starts from the operator's shape leaks the next column somebody adds. They see their words, the answers, and whether it was resolved. Never the classification — a machine's judgement about them, and `angry` rendered back to the person it describes is its own kind of disaster — never the priority, never an operator's private flags, never another account's anything.
+The submitter's view is built from scratch rather than by nulling fields on the operator's, because a projection that starts from the operator's shape leaks the next column somebody adds. They see their words, the answers, and whether it was resolved. Never the classification — a machine's judgment about them, and `angry` rendered back to the person it describes is its own kind of disaster — never the priority, never an operator's private flags, never another account's anything.
 
 Set `submission: { enabled: false }` and the routes are not mounted at all. They answer 404, which is the honest answer for a feature a deployment does not have; a 403 would say "this exists and you may not use it".
 
@@ -175,7 +175,7 @@ if (support.enabled) {
 
 ## Classification
 
-Three axes from one call — category, priority, sentiment — because together they make a sortable inbox rather than a labelled one.
+Three axes from one call — category, priority, sentiment — because together they make a sortable inbox rather than a labeled one.
 
 The inference lands on your Cloudflare bill, where it belongs and stays small. Your customers' support mail never leaves your infrastructure: *your support AI runs on your own hardware, and we never see a customer email.* That is literally true, and it is the strongest thing this project can say about any feature.
 
@@ -212,7 +212,7 @@ support({
 });
 ```
 
-It is **a choice, not only a fallback**. A behaviour conditioned on mail being *impossible* is unreachable by an adopter who can mail and would rather not — and for a submitter who is a signed-in user sitting on the screen they wrote from, the answer is better placed there anyway. With the setting off, in-app delivery still happens automatically when there is no address to reply from and no email capability to send with, because storing the answer beats refusing it.
+It is **a choice, not only a fallback**. A behavior conditioned on mail being *impossible* is unreachable by an adopter who can mail and would rather not — and for a submitter who is a signed-in user sitting on the screen they wrote from, the answer is better placed there anyway. With the setting off, in-app delivery still happens automatically when there is no address to reply from and no email capability to send with, because storing the answer beats refusing it.
 
 An `email` thread never takes this path. Its sender has no read-back — there is no session, only an address — so a stored answer there is one nobody would ever see, and a missing reply address on a mail thread stays a misconfiguration to fail on. `reply.enabled: false` still refuses on both.
 
@@ -223,7 +223,7 @@ The reply response says which happened, and the two cannot be confused:
 { "channel": "app",   "messageId": "…" }
 ```
 
-Two different promises about when somebody reads the answer, so they are two different shapes rather than one with an optional `jobId`. **Nobody is notified of a stored reply.** Telling a signed-in submitter is the application's call — what is a preference and what is a notice is the adopter's judgement, and a capability that grew push here would make that decision for everybody.
+Two different promises about when somebody reads the answer, so they are two different shapes rather than one with an optional `jobId`. **Nobody is notified of a stored reply.** Telling a signed-in submitter is the application's call — what is a preference and what is a notice is the adopter's judgment, and a capability that grew push here would make that decision for everybody.
 
 Alongside it, a **canned-reply catalog**: starting points a human picks, edits, and sends. Six ship, keyed to the default categories, and you add your own with `defineSupportReplies`. They are body text, not email templates — the words are yours and change on a Tuesday, while a Handlebars template changes on a release. Nothing is ever sent automatically. The machine's job is a better blank page, not the letter.
 
@@ -255,7 +255,7 @@ Until you re-provision, the two can disagree, and the code copes: with the flag 
 
 Stored in your own R2, served as short-lived signed URLs, **never proxied** — a dashboard fetches from R2 directly, because proxying would put a surface in the path between you and your customers' files.
 
-Keys are server-derived and opaque, so a client can never name an object or guess the one beside it. Bytes are stored as `application/octet-stream` whatever the sender declared, because R2 echoes the stored type back on a presigned GET and a browser will render `text/html` — honouring a declared type would make every attachment a stored-XSS delivery mechanism with a signed URL as the exploit.
+Keys are server-derived and opaque, so a client can never name an object or guess the one beside it. Bytes are stored as `application/octet-stream` whatever the sender declared, because R2 echoes the stored type back on a presigned GET and a browser will render `text/html` — honoring a declared type would make every attachment a stored-XSS delivery mechanism with a signed URL as the exploit.
 
 ## The sender is a claim, and stays one
 
@@ -269,7 +269,7 @@ So the design does not pretend otherwise:
 
 - **The match still happens.** A sender resolves to an account, because that is the useful part and every mail client does it.
 - **The claim never does.** `sender.authenticated` is `false` unless you have explicitly said your pipeline produces a trustworthy verdict, and a dashboard should render an unverified match as exactly that — matched, not confirmed.
-- **The billing history is withheld until it is proved.** Purchases, entitlements, and the account's own `emailVerified` are omitted on an unverified match. A name is a guess an operator can check; an itemised purchase history is what somebody issues a refund on.
+- **The billing history is withheld until it is proved.** Purchases, entitlements, and the account's own `emailVerified` are omitted on an unverified match. A name is a guess an operator can check; an itemized purchase history is what somebody issues a refund on.
 
 Set `guard.trustAuthenticationResults: true` (with `guard.authservId`) only if your receiving MTA both **stamps** the header and **strips** any inbound copy of it. Verifying DKIM inside the Worker — the only signal actually present in the bytes Cloudflare hands you — is the real answer and is not implemented here yet.
 
@@ -277,12 +277,12 @@ Set `guard.trustAuthenticationResults: true` (with `guard.authservId`) only if y
 
 This capability's entire input is content an attacker chooses, and a dashboard renders it. The places that matters:
 
-- **HTML is sanitised through `HTMLRewriter`** — the runtime's real parser — with an allowlist on both tags and attributes. A regex sanitiser is a list of the tricks its author thought of.
+- **HTML is sanitized through `HTMLRewriter`** — the runtime's real parser — with an allowlist on both tags and attributes. A regex sanitizer is a list of the tricks its author thought of.
 - **Remote images are stripped.** An `<img src="https://…">` in a support message is a read receipt telling the sender when somebody opened their mail and from which IP. The `alt` survives.
-- **Filenames and MIME types are recorded as declared and never honoured.** Path separators, control characters, and right-to-left overrides are stripped on the way in.
-- **Display names and addresses are normalised once**, on ingest, so every join is plain equality.
+- **Filenames and MIME types are recorded as declared and never honored.** Path separators, control characters, and right-to-left overrides are stripped on the way in.
+- **Display names and addresses are normalized once**, on ingest, so every join is plain equality.
 - **Domain alignment is a public-suffix lookup, not label arithmetic.** DMARC relaxed alignment is defined in terms of the Organizational Domain, so `tldts` computes it — with the PSL's private section on, so two sites sharing a host like `github.io` do not align with each other.
-- The classification prompt delimits the body, but the real defence against prompt injection is structural: the output is validated against a closed enum, so the worst achievable outcome is a wrong label on one thread — and a wrong label is recomputed.
+- The classification prompt delimits the body, but the real defense against prompt injection is structural: the output is validated against a closed enum, so the worst achievable outcome is a wrong label on one thread — and a wrong label is recomputed.
 - Nothing a sender wrote ever reaches an error message or an audit event's metadata.
 
 ## Routes
@@ -333,7 +333,7 @@ Listing is cursor-paginated on `(receivedAt, id)`, never offset — mail arrives
 bun run --filter @pithy-sh/support test
 ```
 
-Node tests cover parsing, threading, sanitisation policy, the guard, and classification against injected fakes. Workers tests run against real D1 and R2 through Miniflare — migrations and their rollbacks, ingest and idempotency, cursor pagination, and both search backends.
+Node tests cover parsing, threading, sanitization policy, the guard, and classification against injected fakes. Workers tests run against real D1 and R2 through Miniflare — migrations and their rollbacks, ingest and idempotency, cursor pagination, and both search backends.
 
 ## License
 

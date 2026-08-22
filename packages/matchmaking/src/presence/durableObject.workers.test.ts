@@ -59,7 +59,7 @@ function nextFrame<T>(ws: WebSocket): Promise<T> {
 }
 
 // The presence DO's env is narrow, so widen `runInDurableObject` to the concrete instance (the queue test's
-// trick). Runtime behaviour is unchanged; only the types narrow.
+// trick). Runtime behavior is unchanged; only the types narrow.
 const inPresence = runInDurableObject as unknown as <R>(
   stub: DurableObjectStub<MatchmakingPresence>,
   fn: (p: MatchmakingPresence) => R | Promise<R>,

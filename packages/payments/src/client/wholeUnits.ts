@@ -40,7 +40,7 @@ import { minorUnitDigits } from "../data/money";
  * below it and this test answers `false` for it.
  *
  * **The direction of that error is the reason it is still the right test.** A missed zero means the
- * fraction is not recognised and the figure is returned exactly as Paddle rendered it — a silent refusal
+ * fraction is not recognized and the figure is returned exactly as Paddle rendered it — a silent refusal
  * to trim, never a mangled price. A false *positive* is what would remove a digit that mattered, and
  * cannot happen here: block lengths are all ten, so the start of a digit run is always a block zero.
  *

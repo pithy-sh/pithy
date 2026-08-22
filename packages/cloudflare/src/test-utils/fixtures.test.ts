@@ -173,7 +173,7 @@ describe("a switch is a word, not a non-empty string", () => {
     expect(resolution.ready).toBe(false);
   });
 
-  it("keeps the behaviour the hand-rolled check had: only an explicit word deploys", () => {
+  it("keeps the behavior the hand-rolled check had: only an explicit word deploys", () => {
     // `process.env.PITHY_LIVE_DEPLOY === "1"` was the whole gate, in five places. This is the one.
     expect(fixtureReady("live-deploy", { env: { PITHY_LIVE_DEPLOY: "1" } })).toBe(true);
     expect(fixtureReady("live-deploy", { env: { PITHY_LIVE_DEPLOY: "0" } })).toBe(false);

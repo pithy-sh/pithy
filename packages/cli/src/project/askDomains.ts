@@ -107,7 +107,7 @@ export async function askDomains(options: {
       defaultValue: "",
     });
     if (isCancel(hostname)) {
-      process.stderr.write("Cancelled.\n");
+      process.stderr.write("Canceled.\n");
       process.exit(1);
     }
     const value = String(hostname ?? "").trim();
@@ -125,7 +125,7 @@ export async function askDomains(options: {
         ...(owning ? { initialValue: owning.name } : {}),
       });
       if (isCancel(choice)) {
-        process.stderr.write("Cancelled.\n");
+        process.stderr.write("Canceled.\n");
         process.exit(1);
       }
       zone = String(choice);

@@ -61,7 +61,7 @@ describe("d1ReplayGuard", () => {
     const db = controlPlaneDatabase(env.DB);
 
     // Eight guards over the same database, standing in for eight colocations reaching one D1. Every
-    // claim is issued before any has resolved, so nothing is serialised by the test itself.
+    // claim is issued before any has resolved, so nothing is serialized by the test itself.
     const guards = Array.from({ length: 8 }, () => d1ReplayGuard(db, { now: clock.now, ttlSeconds: TTL_SECONDS }));
     const outcomes = await Promise.all(guards.map((guard) => guard.claim("cpt_concurrent", CONNECTION)));
 

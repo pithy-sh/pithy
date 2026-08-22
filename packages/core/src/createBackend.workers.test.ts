@@ -84,7 +84,7 @@ describe("createBackend", () => {
   });
 
   test("the app's middleware runs before a library capability's route, so an adopter can gate one", async () => {
-    // **The ordering an adopter's own authorisation depends on.** A capability's write route carries the
+    // **The ordering an adopter's own authorization depends on.** A capability's write route carries the
     // gates that capability owns and no others — `@pithy-sh/support`'s `POST /support/feedback` takes a
     // session and same-origin, and must never take a role the kit invented, because a general intake
     // that is role-gated stops being one. An adopter whose account model makes some submissions

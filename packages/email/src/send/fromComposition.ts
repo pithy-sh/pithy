@@ -11,7 +11,7 @@ import type { EnqueueInput, EnqueueResult } from "./enqueue";
  * A route reaches `enqueue` through the `compose` hook, and should keep doing that — it is typed, it is
  * explicit, and it does not depend on module load order. **A Workflow class has no such route.** The
  * runtime constructs it with the worker `env` and nothing else, `enqueue` is a closure rather than a
- * binding, and Workflow params are serialised so a closure cannot travel in one either. Until this
+ * binding, and Workflow params are serialized so a closure cannot travel in one either. Until this
  * existed, a durable job could not send mail without rebuilding the sending identity from `env` — the
  * same from-address in a second place, free to drift from `pithy.config.ts` — which is exactly what this
  * capability's own doc asks consumers not to do.

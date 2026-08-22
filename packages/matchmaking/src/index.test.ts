@@ -22,8 +22,8 @@ const PACKAGE = join(import.meta.dirname, "..");
  * exactly that: it re-exported both Durable Object classes, so importing it pulled in `cloudflare:workers`
  * and threw everywhere but workerd (#180, the same defect `@pithy-sh/multiplayer` shipped as #172).
  *
- * **Why this lives here and not only in the CLI.** `configEntrypoints.test.ts` holds every catalogued
- * capability to this, but scope there is `CATALOG` — and `@pithy-sh/matchmaking` is not catalogued yet.
+ * **Why this lives here and not only in the CLI.** `configEntrypoints.test.ts` holds every cataloged
+ * capability to this, but scope there is `CATALOG` — and `@pithy-sh/matchmaking` is not cataloged yet.
  * Nothing would have caught this until the commit that adds the catalog entry, which is the commit it
  * would otherwise have shipped broken on. A package carries its own gate until the shared one reaches it.
  *

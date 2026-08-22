@@ -344,7 +344,7 @@ async function promptScopes(
     required: false,
   });
   if (isCancel(answer)) {
-    process.stderr.write("Cancelled.\n");
+    process.stderr.write("Canceled.\n");
     process.exit(1);
   }
   return answer as ControlPlaneScope[];
@@ -382,7 +382,7 @@ async function confirmRevokeKey(keyId: string, env: string): Promise<void> {
   const { confirm, isCancel } = await import("@clack/prompts");
   const answer = await confirm({ message: `Revoke key ${keyId} on ${env}?`, initialValue: false });
   if (isCancel(answer) || answer !== true) {
-    process.stderr.write("Cancelled.\n");
+    process.stderr.write("Canceled.\n");
     process.exit(1);
   }
 }
@@ -391,7 +391,7 @@ async function confirmDisconnect(env: string): Promise<void> {
   const { confirm, isCancel } = await import("@clack/prompts");
   const answer = await confirm({ message: `Disconnect the management client from ${env}?`, initialValue: false });
   if (isCancel(answer) || answer !== true) {
-    process.stderr.write("Cancelled.\n");
+    process.stderr.write("Canceled.\n");
     process.exit(1);
   }
 }

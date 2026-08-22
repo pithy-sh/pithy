@@ -146,7 +146,7 @@ export function isReapableDevCommand(command: string | null): boolean {
   return tokens.slice(1).some((token) => WORKER_BINARY.test(commandBase(token)));
 }
 
-/** This process and every ancestor of it — never signalled, whatever is holding a port. */
+/** This process and every ancestor of it — never signaled, whatever is holding a port. */
 async function ancestorPids(selfPid: number, parentOf: ParentPid): Promise<Set<number>> {
   const chain = new Set<number>([selfPid]);
   let pid = selfPid;
@@ -194,7 +194,7 @@ export async function sweepStaleDevPorts(ports: number[], deps: SweepDeps = {}):
   const selfPid = deps.selfPid ?? process.pid;
   const known = new Set(deps.knownPids ?? []);
   const reaped: number[] = [];
-  // Resolved once, and only when something is actually about to be signalled.
+  // Resolved once, and only when something is actually about to be signaled.
   let protectedPids: Set<number> | null = null;
 
   for (const port of ports) {

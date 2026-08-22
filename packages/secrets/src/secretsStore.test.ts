@@ -170,7 +170,7 @@ describe("secretsStore — a failure belongs to its secret, not to the store (#1
     expect(store.getVersions("auth-session-secret")).toEqual({ currentVersion: "1", versions: { "1": "sess" } });
   });
 
-  test("the unset secret still fails when read, and names itself and not its neighbour", async () => {
+  test("the unset secret still fails when read, and names itself and not its neighbor", async () => {
     const store = await secretsStore(envWith({ "auth-session-secret": "sess" }), auth);
     const error = throwsFrom(() => store.get("auth-google-credentials"));
     expect(error).toBeInstanceOf(SecretNotFoundError);

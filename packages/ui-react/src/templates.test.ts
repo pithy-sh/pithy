@@ -114,14 +114,14 @@ describe("the React template library", () => {
     // one it was written in, and a scaffolded file is one Pithy cannot fix afterwards. Every price a
     // Pithy screen renders comes from Paddle, for that visitor.
     const payments: readonly string[] = TEMPLATE_GROUPS.payments;
-    const offences: string[] = [];
+    const offenses: string[] = [];
     for (const path of declaredPaths()) {
       for (const { line, code, source } of await renderableLines(path)) {
         const hit = CURRENCY.test(code) || (payments.includes(path) && BARE_AMOUNT.test(code));
-        if (hit) offences.push(`${path}:${line} ${source.trim()}`);
+        if (hit) offenses.push(`${path}:${line} ${source.trim()}`);
       }
     }
-    expect(offences).toEqual([]);
+    expect(offenses).toEqual([]);
   });
 
   test("the price sweep finds one when there is one to find", () => {

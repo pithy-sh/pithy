@@ -18,7 +18,7 @@ import { z } from "zod";
  *
  * **`never_paid` is a purchase that terminated before any money moved.** A delayed-payment checkout whose
  * bank debit bounced, a Stripe subscription abandoned at `incomplete_expired`, a Play deferred purchase
- * cancelled before payment. It grants nothing and credits nothing, and no clawback ever follows one, because
+ * canceled before payment. It grants nothing and credits nothing, and no clawback ever follows one, because
  * there is no payment to reverse. Leaning on `expired` for these is how a coin pack gets handed out for money
  * that never arrived — see `UNPAID_STATUSES` in `grants/apply.ts`. Apple maps nothing here: StoreKit issues
  * no transaction until the money moves.

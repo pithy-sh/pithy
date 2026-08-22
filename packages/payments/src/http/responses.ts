@@ -156,7 +156,7 @@ export const PaymentsPortalHandoffResponse = z
         z
           .object({
             subscriptionId: z.string().describe("The store's own subscription id."),
-            cancel: z.string().describe("Where this subscription is cancelled."),
+            cancel: z.string().describe("Where this subscription is canceled."),
             updatePaymentMethod: z.string().describe("Where this subscription's payment method is changed."),
           })
           .describe("One subscription's deep links. Every URL here is a bearer credential for that billing."),
@@ -341,7 +341,7 @@ export type PaymentsAdminCatalogProduct = z.output<typeof PaymentsAdminCatalogPr
 /**
  * `GET {base}/admin/catalog` — what this project sells.
  *
- * **`enabled` is the same modelled answer `clientProjection` gives, and deliberately the same shape.** A
+ * **`enabled` is the same modeled answer `clientProjection` gives, and deliberately the same shape.** A
  * catalog with nothing in it answers `{ enabled: false }` rather than an empty list, so "composed with
  * nothing to sell" is a state a client renders as *there is nothing to comp here* instead of as a dropdown
  * that came back broken. A catalog that failed to load is not this: it is a non-200, or a body that does
@@ -511,7 +511,7 @@ export const PaymentsAdminReconcileRunView = z
     finishedAt: z.iso.datetime().describe("When it finished, ISO-8601."),
     environment: PurchaseEnvironment.describe("The store environment the host was deployed to."),
     rail: PaymentsRail.nullable().describe(
-      "The store this pass was narrowed to, or null for every enabled rail. Null is the scheduled behaviour.",
+      "The store this pass was narrowed to, or null for every enabled rail. Null is the scheduled behavior.",
     ),
     pages: z.number().int().describe("Durable steps read — one page of purchases each."),
     scanned: z.number().int().describe("Purchases examined."),

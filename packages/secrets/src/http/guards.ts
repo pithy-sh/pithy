@@ -21,7 +21,7 @@ import type { ControlPlaneScope } from "@pithy-sh/core/src/controlPlane/scope/sc
  *
  * ## Why the history is not a second scope
  *
- * `@pithy-sh/ledger` splits balances from the entry log behind them, because a number and a behavioural
+ * `@pithy-sh/ledger` splits balances from the entry log behind them, because a number and a behavioral
  * record are different disclosures. Here they are the same disclosure at two resolutions: the listing
  * already reports the last successful rotation and the count, and the history adds the attempts between
  * them. Nothing appears in one that the other conceals, so a second grant would be a decision an adopter
@@ -76,7 +76,7 @@ export const SECRETS_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
  * Declared beside the scope rather than in `routes.ts` so the scope a route demands and the scope a
  * manifest advertises are the same constant, read from one place. `basePath` is a parameter and never a
  * default: an adopter who mounted this at `/vault` must get a manifest naming `/vault/admin/status`, or
- * a management client composing its calls from it would 404 against exactly the adopters who customised
+ * a management client composing its calls from it would 404 against exactly the adopters who customized
  * anything.
  *
  * Everything sits under `admin/` for consistency with every other capability's management surface, and

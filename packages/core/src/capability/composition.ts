@@ -18,7 +18,7 @@ import type { Capability } from "./capability";
  * handed out, not a binding — and there was no way back from a durable step to the composed set. The
  * two ways past it were both wrong and both the adopter's to take: rebuild the seam from `env` plus a
  * restated identity (the same sending address in a second place, free to drift from `pithy.config.ts`),
- * or pass the closure through Workflow params (which are serialised, and a closure is not). So a durable
+ * or pass the closure through Workflow params (which are serialized, and a closure is not). So a durable
  * job could never send mail, and `pithy-sh/dashboard`'s monthly key-rotation notice was written, tested,
  * and reachable by nothing.
  *

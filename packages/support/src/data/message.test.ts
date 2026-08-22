@@ -12,7 +12,7 @@ import { SupportMessage } from "./message";
  * It is not a way to ask whether a reply went out — the moment a reply can be delivered in the app
  * rather than by mail, a null job id would mean either "this arrived" or "this was never sent", and a
  * client would have to read `direction` to tell them apart. `channel` already says how a message
- * travelled, so the rule is that the job id is present exactly when the message travelled by mail on
+ * traveled, so the rule is that the job id is present exactly when the message traveled by mail on
  * the way out, and absent otherwise.
  *
  * The check lives on the schema rather than in `reply/send.ts` because the schema is what every
@@ -49,7 +49,7 @@ function message(over: Partial<SupportMessage>): SupportMessage {
   };
 }
 
-describe("a message row states how it travelled, and the job id follows from that", () => {
+describe("a message row states how it traveled, and the job id follows from that", () => {
   test("the four rows the model actually produces all encode", () => {
     const rows: SupportMessage[] = [
       // Inbound mail.

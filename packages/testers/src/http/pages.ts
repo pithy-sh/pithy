@@ -15,7 +15,7 @@
 /**
  * Escape a value before it goes into the HTML these routes render.
  *
- * The store URL is developer-supplied and already host-allowlisted, so this is defence in depth rather
+ * The store URL is developer-supplied and already host-allowlisted, so this is defense in depth rather
  * than the only guard — but it is a URL interpolated into an `href` on a page shown to a stranger, and
  * "already validated elsewhere" is how injection survives a refactor.
  */

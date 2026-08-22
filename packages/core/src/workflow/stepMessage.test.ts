@@ -74,7 +74,7 @@ describe("an action that cannot be encoded is dropped, and the sentence survives
 describe("text this did not write is declined, not reshaped", () => {
   test("no code prefix is no encoding", () => {
     expect(decodeWorkflowStepMessage("kaboom, no code here")).toBeNull();
-    // `unclassified` is the code a fault no layer recognises carries, and it is not a `domain/reason`.
+    // `unclassified` is the code a fault no layer recognizes carries, and it is not a `domain/reason`.
     // So the terminal text for a foreign throw stays unpromotable, exactly as it was before #353.
     expect(decodeWorkflowStepMessage("unclassified: something went wrong")).toBeNull();
   });

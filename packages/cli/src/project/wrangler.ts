@@ -17,7 +17,7 @@ export interface WranglerEnvVars {
  * The parsed `wrangler.jsonc`, comments preserved (comment-json), or `null` when there is **no file**.
  *
  * Nineteen modules read a Worker's config through this wrapper, and until #204 it read the bytes with a
- * bare `readFile`. That put every one of those reads outside the ENOENT gate: the gate recognises the leaf
+ * bare `readFile`. That put every one of those reads outside the ENOENT gate: the gate recognizes the leaf
  * calls that hand back a file's contents, so a read behind a wrapper is one it cannot see, and
  * `envInventory.ts` was left spelling out the errno branch for itself — correct, and invisible. The
  * decision lives in {@link readOptionalFile} now, which is what puts this wrapper inside the rule.

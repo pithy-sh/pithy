@@ -136,7 +136,7 @@ describe("connectionRegistry", () => {
   });
 
   test("revokeKey stamps revokedAt and core stops accepting that key immediately", async () => {
-    // `revokedAt` is honoured by `findVerifyingKey` on every request, so this asserts the whole path:
+    // `revokedAt` is honored by `findVerifyingKey` on every request, so this asserts the whole path:
     // the CLI writes it, the codecs round-trip it through D1, and core's lifecycle refuses the key.
     const registry = connectionRegistry(controlPlaneDatabase(d1), "prod");
     const at = new Date("2026-08-01T00:00:00.000Z");

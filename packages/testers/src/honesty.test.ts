@@ -190,7 +190,7 @@ describe("uncertainty: 'we do not know' must be representable", () => {
   });
 
   test("the reset policy is exposed as the assumption it is", () => {
-    // Google documents neither behaviour, so naming the field for what it is beats burying it in the
+    // Google documents neither behavior, so naming the field for what it is beats burying it in the
     // arithmetic.
     expect(["reset", "pause"]).toContain(CohortView.parse(sampleCohort()).resetPolicy);
   });

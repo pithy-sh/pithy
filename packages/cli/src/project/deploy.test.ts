@@ -376,7 +376,7 @@ describe("summarizeDeploy", () => {
   });
 
   /**
-   * The colour and the exit code read the same rule, so the line an adopter sees cannot say "routine" over
+   * The color and the exit code read the same rule, so the line an adopter sees cannot say "routine" over
    * a verification that fails the command (#264).
    */
   test("a verification that fails the command is reported as a failure line", () => {

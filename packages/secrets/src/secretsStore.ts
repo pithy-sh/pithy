@@ -330,7 +330,7 @@ export class SecretsAccessor<R extends SecretRegistry> {
 
   /**
    * The current pointer plus every still-valid version of one keyspace member — what a verifier needs
-   * mid-rotation, when a tenant's retired key must still be honoured alongside its new one.
+   * mid-rotation, when a tenant's retired key must still be honored alongside its new one.
    */
   async getKeyedVersions<K extends KeyedSecretName<R>>(name: K, key: string): Promise<VersionedSecret<R[K]>> {
     const resolved = await this.#loadKeyed(name, key);
@@ -367,7 +367,7 @@ export class SecretsAccessor<R extends SecretRegistry> {
    * rotation, on the request path.
    *
    * This is the write that makes {@link getKeyedVersions} mean something: a verifier mid-rotation has
-   * to honour the retired key alongside the new one, and nothing else can produce that state. The
+   * to honor the retired key alongside the new one, and nothing else can produce that state. The
    * keyspace must be declared `rotatable`, which is where that axis stops being forward-looking
    * metadata — a keyspace that says it does not accumulate versions is not quietly made to.
    *
@@ -426,7 +426,7 @@ export class SecretsAccessor<R extends SecretRegistry> {
    *
    * A held failure travels with its name and no further. That is the whole point of the slice: the
    * view a capability gets carries the errors of its own secrets, and cannot be tripped by a
-   * neighbour's unset one.
+   * neighbor's unset one.
    *
    * `keyed` defaults to this accessor's own. The shared store passes the current invocation's
    * instead: it hands out views over an accessor cached across requests, and a keyspace read or write
@@ -447,7 +447,7 @@ export class SecretsAccessor<R extends SecretRegistry> {
 
   /**
    * Resolve one keyspace member. The key is validated and composed by {@link keyedSecretName} — the
-   * one place a member name is ever built — so a key can neither escape into a neighbouring keyspace
+   * one place a member name is ever built — so a key can neither escape into a neighboring keyspace
    * nor land on a named entry. A member with no stored value throws instead of resolving `undefined`.
    *
    * Every failure names the keyspace and never the key: `detail` reaches logs verbatim, and the key

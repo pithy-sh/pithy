@@ -23,7 +23,7 @@ export const SupportClassification = z
     messageId: z
       .string()
       .describe(
-        "The `pithy_support_messages.id` the model actually read. Recorded because a thread's classification is a judgement about one message, and knowing which one is what makes a disagreement between two runs legible.",
+        "The `pithy_support_messages.id` the model actually read. Recorded because a thread's classification is a judgment about one message, and knowing which one is what makes a disagreement between two runs legible.",
       ),
     category: z
       .string()

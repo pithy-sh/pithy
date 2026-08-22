@@ -65,7 +65,7 @@ export class WorkersProvisioner {
    * the created script's id. workers.dev must be enabled via a separate call after script creation.
    *
    * `compatibilityDate` is passed through and not defaulted, which is this class's standing promise
-   * one level down: a compatibility date is a behaviour contract in the caller's own account, and the
+   * one level down: a compatibility date is a behavior contract in the caller's own account, and the
    * manager stopped inventing one in #396.
    */
   async createWorker(

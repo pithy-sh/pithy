@@ -22,7 +22,7 @@
  * instance is resumable and still owns its rows; re-driving one would put a second Workflow behind the
  * same jobs and make pausing a batch a way to send everyone in it twice.
  *
- * Outside it today: `errored`, `terminated`, `complete`, and anything unrecognised. None of those will
+ * Outside it today: `errored`, `terminated`, `complete`, and anything unrecognized. None of those will
  * touch another job, so whatever they left in `sending` is genuinely stranded.
  */
 const LIVE_INSTANCE_STATUSES: ReadonlySet<string> = new Set([

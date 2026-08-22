@@ -36,7 +36,7 @@ describe("discoverPackages", () => {
   });
 
   // `tooling/*` is a workspace like `packages/*` — private and never published, but its source is
-  // still ours and still needs a header. The licence tool itself living unlicensed was the tell.
+  // still ours and still needs a header. The license tool itself living unlicensed was the tell.
   test("finds tooling packages as well as published ones", () => {
     put("packages/core/package.json", JSON.stringify({ name: "@pithy-sh/core", license: "MIT" }));
     put("tooling/license-headers/package.json", JSON.stringify({ name: "@pithy-sh/license-headers", license: "MIT" }));

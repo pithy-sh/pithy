@@ -93,7 +93,7 @@ describe("secrets capability", () => {
   test("moves the advertised paths with the mount point", () => {
     // The trap: a `?? "/secrets"` fallback living only in the route registrar would let the manifest
     // advertise one path while the routes mounted at another, and a management client composing its
-    // calls from the manifest would 404 against exactly the adopters who customised anything.
+    // calls from the manifest would 404 against exactly the adopters who customized anything.
     const moved = secrets({ registry, basePath: "/vault" });
     for (const route of moved.adminRoutes ?? []) expect(route.path.startsWith("/vault/")).toBe(true);
   });

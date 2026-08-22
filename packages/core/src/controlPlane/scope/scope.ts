@@ -36,7 +36,7 @@ export type ControlPlaneScope = z.output<typeof ControlPlaneScope>;
  * The requirement for a route that needs a **verified caller but no authorization** — today, only
  * `GET /control-plane/ping`.
  *
- * Ping is not a scope, and modelling it as one would be dishonest: granting it would change nothing
+ * Ping is not a scope, and modeling it as one would be dishonest: granting it would change nothing
  * and withholding it would change nothing, because ping must work for a connection granted nothing at
  * all. It is the call that proves a newly registered key works *before* the key it replaces is
  * expired, and that ordering is the entire safety property of rotation. A ping that could be withheld
@@ -73,7 +73,7 @@ export const MANIFEST_READ_SCOPE: ControlPlaneScope = "manifest:read";
  * Register a new public key, expire a superseded one, and read the registration state. One scope for
  * the whole key lifecycle, granted separately at connect: an adopter who does not want a management
  * client changing keys on a schedule simply does not grant it, and then it *cannot*, whatever the
- * client intends. Better than a toggle anyone has to be trusted to honour.
+ * client intends. Better than a toggle anyone has to be trusted to honor.
  */
 export const KEYS_ROTATE_SCOPE: ControlPlaneScope = "keys:rotate";
 

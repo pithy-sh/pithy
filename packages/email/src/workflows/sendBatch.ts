@@ -32,7 +32,7 @@ import { runSend, type SendDeps, type SendOutcome } from "../send/runSend";
 
 /** The durable step runner, structurally. Injected, so a test can drive an interrupt and a resume. */
 export interface SendBatchStep {
-  /** Run a named step, or return its journalled result if this instance already completed it. */
+  /** Run a named step, or return its journaled result if this instance already completed it. */
   do<T>(name: string, fn: () => Promise<T>): Promise<T>;
 }
 
@@ -40,7 +40,7 @@ export interface SendBatchStep {
  * What a batch needs: everything one send needs, minus the pass instant it journals for itself.
  *
  * `heartbeatAt` is the clock, and it stays a thunk all the way down — `runSend` reads it afresh on every
- * patch. The pass instant is *one journalled read of the same clock*, which is the whole design in a
+ * patch. The pass instant is *one journaled read of the same clock*, which is the whole design in a
  * sentence: one source, two lifetimes, and neither of them able to answer for the other.
  */
 export type SendBatchDeps = Omit<SendDeps, "passStartedAt">;
@@ -61,7 +61,7 @@ export type SendBatchDeps = Omit<SendDeps, "passStartedAt">;
  */
 export type BatchJobResult =
   | {
-      /** The send ran to a conclusion — sent, suppressed, cancelled or terminally failed. */
+      /** The send ran to a conclusion — sent, suppressed, canceled or terminally failed. */
       state: "attempted";
       /** The job this is about. */
       jobId: string;
@@ -98,13 +98,13 @@ export async function runSendBatch(
   jobIds: readonly string[],
 ): Promise<BatchSendReport> {
   /**
-   * The pass instant, journalled (pithy-sh/pithy#327).
+   * The pass instant, journaled (pithy-sh/pithy#327).
    *
    * One read of `heartbeatAt`, taken inside a step so a resume reads back the instant the batch began
    * rather than the instant it came back. It dates the work — `sentAt`, the redaction stamp, the events,
    * and every tracked link's expiry.
    *
-   * **What is deliberately not journalled is the clock itself.** `deps.heartbeatAt` goes through to
+   * **What is deliberately not journaled is the clock itself.** `deps.heartbeatAt` goes through to
    * `runSend` as a thunk, because `updatedAt` is what decides a `sending` job is old enough to ask about
    * at all, and a frozen one puts a job the batch is mid-flight on in front of that question every tick.
    * The batch's own liveness answers it correctly either way; a clock that lies is still a clock that

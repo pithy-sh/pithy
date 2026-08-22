@@ -236,7 +236,7 @@ async function planFiles(
 async function unstyledOnDisk(workerDir: string): Promise<string[]> {
   const src = join(workerDir, "src");
   // `recursive` gives worker-relative paths under `src/`, in whatever separator the platform uses;
-  // normalised to `/` because `PITHY_SCREEN_DIR` is a path *within a scaffolded worker*, and those are
+  // normalized to `/` because `PITHY_SCREEN_DIR` is a path *within a scaffolded worker*, and those are
   // written the way the templates write them. A worker with no `src/` at all answers the empty set.
   const entries = await readdir(src, { recursive: true }).catch(() => [] as string[]);
   const onDisk: Record<string, string> = {};

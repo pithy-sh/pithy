@@ -139,7 +139,7 @@ export async function runAtRestKeyRotation(
     //
     // Rethrown unchanged, which is where the detail belongs: the Workflow logs a `PithyError` whose
     // `detail` the HTTP codec strips. Nothing about this failure is written to a column, and the column
-    // is still refused for publication — that refusal is defence in depth, not this fix.
+    // is still refused for publication — that refusal is defense in depth, not this fix.
     await step.do("mark-failure", () => deps.tracker.markFailure(rotationId, "at-rest-incomplete"));
     throw cause;
   }

@@ -90,7 +90,7 @@ export const MAX_WORKFLOW_STEP_TEXT = 512;
 
 /**
  * Any line break. The separator is one specific break, so every other one — a bare `\r`, a second
- * newline — is a shape this encoding never produces, and an unrecognised shape is declined.
+ * newline — is a shape this encoding never produces, and an unrecognized shape is declined.
  */
 const LINE_BREAK = /[\n\r]/;
 

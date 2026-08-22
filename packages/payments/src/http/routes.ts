@@ -568,7 +568,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
     const d1 = database(c);
     const provider = resolveRailProvider(rail, config, await credentials(c), trust);
     // **The deployment travels with the clock**, and on one rail it is load-bearing rather than incidental.
-    // Paddle's `verify` honours a submitted transaction's ownership stamp only when a MAC keyed on this
+    // Paddle's `verify` honors a submitted transaction's ownership stamp only when a MAC keyed on this
     // deployment's own secret verifies beside it — and the environment is *inside* that MAC's message, so a
     // rail handed no deployment can prove nothing and refuses every submission. The other rails ignore it.
     const verified = await provider.verify(receipt, { now, deployment: deploymentName(c) });
@@ -1528,7 +1528,7 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
                 resourceId: input.entitlement,
                 // The route and the submitted key, and nothing else the caller supplied. The key is safe to
                 // record — `EntitlementKey` has already bounded it to `^[a-z][a-z0-9_]*$` at 64 characters —
-                // and it is the only field that makes a run of refusals legible. Never the catalogue: the
+                // and it is the only field that makes a run of refusals legible. Never the catalog: the
                 // defined set goes in `detail`, which the codec strips, and must not be copied into a
                 // queryable, long-lived trail.
                 metadata: { route: "entitlements/grant", entitlement: input.entitlement },

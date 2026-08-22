@@ -293,7 +293,7 @@ describe("buildEnvInventory — a wrangler.jsonc that did not come back", () => 
  *
  * `cloudflare.<name>.json` is what makes a second account possible; the *pin* is what makes the
  * nickname mean the same thing twice. This suite is the pair of them at the one seam that prints an
- * account id: an inventory labelled with the wrong account is not a degraded report, it is a report
+ * account id: an inventory labeled with the wrong account is not a degraded report, it is a report
  * about somebody else's tenant with this project's Worker names on it.
  */
 describe("buildEnvInventory reads the account the project names", () => {

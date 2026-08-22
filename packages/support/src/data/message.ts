@@ -78,7 +78,7 @@ export type SupportReferenceIds = z.output<typeof SupportReferenceIds>;
  * One message in `pithy_support_messages` — inbound mail as it arrived, or a reply as it went out.
  *
  * **The raw MIME is kept immutable in R2 and never rewritten.** `textBody`/`htmlBody` are a derived,
- * sanitised rendering of it, so a parser bug, a sanitiser change, or a reclassification pass can all
+ * sanitized rendering of it, so a parser bug, a sanitizer change, or a reclassification pass can all
  * be re-run from the bytes that actually arrived. Storing only the parsed form would make the parse a
  * one-way decision taken at the worst possible moment — inside an `email()` handler with a CPU budget.
  *
@@ -91,9 +91,9 @@ export const SupportMessage = z
   .object({
     id: z.string().describe("UUID primary key for this message row — Pithy's id, not the sender's."),
     threadId: z.string().describe("The `pithy_support_threads.id` this message belongs to."),
-    direction: SupportMessageDirection.describe("Which way this message travelled."),
+    direction: SupportMessageDirection.describe("Which way this message traveled."),
     channel: SupportChannel.describe(
-      "How this message travelled, which on an outbound row is **how the answer was delivered**: `email` means it was handed to `@pithy-sh/email`'s durable send path, `app` means it was stored for the submitter to read in the app and no mail was sent. Per message rather than only per thread, because the two genuinely differ — one `app` thread can hold an answer that was mailed and an answer that was not, and those are different promises about when somebody will read them.",
+      "How this message traveled, which on an outbound row is **how the answer was delivered**: `email` means it was handed to `@pithy-sh/email`'s durable send path, `app` means it was stored for the submitter to read in the app and no mail was sent. Per message rather than only per thread, because the two genuinely differ — one `app` thread can hold an answer that was mailed and an answer that was not, and those are different promises about when somebody will read them.",
     ),
     submittedByUserId: z
       .string()
@@ -127,7 +127,7 @@ export const SupportMessage = z
       .string()
       .nullish()
       .describe(
-        "The address this message was sent from, lowercased. **Null exactly on an answer delivered in the app**, which left no envelope — there is no address a reply that was never mailed came from, and putting the deployment's own address there would claim a send that did not happen. Never null on anything that travelled by mail, and never present on anything that did not. Checked on the object, both ways, so it is a rule rather than a note.",
+        "The address this message was sent from, lowercased. **Null exactly on an answer delivered in the app**, which left no envelope — there is no address a reply that was never mailed came from, and putting the deployment's own address there would claim a send that did not happen. Never null on anything that traveled by mail, and never present on anything that did not. Checked on the object, both ways, so it is a rule rather than a note.",
       ),
     fromName: z.string().nullish().describe("The sender's display name. Untrusted text; render it escaped."),
     toAddress: z
@@ -146,7 +146,7 @@ export const SupportMessage = z
       .string()
       .nullish()
       .describe(
-        "The HTML body **after sanitisation** — scripts, event handlers, styles, frames, and remote-loading attributes removed. Null when the message carried no HTML. The raw original is still in R2 if the sanitiser ever needs re-running.",
+        "The HTML body **after sanitization** — scripts, event handlers, styles, frames, and remote-loading attributes removed. Null when the message carried no HTML. The raw original is still in R2 if the sanitizer ever needs re-running.",
       ),
     emailJobId: z
       .string()
@@ -168,7 +168,7 @@ export const SupportMessage = z
   })
   .describe("One message in `pithy_support_messages` — the derived rendering of mail whose raw form lives in R2.")
   // **The invariant, stated once, where every producer already passes.** `emailJobId` is the join to
-  // `pithy_email_jobs` and nothing else: it is present exactly when this message travelled by mail on
+  // `pithy_email_jobs` and nothing else: it is present exactly when this message traveled by mail on
   // the way out. Written at a call site instead, this rule would hold until the second writer — and
   // there are already five (ingest, submission, the reply path, the seeds, the tests). Enforced here
   // it also runs on the way *back* out of D1, so a row that reached the table by any other route
@@ -191,7 +191,7 @@ export const SupportMessage = z
   // for one row — the answer `sendReply` stores in the app, which has no envelope — and the rule that
   // bounds that was written as prose on the field. Prose holds until the second writer, which is the
   // argument the check above is made of; there is no reason it carries less weight here. A null on a
-  // message that travelled by mail is a thread nobody can answer, because `sendReply` addresses the
+  // message that traveled by mail is a thread nobody can answer, because `sendReply` addresses the
   // reply to it. An address on one that did not travel claims a send that never happened, to every
   // projection that renders the column.
   .check((ctx) => {

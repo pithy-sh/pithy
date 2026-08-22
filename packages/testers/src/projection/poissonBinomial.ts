@@ -82,7 +82,7 @@ export function expectedSurvivors(probabilities: readonly number[]): number {
  *
  * Independence across days is assumed and stated. It is not quite true — a tester who uninstalls is
  * gone for every subsequent day, not independently gone each day — but the per-day rate is already
- * calibrated against that behaviour rather than against a memoryless process, and a hazard model would
+ * calibrated against that behavior rather than against a memoryless process, and a hazard model would
  * add parameters nobody can audit to a number that is a declared prior in the first place.
  */
 export function survivalOverDays(dailySurvival: number, days: number): number {

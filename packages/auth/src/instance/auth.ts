@@ -138,7 +138,7 @@ export interface AuthInstanceDeps<Plugins extends readonly BetterAuthPlugin[] = 
  * The concrete return type of `makeAuth` — the Better-Auth instance with Pithy's plugin set, and the
  * adopter's on top of it.
  *
- * Parameterised in the plugin tuple so an adopter can name the instance their own composition produces:
+ * Parameterized in the plugin tuple so an adopter can name the instance their own composition produces:
  * `AuthInstance<[ReturnType<typeof organization>]>`. That is the type
  * `inferAdditionalFields<…>()` needs on the client, and the reason the plugin tuple is threaded through
  * `makeAuth` rather than widened to `BetterAuthPlugin[]` at the door.
@@ -171,7 +171,7 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
     // Better Auth's errors bubble out of `handler` so the Hono boundary maps them to PithyError.
     //
     // **Load-bearing, and measured rather than assumed (#385).** The `before` hook below throws a
-    // `PithyError`, which better-call's router does not recognise as its own `APIError` — so without
+    // `PithyError`, which better-call's router does not recognize as its own `APIError` — so without
     // this it takes the default branch: `console.error("# SERVER_ERROR: ", error)`, which prints the
     // whole payload including the `action` naming `auth-github-credentials`, and answers a bodyless
     // 500. Removing it reddens two cases in `http/providerResolution.workers.test.ts` (503 becomes

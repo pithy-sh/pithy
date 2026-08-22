@@ -244,7 +244,7 @@ describe("support response schemas", () => {
     accepts(SupportMyThreadView, myThreadView(APP_THREAD));
     accepts(SupportMyMessageView, myMessageView(APP_MESSAGE, []));
 
-    // A machine's judgement about the person, the private flags of whoever is triaging, and the link
+    // A machine's judgment about the person, the private flags of whoever is triaging, and the link
     // that decides whether an operator sees their purchase history. None of it is the submitter's, and
     // a projection built by omitting fields from the operator's view would disclose the next column
     // somebody adds without anyone deciding to.
@@ -376,7 +376,7 @@ describe("the reader's contract beside the producer's", () => {
   test("the producer's schemas still refuse a member they do not declare", () => {
     expect(SupportListedThreadView.safeParse(stranger()).success).toBe(false);
     expect(SupportThreadsResponse.safeParse({ threads: [stranger()], nextCursor: null }).success).toBe(false);
-    // And one stranger among four costs the producer's schema the whole page — the behaviour the
+    // And one stranger among four costs the producer's schema the whole page — the behavior the
     // reader's contract exists to change, stated here so the change is visible as a difference.
     const page = { threads: [listedThreadView(LISTED), stranger()], nextCursor: null };
     expect(SupportThreadsResponse.safeParse(page).success).toBe(false);
@@ -390,7 +390,7 @@ describe("the reader's contract beside the producer's", () => {
     expect(thread?.accountLinkSource).toBe("oauth");
     expect(thread?.priority).toBe("blocker");
     // Marked, not mapped. The enum is still the authority on what a value means, and it says no — which
-    // is the whole licence a client needs to render the row and say it does not recognise this.
+    // is the whole license a client needs to render the row and say it does not recognize this.
     expect(SupportChannel.safeParse(thread?.channel).success).toBe(false);
     expect(SupportAccountLinkSource.safeParse(thread?.accountLinkSource).success).toBe(false);
     // A member the enum does declare still reads as itself, and the row is otherwise untouched.

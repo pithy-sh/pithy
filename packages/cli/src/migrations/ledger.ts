@@ -44,7 +44,7 @@ export const UndeclaredMigration = z
     database: z.string().describe("The database name — a capability's `databases` key."),
     binding: z
       .string()
-      .describe("The D1 binding it resolves to, as wrangler.jsonc declares it — the name an adopter recognises."),
+      .describe("The D1 binding it resolves to, as wrangler.jsonc declares it — the name an adopter recognizes."),
     name: z.string().describe("The composed migration name, exactly as the ledger records it."),
   })
   .describe("One migration a database has applied that this project no longer declares.");
@@ -87,7 +87,7 @@ export function undeclaredRemedy(env: string): string {
  * Refuse a run against a database whose ledger records something this project no longer declares.
  *
  * Placed at {@link runGroups}, beside `claimGroups` and for the same reason: it is the one line every
- * path that writes to a database goes through, so the refusal cannot be honoured by two commands and
+ * path that writes to a database goes through, so the refusal cannot be honored by two commands and
  * skipped by six. It runs after the ownership claim — whose database this is comes before what is in it.
  *
  * **Only for a pass whose provider spans the whole ledger.** `pithy remove --drop` runs a deliberately

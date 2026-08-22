@@ -200,7 +200,7 @@ function holdProbability(
   const deficit = targetSize - probabilities.length;
   if (deficit > 0) {
     // The mean of who is already in, or the healthy prior when nobody is — a brand-new cohort has no
-    // behaviour to average, and assuming the worst of people who have not arrived yet would report a
+    // behavior to average, and assuming the worst of people who have not arrived yet would report a
     // fresh cohort as doomed on its first day.
     const mean =
       probabilities.length > 0

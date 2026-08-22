@@ -148,7 +148,7 @@ export const SubmittedAttachmentInput = z
       .min(1)
       .max(255)
       .describe(
-        "The filename as the client declares it. **Recorded and never honoured** — the R2 key is server-derived, so this is metadata a console renders escaped, not a path anything resolves.",
+        "The filename as the client declares it. **Recorded and never honored** — the R2 key is server-derived, so this is metadata a console renders escaped, not a path anything resolves.",
       ),
     contentType: z
       .string()
@@ -162,7 +162,7 @@ export const SubmittedAttachmentInput = z
       // **Both alphabets, and the union is not belt-and-braces.** `z.base64()` rejects any string
       // containing `-` or `_`, so it alone would 400 every client whose platform encoder emits
       // `base64url` — Swift's `base64EncodedString(options:)`, Node's `toString("base64url")`, and
-      // most JWT-adjacent helpers — while `decodeBase64` sits behind it happily normalising the two.
+      // most JWT-adjacent helpers — while `decodeBase64` sits behind it happily normalizing the two.
       // A validator that refuses what the decoder documents as fine is the validator that is wrong.
       .union([z.base64(), z.base64url()])
       .describe(

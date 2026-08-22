@@ -69,7 +69,7 @@ const PaddlePortalSession = z
             z
               .object({
                 id: z.string().min(1).describe("The subscription these links act on."),
-                cancel_subscription: z.string().min(1).describe("Where this subscription is cancelled."),
+                cancel_subscription: z.string().min(1).describe("Where this subscription is canceled."),
                 update_subscription_payment_method: z
                   .string()
                   .min(1)

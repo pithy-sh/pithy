@@ -76,7 +76,7 @@ export function vectorIndexName(project: string, index: string, env: string): st
 export interface VectorIndexShape {
   /** Components per vector, matching the model that fills the index. */
   dimensions: number;
-  /** How nearest neighbours are scored. */
+  /** How nearest neighbors are scored. */
   metric: "cosine" | "euclidean" | "dot-product";
 }
 

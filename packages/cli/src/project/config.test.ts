@@ -130,7 +130,7 @@ describe("a config that will not load names its own cause (#207)", () => {
   });
 
   test("no throw-site context reaches message or action — not a stack, not a path, not an escape code", async () => {
-    // Under vitest the transform's own parse diagnostic is a multi-line, ANSI-coloured box that quotes
+    // Under vitest the transform's own parse diagnostic is a multi-line, ANSI-colored box that quotes
     // the file's path and source; under Bun it is a clean one-liner. Neither may be pasted through.
     for (const source of [UNRESOLVED, SYNTAX, THROWS]) {
       const payload = await refusal(source);
@@ -776,11 +776,11 @@ describe("the project's environments declaration", () => {
  * **What it asks is the decidable question**, in `atomic.test.ts`'s sense: not "does this module mean to
  * filter a message", which is intent and is exactly what an evader controls, but **does this module
  * declare a message-safety filter of its own** — a declaration named for the safety of a reason or a
- * message, or its own recogniser for an absolute path, which is the one constant no copy of this filter
+ * message, or its own recognizer for an absolute path, which is the one constant no copy of this filter
  * managed to do without. Both are what the three copies were, and both are what a fourth would have to
  * write.
  *
- * It deliberately does **not** flag de-colouring. `dev/logging.ts` strips ANSI to render a dev-server log
+ * It deliberately does **not** flag de-coloring. `dev/logging.ts` strips ANSI to render a dev-server log
  * and is right to; stripping escapes is formatting, not a decision about what an adopter may be told.
  */
 describe("the gate on the filter (#228)", () => {
@@ -799,16 +799,16 @@ describe("the gate on the filter (#228)", () => {
    * Why `source` decides message safety, or null.
    *
    * Two signals, each of which every copy of this filter had. A declaration named for the safety of a
-   * reason or a message is the filter itself; a recogniser for an absolute path is the test it cannot be
+   * reason or a message is the filter itself; a recognizer for an absolute path is the test it cannot be
    * written without — a message-safety filter that does not know what a path looks like does not stop one
-   * from travelling. Either alone is enough to want a human to look.
+   * from traveling. Either alone is enough to want a human to look.
    */
   function decidesMessageSafety(source: string): string | null {
     const found: string[] = [];
     const declaration = /\b(?:function|const|let|var)\s+(\w*[sS]afe(?:Reason|Message|Text|Detail)\w*)\s*[(=:]/g;
     for (const [, name] of source.matchAll(declaration)) if (name) found.push(`declares ${name}`);
     // The absolute-path character class, in the spelling all three copies used, and the name they gave it.
-    if (source.includes("[A-Za-z]:[")) found.push("recognises an absolute path");
+    if (source.includes("[A-Za-z]:[")) found.push("recognizes an absolute path");
     if (/\bABSOLUTE_PATH\b/.test(source)) found.push("declares ABSOLUTE_PATH");
     return found.length === 0 ? null : [...new Set(found)].join(", ");
   }
@@ -854,14 +854,14 @@ describe("the gate on the filter (#228)", () => {
     ].join("\n");
 
     expect(decidesMessageSafety(planted)).toContain("declares safeReason");
-    expect(decidesMessageSafety(planted)).toContain("recognises an absolute path");
+    expect(decidesMessageSafety(planted)).toContain("recognizes an absolute path");
     // And a module that merely uses core's filter is not a module that decides anything.
     expect(
       decidesMessageSafety(
         'import { safeReason } from "@pithy-sh/core/src/error/cause";\nconst reason = safeReason(cause);\n',
       ),
     ).toBeNull();
-    // Nor is one that de-colours a log line for display — `dev/logging.ts` does exactly that.
+    // Nor is one that de-colors a log line for display — `dev/logging.ts` does exactly that.
     expect(decidesMessageSafety("const ANSI = /\\u001b\\[[0-9;]*m/g;\nline.replace(ANSI, '');\n")).toBeNull();
   });
 });

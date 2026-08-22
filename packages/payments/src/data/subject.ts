@@ -8,7 +8,7 @@ import { z } from "zod";
  *
  * A consumer app sells to people: one buyer, one holder, and a user id is the whole answer. A business
  * selling to businesses has a different fact to record — the organization signs, the organization is
- * invoiced, and everybody in it holds what it bought. Modelling that on a user-keyed table means either
+ * invoiced, and everybody in it holds what it bought. Modeling that on a user-keyed table means either
  * fanning a plan out across members (which drifts the moment somebody joins or leaves) or keying it to
  * the owner (which makes the plan theirs, transferable with ownership, and invisible to the colleague
  * their employer is paying for).
@@ -119,7 +119,7 @@ export function sameSubject(a: PaymentsSubject | undefined, b: PaymentsSubject |
  * to somebody.
  *
  * The type half leads so the string sorts and greps by kind, and so a value that is *not* this encoding
- * is recognisable at a glance in a provider's dashboard.
+ * is recognizable at a glance in a provider's dashboard.
  */
 export function encodeSubjectReference(subject: PaymentsSubject): string {
   return `${subject.subjectType}${SUBJECT_REFERENCE_SEPARATOR}${subject.subjectId}`;

@@ -452,7 +452,7 @@ export type CheckoutHandoff =
 export interface PortalSubscriptionLinks {
   /** The store's own subscription id — `sub_…`. */
   subscriptionId: string;
-  /** Where this subscription is cancelled. */
+  /** Where this subscription is canceled. */
   cancel: string;
   /** Where this subscription's payment method is changed. */
   updatePaymentMethod: string;

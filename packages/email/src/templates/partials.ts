@@ -9,9 +9,9 @@
  * the query — a known limit). The open-tracking pixel and the unsubscribe link render only when the render
  * context supplies them; the engine guarantees a marketing send always supplies the unsubscribe.
  *
- * The dark block also carries the `.sev-*` severity colours, which are the one thing in this shell that
+ * The dark block also carries the `.sev-*` severity colors, which are the one thing in this shell that
  * is not the brand's to set — see `severity.ts`. They live here because this is where every other
- * dark-mode swap lives, and they are generated from the same table the inline light colours come from.
+ * dark-mode swap lives, and they are generated from the same table the inline light colors come from.
  *
  * Restyled from the Leed/Pithy email shell. Variables are Handlebars: `{{theme.*}}`, `{{layoutWidth}}`,
  * `{{openPixelUrl}}`, `{{unsubscribeUrl}}`.

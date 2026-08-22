@@ -497,7 +497,7 @@ describe("checkDevSecretsLocation", () => {
  *
  * `checkDevSecrets` took the lossy target list, so an unresolvable project answered `[]` exactly as a
  * project with no secrets does, and the whole `Dev secrets:` block disappeared. That is the least useful
- * behaviour available to a diagnostic: the report goes quiet in the one state it was written for (#166 was
+ * behavior available to a diagnostic: the report goes quiet in the one state it was written for (#166 was
  * the same shape). The two states are now different values, and neither is an exception.
  */
 describe("a Worker nobody could ask (#208)", () => {
@@ -608,7 +608,7 @@ describe("a green report means the next seed works (#325)", () => {
       if (!devSecretsHealthy(result)) return;
 
       // The same file, through the seeder. `loadDevSecrets` is what doctor read it with, so a divergence
-      // here is a divergence in judgement and not in parsing.
+      // here is a divergence in judgment and not in parsing.
       await expect(
         seedDevSecrets({ file: loadDevSecrets(source, { path }), registry, store: store(), path }),
       ).resolves.toBeDefined();

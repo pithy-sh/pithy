@@ -35,7 +35,7 @@ export const DEV_SECRETS_FILE = "secrets.jsonc";
 export const ENVELOPE_SHAPE = '{ "currentVersion": "1", "versions": { "1": <value> } }';
 
 /**
- * The committed example — the one artefact about secrets that stays in an adopter's repository, and
+ * The committed example — the one artifact about secrets that stays in an adopter's repository, and
  * documentation only. It is never copied to a working file: `pithy add` writes the real one, outside
  * the checkout, and there is nothing in the project for it to sit beside.
  */

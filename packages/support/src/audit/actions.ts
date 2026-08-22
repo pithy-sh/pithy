@@ -37,7 +37,7 @@ export const SupportAuditActions = {
    */
   replySent: "support/reply_sent",
   /**
-   * A classification was re-run by hand. Audited because it rewrites a judgement about a customer's
+   * A classification was re-run by hand. Audited because it rewrites a judgment about a customer's
    * message, and because a run of them is what somebody fishing for a different answer looks like.
    */
   threadReclassified: "support/thread_reclassified",

@@ -114,7 +114,7 @@ function browserStore(name: "localStorage" | "sessionStorage"): PaddleCacheStore
  * it the one misconfiguration that got no console line, because "did anybody ask for a cache?" had
  * nothing left to see. Handing the name back is what makes an unresolvable store an answer.
  *
- * An injected `null` is honoured as an answer too: `PricesCacheStores` says `PaddleCacheStore | null`,
+ * An injected `null` is honored as an answer too: `PricesCacheStores` says `PaddleCacheStore | null`,
  * so null means *this environment has none* — a suite saying so, or an adopter's SSR-safe wrapper — and
  * quietly resolving the browser's real store instead would exercise the opposite path from the one the
  * caller named.

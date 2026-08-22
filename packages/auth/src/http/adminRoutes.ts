@@ -299,7 +299,7 @@ export function registerAuthAdminRoutes(wiring: AuthWiring): (app: Hono<PithyHon
           resourceId: sessionId,
           ...context(c),
           // The owning user reaches the trail, where it belongs, and not the response — the caller holds
-          // a revoke scope, which is not a licence to learn whose session it was.
+          // a revoke scope, which is not a license to learn whose session it was.
           metadata: { revoked, userId: session?.userId ?? null },
         });
 

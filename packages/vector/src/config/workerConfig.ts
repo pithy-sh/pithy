@@ -31,7 +31,7 @@ export const VectorWorkerIndex = z
     binding: z.string().min(1).describe("The wrangler binding this index arrives on in the worker's env."),
     model: z.string().min(1).describe("The Workers AI embedding model pinned to this index."),
     dimensions: z.number().int().positive().describe("How many components each vector carries."),
-    metric: VectorMetric.describe("How this index scores nearest neighbours."),
+    metric: VectorMetric.describe("How this index scores nearest neighbors."),
     namespace: z.string().optional().describe("The namespace writes and queries use when a caller names none."),
     filterable: z
       .array(MetadataIndexDescriptor)

@@ -19,7 +19,7 @@ import { VectorDimensionMismatchError } from "../error/errors";
  *
  * {@link embedForIndex} is the call production code makes. It pins the model to the index's declared one for
  * writes *and* queries, which removes the failure people actually hit: an index built with one model, queried
- * with another. Nothing errors. The neighbours just come back from a space the query vector does not live in.
+ * with another. Nothing errors. The neighbors just come back from a space the query vector does not live in.
  */
 
 /** The subset of the Workers AI binding this module uses. */

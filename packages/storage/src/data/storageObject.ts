@@ -15,7 +15,7 @@ import { z } from "zod";
  *
  * `id` is a UUID, not an autoincrement integer, because it is externally exposed in every route path
  * (CLAUDE.md §ID strategy) — a sequential id would let anyone enumerate how many files exist and
- * probe for neighbours.
+ * probe for neighbors.
  *
  * `size` is declared by the client at init and *confirmed* against R2 at completion. It is nullable
  * because a caller may not know it up front; a null size reserves no quota, which is why the handler

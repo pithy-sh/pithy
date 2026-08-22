@@ -127,7 +127,7 @@ function hostVarArgs(workerName: string, hostPorts: Readonly<Record<string, numb
  */
 function ciVarArgs(env: NodeJS.ProcessEnv): string[] {
   if (!isContinuousIntegration(env)) return [];
-  // The value travels verbatim rather than normalised to `true`: "any non-blank value" is the rule at
+  // The value travels verbatim rather than normalized to `true`: "any non-blank value" is the rule at
   // both ends (#218), and rewriting it here would be this file inventing a second one.
   return ["--var", `${CI_ENV}:${env[CI_ENV] ?? ""}`];
 }

@@ -69,7 +69,7 @@ export interface WorkflowFault {
   reason: string;
 }
 
-/** The `code` reported for a throw no layer recognises. */
+/** The `code` reported for a throw no layer recognizes. */
 const UNCLASSIFIED = "unclassified";
 
 /**
@@ -169,7 +169,7 @@ export interface WorkflowStepLike {
  * classification itself testable anywhere.
  *
  * **One argument, deliberately.** `NonRetryableError`'s constructor also takes a `name`, and the engine
- * recognises the error *by* that name: measured against a real Workflow in `wrangler dev`, passing any
+ * recognizes the error *by* that name: measured against a real Workflow in `wrangler dev`, passing any
  * name but the default turned an instance that failed in 0.7s back into one that retried for 32s and
  * then failed. The signature is narrowed so nobody can reintroduce that by being helpful.
  */

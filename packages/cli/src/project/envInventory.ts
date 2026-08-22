@@ -319,7 +319,7 @@ export async function buildEnvInventory(options: EnvInventoryOptions): Promise<E
 
   // A pinned `cloudflare.accountId` that disagrees with what the credentials resolve to throws here,
   // before a single line is printed. `pithy env` is otherwise contractually exit-0, and this is the one
-  // exception worth making: an inventory labelled with an account the project does not claim is not a
+  // exception worth making: an inventory labeled with an account the project does not claim is not a
   // degraded report, it is a wrong one.
   const accountId = cloudflareEnv({ ...options.paths, account: options.account }).CLOUDFLARE_ACCOUNT_ID ?? null;
 

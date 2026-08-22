@@ -78,7 +78,7 @@ describe("sweepPaddleEvents", () => {
     // the live sandbox API confirmed it on 2026-08-13 — filtering on two of the six types in that
     // account's stream returned four events of exactly those two types. The earlier build sent
     // `event_type=a&event_type=b&…`, a repeated-key form documented nowhere; a filter Paddle does not
-    // recognise is a filter it may not apply, and the whole account stream is what comes back.
+    // recognize is a filter it may not apply, and the whole account stream is what comes back.
     const transport = stub({ "/events": [] });
     await sweepPaddleEvents({ ...OPTIONS, transport });
 
@@ -96,7 +96,7 @@ describe("sweepPaddleEvents", () => {
   });
 
   test("a type the filter excluded but Paddle returned anyway is walked past, not read and not recorded", async () => {
-    // The control this package owns. A query parameter is a request honoured by someone else's service;
+    // The control this package owns. A query parameter is a request honored by someone else's service;
     // an allowlist on what is *recorded* is a control we can prove. `client_token.created` carries a token
     // Paddle does not redact, so "the filter will have caught it" is not a safety argument.
     const TOKEN = "test_c0ffee0000000000000planted";

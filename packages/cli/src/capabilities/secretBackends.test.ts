@@ -155,7 +155,7 @@ function keyOf(
   // is declared in `secrets/capability.ts` and filed under `[MASTER_KEY_BINDING]` forty lines later.
   // Following the variable is the only way to learn the name it is actually stored under.
   const bound = /\bconst\s+([A-Za-z0-9_$]+)\s*(?::[^=]*)?=\s*$/.exec(header);
-  if (!bound) return refuse("is not preceded by a key or a variable binding this extractor recognises");
+  if (!bound) return refuse("is not preceded by a key or a variable binding this extractor recognizes");
   const variable = bound[1] as string;
   for (const text of all) {
     const used = new RegExp(
@@ -279,7 +279,7 @@ describe("a secret's declared backend is where the value actually goes", () => {
  * `SECRETS_ENCRYPTION_KEYS` binding for exactly that reason. It appears in no `defineSecretRegistry`,
  * which is why the scan above cannot see it and it needs its own assertions.
  *
- * Worth pinning explicitly because five neighbouring credential secrets were just corrected from
+ * Worth pinning explicitly because five neighboring credential secrets were just corrected from
  * `cf-secrets-store` to `d1`: the master key must never be swept along with them.
  */
 describe("the at-rest encryption key stays in the Cloudflare Secrets Store", () => {

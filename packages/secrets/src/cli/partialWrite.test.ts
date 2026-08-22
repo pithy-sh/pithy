@@ -22,7 +22,7 @@ describe("partialWriteReport", () => {
     expect(channel.read(thrown)).toEqual(["staging"]);
   });
 
-  test("the report does not serialise with the error", () => {
+  test("the report does not serialize with the error", () => {
     const channel = partialWriteReport<string[]>("pithy.test.hidden", isStrings);
     const error = channel.carry(new Error("boom"), ["staging", "prod"]);
 

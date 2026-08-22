@@ -362,7 +362,7 @@ describe("runAdd", () => {
     // copied it into each Worker's `.dev.vars`; the generator reads this file directly instead.
     //
     // **The generated `.dev.vars` is not asserted here, and that is the fixture's limit rather than the
-    // behaviour's.** Materialising a `cf-secrets-store` secret needs the Worker's *composition* — the
+    // behavior's.** Materialising a `cf-secrets-store` secret needs the Worker's *composition* — the
     // registry is what says the master key is one — and this fixture is scaffolded in the OS tmpdir,
     // where `pithy.config.ts`'s `@pithy-sh/*` imports resolve against nothing. `targets.test.ts` and
     // `generate.test.ts` scaffold inside the package for exactly that reason, and cover the rest.

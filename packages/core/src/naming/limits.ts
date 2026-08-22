@@ -12,14 +12,14 @@ import { MAX_ENVIRONMENT_NAME } from "./environment";
  * and truncated D1 databases, Secrets Store entries, and API token labels against limits that do
  * not exist — `secrets-encryption-keys` came out of it as `secrets-encryp-91c2e9`, hashed for
  * nothing. A truncated name is not merely ugly: it is the name teardown must recompute exactly, and
- * the name a human has to recognise in a dashboard listing that cannot be filtered.
+ * the name a human has to recognize in a dashboard listing that cannot be filtered.
  *
  * Every row below carries its source. `cloudflare` means the number is documented (limits page,
  * OpenAPI schema, or wrangler's own constant, verified 2026-07-31); `pithy` means Cloudflare
  * publishes no cap and this is our ceiling, chosen and stated as ours.
  */
 
-/** Where a limit comes from — Cloudflare's documentation, or Pithy's own judgement. */
+/** Where a limit comes from — Cloudflare's documentation, or Pithy's own judgment. */
 export type LimitSource = "cloudflare" | "pithy";
 
 /**
