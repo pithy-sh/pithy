@@ -106,11 +106,16 @@
     // not its verdict, and that verdict was green throughout the defect — and it reaches only one hop,
     // so `packages/core` would still be missing. Naming the subject says which files and why.
     //
-    // This is the third instance of this class found this session. `#432` holds the pre-existing half —
-    // the repo-wide gates under `packages/cli/src/ci/` that are scoped to their package — and asks for
-    // a shape where the miscoping is impossible rather than corrected. This is the corrected kind, with
-    // a test standing over it. When #432 lands a general answer, these three entries should collapse
-    // into it.
+    // This is the third instance of this class found this session. #432 has landed the general answer,
+    // and it is a general **guard** rather than a general declaration: `cli/src/ci/turboInputs.test.ts`
+    // stands over every package the cross-package-read register names, this one included, and fails on
+    // a key that has dropped a registered read or that holds an artifact a run of this repository
+    // writes. **These three entries did not collapse into it, and they cannot.** JSON has no way to
+    // name a list once, and turbo's only shared-inputs mechanism is `globalDependencies`, which keys
+    // every task in every package — the end of caching, spent to save two copies of six lines. So the
+    // copies stay, and what changed is that they are checked copies. The follow-up worth having is
+    // generating this file from the register instead of checking it against one; nobody should write
+    // that until a third package needs the same list.
     //
     // **The three lists are identical, and that is the point rather than a copy-paste.** `test` and
     // `test:node` are one command here — `vitest run`; the package has no workers project — and the
@@ -200,9 +205,11 @@
     // edit would replay a green guard over a stale list. One list, checked to be one list.
     //
     // This is the fourth instance of this class found this session, and the second introduced by a fix.
-    // `#432` holds the pre-existing half and asks for a shape where the miscoping is impossible rather
-    // than corrected. This is the corrected kind, with a test standing over it. When #432 lands a general
-    // answer, every entry of this shape should collapse into it.
+    // #432 has landed the general answer, and it is a general **guard** rather than a general
+    // declaration — `cli/src/ci/turboInputs.test.ts`, which reads the same register CI plans jobs with
+    // and holds every one of these keys to it. **This entry did not collapse into it, and it cannot**;
+    // the `#414` block above says why, and the reason is JSON's rather than anybody's. The three copies
+    // stay, checked.
     "@pithy-sh/browser-scopes#typecheck": {
       "inputs": [
         "$TURBO_DEFAULT$",
@@ -222,7 +229,13 @@
         // failed this package's own guard the moment it went missing from the key. The two dot-files
         // directly in a package are `.dev.vars` (ignored) and `.gitignore` (tracked); a shape that
         // cannot tell them apart is not a shortcut worth taking.
+        //
+        // `.dev.vars.*` beside it, because a `--env` run reads `.dev.vars.dev` and an exact-name line
+        // never reached it. Unqualified here, where the whole-tree keys carve out `[!e]`: the one tracked
+        // `.dev.vars.*` in this repository is `templates/starter/.dev.vars.example`, and no glob rooted at
+        // `packages/*` can see it — #432, Jim, 2026-08-21.
         "!$TURBO_ROOT$/packages/*/.dev.vars",
+        "!$TURBO_ROOT$/packages/*/.dev.vars.*",
         // `tsc -b` leaves this beside a package's tsconfig, so it appears on any machine that has run a
         // solution build and on no clean checkout. Left in the key, the gate passes in CI and fails
         // locally — the worst shape a gate can have, because the failure looks like the developer's.
@@ -240,19 +253,9 @@
         "!$TURBO_ROOT$/packages/*/dist/**",
         "!$TURBO_ROOT$/packages/*/coverage/**",
         "!$TURBO_ROOT$/packages/*/.*/**/*",
-        // A dot-*file* sitting directly in a package, which the line above does not reach: it wants a
-        // directory with contents. `packages/cloudflare/.dev.vars` appears the moment anybody runs
-        // `pithy dev`, and it is git-ignored — Jim, 2026-08-21.
-        //
-        // Named, not globbed as `packages/*/.*`, and the difference was measured: that glob also drops
-        // `packages/cli/.gitignore`, which is tracked, is a real cross-package read in the register, and
-        // failed this package's own guard the moment it went missing from the key. The two dot-files
-        // directly in a package are `.dev.vars` (ignored) and `.gitignore` (tracked); a shape that
-        // cannot tell them apart is not a shortcut worth taking.
+        // `.dev.vars` and `*.tsbuildinfo`, named for the reasons the `#typecheck` block above gives.
         "!$TURBO_ROOT$/packages/*/.dev.vars",
-        // `tsc -b` leaves this beside a package's tsconfig, so it appears on any machine that has run a
-        // solution build and on no clean checkout. Left in the key, the gate passes in CI and fails
-        // locally — the worst shape a gate can have, because the failure looks like the developer's.
+        "!$TURBO_ROOT$/packages/*/.dev.vars.*",
         "!$TURBO_ROOT$/packages/*/*.tsbuildinfo",
         "!$TURBO_ROOT$/packages/cli/templates/**"
       ]
@@ -267,19 +270,9 @@
         "!$TURBO_ROOT$/packages/*/dist/**",
         "!$TURBO_ROOT$/packages/*/coverage/**",
         "!$TURBO_ROOT$/packages/*/.*/**/*",
-        // A dot-*file* sitting directly in a package, which the line above does not reach: it wants a
-        // directory with contents. `packages/cloudflare/.dev.vars` appears the moment anybody runs
-        // `pithy dev`, and it is git-ignored — Jim, 2026-08-21.
-        //
-        // Named, not globbed as `packages/*/.*`, and the difference was measured: that glob also drops
-        // `packages/cli/.gitignore`, which is tracked, is a real cross-package read in the register, and
-        // failed this package's own guard the moment it went missing from the key. The two dot-files
-        // directly in a package are `.dev.vars` (ignored) and `.gitignore` (tracked); a shape that
-        // cannot tell them apart is not a shortcut worth taking.
+        // `.dev.vars` and `*.tsbuildinfo`, named for the reasons the `#typecheck` block above gives.
         "!$TURBO_ROOT$/packages/*/.dev.vars",
-        // `tsc -b` leaves this beside a package's tsconfig, so it appears on any machine that has run a
-        // solution build and on no clean checkout. Left in the key, the gate passes in CI and fails
-        // locally — the worst shape a gate can have, because the failure looks like the developer's.
+        "!$TURBO_ROOT$/packages/*/.dev.vars.*",
         "!$TURBO_ROOT$/packages/*/*.tsbuildinfo",
         "!$TURBO_ROOT$/packages/cli/templates/**"
       ]
@@ -297,6 +290,276 @@
     // too many run at once. The wall clock is set by total CPU work, not by scheduling: cold serial
     // cost is ~191s (node 64s + workers 127s), and 90s is roughly what 8 cores can do with it.
     // The lever that actually works is doing less work — turbo's cache locally, `--affected` in CI.
+    // **A gate whose subject is the repository is keyed on the repository — #432, Jim, 2026-08-21.**
+    //
+    // A task's default inputs are the files of the package that declares it. `packages/cli` holds the
+    // gates that read past that line, and it holds most of them: `ci/sourceFiles.test.ts` reads every
+    // tracked file in the tree, `ci/fileModes.test.ts` reads every tracked file's mode,
+    // `ci/compatibilityDates.test.ts` and `ci/testIsolation.test.ts` walk the whole root, and
+    // `ci/auditActions.test.ts`, `ci/codecSafety.test.ts`, `ci/sweepPopulation.test.ts`,
+    // `ci/workflowModuleFormat.test.ts` and `ci/workflowDeterminism.test.ts` walk `packages/`. Every one
+    // of them was scoped to one package while its subject was the tree.
+    //
+    // Reproduced with the branch's cache warm, by planting one `U+200F` in
+    // `packages/payments/src/client/wholeUnits.ts` — the exact character the source gate refuses.
+    // `turbo run test --filter=@pithy-sh/cli` printed `Cached: 1 cached, 1 total` and
+    // `Time: 21ms >>> FULL TURBO`, replaying `3613 passed` from before the character existed. Run
+    // directly, the same tree fails and names it: `U+200F at byte 124`. This is #427's own history —
+    // that branch shipped five of them past a green `bun run test`. **The stale answer is "pass."**
+    //
+    // **The planner was already right; only the hash was wrong.** `.github/scripts/crossPackageReads.ts`
+    // maps a changed path back to the package whose suite asserts about it, and CI adds that package by
+    // name — so `@pithy-sh/cli` has been planned on every `packages/**` change all along, and turbo then
+    // answered it out of a cache computed for a different tree. The register is the derivation, and
+    // `packages/cli/src/ci/turboInputs.test.ts` is what makes the key derive from it rather than from
+    // somebody's memory: it reads the register, asks turbo `--dry=json` what it actually hashes, and
+    // fails on any registered read the key has dropped. **A hand-maintained list of what a gate reads is
+    // the same defect one level up**; the list below is checked against git and the register on every run.
+    //
+    // **The whole tree, and the price is measured rather than guessed.** One character changed in
+    // `packages/payments` now costs `bun run test` **13m26s**, re-executing `@pithy-sh/cli`,
+    // `@pithy-sh/ui-react`, `@pithy-sh/browser-scopes` and `@pithy-sh/payments` — three heavy suites
+    // that used to sit out most changes, and the cli one alone is 231 files and ~196s cold. That is the
+    // trade, taken deliberately: the alternative is not a cheaper gate but a green tick over unverified
+    // work, and #427 is what that costs when it is taken. The cache still does its job on an unchanged
+    // tree, which is the only run it was ever right about.
+    //
+    // **The follow-up that buys the time back is moving the repo-wide gates out of `@pithy-sh/cli`.**
+    // Eleven files under `src/ci/` read the tree; the other 220 in that package do not. Split into a
+    // root task of their own, the whole-tree key would cover eleven files instead of dragging a
+    // 231-file suite behind it, and `@pithy-sh/cli:test` would go back to its own inputs. Nothing here
+    // depends on that happening, and it is a bigger change than #432 asked for.
+    //
+    // **This is also where the guard lives, and it has to be.** A task's hash covers its own definition
+    // and no other, so a guard in a narrowly-keyed package would replay while somebody narrowed
+    // `turbo.jsonc` underneath it. `turbo.jsonc` is inside this key, so editing the declaration re-runs
+    // the assertion about the declaration. That guard is general — it stands over every package in the
+    // register, `@pithy-sh/vite-adopter` and `@pithy-sh/browser-scopes` included, and it is what #432
+    // asked for in place of one more corrected entry. The two fixtures keep their own
+    // `turboInputs.test.ts` as they are: each also derives from `tsc --listFilesOnly`, which is the half
+    // a register reading test sources cannot see, and the register half being asserted twice is cheap.
+    //
+    // **What is general is the guard, not the declaration, and the difference is JSON's.** The four
+    // whole-tree keys below are four verbatim copies of one list, and the two fixture blocks above are
+    // three each. There is no way to write it once: JSON cannot name a value, and turbo's one
+    // shared-inputs mechanism — `globalDependencies` — keys every task in every package, which ends
+    // caching outright to save the duplication. So the copies stay and the guard holds them equal. Any
+    // one of them narrowed, and the test that reads the register is one of the tests that re-runs.
+    //
+    // `test` and `test:node` are one command here — `vitest run`; the package has no workers project —
+    // and the guard runs in it. The two lists are identical, and the guard asserts that too: a `test`
+    // keyed more narrowly than the `test:node` CI runs would replay a green guard over a stale key.
+    "@pithy-sh/cli#test": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/**",
+        // Turbo does not apply `.gitignore` to an explicit glob, so everything git ignores is named
+        // here or it is hashed. `.git` is spelled twice because in the main checkout it is a directory
+        // that changes on every commit, fetch and index write, and in a worktree it is a file — a key
+        // that can never hit twice, either way.
+        //
+        // **What a line matches today is not what it is for.** Measured on this tree: dropping
+        // `**/node_modules/**` adds 29,032 files, `.husky/_/**` adds 19, and `**/dist/**` adds one.
+        // Dropping `**/.turbo/**` and `**/*.log` together adds 49, every one of them a `turbo-*.log`
+        // **the hashed task writes itself**. Every other line matches nothing right now, because the
+        // artifact it names appears the moment somebody runs the thing that writes it — and
+        // `**/.turbo/**` reads dead by that measure and is not: with `**/*.log` left in place, one
+        // non-log file dropped in `packages/cli/.turbo` takes the key from 2,606 files to 2,607. Turbo
+        // does not exclude its own cache directory.
+        //
+        // Checked rather than remembered, and not against the working tree either. `turboInputs.test.ts`
+        // reads every ignore file git consults — the root's, `packages/cli`'s, and the one husky
+        // generates for itself — turns each rule into a path only that rule decides, plants it, and fails
+        // on any this key still holds. Nothing here is exercised by a hand-picked path any more: a
+        // measured negation is what `.husky/_/**` used to be, and a measurement is a fact about one
+        // machine on one day. It also asks git for every tracked file and fails on any the key has
+        // dropped. So a negation that reaches too far is as red as one that reaches too little, on a
+        // clean checkout and on a crashed one alike.
+        "!$TURBO_ROOT$/.git",
+        "!$TURBO_ROOT$/.git/**",
+        "!$TURBO_ROOT$/.husky/_/**",
+        "!$TURBO_ROOT$/.local/**",
+        // `.worktrees/` states no slash of its own, so git matches it at any depth and this glob has to
+        // as well. Root-anchored, it left `packages/core/.worktrees/` hashed — #432, Jim, 2026-08-21.
+        "!$TURBO_ROOT$/**/.worktrees/**",
+        // The vendored starter, ignored by `packages/cli/.gitignore` — the ignore file the guard could
+        // not see until it stopped reading the root's alone. `prepack` copies `templates/starter` here
+        // and `postpack` removes it; a pack that fails in between leaves the copy for good, git-ignored
+        // and silent. Left in the key, that developer's hash can never agree with CI's again.
+        "!$TURBO_ROOT$/packages/cli/templates/**",
+        "!$TURBO_ROOT$/**/node_modules/**",
+        "!$TURBO_ROOT$/**/dist/**",
+        "!$TURBO_ROOT$/**/coverage/**",
+        "!$TURBO_ROOT$/**/.turbo/**",
+        "!$TURBO_ROOT$/**/.wrangler/**",
+        // The CLI's own test scaffolds. Removed after each run, so they are only ever in a tree where
+        // something crashed — and a key that changes after a crash is a cache nobody can reason about.
+        "!$TURBO_ROOT$/**/.smoke-*/**",
+        "!$TURBO_ROOT$/**/.e2e-*/**",
+        "!$TURBO_ROOT$/**/.boot-*/**",
+        "!$TURBO_ROOT$/**/.migrate-*/**",
+        "!$TURBO_ROOT$/**/.deploy-it-*/**",
+        // `.dev.vars.*` is the rule, less the one tracked file it would take with it.
+        // `templates/starter/.dev.vars.example` is committed, and **turbo cannot put back what a negation
+        // removed** — measured: re-including that path after the negation leaves the key at 2,609 files,
+        // one short. So the class is spelled "anything not starting with `e`", which is the rule bar the
+        // example.
+        //
+        // It was the three environments, and three environments are a probe rather than a rule.
+        // `.dev.vars.local` is wrangler's own filename, git ignores it, and all four whole-tree keys
+        // hashed it — #432, Jim, 2026-08-21.
+        "!$TURBO_ROOT$/**/.dev.vars",
+        "!$TURBO_ROOT$/**/.dev.vars.[!e]*",
+        "!$TURBO_ROOT$/**/.dev-ports.json",
+        "!$TURBO_ROOT$/**/.dev.config.json",
+        "!$TURBO_ROOT$/**/.dev-state.json",
+        "!$TURBO_ROOT$/**/.pithy-feature.json",
+        // `.env.*` is broad here and carved above, and the asymmetry is the tree's: nothing tracked
+        // matches this one. The day a `.env.example` lands, the guard names it as a tracked file the key
+        // dropped, and this line gets the `[!e]` treatment its sibling has.
+        "!$TURBO_ROOT$/**/.env",
+        "!$TURBO_ROOT$/**/.env.*",
+        "!$TURBO_ROOT$/**/.DS_Store",
+        "!$TURBO_ROOT$/**/*.log",
+        "!$TURBO_ROOT$/**/*.tmp",
+        "!$TURBO_ROOT$/**/*.tsbuildinfo"
+      ]
+    },
+    // The same key, for the task CI runs. See the block above.
+    "@pithy-sh/cli#test:node": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/**",
+        // The list below is the one above, and the comments with it are there. Turbo hashes a task
+        // against its own definition only, so the four whole-tree keys are four copies by necessity —
+        // see the `#432` block for why that is not collapsible and what the follow-up is.
+        "!$TURBO_ROOT$/.git",
+        "!$TURBO_ROOT$/.git/**",
+        "!$TURBO_ROOT$/.husky/_/**",
+        "!$TURBO_ROOT$/.local/**",
+        "!$TURBO_ROOT$/**/.worktrees/**",
+        "!$TURBO_ROOT$/packages/cli/templates/**",
+        "!$TURBO_ROOT$/**/node_modules/**",
+        "!$TURBO_ROOT$/**/dist/**",
+        "!$TURBO_ROOT$/**/coverage/**",
+        "!$TURBO_ROOT$/**/.turbo/**",
+        "!$TURBO_ROOT$/**/.wrangler/**",
+        "!$TURBO_ROOT$/**/.smoke-*/**",
+        "!$TURBO_ROOT$/**/.e2e-*/**",
+        "!$TURBO_ROOT$/**/.boot-*/**",
+        "!$TURBO_ROOT$/**/.migrate-*/**",
+        "!$TURBO_ROOT$/**/.deploy-it-*/**",
+        "!$TURBO_ROOT$/**/.dev.vars",
+        "!$TURBO_ROOT$/**/.dev.vars.[!e]*",
+        "!$TURBO_ROOT$/**/.dev-ports.json",
+        "!$TURBO_ROOT$/**/.dev.config.json",
+        "!$TURBO_ROOT$/**/.dev-state.json",
+        "!$TURBO_ROOT$/**/.pithy-feature.json",
+        "!$TURBO_ROOT$/**/.env",
+        "!$TURBO_ROOT$/**/.env.*",
+        "!$TURBO_ROOT$/**/.DS_Store",
+        "!$TURBO_ROOT$/**/*.log",
+        "!$TURBO_ROOT$/**/*.tmp",
+        "!$TURBO_ROOT$/**/*.tsbuildinfo"
+      ]
+    },
+    // `@pithy-sh/ui-react`'s `seededGates.test.ts` carries a ledger of every file the library seeds, and
+    // for four of them the ledger names a gate that lives somewhere else — `packages/cli/src/ui/react.test.ts`,
+    // `packages/cli/src/project/scaffoldGates.test.ts`, `packages/vite/src/clientEnvDeclaration.test.ts` —
+    // and asserts the file is there. A ledger claiming a subject is held by a gate that was deleted is a
+    // decision nobody is keeping any more, and it replayed green for as long as this package existed.
+    //
+    // The whole tree rather than those four paths: the register resolves this read to the repository
+    // root, and the register is the derivation the guard checks against. Keying it more narrowly than the
+    // derivation means keeping a second list, which is the defect. Over-approximating costs cache hits;
+    // under-approximating costs the gate, silently.
+    "@pithy-sh/ui-react#test": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/**",
+        // The list below is the one above, and the comments with it are there. Turbo hashes a task
+        // against its own definition only, so the four whole-tree keys are four copies by necessity —
+        // see the `#432` block for why that is not collapsible and what the follow-up is.
+        "!$TURBO_ROOT$/.git",
+        "!$TURBO_ROOT$/.git/**",
+        "!$TURBO_ROOT$/.husky/_/**",
+        "!$TURBO_ROOT$/.local/**",
+        "!$TURBO_ROOT$/**/.worktrees/**",
+        "!$TURBO_ROOT$/packages/cli/templates/**",
+        "!$TURBO_ROOT$/**/node_modules/**",
+        "!$TURBO_ROOT$/**/dist/**",
+        "!$TURBO_ROOT$/**/coverage/**",
+        "!$TURBO_ROOT$/**/.turbo/**",
+        "!$TURBO_ROOT$/**/.wrangler/**",
+        "!$TURBO_ROOT$/**/.smoke-*/**",
+        "!$TURBO_ROOT$/**/.e2e-*/**",
+        "!$TURBO_ROOT$/**/.boot-*/**",
+        "!$TURBO_ROOT$/**/.migrate-*/**",
+        "!$TURBO_ROOT$/**/.deploy-it-*/**",
+        "!$TURBO_ROOT$/**/.dev.vars",
+        "!$TURBO_ROOT$/**/.dev.vars.[!e]*",
+        "!$TURBO_ROOT$/**/.dev-ports.json",
+        "!$TURBO_ROOT$/**/.dev.config.json",
+        "!$TURBO_ROOT$/**/.dev-state.json",
+        "!$TURBO_ROOT$/**/.pithy-feature.json",
+        "!$TURBO_ROOT$/**/.env",
+        "!$TURBO_ROOT$/**/.env.*",
+        "!$TURBO_ROOT$/**/.DS_Store",
+        "!$TURBO_ROOT$/**/*.log",
+        "!$TURBO_ROOT$/**/*.tmp",
+        "!$TURBO_ROOT$/**/*.tsbuildinfo"
+      ]
+    },
+    // The same key, for the task CI runs. See the block above.
+    "@pithy-sh/ui-react#test:node": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/**",
+        // The list below is the one above, and the comments with it are there. Turbo hashes a task
+        // against its own definition only, so the four whole-tree keys are four copies by necessity —
+        // see the `#432` block for why that is not collapsible and what the follow-up is.
+        "!$TURBO_ROOT$/.git",
+        "!$TURBO_ROOT$/.git/**",
+        "!$TURBO_ROOT$/.husky/_/**",
+        "!$TURBO_ROOT$/.local/**",
+        "!$TURBO_ROOT$/**/.worktrees/**",
+        "!$TURBO_ROOT$/packages/cli/templates/**",
+        "!$TURBO_ROOT$/**/node_modules/**",
+        "!$TURBO_ROOT$/**/dist/**",
+        "!$TURBO_ROOT$/**/coverage/**",
+        "!$TURBO_ROOT$/**/.turbo/**",
+        "!$TURBO_ROOT$/**/.wrangler/**",
+        "!$TURBO_ROOT$/**/.smoke-*/**",
+        "!$TURBO_ROOT$/**/.e2e-*/**",
+        "!$TURBO_ROOT$/**/.boot-*/**",
+        "!$TURBO_ROOT$/**/.migrate-*/**",
+        "!$TURBO_ROOT$/**/.deploy-it-*/**",
+        "!$TURBO_ROOT$/**/.dev.vars",
+        "!$TURBO_ROOT$/**/.dev.vars.[!e]*",
+        "!$TURBO_ROOT$/**/.dev-ports.json",
+        "!$TURBO_ROOT$/**/.dev.config.json",
+        "!$TURBO_ROOT$/**/.dev-state.json",
+        "!$TURBO_ROOT$/**/.pithy-feature.json",
+        "!$TURBO_ROOT$/**/.env",
+        "!$TURBO_ROOT$/**/.env.*",
+        "!$TURBO_ROOT$/**/.DS_Store",
+        "!$TURBO_ROOT$/**/*.log",
+        "!$TURBO_ROOT$/**/*.tmp",
+        "!$TURBO_ROOT$/**/*.tsbuildinfo"
+      ]
+    },
+    // `@pithy-sh/cloudflare`'s `test-utils/fixtures.test.ts` holds every live fixture to the section of
+    // `docs/FIXTURES.md` its skip message cites. A skip line naming a document nobody wrote is worse than
+    // no line at all (#106) — and that is only true if editing the document re-runs the gate, which is
+    // the same seam as the block above, one document wide. The register records the read; the guard in
+    // `packages/cli/src/ci/turboInputs.test.ts` fails if this line goes missing.
+    "@pithy-sh/cloudflare#test": {
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/turbo.jsonc", "$TURBO_ROOT$/docs/FIXTURES.md"]
+    },
+    // The same key, for the task CI runs. See the block above.
+    "@pithy-sh/cloudflare#test:node": {
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/turbo.jsonc", "$TURBO_ROOT$/docs/FIXTURES.md"]
+    },
     "test": {},
     "test:node": {},
     "test:workers": {},
