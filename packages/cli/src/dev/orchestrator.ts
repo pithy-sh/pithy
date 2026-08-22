@@ -33,6 +33,7 @@ import { allCapabilities, loadProject, loadWorkerConfig, requireProjectName } fr
 import { detectPackageManager, execArgs } from "../project/packageManager";
 import { defaultWorkerDev } from "../project/workerManifest";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "../project/workers";
+import { formatJsonLine } from "../terminal/output";
 import { dim, workerColor } from "../terminal/style";
 import { hasCloudflareLogin as defaultHasCloudflareLogin, deliveryFailureNote, deliveryPreflight } from "./delivery";
 import { type DevLoginTarget, devLoginKeyAction, devLoginLines, readDevLogin as readDevLoginDefault } from "./devLogin";
@@ -48,7 +49,7 @@ import {
   materializeHostConfigs as materializeHostConfigsDefault,
 } from "./hostWorkers";
 import { type KeyReader, readKeys as readKeysDefault } from "./keys";
-import { type DataStream, teeStream } from "./logging";
+import { type DataStream, stripAnsi, teeStream } from "./logging";
 import { openUrl as openUrlDefault } from "./openUrl";
 import {
   isAlive as isAliveDefault,
@@ -58,6 +59,7 @@ import {
   tryBind as tryBindDefault,
   verifyPinnedPort,
 } from "./ports";
+import { type ReadyWatch, type Schedule, stillWaitingLines, watchReady } from "./readyWatch";
 import { type DevState, devStatePath, readDevState, removeDevState, writeDevState } from "./state";
 
 /** A spawned child, minimally what the orchestrator drives — satisfied by a real `ChildProcess` or a fake. */
@@ -146,9 +148,13 @@ export interface StartDevOptions {
   kill?: (pid: number, signal: NodeJS.Signals) => void;
   isAlive?: (pid: number) => boolean;
   sleep?: Sleep;
+  /** Seam: the ready-deadline timer. Real `setTimeout` in production, a hand-driven clock in tests. */
+  schedule?: Schedule;
   launchWrangler?: WranglerLauncher;
   hasSetsid?: boolean;
   stdout?: (text: string) => void;
+  /** Seam: where the prose goes when stdout is reserved for JSON (`--json`). */
+  stderr?: (text: string) => void;
   /** Seam: the seeded dev login the ready banner offers, if `pithy seed` wrote one. */
   readDevLogin?: (projectDir: string) => Promise<DevLogin | undefined>;
   /** Seam: which started workers carry the dev-login route (they compose auth). */
@@ -371,6 +377,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   const sleep = options.sleep ?? realSleep;
   const hasSetsid = options.hasSetsid ?? process.platform !== "win32";
   const stdout = options.stdout ?? ((text: string) => void process.stdout.write(text));
+  const stderr = options.stderr ?? ((text: string) => void process.stderr.write(text));
   const readDevLogin = options.readDevLogin ?? readDevLoginDefault;
   const resolveDevLoginTargets =
     options.devLoginTargets ??
@@ -383,7 +390,23 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   const writeState = options.writeState ?? writeDevState;
   const removeState = options.removeState ?? removeDevState;
   const ownPid = options.ownPid ?? process.pid;
-  const emitLine = (text: string) => stdout(`${text}\n`);
+  /**
+   * Say one line to whoever is reading this session.
+   *
+   * **Under `--json`, stdout is reserved for JSON and the prose goes to stderr.** Everything a person is
+   * told here — the `Starting …` line, the delivery verdict, a `.dev.vars` refusal, and above all the
+   * workers' own teed output, which is the bulk of the stream and every line wrangler and Vite print —
+   * used to land on the same descriptor as the machine-readable line. So `pithy dev --json | jq` choked
+   * on the first thing wrangler said, and the only rule a consumer could apply was to try each line and
+   * skip what did not parse — which quietly skips a JSON line we get wrong, too. CLAUDE.md asks every
+   * command to be agent-drivable; a stream is only that if a script knows which lines are for it.
+   * Splitting by descriptor is the shell's own answer, costs a person nothing (both still reach the
+   * terminal, and `logs/dev.log` has every line in either mode), and gives the rule a consumer can
+   * actually apply: **every line on stdout is one object.** `docs/commands/dev.md` §`--json` states it.
+   */
+  const emitLine = (text: string) => (options.json ? stderr : stdout)(`${text}\n`);
+  /** The machine's half: one object per line, always on stdout, only under `--json`. */
+  const emitJson = (payload: Record<string, unknown>) => stdout(`${formatJsonLine(payload)}\n`);
 
   // 1. Discover the autostart set. apps/ is the registry; no hand-kept list.
   const discovered = await discoverWorkers(projectDir);
@@ -643,9 +666,15 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   });
   let shuttingDown = false;
 
+  // The ready deadline's timer, replaced by the live watch once the children are spawned. Declared here
+  // for the same reason `keys` is: the banner and the shutdown both stop it, and both are written above
+  // the spawn loop that starts it.
+  let readyWatch: ReadyWatch = { stop: () => {} };
+
   const showBannerIfReady = () => {
     if (bannerShown || [...readyState.values()].some((r) => !r)) return;
     bannerShown = true;
+    readyWatch.stop();
     if (!options.json) {
       // Bindings go live with the banner, not before it: `l` opens a URL, and a URL that answers is a
       // worker that has already matched its ready signal. `--json` gets none — its output is being read
@@ -717,6 +746,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     // First, before anything can take time: give the terminal back. A session that died with the
     // terminal in raw mode leaves a shell that echoes nothing.
     keys.stop();
+    readyWatch.stop();
     emitLine(`Stopping — ${reason}.`);
     log.write(`stopping — ${reason}`);
     for (const { child } of children) signalChild(child.pid, "SIGTERM");
@@ -871,7 +901,53 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     );
   }
 
-  // 8. Record the live session so a re-run can stop it and reap its children.
+  // 8. Start the ready deadline, now that every child is running (pithy-sh/pithy#429).
+  //
+  //    `wrangler dev` does not exit when a build fails — it prints the error and keeps running. So a
+  //    worker that cannot build is a live child that never matches its ready signal: the banner waits on
+  //    the whole set and never fires, and the session proceeds looking healthy with the real error forty
+  //    lines up the scrollback, interleaved with every sibling's startup. Three capability workers reached
+  //    an adopter that way (#426). The deadline names whoever has not arrived, and keeps naming them.
+  //
+  //    **A child that fails to build is deliberately not treated as dead — it is reported, and left.**
+  //    The tempting alternative loses on three counts. A death here is not local: the exit handler above
+  //    tears the *whole* session down when any child exits, so condemning one broken build would stop
+  //    every healthy worker for one worker's typo, which is a worse trade than a line naming it. The
+  //    verdict would have to be read out of wrangler's own output (`Build failed with 1 error`), which
+  //    is version-coupled prose, and a false positive kills a working session — while a `dev.command`
+  //    worker is not wrangler at all, and Vite does recover from a bad build. And the deadline already
+  //    catches strictly more than a build failure: a port that never binds, a binding that never
+  //    resolves, a startup that hangs. So the watch reports; it never condemns.
+  //
+  //    It does say what a restart cannot be avoided for. A `wrangler dev` whose **first** build fails
+  //    never rebuilds — fixing the file changes nothing, measured, so the report's action line names
+  //    `pithy dev` rather than implying the session will heal itself.
+  //
+  //    **`--json` gets a record, not the prose.** CLAUDE.md makes every command agent-drivable, and the
+  //    agent driving `pithy dev --json` is in exactly the position #426's adopter was: a session that
+  //    never emits its ready line, and nothing on the wire saying which worker is missing. A sentence it
+  //    would have to regex is not an answer, so the deadline emits one JSON line per report — the same
+  //    line-per-object shape as the handshake above it, `event` naming which kind of line it is. That is
+  //    the one place `pithy dev`'s streaming surface owes a machine something the handshake cannot carry:
+  //    the handshake is written the moment the children are spawned, and readiness is decided after it.
+  //    The prose still goes to `logs/dev.log` in both modes — the log is read by a person either way.
+  readyWatch = watchReady({
+    pending: () => started.map((s) => s.worker.name).filter((name) => !readyState.get(name)),
+    report: (waiting, first) => {
+      // Both destinations, the way the banner's own lines go: a report only in the terminal is a report
+      // a piped session loses, and `logs/dev.log` is where a developer looks after the fact.
+      const lines = stillWaitingLines(waiting, first);
+      if (options.json) {
+        emitJson({ command: "dev", event: "still-waiting", waiting: [...waiting] });
+      } else {
+        for (const line of lines) emitLine(line);
+      }
+      for (const line of lines) log.write(stripAnsi(line));
+    },
+    schedule: options.schedule,
+  });
+
+  // 9. Record the live session so a re-run can stop it and reap its children.
   const state: DevState = {
     pid: ownPid,
     startedAt: now().toISOString(),

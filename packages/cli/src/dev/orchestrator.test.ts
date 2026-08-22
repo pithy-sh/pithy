@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { GENERATED_MARKER, generateDevVars } from "../devSecrets/generate";
 import { type DevConfig, devConfigPath, readDevConfig } from "../feature/devConfig";
 import { BLOCK_SIZE, type PortsRegistry } from "../feature/ports";
@@ -21,6 +21,7 @@ import {
   type StartDevOptions,
   startDev,
 } from "./orchestrator";
+import { READY_DEADLINE_MS, READY_REMINDER_MS, type Schedule } from "./readyWatch";
 import type { DevState } from "./state";
 
 /** A fake child process: an EventEmitter with PassThrough stdout/stderr and a pid. */
@@ -71,6 +72,7 @@ function harness(overrides: Partial<StartDevOptions> = {}) {
   }[] = [];
   const killCalls: { pid: number; signal: string }[] = [];
   const stdoutLines: string[] = [];
+  const stderrLines: string[] = [];
   const logLines: string[] = [];
   const livePids = new Set<number>();
   let seq = 5000;
@@ -95,6 +97,26 @@ function harness(overrides: Partial<StartDevOptions> = {}) {
   };
 
   const logSink: LogSink = { write: (l) => logLines.push(l), end: () => {} };
+
+  // A hand-driven clock for the ready deadline, so no case waits ninety real seconds and none leaves a
+  // live timer behind. `advance` fires whatever is due.
+  const timers: { at: number; run: () => void; done: boolean }[] = [];
+  let elapsed = 0;
+  const schedule: Schedule = (ms, run) => {
+    const timer = { at: elapsed + ms, run, done: false };
+    timers.push(timer);
+    return () => {
+      timer.done = true;
+    };
+  };
+  const advance = (ms: number) => {
+    elapsed += ms;
+    for (const timer of [...timers]) {
+      if (timer.done || timer.at > elapsed) continue;
+      timer.done = true;
+      timer.run();
+    }
+  };
 
   const written: DevState[] = [];
   let stored: DevState | null = null;
@@ -134,9 +156,11 @@ function harness(overrides: Partial<StartDevOptions> = {}) {
     kill,
     isAlive: (pid) => livePids.has(pid),
     sleep: async () => {},
+    schedule,
     launchWrangler: (args) => ({ command: "bun", args: ["x", "wrangler", ...args] }),
     hasSetsid: true,
     stdout: (t) => stdoutLines.push(t.replace(/\n$/, "")),
+    stderr: (t) => stderrLines.push(t.replace(/\n$/, "")),
     openLog: () => logSink,
     baseEnv: { PATH: "/usr/bin" },
     now: () => new Date("2026-07-27T00:00:00.000Z"),
@@ -155,15 +179,26 @@ function harness(overrides: Partial<StartDevOptions> = {}) {
     spawned,
     killCalls,
     stdoutLines,
+    stderrLines,
     logLines,
     written,
     removed,
     livePids,
+    advance,
+    pendingTimers: () => timers.filter((timer) => !timer.done).length,
     setStored: (s: DevState | null) => {
       stored = s;
     },
   };
 }
+
+// One test forces color on and rebuilds the module graph to prove the log path strips it. Both are undone
+// here rather than there, so a failure part-way through cannot leave `FORCE_COLOR` set for the file's
+// remaining tests — every one of which asserts on plain strings.
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.resetModules();
+});
 
 describe("startDev — ports", () => {
   test("verifies every pinned port on both families before spawning", async () => {
@@ -723,6 +758,151 @@ describe("startDev — ready banner", () => {
     await handle.ready;
 
     expect(h.stdoutLines.some((line) => line.startsWith("Dev login:"))).toBe(false);
+  });
+});
+
+describe("startDev — ready deadline", () => {
+  /** Start a session where `api` comes up and `web` never does — a worker whose build failed. */
+  async function halfReady(overrides: Partial<StartDevOptions> = {}) {
+    const h = harness(overrides);
+    const handle = await startDev(h.options);
+    const api = h.spawned.find((s) => s.opts.cwd === "/proj/apps/api")?.child as FakeChild;
+    api.stdout.write("Ready on http://localhost:8787\n");
+    await flush();
+    return { h, handle };
+  }
+
+  test("names the worker that started and never became ready", async () => {
+    const { h } = await halfReady();
+    expect(h.stdoutLines.some((line) => line.startsWith("Still waiting on:"))).toBe(false);
+
+    h.advance(READY_DEADLINE_MS);
+
+    expect(h.stdoutLines).toContain("Still waiting on: web.");
+    // The set, never the count — and the reason nothing else in the session was going to say it.
+    expect(h.stdoutLines.some((line) => line.includes("keeps running, so nothing else reports it"))).toBe(true);
+  });
+
+  test("repeats the line while it stays true — one report scrolls away like the error did", async () => {
+    const { h } = await halfReady();
+    h.advance(READY_DEADLINE_MS);
+    h.advance(READY_REMINDER_MS);
+    h.advance(READY_REMINDER_MS);
+    expect(h.stdoutLines.filter((line) => line === "Still waiting on: web.")).toHaveLength(3);
+  });
+
+  test("the report lands in logs/dev.log too, and carries no color when it gets there", async () => {
+    // **Forcing color on is what makes this testable at all.** `terminal/style.ts` latches its decision
+    // at import from `process.stdout.isTTY`, and no test runner has a TTY — so under the ordinary import
+    // `dim()` is the identity function, nothing on this path ever produces an escape sequence, and
+    // "the log carries no ANSI" is equally true of a build that strips it and one that never did. The
+    // assertion was empty for exactly that reason. With `FORCE_COLOR` set and the module graph rebuilt,
+    // the action lines really are wrapped, the terminal and the log say different bytes, and only one of
+    // them may carry the escape — which is the claim.
+    vi.stubEnv("NO_COLOR", undefined);
+    vi.stubEnv("FORCE_COLOR", "1");
+    vi.resetModules();
+    const { startDev: startDevInColor } = await import("./orchestrator");
+
+    const h = harness();
+    await startDevInColor(h.options);
+    const api = h.spawned.find((s) => s.opts.cwd === "/proj/apps/api")?.child as FakeChild;
+    api.stdout.write("Ready on http://localhost:8787\n");
+    await flush();
+    h.advance(READY_DEADLINE_MS);
+
+    const action = "  A worker that never becomes ready keeps running, so nothing else reports it.";
+    // The guard on the guard: color really is on for this run, so nothing below can pass vacuously.
+    expect(h.stdoutLines).toContain(`\x1b[2m${action}\x1b[22m`);
+    expect(h.logLines).toContain("Still waiting on: web.");
+    expect(h.logLines).toContain(action);
+    expect(h.logLines.filter((line) => line.includes("\x1b"))).toEqual([]);
+  });
+
+  test("--json gets a record, not the prose — the agent's half of the report", async () => {
+    // A session that never emits its ready line, read by a script: the sentence a person gets is not an
+    // answer, so the deadline writes one JSON line per report. `logs/dev.log` still gets the prose.
+    const { h } = await halfReady({ json: true });
+    h.advance(READY_DEADLINE_MS);
+
+    const records = h.stdoutLines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line) as unknown);
+    expect(records).toEqual([{ command: "dev", event: "still-waiting", waiting: ["web"] }]);
+    // And no prose report on stdout to confuse a reader parsing line by line.
+    expect(h.stdoutLines.some((line) => line.startsWith("Still waiting on:"))).toBe(false);
+    expect(h.logLines).toContain("Still waiting on: web.");
+  });
+
+  test("a cold first build that arrives in time produces no report", async () => {
+    const h = harness();
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    // Nothing is left ticking once the banner has fired — the watch is stopped there, not left to wake
+    // up at the deadline and find its set empty.
+    expect(h.pendingTimers()).toBe(0);
+    h.advance(READY_DEADLINE_MS * 10);
+    expect(h.stdoutLines.some((line) => line.startsWith("Still waiting on:"))).toBe(false);
+  });
+
+  test("the worker that never arrives is reported, never killed — the session keeps supervising", async () => {
+    const { h } = await halfReady();
+    h.advance(READY_DEADLINE_MS);
+    h.advance(READY_REMINDER_MS);
+
+    expect(h.killCalls).toEqual([]);
+    expect(h.stdoutLines.some((line) => line.startsWith("Stopping"))).toBe(false);
+    expect(h.removed).toEqual([]);
+    // And the banner still fires if the worker does arrive — the watch reports, it does not condemn.
+    const web = h.spawned.find((s) => s.opts.cwd === "/proj/apps/web")?.child as FakeChild;
+    web.stdout.write("VITE ready in 300 ms\n");
+    await flush();
+    expect(h.stdoutLines).toContain("Ready.");
+  });
+
+  test("shutdown stops the watch — a torn-down session says nothing more", async () => {
+    const { h, handle } = await halfReady();
+    await handle.shutdown("interrupted");
+    h.advance(READY_DEADLINE_MS * 2);
+    expect(h.stdoutLines.some((line) => line.startsWith("Still waiting on:"))).toBe(false);
+  });
+});
+
+describe("startDev — --json is a stream a script can parse", () => {
+  /**
+   * The rule `docs/commands/dev.md` states, held here: under `--json`, **every line on stdout is one JSON
+   * object**. Nothing else in this session writes to stdout — not the `Starting …` line, not the delivery
+   * verdict, and not the workers' own output, which is the bulk of the stream and every line wrangler and
+   * Vite print. They go to stderr, where a person still sees them and no parser has to skip them.
+   *
+   * A doc sentence alone would not have survived the next line somebody adds. This is the gate on it.
+   */
+  test("stdout carries JSON and nothing else; the prose goes to stderr", async () => {
+    const h = harness({ json: true });
+    await startDev(h.options);
+    const api = h.spawned.find((s) => s.opts.cwd === "/proj/apps/api")?.child as FakeChild;
+    api.stdout.write("Ready on http://localhost:8787\n");
+    api.stderr.write("▲ [WARNING] a warning wrangler prints\n");
+    await flush();
+    // The still-waiting record, which is the only thing `startDev` itself puts on stdout under `--json`.
+    h.advance(READY_DEADLINE_MS);
+
+    for (const line of h.stdoutLines) expect(() => JSON.parse(line) as unknown).not.toThrow();
+    expect(h.stdoutLines).toContain('{"command":"dev","event":"still-waiting","waiting":["web"]}');
+    expect(h.stderrLines).toContain("Starting api, web.");
+    expect(h.stderrLines.some((line) => line.includes("a warning wrangler prints"))).toBe(true);
+  });
+
+  /** Without `--json` nothing moves: the terminal is the audience, and stderr stays empty. */
+  test("the ordinary session still says everything on stdout", async () => {
+    const h = harness();
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    expect(h.stdoutLines).toContain("Starting api, web.");
+    expect(h.stdoutLines).toContain("Ready.");
+    expect(h.stderrLines).toEqual([]);
   });
 });
 
