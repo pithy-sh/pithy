@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { CLOUDFLARE_ENV_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
 import { beforeAll, describe, expect, test } from "vitest";
-import { readSource, sourcePaths } from "./sourceFiles";
+import { blankComments, readSource, sourcePaths } from "./sourceFiles";
 
 /**
  * The gates. **No test in this repository resolves the operator's real machine or their real account.**
@@ -32,22 +32,45 @@ import { readSource, sourcePaths } from "./sourceFiles";
  * accepted from either level and `setupFiles` is required on the project itself. Getting that backwards
  * is how a config acquires a guard that never runs.
  *
- * **Workers projects are exempt, and the exemption is structural rather than a judgment.** workerd does
- * not inherit the host environment, so there is no ambient credential to blank and no real home
- * directory to resolve. A guard there would be inert by construction, which is the thing this file
- * exists to refuse. A test under `@cloudflare/vitest-plugin` sees Vite's `import.meta.env` shims and
- * vitest's two pool ids, plus whatever `bindings` its own config declares. No `CLOUDFLARE_API_TOKEN`,
- * no `HOME`.
+ * **Workers projects are exempt from the two guards above, and from nothing else. State that precisely,
+ * because for a while it was stated loosely and the looseness was the hole (#437).**
+ *
+ * *Exempt:* the blank-credential `env` pin and the config-directory setup. workerd inherits nothing from
+ * the host, so there is no ambient credential to blank and no real home directory to resolve. Either
+ * guard there would be inert by construction, which is the thing this file exists to refuse. A test
+ * under `@cloudflare/vitest-plugin` sees Vite's `import.meta.env` shims and vitest's two pool ids, plus
+ * whatever `bindings` its own config declares. No `CLOUDFLARE_API_TOKEN`, no `HOME`.
+ *
+ * *Not exempt:* everything a workers config **declares**. Inheritance and declaration are different
+ * questions and the exemption only ever answered the first. A `bindings` entry writes into workerd's
+ * `process.env` by design, so `CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN` was #198 walking
+ * back in through the exempt door with nothing to stop it. Two gates below close that, and they are
+ * halves rather than duplicates: every workers project loads `vitest.workers.setup.ts`, which refuses a
+ * credential *visible inside workerd*, and neither a workers config nor any repository module it imports
+ * may read `process.env` at all, which refuses the *declaration* on a machine where it happens to
+ * evaluate to nothing.
  *
  * **That is asserted, not probed.** It used to be a sentence here reporting a count taken once on
  * workerd `1.20260730.1`; #433 moved the harness to `1.20260820.1` and the sentence would have gone
  * stale without a word — in the file that justifies dropping a guard, which is the worst place for a
  * fact nothing checks. {@link WORKERD_ENV_EVIDENCE} pins the exact key set from inside workerd, and
- * the citation is resolved below rather than left as prose that rots the same way.
+ * the citation is resolved below rather than left as prose that rots the same way. What it pins is now
+ * core's own exact set; the portable half of its claim runs in all seventeen projects instead.
  *
- * **`templates/` is exempt too.** Those files are copied verbatim into an adopter's repository by
- * `pithy init`, where they become the adopter's code and this repository's root does not exist. They are
- * also not a workspace member, so `bun run test` never runs them.
+ * **`templates/` is exempt from the guards it cannot state, and from nothing else — there is an
+ * eighteenth workers config in it.** Those files are copied verbatim into an adopter's repository by
+ * `pithy init`, where they become the adopter's code and this repository's root does not exist. So
+ * `templates/starter/vitest.workers.config.ts` can state neither setup file: both are absolute paths
+ * only this checkout has. It is dropped from the walk that loads configs for that reason, and a reader
+ * counting eighteen files against seventeen projects has found this paragraph rather than a gap. They
+ * are also not a workspace member, so `bun run test` never runs them.
+ *
+ * **The source scan covers it, because that exemption does not reach.** A requirement-gate names a path;
+ * a prohibition-gate names a text, and `process.env` means the same thing in every checkout. Splitting
+ * the two costs nothing today — the template reads no environment — and buys the one workers config in
+ * this tree that becomes a stranger's code: a scaffolded `bindings: { CLOUDFLARE_API_TOKEN: … }` would
+ * ship from here and reach *their* account. Applying one exclusion to both walks was reasoning from the
+ * gate that had a reason to the gate that did not.
  *
  * The walk is `ci/sourceFiles.ts` — the one every other tripwire in this tree reads it through (#185).
  */
@@ -59,6 +82,38 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "
 const CONFIG_DIR_SETUP = join(REPO_ROOT, "vitest.setup.ts");
 
 /**
+ * The setup file every *workers* project loads instead: the credential guard that runs inside workerd.
+ *
+ * Computed from {@link REPO_ROOT} rather than imported from `vitest.shared.ts`, for the wall
+ * {@link EXPECTED_BUDGETS} records below — this package's `rootDir` is its own `src`, and a relative
+ * import of a repository-root file fails `bun run typecheck` on TS6059 for every file reached through
+ * it. A path is not a policy, so the copy costs nothing here: get it wrong and the assertion goes red.
+ */
+const WORKERS_ENV_SETUP = join(REPO_ROOT, "vitest.workers.setup.ts");
+
+/** What a workers config is called. The scan below reads all eighteen; seventeen are projects here. */
+const WORKERS_CONFIG = "vitest.workers.config.ts";
+
+/**
+ * The eighteenth, and the only one that leaves this repository. `pithy init` copies it verbatim into an
+ * adopter's tree, so it is scanned rather than exempt — see the templates paragraph at the top. Named
+ * here so re-excluding it, or moving it, is a red test rather than a silently narrower scan.
+ */
+const TEMPLATE_WORKERS_CONFIG = "templates/starter/vitest.workers.config.ts";
+
+/**
+ * The workers population as it stands. Both gates below are over a filtered list, and a filter that
+ * matched nothing would satisfy either in silence — so each states the real number rather than a floor
+ * it is comfortable with. An anti-vacuity guard set below the population is shape 8 of #326's taxonomy:
+ * it passes for exactly the broken walk it was written to catch.
+ *
+ * A floor rather than an equality, because a capability landing with a workers suite raises it and that
+ * is not a defect. What is asserted exactly is that the two walks agree with *each other* — this is the
+ * count of *projects*, so the scan is held to it plus the template rather than to it.
+ */
+const WORKERS_PROJECTS = 17;
+
+/**
  * The opt-in that lets a suite resolve the operator's real config directory (`stateDir`, #200). It
  * exists for a suite that means it. A unit config that set it would hand the exemption to everything.
  */
@@ -66,6 +121,29 @@ const ALLOW_REAL = "PITHY_ALLOW_REAL_CONFIG_DIR";
 
 /** The plugin that marks a project as running inside workerd rather than on the host. */
 const WORKERS_PLUGIN = "@cloudflare/vitest-plugin";
+
+/**
+ * The compatibility flag every workers config states, and the reason it is a gate rather than a habit.
+ *
+ * **It is what makes a declared binding visible in `process.env`, and nothing else was checking it.**
+ * Measured on `@pithy-sh/core`: delete this one line, declare
+ * `bindings: { CLOUDFLARE_API_TOKEN: "leaked-nocompat" }`, and the whole set goes green — the root
+ * guard's `process.env` scan returns `[]`, `envIsolation.workers.test.ts` passes all three of its
+ * assertions including the exact key set, and the credential is fully readable from any test through
+ * `env` from `cloudflare:test`. Restore the flag against the same binding and the pool refuses to start.
+ * One deleted line, one blinded guard, and nothing to see.
+ *
+ * The root guard now reads the bindings as well, so the leak above is caught either way. This stays
+ * because the flag is a fact about the runtime the capabilities are tested on, not only about the
+ * guard: without it a suite exercises a workerd the deployed Worker is not, and a new capability's
+ * config is written by copying a sibling's — which is exactly how eight of them came to share one wrong
+ * compatibility date (#388).
+ *
+ * `compatibilityDates.test.ts` reads the sibling half of this line for the same population, and for the
+ * same reason it reads text: the miniflare options are closed over inside the plugin, so the loaded
+ * config object cannot answer.
+ */
+const NODEJS_COMPAT = "nodejs_compat";
 
 /**
  * The measurement the workers exemption rests on, written down once and resolved below.
@@ -158,6 +236,79 @@ function resolveSetup(entry: string, dir: string): string {
   return isAbsolute(entry) ? entry : resolve(dir, entry);
 }
 
+/**
+ * A relative `import … from "./x"` or `export … from "./x"`. The only way a config reaches a file in
+ * this repository: a bare specifier is a package, and vite externalizes it.
+ */
+const RELATIVE_IMPORT = /\bfrom\s*["'](\.[^"']*)["']/g;
+
+/** One file the prohibition scan reads, and the config that reached it. `null` for a config itself. */
+interface ScanTarget {
+  readonly path: string;
+  readonly via: string | null;
+}
+
+/**
+ * A relative specifier as a file on disk, or `null` where nothing resolves — reported, never skipped.
+ *
+ * Three spellings, which is every one this tree uses: extensionless, explicit `.ts`, and the ESM `.js`
+ * that means `.ts` on disk. A fourth would be reported as unresolved rather than skipped, which is a red
+ * test asking for this function to learn it — the opposite failure to a scan that quietly walks past.
+ */
+function resolveImport(specifier: string, from: string): string | null {
+  const base = resolve(dirname(from), specifier);
+  const candidates = base.endsWith(".ts")
+    ? [base]
+    : base.endsWith(".js")
+      ? [base.replace(/\.js$/, ".ts")]
+      : [`${base}.ts`, join(base, "index.ts")];
+  return candidates.find((candidate) => readSource(candidate) !== null) ?? null;
+}
+
+/**
+ * Every repository file a config pulls in, transitively — **derived rather than listed**, which is the
+ * whole of #437's third finding.
+ *
+ * The ban below used to read the eighteen config files and nothing else, while its own docblock rejected
+ * a narrower rule "walked around by a helper that reads the environment one call away". A helper one
+ * call away is exactly what `../../vitest.shared` is: all seventeen import it, and an
+ * `export const HOST_TOKEN = process.env.CLOUDFLARE_API_TOKEN ?? ""` added there would be invisible to a
+ * file-name-scoped scan and would flow straight into a `bindings` entry.
+ *
+ * Naming the two modules a config imports today would close it and go stale on the third. So the graph
+ * is walked instead: relative specifiers only, transitively, which today reaches `vitest.shared.ts`,
+ * `compatibility.ts` and `@pithy-sh/cloudflare`'s `env/devVars` — that last one is bundled into workerd
+ * and had a hand-written paragraph asking a reader not to make it read the environment. It has a gate
+ * now.
+ *
+ * **The setup file is deliberately not in this graph, and must not be.** `vitest.shared.ts` reaches
+ * `vitest.workers.setup.ts` through `new URL(…)`, which is a path rather than an import — and reading
+ * `process.env` is that file's entire job, from inside workerd where it is the thing being checked.
+ */
+function reachedModules(configs: readonly string[], unresolved: string[]): ScanTarget[] {
+  const found: ScanTarget[] = [];
+  const seen = new Set(configs);
+  const queue = configs.map((config) => ({ file: config, via: named(config) }));
+  while (queue.length > 0) {
+    const { file, via } = queue.shift() as { file: string; via: string };
+    const text = readSource(file);
+    if (text === null) continue;
+    for (const match of blankComments(text).matchAll(RELATIVE_IMPORT)) {
+      const specifier = match[1] as string;
+      const target = resolveImport(specifier, file);
+      if (target === null) {
+        unresolved.push(`${named(file)} imports ${specifier}, which this walk cannot resolve`);
+        continue;
+      }
+      if (seen.has(target)) continue;
+      seen.add(target);
+      found.push({ path: target, via });
+      queue.push({ file: target, via });
+    }
+  }
+  return found;
+}
+
 /** Load a config module and hand back its default export. */
 async function load(path: string): Promise<ConfigShape | null> {
   const module: unknown = await import(pathToFileURL(path).href);
@@ -231,12 +382,31 @@ async function projectsOf(path: string): Promise<Project[]> {
 
 let configs: string[] = [];
 let projects: Project[] = [];
+let workersConfigs: string[] = [];
+let ownWorkersConfigs: string[] = [];
+let reached: ScanTarget[] = [];
+let unresolvedImports: string[] = [];
+
+/**
+ * The `templates/` exclusion, and it earns its place on one walk rather than on both. See the templates
+ * paragraph at the top for which, and why the other one covers the template instead.
+ */
+function outsideTemplates(path: string): boolean {
+  return relative(REPO_ROOT, path).split(sep)[0] !== "templates";
+}
 
 beforeAll(async () => {
-  configs = sourcePaths(REPO_ROOT, { keep: isEntryConfig }).filter(
-    (path) => relative(REPO_ROOT, path).split(sep)[0] !== "templates",
-  );
+  configs = sourcePaths(REPO_ROOT, { keep: isEntryConfig }).filter(outsideTemplates);
   projects = (await Promise.all(configs.map(projectsOf))).flat();
+  // Every workers config in the tree; then the ones that are this repository's own projects. The source
+  // scan reads the first, the setup-file gate answers for the second, and the two counts differ by the
+  // template — asserted below, so a re-exclusion cannot quietly make them the same list again.
+  workersConfigs = sourcePaths(REPO_ROOT, { keep: (name) => name === WORKERS_CONFIG });
+  ownWorkersConfigs = workersConfigs.filter(outsideTemplates);
+  // And every repository module those configs import, transitively — the ban is about what a config
+  // can read, and a config reads whatever it imports. See `reachedModules`.
+  unresolvedImports = [];
+  reached = reachedModules(workersConfigs, unresolvedImports);
 }, 60_000);
 
 describe("the walk itself", () => {
@@ -293,6 +463,191 @@ describe("the workers exemption cites evidence that exists", () => {
         WORKERD_ENV_EVIDENCE,
       );
     }
+  });
+});
+
+/**
+ * #437. **Every workers project certifies its own environment, and the set is what is certified.**
+ *
+ * The exemption above is right about inheritance and says nothing about declaration. A `bindings` entry
+ * in a workers config puts a host-computed value into workerd's `process.env` by design — five configs
+ * declare `SECRETS_ENCRYPTION_KEYS: devEncryptionKeys()`, which is a key minted for the test and is
+ * fine — and the shape one line over is `CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN`, which
+ * is #198 walking back in through the exempt door.
+ *
+ * So the portable half of {@link WORKERD_ENV_EVIDENCE} — no Cloudflare credential is visible from inside
+ * workerd, whatever put it there — is a repository-root setup file that all seventeen load, and this is
+ * the gate that every one of them does. Read off the loaded config object, like everything else here:
+ * a `setupFiles` key shadowed by a second one on the same literal fails exactly like a missing one, and
+ * that is the bug #198 was.
+ *
+ * **The guard throws rather than asserts.** It sits above every `node_modules/` holding vitest, so it
+ * can import no bare specifier and has no `expect` — the same wall `vitest.setup.ts` documents. What it
+ * gives up is bought back in `@pithy-sh/cloudflare`'s `env/devVars.test.ts`, where the decision it makes
+ * is a pure function with four cases.
+ *
+ * **A third gate, because the first two were both true of an empty file.** A `setupFiles` entry proves the
+ * citation, and `readSource` proves the file. Neither proves the file does anything: replacing its body
+ * with `export {};` left this suite at 18 passed and `@pithy-sh/core`'s workers project at 169, which is
+ * the whole mechanism retired in silence. So the guard now records its scan on `globalThis` and
+ * {@link WORKERD_ENV_EVIDENCE} reads the record back **from inside workerd**, which is the strongest
+ * place the call can be proven and is not this file.
+ *
+ * What is left here is the throw, and it is text. The alternative is putting a live credential into a
+ * real workers pool to watch a suite die, which is the thing the guard exists to refuse — so the one
+ * clause that cannot be exercised is the one asserted by reading. Narrow, and paired: the runtime record
+ * says the predicate ran on the real environment, this says a non-empty answer still stops the run.
+ *
+ * **And a fourth, because the guard's evidence had a compatibility flag under it.** The scan that
+ * satisfies all of the above can be blinded by deleting one line from a config: `process.env` carries a
+ * declared binding only while `compatibilityFlags: ["nodejs_compat"]` is stated, and without it the
+ * whole set goes green over a credential any test can still read through `env` from `cloudflare:test`.
+ * The guard reads that `env` too now, so the leak is caught either way — and the flag is gated here as
+ * well, because {@link NODEJS_COMPAT} records why it is a fact worth stating in its own right.
+ */
+describe("every workers project certifies its own environment", () => {
+  test("every workers project loads the shared workerd credential guard", () => {
+    const without = projects
+      .filter((project) => project.workers)
+      .filter((project) => !project.setupFiles.includes(WORKERS_ENV_SETUP))
+      .map((project) => project.label);
+    expect(without).toEqual([]);
+  });
+
+  test("the guard they load is where it says", () => {
+    // The treatment `WORKERD_ENV_EVIDENCE` gets above, for the same reason: a `setupFiles` entry naming
+    // a file that is not there is a path vitest resolves, so a rename would leave seventeen configs
+    // citing nothing.
+    expect(
+      readSource(WORKERS_ENV_SETUP),
+      `seventeen workers configs load ${named(WORKERS_ENV_SETUP)}, which is not there`,
+    ).not.toBeNull();
+  });
+
+  test("and it still refuses what it finds", () => {
+    // The clause no runtime can reach without a real credential in a real pool. `WORKERD_ENV_EVIDENCE`
+    // proves both scans happened; nothing but the text proves a non-empty answer still ends the run.
+    // Read through `code`, so a docblock quoting either line is not mistaken for the line.
+    const source = blankComments(readSource(WORKERS_ENV_SETUP) ?? "");
+    expect(source, `${named(WORKERS_ENV_SETUP)} no longer scans workerd's environment`).toContain(
+      "visibleCredentialKeys(process.env)",
+    );
+    expect(source, `${named(WORKERS_ENV_SETUP)} no longer scans the bindings themselves`).toContain(
+      'from "cloudflare:test"',
+    );
+    expect(source, `${named(WORKERS_ENV_SETUP)} scans and does not refuse — a report is not a guard`).toMatch(
+      /if\s*\(\s*visible\.length\s*>\s*0\s*\)\s*\{\s*throw\b/,
+    );
+  });
+
+  test("every workers config states nodejs_compat, or the guard reads a shim", () => {
+    // `NODEJS_COMPAT` carries the measurement: without the flag a declared credential never reaches
+    // `process.env`, and the guard's process scan returns `[]` over a binding any test can read.
+    // Watched failing — remove the line from one config and this names it.
+    //
+    // Over every workers config in the tree, the template included. A flag name is a text rather than
+    // a path, so the exemption the template earns from the setup-file gates does not reach it — the
+    // same split the source scan below makes, for the same reason. Its own population is pinned there.
+    expect(workersConfigs.length).toBeGreaterThan(WORKERS_PROJECTS);
+    const without = workersConfigs
+      .filter((path) => !blankComments(readSource(path) ?? "").includes(`"${NODEJS_COMPAT}"`))
+      .map((path) => `${named(path)} states no ${NODEJS_COMPAT}`);
+    expect(without).toEqual([]);
+  });
+
+  test("and there are seventeen of them, so a walk that found none cannot pass", () => {
+    // Watched failing: point `WORKERS_PLUGIN` at a name no config declares and this goes red at 0
+    // while the set assertion above passes over an empty list without a word. That control is the
+    // whole reason this test is here.
+    expect(projects.filter((project) => project.workers).length).toBeGreaterThanOrEqual(WORKERS_PROJECTS);
+  });
+});
+
+/**
+ * #437, the other half. **No workers config reads the operator's environment.**
+ *
+ * The guard above cannot close this on its own, and the reason is measured rather than argued. A
+ * declaration reading the operator's shell carries nothing on a machine with no token exported — every
+ * CI runner — so the guard inside workerd sees an empty environment and a real leak passes on exactly
+ * the machine the gate has to be trusted on.
+ *
+ * **Watched, on one planted config in `@pithy-sh/leaderboard`, and the plant had to be the honest one.**
+ * The issue's literal example, `bindings: { CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN }`,
+ * never reaches workerd at all: miniflare's option schema refuses `undefined` and the pool fails to
+ * start. That is loud, and it is a type error rather than a finding — it says "expected string,
+ * received undefined" and names no credential. The shape an author writes to get past it is
+ * `process.env.CLOUDFLARE_API_TOKEN ?? ""`, and with no token exported that ran **166 tests green**
+ * while this scan reported `packages/leaderboard/vitest.workers.config.ts:20 reads process.env`. Blank
+ * is unset, so the runtime guard is right to pass it. The declaration is still the defect, and only the
+ * text shows it. Two halves of one property, not a belt and braces.
+ *
+ * **This one reads the text, which is the thing this file is otherwise most suspicious of** (see the
+ * docblock at the top). It is defensible because of the direction it runs in: it refuses a forbidden
+ * shape rather than certifying a guard is present, so its failure mode is a false green on a clever
+ * spelling rather than a false green on an inert guard. The loaded object is not an option here —
+ * `@cloudflare/vitest-plugin` exposes `name`, `api`, `configureVitest`, `config`, `resolveId` and
+ * `load`, its `api` is `{ setMain }`, and invoking its `config` hook adds `test.server.deps`, `resolve`
+ * and `ssr` and no bindings. The miniflare options are closed over inside the plugin. Probed on
+ * `@cloudflare/vitest-plugin@1.0.0`; written down so the next reader does not repeat it.
+ *
+ * **A flat ban, not a `bindings`-shaped one, and the file name is not the boundary either.** No workers
+ * config in this tree reads `process.env` at all, so the ban costs nothing today, and a config has no
+ * legitimate reason to — everything one needs comes from `../../vitest.shared` and `../../compatibility`.
+ * A narrower rule would be walked around by a helper that reads the environment one call away, and for
+ * one review this rule had that hole itself: scoped to a file name, it read the eighteen configs and
+ * nothing they import, while all seventeen import `vitest.shared.ts`. An
+ * `export const HOST_TOKEN = process.env.CLOUDFLARE_API_TOKEN ?? ""` there is one call away and lands in
+ * a `bindings` entry. So the population is the configs **plus every repository module they reach**,
+ * derived by walking the imports rather than listing today's two — see `reachedModules`.
+ */
+describe("no workers config reads the operator's environment", () => {
+  test("not one of them, nor anything they import, and the failure names the line", () => {
+    const failures: string[] = [];
+    for (const target of [...workersConfigs.map((path) => ({ path, via: null })), ...reached]) {
+      const text = readSource(target.path);
+      if (text === null) continue;
+      const reachedFrom = target.via === null ? "" : `, reached from ${target.via}`;
+      blankComments(text)
+        .split("\n")
+        .forEach((line, index) => {
+          if (line.includes("process.env")) {
+            failures.push(`${named(target.path)}:${index + 1} reads process.env${reachedFrom}`);
+          }
+        });
+    }
+    expect(failures).toEqual([]);
+  });
+
+  test("and the import walk resolved everything it found, so nothing escaped it silently", () => {
+    // A specifier this resolver cannot follow is a module the scan skipped, and skipping is the failure
+    // mode the whole population exists to close. Reported rather than dropped.
+    expect(unresolvedImports).toEqual([]);
+    // The three it reaches today. A floor plus these names: a walk that quietly stopped following
+    // imports would satisfy an empty-list assertion and gate exactly the files it was written for.
+    const names = reached.map((target) => named(target.path));
+    expect(names).toContain("vitest.shared.ts");
+    expect(names).toContain("compatibility.ts");
+    expect(names).toContain("packages/cloudflare/src/env/devVars.ts");
+  });
+
+  test("the adopter's copy is scanned too — it is the one that stops being ours", () => {
+    // `templates/starter/vitest.workers.config.ts` states neither setup gate, because both name a path
+    // only this checkout has. This gate names no path: it forbids a text, and a text is checkout-
+    // independent. So the exemption that is real for the one is unearned for the other, and the file it
+    // would exempt is the single workers config that becomes somebody else's code — where a scaffolded
+    // `bindings: { CLOUDFLARE_API_TOKEN: process.env.… }` reaches their account rather than ours.
+    expect(workersConfigs.map(named)).toContain(TEMPLATE_WORKERS_CONFIG);
+  });
+
+  test("and it read every workers config, so a scan that found none cannot pass", () => {
+    // Two independent walks over the same population: this one keys on the file name, the one above
+    // keys on the plugin the loaded config declares. Equality is the interesting assertion — a config
+    // file no `vitest.config.ts` names is a suite nothing runs and nothing else here would notice.
+    // Against `ownWorkersConfigs`, because the plugin walk cannot see the template: it is nobody's
+    // project here. The scan's own population is one larger, which the test above pins by name.
+    expect(ownWorkersConfigs.length).toBe(projects.filter((project) => project.workers).length);
+    expect(ownWorkersConfigs.length).toBeGreaterThanOrEqual(WORKERS_PROJECTS);
+    expect(workersConfigs.length).toBe(ownWorkersConfigs.length + 1);
   });
 });
 

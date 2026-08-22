@@ -1,7 +1,7 @@
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 import { COMPATIBILITY_DATE } from "../../compatibility";
-import { UNIT_BUDGETS } from "../../vitest.shared";
+import { UNIT_BUDGETS, WORKERS_ENV_SETUP } from "../../vitest.shared";
 
 // Workers-runtime project: tests run inside workerd via Miniflare, with real
 // D1 (`DB`, plus `ANALYTICS` to exercise multiple databases) and KV (`SESSIONS`,
@@ -29,5 +29,6 @@ export default defineConfig({
     ...UNIT_BUDGETS,
     name: "workers",
     include: ["src/**/*.workers.test.ts"],
+    setupFiles: [WORKERS_ENV_SETUP],
   },
 });

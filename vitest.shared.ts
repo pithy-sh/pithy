@@ -33,6 +33,20 @@ import { CLOUDFLARE_ENV_KEYS } from "./packages/cloudflare/src/env/devVars";
 export const CONFIG_DIR_SETUP = fileURLToPath(new URL("./vitest.setup.ts", import.meta.url));
 
 /**
+ * The setup file every *workers* project loads instead: the guard that refuses a Cloudflare credential
+ * inside workerd (#437).
+ *
+ * Instead, not as well. {@link CONFIG_DIR_SETUP} reaches for `node:fs` and `node:os` to mint a throwaway
+ * directory, and there is no filesystem in workerd to mint one on. The two setups answer to two
+ * runtimes, so a config states exactly one of them and `packages/cli/src/ci/testIsolation.test.ts`
+ * gates each set against its own.
+ *
+ * Absolute, for the reason above it: a config states it without counting `../` segments, and the gate
+ * compares paths rather than spellings.
+ */
+export const WORKERS_ENV_SETUP = fileURLToPath(new URL("./vitest.workers.setup.ts", import.meta.url));
+
+/**
  * The off switch on the `process.env` credential overlay — `PITHY_OFFLINE_ENV` in `@pithy-sh/cli`'s
  * `cloudflare/config`, which owns it (#218).
  *

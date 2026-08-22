@@ -29,6 +29,27 @@ export const CLOUDFLARE_ENV_KEYS = [
 ] as const;
 
 /**
+ * Which of {@link CLOUDFLARE_ENV_KEYS} an environment actually carries a value for. The one place that
+ * list is turned into a check.
+ *
+ * **Non-empty, not merely present.** `vitest.shared.ts`'s `NO_ACCOUNT` pins all four keys to `""`, and
+ * the `process.env` overlay in `@pithy-sh/cli`'s `cloudflare/config` already reads a blank as unset. A
+ * predicate keying on presence would report every guarded unit project as leaking.
+ *
+ * **This module is bundled into workerd as well as run on the host, and that is why it imports nothing.**
+ * The repository-root `vitest.workers.setup.ts` imports this function relatively and every workers
+ * project loads it, so a `node:` import here breaks seventeen suites at collection. `vitest.shared.ts`
+ * already leans on the same property for {@link CLOUDFLARE_ENV_KEYS} and says so. Nothing gates the
+ * import half — `@pithy-sh/core` has `worker-safety.test.ts` and this package has no equivalent — so it
+ * is a constraint a reader has to be told, which is what this paragraph is. The other half is gated:
+ * `packages/cli/src/ci/testIsolation.test.ts` walks what every workers config imports, so this module
+ * is in that scan and a `process.env` read here is red (#437).
+ */
+export function visibleCredentialKeys(env: Readonly<Record<string, string | undefined>>): readonly string[] {
+  return CLOUDFLARE_ENV_KEYS.filter((key) => (env[key] ?? "").length > 0);
+}
+
+/**
  * Parse a `.dev.vars` file body into a map: `KEY=value` lines, `#` comments and blanks skipped, and
  * a single layer of surrounding quotes stripped. Pure — the caller owns the file read.
  */
