@@ -26,9 +26,8 @@ import {
   type PortBlock,
   portsRegistryPath,
   reclaimPortBlocks,
-  resolveMainRepoRoot,
+  registryRootFor,
 } from "../feature/ports";
-import { canonicalRepoPath } from "../feature/worktree";
 import { allCapabilities, loadProject, loadWorkerConfig, requireProjectName } from "../project/config";
 import { detectPackageManager, execArgs } from "../project/packageManager";
 import { defaultWorkerDev } from "../project/workerManifest";
@@ -244,21 +243,6 @@ async function defaultRegistryPath(_projectDir: string): Promise<string> {
   return portsRegistryPath();
 }
 
-/**
- * The main checkout root, the key this project's blocks are filed under. With no repository at all the
- * project is its own root, which keys one block set per checkout — the same answer the old registry
- * location gave by sitting in it.
- */
-async function defaultRoot(projectDir: string): Promise<string> {
-  try {
-    return await resolveMainRepoRoot(projectDir);
-  } catch {
-    // Canonical for the same reason `resolveMainRepoRoot` is: the answer is a registry key, and a project
-    // reached once through a symlink and once through the real path would occupy two of them.
-    return canonicalRepoPath(projectDir);
-  }
-}
-
 /** The current branch, or `null` when there is no repo or HEAD is detached. */
 async function defaultBranch(projectDir: string): Promise<string | null> {
   try {
@@ -280,7 +264,7 @@ async function defaultBranch(projectDir: string): Promise<string | null> {
 async function reregisterPinnedBlock(options: EnsureDevConfigOptions, branch: string, block: PortBlock): Promise<void> {
   try {
     const registryPath = await (options.registryPathFor ?? defaultRegistryPath)(options.projectDir);
-    const root = await (options.rootFor ?? defaultRoot)(options.projectDir);
+    const root = await (options.rootFor ?? registryRootFor)(options.projectDir);
     await reclaimPortBlocks({ registryPath, root, reservations: [{ branch, block }] });
   } catch {
     // Nothing to report and nothing to stop: the ports this run uses are the ones already on disk.
@@ -328,7 +312,7 @@ export async function ensureDevConfig(options: EnsureDevConfigOptions): Promise<
     await reregisterPinnedBlock(options, branch, block);
   } else {
     const registryPath = await (options.registryPathFor ?? defaultRegistryPath)(options.projectDir);
-    const root = await (options.rootFor ?? defaultRoot)(options.projectDir);
+    const root = await (options.rootFor ?? registryRootFor)(options.projectDir);
     const named = await (options.branchFor ?? defaultBranch)(options.projectDir);
     // Off a branch (no repo, detached HEAD) the checkout path is the stable key — one block per checkout.
     branch = named ?? `local:${options.projectDir}`;

@@ -181,13 +181,57 @@ function docOptions(options: DoctorReportOptions): DoctorReportOptions {
       present: true,
       orphans: [],
     }),
-    // And its neighbor once more, resolved under the same home so the transcript's path tilde-abbreviates
-    // like every other one on the page. Present with nothing stray, which is the state that prints the bare
-    // path — the healthy machine the transcript is of.
+    // And its neighbor once more, resolved under the same home so the transcript's path and every root in
+    // its listing tilde-abbreviate like every other one on the page. Stubbed rows rather than the machine's
+    // own registry, which would put whichever checkouts the suite happens to run beside into the document.
+    //
+    // Four rows, because the page has to show all four kinds: two of this checkout's own, unqualified; a
+    // second checkout named by path, which is the answer to who took the ports you cannot have; and a root
+    // the registry still holds that is gone from disk, which is the one line here anybody can act on.
     checkPortsRegistry: async () => ({
       path: join(harness.dir, ".config", "pithy", "dev-ports.json"),
       present: true,
       stray: null,
+      root: join(harness.dir, "code", "acme"),
+      unreadable: null,
+      entries: [
+        {
+          root: join(harness.dir, "code", "acme"),
+          branch: "main",
+          block: 0,
+          base: 8787,
+          size: 20,
+          own: true,
+          onDisk: true,
+        },
+        {
+          root: join(harness.dir, "code", "acme"),
+          branch: "feature/12-auth",
+          block: 1,
+          base: 8807,
+          size: 20,
+          own: true,
+          onDisk: true,
+        },
+        {
+          root: join(harness.dir, "code", "other-app"),
+          branch: "main",
+          block: 2,
+          base: 8827,
+          size: 20,
+          own: false,
+          onDisk: true,
+        },
+        {
+          root: join(harness.dir, "code", "old-thing"),
+          branch: "main",
+          block: 8,
+          base: 8947,
+          size: 20,
+          own: false,
+          onDisk: false,
+        },
+      ],
     }),
     runtime: BUN,
   };
