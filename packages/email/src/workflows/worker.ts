@@ -3,7 +3,7 @@
 
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
-import type { D1Database } from "@cloudflare/workers-types";
+import type { D1Database, ExecutionContext } from "@cloudflare/workers-types";
 import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import { requireHostEnv } from "@pithy-sh/core/src/workflow/hostEnv";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";

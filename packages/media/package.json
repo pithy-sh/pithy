@@ -19,6 +19,7 @@
     "reset": "bun run clean && rm -rf node_modules"
   },
   "dependencies": {
+    "@cloudflare/workers-types": "^5.20260729.1",
     "@hono/zod-validator": "^0.9.0",
     "@pithy-sh/cloudflare": "workspace:*",
     "@pithy-sh/core": "workspace:*",
@@ -30,7 +31,6 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.0.0",
-    "@cloudflare/workers-types": "^5.20260729.1",
     "@pithy-sh/tsconfig": "workspace:*",
     "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "^4.1.0",

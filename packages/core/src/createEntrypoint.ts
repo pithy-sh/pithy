@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { ExecutionContext, ForwardableEmailMessage } from "@cloudflare/workers-types";
 import type { Capability, CapabilityEmailHandler } from "./capability/capability";
 import { type CreateBackendOptions, createBackend } from "./createBackend";
 import { triggerWorkflow } from "./workflow/dispatch";

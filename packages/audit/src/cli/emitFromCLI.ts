@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: FSL-1.1-MIT
 
+import type { D1Database } from "@cloudflare/workers-types";
 import type { AuditEventInput } from "@pithy-sh/core/src/audit/auditEvent";
 import { auditDatabase } from "../data/tables";
 import { type AuditRecorderOptions, recordAuditEvent } from "../recorder";

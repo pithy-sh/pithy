@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { KVNamespace } from "@cloudflare/workers-types";
 import type { MatchmakingGame } from "../config/config";
 import { MatchmakingInvalidCodeError, MatchmakingRoomFullError, MatchmakingRoomNotFoundError } from "../error/errors";
 import { roomStore } from "../kv/rooms";

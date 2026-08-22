@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { DurableObject } from "cloudflare:workers";
+import type { D1Database } from "@cloudflare/workers-types";
 import { matchmakingDatabase } from "../data/tables";
 import { friendStore } from "../friends/store";
 import { inviteStore } from "../invite/store";
