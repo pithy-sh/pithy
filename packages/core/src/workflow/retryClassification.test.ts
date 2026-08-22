@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
+import { blankComments } from "../text/comments";
 
 // `import.meta.glob` is a vite/vitest feature; declare it so plain `tsc` typecheck accepts it.
 declare global {
@@ -79,14 +80,18 @@ const sources: Source[] = Object.entries(
 ).map(([path, text]) => ({ path: path.replace(/^\.\.\/\.\.\/\.\.\//, "packages/"), text }));
 
 /**
- * The code, with comments removed.
+ * The code, with comments blanked.
  *
  * Prose is not policy: this kit's Workflow files discuss steps and retries at length, and a scan that
- * read a paragraph as a use of the parameter would report every one of them. A `//` preceded by `:` is
- * left alone so a URL in a string survives.
+ * read a paragraph as a use of the parameter would report every one of them.
+ *
+ * The shared walk (#439). Excusing a `//` preceded by `:` was this gate's guess at the URL in a string,
+ * and it dodged that one shape only: an unbalanced `/*` in a glob still opened a block that ran to the
+ * next `*\/` in the file, and a raw `step` between the two was never reported. Blanking also keeps every
+ * line in place, so the offending line this quotes back is the line somebody opens.
  */
 function code(text: string): string {
-  return text.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+  return blankComments(text);
 }
 
 /** One Workflow entrypoint's `run`, and the name it gave its step parameter. */

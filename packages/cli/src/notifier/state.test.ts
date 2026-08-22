@@ -8,6 +8,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { isValidProjectName, kebab, MAX_PROJECT_NAME } from "@pithy-sh/core/src/naming/resource";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { readSource, sourcePaths } from "../ci/sourceFiles";
 import {
@@ -323,12 +324,14 @@ describe("no config string is joined into the config directory without passing a
       "Parses `accountName` through `CloudflareAccountName` before it becomes `cloudflare.<name>.json` — validated at the schema precisely because it becomes a filename (#206).",
   };
 
-  /** Comments blanked, length preserved, so prose naming a `join` is never read as one. */
-  function stripComments(text: string): string {
-    return text
-      .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, " "))
-      .replace(/(^|[^:"'`\\])\/\/[^\n]*/gm, (line, lead: string) => lead + line.slice(lead.length).replace(/./g, " "));
-  }
+  /**
+   * Comments blanked, length preserved, so prose naming a `join` is never read as one.
+   *
+   * The shared walk (#439). Excluding a `//` preceded by a colon or a quote dodged the URL in a string
+   * and left the other hole open: an unbalanced `/*` inside a glob opens a block that runs to the next
+   * `*\/` in the file, blanking every `join` between the two.
+   */
+  const stripComments = blankComments;
 
   /**
    * Every `join(…)` in a module, as its top-level arguments.

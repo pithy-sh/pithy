@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { readFileSync } from "node:fs";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
 import { PaymentsProductType } from "../config/config";
 import { PurchaseEnvironment } from "../data/purchase";
@@ -236,11 +237,14 @@ describe("no reader in this module discards a PaymentsResult", () => {
   const source = readFileSync(new URL("./api.ts", import.meta.url), "utf8");
 
   /**
-   * The same source with comments removed. The negative sweep below is about what the module *does*, and
+   * The same source with comments blanked. The negative sweep below is about what the module *does*, and
    * this module documents the shape it refuses by quoting it — so a sweep over raw text would flag the
    * docblock that explains the rule as a violation of it.
+   *
+   * The shared walk (#439), which also keeps every line in place: the function matcher below ends a body
+   * at a `\n}`, and deleting a docblock used to join the lines either side of it.
    */
-  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const code = blankComments(source);
 
   /** Every exported function in api.ts, as `[name, returnAnnotation, body]`. */
   const exported = [...code.matchAll(/export (?:async )?function (\w+)\(([\s\S]*?)\): ([^{]+)\{([\s\S]*?)\n\}/g)].map(

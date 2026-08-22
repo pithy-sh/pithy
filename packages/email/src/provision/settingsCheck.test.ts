@@ -5,6 +5,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SettingsAccountReader, SettingsCheckContext } from "@pithy-sh/core/src/capability/settings";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
 import { email } from "../capability";
 import { defaultTheme, type EmailTheme } from "../templates/theme";
@@ -45,11 +46,15 @@ function sources(): string[] {
     .sort();
 }
 
-/** One source file with its comments removed, so a literal in prose can never stand in for the call. */
+/**
+ * One source file with its comments blanked, so a literal in prose can never stand in for the call.
+ *
+ * The shared walk (#439). Anchoring to the line start dodged the `//` in a URL and left the other hole
+ * open: an unbalanced `/*` inside a glob opens a block that runs to the next `*\/` in the file, and the
+ * call this pins would be inside it.
+ */
 function code(file: string): string {
-  return readFileSync(join(SRC, file), "utf8")
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^[ \t]*\/\/.*$/gm, "");
+  return blankComments(readFileSync(join(SRC, file), "utf8"));
 }
 
 describe("one schema, two readers", () => {

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConflictError, PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
@@ -550,12 +551,12 @@ describe("only readOptionalFile.ts decides what a failed read means", () => {
   /**
    * Comments blanked, length preserved, so prose about a `catch` is never read as one and every index
    * below still points at the same character of the original.
+   *
+   * The shared walk (#439). Excluding a `//` preceded by a colon or a quote dodged the URL in a string
+   * and left the other hole open: an unbalanced `/*` inside a glob opens a block that runs to the next
+   * `*\/` in the file, blanking every read and write between the two.
    */
-  function stripComments(text: string): string {
-    return text
-      .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, " "))
-      .replace(/(^|[^:"'`\\])\/\/[^\n]*/gm, (line, lead: string) => lead + line.slice(lead.length).replace(/./g, " "));
-  }
+  const stripComments = blankComments;
 
   /** String and template bodies blanked, so a brace inside one cannot end a block early. */
   function blankStrings(text: string): string {

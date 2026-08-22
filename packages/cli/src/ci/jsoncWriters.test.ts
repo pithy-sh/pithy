@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { join, relative } from "node:path";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, it } from "vitest";
-import { blankComments, sourceFiles } from "./sourceFiles";
+import { sourceFiles } from "./sourceFiles";
 
 /**
  * **A JSONC document Pithy re-emits goes through the one printer, or it is not Pithy's to write.**

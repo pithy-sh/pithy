@@ -5,6 +5,7 @@ import { readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { authSecretsRegistry } from "@pithy-sh/auth/src/instance/secrets";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { emailSigningRegistry } from "@pithy-sh/email/src/crypto/signingKey";
 import { mediaSecretsRegistry } from "@pithy-sh/media/src/secret/registry";
 import { paymentsSecretsRegistry } from "@pithy-sh/payments/src/secret/registry";
@@ -76,9 +77,10 @@ function registrySites(): string[] {
   for (const pkg of readdirSync(PACKAGES, { withFileTypes: true })) {
     if (!pkg.isDirectory()) continue;
     for (const path of sourcePaths(join(PACKAGES, pkg.name, "src"), { keep: isShippedSource })) {
-      // Comments stripped: three modules discuss the helper by name in prose, and a scan that read a
-      // sentence as a call site would put this gate's own docstring on the list.
-      const source = (readSource(path) ?? "").replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "");
+      // Comments blanked: three modules discuss the helper by name in prose, and a scan that read a
+      // sentence as a call site would put this gate's own docstring on the list. The shared walk, so a
+      // `//` in a URL cannot blank the rest of a line and hide a real registration on it (#439).
+      const source = blankComments(readSource(path) ?? "");
       if (!source.includes("defineSecretRegistry(")) continue;
       found.push(relative(PACKAGES, path).split("\\").join("/"));
     }

@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { StatePathOptions } from "../notifier/state";
 import { readBootstrapVars } from "./bootstrapVars";
@@ -191,8 +192,11 @@ describe("writeDevVars", () => {
 
 describe("the producers", () => {
   /**
-   * Every non-test module under `src/`, with its comments stripped — `.dev.vars` is named in prose in
+   * Every non-test module under `src/`, with its comments blanked — `.dev.vars` is named in prose in
    * forty files, and a docstring cannot write one. What is left is code.
+   *
+   * The shared walk rather than a pattern (#439). A pattern has no notion of a string, so the `//` in a
+   * URL blanked the rest of its line — and the rest of a line is where the write this scans for sits.
    */
   async function code(): Promise<{ path: string; text: string }[]> {
     const root = join(import.meta.dirname, "..");
@@ -202,7 +206,7 @@ describe("the producers", () => {
       if (!file.isFile() || !file.name.endsWith(".ts") || file.name.endsWith(".test.ts")) continue;
       const full = join(file.parentPath, file.name);
       const source = await readFile(full, "utf8");
-      out.push({ path: relative(root, full), text: source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "") });
+      out.push({ path: relative(root, full), text: blankComments(source) });
     }
     return out;
   }

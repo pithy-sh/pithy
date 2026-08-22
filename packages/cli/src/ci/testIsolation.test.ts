@@ -4,8 +4,9 @@
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { CLOUDFLARE_ENV_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { beforeAll, describe, expect, test } from "vitest";
-import { blankComments, readSource, sourcePaths } from "./sourceFiles";
+import { readSource, sourcePaths } from "./sourceFiles";
 
 /**
  * The gates. **No test in this repository resolves the operator's real machine or their real account.**

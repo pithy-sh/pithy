@@ -5,6 +5,7 @@ import { stat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
 import { sourceFiles, sourcePaths } from "../ci/sourceFiles";
 import { type EditorProcess, openInEditor, requireEditor, resolveEditor, runEditor } from "./editor";
@@ -351,12 +352,13 @@ describe("the gate on the gate", () => {
    * see an evader writing the same loop, and it had been green for exactly that reason. So the question
    * is the coarser one that is actually decidable by text: does this module mention either variable.
    *
-   * Comments are stripped first, because this file's own reasoning names both variables a dozen times
-   * and a rule that fires on prose is a rule people delete. `//` is only taken as a comment after
-   * whitespace or a line start, so the `//` inside a URL is not one.
+   * Comments are blanked first, because this file's own reasoning names both variables a dozen times
+   * and a rule that fires on prose is a rule people delete. The shared walk decides what a comment is:
+   * a `//` inside a string opens none, so a URL cannot blank an `EDITOR` read written after it, and a
+   * `/*` inside a glob opens none either (#439).
    */
   function editorReach(text: string): string | null {
-    const code = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");
+    const code = blankComments(text);
     const found = new Set<string>();
     for (const [name] of code.matchAll(/\b(?:VISUAL|EDITOR)\b/g)) found.add(name);
     return found.size === 0 ? null : [...found].sort().join(", ");

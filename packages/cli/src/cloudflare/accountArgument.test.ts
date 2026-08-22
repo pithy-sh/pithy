@@ -3,6 +3,7 @@
 
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
 import { readSource, sourcePaths } from "../ci/sourceFiles";
 
@@ -75,8 +76,10 @@ describe("a null account is a claim, and every claim is written down", () => {
     for (const path of walked) {
       const source = readSource(path);
       if (source === null) continue;
-      // Comments stripped first, so prose *about* the rule never passes for a use of it.
-      const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+      // Comments blanked first, so prose *about* the rule never passes for a use of it. The shared
+      // walk, so a `//` in a URL cannot blank the rest of a line and hide a real `account: null` on
+      // it (#439).
+      const code = blankComments(source);
       if (/account:\s*null/.test(code)) found.add(named(path));
     }
     expect({
@@ -129,7 +132,7 @@ describe("a null account is a claim, and every claim is written down", () => {
     for (const path of walked) {
       const source = readSource(path);
       if (source === null) continue;
-      const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+      const code = blankComments(source);
       if (OPTIONAL_ACCOUNT.test(code)) found.add(named(path));
     }
     expect({
@@ -194,7 +197,7 @@ describe("a null account is a claim, and every claim is written down", () => {
     for (const relativePath of REGRESSED) {
       const source = readSource(resolve(PACKAGES, "cli", "src", relativePath));
       expect(source, relativePath).not.toBeNull();
-      const code = (source ?? "").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+      const code = blankComments(source ?? "");
       // No bare resolution left: every one of these now names an account in the call.
       expect({ file: relativePath, bare: /cloudflareEnv\(\s*\)/.test(code) }).toEqual({
         file: relativePath,

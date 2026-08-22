@@ -3,6 +3,7 @@
 
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
 import { isShippedSource, readSource, sourcePaths } from "../ci/sourceFiles";
 
@@ -196,7 +197,9 @@ function declaredStoreBackedKeys(): string[] {
 
 /** The bindings one wrangler template declares, split by the two blocks this test cares about. */
 function templateBindings(path: string): { store: string[]; d1: string[] } {
-  const source = (readSource(path) ?? "").replace(/^\s*\/\/.*$/gm, "");
+  // The shared walk (#439). JSONC has the same two holes as TypeScript: a `//` inside a string value
+  // is not a comment, and a whole-line rule saw no trailing one at all.
+  const source = blankComments(readSource(path) ?? "");
   const blockOf = (key: string): string =>
     source.match(new RegExp(`"${key}"\\s*:\\s*\\[(.*?)\\n\\s*\\]`, "s"))?.[1] ?? "";
   const bindingsIn = (block: string): string[] =>

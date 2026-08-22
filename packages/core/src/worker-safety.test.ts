@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
+import { blankComments } from "./text/comments";
 
 // `import.meta.glob` is a vite/vitest feature; declare it so plain `tsc` typecheck accepts it.
 declare global {
@@ -62,9 +63,21 @@ const ALLOWED_SPECIFIERS: ReadonlySet<string> = new Set([
   "zod",
 ]);
 
-/** Comments stripped, so a module that *discusses* `node:crypto` is not reported for the sentence. */
+/**
+ * Comments blanked, so a module that *discusses* `node:crypto` is not reported for the sentence.
+ *
+ * The shared walk rather than a `replace` over a comment pattern (#439). This gate had the naive
+ * pattern, and a pattern has no notion of a string: `const glob = "**\/*.workers.test.ts";` opens a
+ * block comment that runs to the next `*\/` in the file, and an `import { createHash } from "node:crypto"`
+ * between the two is deleted before this scan ever sees it. Planted into `worker/health.ts`, that is
+ * three passing tests over source with a Node builtin in it.
+ *
+ * {@link blankComments} lives in this package for this caller: `@pithy-sh/core` is bundled into the
+ * adopter's Worker, so it may never depend on `@pithy-sh/cli`, where the walk was written. It imports
+ * nothing and reaches no builtin, so it obeys the rule this file enforces.
+ */
 function code(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "");
+  return blankComments(source);
 }
 
 /**

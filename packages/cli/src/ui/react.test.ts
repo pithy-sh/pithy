@@ -4,6 +4,7 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { TEMPLATE_DIR } from "@pithy-sh/ui-react/src/templates";
 import { beforeAll, describe, expect, test } from "vitest";
@@ -222,7 +223,7 @@ describe("the React 19 stub", () => {
     // string may appear on the line that exports it and nowhere else in the scaffolded front end.
     for (const [path, contents] of Object.entries(BOTH)) {
       if (!path.endsWith(".tsx") || path.includes(".test.")) continue;
-      const code = contents.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
+      const code = blankComments(contents);
       const declared = code.match(/^export const path = "(\/[^"]+)";$/m)?.[1];
       for (const screenPath of ["/sign-in", "/paywall", "/callback", "/otp", "/pricing", "/subscription"]) {
         if (screenPath === declared) continue;
@@ -311,11 +312,13 @@ describe("the React 19 stub", () => {
       // and `routeGlob.test.ts` builds to prove it ships in no asset. An origin a gate renders a
       // screen against is a fixture, not a host anything reaches.
       if (path.includes(".test.")) continue;
-      // **Comments are stripped first, and that is the invariant rather than a loophole.** What must
+      // **Comments are blanked first, and that is the invariant rather than a loophole.** What must
       // not appear is a host the running client *reaches*; a comment citing GitHub's or Google's brand
       // terms beside the mark they govern is documentation, and the rule beside the asset is exactly
       // where #257 decided those terms belong. So this reads the code.
-      const code = contents.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^\s*\/\/.*$/gm, " ");
+      // The shared walk, so a `//` in a URL opens no comment: it is the one shape that could have
+      // blanked a real host off the end of a line here (#439).
+      const code = blankComments(contents);
       // The only absolute URL the client reaches is Cloudflare's Turnstile script. Not Stripe's:
       // hosted Checkout needs no SDK. Not the app stores': those URLs live in @pithy-sh/payments, so a
       // store moving one is a minor release rather than an edit to a file Pithy may never rewrite.
@@ -434,9 +437,9 @@ describe("the React 19 stub", () => {
     const signIn = AUTH["src/routes/pithy/sign-in.tsx"] ?? "";
     const form = signIn.slice(signIn.indexOf('<form className="stack"'), signIn.indexOf("</form>"));
     expect(form).toContain('<div className="auth__check">{check.widget}</div>');
-    const social = signIn
-      .slice(signIn.indexOf("async function social"), signIn.indexOf("if (sent)"))
-      .replace(/^\s*\/\/.*$/gm, " ");
+    // Blanked whole, then cut: the shared walk preserves every offset, so the markers found in the
+    // raw screen index the blanked one (#439).
+    const social = blankComments(signIn).slice(signIn.indexOf("async function social"), signIn.indexOf("if (sent)"));
     expect(social).not.toContain("check.attach");
     expect(AUTH["src/routes/pithy/otp.tsx"]).toContain("<Turnstile");
   });

@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
 import { sourceFiles } from "../ci/sourceFiles";
 import { CATALOG, capabilityPackageDir, capabilityPackageName } from "./catalog";
@@ -122,10 +123,13 @@ describe("a module that imports cloudflare:workers exports nothing a non-runtime
    */
   const ALLOWED: Record<string, { exports: string; why: string }> = {};
 
-  /** Source with its comments removed, so prose naming the module is not read as importing it. */
-  function code(text: string): string {
-    return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");
-  }
+  /**
+   * Source with its comments blanked, so prose naming the module is not read as importing it.
+   *
+   * The shared walk (#439): a `//` inside a string opens no comment, so a URL on the line above an
+   * import cannot take it out of this scan.
+   */
+  const code = blankComments;
 
   /**
    * The names a module binds as *values* out of `cloudflare:workers`, or null if it never reaches it.

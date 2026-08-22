@@ -73,6 +73,13 @@ export function renderedClassNames(source: string): string[] {
  * since the last `{`, `}` or `;`, which walks nested blocks at any depth — and that is what lets it see
  * inside `@layer` and `@media`. The layer is how these rules stay overridable, so a reader that could
  * not look into one would report every class as undefined.
+ *
+ * **Its own `/* … *\/` strip, and it stays one (#439).** Every TypeScript-source scan in this repository
+ * reads through `blankComments` in `@pithy-sh/core/src/text/comments`, because a pattern over comments
+ * cannot tell a comment from a `//` in a URL or a `/*` in a glob. CSS has neither: no line comments at
+ * all, and no string a `/*` can hide in that this reader would reach — a `content: ".x"` is a value,
+ * inside a block this walk has already entered. A stripper written for TypeScript would also have to
+ * guess at `/` as a divide and as a regex, which is a guess with nothing to gain here.
  */
 export function definedClassNames(css: string): string[] {
   const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, " ");

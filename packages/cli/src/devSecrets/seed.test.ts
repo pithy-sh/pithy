@@ -5,6 +5,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "n
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { masterKeyRegistryEntry } from "@pithy-sh/secrets/src/capability";
 import type { VersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import { DevSecretEnvelope } from "@pithy-sh/secrets/src/dev/devSecretsFile";
@@ -557,7 +558,10 @@ describe("the environment boundary", () => {
   });
 
   test("nothing carrying a managed environment can reach the seeder", async () => {
-    // The tripwire. Four defect classes in this series each had three or more producers, every one
+    // The tripwire. Comments are blanked through the shared walk, so prose naming the seeder is not a
+    // caller and a `//` inside a URL cannot hide the caller beside it (#439).
+    //
+    // Four defect classes in this series each had three or more producers, every one
     // because a rule lived at a call site instead of at the thing being called. A seventh caller makes
     // this list grow and the failure names the file: prove it cannot carry an environment, or pin it.
     const root = join(import.meta.dirname, "..");
@@ -567,7 +571,7 @@ describe("the environment boundary", () => {
     for (const file of files) {
       if (!file.isFile() || !file.name.endsWith(".ts") || file.name.endsWith(".test.ts")) continue;
       const full = join(file.parentPath, file.name);
-      const text = (await readFile(full, "utf8")).replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+      const text = blankComments(await readFile(full, "utf8"));
       const path = relative(root, full);
       if (path === join("commands", "seed.ts")) seedCommand = text;
       if (/seedProjectDevSecrets\(/.test(text)) callers.push(path);

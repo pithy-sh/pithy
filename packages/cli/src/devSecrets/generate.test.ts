@@ -5,6 +5,7 @@ import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { DEV_VARS_LOCAL, GENERATED_MARKER, generateDevVars, isGeneratedDevVars } from "./generate";
 
@@ -118,8 +119,9 @@ describe("generateDevVars", () => {
     // Stated as a test because the saving it would buy is a few lines of I/O and the cost is a binding
     // that is silently absent. See #154's third comment for the five ways mtime lies.
     const source = await readFile(join(import.meta.dirname, "generate.ts"), "utf8");
-    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
-    expect(code).not.toMatch(/mtime/i);
+    // The shared walk: a `//` in a URL used to blank the rest of its line here, and the rest of that
+    // line is where an mtime read would sit (#439).
+    expect(blankComments(source)).not.toMatch(/mtime/i);
   });
 
   test("a .dev.vars pithy did not write is refused by name, never overwritten and never merged", async () => {

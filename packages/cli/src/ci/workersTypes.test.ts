@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import { relative, resolve, sep } from "node:path";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
-import { blankComments, isShippedSource, readSource, sourcePaths } from "./sourceFiles";
+import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
 
 /**
  * **A package that imports `@cloudflare/workers-types` by name from shipped source declares it as a

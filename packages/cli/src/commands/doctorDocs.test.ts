@@ -5,6 +5,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
 import {
   cleanPlanFor,
@@ -613,8 +614,9 @@ describe("docs/commands/doctor.md", () => {
  * Every block label `renderDoctorText` can print, read out of `doctor.ts` itself.
  *
  * A label is a literal opening a line of the report: an optional indent, words, a colon, then a space or
- * the end of the string — `Project health:`, `  manifests:`, `Cloudflare: `. Comments are stripped first,
- * so prose about a line never passes for the line. Template literals contribute the chunk before their
+ * the end of the string — `Project health:`, `  manifests:`, `Cloudflare: `. Comments are blanked first,
+ * through the shared walk, so prose about a line never passes for the line and no `//` inside a string
+ * takes the rest of its line with it (#439). Template literals contribute the chunk before their
  * first `${`, which is exactly where a fixed label sits and where a computed one does not.
  *
  * Read statically rather than rendered, deliberately: a block only prints in the state that earns it, so
@@ -622,7 +624,7 @@ describe("docs/commands/doctor.md", () => {
  * whole set whether or not anything here exercises it.
  */
 function rendererBlockLabels(source: string): string[] {
-  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+  const code = blankComments(source);
   const literals = [/"((?:[^"\\\n]|\\.)*)"/g, /'((?:[^'\\\n]|\\.)*)'/g, /`((?:[^`\\$]|\\.)*)/g];
   const label = /^ {0,4}([A-Za-z][A-Za-z]*(?: [A-Za-z]+)*):(?:\s|$)/;
   const found = new Set<string>();

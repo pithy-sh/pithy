@@ -39,7 +39,14 @@ beforeAll(async () => {
   turnstile = await readFile(join(TEMPLATE_DIR, "src", "turnstile.tsx"), "utf8");
 });
 
-/** The declarations of the first rule whose prelude is exactly `selector`, comments stripped. */
+/**
+ * The declarations of the first rule whose prelude is exactly `selector`, comments stripped.
+ *
+ * **CSS, so the strip stays local (#439).** The shared walk in `@pithy-sh/core/src/text/comments` exists
+ * because a TypeScript comment can be forged inside a string — a `//` in a URL, a `/*` in a glob. A
+ * stylesheet has no line comments and no such string, so `/* … *\/` is the whole grammar and a pattern
+ * over it is exact rather than approximate. {@link custom} strips the same way for the same reason.
+ */
 function rule(selector: string): string {
   const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, " ");
   const pattern = new RegExp(`(?:^|[{}])\\s*${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([^{}]*)\\}`, "m");

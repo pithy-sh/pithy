@@ -3,6 +3,7 @@
 
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, it } from "vitest";
 import { readSource, sourcePaths } from "../ci/sourceFiles";
 
@@ -56,7 +57,22 @@ function sourceFiles(): string[] {
 }
 
 /**
+ * One file's source with its comments blanked — the shared walk, once, before anything reads it.
+ *
+ * The strip used to live inside {@link topLevelKeys}, on a trimmed entry, and it was a bare `//` to the
+ * end of a line: a URL in a metadata value took the rest of the entry with it, and a `/*` in a glob was
+ * never seen at all. Blanking the whole file first also means a `{` inside prose cannot unbalance the
+ * literal matcher, which is the failure that makes this gate quietly stop matching (#439).
+ */
+function code(path: string): string {
+  return blankComments(readSource(path) ?? "");
+}
+
+/**
  * The source of every `metadata: { … }` object literal in a file, brace-balanced.
+ *
+ * Fed blanked source (see {@link code}), so a brace in prose cannot unbalance the match and a key in an
+ * example cannot be read as a key that ships.
  *
  * Balanced rather than a single regex, because a metadata bag routinely nests (`{ error: { code } }`)
  * and a lazy `\{[^}]*\}` would stop at the first inner brace and read the rest as ordinary text — a
@@ -90,10 +106,7 @@ function topLevelKeys(body: string): string[] {
   let depth = 0;
   let line = "";
   const take = (entry: string): void => {
-    const trimmed = entry
-      .trim()
-      .replace(/\/\/[^\n]*$/gm, "")
-      .trim();
+    const trimmed = entry.trim();
     if (trimmed === "" || trimmed.startsWith("...")) return;
     const written = trimmed.match(/^["']?([A-Za-z_$][\w$]*)["']?\s*:/);
     if (written?.[1]) {
@@ -128,7 +141,7 @@ describe("audit dimensions stay in their columns", () => {
   it("finds the metadata literals it is meant to police", () => {
     // And the extractor has to actually extract. If `metadata:` were renamed, or the brace matcher
     // broke, the offender list below would be empty for the wrong reason.
-    const withMetadata = files.filter((file) => metadataLiterals(readSource(file) ?? "").length > 0);
+    const withMetadata = files.filter((file) => metadataLiterals(code(file)).length > 0);
     expect(withMetadata.length).toBeGreaterThan(5);
   });
 
@@ -144,7 +157,7 @@ describe("audit dimensions stay in their columns", () => {
   it("no emitter writes a dimension key into the metadata bag", () => {
     const offenders: string[] = [];
     for (const file of files) {
-      for (const literal of metadataLiterals(readSource(file) ?? "")) {
+      for (const literal of metadataLiterals(code(file))) {
         for (const key of topLevelKeys(literal)) {
           if (DIMENSION_KEYS.has(key)) offenders.push(`${file.slice(REPO_ROOT.length + 1)}: metadata.${key}`);
         }

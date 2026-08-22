@@ -3,6 +3,7 @@
 
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
 import { HOME_SCREEN, TEMPLATE_DIR, TEMPLATE_GROUPS, WORKER_TOKEN } from "./templates";
 
@@ -98,12 +99,21 @@ describe("the React template library", () => {
    */
   const BARE_AMOUNT = /\b\d+\.\d{2}\b/;
 
-  /** Every line of a template that could render, with comment text removed. Prose is not a price. */
+  /**
+   * Every line of a template that could render, with comment text blanked. Prose is not a price.
+   *
+   * Blanked through the shared walk rather than line by line (#439). Line by line could see neither of
+   * the two shapes that matter here: a `//` inside a URL took the rest of its line with it, and a
+   * docblock was only recognized by its leading `*`, so the first line of a `/*` block and anything
+   * after a `*\/` on the closing line stayed. The walk keeps every line in place, so `line` is still the
+   * line in the file and `source` is still what a reader will open.
+   */
   async function renderableLines(path: string): Promise<{ line: number; code: string; source: string }[]> {
     const text = await readFile(join(TEMPLATE_DIR, path), "utf8");
+    const blanked = blankComments(text).split("\n");
     return text.split("\n").map((source, index) => ({
       line: index + 1,
-      code: source.replace(/\/\/.*$/, "").replace(/^\s*\*.*$/, ""),
+      code: blanked[index] ?? "",
       source,
     }));
   }
