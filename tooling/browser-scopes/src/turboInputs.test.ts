@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -12,10 +12,10 @@ import { describe, expect, test } from "vitest";
  * What keeps this package's turbo cache key from lying about what it covers.
  *
  * Everything in this package is a gate about **other packages**. `responses.ts` compiles every
- * capability's response schemas under a browser's lib; `client.ts` does the same for every
- * control-plane scope; `responseCoverage.test.ts` walks `packages/` to derive what those fixtures must
- * name. Turbo's default inputs for a task are the files in its own package — so for as long as this
- * package existed it replayed while its whole subject moved.
+ * capability's response schemas under a browser's lib; `schemas.ts` does the same for every request
+ * schema and `client.ts` for every control-plane scope; `browserSurface.test.ts` walks `packages/` to
+ * derive what those fixtures must name. Turbo's default inputs for a task are the files in its own
+ * package — so for as long as this package existed it replayed while its whole subject moved.
  *
  * Reproduced with the branch's cache warm, by planting the #419 chain back into `packages/support`:
  * `turbo run test --filter=@pithy-sh/browser-scopes` printed `Cached: 1 cached` and
@@ -76,6 +76,32 @@ const PACKAGE_NAME = "@pithy-sh/browser-scopes";
 /** Every task this package defines that turbo caches. `clean` and `reset` declare `cache: false`. */
 const TASKS = ["typecheck", "test", "test:node"] as const;
 
+/**
+ * Every TypeScript project this package compiles, taken from the script that compiles them.
+ *
+ * Not a list. `browserSurface.test.ts` asserts that the `typecheck` script names every `tsconfig.*.json`
+ * on disk, so reading the script here is reading the projects — and a fifth program cannot be derived by
+ * one of the two and missed by the other.
+ */
+const PROGRAMS: readonly string[] = [
+  ...(
+    JSON.parse(readFileSync(join(PACKAGE_DIR, "package.json"), "utf8")) as { scripts: { typecheck: string } }
+  ).scripts.typecheck.matchAll(/tsc -p (\S+)/g),
+].map(([, project]) => project as string);
+
+/** What one project's program opened, as `tsc` reports it. A failing compile still lists its files. */
+async function listFiles(project: string): Promise<string> {
+  try {
+    const { stdout } = await run(TSC, ["-p", project, "--listFilesOnly"], {
+      cwd: PACKAGE_DIR,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return stdout;
+  } catch (cause) {
+    return (cause as { stdout?: string }).stdout ?? "";
+  }
+}
+
 /** A path relative to the repo root, in POSIX form. */
 function fromRoot(path: string): string {
   return relative(REPO_ROOT, path).split(sep).join("/");
@@ -87,8 +113,14 @@ function inside(dir: string, path: string): boolean {
 }
 
 /**
- * Every file inside the repository, outside this package and outside `node_modules`, that the response
- * gate's TypeScript program compiles.
+ * Every file inside the repository, outside this package and outside `node_modules`, that this
+ * package's browser programs compile.
+ *
+ * **Every one of them, and that is #430's correction.** This ran `tsconfig.responses.json` alone, which
+ * covered one of the programs whose subject moves — so a key narrowed over the other three would have
+ * replayed green here while the gates it guards went stale. The list is {@link PROGRAMS}, read off the
+ * `typecheck` script rather than written down, and `browserSurface.test.ts` holds that script to the
+ * projects on disk. So a program added tomorrow is derived here by the commit that runs it.
  *
  * `tsc --listFilesOnly` rather than a hand-rolled import walk: the question is which files the compiler
  * opens, and the compiler is the only thing that knows. That is the same argument `program.ts` makes
@@ -107,17 +139,9 @@ function inside(dir: string, path: string): boolean {
  * the path test behind it means a line that is not a file on disk is never mistaken for one.
  */
 async function compiled(): Promise<string[]> {
-  let stdout: string;
-  try {
-    ({ stdout } = await run(TSC, ["-p", "tsconfig.responses.json", "--listFilesOnly"], {
-      cwd: PACKAGE_DIR,
-      maxBuffer: 64 * 1024 * 1024,
-    }));
-  } catch (cause) {
-    stdout = (cause as { stdout?: string }).stdout ?? "";
-  }
-  const files = stdout
-    .split("\n")
+  const listings = await Promise.all(PROGRAMS.map(listFiles));
+  const files = listings
+    .flatMap((stdout) => stdout.split("\n"))
     .map((line) => line.trim())
     .filter(Boolean)
     // A line that is not a path on disk is not a file the compiler opened. See the note above.
@@ -241,6 +265,9 @@ describe("this package's cache key covers what this package reads", () => {
     // containment below without touching anything. This module is the subject — #419 landed one import at
     // the top of it — and the count is the transitive reach through the eight capabilities.
     expect(files).toContain("packages/support/src/http/responses.ts");
+    // One root from a second program, so a derivation that quietly went back to compiling one of the
+    // four is red here rather than covered by the first line. #430 added the request schemas.
+    expect(files).toContain("packages/leaderboard/src/http/schemas.ts");
     expect(files.length).toBeGreaterThan(10);
 
     for (const task of TASKS) {

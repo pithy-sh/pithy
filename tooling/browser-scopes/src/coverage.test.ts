@@ -4,8 +4,8 @@
 import { readFileSync } from "node:fs";
 import { relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { sourceFiles } from "@pithy-sh/cli/src/ci/sourceFiles";
 import { describe, expect, it } from "vitest";
+import { scopeHomes } from "./surfaces";
 
 /**
  * What keeps `client.ts` from being a gate that cannot fail.
@@ -20,13 +20,26 @@ import { describe, expect, it } from "vitest";
  *
  * - **Coverage.** Every control-plane scope the kit declares appears in `client.ts`. A new capability
  *   is covered by the commit that adds it, not by somebody remembering this package exists.
- * - **The home module imports only types.** This is the structural half, and it is what actually
- *   fixes #315 rather than papering it. A scope's declaring module may import a type and nothing
- *   else, so naming a scope can never pull a Hono middleware, a `PithyHonoEnv`, or a Worker global
- *   into a browser program — whatever the compiler happens to tolerate this month.
+ * - **The home module imports only types.** A scope's declaring module may import a type and nothing
+ *   else, so naming a scope can never pull a Hono middleware or a `PithyHonoEnv` into a browser
+ *   program as a *value* — whatever the compiler happens to tolerate this month.
  *
  * Neither assertion is derived from the thing it checks: the expected set is read off the capability
  * sources, the actual set is read off `client.ts`, and the compile that consumes both is `tsc`.
+ *
+ * ## The type-only rule is necessary and it was never sufficient (Jim, 2026-08-22)
+ *
+ * That second bullet used to claim it "actually fixes #315 rather than papering it". It does not, on
+ * its own, and #430 is what that cost: every home obeyed it, and eight of the nine still compiled
+ * `@cloudflare/workers-types`, `hono`, `kysely` and `kysely-d1`, because **the compiler follows a
+ * type-only edge exactly as it follows a value one**. What this assertion buys is that a scope's home
+ * cannot execute anything; what it does not buy is anything at all about the graph.
+ *
+ * The graph half lives next door in `browserSurface.test.ts`, which compiles each of these homes as its
+ * own browser program and reports every package it reached. Both are kept: this one is cheap, reads as
+ * a rule a contributor can follow while writing the file, and names the offending line; that one is the
+ * property the rule exists to produce. The walk itself is `surfaces.ts`, shared with that suite so the
+ * two cannot disagree about which modules are homes.
  */
 
 /**
@@ -44,17 +57,6 @@ const PACKAGES = fileURLToPath(new URL("../../../packages", import.meta.url));
 const CLIENT = fileURLToPath(new URL("./client.ts", import.meta.url));
 
 /**
- * How a control-plane scope constant is spelled, everywhere one is declared:
- * `export const AUDIT_TRAIL_READ_SCOPE: ControlPlaneScope = "audit:events:read";`
- *
- * The annotation is the marker rather than the `_SCOPE` suffix, because the suffix is used by strings
- * that are not control-plane scopes at all — `PLAY_SCOPE` is a Google OAuth URL, `CAPABILITY_SCOPE`
- * is an npm namespace, `GLOBAL_SCOPE` is an environment name. Matching on the type catches exactly
- * the ones a management client is meant to know and no others.
- */
-const DECLARATION = /^export const ([A-Z][A-Z0-9_]*): ControlPlaneScope = /gm;
-
-/**
  * Every identifier a `client.ts` **import statement** brings in that is spelled like a scope constant.
  *
  * Scoped to the import block rather than swept over the whole file, because the file's own
@@ -66,26 +68,8 @@ const IMPORTED_SCOPE = /^import\s+\{([^}]*)\}\s+from\s+"[^"]+";$/gms;
 /** An import statement, with the `type` keyword captured when the whole statement carries it. */
 const IMPORT_STATEMENT = /^import\s+(type\s+)?[^;]*?from\s+"([^"]+)";$/gms;
 
-/**
- * Every module in `packages/` that declares at least one control-plane scope, and what it declares.
- *
- * The walk is `@pithy-sh/cli`'s `ci/sourceFiles`, not a seventh copy of one written here. That
- * primitive already answers the two questions this gate would otherwise get wrong on its own: it skips
- * `node_modules`, `dist` and `coverage`, and it drops `.test.ts` and `.d.ts` — a test file declaring a
- * scope-shaped fixture is not the contract, and counting one would make the expected set larger than
- * the kit actually ships.
- */
-function scopeHomes(): Map<string, string[]> {
-  const homes = new Map<string, string[]>();
-  for (const { path, text } of sourceFiles(PACKAGES)) {
-    const names = [...text.matchAll(DECLARATION)].map(([, name]) => name as string);
-    if (names.length > 0) homes.set(path, names);
-  }
-  return homes;
-}
-
 describe("every control-plane scope is reachable from a browser program", () => {
-  const homes = scopeHomes();
+  const homes = scopeHomes(PACKAGES);
   const declared = [...homes.values()].flat().sort();
 
   it("finds the declarations at all", () => {

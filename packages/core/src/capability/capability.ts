@@ -299,8 +299,8 @@ export interface Capability<
    * **Declared alongside the routes, and only through `defineCapabilityHealth`.** The type is branded,
    * so an inline object literal does not compile: every declaration in the tree is parsed, which is what
    * keeps the vocabulary closed, the values scalar, and each value's cost stated. See
-   * `controlPlane/discovery/health.ts` for why those three rules are in the type rather than in a
-   * comment.
+   * `controlPlane/discovery/healthSummary.ts` for why those three rules are in the type rather than in
+   * a comment.
    *
    * Each key is behind a scope this capability's own `adminRoutes` already require — never a new one,
    * because the scopes an adopter is offered at connect are read off those routes, and a value behind

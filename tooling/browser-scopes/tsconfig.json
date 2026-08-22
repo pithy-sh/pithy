@@ -5,5 +5,20 @@
     "lib": ["ES2022"],
     "types": ["node"]
   },
-  "include": ["src/coverage.test.ts", "src/program.test.ts", "src/responseCoverage.test.ts", "src/turboInputs.test.ts"]
+  // The Node-typed half: the suites, and the tree derivations they share. `src/schemas.ts` is
+  // deliberately absent — it belongs to the DOM-only program, and compiling it here under
+  // `types: ["node"]` would hand it exactly the ambient types a browser does not have.
+  //
+  // Hand-written for that reason, and gated because of it: `browserSurface.test.ts` asserts every
+  // `src/*.ts` is in some project's program, so a module this list forgets is red rather than
+  // silently never typechecked. A module reached by an import counts — `program.ts` arrives through
+  // `program.test.ts`.
+  "include": [
+    "src/browserSurface.test.ts",
+    "src/coverage.test.ts",
+    "src/program.test.ts",
+    "src/surfaces.test.ts",
+    "src/surfaces.ts",
+    "src/turboInputs.test.ts"
+  ]
 }

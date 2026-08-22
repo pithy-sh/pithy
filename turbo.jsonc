@@ -176,9 +176,10 @@
     // that is not taken from `#414`'s answer to the same class, and it goes the other way. That lane's
     // fixture has two named packages for a subject, and `tsc --listFiles` says exactly which of their
     // files it opens, so naming those files is both necessary and sufficient. This one derives its
-    // expectation from a **directory walk**: `responseCoverage.test.ts` calls
-    // `sourcePaths(PACKAGES, …)` to find every `src/http/responses.ts` the kit ships, so that a
-    // capability landing tomorrow is covered by the commit that adds it. Its answer therefore changes
+    // expectation from a **directory walk**: `browserSurface.test.ts` calls `surfaces.ts`'s
+    // `responseModules`, `schemaModules` and `scopeHomes` to find every `src/http/responses.ts`, every
+    // `src/http/schemas.ts` and every module that declares a control-plane scope, so that a capability
+    // landing tomorrow is covered by the commit that adds it. Its answer therefore changes
     // when a file **appears** — and a file nothing yet imports is a file no compile opens. Keying on what
     // the programs read would leave `packages/newcap/src/http/responses.ts` unhashed, which is precisely
     // the module the coverage assertion exists to demand. `.github/scripts/crossPackageReads.ts` has

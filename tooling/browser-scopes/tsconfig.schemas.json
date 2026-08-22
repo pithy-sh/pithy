@@ -1,0 +1,15 @@
+{
+  "extends": "@pithy-sh/tsconfig/base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    // Same two lines as `tsconfig.client.json`, and for the same reason: the DOM and nothing of a
+    // Worker, with `types: []` so TypeScript cannot borrow the Workers types a sibling package
+    // installed. A fourth program rather than one more import in `responses.ts` because the two
+    // subjects fail apart — #430 found `@pithy-sh/support`'s request schemas reaching a Kysely reader
+    // while the response schemas beside them were clean, and one program would have reported that as
+    // one red build and hidden which half was broken.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "include": ["src/schemas.ts"]
+}

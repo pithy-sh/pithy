@@ -41,7 +41,7 @@ import * as testers from "@pithy-sh/testers/src/http/responses";
  * single import at the top of a file, not through any particular export. `import * as` puts the whole
  * module in the program, which is what the adopter's bundler does with it anyway.
  *
- * `responseCoverage.test.ts` is what stops this being a list: it derives the modules from the tree
+ * `browserSurface.test.ts` is what stops this being a list: it derives the modules from the tree
  * and holds this file to all of them.
  *
  * Names only. There is nothing to assert about a Zod object that `tsc` has not already proven by

@@ -159,7 +159,7 @@ function packageOf(path: string): string | null {
 }
 
 /**
- * Every file `tsc` opened for this program, as the compiler reports them.
+ * Every file `tsc` opened for the project at `project`, as the compiler reports them. Absolute.
  *
  * A failing compile still lists its files, and the verdict belongs to the `typecheck` task — reporting it
  * here as well would name one defect twice and would make the file list unavailable exactly when it is
@@ -175,7 +175,28 @@ function packageOf(path: string): string | null {
  * `--listFilesOnly` skips the check, so there are no diagnostics to confuse — and every line is still
  * held to being an absolute path that exists, because a config error can still speak on that stream and a
  * line that is not a file on disk is not a file the compiler opened.
+ *
+ * Exported because a project on disk is a subject in its own right: `browserSurface.test.ts` asks each of
+ * this package's own `tsconfig.*.json` what it compiles, to prove no source file here is typechecked by
+ * none of them. Same question, same answer, one implementation.
  */
+export function projectFiles(project: string): string[] {
+  let stdout: string;
+  try {
+    stdout = execFileSync(TSC, ["-p", project, "--listFilesOnly"], {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch (cause) {
+    stdout = (cause as { stdout?: string }).stdout ?? "";
+  }
+  return stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => isAbsolute(line) && existsSync(line));
+}
+
+/** Every file `tsc` opened for a scratch project that extends `base` and names `roots`. */
 function listFiles(base: string, roots: readonly string[], rootDir: string): string[] {
   const scratch = mkdtempSync(join(tmpdir(), "pithy-browser-program-"));
   try {
@@ -193,19 +214,7 @@ function listFiles(base: string, roots: readonly string[], rootDir: string): str
       }),
       "utf8",
     );
-    let stdout: string;
-    try {
-      stdout = execFileSync(TSC, ["-p", project, "--listFilesOnly"], {
-        encoding: "utf8",
-        maxBuffer: 64 * 1024 * 1024,
-      });
-    } catch (cause) {
-      stdout = (cause as { stdout?: string }).stdout ?? "";
-    }
-    return stdout
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => isAbsolute(line) && existsSync(line));
+    return projectFiles(project);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
