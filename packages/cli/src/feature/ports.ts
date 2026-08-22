@@ -300,8 +300,14 @@ async function withLock<T>(registryPath: string, fn: () => Promise<T>, budget?: 
  * That distinction is {@link readOptionalFile}'s. It matters here as much as anywhere: every writer
  * below is a read-modify-write, so a registry read as empty is a registry rewritten holding only this
  * branch — and every other feature's block handed straight back out.
+ *
+ * **Exported for `pithy doctor`'s listing (#436), which reads it and never writes.** One reader, because
+ * the alternative is a second, laxer parse of the same file: doctor would then print rows an allocation
+ * refuses to touch, or an empty listing for a registry that is simply corrupt — and "nothing holds any
+ * ports" is the opposite of what a corrupt registry means. The throw is the report's material, not a
+ * problem for it; the caller catches it and says so on the line.
  */
-async function readRegistry(registryPath: string): Promise<PortsRegistry> {
+export async function readPortsRegistry(registryPath: string): Promise<PortsRegistry> {
   const raw = await readOptionalFile(registryPath, {
     unreadable: ({ code, cause }) =>
       new InternalError({
@@ -342,8 +348,12 @@ async function readRegistry(registryPath: string): Promise<PortsRegistry> {
  * network share, a parent that stopped being a directory. Treating those as gone deletes a live
  * checkout's whole allocation set in one atomic write, and the reclaim scan that could rebuild it cannot
  * run for a root this process could not stat either.
+ *
+ * **Exported so `pithy doctor`'s listing marks the same roots this would sweep (#436).** The report's one
+ * actionable line is *this checkout is gone and its blocks are about to be freed*, and a second answer to
+ * "is it there" would let doctor promise a sweep the pruner does not make, or stay silent about one it does.
  */
-async function rootExists(root: string): Promise<boolean> {
+export async function registryRootExists(root: string): Promise<boolean> {
   try {
     await stat(root);
     return true;
@@ -378,7 +388,7 @@ async function pruneDeadRoots(registry: PortsRegistry, keep: string): Promise<bo
   for (const root of Object.keys(registry)) {
     if (root === keep) continue;
     const branches = registry[root];
-    if (Object.keys(branches ?? {}).length === 0 || !(await rootExists(root))) {
+    if (Object.keys(branches ?? {}).length === 0 || !(await registryRootExists(root))) {
       delete registry[root];
       changed = true;
     }
@@ -422,7 +432,7 @@ export async function allocatePortBlock(options: AllocateOptions): Promise<PortB
   return withLock(
     registryPath,
     async () => {
-      const registry = await readRegistry(registryPath);
+      const registry = await readPortsRegistry(registryPath);
       const pruned = await pruneDeadRoots(registry, root);
 
       const existing = registry[root]?.[branch];
@@ -485,7 +495,7 @@ export async function reclaimPortBlocks(options: {
   return withLock(
     options.registryPath,
     async () => {
-      const registry = await readRegistry(options.registryPath);
+      const registry = await readPortsRegistry(options.registryPath);
       const branches = registry[options.root] ?? {};
       registry[options.root] = branches;
       const reclaimed: string[] = [];
@@ -508,7 +518,7 @@ export async function freePortBlock(options: FreeOptions): Promise<void> {
   await withLock(
     registryPath,
     async () => {
-      const registry = await readRegistry(registryPath);
+      const registry = await readPortsRegistry(registryPath);
       const branches = registry[root];
       if (branches === undefined || !(branch in branches)) {
         return;
@@ -578,4 +588,28 @@ export async function resolveMainRepoRoot(cwd: string): Promise<string> {
   // breaks Windows, where git's forward slashes matched `dirname`'s output and stop matching
   // `realpath`'s. See {@link canonicalRepoPath} for both divergences and why neither shows up in CI.
   return canonicalRepoPath(root);
+}
+
+/**
+ * The registry key for a project directory, repository or not — {@link resolveMainRepoRoot}, and the
+ * project's own canonical path when there is no repository to ask.
+ *
+ * **One function because two callers must produce the same key or the registry lies** (#436). `pithy dev`
+ * allocated through this fallback while `pithy doctor` had its own, narrower answer, so on a machine with
+ * no `git` — or in a project that is not a repository — `dev` filed a block under the project directory
+ * and `doctor` reported that very block as some other checkout's, `own: false` and all. Every caller that
+ * wants "which key are my blocks under" asks here; only a caller that must *refuse* without a repository
+ * (`feature destroy`) reaches past it to `resolveMainRepoRoot`.
+ *
+ * Never rejects: {@link canonicalRepoPath} answers the uncanonicalised path rather than throwing, so the
+ * fallback always produces a key.
+ */
+export async function registryRootFor(projectDir: string): Promise<string> {
+  try {
+    return await resolveMainRepoRoot(projectDir);
+  } catch {
+    // Canonical for the same reason `resolveMainRepoRoot` is: the answer is a registry key, and a project
+    // reached once through a symlink and once through the real path would occupy two of them.
+    return canonicalRepoPath(projectDir);
+  }
 }

@@ -7,6 +7,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { buildReconcilePlan } from "../capabilities/reconcile";
+import type { PortsRegistryCheck, PortsRegistryEntry } from "../doctor/portsRegistry";
 import type { ProjectLedger } from "../migrations/run";
 import type { FetchLike } from "../notifier/check";
 import { readState, writeState } from "../notifier/state";
@@ -179,6 +180,7 @@ describe("renderDoctorText", () => {
         "Config dir: ~/.config/pithy",
         `State file: ${report.stateFile}`,
         "Ports:      ~/.config/pithy/dev-ports.json",
+        "            8787–8806  main",
         "Notifier:   enabled (PITHY_NO_UPDATE_NOTIFIER to disable)",
         "",
         "Project: pithy.config.ts found",
@@ -1324,6 +1326,158 @@ describe("dev login", () => {
       user: "ada@example.com",
       detail: "names ada@example.com",
     });
+  });
+});
+
+/**
+ * The port registry's contents, not just its address (#436). The defect: `Ports:` named a file in
+ * `~/.config` and nothing read it back, so "why is this project on 8847" had no answer short of `cat`.
+ */
+describe("port registry listing", () => {
+  const ACME = "/home/u/code/acme";
+  const OTHER = "/home/u/code/other-app";
+
+  const entry = (over: Partial<PortsRegistryEntry> & { base: number }): PortsRegistryEntry => ({
+    root: ACME,
+    branch: "main",
+    block: 0,
+    size: 20,
+    own: true,
+    onDisk: true,
+    ...over,
+  });
+
+  const ports =
+    (over: Partial<PortsRegistryCheck> = {}) =>
+    async () => ({
+      path: "/home/u/.config/pithy/dev-ports.json",
+      present: true,
+      stray: null,
+      root: ACME,
+      unreadable: null,
+      entries: [],
+      ...over,
+    });
+
+  test("prints this checkout's blocks as ranges, unqualified, under the path", async () => {
+    // Ranges, not block indices: a registry written before BLOCK_SIZE changed holds mixed widths, and
+    // indices hide exactly the overlap the allocator compares ranges to survive.
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkPortsRegistry: ports({
+          entries: [entry({ base: 8787 }), entry({ branch: "feature/12-auth", block: 1, base: 8807 })],
+        }),
+      }),
+    );
+    expect(renderDoctorText(report, "/home/u")).toContain(
+      [
+        "Ports:      ~/.config/pithy/dev-ports.json",
+        "            8787–8806  main",
+        "            8807–8826  feature/12-auth",
+      ].join("\n"),
+    );
+  });
+
+  test("names the checkout that holds every other block", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkPortsRegistry: ports({
+          entries: [entry({ base: 8787 }), entry({ root: OTHER, block: 2, base: 8827, own: false })],
+        }),
+      }),
+    );
+    expect(renderDoctorText(report, "/home/u")).toContain("            8827–8846  ~/code/other-app — main");
+  });
+
+  test("names a root that is gone from disk, before anything prunes it", async () => {
+    // The one line here a developer can act on: you renamed that directory, and the next allocation by
+    // any project on this machine frees these ports without a word.
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkPortsRegistry: ports({
+          entries: [entry({ root: "/home/u/code/old-thing", block: 8, base: 8947, own: false, onDisk: false })],
+        }),
+      }),
+    );
+    expect(renderDoctorText(report, "/home/u")).toContain(
+      "            8947–8966  ~/code/old-thing — main  ← not on disk",
+    );
+  });
+
+  test("aligns the range column against the widest range, mixed widths included", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkPortsRegistry: ports({
+          entries: [entry({ base: 8787, size: 10 }), entry({ root: OTHER, block: 1, base: 9987, own: false })],
+        }),
+      }),
+    );
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("            8787–8796   main");
+    expect(text).toContain("            9987–10006  ~/code/other-app — main");
+  });
+
+  test("a registry with nothing in it is the path and nothing else", async () => {
+    const report = await buildDoctorReport(baseOptions({ checkPortsRegistry: ports() }));
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("Ports:      ~/.config/pithy/dev-ports.json\nNotifier:");
+  });
+
+  test("a registry nothing could read says so instead of listing nothing", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkPortsRegistry: ports({
+          unreadable:
+            "The port registry is corrupt. Delete /home/u/.config/pithy/dev-ports.json and re-run pithy feature create to rebuild it.",
+        }),
+      }),
+    );
+    expect(renderDoctorText(report, "/home/u")).toContain(
+      "Ports:      ~/.config/pithy/dev-ports.json — could not be read. The port registry is corrupt. Delete /home/u/.config/pithy/dev-ports.json and re-run pithy feature create to rebuild it.",
+    );
+  });
+
+  test("nothing here can fail the exit — a stale root is information, not drift", async () => {
+    const report = await buildDoctorReport(
+      harness.healthyOptions({
+        checkPortsRegistry: ports({
+          unreadable: "The port registry is corrupt. Delete it and re-run pithy feature create to rebuild it.",
+          stray: "/p/.dev-ports.json",
+          entries: [entry({ base: 8787, own: false, onDisk: false })],
+        }),
+      }),
+    );
+    expect(doctorExitCode(report)).toBe(0);
+  });
+
+  test("--json carries the whole registry with absolute, unabbreviated paths", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        checkPortsRegistry: ports({
+          entries: [entry({ base: 8787 }), entry({ root: OTHER, block: 2, base: 8827, own: false, onDisk: false })],
+        }),
+      }),
+    );
+    const json = renderDoctorJson(report) as { portsRegistry: PortsRegistryCheck & { detail: string | null } };
+    expect(json.portsRegistry).toEqual({
+      path: "/home/u/.config/pithy/dev-ports.json",
+      present: true,
+      stray: null,
+      root: ACME,
+      unreadable: null,
+      detail: null,
+      entries: [
+        { root: ACME, branch: "main", block: 0, base: 8787, size: 20, own: true, onDisk: true },
+        { root: OTHER, branch: "main", block: 2, base: 8827, size: 20, own: false, onDisk: false },
+      ],
+    });
+  });
+
+  test("the terse report carries no listing — it is not a fault", async () => {
+    const report = await buildDoctorReport(
+      harness.healthyOptions({ checkPortsRegistry: ports({ entries: [entry({ base: 8787 })] }) }),
+    );
+    expect(renderDoctorText(report, "/home/u")).not.toContain("8787–8806");
   });
 });
 

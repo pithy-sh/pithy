@@ -25,7 +25,12 @@ import { checkDevVarsLocal, type DevVarsLocalCheck, describeDevVarsLocal } from 
 import { checkEnvironments, describeEnvironmentDrift, type EnvironmentsCheck } from "../doctor/environments";
 import { buildProjectHealth, type MigrationHealth, type ProjectHealth, type WorkerChecks } from "../doctor/health";
 import { checkLocalDelivery, describeLocalDelivery, type LocalDeliveryCheck } from "../doctor/localDelivery";
-import { checkPortsRegistry, describePortsRegistry, type PortsRegistryCheck } from "../doctor/portsRegistry";
+import {
+  checkPortsRegistry,
+  describePortsRegistry,
+  type PortsRegistryCheck,
+  type PortsRegistryEntry,
+} from "../doctor/portsRegistry";
 import { checkProjectName, describeProjectName, type ProjectNameCheck } from "../doctor/projectName";
 import { checkSecretBindings, describeSecretBindings, type SecretBindingsCheck } from "../doctor/secretBindings";
 import {
@@ -877,8 +882,10 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // Gated the same way, and files only: the two `.dev.` files and each Worker's registry. No account, no
   // database, no seed run — so it answers offline, in the project that is not working.
   const devSecrets = inProject ? await checkedProbe(() => probeDevSecrets(options.projectDir)) : null;
-  // Gated the same way, and files only: two `stat` calls, no account and no git. It reports a location
-  // rather than a verdict, so its could-not-check state is simply `null` — see `probePortsRegistry`.
+  // Gated the same way, and no account: the registry, two `stat` calls, and one `git rev-parse` — the
+  // spawn this check was written to avoid, and the only thing that says which of the machine's blocks are
+  // this checkout's, since a worktree's directory is not the registry key. Guarded inside the check. It
+  // reports a location, so its could-not-check state is simply `null` — see `probePortsRegistry`.
   const portsRegistry = inProject ? await probed<PortsRegistryCheck | null>(() => probePortsRegistry(), null) : null;
   // The same registry, asked about the deployed environments rather than the local file. Files only once
   // more: whether a store *entry* exists is provisioning's question, and this one is whether the stanza
@@ -1036,6 +1043,36 @@ export function doctorExitCode(report: DoctorReport): number {
 /** Abbreviate a home-relative path to `~/…` for display. */
 function tildify(path: string, home: string): string {
   return path === home ? "~" : path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+}
+
+/**
+ * The width of the paths block's label field — `Config dir: `, `Secrets:    `, `Ports:      `, all twelve.
+ *
+ * Named because the port listing indents under it, and a continuation that is off by a space reads as a
+ * different block. Derived from the longest label rather than typed as twelve, so a longer one moves both.
+ */
+const PATHS_INDENT = " ".repeat("Config dir: ".length);
+
+/**
+ * The `Ports:` line's listing — one row per allocated block, this checkout's first (#436).
+ *
+ * **Ranges, not block indices.** The index is the registry's own key and is the one form of this fact
+ * nobody can act on: a registry written before `BLOCK_SIZE` went to 20 holds entries of both widths, so
+ * block 2 and block 4 do not mean what their numbers imply, and the port a developer is actually looking
+ * at — the one `pithy dev` refused to bind — appears in neither. Printing the range is what makes a
+ * mixed-width registry legible, and it is the form the question arrives in.
+ *
+ * Own rows are unqualified because there is nothing to disambiguate; every other row names the checkout
+ * that holds it, which is the whole answer to "8847, and I don't know why". `← not on disk` trails the
+ * one row a developer can do something about — see {@link PortsRegistryEntry.onDisk}.
+ */
+function portsRegistryRows(check: PortsRegistryCheck, home: string): string[] {
+  const range = (entry: PortsRegistryEntry): string => `${entry.base}–${entry.base + entry.size - 1}`;
+  const width = Math.max(0, ...check.entries.map((entry) => range(entry).length));
+  return check.entries.map((entry) => {
+    const held = entry.own ? entry.branch : `${tildify(entry.root, home)} — ${entry.branch}`;
+    return `${range(entry).padEnd(width)}  ${held}${entry.onDisk ? "" : "  ← not on disk"}`;
+  });
 }
 
 /**
@@ -1590,10 +1627,15 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     if (secretsLocation !== null) paths.push(`Secrets:    ${secretsLocation}`);
     // The same block once more, and machine-wide like `State file:` rather than per project like
     // `Dev login:`. A registry that is simply there gets its path and no verdict — the path is the line.
+    // The listing under it is the rest of the answer (#436): the path said *where*, and left *why is this
+    // project on 8847* to `cat`. Both halves are in the report people already run rather than behind a
+    // second command, because the defect being fixed is that this file is invisible, and a command nobody
+    // knows exists is not more visible than a line here.
     if (report.portsRegistry) {
       const detail = describePortsRegistry(report.portsRegistry);
       const path = tildify(report.portsRegistry.path, home);
       paths.push(`Ports:      ${path}${detail ? ` — ${detail}` : ""}`);
+      for (const row of portsRegistryRows(report.portsRegistry, home)) paths.push(`${PATHS_INDENT}${row}`);
     }
     blocks.push([...paths, `Notifier:   ${notifier}`].join("\n"));
   } else if (secretsLocation !== null) {
