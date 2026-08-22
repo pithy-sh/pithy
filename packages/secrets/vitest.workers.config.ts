@@ -1,7 +1,7 @@
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 import { COMPATIBILITY_DATE } from "../../compatibility";
-import { UNIT_BUDGETS } from "../../vitest.shared";
+import { UNIT_BUDGETS, WORKERS_ENV_SETUP } from "../../vitest.shared";
 // A fresh AES-256 master-key config for the test run, provided to Miniflare as the
 // `SECRETS_ENCRYPTION_KEYS` binding — the same string shape `.dev.vars` supplies in local dev. This
 // is why read/write/at-rest-rotation are all testable locally: the worker resolves its encryption
@@ -27,5 +27,6 @@ export default defineConfig({
     ...UNIT_BUDGETS,
     name: "workers",
     include: ["src/**/*.workers.test.ts"],
+    setupFiles: [WORKERS_ENV_SETUP],
   },
 });

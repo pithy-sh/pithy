@@ -3,7 +3,7 @@
 
 import { relative, resolve, sep } from "node:path";
 import { describe, expect, test } from "vitest";
-import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
+import { blankComments, isShippedSource, readSource, sourcePaths } from "./sourceFiles";
 
 /**
  * **A package that imports `@cloudflare/workers-types` by name from shipped source declares it as a
@@ -160,11 +160,6 @@ const IMPORTERS: Record<string, number> = {
  */
 const AMBIENT: Record<string, Record<string, readonly string[]>> = {};
 
-/** Comments stripped, so a module that *discusses* a specifier is not reported for the sentence. */
-function code(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "");
-}
-
 /**
  * Every module specifier a source imports or re-exports, static and dynamic alike.
  *
@@ -179,7 +174,7 @@ function code(source: string): string {
  * import that way), runs to its semicolon, and only its *trailing* specifier counts.
  */
 function specifiers(source: string): string[] {
-  const lines = code(source).split("\n");
+  const lines = blankComments(source).split("\n");
   const found: string[] = [];
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] as string;
@@ -198,7 +193,7 @@ function specifiers(source: string): string[] {
     const match = /(?:^import|\bfrom)\s*["']([^"']+)["']\s*;$/.exec(statement.trimEnd());
     if (match) found.push(match[1] as string);
   }
-  for (const match of code(source).matchAll(/\bimport\s*\(\s*["']([^"']+)["']\s*\)/g)) {
+  for (const match of blankComments(source).matchAll(/\bimport\s*\(\s*["']([^"']+)["']\s*\)/g)) {
     found.push(match[1] as string);
   }
   return found;
@@ -282,7 +277,7 @@ function workersNames(): string[] {
   for (const path of sourcePaths(REPO_ROOT, { keep: isShippedSource })) {
     const text = readSource(path);
     if (text === null) continue;
-    for (const name of exportedNames(code(text), WORKERS_TYPES)) names.add(name);
+    for (const name of exportedNames(blankComments(text), WORKERS_TYPES)) names.add(name);
   }
   return [...names].sort();
 }
@@ -395,7 +390,7 @@ function ambient(directory: string, names: readonly string[]): Record<string, st
   for (const path of sourcePaths(resolve(REPO_ROOT, directory, "src"), { keep: isShippedSource })) {
     const text = readSource(path);
     if (text === null) continue;
-    const stripped = code(text);
+    const stripped = blankComments(text);
     const bound = new Set(boundNames(stripped));
     const used = names.filter((name) => !bound.has(name) && new RegExp(`(?<![.\\w$])${name}\\b`).test(stripped));
     if (used.length > 0) found[named(path)] = used;

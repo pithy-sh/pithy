@@ -3,7 +3,7 @@
 
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
-import { sourceFiles } from "./sourceFiles";
+import { blankComments, sourceFiles } from "./sourceFiles";
 
 /**
  * **A JSONC document Pithy re-emits goes through the one printer, or it is not Pithy's to write.**
@@ -76,9 +76,9 @@ const COMMENT_JSON_IMPORT =
  * the day one arrives this file goes red rather than quietly answering "no".
  */
 function reachesStringify(path: string, source: string): boolean {
-  const withoutComments = source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "");
+  const blanked = blankComments(source);
   let reaches = false;
-  for (const line of withoutComments.split("\n")) {
+  for (const line of blanked.split("\n")) {
     if (!/\bfrom\s+"comment-json"|import\s+"comment-json"/.test(line) && !/["']comment-json["']/.test(line)) continue;
     const statement = line.trim();
     const match = COMMENT_JSON_IMPORT.exec(statement);
@@ -94,14 +94,14 @@ function reachesStringify(path: string, source: string): boolean {
       // A whole-module binding can reach anything on it, so it counts unless the module never mentions
       // the member. Erring towards reporting is the right side to err on for a gate.
       const binding = (namespace ?? fallback ?? "").replace(/^\*\s+as\s+/, "");
-      if (new RegExp(`\\b${binding}\\s*\\.\\s*stringify\\b`).test(withoutComments)) reaches = true;
+      if (new RegExp(`\\b${binding}\\s*\\.\\s*stringify\\b`).test(blanked)) reaches = true;
       continue;
     }
     if (!named) continue;
     for (const specifier of named.slice(1, -1).split(",")) {
       const [imported, local] = specifier.split(/\s+as\s+/).map((part) => part.trim());
       if (imported !== "stringify") continue;
-      if (new RegExp(`\\b${local ?? imported}\\s*\\(`).test(withoutComments)) reaches = true;
+      if (new RegExp(`\\b${local ?? imported}\\s*\\(`).test(blanked)) reaches = true;
     }
   }
   return reaches;

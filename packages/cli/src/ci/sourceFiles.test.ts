@@ -7,7 +7,7 @@ import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { isShippedSource, isTestFile, readSource, sourceFiles, sourcePaths } from "./sourceFiles";
+import { blankComments, isShippedSource, isTestFile, readSource, sourceFiles, sourcePaths } from "./sourceFiles";
 
 let root: string;
 beforeEach(async () => {
@@ -1081,5 +1081,55 @@ describe("the plan job runs before `bun install`, so its scripts import only bui
     // Written down as well as derived: a module joining the closure inherits this rule, and that is
     // a thing somebody should have to add a line for.
     expect(graph()).toEqual(GRAPH);
+  });
+});
+
+describe("blankComments", () => {
+  test("prose is blanked, and the line it stood on still counts", () => {
+    // Both halves of what a caller depends on. A docblock explaining why a config must not read the
+    // environment is prose every scan has to walk past — that is the false positive — and blanking it
+    // has to leave the line count alone, or every failure names a line the reader cannot find.
+    const source = ["/**", " * Never read process.env here.", " */", "const a = 1;", "process.env.X;"].join("\n");
+    const lines = blankComments(source).split("\n");
+    expect(lines.filter((line) => line.includes("process.env"))).toEqual(["process.env.X;"]);
+    expect(lines.indexOf("process.env.X;") + 1).toBe(5);
+  });
+
+  test("a string is not a comment, which is how two reads went unreported", () => {
+    // The two shapes #437 measured, both silent under a `replace` over a comment pattern and both
+    // planted into real source to watch a gate go red — a `//` in a URL, and an unbalanced `/*` in a
+    // glob. A read is only ever *added* by walking instead, so the assertion is that each line
+    // survives to be reported.
+    const inlineUrl = 'const base = "https://api.cloudflare.com"; const t = process.env.CLOUDFLARE_API_TOKEN ?? "";';
+    expect(blankComments(inlineUrl)).toContain("process.env.CLOUDFLARE_API_TOKEN");
+
+    const glob = [
+      'include: ["**/*.workers.test.ts"],',
+      'const t = process.env.CLOUDFLARE_API_TOKEN ?? "";',
+      "/** Anything at all. */",
+    ].join("\n");
+    const globLines = blankComments(glob).split("\n");
+    expect(globLines[1]).toContain("process.env.CLOUDFLARE_API_TOKEN");
+  });
+
+  test("and the reverse: a quote inside a comment or a regex opens no string", () => {
+    // So the walk is not simply preserving everything. A runaway string state would blank a real read
+    // on some later line, which is the same false negative wearing a hat.
+    const quoted = ['// it\'s fine, "really"', "const pattern = /^[\"']+/;", "process.env.X;"].join("\n");
+    const quotedLines = blankComments(quoted).split("\n");
+    expect(quotedLines[0]?.trim()).toBe("");
+    expect(quotedLines[2]).toBe("process.env.X;");
+
+    // A block comment quoting an apostrophe is the same trap over more lines: the line after it must
+    // still read as code rather than as the inside of a string.
+    const block = ['/* it\'s a comment, "really" */', 'const kept = "value";', "process.env.Y;"].join("\n");
+    const blockLines = blankComments(block).split("\n");
+    expect(blockLines[0]?.trim()).toBe("");
+    expect(blockLines[1]).toBe('const kept = "value";');
+    expect(blockLines[2]).toBe("process.env.Y;");
+
+    // And a `/` that divides is not a regex: a runaway literal would swallow the rest of the line.
+    const divide = ["const ratio = total / count;", 'const url = "a//b";', "process.env.Z;"].join("\n");
+    expect(blankComments(divide).split("\n")[2]).toBe("process.env.Z;");
   });
 });
