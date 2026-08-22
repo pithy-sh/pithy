@@ -7,6 +7,7 @@ import type { z } from "zod";
 import type { AuditEmit } from "../audit/recorder";
 import type { ControlPlaneContext } from "../controlPlane/context";
 import type { AdminRoute } from "../controlPlane/discovery/adminRoute";
+import type { CapabilityManifestConfig } from "../controlPlane/discovery/configuration";
 import type { CapabilityHealth } from "../controlPlane/discovery/health";
 import type { ControlPlaneVerifier } from "../controlPlane/http/guard";
 import type { DatabaseSpecMap } from "../data/databases";
@@ -307,6 +308,27 @@ export interface Capability<
    * anything else could never be granted. `capabilityHealthSources` refuses that at assembly.
    */
   health?: CapabilityHealth;
+  /**
+   * The configured facts this capability states into its own manifest entry — the decisions an adopter
+   * already made that a management client has to respect to call anything (#422). Omit it when nothing
+   * this capability is configured with changes how a client calls it, which is the normal case.
+   *
+   * **A third field, because the two obvious names are taken and neither is this.**
+   * {@link Capability.config} is the Zod type this capability validates its own env with — a schema, not
+   * a value, and it holds provider credentials. {@link Capability.settings} is `pithy doctor`'s seam,
+   * which reads local config *before* anything is deployed. This one is a value, resolved at assembly,
+   * on the wire, behind `manifest:read`.
+   *
+   * **Declared only through `defineManifestConfig`.** The type is branded, so an inline literal does not
+   * compile: every fact in the tree is checked against a declaration that travels with it, which is what
+   * keeps the values scalar and stops `manifestConfig: resolved` from ever being written.
+   *
+   * **Build it from the capability's resolved config, never from its defaults** — the same rule
+   * {@link Capability.adminRoutes} states, and here it is the only defense there is. Nothing downstream
+   * compares a fact against the capability's behavior, because the declaration and the value come from
+   * one object.
+   */
+  manifestConfig?: CapabilityManifestConfig;
   /**
    * How this capability checks that its own **settings work**, as opposed to being merely present — the
    * seam `pithy doctor` runs for every capability every Worker composes (#411). Omit it when a capability

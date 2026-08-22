@@ -46,6 +46,20 @@ export {
   ControlPlaneManifest,
   type ControlPlaneManifestWire,
 } from "./controlPlane/discovery/adminRoute";
+// The configured-fact seam: a capability states a decision an adopter already made — what this project
+// bills — and a management client respects it rather than guessing at it (#422). Exported whole, for the
+// same reason health is: a client reads the values through the declarations that travel with them, and
+// one that had to re-derive the contract would drift from it.
+export {
+  type CapabilityManifestConfig,
+  type CapabilityManifestConfigInput,
+  defineManifestConfig,
+  ManifestConfigKey,
+  ManifestConfigValue,
+  ManifestConfigValues,
+  type NamedConfigValue,
+  namedConfigValues,
+} from "./controlPlane/discovery/configuration";
 export { type AdminRouteDrift, missingAdminRoutes } from "./controlPlane/discovery/drift";
 // The health seam: a capability declares a bounded set of scalars about its own state, and the manifest
 // carries them — so a client renders "3 secrets need rotating" from the read it already made rather than

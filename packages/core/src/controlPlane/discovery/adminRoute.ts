@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import { ControlPlaneScope } from "../scope/scope";
+import { ManifestConfigKey, ManifestConfigValues } from "./configuration";
 import { CapabilityHealthReport, HealthSummary, HealthSummaryKey, healthReport, healthWire } from "./healthSummary";
 
 /**
@@ -88,9 +89,21 @@ export const CapabilityDeclaration = z
       .describe(
         "The closed vocabulary of scalars this capability may report about its own state, or empty when it reports none — including when the Worker predates this field and says nothing at all. Declared alongside the routes so a client can render a key it has never heard of from what the Worker says about it — and so a *withheld* number is visible as a key with no value, rather than as silence.",
       ),
+    // Both defaulted, for the reason stated above `healthKeys` and with the same force (#422). The two
+    // arrived together and travel together: a declaration with no value is a control with nothing behind
+    // it, and a value with no declaration is a fact a client can only guess the meaning of.
+    configKeys: z
+      .array(ManifestConfigKey)
+      .default([])
+      .describe(
+        "The configured facts this capability states, or empty when it states none — including when the Worker predates this field. Declared alongside the routes, because a fact is what a client needs to *call* one: `POST /billing/entitlements/grant` names a holder and never assumes it, so a client that cannot learn what this project bills can only guess — and a guess writes a row nothing reads.",
+      ),
+    config: ManifestConfigValues.default({}).describe(
+      "What each declared fact resolved to for this deployment. The same answer for every caller, read off the capability's parsed config at assembly: there is no producer here, so no failure state, no per-request cost, and no staleness beyond the manifest itself.",
+    ),
   })
   .describe(
-    "One capability this Worker composes, the version it is at, the admin surface it exposes, and the summary it may report.",
+    "One capability this Worker composes, the version it is at, the admin surface it exposes, the summary it may report, and the configured facts a client must respect to call any of it.",
   );
 export type CapabilityDeclaration = z.infer<typeof CapabilityDeclaration>;
 
@@ -150,11 +163,13 @@ export const CapabilityDescriptor = z
     // Both fields, from the one value, in the one place. A handler cannot write the numbers and forget
     // the flag, which is what makes `encode(decode(entry))` the entry again — the property the seam's
     // response contract test rests on.
-    encode: ({ health, healthKeys, ...declaration }) => ({
+    encode: ({ health, healthKeys, configKeys, config, ...declaration }) => ({
       ...declaration,
-      // The vocabulary is defaulted on the way in, so it is optional on the way back out. Empty is the
-      // meaning absence already had: a capability that declares no summary.
+      // Every defaulted field is optional on the way back out, and empty is the meaning absence already
+      // had: a capability that declares no summary, and one that states no configured fact.
       healthKeys: healthKeys ?? [],
+      configKeys: configKeys ?? [],
+      config: config ?? {},
       ...healthWire(health),
     }),
   })
@@ -179,6 +194,13 @@ export type CapabilityDescriptor = z.infer<typeof CapabilityDescriptor>;
  * features*, which is what answers "should this customer upgrade", "which customers are exposed to what
  * we just fixed", and "does this project predate the capability a pane needs". Reporting only one leaves
  * half the questions unanswerable, and they are the halves people actually ask.
+ *
+ * **And each entry carries a third thing: the configured facts that capability states** (#422). Knowing
+ * where a route is and which scope it needs is not always enough to call it — `POST
+ * {base}/entitlements/grant` names a holder, and whether this project's holders are people or
+ * organizations is a decision the adopter made in config. A client that cannot read the decision guesses
+ * it, and a guess writes a row nothing reads. See `discovery/configuration.ts` for why a fact is not a
+ * health number, despite the two fields sitting side by side.
  */
 export const ControlPlaneManifest = z
   .object({

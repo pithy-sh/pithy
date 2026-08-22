@@ -275,16 +275,23 @@ A management client composes its navigation **and its calls** from `GET /control
   "connectionId": "b6a1f0c2-3d4e-4f50-8a9b-0c1d2e3f4a5b",
   "version": "8f2a1c94-...",
   "capabilities": [
-    { "name": "controlplane", "version": "1.4.0", "healthKeys": [], "health": null, "adminRoutes": [
+    { "name": "controlplane", "version": "1.4.0", "healthKeys": [], "health": null,
+      "configKeys": [], "config": {}, "adminRoutes": [
       { "method": "GET",  "path": "/control-plane/ping", "scope": null,
         "summary": "Prove connectivity and which key answered. Always available to a verified caller." }
     ]},
-    { "name": "payments", "version": "1.4.0", "healthKeys": [], "health": null, "adminRoutes": [
-      { "method": "POST", "path": "/billing/entitlements/grant", "scope": "payments:entitlements:grant",
-        "summary": "Comp an entitlement, or repair a purchase that verified but never projected." },
-      { "method": "POST", "path": "/billing/entitlements/revoke", "scope": "payments:entitlements:revoke",
-        "summary": "Take an entitlement back, effective immediately." }
-    ]},
+    { "name": "payments", "version": "1.4.0", "healthKeys": [], "health": null,
+      "configKeys": [
+        { "key": "billingSubject", "choices": ["user", "organization"],
+          "summary": "What kind of thing holds a purchase in this project — one person, or one organization." }
+      ],
+      "config": { "billingSubject": "organization" },
+      "adminRoutes": [
+        { "method": "POST", "path": "/billing/entitlements/grant", "scope": "payments:entitlements:grant",
+          "summary": "Comp an entitlement, or repair a purchase that verified but never projected." },
+        { "method": "POST", "path": "/billing/entitlements/revoke", "scope": "payments:entitlements:revoke",
+          "summary": "Take an entitlement back, effective immediately." }
+      ]},
     { "name": "secrets", "version": "1.4.0",
       "healthKeys": [
         { "key": "secretsDueForRotation", "kind": "count", "states": null,
@@ -292,14 +299,18 @@ A management client composes its navigation **and its calls** from `GET /control
           "summary": "Secrets past the rotation cadence their registry entry declares." }
       ],
       "health": { "secretsDueForRotation": 3 },
+      "configKeys": [],
+      "config": {},
       "adminRoutes": [
         { "method": "GET", "path": "/secrets/admin/status", "scope": "secrets:status:read",
           "summary": "Every declared secret's status: when it was last rotated, how often, and whether it is overdue." },
         { "method": "POST", "path": "/secrets/admin/status/:name/rotate", "scope": "secrets:rotate",
           "summary": "Replace one declared secret in this environment, against its declared rotator. Reports per environment, never in aggregate." }
       ]},
-    { "name": "leaderboard", "version": "1.2.1", "healthKeys": [], "health": null, "adminRoutes": [] },
-    { "name": "app", "version": null, "healthKeys": [], "health": null, "adminRoutes": [] }
+    { "name": "leaderboard", "version": "1.2.1", "healthKeys": [], "health": null,
+      "configKeys": [], "config": {}, "adminRoutes": [] },
+    { "name": "app", "version": null, "healthKeys": [], "health": null,
+      "configKeys": [], "config": {}, "adminRoutes": [] }
   ],
   "grantedScopes": ["manifest:read", "payments:entitlements:grant"]
 }
@@ -309,13 +320,37 @@ A management client composes its navigation **and its calls** from `GET /control
 
 Each route also names the scope it needs. Against `grantedScopes`, that is what lets a client gray out `revoke` — not granted here — instead of offering a button that answers 403.
 
-A capability with no management surface reports an empty list rather than being absent. "Composed, but nothing to administer" and "not installed" are different facts, and a client that cannot tell them apart renders the wrong thing for both.
+A capability with no management surface reports an empty list rather than being absent. "Composed, but nothing to administer" and "not installed" are different facts, and a client that cannot tell them apart renders the wrong thing for both. The same holds for `configKeys` and `config`: only payments states a fact above, and every other entry carries `[]` and `{}` rather than omitting them.
 
 So a Worker that does not compose payments has no purchases pane, and that is a fact the client discovers. Run `pithy add support` and a **working** support pane appears on the next visit — panes *and* the calls behind them — with nothing for either side to configure.
 
 **The declaration is checked, not trusted.** A hand-maintained list beside generated behavior is a list that rots, and a manifest that has drifted is worse than none: a client believes it, calls a path nothing serves, and the adopter sees a management client broken for reasons inside somebody else's package. So `missingAdminRoutes` compares every declared route against the router that actually mounted, and each capability asserts it in its own `routeContract.test.ts`.
 
 There is deliberately **no manifest schema version**. With the routes described here, a client dispatches on what this Worker declares right now; a schema version would be a second source of truth to keep in sync with the first.
+
+### The facts a client must respect
+
+A route says where to call and which scope to hold. It does not say what to **send**. `POST /billing/entitlements/grant` names the holder and never assumes it — `subjectType` is a request field, deliberately — and whether this project's holders are people or organizations is a decision the adopter made once, in config, with no default to fall back on. A client that cannot read that decision has to guess it. Against a project billing the other kind the guess is refused, and the person a support agent meant to help is still locked out.
+
+Nothing else on the wire answers it either. The catalog read returns products. The client projection leaves it out on purpose and is a browser bundle besides. And the entitlement rows carry a `subjectType` each — evidence about who happens to hold something, not a statement about what the project bills. An empty table says nothing, and a project that migrated has both kinds in it.
+
+So a capability may state **configured facts** on its own entry, declared alongside its routes for the same reason: `configKeys` is the closed vocabulary, `config` is what this deployment resolved each one to. Payments states one, `billingSubject`, read off `PaymentsSubjectType` so a third kind of holder cannot land without the manifest learning it. Most capabilities state none, and say so with an empty list.
+
+**A configured fact is not a health number**, though the two sit side by side on the entry:
+
+| | A health number | A configured fact |
+| --- | --- | --- |
+| Who it is for | This caller — scoped, and withheld without the grant | Everybody, identically |
+| Where it comes from | A producer, run on the read | Resolved config, read once at assembly |
+| How it fails | `unavailable` — a fourth state that must not read as zero | It cannot. There is nothing to ask |
+| How old it is | As old as the manifest a client cached | Changes only when the adopter redeploys |
+| What a client does with it | Renders it | Sends it back on the next call |
+
+**No per-key scope, deliberately.** A health key inherits one because a count is still a fact about somebody's posture. `billingSubject` is not that: it names no account, no transaction and no amount, and reads identically against an empty database. The whole manifest already sits behind `manifest:read` — the same gate that discloses every route, every scope and every composed version. Withholding stays addable later with no wire change: a key present in `configKeys` with no value in `config` already means "declared and not shown".
+
+**Scalars only, and a value nothing declares is refused.** A capability's resolved config holds provider credentials and an adopter's whole catalog, so the seam is narrow by construction rather than by taste: `defineManifestConfig` is the only constructor, it takes a string, a number or a boolean and nothing else, and it refuses a value no key declares, a declared key with no value, and a value outside its own `choices`.
+
+**Both fields are defaulted rather than required**, like `healthKeys` before them. A Worker deployed before they existed sends neither, and its manifest must still parse whole — there is no schema version to negotiate on, so absence is the entire compatibility mechanism.
 
 ### The numbers, so a rail costs one read
 
