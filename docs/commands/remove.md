@@ -26,7 +26,7 @@ The precise inverse of `add` — and of `add --eject` — for one Worker, in thi
 
 **Drop the tables, if asked.** First, while the capability's `down` code is still present — after the uninstall there would be nothing left to reverse them with. Gated on a confirmation, and refused outright when a sibling Worker still wires the capability: Workers sharing a binding name share one physical D1, so reversing migrations for one would delete data the other is serving.
 
-**Unwire the Worker.** The import and the registration call come out of `apps/<name>/pithy.config.ts`; the capability's bindings come out of every environment stanza in its `wrangler.jsonc`.
+**Unwire the Worker.** The import and the registration call come out of `apps/<name>/pithy.config.ts`; the capability's bindings come out of every environment stanza in its `wrangler.jsonc`; and its Durable Object exports come out of the module `main` names — the package is about to be uninstalled, or the fork deleted, so a re-export left behind is a Worker that no longer builds. A binding another capability in that Worker still needs stays, and so does an export of the same class from a module of your own.
 
 **Remove the code.** An ejected capability's local source at `apps/<name>/capabilities/<cap>/` is deleted — through a gate that refuses a symlink at any segment of that path and refuses a path resolving outside the project. A package-served capability is uninstalled with the project's package manager instead.
 

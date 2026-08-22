@@ -197,7 +197,7 @@ describe("docs/commands/doctor.md", () => {
   test("pastes exactly the blocks pinned below, and nothing else", () => {
     // An unclassified block, a fourth transcript, or a second sample would be an unpinned example. The
     // page total counts the synopsis too, so a worked example added anywhere lands in one of these.
-    expect(WHAT_BLOCKS).toHaveLength(10);
+    expect(WHAT_BLOCKS).toHaveLength(11);
     expect(EXAMPLE_BLOCKS).toHaveLength(2);
     expect(JSON_SAMPLES).toHaveLength(1);
     expect(fencedBlocks(PAGE)).toHaveLength(WHAT_BLOCKS.length + EXAMPLE_BLOCKS.length + JSON_SAMPLES.length + 1);
@@ -225,6 +225,7 @@ describe("docs/commands/doctor.md", () => {
                 {
                   name: "media",
                   missingConfigKeys: [],
+                  missingEntryExports: [],
                   missingBindings: [
                     { env: "staging", name: "MEDIA_BUCKET", type: "r2" },
                     { env: "prod", name: "MEDIA_BUCKET", type: "r2" },
@@ -321,6 +322,39 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
+   * The entry-export fragment (#428), pinned against a Worker binding a Durable Object whose class its
+   * entry does not export.
+   *
+   * The half of a binding that lives in the adopter's code. `wrangler.jsonc` carries the `class_name` and
+   * the module `main` names carries the class, and a project holding one without the other is refused at
+   * deploy — so a check reading only the config called it healthy. The page shows the line because the
+   * adopter meeting it is looking at a `wrangler.jsonc` with nothing wrong in it.
+   */
+  test("the entry-export fragment is what the renderer prints for a class the entry does not export", async () => {
+    const report = await buildDoctorReport(
+      docOptions(
+        harness.baseOptions({
+          resolveWorkers: async () => workerSet("api"),
+          buildPlan: planStub({
+            ...cleanPlanFor("api"),
+            perCapability: [
+              {
+                name: "multiplayer",
+                missingBindings: [],
+                missingConfigKeys: [],
+                missingEntryExports: ["MultiplayerSession"],
+              },
+            ],
+          }),
+        }),
+      ),
+    );
+    const fragment = FRAGMENTS[2];
+    if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the entry-export fragment.`);
+    expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  /**
    * The prereqs fragment (#273), pinned against a Worker composing `auth` with neither peer beside it.
    *
    * The one check in the block that is not drift: `createBackend` refuses to assemble that composition, so
@@ -342,7 +376,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[2];
+    const fragment = FRAGMENTS[3];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the prerequisites fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -373,7 +407,7 @@ describe("docs/commands/doctor.md", () => {
       ],
       manifests: { ok: true, faults: [] },
     };
-    const fragment = FRAGMENTS[3];
+    const fragment = FRAGMENTS[4];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the unchecked-worker fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -401,7 +435,7 @@ describe("docs/commands/doctor.md", () => {
         faults: [{ package: "@pithy-sh/leaderboard", reason: "configOptions[0].key: not a bare identifier" }],
       },
     };
-    const fragment = FRAGMENTS[4];
+    const fragment = FRAGMENTS[5];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the Project health fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -427,7 +461,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[5];
+    const fragment = FRAGMENTS[6];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the unknown-alias fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -453,7 +487,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[6];
+    const fragment = FRAGMENTS[7];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the offline fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -501,7 +535,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[7];
+    const fragment = FRAGMENTS[8];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the settings fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -525,7 +559,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[8];
+    const fragment = FRAGMENTS[9];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the local delivery fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });

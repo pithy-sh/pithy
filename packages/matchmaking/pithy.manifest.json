@@ -4,8 +4,18 @@
   "requiredBindings": [
     { "type": "d1", "name": "DB" },
     { "type": "kv", "name": "MATCHMAKING" },
-    { "type": "durable_object", "name": "QUEUE", "className": "MatchmakingQueue" },
-    { "type": "durable_object", "name": "PRESENCE", "className": "MatchmakingPresence" }
+    {
+      "type": "durable_object",
+      "name": "QUEUE",
+      "className": "MatchmakingQueue",
+      "classModule": "@pithy-sh/matchmaking/src/queue/durableObject"
+    },
+    {
+      "type": "durable_object",
+      "name": "PRESENCE",
+      "className": "MatchmakingPresence",
+      "classModule": "@pithy-sh/matchmaking/src/presence/durableObject"
+    }
   ],
   "peerCapabilities": [],
   "optionalCapabilities": ["auth", "rating", "multiplayer"],
@@ -14,7 +24,7 @@
   "scaffold": [
     "Add a `matchmaking({ games: [...] })` block to pithy.config.ts and declare at least one game.",
     "Give each game a `key`, a `players` count, an optional `skillPool` naming a @pithy-sh/rating pool, and a `snapshot` — the `kind` and `rules` of the @pithy-sh/multiplayer game a formed match is minted into. Tune `roomCodes` and `queue` per game.",
-    "Re-export both Durable Objects from your worker entry: `export { MatchmakingQueue } from \"@pithy-sh/matchmaking/src/queue/durableObject\";` and `export { MatchmakingPresence } from \"@pithy-sh/matchmaking/src/presence/durableObject\";` — wrangler's `class_name` resolves against your worker's `main`. Import each from its own module, never from the package entry point, which pithy.config.ts loads in Node.",
+    "The CLI has already written both Durable Object exports into your worker entry: `export { MatchmakingQueue } from \"@pithy-sh/matchmaking/src/queue/durableObject\";` and `export { MatchmakingPresence } from \"@pithy-sh/matchmaking/src/presence/durableObject\";` — wrangler's `class_name` resolves against your worker's `main`. Each comes from its own module, never from the package entry point, which pithy.config.ts loads in Node. No hand-editing.",
     "The CLI has already added the QUEUE and PRESENCE durable_object bindings and their class migration tags (`new_sqlite_classes`) to wrangler.jsonc for every environment. No hand-editing.",
     "Bind a D1 database named DB in wrangler.jsonc — the same app database your other capabilities use.",
     "Create the MATCHMAKING KV namespace in your Cloudflare account under the name `pithy add` printed for each environment, and paste its id into the entry add already wrote. A kv_namespaces entry has no name field, so the title can only live in the account. Room codes live there under a TTL; nothing else does.",

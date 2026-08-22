@@ -6,7 +6,10 @@ import { describe, expect, test } from "vitest";
 import { provisionableBindings, serviceBindings } from "./bindings";
 
 /** A capability declaring an arbitrary set of bindings — the only field these tests exercise. */
-function cap(name: string, bindings: { type: string; name: string; className?: string; service?: string }[]) {
+function cap(
+  name: string,
+  bindings: { type: string; name: string; className?: string; classModule?: string; service?: string }[],
+) {
   return defineCapability({
     name,
     // biome-ignore lint/suspicious/noExplicitAny: test fixture feeds raw binding specs through the parser.
@@ -22,7 +25,7 @@ describe("provisionableBindings", () => {
       { type: "r2", name: "ASSETS" },
       { type: "ai", name: "AI" },
       { type: "queue", name: "JOBS" },
-      { type: "durable_object", name: "ROOMS", className: "Room" },
+      { type: "durable_object", name: "ROOMS", className: "Room", classModule: "@acme/rooms/src/durableObject" },
       { type: "service", name: "OTHER", service: "other" },
     ]);
 

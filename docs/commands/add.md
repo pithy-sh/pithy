@@ -49,11 +49,13 @@ $ pithy add auth --json
 
 Composing something nobody asked for is not a thing to do behind an adopter's back. Reporting `Done.` on a project that cannot boot is worse. A prompt where there is someone to ask and a flag where there is not is how the rest of this CLI settles that (§`--worker`, `pithy init`'s domains).
 
-**Wire that Worker.** `apps/<name>/pithy.config.ts` gains the import and the registration call; `apps/<name>/wrangler.jsonc` gains the manifest's required bindings, in every environment stanza the file declares, plus any Durable Object class migrations. Handler source stays in the package. Only the thin registration lands in your repo.
+**Wire that Worker.** `apps/<name>/pithy.config.ts` gains the import and the registration call; `apps/<name>/wrangler.jsonc` gains the manifest's required bindings, in every environment stanza the file declares, plus any Durable Object class migrations; and the module that Worker's `main` names gains an `export { <Class> } from "…";` for every Durable Object class it now binds. Handler source stays in the package. Only the thin registration lands in your repo.
 
 Every binding whose entry `add` can complete offline is written: `d1_databases`, `kv_namespaces`, `r2_buckets`, `ai`, `durable_objects`, `ratelimits`, and `workflows`. Two are worth a sentence each.
 
 A **rate limiter** is a policy, not a resource — nothing exists behind it in your account. It is written at **100 requests per 60 seconds, per client IP**, which is a flood guard rather than a product rule. Tune it in `wrangler.jsonc`; `add` never rewrites an entry you have changed. Cloudflare accepts a `period` of `10` or `60` and nothing else.
+
+A **Durable Object** is two halves, and only one of them is config. The `durable_objects.bindings` entry names a `class_name`, and wrangler resolves that name against the module `main` names — a Worker whose entry does not export the class is refused at deploy with *Your Worker depends on the following Durable Objects, which are not exported in your entrypoint file*. So `add` writes the export too, under a comment saying what the block is. Delete a line from it and the Worker stops deploying; `pithy remove` takes it back out. A class the entry already exports, however you wrote it, is left alone.
 
 A **Workflow** entry names the capability's host Worker across scripts — `<project>-<env>-<capability>-<job>` running in `<project>-<env>-<capability>` — so it is complete before that host exists, and `wrangler dev` binds it either way. The host itself is deployed by `pithy <capability> provision`, which `notes` says.
 

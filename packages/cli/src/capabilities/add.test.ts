@@ -169,7 +169,12 @@ describe("addCapability", () => {
       name: "multiplayer",
       package: "@pithy-sh/multiplayer",
       requiredBindings: [
-        { type: "durable_object", name: "SESSIONS", className: "MultiplayerSession" },
+        {
+          type: "durable_object",
+          name: "SESSIONS",
+          className: "MultiplayerSession",
+          classModule: "@pithy-sh/multiplayer/src/session/durableObject",
+        },
         { type: "d1", name: "DB" },
       ],
     });
@@ -198,10 +203,80 @@ describe("addCapability", () => {
     expect(wrangler.env.staging?.migrations).toBeUndefined();
     expect(wrangler.env.prod?.migrations).toBeUndefined();
 
+    // And the half of the binding that lives in the adopter's code: wrangler resolves `class_name`
+    // against the module `main` names, and refuses the deploy when nothing there exports it (#428).
+    const entry = await readFile(join(worker, "src", "index.ts"), "utf8");
+    expect(entry).toContain('export { MultiplayerSession } from "@pithy-sh/multiplayer/src/session/durableObject";');
+    // The Worker it was already is untouched — the export is written after it, never into it.
+    expect(entry).toContain("export default createEntrypoint(config);");
+
     // Idempotent: a second add changes nothing.
     const once = await readFile(join(worker, "wrangler.jsonc"), "utf8");
     await addCapability({ workerDir: worker, manifest: doManifest });
     expect(await readFile(join(worker, "wrangler.jsonc"), "utf8")).toBe(once);
+    expect(await readFile(join(worker, "src", "index.ts"), "utf8")).toBe(entry);
+  });
+
+  test("a capability with no Durable Object never touches the entry", async () => {
+    // The entry is the adopter's file. A command that rewrote it for every capability would put a diff
+    // in front of them for nothing, and `auth` binds no class.
+    const before = await readFile(join(worker, "src", "index.ts"), "utf8");
+    await addCapability({ workerDir: worker, manifest });
+    expect(await readFile(join(worker, "src", "index.ts"), "utf8")).toBe(before);
+  });
+
+  test("an entry the wrangler config names and the Worker does not have is refused, by name", async () => {
+    // Not silence: `main` is what wrangler bundles, so a capability wired with no entry to export its
+    // class from is a project that configures a Durable Object it cannot deploy. The refusal names the
+    // file and the command to run again.
+    const doManifest = CapabilityManifest.parse({
+      name: "multiplayer",
+      package: "@pithy-sh/multiplayer",
+      requiredBindings: [
+        {
+          type: "durable_object",
+          name: "SESSIONS",
+          className: "MultiplayerSession",
+          classModule: "@pithy-sh/multiplayer/src/session/durableObject",
+        },
+      ],
+    });
+    await rm(join(worker, "src", "index.ts"));
+    await expect(addCapability({ workerDir: worker, manifest: doManifest })).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.message).toMatch(/index\.ts is missing/);
+      // A file the config names and the disk does not have. Restoring it is the remedy, and the action
+      // says so.
+      expect(error.payload.action).toMatch(/Restore/);
+      return true;
+    });
+  });
+
+  test("a config naming no main is told to name one, not to restore a file nothing named", async () => {
+    // Two different faults under one action line. When `main` is absent there is no "that file" to
+    // restore — nothing has named a file yet — and the remedy is in wrangler.jsonc, not on disk.
+    const doManifest = CapabilityManifest.parse({
+      name: "multiplayer",
+      package: "@pithy-sh/multiplayer",
+      requiredBindings: [
+        {
+          type: "durable_object",
+          name: "SESSIONS",
+          className: "MultiplayerSession",
+          classModule: "@pithy-sh/multiplayer/src/session/durableObject",
+        },
+      ],
+    });
+    const path = join(worker, "wrangler.jsonc");
+    const config = parse(await readFile(path, "utf8")) as unknown as { main?: string };
+    delete config.main;
+    await writeFile(path, JSON.stringify(config, null, 2));
+
+    await expect(addCapability({ workerDir: worker, manifest: doManifest })).rejects.toSatisfy((error: PithyError) => {
+      expect(error.payload.message).toMatch(/names no main/);
+      expect(error.payload.action).not.toMatch(/Restore/);
+      expect(error.payload.action).toMatch(/main/);
+      return true;
+    });
   });
 
   /**
@@ -222,14 +297,31 @@ describe("addCapability", () => {
     const multiplayerManifest = CapabilityManifest.parse({
       name: "multiplayer",
       package: "@pithy-sh/multiplayer",
-      requiredBindings: [{ type: "durable_object", name: "SESSIONS", className: "MultiplayerSession" }],
+      requiredBindings: [
+        {
+          type: "durable_object",
+          name: "SESSIONS",
+          className: "MultiplayerSession",
+          classModule: "@pithy-sh/multiplayer/src/session/durableObject",
+        },
+      ],
     });
     const matchmakingManifest = CapabilityManifest.parse({
       name: "matchmaking",
       package: "@pithy-sh/matchmaking",
       requiredBindings: [
-        { type: "durable_object", name: "QUEUE", className: "MatchmakingQueue" },
-        { type: "durable_object", name: "PRESENCE", className: "MatchmakingPresence" },
+        {
+          type: "durable_object",
+          name: "QUEUE",
+          className: "MatchmakingQueue",
+          classModule: "@pithy-sh/matchmaking/src/queue/durableObject",
+        },
+        {
+          type: "durable_object",
+          name: "PRESENCE",
+          className: "MatchmakingPresence",
+          classModule: "@pithy-sh/matchmaking/src/presence/durableObject",
+        },
       ],
     });
 

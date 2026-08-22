@@ -4,7 +4,7 @@ Authoritative, turn-based multiplayer sessions on Cloudflare. The server holds t
 
 The package is **sessions infrastructure plus pluggable game models**. The session — membership bound to an authenticated user, a lifecycle, hidden per-player state, an alarm-driven deadline, a durable D1 result, a one-way leaderboard publish — is the same for every game. What a *game* is lives behind a `GameModel`, resolved by `kind`. Three example games ship — built on reusable pattern helpers — and you can register your own.
 
-This is Pithy's first Durable Object. `pithy add multiplayer` wires the DO binding and its class migration tag into `wrangler.jsonc` for every environment; `pithy migrate` creates the result table. You write games as config and re-export one class.
+This is Pithy's first Durable Object. `pithy add multiplayer` wires the DO binding and its class migration tag into `wrangler.jsonc` for every environment, and writes the `MultiplayerSession` export into your worker entry; `pithy migrate` creates the result table. You write games as config.
 
 ## Games, and the patterns you build them on
 

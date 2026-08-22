@@ -152,6 +152,7 @@ describe("renderDoctorText", () => {
             {
               name: "media",
               missingConfigKeys: [],
+              missingEntryExports: [],
               missingBindings: [
                 { env: "staging", name: "MEDIA_BUCKET", type: "r2" },
                 { env: "prod", name: "MEDIA_BUCKET", type: "r2" },
@@ -440,6 +441,7 @@ describe("doctorExitCode", () => {
               name: "auth",
               missingBindings: [],
               missingConfigKeys: [{ key: "basePath", default: "/auth", describe: "x" }],
+              missingEntryExports: [],
             },
           ],
         }),
@@ -487,6 +489,7 @@ describe("doctorExitCode", () => {
             {
               name: "media",
               missingConfigKeys: [],
+              missingEntryExports: [],
               missingBindings: [{ env: "staging", name: "MEDIA_BUCKET", type: "r2" }],
             },
           ],
@@ -494,6 +497,28 @@ describe("doctorExitCode", () => {
       }),
     );
     expect(doctorExitCode(report)).toBe(1);
+  });
+
+  test("non-zero when a Durable Object class is missing from the entry, and the block names it", async () => {
+    // The half of the binding `wrangler.jsonc` cannot show. Reported under `bindings` because that is
+    // what it is: one binding written in two files, and the deploy needs both.
+    const report = await buildDoctorReport(
+      baseOptions({
+        buildPlan: planStub({
+          ...cleanPlan,
+          perCapability: [
+            {
+              name: "multiplayer",
+              missingConfigKeys: [],
+              missingBindings: [],
+              missingEntryExports: ["MultiplayerSession"],
+            },
+          ],
+        }),
+      }),
+    );
+    expect(doctorExitCode(report)).toBe(1);
+    expect(renderDoctorText(report, "/home/u")).toContain("MultiplayerSession not exported from this worker's entry");
   });
 
   test("non-zero when migrations are pending", async () => {
@@ -792,7 +817,7 @@ describe("project health — installed is not composed (regression)", () => {
 
   test("a worker composing nothing is healthy and exits zero", async () => {
     const report = await buildDoctorReport(realEngine([worker("web", web, [])]));
-    expect(checkedWorker(report.project?.health).bindings).toEqual({ ok: true, missing: [] });
+    expect(checkedWorker(report.project?.health).bindings).toEqual({ ok: true, missing: [], missingExports: [] });
     expect(report.project?.health.ok).toBe(true);
     expect(doctorExitCode(report)).toBe(0);
   });

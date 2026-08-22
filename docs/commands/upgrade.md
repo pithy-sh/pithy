@@ -24,7 +24,7 @@ A capability's manifest grows. A new release declares a binding it did not need 
 
 Capabilities are per Worker, so the reconcile engine is too. `upgrade` fans out over `apps/*`, building one plan per Worker against that Worker's own wiring and applying it there. `--worker <name>` narrows the run to one. Output is grouped by Worker: a project with two Workers gets two blocks, and `--json` carries one entry each.
 
-Per Worker, a plan reports four things.
+Per Worker, a plan reports five things.
 
 **Missing bindings**, per environment. A required binding the manifest declares that a wrangler stanza lacks — checked for every stanza in the file, since `env.staging` can be behind while the top-level one is current. Applying writes them in, comment-preserving, and appends any Durable Object class migrations.
 
@@ -32,9 +32,23 @@ Per Worker, a plan reports four things.
 
 **Ejected capabilities.** Named, never touched. A fork no longer tracks its package, so reconciling it would overwrite code you own.
 
+**Missing Durable Object exports.** A `durable_objects.bindings` entry is half of a Durable Object; the other half is `export { <Class> } from "…";` on the module `main` names, which is what wrangler resolves `class_name` against. A class bound in `wrangler.jsonc` and absent from the entry is drift a config read alone cannot see — the binding is there and the class is nowhere — so it is reported per capability and written by an apply.
+
 **Pending migrations**, counted for `--env`. Reported by default; applied only with `--migrate`.
 
 Two things sit outside that list. `entitlements` names this Worker's own source files that gate a route on an entitlement while nothing the Worker composes provides one — report-only, because which capability to compose is your decision, not the CLI's. And `missingVersionMetadata` covers the `version_metadata` binding named `CF_VERSION_METADATA`: without it a Worker cannot report which build is running, so log records carry no `version`, audit events carry no build id, and `pithy deploy` cannot verify the deploy it just made. An upgrade adds it. A config naming a *different* binding is reported and left alone.
+
+**The entry is the one file `upgrade` writes that is source rather than config**, so both halves of that write are named. A dry run says what is missing and an apply says what it wrote:
+
+```
+api:
+  Worker entry: export MultiplayerSession.
+
+api:
+  Worker entry: exported MultiplayerSession.
+```
+
+Over every composed capability, not only the ones with a missing binding — a project wired before the CLI wrote that line has the binding already and the export nowhere, and `wrangler deploy` refuses it with *Your Worker depends on the following Durable Objects, which are not exported in your entrypoint file*. That project is exactly who runs this command, so it is reported rather than repaired in silence, and `pithy doctor` fails on it under `bindings`. A Worker whose config names no `main` has no entry to read and is passed over.
 
 **Installed is not composed.** The manifests are installed once at the project root and shared by every Worker, so they describe every capability installed anywhere in the project — not what this Worker is made of. A plan is scoped to the Worker's own composed set. A capability another Worker added contributes nothing here; anything else would put a foreign capability's bindings, and its Durable Object class migrations, on a script that never declared them.
 
@@ -42,7 +56,7 @@ Two things sit outside that list. `entitlements` names this Worker's own source 
 
 A dry run resolves no project name and proposes none, so nothing can be written. An apply resolves the name from the root `pithy.config.ts`, because a capability wired by `upgrade` must get the same `<project>-<env>-<binding>` resource name it would have got from `add`. With `--migrate`, the name is required and checked first, so a nameless project fails having written nothing rather than mid-fan-out.
 
-`upgrade` skips ejected capabilities, touches no Cloudflare account, and writes only config files and — with `--migrate` — the database for `--env`.
+`upgrade` skips ejected capabilities, touches no Cloudflare account, and writes only config files, the Worker entry's Durable Object exports, and — with `--migrate` — the database for `--env`.
 
 ## `--json`
 
@@ -105,6 +119,7 @@ a weaker gate than the failure it replaced.
 | `perCapability[].missingConfigKeys[].key` | string | The option name to add to the registration call |
 | `perCapability[].missingConfigKeys[].default` | JSON value | The manifest default rendered as the option's value — a scalar, or a worked example you replace |
 | `perCapability[].missingConfigKeys[].describe` | string | The option's rationale, rendered as the comment above it |
+| `perCapability[].missingEntryExports` | string[] | Durable Object classes this capability binds in this Worker that the module its `main` names does not export. wrangler resolves `class_name` against that module and refuses the deploy without it. An apply writes them |
 | `ejectedSkipped` | string[] | Ejected capabilities, by name. Never reconciled — ejected code no longer tracks its package |
 | `ledger` | object | What `env`'s databases have applied against what this Worker declares. **The counts sit behind `state`**, so a sum taken over some of the databases cannot be read as a sum over all of them |
 | `ledger.state` | `"read"` \| `"partial"` \| `"unavailable"` | Whether every database in scope answered, some did, or none did |
@@ -141,6 +156,7 @@ a weaker gate than the failure it replaced.
 | `migrations[].results[].status` | `"Success" \| "Error" \| "NotExecuted"` | `NotExecuted` means an earlier migration failed |
 | `migrations[].sharedWith` | string[] | The other Workers bound to this same physical D1. Present only when a database is shared |
 | `addedVersionMetadata` | boolean | Whether this run added the `version_metadata` binding the Worker was missing |
+| `addedEntryExports` | string[] | The Durable Object classes this run exported from the Worker's entry. Empty when the entry already carried them |
 
 **The two shapes differ in what a run produced, never in how it names the Worker.** `worker` and `deployedAs` are in both, carrying the same two strings, because `workers` is one array and `dryRun` is what says which shape fills it — a key present on one side and absent on the other would mean a consumer that worked under `--dry-run` read `undefined` on the run that actually wrote something. The applied entry used to drop `deployedAs`; it does not now.
 

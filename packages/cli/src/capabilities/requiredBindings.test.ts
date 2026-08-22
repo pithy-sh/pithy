@@ -10,7 +10,9 @@ import type { BindingSpec, BindingType } from "@pithy-sh/core/src/capability/bin
 import { isProvisionedBinding, isWrittenBinding } from "@pithy-sh/core/src/capability/bindings";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { parse } from "comment-json";
+import { parseAst } from "rolldown/parseAst";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import type { Node } from "../ci/workflowDrivers";
 import { DEFAULT_WORKER, scaffoldProject } from "../project/scaffold";
 import { addCapability, type ConfigValue } from "./add";
 import { applyReconcilePlan, buildReconcilePlan } from "./reconcile";
@@ -140,6 +142,69 @@ function incompleteWorkflowBindings(manifests: readonly { pkg: string; manifest:
   return incomplete;
 }
 
+/**
+ * Every Durable Object class a **set of bindings** names, sorted and deduplicated.
+ *
+ * **Over the bindings, never over the manifest**, and that is the whole of the answer to `optional`. The
+ * rule is one sentence — *the entry exports exactly the classes this Worker binds* — and the two writers
+ * bind different sets from the same manifest: `pithy add` runs before any config exists and writes the
+ * non-optional bindings, while `pithy upgrade` writes what the Worker's composed set actually derives
+ * ({@link effectiveBindings}). Both are right, so this takes the list rather than deciding for them.
+ *
+ * The earlier shape decided, and decided against both of them: it read every binding a manifest declared,
+ * optional included, on the reasoning that "a class the writer put in `durable_objects.bindings` has to be
+ * there whatever the flag says". True — but the writer puts an optional one in no stanza at all, so the
+ * gate demanded an export for a class no `class_name` resolves against. Nothing shipped an optional
+ * Durable Object binding, so nothing failed; the first one would have turned this red for a project that
+ * was correct.
+ */
+function durableObjectClasses(bindings: readonly BindingSpec[]): string[] {
+  return [
+    ...new Set(
+      bindings
+        .filter((binding) => binding.type === "durable_object" && binding.className !== undefined)
+        .map((binding) => binding.className as string),
+    ),
+  ].sort();
+}
+
+/** Every `class_name` one environment's stanza binds a Durable Object namespace to. */
+function wiredDurableObjectClasses(stanza: Record<string, unknown>): string[] {
+  const bindings = (stanza.durable_objects as { bindings?: Record<string, unknown>[] } | undefined)?.bindings ?? [];
+  return bindings.map((entry) => String(entry.class_name));
+}
+
+/**
+ * Every value-kind name a module exports, read from its syntax tree.
+ *
+ * **The judge is deliberately not the writer.** `capabilities/entryExports.ts` has a reader of its own —
+ * a scanner, because it ships and the parser here is a dev-only dependency — and a gate that asked the
+ * writer whether the writer had written something would be green on any reader that answered its own
+ * question. This one parses, with rolldown's oxc, exactly as `ci/workflowDrivers.ts` does.
+ *
+ * `exportKind` is what decides, not the word: `verbatimModuleSyntax` erases a type-only export, so
+ * `export type { MultiplayerSession }` puts no class on the emitted module and wrangler's `class_name`
+ * still resolves to nothing — the same fact `hasDefaultExport` turns on for #426.
+ */
+function exportedNames(text: string): string[] {
+  const program = parseAst(text, { lang: "ts" }, "entry.ts") as unknown as Node;
+  const body = Array.isArray(program.body) ? (program.body as Node[]) : [];
+  const names: string[] = [];
+  for (const statement of body) {
+    if (statement.type !== "ExportNamedDeclaration" || statement.exportKind === "type") continue;
+    const specifiers = Array.isArray(statement.specifiers) ? (statement.specifiers as Node[]) : [];
+    for (const specifier of specifiers) {
+      if (specifier.exportKind === "type") continue;
+      const exported = specifier.exported as { name?: unknown } | undefined;
+      if (typeof exported?.name === "string") names.push(exported.name);
+    }
+    // `export class MultiplayerSession {}` — an adopter's own class, exported where it is declared.
+    const declaration = statement.declaration as { id?: { name?: unknown } } | undefined;
+    if (typeof declaration?.id?.name === "string") names.push(declaration.id.name);
+  }
+  return names;
+}
+
 describe("every required binding has somewhere to come from", () => {
   test("the sweeps below are quantified over the real manifests", () => {
     // The anti-vacuity guard the whole file was missing. Every assertion here is `for (… of MANIFESTS)`
@@ -156,6 +221,14 @@ describe("every required binding has somewhere to come from", () => {
     const kinds = new Set(MANIFESTS.flatMap(({ manifest }) => manifest.requiredBindings.map((b) => b.type)));
     expect(kinds).toContain("d1");
     expect(kinds).toContain("workflow");
+    expect(kinds).toContain("durable_object");
+    // And the Durable Object sweep below is quantified over real classes, not over an empty `className`
+    // on every one of them — three, across `multiplayer` and `matchmaking`.
+    expect(MANIFESTS.flatMap(({ manifest }) => durableObjectClasses(manifest.requiredBindings)).sort()).toEqual([
+      "MatchmakingPresence",
+      "MatchmakingQueue",
+      "MultiplayerSession",
+    ]);
   });
 
   test("each is either written by pithy add or created by a provision command", () => {
@@ -183,6 +256,34 @@ describe("every required binding has somewhere to come from", () => {
       (binding) => !isWrittenBinding(binding.type) && !isProvisionedBinding(binding.type),
     );
     expect(orphaned.map(label)).toEqual(["queue:PLANTED"]);
+  });
+
+  test("every Durable Object class really is exported by the module its binding names", () => {
+    // The claim `classModule` makes is about another package's files, so it is checked against them —
+    // `catalog.test.ts`'s rule for the import specifier `pithy add` writes, one export keyword over. A
+    // specifier that resolves to nothing, or to a module that does not export the class, is a Worker
+    // that fails at bundle time on a line the CLI wrote.
+    const wrong: string[] = [];
+    for (const { pkg, manifest } of MANIFESTS) {
+      for (const binding of manifest.requiredBindings) {
+        if (binding.type !== "durable_object") continue;
+        const { className, classModule } = binding;
+        if (className === undefined || classModule === undefined) continue;
+        // Inside the capability's own package, and never its entry point: `src/index` is what an
+        // adopter's `pithy.config.ts` imports in Node, and a Durable Object on that path imports
+        // `cloudflare:workers` and takes every Node-side command down with it (#172, #180).
+        const inside = classModule.startsWith(`${manifest.package}/`);
+        const path = join(PACKAGES, pkg, `${classModule.slice(manifest.package.length + 1)}.ts`);
+        if (!inside || classModule === `${manifest.package}/src/index` || !exists(path)) {
+          wrong.push(`${pkg}: ${classModule} is not a module of ${manifest.package}`);
+          continue;
+        }
+        if (!new RegExp(`export class ${className}\\b`).test(readFileSync(path, "utf8"))) {
+          wrong.push(`${pkg}: ${classModule} exports no ${className}`);
+        }
+      }
+    }
+    expect(wrong).toEqual([]);
   });
 
   test("a workflow binding nothing can name is refused, because a partial entry fails wrangler's validator", () => {
@@ -306,6 +407,113 @@ describe("what pithy add claims to write, it writes", () => {
   );
 
   /**
+   * **Every Durable Object class the wiring names is exported by the entry the scaffolder writes.** (#428)
+   *
+   * A `durable_objects.bindings` entry is one half of a Durable Object. The other half is a named export
+   * on the module `main` points at, and wrangler refuses the deploy without it:
+   *
+   *     Your Worker depends on the following Durable Objects, which are not exported in your entrypoint
+   *     file: MultiplayerSession.
+   *
+   * `pithy add` wrote both halves of the config — the binding and the `new_sqlite_classes` tag — and left
+   * the export to a human, whose only prompt was a line in the manifest's `scaffold` prose. So `pithy add
+   * multiplayer` produced a project that could not deploy, and `pithy add matchmaking` one that could not
+   * deploy for two more classes.
+   *
+   * **Derived on both sides, so a fourth class is covered by the fact of being declared.** The classes come
+   * from what the real writer put in the real file, checked against what the manifests declare so nothing
+   * can go missing between the two views; the exports come from parsing the entry the real scaffolder
+   * wrote. Nothing here names a class, and the sweep is `test.each(MANIFESTS)` — a capability that ships a
+   * Durable Object tomorrow joins it with nothing to remember.
+   *
+   * It rides on this describe's fixture on purpose, and that fixture's project (`bindings`) and Worker
+   * (`api`) differ: a fixture where both were the same is what hid #136 for months.
+   *
+   * **Here rather than in `ci/workflowDrivers.ts`**, which is #426's gate and the shape this follows. That
+   * one extends the walk it needs: both sides of its rule — the `WorkflowEntrypoint` subclasses and the
+   * modules holding them — are files in this repository. Only one side of this rule is. The other is a
+   * file that does not exist until the scaffolder writes it, and this sweep is the walk that already runs
+   * the real scaffolder over the real manifests. Adding a second scan of `packages/` would not have seen
+   * it.
+   */
+  test.each(MANIFESTS.map(({ pkg, manifest }) => [pkg, manifest] as const))(
+    "%s: every Durable Object class it binds is exported by the Worker entry",
+    async (pkg, manifest) => {
+      await addCapability({ workerDir: worker, manifest, configValues: answers(manifest), project: "bindings" });
+      const config = parse(await readFile(join(worker, "wrangler.jsonc"), "utf8")) as unknown as Record<
+        string,
+        unknown
+      > & { env?: Record<string, Record<string, unknown>> };
+
+      const stanzas: Record<string, unknown>[] = [config, ...Object.values(config.env ?? {})];
+      const wired = [...new Set(stanzas.flatMap(wiredDurableObjectClasses))].sort();
+      // The two views agree: every class `pithy add` is meant to wire got a binding, and no binding names
+      // a class no manifest asked for. A class dropped here would make the export check below quietly
+      // narrower than the rule it states. `required` rather than every declared binding, because that is
+      // the set this writer wires — see {@link durableObjectClasses}.
+      expect(wired).toEqual(durableObjectClasses(required(manifest)));
+
+      // The entry is whatever `main` names, resolved against the Worker — the same module wrangler
+      // resolves `class_name` against, never an assumption about where a Worker keeps its entry.
+      const entry = await readFile(join(worker, String(config.main)), "utf8");
+      const exported = new Set(exportedNames(entry));
+      expect(wired.filter((className) => !exported.has(className)).map((className) => `${pkg}: ${className}`)).toEqual(
+        [],
+      );
+    },
+  );
+
+  test("it bites — an optional Durable Object binding is wired nowhere, so it is demanded nowhere", async () => {
+    // The answer to the one question the two halves of this gate used to disagree about (#428 review).
+    // `optional` means the capability needs the binding only under a particular config, and `pithy add`
+    // runs before any config exists — so it writes no stanza for one. Everything downstream follows that
+    // single decision: no `durable_objects.bindings` entry, no `new_sqlite_classes` tag, no export.
+    //
+    // Nothing shipped declares an optional Durable Object binding, which is exactly why this is planted:
+    // the rule is true today by accident and has to be true by construction.
+    const planted = CapabilityManifest.parse({
+      name: "planted",
+      package: "@pithy-sh/planted",
+      requiredBindings: [
+        {
+          type: "durable_object",
+          name: "PLANTED_ROOM",
+          className: "PlantedRoom",
+          classModule: "@pithy-sh/planted/src/room/durableObject",
+        },
+        {
+          type: "durable_object",
+          name: "PLANTED_GHOST",
+          className: "PlantedGhost",
+          classModule: "@pithy-sh/planted/src/ghost/durableObject",
+          optional: true,
+        },
+      ],
+    });
+    await addCapability({ workerDir: worker, manifest: planted, configValues: {}, project: "bindings" });
+    const config = parse(await readFile(join(worker, "wrangler.jsonc"), "utf8")) as unknown as Record<
+      string,
+      unknown
+    > & { env?: Record<string, Record<string, unknown>>; migrations?: { new_sqlite_classes?: string[] }[] };
+
+    const stanzas: Record<string, unknown>[] = [config, ...Object.values(config.env ?? {})];
+    expect([...new Set(stanzas.flatMap(wiredDurableObjectClasses))].sort()).toEqual(["PlantedRoom"]);
+    // The gate asks for the writer's set, not the manifest's — the half that was stating the opposite rule.
+    expect(durableObjectClasses(required(planted))).toEqual(["PlantedRoom"]);
+
+    // The class migration tag follows the binding too. A `new_sqlite_classes` naming a class the Worker
+    // neither binds nor exports registers an actor nothing can reach, against a script that does not carry
+    // it — and a tag is applied once and never revisited, so it is not a mistake a later run repairs.
+    expect((config.migrations ?? []).flatMap((migration) => migration.new_sqlite_classes ?? [])).toEqual([
+      "PlantedRoom",
+    ]);
+
+    const exported = exportedNames(await readFile(join(worker, String(config.main)), "utf8"));
+    expect(exported).toContain("PlantedRoom");
+    expect(exported).not.toContain("PlantedGhost");
+  });
+
+  /**
    * **What `pithy upgrade` reports adding is in the file.**
    *
    * The invariant #318 was reported about, stated over the report rather than over any binding. `upgrade`
@@ -381,6 +589,113 @@ describe("what pithy add claims to write, it writes", () => {
       expect(stillMissing).toEqual([]);
     },
   );
+
+  /**
+   * **The same rule, against the other writer.** (#428)
+   *
+   * `pithy add` was not the only thing writing a `durable_objects.bindings` entry with a `class_name` in
+   * it — `pithy upgrade`'s reconcile writes one into every environment of a Worker that is missing it, and
+   * for a while it was the one path that still left the export to a human. So the defect this issue is
+   * about survived its own fix on the command an adopter reaches for *because* something is wrong.
+   *
+   * A property held by one of two writers is not held. The sweep is the add-side one, quantified the same
+   * way and derived on both sides, pointed at `applyReconcilePlan` instead — and it stays honest about the
+   * difference between them: `upgrade` writes the bindings the Worker's composed set derives, optional ones
+   * included, so the classes it must export are the composed set's rather than `add`'s narrower list.
+   *
+   * The report is checked against the file for the same reason #318's is. `upgrade` writing an adopter's
+   * entry and saying nothing is the shape that issue was reported about, one file over.
+   */
+  test.each(MANIFESTS.map(({ pkg, manifest }) => [pkg, manifest] as const))(
+    "%s: every Durable Object class pithy upgrade wires is exported by the Worker entry",
+    async (pkg, manifest) => {
+      await writeManifest(dir, manifest);
+      const composed = [{ name: manifest.name, requiredBindings: manifest.requiredBindings }];
+      const applied = await applyReconcilePlan({
+        account: null,
+        projectDir: dir,
+        workerDir: worker,
+        plan: await buildReconcilePlan({
+          account: null,
+          projectDir: dir,
+          workerDir: worker,
+          env: "dev",
+          capabilities: composed,
+        }),
+        migrate: false,
+        env: "dev",
+        capabilities: composed,
+        project: "bindings",
+      });
+
+      const config = parse(await readFile(join(worker, "wrangler.jsonc"), "utf8")) as unknown as Record<
+        string,
+        unknown
+      > & { env?: Record<string, Record<string, unknown>> };
+      const stanzas: Record<string, unknown>[] = [config, ...Object.values(config.env ?? {})];
+      const wired = [...new Set(stanzas.flatMap(wiredDurableObjectClasses))].sort();
+      // Every class the composed set declares got a binding here, and no binding names a class nothing
+      // asked for — so the export check below is over the whole rule and not a corner of it.
+      expect(wired).toEqual(durableObjectClasses(manifest.requiredBindings));
+
+      const exported = new Set(exportedNames(await readFile(join(worker, String(config.main)), "utf8")));
+      expect(wired.filter((className) => !exported.has(className)).map((className) => `${pkg}: ${className}`)).toEqual(
+        [],
+      );
+      // And `upgrade` says what it wrote into the adopter's entry, exactly as it says what it wrote into
+      // their wrangler.jsonc.
+      expect([...applied.addedEntryExports].sort()).toEqual(wired);
+    },
+  );
+
+  test("a project wired before the export existed is repaired, though its plan reports no drift", async () => {
+    // The case that decides *how much* the reconcile writer looks at, and the one an adopter is actually
+    // in. A project scaffolded by the pre-#428 CLI has the `durable_objects.bindings` entry and the class
+    // migration tag already, so nothing is missing and the plan is empty — and that project is precisely
+    // who runs `pithy upgrade`, because `wrangler deploy` has just refused it. A writer keyed on missing
+    // bindings would read the empty plan and leave the Worker exactly as undeployable as it found it.
+    const multiplayer = MANIFESTS.find((entry) => entry.pkg === "multiplayer")?.manifest as CapabilityManifest;
+    await writeManifest(dir, multiplayer);
+    await addCapability({
+      workerDir: worker,
+      manifest: multiplayer,
+      configValues: answers(multiplayer),
+      project: "bindings",
+    });
+
+    const config = parse(await readFile(join(worker, "wrangler.jsonc"), "utf8")) as unknown as { main: string };
+    const entryPath = join(worker, config.main);
+    // Roll the entry back to what that CLI left behind: everything but the export.
+    const before = (await readFile(entryPath, "utf8"))
+      .split("\n")
+      .filter((line) => !line.startsWith("export { ") && !line.startsWith("// Durable Object classes"))
+      .join("\n");
+    await writeFile(entryPath, before);
+    expect(exportedNames(before)).not.toContain("MultiplayerSession");
+
+    const composed = [{ name: multiplayer.name, requiredBindings: multiplayer.requiredBindings }];
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir: worker,
+      env: "dev",
+      capabilities: composed,
+    });
+    expect(plan.perCapability.flatMap((cap) => cap.missingBindings)).toEqual([]);
+
+    const applied = await applyReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir: worker,
+      plan,
+      migrate: false,
+      env: "dev",
+      capabilities: composed,
+      project: "bindings",
+    });
+    expect(applied.addedEntryExports).toEqual(["MultiplayerSession"]);
+    expect(exportedNames(await readFile(entryPath, "utf8"))).toContain("MultiplayerSession");
+  });
 
   test("it bites — a binding the writer declines is named as skipped, never counted as added", async () => {
     // The planted violation, in #318's exact shape: an optional workflow binding stating no `job` and no

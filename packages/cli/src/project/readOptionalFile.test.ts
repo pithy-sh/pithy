@@ -471,8 +471,8 @@ describe("only readOptionalFile.ts decides what a failed read means", () => {
       why: "`wireSolution` extends, never creates. No readable `tsconfig.json` means no references are added and nothing is written — inventing a solution file for a project that predates it would break that adopter's typecheck.",
     },
     "cli/src/capabilities/reconcile.ts": {
-      reads: "readFile",
-      why: "A config it cannot read yields no located registration, so no drift is reported and nothing is written from it. The cost is a report that under-reports for that Worker, and `doctor` reads the same file again.",
+      reads: "readFile, readOptionalFile",
+      why: "A config it cannot read yields no located registration, so no drift is reported and nothing is written from it. An entry it cannot read is the same trade one file over: no Durable Object export drift is established, where naming every class the Worker binds would be a guess. The cost is a report that under-reports for that Worker, and `doctor` reads the same files again.",
     },
   };
 

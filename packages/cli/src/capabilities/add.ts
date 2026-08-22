@@ -3,6 +3,7 @@
 
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import {
   type CapabilityManifest,
   renderCapabilityImport,
@@ -19,10 +20,12 @@ import {
   type ProposedName,
   type WranglerStanza,
 } from "../project/bindingEntries";
-import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
+import { readOptionalFile } from "../project/readOptionalFile";
+import { readWranglerConfig, workerEntryPath, writeWranglerConfig } from "../project/wrangler";
 import { optionValue } from "./configConstants";
 import { capabilityImportSpecifier, findNamedImport, importOrigin } from "./configImports";
 import { ejectImportPath } from "./eject";
+import { durableObjectExports, withDurableObjectExports } from "./entryExports";
 import { requiredOptionRefusal } from "./requiredOptions";
 
 /** A config option's value: the JSON scalars a manifest default can be. */
@@ -83,7 +86,66 @@ const MARKER = "// pithy:capabilities";
  */
 export async function addCapability(options: AddCapabilityOptions): Promise<AddCapabilityResult> {
   await updateConfig(options);
-  return { kvNamespaces: await updateWrangler(options) };
+  const kvNamespaces = await updateWrangler(options);
+  await updateEntry(options);
+  return { kvNamespaces };
+}
+
+/**
+ * The bindings `pithy add` actually wires into this Worker: the manifest's, minus the optional ones.
+ *
+ * An `optional` binding is one the capability needs only under a particular config. The manifest is one
+ * static file and cannot vary with config, so it declares the union and marks such a binding optional;
+ * `pithy add` runs *before* any config exists and has nothing to resolve the flag against, so it writes
+ * none of them. `createBackend` reads the same flag to decide whether a missing binding is fatal at
+ * assembly, and `pithy upgrade` — which does have the composed set — writes the ones that Worker derives.
+ *
+ * **One list, read three times**: the `wrangler.jsonc` stanzas, the Durable Object class migration tags,
+ * and the entry's exports. They were three separate filters over the same manifest and they did not
+ * agree — the tags took every declared binding — so an optional Durable Object would have been registered
+ * against the script by a `new_sqlite_classes` tag while nothing bound it and nothing exported it. A tag
+ * is applied once and never revisited, so that is not a mistake a later run repairs.
+ */
+function wiredBindings(manifest: CapabilityManifest): BindingSpec[] {
+  return manifest.requiredBindings.filter((binding) => !binding.optional);
+}
+
+/**
+ * Write the capability's Durable Object exports into the Worker's entry — the other half of a
+ * `durable_objects.bindings` entry, and the half `wrangler deploy` refuses the Worker without (#428).
+ *
+ * Silent, like the class migration tag beside it: there is nothing for the adopter to do about it, and a
+ * line of output for every file a command touches is not this CLI's voice. The entry is whatever `main`
+ * names, so a Worker that keeps its module somewhere else still gets the export where wrangler looks.
+ *
+ * Over {@link wiredBindings}, so a class is exported exactly when it is bound.
+ */
+async function updateEntry({ workerDir, manifest }: AddCapabilityOptions): Promise<void> {
+  const exports = durableObjectExports(wiredBindings(manifest));
+  if (exports.length === 0) return;
+
+  const path = await workerEntryPath(workerDir);
+  const source = path === null ? null : await readOptionalFile(path);
+  if (path === null || source === null) {
+    const classes = exports.map((entry) => entry.className).join(", ");
+    const wrangler = join(workerDir, "wrangler.jsonc");
+    // Two faults, two remedies. A config with no `main` has named no file, so there is nothing to
+    // restore and the fix is in `wrangler.jsonc`; a `main` whose file is gone is the opposite. The
+    // message already said which of the two it was, and one shared action line contradicted half of it.
+    throw new InternalError({
+      message:
+        path === null
+          ? `${wrangler} names no main, so this Worker has no entry to export ${classes} from.`
+          : `${path} is missing — this Worker's wrangler.jsonc names it as main.`,
+      action:
+        path === null
+          ? `Give ${wrangler} a main naming this Worker's entry, then run pithy add ${manifest.name} again.`
+          : `Restore that file, then run pithy add ${manifest.name} again.`,
+      detail: `${manifest.name} binds ${classes}, which wrangler resolves against the Worker's entry.`,
+    });
+  }
+  const written = withDurableObjectExports(source, exports);
+  if (written !== source) await writeFile(path, written);
 }
 
 /** Escape a capability name for use inside a `RegExp` (names are simple, but be safe). */
@@ -188,22 +250,15 @@ async function updateConfig({ workerDir, manifest, configValues }: AddCapability
 }
 
 /**
- * Append every binding a capability's manifest requires to one environment's stanza, and report the KV
+ * Append each of a capability's {@link wiredBindings} to one environment's stanza, and report the KV
  * namespace titles the adopter has to create by hand.
  *
  * The entries themselves are `project/bindingEntries.ts`'s — one writer, shared with `pithy upgrade`'s
  * reconcile, so the two commands cannot produce different configs from the same manifest.
  */
-function appendBindings(stanza: WranglerStanza, manifest: CapabilityManifest, scope: BindingScope): ProposedName[] {
+function appendBindings(stanza: WranglerStanza, bindings: readonly BindingSpec[], scope: BindingScope): ProposedName[] {
   const proposed: ProposedName[] = [];
-  for (const binding of manifest.requiredBindings) {
-    // An `optional` binding is one the capability only needs under a particular config — the seam's
-    // `CONTROL_PLANE` KV, which nothing reads under the default `d1` replay backend. The manifest is one
-    // static file and cannot vary with config, so it declares the union and marks such a binding
-    // optional; writing it anyway would make every project provision and bind a namespace no code path
-    // in the tree ever reads, and re-add it the moment an adopter deleted it. `createBackend` reads the
-    // same flag to decide whether a missing binding is fatal at assembly.
-    if (binding.optional) continue;
+  for (const binding of bindings) {
     const write = appendBinding(stanza, binding, scope);
     if (write.outcome === "written" && write.proposed) proposed.push(write.proposed);
   }
@@ -213,18 +268,20 @@ function appendBindings(stanza: WranglerStanza, manifest: CapabilityManifest, sc
 async function updateWrangler({ workerDir, manifest, project }: AddCapabilityOptions): Promise<ProposedName[]> {
   const config = (await readWranglerConfig(workerDir)) as WranglerStanza;
 
+  const bindings = wiredBindings(manifest);
   const kvNamespaces: ProposedName[] = [];
   for (const { env, stanza } of envStanzas(config)) {
     kvNamespaces.push(
-      ...appendBindings(stanza, manifest, {
+      ...appendBindings(stanza, bindings, {
         ...(project === undefined ? {} : { project }),
         env,
         capability: manifest.name,
       }),
     );
   }
-  // DO class migrations are top-level only — they register the class against the script, not per-env.
-  appendDurableObjectMigrations(config, manifest.requiredBindings);
+  // DO class migrations are top-level only — they register the class against the script, not per-env. The
+  // same list the stanzas got: a tag registers a class the Worker binds, or it registers nothing.
+  appendDurableObjectMigrations(config, bindings);
 
   await writeWranglerConfig(workerDir, config);
   return kvNamespaces;

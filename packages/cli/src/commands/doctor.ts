@@ -1143,6 +1143,14 @@ function workerHealthLines(health: WorkerChecks): string[] {
       lines.push(healthLine(label, `${binding.name} (${binding.type}) missing from wrangler.jsonc`));
       lines.push(`${HEALTH_CONT}env: ${binding.envs.join(", ")}`);
     });
+    // The other half of a Durable Object binding, and the half that lives in the adopter's code.
+    // wrangler resolves `class_name` against the module `main` names, so a class missing there is a
+    // deploy this project cannot make — reported under `bindings` because it is one binding written in
+    // two files (#428).
+    health.bindings.missingExports.forEach((className, index) => {
+      const label = index === 0 && health.bindings.missing.length === 0 ? "bindings" : "";
+      lines.push(healthLine(label, `${className} not exported from this worker's entry — run \`pithy upgrade\``));
+    });
   }
 
   if (health.migrations.ok) {

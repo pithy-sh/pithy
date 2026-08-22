@@ -21,6 +21,14 @@ export const MULTIPLAYER_MIGRATION_ORDER = 500;
 /** The Durable Object namespace binding name, and the class it is backed by — the CLI wires both. */
 export const MULTIPLAYER_SESSIONS_BINDING = "SESSIONS";
 export const MULTIPLAYER_SESSION_CLASS = "MultiplayerSession";
+/**
+ * The module the class is exported from — what the CLI writes the Worker entry's re-export against.
+ *
+ * Its own module, never `src/index`: the entry point is what an adopter's `pithy.config.ts` imports, and
+ * a Durable Object on that path imports `cloudflare:workers` and takes every Node-side command down with
+ * it (#172).
+ */
+export const MULTIPLAYER_SESSION_MODULE = "@pithy-sh/multiplayer/src/session/durableObject";
 
 export type MultiplayerOptions = MultiplayerConfigInput & {
   /** Mount the routes somewhere other than `/multiplayer`. */
@@ -58,7 +66,12 @@ export function multiplayer(options: MultiplayerOptions = { games: [] }): Multip
   const migrations: Record<string, Migration> = { "0001_results": multiplayer_0001_results };
 
   const requiredBindings: BindingSpecInput[] = [
-    { type: "durable_object", name: MULTIPLAYER_SESSIONS_BINDING, className: MULTIPLAYER_SESSION_CLASS },
+    {
+      type: "durable_object",
+      name: MULTIPLAYER_SESSIONS_BINDING,
+      className: MULTIPLAYER_SESSION_CLASS,
+      classModule: MULTIPLAYER_SESSION_MODULE,
+    },
     { type: "d1", name: "DB" },
   ];
 

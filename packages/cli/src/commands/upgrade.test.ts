@@ -62,8 +62,9 @@ const plan: ReconcilePlan = {
       name: "auth",
       missingBindings: [{ env: "dev", name: "DB", type: "d1" }],
       missingConfigKeys: [{ key: "basePath", default: "/auth", describe: "x" }],
+      missingEntryExports: [],
     },
-    { name: "quiet", missingBindings: [], missingConfigKeys: [] },
+    { name: "quiet", missingBindings: [], missingConfigKeys: [], missingEntryExports: [] },
   ],
   ejectedSkipped: ["billing"],
   ledger: { state: "read", pending: 3, undeclared: [] },
@@ -80,6 +81,24 @@ describe("plan rendering", () => {
     expect(lines).toContain("3 migrations pending. Run pithy upgrade --migrate, or pithy migrate --env dev.");
     // A capability with no drift produces no line.
     expect(lines.some((line) => line.startsWith("quiet:"))).toBe(false);
+  });
+
+  test("a Durable Object class the entry does not export gets its own line", () => {
+    // A plan reports what an apply writes. This one wrote the export and reported nothing, so a project
+    // wired before it landed — binding present, export nowhere — read as "Nothing to upgrade." while
+    // `wrangler deploy` refused it (#428).
+    const lines = __test.planLines({
+      ...plan,
+      perCapability: [
+        {
+          name: "multiplayer",
+          missingBindings: [],
+          missingConfigKeys: [],
+          missingEntryExports: ["MultiplayerSession"],
+        },
+      ],
+    });
+    expect(lines).toContain("Worker entry: export MultiplayerSession.");
   });
 
   test("a clean worker says nothing to upgrade", () => {
@@ -115,6 +134,7 @@ describe("applied rendering", () => {
       migrated: false,
       migrations: [],
       addedVersionMetadata: false,
+      addedEntryExports: [],
     };
     const lines = __test.appliedLines(applied, plan);
     expect(lines).toContain("auth: added 1 binding, 1 config key.");
@@ -137,6 +157,7 @@ describe("applied rendering", () => {
         },
       ],
       addedVersionMetadata: false,
+      addedEntryExports: [],
     };
     const lines = __test.appliedLines(applied, plan);
     expect(lines).toContain("Migrated 1 migration.");
@@ -180,6 +201,7 @@ describe("worker grouping", () => {
       migrated: false,
       migrations: [],
       addedVersionMetadata: false,
+      addedEntryExports: [],
     };
     expect(__test.renderUpgrade({ workers: [entry(plan, applied)], manifestFaults: [] })).toContain(
       "  auth: added 1 config key.",

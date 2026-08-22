@@ -82,6 +82,25 @@ export function isWrittenBinding(type: BindingType): boolean {
 }
 
 /**
+ * A JavaScript class name — what `className` may be.
+ *
+ * Constrained because it is no longer only a JSON value. A Durable Object's `className` is written into
+ * the adopter's Worker entry as `export { <className> } from "…";` (#428), which is generated TypeScript
+ * built out of third-party data read from `node_modules` — the shape #171, #174 and #183 each met one
+ * field too late. An identifier cannot close the statement and open another.
+ */
+const CLASS_NAME = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+/**
+ * A bare module specifier — a package, optionally with a path into it.
+ *
+ * The other half of the generated export line, and narrowed for the same reason. No quotes, no
+ * whitespace, no `..`: a specifier that walked back out of its own package would re-export whatever it
+ * landed on, which is `configImports.isInside`'s argument in a regex.
+ */
+const CLASS_MODULE = /^(@[a-z0-9~-][a-z0-9._~-]*\/)?[a-z0-9~-][a-z0-9._~-]*(\/[A-Za-z0-9_~-][A-Za-z0-9._~-]*)*$/;
+
+/**
  * Declares a Cloudflare binding a capability requires in the Worker env. The authoring
  * shape lets `optional` be omitted (defaults false); `createBackend` normalizes via parse.
  */
@@ -93,9 +112,18 @@ export const BindingSpec = z
     className: z
       .string()
       .min(1)
+      .regex(CLASS_NAME, "A className is a JavaScript identifier: letters, digits, `_` and `$`, not leading a digit.")
       .optional()
       .describe(
-        'The exported class this binding is backed by. For a `durable_object` binding it is the DO class (e.g. "MultiplayerSession") the CLI writes into `durable_objects.bindings` and the DO class migration tag. For a `workflow` binding it is the `WorkflowEntrypoint` subclass (e.g. "EmailSendWorkflow") the CLI writes as `class_name` — the same value the capability\'s own `WorkflowSpec.className` carries. Ignored for every other kind.',
+        'The exported class this binding is backed by. For a `durable_object` binding it is the DO class (e.g. "MultiplayerSession") the CLI writes into `durable_objects.bindings`, the DO class migration tag, and the `export { … }` line in the Worker entry. For a `workflow` binding it is the `WorkflowEntrypoint` subclass (e.g. "EmailSendWorkflow") the CLI writes as `class_name` — the same value the capability\'s own `WorkflowSpec.className` carries. Ignored for every other kind.',
+      ),
+    classModule: z
+      .string()
+      .min(1)
+      .regex(CLASS_MODULE, "A classModule is a bare module specifier: a package, optionally with a path into it.")
+      .optional()
+      .describe(
+        'The module the class is exported from (e.g. "@pithy-sh/multiplayer/src/session/durableObject") — what the CLI writes the Worker entry\'s `export { <className> } from "<classModule>";` against. Required for a `durable_object` binding, because wrangler resolves `class_name` against the entry `main` names and refuses the deploy when nothing there exports it. Its own module, never the package entry point, which `pithy.config.ts` loads in Node. Ignored for every other kind.',
       ),
     job: z
       .string()
@@ -135,6 +163,19 @@ export const BindingSpec = z
         input: ctx.value,
         path: ["className"],
         message: `Durable Object binding "${ctx.value.name}" needs a className — the exported DO class it is backed by.`,
+      });
+    }
+    // And the module that class comes from. A DO binding is two halves — the `durable_objects.bindings`
+    // entry and a named export on the module `main` points at — and the CLI can only write the second
+    // one if the capability says where the class lives. Without it the wiring is complete in the config
+    // and the deploy fails on "not exported in your entrypoint file" (#428). Refused at define time,
+    // attributed to the capability, for the same reason `className` is.
+    if (ctx.value.type === "durable_object" && ctx.value.classModule === undefined) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        path: ["classModule"],
+        message: `Durable Object binding "${ctx.value.name}" needs a classModule — the module its class is exported from.`,
       });
     }
     // A service binding with no target is unresolvable: the CLI cannot know which Worker to point

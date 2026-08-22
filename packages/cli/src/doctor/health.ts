@@ -31,10 +31,21 @@ export interface ConfigHealth {
   drift: { capability: string; keys: string[] }[];
 }
 
-/** The `bindings` check: required bindings absent from `wrangler.jsonc`, each with the envs that lack it. */
+/**
+ * The `bindings` check: required bindings absent from `wrangler.jsonc`, each with the envs that lack it —
+ * **and the Durable Object classes the Worker's entry does not export.**
+ *
+ * One check, because a Durable Object is one binding written in two files. The `durable_objects.bindings`
+ * entry names a `class_name` and wrangler resolves that name against the module `main` names; a Worker
+ * carrying the first and not the second is refused at deploy. Reporting only the half that lives in
+ * `wrangler.jsonc` is what let `doctor` call a project healthy that `wrangler deploy` would not take
+ * (#428).
+ */
 export interface BindingHealth {
   ok: boolean;
   missing: { name: string; type: string; envs: string[] }[];
+  /** Durable Object classes bound in `wrangler.jsonc` that this Worker's entry does not export. */
+  missingExports: string[];
 }
 
 /**
@@ -217,7 +228,9 @@ function healthFromPlan(worker: string, plan: ReconcilePlan): WorkerHealth {
   const config: ConfigHealth = { ok: drift.length === 0, drift };
 
   const missing = groupMissingBindings(plan);
-  const bindings: BindingHealth = { ok: missing.length === 0, missing };
+  // Deduplicated across capabilities: two capabilities binding one class is one missing export.
+  const missingExports = [...new Set(plan.perCapability.flatMap((cap) => cap.missingEntryExports))];
+  const bindings: BindingHealth = { ok: missing.length === 0 && missingExports.length === 0, missing, missingExports };
 
   // `ok` only on a whole read with nothing on either side of it. A `partial` ledger is a database this
   // check did not compare, and a check that did not run is not a check that passed — the same standard

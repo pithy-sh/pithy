@@ -63,6 +63,7 @@ describe("buildProjectHealth", () => {
         {
           name: "auth",
           missingBindings: [],
+          missingEntryExports: [],
           missingConfigKeys: [
             { key: "basePath", default: "/auth", describe: "x" },
             { key: "sessionDays", default: 30, describe: "y" },
@@ -89,6 +90,7 @@ describe("buildProjectHealth", () => {
         {
           name: "media",
           missingConfigKeys: [],
+          missingEntryExports: [],
           missingBindings: [
             { env: "staging", name: "MEDIA_BUCKET", type: "r2" },
             { env: "prod", name: "MEDIA_BUCKET", type: "r2" },
@@ -107,6 +109,33 @@ describe("buildProjectHealth", () => {
     expect(checkedWorker(health).bindings.missing).toEqual([
       { name: "MEDIA_BUCKET", type: "r2", envs: ["staging", "prod"] },
     ]);
+  });
+
+  test("bindings check fails on a Durable Object class the entry does not export", async () => {
+    // The other half of a `durable_objects.bindings` entry, and the half `wrangler.jsonc` cannot show. A
+    // project wired before the CLI wrote that line has the binding and not the class, so every other
+    // check passes and the deploy is still refused — `doctor` calling it healthy is #428 one level up.
+    const plan: ReconcilePlan = {
+      ...clean("api"),
+      perCapability: [
+        {
+          name: "multiplayer",
+          missingConfigKeys: [],
+          missingBindings: [],
+          missingEntryExports: ["MultiplayerSession"],
+        },
+      ],
+    };
+    const health = await buildProjectHealth({
+      account: null,
+      projectDir: "/p",
+      env: "dev",
+      workers: [api],
+      buildPlan: planStub({ api: plan }),
+    });
+    expect(health.ok).toBe(false);
+    expect(checkedWorker(health).bindings.ok).toBe(false);
+    expect(checkedWorker(health).bindings.missingExports).toEqual(["MultiplayerSession"]);
   });
 
   test("migrations check surfaces the pending count and env", async () => {
@@ -227,7 +256,12 @@ describe("buildProjectHealth — per Worker", () => {
     const drifted: ReconcilePlan = {
       ...clean("collab"),
       perCapability: [
-        { name: "auth", missingConfigKeys: [], missingBindings: [{ env: "dev", name: "DB", type: "d1" }] },
+        {
+          name: "auth",
+          missingConfigKeys: [],
+          missingEntryExports: [],
+          missingBindings: [{ env: "dev", name: "DB", type: "d1" }],
+        },
       ],
     };
     const health = await buildProjectHealth({

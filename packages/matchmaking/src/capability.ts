@@ -47,8 +47,18 @@ export function matchmaking(options: MatchmakingOptions = { games: [] }): Matchm
   const requiredBindings: BindingSpecInput[] = [
     { type: "d1", name: "DB" },
     { type: "kv", name: "MATCHMAKING" },
-    { type: "durable_object", name: "QUEUE", className: "MatchmakingQueue" },
-    { type: "durable_object", name: "PRESENCE", className: "MatchmakingPresence" },
+    {
+      type: "durable_object",
+      name: "QUEUE",
+      className: "MatchmakingQueue",
+      classModule: "@pithy-sh/matchmaking/src/queue/durableObject",
+    },
+    {
+      type: "durable_object",
+      name: "PRESENCE",
+      className: "MatchmakingPresence",
+      classModule: "@pithy-sh/matchmaking/src/presence/durableObject",
+    },
   ];
 
   const capability = defineCapability({

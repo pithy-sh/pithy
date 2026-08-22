@@ -58,6 +58,26 @@ export async function readWranglerConfig(projectDir: string): Promise<unknown> {
 }
 
 /**
+ * The module a Worker's `main` names, absolute — the entry every `class_name` in that config resolves
+ * against, and the file `pithy add` writes a Durable Object's export into (#428). `null` when the config
+ * names none.
+ *
+ * Read from the config rather than assumed to be `src/index.ts`: `main` is wrangler's own answer to
+ * "which module is this Worker", the adopter may move it, and a Worker carrying a front end has one
+ * written by the Vite plugin. Guessing would mean writing an export into a file nothing bundles.
+ *
+ * A missing `main` is answered as a value rather than a throw, because the two callers mean different
+ * things by it: `add` is about to wire a class into a Worker that cannot say which module it is, and
+ * refuses by name; `remove` is unwiring one and has nothing to take out, so it moves on rather than
+ * stranding a capability half-removed.
+ */
+export async function workerEntryPath(workerDir: string): Promise<string | null> {
+  const config = (await readWranglerConfig(workerDir)) as { main?: unknown };
+  if (typeof config.main !== "string" || config.main === "") return null;
+  return join(workerDir, config.main);
+}
+
+/**
  * Write `wrangler.jsonc` back comment-preserving, printed the way the Biome `pithy init` scaffolds would
  * print it and shaped like the bytes already there — see {@link writeJsonc}. This wrote `stringify`'s
  * fully expanded output until #249, so every command that edits a Worker's config left a file the

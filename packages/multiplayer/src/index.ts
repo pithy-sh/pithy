@@ -19,8 +19,8 @@
  * export { MultiplayerSession } from "@pithy-sh/multiplayer/src/session/durableObject";
  * ```
  *
- * — which is what the manifest's scaffold step says, and what wrangler's `class_name` resolves against.
- * The CLI writes the binding and the class migration tag for you. To ship a custom game model, call
+ * — which is what wrangler's `class_name` resolves against, and `pithy add multiplayer` writes that line
+ * for you, beside the binding and the class migration tag (#428). To ship a custom game model, call
  * `registerGameModel(myModel)` in the worker entry.
  */
 
@@ -28,6 +28,7 @@ export {
   isMultiplayerCapability,
   MULTIPLAYER_MIGRATION_ORDER,
   MULTIPLAYER_SESSION_CLASS,
+  MULTIPLAYER_SESSION_MODULE,
   MULTIPLAYER_SESSIONS_BINDING,
   type MultiplayerCapability,
   type MultiplayerOptions,

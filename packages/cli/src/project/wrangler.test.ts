@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { readOptionalWranglerConfig, readWranglerConfig, runWrangler } from "./wrangler";
+import { readOptionalWranglerConfig, readWranglerConfig, runWrangler, workerEntryPath } from "./wrangler";
 
 /** Use `node` as the binary so these run without wrangler installed. */
 const NODE = "node";
@@ -59,6 +59,62 @@ describe("readWranglerConfig", () => {
 
     await mkdir(join(dir, "wrangler.jsonc"));
     await expect(readOptionalWranglerConfig(dir)).rejects.toThrow(PithyError);
+  });
+});
+
+/**
+ * **The module `main` names, which is the file a Durable Object's export has to land in (#428).**
+ *
+ * Every branch here is a decision `pithy add` and `pithy remove` act on, and the `null` one is the
+ * refusal `add` raises by name. It had no test of its own: replacing `return null` with a guess at
+ * `src/index.ts` left the whole `capabilities` + `project` suite green, so the branch was reachable only
+ * in principle. A Worker with no `main` is a real Worker — a Vite frontend joins the dev set through
+ * `pithy.worker.jsonc` alone — so the answer has to be the config's, never a guess.
+ */
+describe("workerEntryPath", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-entry-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("resolves main against the worker directory", async () => {
+    await writeFile(join(dir, "wrangler.jsonc"), '{\n  "name": "api",\n  "main": "src/index.ts"\n}\n');
+    expect(await workerEntryPath(dir)).toBe(join(dir, "src/index.ts"));
+  });
+
+  test("a main the adopter has moved is followed, never assumed", async () => {
+    // The whole reason this reads the config: a Worker carrying a front end has its entry written by the
+    // Vite plugin, and guessing `src/index.ts` would put the export in a file nothing bundles.
+    await writeFile(join(dir, "wrangler.jsonc"), '{\n  "name": "api",\n  "main": "worker/entry.ts"\n}\n');
+    expect(await workerEntryPath(dir)).toBe(join(dir, "worker/entry.ts"));
+  });
+
+  test("no main is null — the Worker cannot say which module it is", async () => {
+    await writeFile(join(dir, "wrangler.jsonc"), '{\n  "name": "web"\n}\n');
+    expect(await workerEntryPath(dir)).toBeNull();
+  });
+
+  test("a main that is not a string is null, not a path built out of a number", async () => {
+    // `wrangler.jsonc` is the adopter's file and JSON holds any type. `join(dir, 42)` throws a raw
+    // TypeError; the honest answer is that this config names no entry.
+    await writeFile(join(dir, "wrangler.jsonc"), '{\n  "name": "api",\n  "main": 42\n}\n');
+    expect(await workerEntryPath(dir)).toBeNull();
+  });
+
+  test("an empty main is null, not the worker directory itself", async () => {
+    // `join(dir, "")` is `dir` — a directory, which `add` would then try to read as source and `remove`
+    // would try to rewrite. Empty names no module.
+    await writeFile(join(dir, "wrangler.jsonc"), '{\n  "name": "api",\n  "main": ""\n}\n');
+    expect(await workerEntryPath(dir)).toBeNull();
+  });
+
+  test("no wrangler.jsonc at all refuses, rather than answering null", async () => {
+    // The refusal is `readWranglerConfig`'s and stays its: a directory that is not a Worker is a
+    // different fact from a Worker that names no entry, and only the second one is a value.
+    await expect(workerEntryPath(dir)).rejects.toThrow(PithyError);
   });
 });
 

@@ -16,7 +16,7 @@ That installs the package and writes four bindings into every environment of you
 
 One binding it writes without an id: a `kv_namespaces` entry has no name field, so `pithy add` prints the name to give the `MATCHMAKING` namespace in each environment. Create it in your account under that name and paste the id in.
 
-Then export both classes from your worker entry, so wrangler's `class_name` resolves against it:
+`pithy add` also writes both classes into your worker entry, so wrangler's `class_name` resolves against it:
 
 ```ts
 export { MatchmakingQueue } from "@pithy-sh/matchmaking/src/queue/durableObject";

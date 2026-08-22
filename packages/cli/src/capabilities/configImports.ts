@@ -37,7 +37,47 @@ export interface ConfigImport {
  */
 const NAMED_IMPORT = /^[ \t]*import\s*\{([^}]*)\}\s*from\s*(["'])([^"']+)\2;?/gm;
 
-/** A config's text with everything that only *looks* like code taken out of the way. */
+/**
+ * A named re-export statement — `export { MultiplayerSession } from "…";`.
+ *
+ * The same shape one statement keyword over, and read by the same machinery below: a Durable Object's
+ * export in a Worker entry is the second half of a binding `pithy add` writes (#428), and it is found,
+ * skipped and cut by exactly the rules an import is. A second scanner would be a second idea of what a
+ * comment is.
+ *
+ * `export { a }` with no `from` is not matched: it re-exports nothing, so it cannot be the line that
+ * puts a capability's class on the module.
+ */
+const NAMED_EXPORT = /^[ \t]*export\s*\{([^}]*)\}\s*from\s*(["'])([^"']+)\2;?/gm;
+
+/**
+ * Any named export clause — `export { X };` as well as `export { X } from "…";`.
+ *
+ * The pattern above answers "which statement points at that module", which is what an edit needs. This
+ * one answers the wider question `pithy add` asks before writing anything: **is that name already on this
+ * module**, however it got there. A bare clause re-exports nothing, so it is never a line we would write,
+ * and it still makes a second `export { X } from "…"` a duplicate the build refuses.
+ */
+const EXPORT_CLAUSE = /^[ \t]*export\s*\{([^}]*)\}(?:\s*from\s*(["'])([^"']+)\2)?;?/gm;
+
+/**
+ * A value declaration exported where it is declared — `export class X {}`, `export const X = …`,
+ * `export async function* X() {}`.
+ *
+ * The third way a name lands on a module, and the one that made the claim above untrue: an adopter who
+ * wrote their own Durable Object into the entry got ours appended beside it and a duplicate export (#428).
+ *
+ * `default` is deliberately absent from the alternation. `export default class X {}` puts `default` on
+ * the module and nothing else, so wrangler's `class_name` still resolves to nothing. So are `type`,
+ * `interface` and `enum`: the first two are erased by `verbatimModuleSyntax`, and neither is a class.
+ */
+const EXPORTED_DECLARATION =
+  /^[ \t]*export\s+(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:class|function\s*\*?|const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)/gm;
+
+/** Which statement form {@link findNamedBinding} reads. Both bind names from another module. */
+export type ClauseKind = "import" | "export";
+
+/** A source file's text with everything that only *looks* like code taken out of the way. */
 interface ScannedConfig {
   /**
    * The source with every comment blanked to spaces — same length, same offsets, same line breaks, so
@@ -130,9 +170,9 @@ function scanConfig(source: string): ScannedConfig {
  * ruled out. The one place file text becomes imports — `findNamedImport` and `parseEjectedCapabilities`
  * both read a config through it, so neither can quietly grow its own idea of what an import is.
  */
-function* namedImports(source: string): Generator<RegExpExecArray> {
+function* namedClauses(source: string, pattern: RegExp): Generator<RegExpExecArray> {
   const { code, inLiteral } = scanConfig(source);
-  for (const match of code.matchAll(NAMED_IMPORT)) {
+  for (const match of code.matchAll(pattern)) {
     if (inLiteral[match.index]) continue; // an import inside a string is a string
     yield match;
   }
@@ -140,7 +180,7 @@ function* namedImports(source: string): Generator<RegExpExecArray> {
 
 /** The module specifier of every named import in a config, in source order. Duplicates included. */
 export function importedSpecifiers(source: string): string[] {
-  return [...namedImports(source)].map((match) => match[3] ?? "");
+  return [...namedClauses(source, NAMED_IMPORT)].map((match) => match[3] ?? "");
 }
 
 /** One comma-separated name in an import clause, and where it sits in the source. */
@@ -172,7 +212,19 @@ function clauseSegments(clause: string, offset: number): ClauseSegment[] {
  * question each caller answers with {@link importOrigin}.
  */
 export function findNamedImport(source: string, name: string): ConfigImport | undefined {
-  for (const match of namedImports(source)) {
+  return findNamedBinding(source, name, "import");
+}
+
+/**
+ * The named import **or** re-export that binds `name`, or `undefined` when nothing does.
+ *
+ * One search for both keywords, because the two questions are the same one: which statement puts this
+ * name on this module, and what does it point at. `pithy add` asks it of a capability's import in
+ * `pithy.config.ts` and of a Durable Object's export in the Worker entry, and a second implementation
+ * would be a second answer to "is that a comment" — the bug the scanner exists for.
+ */
+export function findNamedBinding(source: string, name: string, kind: ClauseKind): ConfigImport | undefined {
+  for (const match of namedClauses(source, kind === "import" ? NAMED_IMPORT : NAMED_EXPORT)) {
     const clause = match[1] ?? "";
     const segments = clauseSegments(clause, match.index + match[0].indexOf("{") + 1);
     for (const [index, segment] of segments.entries()) {
@@ -202,6 +254,59 @@ export function findNamedImport(source: string, name: string): ConfigImport | un
     }
   }
   return undefined;
+}
+
+/**
+ * Every named re-export in a module — the statement verbatim, the module it points at, and where it
+ * starts — in source order.
+ *
+ * Keyed on the specifier rather than on a name, because `pithy add --eject` asks the opposite question
+ * from the rest of this file: not "which statement binds this name" but "which statements still point into
+ * the package we have just forked". A fork whose entry re-exports the package runs the package's class
+ * (#428).
+ *
+ * **`start` is not decoration.** The pattern is anchored at `^[ \t]*`, so a statement begins at the
+ * `export` keyword — and a line reading `// export { X } from "…";` contains that statement as a literal
+ * substring. An edit that found its target with `String.replace` repointed the adopter's commented-out
+ * copy and left the live export pointing at the package, which is the one outcome repointing exists to
+ * prevent. The offset is the anchor: a caller splices at it, exactly as {@link withoutBinding} does.
+ */
+export function namedReexports(source: string): { statement: string; specifier: string; start: number }[] {
+  return [...namedClauses(source, NAMED_EXPORT)].map((match) => ({
+    statement: source.slice(match.index, match.index + match[0].length),
+    specifier: match[3] ?? "",
+    start: match.index,
+  }));
+}
+
+/**
+ * Whether the module puts `name` on itself at runtime, in any spelling that survives to the bundle.
+ *
+ * The question `pithy add` asks before writing a Durable Object's export: a class already exported is a
+ * class wrangler's `class_name` resolves, whoever put it there, and appending a second statement for the
+ * same name is a duplicate export the build stops on. So all three spellings count — a re-export, a bare
+ * clause over a local declaration, and a declaration exported in place.
+ *
+ * **Runtime, not syntax.** `export type { X }` and `export { type X }` are erased by
+ * `verbatimModuleSyntax`, so they leave the module carrying nothing and are not this. Same fact
+ * `hasDefaultExport` turns on for #426, one keyword over.
+ *
+ * A scanner, not a parser — {@link scanConfig} says what that costs.
+ */
+export function exportsName(source: string, name: string): boolean {
+  for (const match of namedClauses(source, EXPORT_CLAUSE)) {
+    for (const segment of (match[1] ?? "").split(",")) {
+      const trimmed = segment.trim();
+      if (trimmed === "" || trimmed.startsWith("type ")) continue;
+      // `X as Y` puts `Y` on the module; `X` alone puts `X`.
+      const parts = trimmed.split(/\s+as\s+/);
+      if ((parts[1] ?? parts[0] ?? "").trim() === name) return true;
+    }
+  }
+  for (const match of namedClauses(source, EXPORTED_DECLARATION)) {
+    if (match[1] === name) return true;
+  }
+  return false;
 }
 
 /**

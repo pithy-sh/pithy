@@ -2,7 +2,12 @@
   "name": "multiplayer",
   "package": "@pithy-sh/multiplayer",
   "requiredBindings": [
-    { "type": "durable_object", "name": "SESSIONS", "className": "MultiplayerSession" },
+    {
+      "type": "durable_object",
+      "name": "SESSIONS",
+      "className": "MultiplayerSession",
+      "classModule": "@pithy-sh/multiplayer/src/session/durableObject"
+    },
     { "type": "d1", "name": "DB" }
   ],
   "peerCapabilities": [],
@@ -12,7 +17,7 @@
   "scaffold": [
     "Add a `multiplayer({ games: [...] })` block to pithy.config.ts and define at least one game.",
     "Give each game a `key`, a `kind` (`battle`, `connect-n`, or `craps`, or a game you registered), an optional `mode` (`match` default, or `table` for a persistent multi-round table), an optional `players` count, and a `rules` block. A `battle`'s rules are its move catalogs; a `connect-n`'s are `{ rows, cols, connect }`; a `craps`'s are `{ currency, minBet, maxBet }`.",
-    "Re-export the Durable Object from your worker entry: `export { MultiplayerSession } from \"@pithy-sh/multiplayer/src/session/durableObject\";` — wrangler's `class_name` resolves against your worker's `main`.",
+    "The CLI has already written the Durable Object export into your worker entry: `export { MultiplayerSession } from \"@pithy-sh/multiplayer/src/session/durableObject\";` — wrangler's `class_name` resolves against your worker's `main`. No hand-editing.",
     "To ship a game the examples don't cover, layer it on the closest pattern helper (`simultaneous`/`turnBased`/`wageringTable`) or the raw `GameModel` seam, and call `registerGameModel(myGame)` in your worker entry before the DO handles requests.",
     "The CLI has already added the `SESSIONS` durable_object binding and the `MultiplayerSession` class migration tag (`new_sqlite_classes`) to wrangler.jsonc for every environment. No hand-editing.",
     "Bind a D1 database named DB in wrangler.jsonc — the same app database your other capabilities use.",

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { readFile, stat, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
@@ -10,12 +10,14 @@ import type { CliAuditEmit } from "../audit/cliAudit";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { type DatabaseRun, dropCapabilityTables } from "../migrations/run";
 import { uninstallPackage } from "../project/packageManager";
+import { readOptionalFile } from "../project/readOptionalFile";
 import { removeScaffoldPath } from "../project/scaffold";
 import { discoverWorkers } from "../project/workers";
-import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
+import { readWranglerConfig, workerEntryPath, writeWranglerConfig } from "../project/wrangler";
 import { capabilityPackageName, isSharedCapabilityPackage } from "./catalog";
-import { findNamedImport, isCapabilityImport, withoutBinding } from "./configImports";
-import { EJECT_DIR, ejectImportPath, isEjected } from "./eject";
+import { exportsName, findNamedImport, isCapabilityImport, withoutBinding } from "./configImports";
+import { EJECT_DIR, ejectImportPath, ejectSpecifierFromDir, isEjected } from "./eject";
+import { durableObjectExports, withoutDurableObjectExports } from "./entryExports";
 
 /** The subset of a manifest/capability the binding helpers read — both shapes carry it. */
 type HasBindings = { requiredBindings: readonly BindingSpec[] };
@@ -203,6 +205,56 @@ export async function removeFromWrangler(
   stripDurableObjectMigrations(config, bindings);
   await writeWranglerConfig(workerDir, config);
   return bindings.map((binding) => binding.name);
+}
+
+/**
+ * Take the capability's Durable Object exports out of the Worker's entry — the inverse of the half of a
+ * DO binding that lives in the adopter's code (#428).
+ *
+ * Necessary rather than tidy: the export names a module this command is about to delete — the package it
+ * uninstalls, or the `capabilities/<cap>` fork it removes whole — so leaving it behind is a Worker that no
+ * longer builds, the same failure a left-behind import is, one file over. Returns the classes taken out.
+ *
+ * **Both spellings, by the rule the config's import already uses.** `pithy add` writes the export against
+ * the package and `pithy add --eject` repoints it into the fork, so the specifier that is ours to remove
+ * is either — which is exactly what {@link isCapabilityImport} answers, and why the capability's name is a
+ * parameter here. Anything else pointing at the same class is the adopter's own line and stays.
+ *
+ * A class another capability wired into **this** Worker still binds stays too, by
+ * {@link removableBindings}.
+ */
+export async function removeFromEntry(
+  workerDir: string,
+  capability: string,
+  target: HasBindings,
+  others: readonly HasBindings[],
+): Promise<string[]> {
+  const exports = durableObjectExports(removableBindings(target, others));
+  if (exports.length === 0) return [];
+
+  // Nothing to unwire is not a failure here, unlike in `add`: a removal runs against whatever state the
+  // project is in, and stopping because the entry has already gone would strand the capability
+  // half-removed. An entry that is *there* and will not open is still a refusal — `readOptionalFile`
+  // draws that line, and this does not draw its own.
+  const path = await workerEntryPath(workerDir);
+  if (path === null) return [];
+  const source = await readOptionalFile(path);
+  if (source === null) return [];
+
+  // The fork as **the entry** reaches it — `../capabilities/<cap>` from the `src/` an entry usually sits
+  // in, where `pithy.config.ts` says `./capabilities/<cap>`. `--eject` writes each file its own spelling,
+  // so a predicate built from the Worker's directory would read the ejected line as somebody else's and
+  // leave a re-export of a directory this command is about to delete.
+  const written = withoutDurableObjectExports(source, exports, (specifier) =>
+    isCapabilityImport(
+      specifier,
+      capabilityPackageName(capability),
+      ejectSpecifierFromDir(workerDir, dirname(path), capability),
+    ),
+  );
+  if (written === source) return [];
+  await writeFile(path, written);
+  return exports.filter((entry) => !exportsName(written, entry.className)).map((entry) => entry.className);
 }
 
 /**
@@ -499,6 +551,7 @@ export async function removeCapability(options: RemoveCapabilityOptions): Promis
   await removeFromConfig(workerDir, capability, pkg);
   const others = capabilities.filter((c) => c.name !== capability);
   const removedBindings = target ? await removeFromWrangler(workerDir, target, others) : [];
+  if (target) await removeFromEntry(workerDir, capability, target, others);
 
   let packageManager: string | undefined;
   let keptLinked = false;

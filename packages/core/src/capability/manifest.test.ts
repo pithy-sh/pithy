@@ -679,15 +679,20 @@ describe("every manifest string that reaches generated source is constrained at 
    * The strings a manifest states that no generated file ever carries, each with the reason it is exempt.
    *
    * `scaffold` and `whenToEnable` are prose: the CLI prints them to a terminal and writes them nowhere.
-   * The four `BindingSpec`/`DevSecret` leaves belong to composed contracts with their own rules, and they
+   * The three `BindingSpec`/`DevSecret` leaves belong to composed contracts with their own rules, and they
    * reach `wrangler.jsonc` through a JSON serializer that escapes what it is given — not TypeScript
    * through interpolation. Narrowing those is `BindingSpec`'s call to make, not this schema's.
+   *
+   * `requiredBindings[].className` used to be the fourth, on exactly that argument, and #428 ended it:
+   * a Durable Object's class name is now written into the adopter's Worker entry as
+   * `export { <className> } from "<classModule>";`, which is generated TypeScript. `BindingSpec` narrows
+   * both to a JavaScript identifier and a bare module specifier, so neither needs an exemption — which is
+   * the gate working as designed rather than a change to it.
    */
   const NEVER_RENDERED = new Set([
     "scaffold[]",
     "whenToEnable",
     "requiredBindings[].name",
-    "requiredBindings[].className",
     "requiredBindings[].service",
     "devSecrets[].name",
   ]);

@@ -142,6 +142,60 @@ describe("buildReconcilePlan — bindings", () => {
     ]);
   });
 
+  /**
+   * **The half of a Durable Object binding that lives in the adopter's code, reported by the plan.**
+   *
+   * An apply writes it. Nothing reported it, so a project wired before that landed — binding present,
+   * export nowhere — read as clean under `pithy doctor` and `pithy upgrade --dry-run` while `wrangler
+   * deploy` refused it. That is #428's own shape one level up: a property of the entry that nobody
+   * states, so nothing checks it, and the failure arrives at deploy.
+   */
+  const multiplayerManifest = {
+    name: "multiplayer",
+    package: "@pithy-sh/multiplayer",
+    requiredBindings: [
+      {
+        type: "durable_object",
+        name: "SESSIONS",
+        className: "MultiplayerSession",
+        classModule: "@pithy-sh/multiplayer/src/session/durableObject",
+      },
+    ],
+  };
+
+  test("reports a Durable Object class the Worker's entry does not export", async () => {
+    await writeManifest(dir, multiplayerManifest);
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: composes("multiplayer"),
+    });
+    expect(plan.perCapability.find((cap) => cap.name === "multiplayer")?.missingEntryExports).toEqual([
+      "MultiplayerSession",
+    ]);
+  });
+
+  test("an entry that already exports the class reports no drift", async () => {
+    await writeManifest(dir, multiplayerManifest);
+    const entry = join(workerDir, "src", "index.ts");
+    const source = await readFile(entry, "utf8");
+    await writeFile(
+      entry,
+      `${source}\nexport { MultiplayerSession } from "@pithy-sh/multiplayer/src/session/durableObject";\n`,
+    );
+
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: composes("multiplayer"),
+    });
+    expect(plan.perCapability.find((cap) => cap.name === "multiplayer")?.missingEntryExports).toEqual([]);
+  });
+
   test("skips binding kinds with no wrangler-array wiring", async () => {
     await writeManifest(dir, {
       name: "email",
@@ -246,7 +300,14 @@ describe("buildReconcilePlan — per Worker", () => {
     await writeManifest(dir, {
       name: "multiplayer",
       package: "@pithy-sh/multiplayer",
-      requiredBindings: [{ type: "durable_object", name: "SESSIONS", className: "MultiplayerSession" }],
+      requiredBindings: [
+        {
+          type: "durable_object",
+          name: "SESSIONS",
+          className: "MultiplayerSession",
+          classModule: "@pithy-sh/multiplayer/src/session/durableObject",
+        },
+      ],
     });
     const webDir = await addWorker("web");
     const before = await readFile(join(webDir, "wrangler.jsonc"), "utf8");
@@ -653,7 +714,14 @@ describe("applyReconcilePlan — bindings", () => {
     await writeManifest(dir, {
       name: "multiplayer",
       package: "@pithy-sh/multiplayer",
-      requiredBindings: [{ type: "durable_object", name: "ROOMS", className: "MultiplayerSession" }],
+      requiredBindings: [
+        {
+          type: "durable_object",
+          name: "ROOMS",
+          className: "MultiplayerSession",
+          classModule: "@pithy-sh/multiplayer/src/session/durableObject",
+        },
+      ],
     });
     const plan = await planFor("dev", "multiplayer");
     await applyReconcilePlan({

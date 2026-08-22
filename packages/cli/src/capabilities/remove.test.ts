@@ -20,6 +20,7 @@ import {
   type RemoveSteps,
   removableBindings,
   removeCapability,
+  removeFromEntry,
   removeFromWrangler,
   unwireConfig,
 } from "./remove";
@@ -229,7 +230,12 @@ describe("removeFromWrangler — durable objects", () => {
 
     const target = {
       requiredBindings: [
-        BindingSpec.parse({ type: "durable_object", name: "SESSIONS", className: "MultiplayerSession" }),
+        BindingSpec.parse({
+          type: "durable_object",
+          name: "SESSIONS",
+          className: "MultiplayerSession",
+          classModule: "@pithy-sh/multiplayer/src/session/durableObject",
+        }),
         BindingSpec.parse({ type: "d1", name: "DB" }),
       ],
     };
@@ -269,7 +275,12 @@ describe("add then remove", () => {
       { type: "vectorize", name: "MEDIA_INDEX", remote: true },
       { type: "ai", name: "AI", remote: true },
       { type: "workflow", name: "MEDIA_IMAGE_TO_TEXT", className: "ImageToTextWorkflow", optional: true },
-      { type: "durable_object", name: "MEDIA_SESSION", className: "MediaSession" },
+      {
+        type: "durable_object",
+        name: "MEDIA_SESSION",
+        className: "MediaSession",
+        classModule: "@pithy-sh/media/src/session/durableObject",
+      },
     ],
   });
 
@@ -305,12 +316,18 @@ describe("add then remove", () => {
 }
 `;
 
+  /** The module `main` names — where a Durable Object's export goes, and comes back out of. */
+  const entry =
+    'import { createEntrypoint } from "@pithy-sh/core/src/createEntrypoint";\n\nexport default createEntrypoint(config);\n';
+
   test("restores wrangler.jsonc byte for byte, comments included", async () => {
     await writeFile(join(dir, "wrangler.jsonc"), fixture);
     await writeFile(
       join(dir, "pithy.config.ts"),
       "export default {\n  capabilities: [\n    // pithy:capabilities\n  ],\n};\n",
     );
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "src", "index.ts"), entry);
     // Canonicalize through the writer first, so the comparison proves the mirror is complete rather
     // than re-testing comment-json's formatting choices.
     await writeWranglerConfig(dir, await readWranglerConfig(dir));
@@ -329,8 +346,18 @@ describe("add then remove", () => {
         ],
       },
     ];
+    // The entry carries the other half of the DO binding, and it is undone on the same round trip.
+    const addedEntry = await readFile(join(dir, "src", "index.ts"), "utf8");
+    expect(addedEntry).toContain('export { MediaSession } from "@pithy-sh/media/src/session/durableObject";');
+
     const removed = await removeFromWrangler(dir, { requiredBindings: everyKind.requiredBindings }, others);
     expect(removed).toEqual(["MEDIA", "MEDIA_BUCKET", "MEDIA_INDEX", "AI", "MEDIA_IMAGE_TO_TEXT", "MEDIA_SESSION"]);
+    expect(await removeFromEntry(dir, "media", { requiredBindings: everyKind.requiredBindings }, others)).toEqual([
+      "MediaSession",
+    ]);
+    // Byte for byte here too: a re-export of a package about to be uninstalled is a Worker that no
+    // longer builds, which is the failure `remove` exists to undo.
+    expect(await readFile(join(dir, "src", "index.ts"), "utf8")).toBe(entry);
 
     const after = await readFile(join(dir, "wrangler.jsonc"), "utf8");
     // Byte for byte: any binding kind add can write and remove cannot strip shows up here.
@@ -868,5 +895,85 @@ describe("removeCapability", () => {
     expect(events).toEqual([
       expect.objectContaining({ action: "capability/removed", outcome: "failure", severity: "warning" }),
     ]);
+  });
+});
+
+/**
+ * **The inverse of both writers of the entry's Durable Object export.**
+ *
+ * `pithy add` writes `export { <Class> } from "@pithy-sh/<cap>/…"`, and `pithy add --eject` repoints that
+ * same line at `./capabilities/<cap>/…` (#428). `removeCapability` uninstalls the package in the first
+ * case and deletes the fork directory in the second — so a line left behind either way is a Worker that no
+ * longer builds. One rule covers both, and it is the rule `remove` already reads a config's *import* by:
+ * the name identifies the statement, {@link isCapabilityImport} decides whether it is ours.
+ */
+describe("removeFromEntry", () => {
+  let dir: string;
+  const ENTRY = 'import config from "../pithy.config";\n\nexport default config;\n';
+  const target = {
+    requiredBindings: [
+      BindingSpec.parse({
+        type: "durable_object",
+        name: "MEDIA_SESSION",
+        className: "MediaSession",
+        classModule: "@pithy-sh/media/src/session/durableObject",
+      }),
+    ],
+  };
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-remove-entry-"));
+    await writeFile(join(dir, "wrangler.jsonc"), '{ "name": "api", "main": "src/index.ts" }\n');
+    await mkdir(join(dir, "src"), { recursive: true });
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** Write the entry with one export statement under it, and hand back its path. */
+  async function entry(statement: string): Promise<string> {
+    const path = join(dir, "src", "index.ts");
+    await writeFile(path, `${ENTRY}${statement}\n`);
+    return path;
+  }
+
+  test("takes out the export pointing at the capability's own module", async () => {
+    const path = await entry('export { MediaSession } from "@pithy-sh/media/src/session/durableObject";');
+    expect(await removeFromEntry(dir, "media", target, [])).toEqual(["MediaSession"]);
+    expect(await readFile(path, "utf8")).not.toContain("MediaSession");
+  });
+
+  test("takes out the export eject repointed into the fork", async () => {
+    // The consequence of eject repointing it. `removeCapability` deletes `capabilities/media` whole, so
+    // an entry still re-exporting a module inside it is broken in the way removal exists to prevent.
+    //
+    // `../capabilities/…`, not `./capabilities/…`: the fork sits beside `pithy.config.ts` in the Worker's
+    // own directory, and this entry is a directory below it under `src/`. Each file names the fork as it
+    // reaches it, so the predicate deciding what is ours is built from the entry's directory too.
+    const path = await entry('export { MediaSession } from "../capabilities/media/session/durableObject";');
+    expect(await removeFromEntry(dir, "media", target, [])).toEqual(["MediaSession"]);
+    expect(await readFile(path, "utf8")).not.toContain("MediaSession");
+  });
+
+  test("an entry in the Worker's own directory names the fork its own way, and that comes out too", async () => {
+    // `main` is the adopter's to set, and one naming a module beside `pithy.config.ts` reaches the fork as
+    // `./capabilities/media`. Derived from the entry's directory, both spellings are the same rule.
+    await writeFile(join(dir, "wrangler.jsonc"), '{ "name": "api", "main": "index.ts" }\n');
+    const path = join(dir, "index.ts");
+    await writeFile(path, `${ENTRY}export { MediaSession } from "./capabilities/media/session/durableObject";\n`);
+    expect(await removeFromEntry(dir, "media", target, [])).toEqual(["MediaSession"]);
+    expect(await readFile(path, "utf8")).not.toContain("MediaSession");
+  });
+
+  test("an export of the same class from the adopter's own module stays", async () => {
+    const path = await entry('export { MediaSession } from "./session";');
+    expect(await removeFromEntry(dir, "media", target, [])).toEqual([]);
+    expect(await readFile(path, "utf8")).toContain('export { MediaSession } from "./session";');
+  });
+
+  test("a class another capability in this Worker still binds stays", async () => {
+    const path = await entry('export { MediaSession } from "@pithy-sh/media/src/session/durableObject";');
+    expect(await removeFromEntry(dir, "media", target, [target])).toEqual([]);
+    expect(await readFile(path, "utf8")).toContain("MediaSession");
   });
 });

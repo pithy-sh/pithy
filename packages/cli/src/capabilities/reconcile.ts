@@ -25,12 +25,15 @@ import {
   type WranglerStanza,
 } from "../project/bindingEntries";
 import { allCapabilities, loadWorkerConfig } from "../project/config";
+import { readOptionalFile } from "../project/readOptionalFile";
 import { applyVersionMetadata, hasVersionMetadata } from "../project/versionMetadata";
 import { workerIdentity } from "../project/workerIdentity";
-import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
+import { readWranglerConfig, workerEntryPath, writeWranglerConfig } from "../project/wrangler";
 import { declaresConstant } from "./configConstants";
+import { exportsName } from "./configImports";
 import { ejectedCapabilities } from "./eject";
 import { findEntitlementGap } from "./entitlementGap";
+import { durableObjectExports, withDurableObjectExports } from "./entryExports";
 import { availableManifests } from "./manifests";
 import { MissingPrerequisite, missingPrerequisites } from "./prerequisites";
 import { requiredOptionRefusal } from "./requiredOptions";
@@ -119,6 +122,11 @@ export const CapabilityReconcile = z
     missingConfigKeys: z
       .array(MissingConfigKey)
       .describe("Manifest config options not yet present in this capability's pithy.config.ts registration."),
+    missingEntryExports: z
+      .array(z.string())
+      .describe(
+        "Durable Object classes this capability binds in this Worker that the module its `main` names does not export. wrangler resolves `class_name` against that module and refuses the deploy without it, so this is drift a `wrangler.jsonc` read alone cannot see: the binding is there and the class is nowhere. An upgrade writes them.",
+      ),
   })
   .describe("The reconcile drift for a single installed, non-ejected capability.");
 export type CapabilityReconcile = z.infer<typeof CapabilityReconcile>;
@@ -496,6 +504,42 @@ async function readConfigSource(workerDir: string): Promise<string> {
   }
 }
 
+/**
+ * The Worker entry's source as text, or `""` when there is no entry to read.
+ *
+ * Degraded per contributor, like the config source beside it: a Worker whose `wrangler.jsonc` names no
+ * `main` — a front end that joins the dev set through `pithy.worker.jsonc` alone — has no entry, and a
+ * plan that threw over it would take the other four contributors down with it.
+ */
+async function readEntrySource(workerDir: string): Promise<string> {
+  const path = await workerEntryPath(workerDir).catch(() => null);
+  if (path === null) return "";
+  // Discarded on purpose, on the terms `readConfigSource` above is — `readOptionalFile.test.ts` holds the
+  // sentence. An entry that will not open establishes no export drift; naming every class the Worker
+  // binds would be a guess, and taking the other four contributors down over it is #371's own defect.
+  return (await readOptionalFile(path).catch(() => null)) ?? "";
+}
+
+/**
+ * The Durable Object classes this capability binds here that the Worker's entry does not export.
+ *
+ * **A plan reports what an apply writes.** The apply wrote these and no plan mentioned them, so a project
+ * wired before that landed — binding present, export nowhere — read as clean under `pithy doctor` and
+ * `pithy upgrade --dry-run` while `wrangler deploy` refused it by name. That is #428's own shape one level
+ * up: a property of the entry that nobody states, so nothing checks it, and the failure arrives at deploy.
+ * `doctor` is the command an adopter runs *because* something is wrong, so it is the last place a silent
+ * property belongs.
+ *
+ * An entry that could not be read reports nothing rather than everything: an unreadable file is not an
+ * entry missing an export, and a plan that guessed would name every class the Worker binds.
+ */
+function computeMissingEntryExports(bindings: readonly BindingSpec[], entrySource: string): string[] {
+  if (entrySource === "") return [];
+  return durableObjectExports(bindings)
+    .filter((entry) => !exportsName(entrySource, entry.className))
+    .map((entry) => entry.className);
+}
+
 /** A Worker with no `wrangler.jsonc` has no stanzas to reconcile — report no binding drift rather than failing. */
 async function readStanzas(workerDir: string): Promise<{ env: string; stanza: WranglerStanza }[]> {
   try {
@@ -525,6 +569,7 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   const { manifests } = await availableManifests(projectDir);
   const ejected = await ejectedCapabilities(workerDir);
   const configSource = await readConfigSource(workerDir);
+  const entrySource = await readEntrySource(workerDir);
   const stanzas = await readStanzas(workerDir);
   // The Worker's own composed set, by name. Manifests resolve from the shared root install, so this is the
   // only thing that distinguishes "installed in the project" from "part of this Worker".
@@ -541,6 +586,12 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
       name: manifest.name,
       missingBindings: computeMissingBindings(manifest, stanzas, byName.get(manifest.name)),
       missingConfigKeys: computeMissingConfigKeys(manifest, configSource),
+      // The same binding set the stanzas are compared against — a class is exported exactly when this
+      // Worker binds it.
+      missingEntryExports: computeMissingEntryExports(
+        effectiveBindings(manifest, byName.get(manifest.name)),
+        entrySource,
+      ),
     });
   }
   perCapability.sort((a, b) => a.name.localeCompare(b.name));
@@ -795,6 +846,14 @@ export interface ReconcileApplied {
   migrations: DatabaseRun[];
   /** Whether this run added the `version_metadata` binding the Worker was missing. */
   addedVersionMetadata: boolean;
+  /**
+   * The Durable Object classes this run wrote an `export { … } from "…"` for into the Worker's entry.
+   *
+   * Reported for the reason every other field here is: `upgrade` writes a file in the adopter's repo, and
+   * a change it makes without saying so is a `git diff` they have to reverse-engineer (#318). Empty on the
+   * common run, which is what idempotent looks like.
+   */
+  addedEntryExports: string[];
 }
 
 /** Add every plan capability's missing bindings to the Worker's wrangler.jsonc, comment-preserving. Returns what was added per capability. */
@@ -831,7 +890,11 @@ async function applyBindings(
       written.push(...result.written);
       skipped.push(...result.skipped);
     }
-    appendDurableObjectMigrations(config, manifest.requiredBindings);
+    // The same list the stanzas got, never the manifest's whole set: a class migration tag registers a
+    // class against the script, and one for a binding this Worker does not derive registers an actor
+    // nothing can reach. A tag is applied once and never revisited, so it is not a mistake a later run
+    // repairs — `capabilities/add.ts`'s `wiredBindings` states the rule for the other writer.
+    appendDurableObjectMigrations(config, effectiveBindings(manifest, composedByName.get(cap.name)));
     added.set(cap.name, { written, skipped });
     // Only a real write dirties the file. A capability whose every binding was declined leaves
     // `wrangler.jsonc` byte-identical, and rewriting it would be a diff saying nothing happened.
@@ -839,6 +902,60 @@ async function applyBindings(
   }
   if (touched) await writeWranglerConfig(workerDir, config);
   return added;
+}
+
+/**
+ * Write every composed capability's Durable Object exports into the Worker's entry — **the other writer**
+ * of the two halves of a Durable Object, and the one #428's first fix missed.
+ *
+ * `pithy add` was not the only command putting a `durable_objects.bindings` entry with a `class_name` in
+ * it into a Worker: the reconcile above writes one into every environment that is missing it, and left the
+ * export to a human. So the defect survived on the command an adopter reaches for *because* something is
+ * wrong, and `pithy upgrade` would report a Worker fully reconciled that `wrangler deploy` still refuses:
+ *
+ *     Your Worker depends on the following Durable Objects, which are not exported in your entrypoint
+ *     file: MultiplayerSession.
+ *
+ * **Over every composed capability, not only the ones with a missing binding.** A project scaffolded
+ * before this landed has the bindings already and the export nowhere, so nothing in `wrangler.jsonc` is
+ * missing — and that project is exactly who runs `pithy upgrade`. {@link computeMissingEntryExports} is
+ * what puts the same set in the plan, so `doctor` and `--dry-run` name it too; the modules it needs to
+ * *write* the line come from the manifests here, which is why this derives the set again rather than
+ * reading the plan's class names. {@link withDurableObjectExports} is idempotent, so a Worker that is
+ * already right is read and left alone.
+ *
+ * A Worker whose config names no `main` is passed over rather than refused, unlike in `pithy add`. Add
+ * wires one capability into one Worker the adopter just named; upgrade fans out over every Worker in the
+ * project, and a Worker with a Durable Object and no entry cannot deploy for a reason older and plainer
+ * than this one. Refusing here would abandon the fan-out mid-write over a config that was already broken.
+ */
+async function applyEntryExports(
+  projectDir: string,
+  workerDir: string,
+  plan: ReconcilePlan,
+  capabilities: readonly Capability[],
+): Promise<string[]> {
+  const byName = new Map((await availableManifests(projectDir)).manifests.map((manifest) => [manifest.name, manifest]));
+  const composedByName = new Map(capabilities.map((capability) => [capability.name, capability]));
+  const exports = plan.perCapability.flatMap((cap) => {
+    const manifest = byName.get(cap.name);
+    // Same source of truth as the binding writer — see `effectiveBindings`. Exporting a class this Worker
+    // does not bind would pull a Durable Object into the bundle for nothing.
+    return manifest ? durableObjectExports(effectiveBindings(manifest, composedByName.get(cap.name))) : [];
+  });
+  if (exports.length === 0) return [];
+
+  const path = await workerEntryPath(workerDir).catch(() => null);
+  const source = path === null ? null : await readOptionalFile(path);
+  if (path === null || source === null) return [];
+
+  const written = withDurableObjectExports(source, exports);
+  if (written === source) return [];
+  await writeFile(path, written);
+  // What went in, decided by the same reader the writer used rather than by the intention — #318's rule,
+  // and the reason this is reported at all: `upgrade` editing an adopter's entry and saying nothing is
+  // that issue's shape. A class the entry already carried is not something this run added.
+  return [...new Set(exports.filter((entry) => !exportsName(source, entry.className)).map((e) => e.className))];
 }
 
 /** Insert every plan capability's missing config keys into the Worker's pithy.config.ts, never rewriting an existing key. */
@@ -931,6 +1048,9 @@ export async function applyReconcilePlan(options: ApplyReconcilePlanOptions): Pr
   refuseUnwritableConfigKeys(plan);
 
   const addedBindings = await applyBindings(projectDir, workerDir, plan, options.project, capabilities);
+  // After the bindings, deliberately: the export is the second half of a binding, and an entry re-exporting
+  // a class nothing binds is the wrong file to leave behind if the write above throws.
+  const addedEntryExports = await applyEntryExports(projectDir, workerDir, plan, capabilities);
   const addedConfigKeys = await applyConfigKeys(workerDir, plan);
   // Idempotent, and a no-op on a Worker that already declares it — including one that names a different
   // binding, which is reported rather than repointed.
@@ -974,5 +1094,6 @@ export async function applyReconcilePlan(options: ApplyReconcilePlanOptions): Pr
     migrated,
     migrations,
     addedVersionMetadata,
+    addedEntryExports,
   };
 }

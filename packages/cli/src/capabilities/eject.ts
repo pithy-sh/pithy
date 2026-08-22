@@ -2,12 +2,20 @@
 // SPDX-License-Identifier: MIT
 
 import { cp, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { promoteDependencies } from "../project/packageManager";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { ensureScaffoldPath, pathExists } from "../project/scaffold";
-import { findNamedImport, importedSpecifiers, isCapabilityImport, isInside } from "./configImports";
+import { workerEntryPath } from "../project/wrangler";
+import {
+  capabilityImportSpecifier,
+  findNamedImport,
+  importedSpecifiers,
+  isCapabilityImport,
+  isInside,
+  namedReexports,
+} from "./configImports";
 
 /**
  * The directory an ejected capability's source is copied into, relative to the Worker's
@@ -16,9 +24,35 @@ import { findNamedImport, importedSpecifiers, isCapabilityImport, isInside } fro
  */
 export const EJECT_DIR = "capabilities";
 
-/** The local import path an ejected capability is wired to — also the "this is ejected" signal for upgrade. */
+/**
+ * The local import path an ejected capability is wired to, **from the Worker's own directory** — also the
+ * "this is ejected" signal for upgrade, which reads `pithy.config.ts` and nothing else.
+ *
+ * Every other file is a different distance from the fork, so a file that is not the config asks
+ * {@link ejectSpecifierFromDir} instead.
+ */
 export function ejectImportPath(capability: string): string {
   return `./${EJECT_DIR}/${capability}`;
+}
+
+/**
+ * The fork's specifier **as written into a file in `fromDir`** — `./capabilities/<cap>` from the Worker's
+ * own directory, `../capabilities/<cap>` from the `src/` the entry usually sits in.
+ *
+ * A specifier is resolved relative to the file holding it, and eject writes one into two files at two
+ * depths: `apps/<worker>/pithy.config.ts` and whatever module that Worker's `main` names. Reusing the
+ * config's spelling in the entry produced `./capabilities/<cap>` resolved from `apps/<worker>/src/`,
+ * which is nowhere — a Worker that stopped bundling, written by the command whose job is that it still
+ * does. So each writer derives its own path from the file it is writing into.
+ *
+ * POSIX separators whatever the platform's are: this is a module specifier, not a filesystem path, and a
+ * bundler reads `\` as an escape.
+ */
+export function ejectSpecifierFromDir(workerDir: string, fromDir: string, capability: string): string {
+  const path = relative(fromDir, join(workerDir, EJECT_DIR, capability))
+    .split(sep)
+    .join("/");
+  return path.startsWith(".") ? path : `./${path}`;
 }
 
 /**
@@ -145,7 +179,10 @@ async function promotableDependencies(projectDir: string, pkg: string): Promise<
 async function repointImport(workerDir: string, pkg: string, capability: string): Promise<void> {
   const path = join(workerDir, "pithy.config.ts");
   const source = await readFile(path, "utf8");
-  const local = ejectImportPath(capability);
+  // Derived from the file being written, like the entry's is. For the config the answer is
+  // `ejectImportPath` itself — it sits in the Worker's own directory — and that is the string
+  // `parseEjectedCapabilities` reads back as the "this is ejected" signal.
+  const local = ejectSpecifierFromDir(workerDir, dirname(path), capability);
   const found = findNamedImport(source, capability);
   if (found?.specifier === local) return; // already ejected — a --force re-copy leaves it local
   if (found && isCapabilityImport(found.specifier, pkg, local)) {
@@ -162,6 +199,80 @@ async function repointImport(workerDir: string, pkg: string, capability: string)
     message: `${path} doesn't import ${pkg}.`,
     action: `Run pithy add ${capability} first, then eject.`,
   });
+}
+
+/**
+ * The local path a specifier into the package becomes once the package's `src/` is a fork under
+ * `capabilities/<cap>/`.
+ *
+ * The barrel becomes the fork directory itself — `local`, the fork as the file being written reaches it,
+ * so the two halves of the wiring name one directory in each file's own spelling. Anything deeper under
+ * `src/` keeps its path below it, because `cp` preserved the structure.
+ *
+ * Anything else inside the package is **refused, by name**. Only `src/` is copied, so there is no local
+ * counterpart to point at, and quietly leaving the line alone would put the package's class back into the
+ * bundle under the fork's name — which is the failure repointing exists to prevent.
+ */
+function localSpecifier(pkg: string, local: string, specifier: string): string {
+  if (specifier === pkg || specifier === capabilityImportSpecifier(pkg)) return local;
+  const src = `${pkg}/src/`;
+  if (specifier.startsWith(src)) return `${local}/${specifier.slice(src.length)}`;
+  throw new ConflictError({
+    message: `The worker entry re-exports ${specifier}, which eject cannot fork — only ${pkg}/src is copied.`,
+    action: `Point that export at a path under ${pkg}/src, or take the line out, then eject again.`,
+  });
+}
+
+/**
+ * The Worker entry with its re-exports of the package repointed at the local fork, or `null` when there
+ * is nothing to change.
+ *
+ * **The other half of the wiring, and the half that decides which code actually runs.** `pithy add` writes
+ * `export { <Class> } from "@pithy-sh/<cap>/…"` into the entry, because wrangler resolves a Durable
+ * Object's `class_name` against the module `main` names (#428). Ejecting only `pithy.config.ts` left that
+ * line pointing at the package: Cloudflare instantiated the package's class while the adopter edited the
+ * copy, and nothing said so — it builds, it deploys, and every change to the forked actor is ignored.
+ * `docs/EJECT.md` promised the project imports nothing from the package afterwards, and this is what makes
+ * that sentence true rather than nearly true.
+ *
+ * Every re-export pointing into the package, not only the ones the CLI wrote. A line an adopter added by
+ * hand reaches the same class through the same package, and `repointImport` follows whatever path into the
+ * package a config uses for exactly this reason.
+ *
+ * A Worker whose config names no entry — a front end that joins the dev set through `pithy.worker.jsonc`
+ * alone — has nothing to repoint and is not a failure.
+ */
+async function planEntryExports(
+  workerDir: string,
+  pkg: string,
+  capability: string,
+): Promise<{ path: string; written: string } | null> {
+  const path = await workerEntryPath(workerDir).catch(() => null);
+  const source = path === null ? null : await readOptionalFile(path);
+  if (path === null || source === null) return null;
+
+  // Relative to the entry, not to `pithy.config.ts`: the two files sit at different depths and the fork
+  // is one directory. {@link ejectSpecifierFromDir} says what reusing the config's spelling here cost.
+  const local = ejectSpecifierFromDir(workerDir, dirname(path), capability);
+  // Planned as spans and applied last-first, so each splice lands where the scanner found it and no
+  // earlier edit moves a later one. Found by offset because a commented-out copy of a line contains
+  // that line verbatim, and a literal search repointed the comment while the live export kept naming
+  // the package (#428). `namedReexports` yields in source order, so reversing gives descending starts.
+  const edits: { start: number; end: number; text: string }[] = [];
+  for (const { statement, specifier, start } of namedReexports(source)) {
+    if (specifier !== pkg && !specifier.startsWith(`${pkg}/`)) continue;
+    // The specifier is the only quoted region in the statement, so swapping it there keeps whatever
+    // spacing and quote style the entry uses. Replacement functions keep any `$` in either string.
+    const text = statement.replace(specifier, () => localSpecifier(pkg, local, specifier));
+    edits.push({ start, end: start + statement.length, text });
+  }
+  if (edits.length === 0) return null;
+
+  let written = source;
+  for (const edit of edits.reverse()) {
+    written = written.slice(0, edit.start) + edit.text + written.slice(edit.end);
+  }
+  return written === source ? null : { path, written };
 }
 
 /**
@@ -209,7 +320,12 @@ export async function ejectCapability(options: EjectCapabilityOptions): Promise<
   const promote = options.promoteDeps ?? ((dir, deps) => promoteDependencies(dir, deps).then(() => {}));
   await promote(projectDir, promotedDependencies);
 
+  // Planned before either write, and written after both: {@link localSpecifier} refuses a re-export it
+  // cannot fork, and a refusal raised between the two would leave the config naming the fork while the
+  // entry still named the package. Same reasoning as the copy/promote/repoint order above.
+  const entry = await planEntryExports(workerDir, pkg, capability);
   await repointImport(workerDir, pkg, capability);
+  if (entry) await writeFile(entry.path, entry.written);
 
   return { capability, path: `${EJECT_DIR}/${capability}`, promotedDependencies, forced: Boolean(alreadyEjected) };
 }

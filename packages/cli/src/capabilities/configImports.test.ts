@@ -4,9 +4,11 @@
 import { describe, expect, test } from "vitest";
 import {
   capabilityImportSpecifier,
+  exportsName,
   findNamedImport,
   importOrigin,
   isCapabilityImport,
+  namedReexports,
   withoutBinding,
 } from "./configImports";
 
@@ -185,5 +187,97 @@ describe("withoutBinding", () => {
     expect(without('import { auth, } from "@pithy-sh/auth/src/index";\nexport default {};\n', "auth")).toBe(
       "export default {};\n",
     );
+  });
+});
+
+/**
+ * **Is that name on this module at runtime?** — the question `pithy add` asks a Worker entry before
+ * writing a Durable Object's export into it (#428), because a second statement exporting a name the
+ * module already carries is a duplicate export the build refuses.
+ *
+ * Three spellings put a name on a module and two only look like it. The scanner draws the line, so a
+ * commented-out export and a `verbatimModuleSyntax`-erased type answer the same way: no.
+ */
+describe("exportsName", () => {
+  test("a re-export puts the name on the module", () => {
+    expect(exportsName('export { Session } from "./session";', "Session")).toBe(true);
+  });
+
+  test("a bare clause over a local declaration does too", () => {
+    expect(exportsName("class Session {}\nexport { Session };\n", "Session")).toBe(true);
+  });
+
+  test("so does a declaration exported where it is declared", () => {
+    for (const source of [
+      "export class Session {}",
+      "export abstract class Session {}",
+      "export const Session = 1;",
+      "export async function Session() {}",
+      "export function* Session() {}",
+    ]) {
+      expect(exportsName(source, "Session")).toBe(true);
+    }
+  });
+
+  test("an alias binds the name it lands on, not the one it came from", () => {
+    expect(exportsName('export { Room as Session } from "./room";', "Session")).toBe(true);
+    expect(exportsName('export { Session as Room } from "./room";', "Session")).toBe(false);
+  });
+
+  test("a default export of the same name is not that name on the module", () => {
+    // `export default class Session {}` puts `default` there and nothing else, so wrangler's `class_name`
+    // still resolves to nothing.
+    expect(exportsName("export default class Session {}", "Session")).toBe(false);
+  });
+
+  test("a type-only export is erased before it reaches the bundle", () => {
+    expect(exportsName('export type { Session } from "./session";', "Session")).toBe(false);
+    expect(exportsName('export { type Session } from "./session";', "Session")).toBe(false);
+  });
+
+  test("a commented-out export is not an export", () => {
+    expect(exportsName('// export { Session } from "./session";', "Session")).toBe(false);
+    expect(exportsName('/* export { Session } from "./session"; */', "Session")).toBe(false);
+  });
+
+  test("an export inside a string is a string", () => {
+    expect(exportsName('const help = `export { Session } from "./session";`;', "Session")).toBe(false);
+  });
+
+  test("a longer name that merely starts the same is not it", () => {
+    expect(exportsName('export { SessionStore } from "./session";', "Session")).toBe(false);
+  });
+});
+
+/**
+ * Every re-export and where it points — what `pithy add --eject` reads to move a fork's entry off the
+ * package it has just copied.
+ */
+describe("namedReexports", () => {
+  test("carries the statement, the specifier and the offset, in source order", () => {
+    const source = [
+      'import { createEntrypoint } from "@pithy-sh/core/src/createEntrypoint";',
+      'export { Queue } from "@pithy-sh/matchmaking/src/queue/durableObject";',
+      'export { Room } from "./rooms";',
+    ].join("\n");
+    // The offset is what an edit splices at. Found by searching for the statement instead, a caller
+    // repointed the adopter's commented-out copy of a line — a comment contains the live statement
+    // verbatim — and left the export that runs pointing at the package (#428).
+    expect(namedReexports(source)).toEqual([
+      {
+        statement: 'export { Queue } from "@pithy-sh/matchmaking/src/queue/durableObject";',
+        specifier: "@pithy-sh/matchmaking/src/queue/durableObject",
+        start: source.indexOf("export { Queue }"),
+      },
+      { statement: 'export { Room } from "./rooms";', specifier: "./rooms", start: source.indexOf("export { Room }") },
+    ]);
+  });
+
+  test("a clause with no from re-exports nothing, so it is not one", () => {
+    expect(namedReexports("class Room {}\nexport { Room };\n")).toEqual([]);
+  });
+
+  test("a commented-out re-export points nowhere", () => {
+    expect(namedReexports('// export { Room } from "./rooms";')).toEqual([]);
   });
 });

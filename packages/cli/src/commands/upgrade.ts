@@ -294,6 +294,11 @@ function planLines(plan: ReconcilePlan): string[] {
     if (summary) lines.push(`${cap.name}: ${summary}`);
   }
   for (const name of plan.ejectedSkipped) lines.push(`${name}: ejected. Skipped.`);
+  // The Worker's entry, in the same words the applied lines use one tense over. A Durable Object is one
+  // binding written in two files, and the plan reported only the file that is config — so a project with
+  // the binding and no export read as "Nothing to upgrade." while the deploy was refused (#428).
+  const exports = [...new Set(plan.perCapability.flatMap((cap) => cap.missingEntryExports))];
+  if (exports.length > 0) lines.push(`Worker entry: export ${exports.join(", ")}.`);
   if (plan.missingVersionMetadata) lines.push("version_metadata: add CF_VERSION_METADATA.");
   lines.push(...ledgerLines(plan));
   if (lines.length === 0) lines.push("Nothing to upgrade.");
@@ -318,6 +323,11 @@ function appliedLines(applied: ReconcileApplied, plan: ReconcilePlan): string[] 
     }
   }
   for (const name of applied.ejectedSkipped) lines.push(`${name}: ejected. Skipped.`);
+  // The Worker's entry, which is source in the adopter's repo rather than config. Named, because a file
+  // this command edits without saying so is a `git diff` they have to reverse-engineer.
+  if (applied.addedEntryExports.length > 0) {
+    lines.push(`Worker entry: exported ${applied.addedEntryExports.join(", ")}.`);
+  }
   if (applied.addedVersionMetadata) lines.push("version_metadata: added CF_VERSION_METADATA.");
   else if (plan.missingVersionMetadata) lines.push("version_metadata: names another binding. Left alone.");
   if (applied.migrated) {

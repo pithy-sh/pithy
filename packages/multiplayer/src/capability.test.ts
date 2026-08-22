@@ -5,7 +5,12 @@ import { readFileSync } from "node:fs";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { describe, expect, it } from "vitest";
 import type { MultiplayerOptions } from "./capability";
-import { MULTIPLAYER_SESSION_CLASS, MULTIPLAYER_SESSIONS_BINDING, multiplayer } from "./capability";
+import {
+  MULTIPLAYER_SESSION_CLASS,
+  MULTIPLAYER_SESSION_MODULE,
+  MULTIPLAYER_SESSIONS_BINDING,
+  multiplayer,
+} from "./capability";
 
 /**
  * What `pithy add multiplayer` writes, checked by calling `multiplayer()` on it.
@@ -82,12 +87,14 @@ describe("pithy.manifest.json", () => {
     );
   });
 
-  it("tells the adopter to export the Durable Object from a module that is not the entry point", () => {
-    // The scaffold step is the adopter's only instruction for wiring `class_name`, and #172 moved where
-    // the class can be imported from. A step naming `src/index` would now name a module that does not
-    // export it — a scaffold that fails at bundle time, on the line the manifest told them to write.
-    const step = manifest.scaffold.find((line) => line.includes(MULTIPLAYER_SESSION_CLASS));
-    expect(step).toContain("@pithy-sh/multiplayer/src/session/durableObject");
-    expect(step).not.toContain("@pithy-sh/multiplayer/src/index");
+  it("names the module the Durable Object is exported from, and it is not the entry point", () => {
+    // `classModule` is what `pithy add` writes the worker entry's re-export against (#428), so a module
+    // that does not export the class is a Worker that fails at bundle time — on a line the CLI wrote.
+    // #172 moved the class out of `src/index`, which an adopter's `pithy.config.ts` imports in Node.
+    for (const bindings of [multiplayer(seeded).requiredBindings, manifest.requiredBindings]) {
+      const declared = bindings.find((binding) => binding.type === "durable_object");
+      expect(declared?.classModule).toBe(MULTIPLAYER_SESSION_MODULE);
+      expect(MULTIPLAYER_SESSION_MODULE).not.toContain("/src/index");
+    }
   });
 });

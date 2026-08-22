@@ -13,7 +13,7 @@ pithy add auth --eject
 This installs and adds the capability the normal way, then ejects it:
 
 - **Copies the source.** The capability's entire `src/` is copied from `node_modules/@pithy-sh/auth/` into `<project>/capabilities/auth/`, structure and relative imports preserved. Routes, middleware, schemas, migrations — all local and editable.
-- **Repoints the wiring.** The `pithy.config.ts` import moves from `@pithy-sh/auth/src/index` to `./capabilities/auth`. The registration, bindings, and config options are unchanged.
+- **Repoints the wiring.** The `pithy.config.ts` import moves from `@pithy-sh/auth/src/index` to `./capabilities/auth`. So does every re-export in the worker entry that points into the package — the `export { MultiplayerSession } from "@pithy-sh/multiplayer/src/session/durableObject";` line `pithy add` writes for a Durable Object becomes `../capabilities/multiplayer/session/durableObject`, so the class Cloudflare runs is the one you edit. Each file names the fork the way it reaches it: the config sits beside `capabilities/` and the entry usually sits a directory below it in `src/`, so the two lines read differently and point at one directory. The registration, bindings, and config options are unchanged.
 - **Promotes dependencies.** The capability's runtime dependencies (e.g. `better-auth`, `zod`) — transitive through the package until now — are added to your `package.json`, so the local copy builds standalone. `@pithy-sh/auth` is left installed but unimported, and safe to remove.
 
 After eject, your project imports nothing from `@pithy-sh/auth`. The ejected code still resolves `@pithy-sh/core` (the contract seam) and third-party libraries.
