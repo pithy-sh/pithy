@@ -203,12 +203,17 @@ export function email(config: EmailConfigInput): EmailCapability {
     // The slice of secrets email reads — aggregated into the shared per-invocation accessor at startup.
     secretRegistry: emailSigningRegistry,
     /**
-     * This capability's own copy, in the language it is written in — the seven templates whose words
-     * the kit owns, plus the shell's severity vocabulary and its opt-out link. All under `email/`,
-     * which `composeMessages` enforces.
+     * This capability's own copy — the seven templates whose words the kit owns, plus the shell's
+     * severity vocabulary and its opt-out link. All under `email/`, which `composeMessages` enforces.
      *
-     * English only. The translations of it ship in `@pithy-sh/i18n`, so a corrected sentence or a new
-     * locale reaches an adopter as a package upgrade rather than as a merge into a file they own.
+     * **In every language it is written in, not English alone (#442).** The send Worker is a separate
+     * deploy with no request and no config, so anything it does not bundle is stamped into it as a
+     * variable — and the kit's own translations were doing that on every provision run. Held here,
+     * they are built into the host and only an adopter's diff travels.
+     *
+     * A kit sentence still lives in exactly one place; which package that is follows how it reaches a
+     * reader. `@pithy-sh/i18n` keeps what no capability can — the error taxonomy, whose domains are
+     * not capability names, and the screens, which are copied rather than imported.
      */
     messages: EMAIL_MESSAGES,
     /**

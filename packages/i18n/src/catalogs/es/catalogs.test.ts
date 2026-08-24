@@ -185,8 +185,9 @@ describe("placeholders are spelled the way `interpolate` spells them", () => {
 
   test("the catalogs really do carry placeholders, so that sweep is not over nothing", () => {
     // Re-measured on 2026-08-24 at 14, down from 30: the email copy moved to `@pithy-sh/email` in
-    // #442 and took most of the interpolated sentences with it. Counted there now, in that package's
-    // own suite, against the English it sits beside.
+    // #442 and took most of the interpolated sentences with it. Their placeholder parity against the
+    // English is held by `packages/cli/src/ci/catalogCoverage.test.ts`, which reads both homes —
+    // not by `@pithy-sh/email`'s own suite, which has no `es` gate of its own.
     const withParams = ENTRIES.filter(({ message }) => message.includes("{")).length;
     expect(withParams).toBeGreaterThanOrEqual(13);
   });

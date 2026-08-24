@@ -3,7 +3,7 @@
 
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { KitErrorPayload } from "@pithy-sh/core/src/error/payload";
-import { messageDomain } from "@pithy-sh/core/src/i18n/catalog";
+import { lookupMessage, messageDomain } from "@pithy-sh/core/src/i18n/catalog";
 import { describe, expect, test } from "vitest";
 import { i18n, isI18nCapability } from "./capability";
 import { KIT_CATALOGS } from "./catalogs/kit";
@@ -106,19 +106,22 @@ describe("the five layers, in the documented order", () => {
     // A capability sees only itself when it is constructed, so the kit's English is not here yet. The
     // layer *slots* are, which is what keeps the order fixed rather than growing at assembly.
     const layers = bilingual().layersFor("es");
-    expect(layers).toHaveLength(5);
+    expect(layers).toHaveLength(6);
     expect(layers[0]).toEqual({ "app/greeting": "Buenas." });
     expect(layers[1]).toEqual({ "app/greeting": "Hi." });
     expect(layers[2]).toBe(KIT_CATALOGS.es);
     expect(layers[3]).toBeUndefined();
-    expect(layers[4]).toEqual({});
+    expect(layers[4]).toBeUndefined();
+    // Six, not five, since #442: English is its own layer rather than something the project-default
+    // layer resolves to when nothing else contributed that locale.
+    expect(layers[5]).toBeUndefined();
   });
 
-  test("after `compose`, layers four and five carry every capability's own messages", () => {
+  test("after `compose`, the capability layers carry every capability's own messages", () => {
     const capability = bilingual();
     capability.compose?.({ capabilities: [board, capability] });
     const layers = capability.layersFor("es");
-    expect(layers).toHaveLength(5);
+    expect(layers).toHaveLength(6);
     // 1. the adopter's catalog for the resolved locale
     expect(layers[0]).toEqual({ "app/greeting": "Buenas." });
     // 2. the adopter's catalog for the project default
@@ -180,7 +183,7 @@ describe("isI18nCapability", () => {
     if (isI18nCapability(capability)) {
       // The narrowing is the point: `i18nConfig` and `layersFor` are only reachable through it.
       expect(capability.i18nConfig.defaultLocale).toBe("en");
-      expect(capability.layersFor("en")).toHaveLength(5);
+      expect(capability.layersFor("en")).toHaveLength(6);
     }
   });
 
@@ -193,5 +196,51 @@ describe("isI18nCapability", () => {
     // and no layer walk, and treating it as this one would fail at the first property read.
     const impostor: Capability = defineCapability({ name: "i18n", requiredBindings: [] });
     expect(isI18nCapability(impostor)).toBe(false);
+  });
+});
+
+describe("English stays the backstop, whatever the project's default is", () => {
+  /**
+   * **A layer that reached English only by coincidence, until a capability shipped a second locale.**
+   *
+   * Layer 5 was `catalogFor(composedMessages, defaultLocale)` — `catalogs[default] ?? catalogs.en` —
+   * which fell through to English only because no capability had ever contributed a non-`en` locale.
+   * `@pithy-sh/email` does now (#442), so for a project whose default is not `en` the layer answered
+   * the Spanish map, layers 5 and 6 collapsed into one, and an adopter's own English-only key rendered
+   * as its raw key on a Spanish page. English is the language the kit is written in; it is a layer of
+   * its own now rather than something another layer happens to resolve to.
+   */
+  function composed(defaultLocale: string) {
+    const capability = i18n({ supportedLocales: ["en", "es"], defaultLocale });
+    const app = defineCapability({
+      name: "app",
+      messages: { en: { "app/board.title": "Leaderboard" } },
+      requiredBindings: [],
+    });
+    const withEmail = defineCapability({
+      name: "email",
+      messages: { en: { "email/x": "English" }, es: { "email/x": "Español" } },
+      requiredBindings: [],
+    });
+    const all = [capability, withEmail, app];
+    for (const one of all) one.compose?.({ capabilities: all });
+    return capability;
+  }
+
+  test("an adopter's English-only key resolves on a Spanish page, default `en`", () => {
+    const layers = composed("en").layersFor("es");
+    expect(lookupMessage(layers, "app/board.title")).toBe("Leaderboard");
+  });
+
+  test("and it still resolves when the project's default is Spanish", () => {
+    // The case that broke. Nothing about a project choosing a non-English default should cost it the
+    // language the kit's own keys are written in.
+    const layers = composed("es").layersFor("es");
+    expect(lookupMessage(layers, "app/board.title")).toBe("Leaderboard");
+  });
+
+  test("a capability's own translation still wins over that backstop", () => {
+    expect(lookupMessage(composed("es").layersFor("es"), "email/x")).toBe("Español");
+    expect(lookupMessage(composed("es").layersFor("en"), "email/x")).toBe("English");
   });
 });

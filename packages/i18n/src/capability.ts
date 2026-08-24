@@ -3,7 +3,8 @@
 
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import type { LocaleCatalogs, MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
-import { catalogFor, composeMessages } from "@pithy-sh/core/src/i18n/registry";
+import { composeMessages } from "@pithy-sh/core/src/i18n/registry";
+import { DEFAULT_LOCALE } from "@pithy-sh/core/src/i18n/translator";
 import { KIT_CATALOGS } from "./catalogs/kit";
 import type { I18nClientProjection } from "./client/projection";
 import { I18nConfig, type I18nConfigInput } from "./config/config";
@@ -47,7 +48,8 @@ export interface I18nCapability extends Capability {
  * 2. the adopter's catalog for the project default,
  * 3. **the kit's translation** for the resolved locale — the `es` this package ships,
  * 4. every composed capability's English, for the resolved locale,
- * 5. that same English for the project default.
+ * 5. every composed capability's copy for the project default,
+ * 6. and their English, which is the language the kit is written in.
  *
  * Per key, never per catalog: overriding one sentence is one entry, and every key an adopter did not
  * mention keeps flowing from the package. That is what makes an override a merge rather than a fork,
@@ -66,7 +68,15 @@ export function i18n(config: I18nConfigInput = {}): I18nCapability {
     resolved.messages[resolved.defaultLocale],
     KIT_CATALOGS[locale],
     composedMessages[locale],
-    catalogFor(composedMessages, resolved.defaultLocale),
+    composedMessages[resolved.defaultLocale],
+    // **The source language, explicitly, and last.** This was `catalogFor(composedMessages, default)`,
+    // which answers `catalogs[default] ?? catalogs.en` — so it only ever reached English because no
+    // capability had contributed a non-`en` locale. `@pithy-sh/email` does now (#442), which made the
+    // fallback silently stop existing for any project whose `defaultLocale` is not `en`: layers 5 and
+    // 6 collapsed into the same Spanish map, and an adopter's own English-only key rendered as its raw
+    // key on a Spanish page. English is the language the kit is written in, so it is a layer of its
+    // own rather than something another layer resolves to by coincidence.
+    composedMessages[DEFAULT_LOCALE],
   ];
 
   const capability = defineCapability({
