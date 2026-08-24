@@ -30,11 +30,14 @@ import { EMAIL_MESSAGES, type EmailMessageLayers } from "../templates/messages";
  * a key no template will ever ask for.
  *
  * **And only keys that say something the host does not already have.** `catalogLayers` ends every
- * lookup at `EMAIL_MESSAGES` — this package's own English, bundled into the host — so a key whose
- * merged value is byte-identical to that English resolves to the same string whether it is in the var
- * or not. Leaving it out is therefore invisible in the rendered mail and is the difference between a
- * project fitting in the var and being refused by it. An adopter who overrode an English sentence is
- * unaffected: their value is not the kit's, so it stays.
+ * lookup at `EMAIL_MESSAGES` — this package's own copy, in every language it is written in, bundled
+ * into the host — so a key whose merged value is byte-identical to what the host already resolves for
+ * that locale renders the same string whether it is in the var or not. Leaving it out is invisible in
+ * the rendered mail, and it is what makes adding a language cost no configuration at all: a project
+ * on the kit's own locales that overrode nothing deploys no catalog variable.
+ *
+ * An adopter who overrode a sentence is unaffected, including one who overrode a translation back to
+ * the English wording: the comparison is against the locale's own bundled value, which is not that.
  */
 
 /** The domain every key this capability renders lives under — `composeMessages` enforces it too. */

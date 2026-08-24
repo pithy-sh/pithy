@@ -134,14 +134,6 @@ const EMAIL_EN: MessageCatalog = {
 };
 
 /**
- * This capability's `Capability.messages` contribution — **English only, and that is the rule.**
- *
- * A kit package contributes the language it is written in; the translations of it ship in
- * `@pithy-sh/i18n` (`src/catalogs/<locale>/email.ts`), so a corrected sentence or a new locale reaches
- * every adopter as a package upgrade rather than as a merge into files they own. Keys are all under
- * `email/`, which `composeMessages` enforces.
- */
-/**
  * Every language this capability's own copy is written in.
  *
  * **Bundled, not stamped.** The send Worker is deployed with this map inside it, so adding a language
@@ -162,11 +154,26 @@ export const EMAIL_MESSAGES: LocaleCatalogs = { en: EMAIL_EN, es: EMAIL_ES };
 export type EmailMessageLayers = (locale: string) => readonly (MessageCatalog | undefined)[];
 
 /** The layers a project that composed no i18n capability walks: this package's own English, and nothing else. */
-export const kitEmailLayers: EmailMessageLayers = (locale) => [EMAIL_MESSAGES[locale], EMAIL_EN];
+export const kitEmailLayers: EmailMessageLayers = (locale) => [bundledFor(locale), EMAIL_EN];
 
 /** The primary language subtag of a tag — `es` of `es-AR`. Null when it is not a tag at all. */
 function languageOf(tag: string): string | null {
   return parseLocale(tag)?.language ?? null;
+}
+
+/**
+ * This package's own copy for `locale`, reduced to the language when the region was not written for.
+ *
+ * **The reduction has to happen here too, and not only over the stamped catalogs.** It did not, and
+ * that was a regression the moment #442 bundled the kit's translations: the stamped catalog used to
+ * *be* the kit's Spanish, so reducing `es-AR` to `es` over it found the words. With the kit's copy
+ * bundled here instead, the stamped catalog is empty for a project that overrode nothing, and an
+ * exact-tag lookup on `es-AR` answered `undefined` — so a reader whose `pithy_auth_users.locale` is
+ * `es-AR` or `es-MX` got an English letter from a project that ships Spanish.
+ */
+function bundledFor(locale: string): MessageCatalog | undefined {
+  const language = languageOf(locale);
+  return EMAIL_MESSAGES[locale] ?? (language ? EMAIL_MESSAGES[language] : undefined);
 }
 
 /**
@@ -257,7 +264,7 @@ export function catalogLayers(catalogs: LocaleCatalogs): EmailMessageLayers {
     // this path: `@pithy-sh/i18n` negotiates `es-AR` down to `es` at the request, before a locale is
     // ever stored or enqueued.
     const exact = catalogs[locale] ?? (language ? catalogs[language] : undefined);
-    return [exact, EMAIL_MESSAGES[locale], EMAIL_EN];
+    return [exact, bundledFor(locale), EMAIL_EN];
   };
 }
 

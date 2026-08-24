@@ -197,3 +197,34 @@ describe("every key a template asks for is a key this package writes", () => {
     expect(stray).toEqual([]);
   });
 });
+
+describe("a regional reader gets the language the kit ships", () => {
+  /**
+   * **The regression #442 introduced, and the reason the reduction lives in two places.**
+   *
+   * `catalogLayers` reduced `es-AR` to `es` over the *stamped* catalogs only. That was invisible while
+   * the kit's Spanish was itself stamped — the reduction found it there. Bundling it moved the words
+   * to `EMAIL_MESSAGES`, where the lookup was exact-tag, so a project that overrode nothing had an
+   * empty stamped catalog and `EMAIL_MESSAGES["es-AR"]` answered `undefined`. A reader whose
+   * `pithy_auth_users.locale` is `es-AR` or `es-MX` got an English letter from a project shipping
+   * Spanish, and nothing failed.
+   */
+  test.each(["es", "es-AR", "es-MX", "es-419"])("`%s` reads the Spanish the host is built with", (locale) => {
+    const t = emailTranslator(locale, catalogLayers({}));
+    expect(t.t("email/welcome.subject")).toBe(EMAIL_MESSAGES.es?.["email/welcome.subject"]);
+  });
+
+  test("a language the kit does not ship still reads English", () => {
+    expect(emailTranslator("fr-CA", catalogLayers({})).t("email/welcome.subject")).toBe(
+      EMAIL_MESSAGES.en?.["email/welcome.subject"],
+    );
+  });
+
+  test("and the no-i18n path reduces the same way, because it walks the same bundle", () => {
+    // `kitEmailLayers` is what a project composing no i18n capability uses. It had the identical
+    // exact-tag lookup and the identical newly-live consequence.
+    expect(emailTranslator("es-AR", kitEmailLayers).t("email/welcome.subject")).toBe(
+      EMAIL_MESSAGES.es?.["email/welcome.subject"],
+    );
+  });
+});
