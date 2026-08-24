@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { KitErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { describe, expect, test } from "vitest";
 import { hasKitCatalog, loadKitCatalog } from "./browser";
 import { KIT_CATALOGS } from "./kit";
@@ -68,13 +69,28 @@ describe("a locale the kit does not write", () => {
 });
 
 describe("what the Spanish catalog actually carries", () => {
-  test("real sentences, from all three of the files it is assembled from", async () => {
+  test("real sentences, from both of the files it is assembled from", async () => {
     // The anti-vacuity guard for every case above: `toEqual` between two references to one gutted
-    // object passes perfectly. These are keys from `errors.ts`, `screens.ts` and `email.ts` in turn.
+    // object passes perfectly. These are keys from `errors.ts` and `screens.ts` in turn.
     const es = await loadKitCatalog("es");
-    expect(Object.keys(es).length).toBeGreaterThanOrEqual(242);
+    expect(Object.keys(es).length).toBeGreaterThanOrEqual(185);
     expect(es["core/not_found"]).toBeTypeOf("string");
     expect(es["auth/sign_in.title"]).toBeTypeOf("string");
-    expect(es["email/shell.greeting"]).toBeTypeOf("string");
+  });
+
+  test("and no email template copy, because a browser is not what renders a letter", () => {
+    // The email *copy* moved to `@pithy-sh/email` in #442, so the send Worker is built with it rather
+    // than sent it. Nothing in a browser renders an email, so its absence here costs a reader nothing
+    // — and its presence was ~3 KB in every language chunk a reader downloads.
+    //
+    // The `email/*` **error codes** stay, and the distinction is the point: for an error the key is the
+    // code, the taxonomy has no capability home, and a browser really does render one when a send is
+    // refused. Written as "everything under the domain that is not a code", so a seventh code arrives
+    // without editing this.
+    const codes = new Set<string>(KitErrorPayload.options.map((member) => member.shape.code.value));
+    const shipped = Object.keys(KIT_CATALOGS.es ?? {});
+    expect(shipped.filter((key) => key.startsWith("email/") && !codes.has(key))).toEqual([]);
+    // And the codes really are still here, or the filter above is passing over an empty set.
+    expect(shipped.filter((key) => key.startsWith("email/") && codes.has(key)).length).toBeGreaterThanOrEqual(6);
   });
 });

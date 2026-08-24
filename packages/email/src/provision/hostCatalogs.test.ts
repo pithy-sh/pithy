@@ -3,6 +3,7 @@
 
 import { KitErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { describe, expect, test } from "vitest";
+import { EMAIL_MESSAGES } from "../templates/messages";
 import { emailHostCatalogs } from "./hostCatalogs";
 
 describe("an error's translation is not template copy, and does not ride to the host", () => {
@@ -34,5 +35,46 @@ describe("an error's translation is not template copy, and does not ride to the 
     }
     // And the template copy beside them still does, so the filter is a cut and not a wall.
     expect(carried.es?.["email/magic_link.subject"]).toBe("Tu enlace");
+  });
+});
+
+describe("the host is built with the kit's words, not sent them", () => {
+  /**
+   * **The whole of #442, stated as the property an adopter feels.**
+   *
+   * The send Worker is a separate deploy with no request and no access to `pithy.config.ts`, so
+   * anything it does not bundle has to be stamped into it as configuration. Holding the kit's own
+   * translations in `@pithy-sh/i18n` meant static data traveled that channel on every provision run,
+   * against a 5 KB per-variable ceiling one language pack filled to 61%. Held beside the English they
+   * translate, the host is built with them and the variable carries only what an adopter changed.
+   */
+  const kit = (locale: string) => [EMAIL_MESSAGES[locale], EMAIL_MESSAGES.en].filter(Boolean);
+
+  test("a project on the kit's own locales, overriding nothing, deploys no variable at all", () => {
+    expect(emailHostCatalogs(["en", "es"], kit as never)).toEqual({});
+  });
+
+  test("adding a locale the kit ships costs no configuration growth", () => {
+    // The property that makes adding languages free: this is the same empty answer whether the
+    // project serves one language or every language the kit is written in.
+    expect(emailHostCatalogs(["en"], kit as never)).toEqual({});
+    expect(emailHostCatalogs(["en", "es"], kit as never)).toEqual({});
+  });
+
+  test("an adopter overriding one sentence deploys one sentence", () => {
+    const overridden = (locale: string) =>
+      locale === "es" ? [{ "email/shell.unsubscribe": "Baja" }, ...kit("es")] : kit(locale);
+    const carried = emailHostCatalogs(["en", "es"], overridden as never);
+    expect(carried).toEqual({ es: { "email/shell.unsubscribe": "Baja" } });
+    expect(new TextEncoder().encode(JSON.stringify(carried.es)).length).toBeLessThan(100);
+  });
+
+  test("a locale the kit does not ship still travels whole, because nothing bundled it", () => {
+    // The other half of the rule: what the host was not built with, it must still be told.
+    const french = (locale: string) =>
+      locale === "fr" ? [{ "email/shell.unsubscribe": "Se désabonner" }, ...kit("fr")] : kit(locale);
+    expect(emailHostCatalogs(["en", "fr"], french as never)).toEqual({
+      fr: { "email/shell.unsubscribe": "Se désabonner" },
+    });
   });
 });

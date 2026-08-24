@@ -45,7 +45,15 @@ vi.mock("../project/wrangler", () => ({
 }));
 
 /** The kit's Spanish for `welcome`, as `@pithy-sh/i18n` ships it — the sentence that has to survive. */
-const KIT_ES_WELCOME_SUBJECT = "Te damos la bienvenida a {app}";
+/**
+ * One sentence the adopter changed.
+ *
+ * **The kit's own Spanish is no longer what travels (#442).** The host is built with it, so a project
+ * that overrides nothing deploys no variable at all — which means asserting the kit's own value here
+ * would assert an empty answer and prove nothing about the compose step. The adopter's diff is what
+ * still has to reach the host, so that is what these cases carry.
+ */
+const OVERRIDDEN = "Hola y bienvenido a {app}";
 
 /** One app Worker composing the given capabilities — the shape `resolveWorkers` hands back. */
 function workers(...capabilities: Capability[]): ResolvedWorker[] {
@@ -67,19 +75,22 @@ function mail() {
 describe("loadEmailCapability", () => {
   test("hands back an assembled capability, so its catalogs are an answer and not a placeholder", async () => {
     const resolved = await loadEmailCapability("/proj", async () =>
-      workers(i18n({ supportedLocales: ["en", "es"] }), mail()),
+      workers(
+        i18n({ supportedLocales: ["en", "es"], messages: { es: { "email/welcome.subject": OVERRIDDEN } } }),
+        mail(),
+      ),
     );
-    expect(resolved.hostCatalogs().es?.["email/welcome.subject"]).toBe(KIT_ES_WELCOME_SUBJECT);
+    expect(resolved.hostCatalogs().es?.["email/welcome.subject"]).toBe(OVERRIDDEN);
   });
 
   test("across Workers, because the host it stamps is the project's and belongs to neither of them", async () => {
     // `apps/web` composes the languages and `apps/api` composes the mail. One host is deployed for the
     // project, named `<project>-<env>-email`, and it sends for both — so the union is the honest set.
     const resolved = await loadEmailCapability("/proj", async () => [
-      ...workers(i18n({ supportedLocales: ["en", "es"] })),
+      ...workers(i18n({ supportedLocales: ["en", "es"], messages: { es: { "email/welcome.subject": OVERRIDDEN } } })),
       ...workers(mail()),
     ]);
-    expect(resolved.hostCatalogs().es?.["email/welcome.subject"]).toBe(KIT_ES_WELCOME_SUBJECT);
+    expect(resolved.hostCatalogs().es?.["email/welcome.subject"]).toBe(OVERRIDDEN);
   });
 
   test("a project composing no i18n capability carries nothing, which is the English it always sent", async () => {
@@ -109,14 +120,17 @@ describe("CloudflareEmailProvisioner.deployWorker", () => {
   test("deploys the host carrying the project's catalogs, not merely holding them", async () => {
     deployed.configs.length = 0;
     const mailCapability = await loadEmailCapability("/proj", async () =>
-      workers(i18n({ supportedLocales: ["en", "es"] }), mail()),
+      workers(
+        i18n({ supportedLocales: ["en", "es"], messages: { es: { "email/welcome.subject": OVERRIDDEN } } }),
+        mail(),
+      ),
     );
     await provisioner(mailCapability.hostCatalogs()).deployWorker("prod", "sup-db");
 
     const vars = deployed.configs[0]?.vars;
     expect(vars?.EMAIL_MESSAGES_ES, "wrangler was pointed at a config with no `es` catalog var").toBeDefined();
     const carried = catalogsFromEnv(vars ?? {});
-    expect(carried.es?.["email/welcome.subject"]).toBe(KIT_ES_WELCOME_SUBJECT);
+    expect(carried.es?.["email/welcome.subject"]).toBe(OVERRIDDEN);
   });
 
   test("and deploys no var at all for a project with nothing to carry", async () => {

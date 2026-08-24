@@ -198,8 +198,15 @@ describe("a dev session for a project that speaks two languages", () => {
   }
 
   test("the local email host is written carrying the words it will render in", async () => {
+    // **An override, because since #442 the kit's own Spanish is not what travels.** The host is built
+    // with that, so a project on kit locales alone deploys no variable at all — which is the property
+    // the case below pins. What still has to reach it is the adopter's diff, and that is what makes
+    // this a gate on the compose step: an unassembled capability answers `{}` here too.
     const { written, result } = await materialize(
-      i18n({ supportedLocales: ["en", "es"] }),
+      i18n({
+        supportedLocales: ["en", "es"],
+        messages: { es: { "email/welcome.subject": "Hola y bienvenido a {app}" } },
+      }),
       email({ fromAddress: "noreply@acme.test", baseUrl: "https://api.acme.test" }),
     );
     expect(result.failed).toEqual([]);
@@ -212,7 +219,16 @@ describe("a dev session for a project that speaks two languages", () => {
     // Collected through the seam the host itself reads them with — a value this test can read and the
     // host cannot is not a value that was delivered.
     const carried = catalogsFromEnv(written.vars ?? {});
-    expect(carried.es?.["email/welcome.subject"]).toBe("Te damos la bienvenida a {app}");
+    expect(carried.es?.["email/welcome.subject"]).toBe("Hola y bienvenido a {app}");
+  });
+
+  test("and a project that changed none of the kit's words gets no variable, because the host has them", async () => {
+    const { written } = await materialize(
+      i18n({ supportedLocales: ["en", "es"] }),
+      email({ fromAddress: "noreply@acme.test", baseUrl: "https://api.acme.test" }),
+    );
+    // The point of #442: a Spanish magic link still goes out in Spanish, from a host built with it.
+    expect(catalogsFromEnv(written.vars ?? {})).toEqual({});
   });
 
   test("and a project with no i18n capability gets no var at all, which is the English it always sent", async () => {
