@@ -67,7 +67,9 @@ async function seedUser(id: string, email: string, ageMinutes: number, name = "A
   const at = new Date(NOW.getTime() - ageMinutes * 60_000);
   await db()
     .insertInto("pithyAuthUsers")
-    .values(User.encode({ id, name, email, emailVerified: true, image: null, createdAt: at, updatedAt: at }))
+    .values(
+      User.encode({ id, name, email, emailVerified: true, image: null, locale: null, createdAt: at, updatedAt: at }),
+    )
     .execute();
 }
 

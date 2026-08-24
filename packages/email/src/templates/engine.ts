@@ -1,13 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
+import type { Translator } from "@pithy-sh/core/src/i18n/translator";
 import Handlebars from "handlebars";
 import { mintToken } from "../crypto/token";
 import type { EmailKind } from "../data/enums";
 import { EmailInvalidPayloadError, EmailTemplateNotFoundError } from "../error/errors";
+import { emailTranslator, kitEmailLayers } from "./messages";
 import { precompiledPartials, precompiledTemplates } from "./precompiled.generated";
 import { type EmailTemplate, templates } from "./registry";
-import { severityColor, severityLabel } from "./severity";
+import { severityColor, severityLabelKey } from "./severity";
 import { type EmailTheme, widthPx } from "./theme";
 
 /**
@@ -45,8 +48,87 @@ for (const [name, spec] of Object.entries(precompiledPartials)) {
 // template would carry nine `{{#if}}` blocks to render one word. Registered on this instance at module
 // load; precompiled specs resolve a helper by name at render time, so `scripts/precompile.ts` needs to
 // know nothing about them.
-hbs.registerHelper("severityLabel", severityLabel);
 hbs.registerHelper("severityColor", severityColor);
+
+/**
+ * The English every render falls back to — and the whole render when nothing composed an i18n
+ * capability, which is the seam's zero-config behavior everywhere else in the kit.
+ *
+ * Module-level and shared, because it holds no request state: a translator over one fixed catalog is a
+ * pure lookup table. The per-job translators the send path builds are the ones that carry a locale, and
+ * they live and die with one render.
+ */
+const ENGLISH: Translator = emailTranslator("en", kitEmailLayers);
+
+/** The key the render context carries its translator under. Read by the helpers, never by a template. */
+const TRANSLATOR_KEY = "i18n";
+
+/** The slice of Handlebars' helper options these helpers read. Declared rather than imported, to stay off `any`. */
+interface HelperContext {
+  /** The `key=value` arguments written on the helper call — the message's interpolation parameters. */
+  hash?: Record<string, unknown>;
+  /** Handlebars' data frame. `root` is the render context, which is where the translator rides. */
+  data?: { root?: unknown };
+}
+
+/** Whether a value is a translator, structurally — the seam is an interface, so there is no class to test. */
+function isTranslator(value: unknown): value is Translator {
+  return typeof (value as { t?: unknown } | null | undefined)?.t === "function";
+}
+
+/**
+ * The translator this render is going through, or the kit's English.
+ *
+ * Read off `@root` rather than closed over, because the engine is built once per isolate and a
+ * translator belongs to one message. A module-level "current locale" would be the same hazard
+ * `z.config()` is banned repo-wide for: an isolate serves many recipients, and the one holding the
+ * locale would apply the last render's language to the next.
+ */
+function translatorOf(options: HelperContext): Translator {
+  const held = (options.data?.root as Record<string, unknown> | undefined)?.[TRANSLATOR_KEY];
+  return isTranslator(held) ? held : ENGLISH;
+}
+
+/** The helper's `key=value` arguments as message parameters — scalars only, like every catalog value. */
+function messageParams(hash: Record<string, unknown> | undefined): MessageParams {
+  const params: MessageParams = {};
+  for (const [name, value] of Object.entries(hash ?? {})) {
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") params[name] = value;
+  }
+  return params;
+}
+
+/**
+ * `{{t "email/magic_link.heading"}}` — one catalog message, with `key=value` interpolation.
+ *
+ * It returns a plain string and **never** a `SafeString`. That is the security constraint, not a style
+ * choice: the HTML body escapes what a mustache produces, so a catalog value — the kit's, or the one
+ * sentence an adopter overrode it with — is escaped on exactly the path a payload value is. `subject`
+ * and `text` are precompiled with `noEscape`, where nothing is escaped and nothing needs to be, which
+ * is why no catalog value in this kit carries markup and why `docs/I18N.md` says so to adopters.
+ */
+hbs.registerHelper("t", (key: unknown, options: HelperContext): string =>
+  translatorOf(options).t(String(key), messageParams(options.hash)),
+);
+
+/**
+ * `{{tn "email/otp.expiry" count=expiresMinutes}}` — the plural form the count calls for.
+ *
+ * Separate from `t` because plural selection is the thing a second locale exposes: "It expires in 1
+ * minutes" was already wrong in English and unfixable without it, and Russian needs three forms where
+ * English needs two. The count is a hash argument rather than a positional one so that a payload field
+ * reaching a template through this helper is still visible to `engine.test.ts`'s check that every
+ * variable a template renders is declared on its payload schema.
+ */
+hbs.registerHelper("tn", (key: unknown, options: HelperContext): string => {
+  const params = messageParams(options.hash);
+  return translatorOf(options).plural(String(key), Number(params.count ?? 0), params);
+});
+
+/** `{{severityLabel severity}}` — the level's word, in the reader's language. */
+hbs.registerHelper("severityLabel", (severity: unknown, options: HelperContext): string =>
+  translatorOf(options).t(severityLabelKey(severity)),
+);
 
 interface Compiled {
   def: EmailTemplate;
@@ -157,7 +239,12 @@ export function listTemplates(): EmailTemplate[] {
  * fast on a bad payload and to store the job's subject without rendering the whole body. Throws
  * `email/template_not_found` or `email/invalid_payload`.
  */
-export function renderSubject(templateId: string, payload: unknown, theme: EmailTheme): string {
+export function renderSubject(
+  templateId: string,
+  payload: unknown,
+  theme: EmailTheme,
+  translator: Translator = ENGLISH,
+): string {
   const entry = compiled.get(templateId);
   if (!entry) throw new EmailTemplateNotFoundError({ detail: `no template registered with id '${templateId}'` });
   const parsed = entry.def.payload.safeParse(payload);
@@ -165,9 +252,33 @@ export function renderSubject(templateId: string, payload: unknown, theme: Email
     const summary = parsed.error.issues.map((i) => `${i.path.join(".") || "<root>"}:${i.code}`).join(", ");
     throw new EmailInvalidPayloadError({ detail: `template '${templateId}' payload invalid: ${summary}` });
   }
-  return entry
-    .subject({ ...(parsed.data as Record<string, unknown>), theme, layoutWidth: widthPx(entry.def.width) })
-    .trim();
+  return entry.subject(renderContext(parsed.data as Record<string, unknown>, entry, theme, translator)).trim();
+}
+
+/**
+ * The render context: the parsed payload, the theme, and what the shell needs to be written in a
+ * language.
+ *
+ * One builder for both render sites, because the two used to assemble it separately and the *subject*
+ * is the field they were most able to disagree about — `renderSubject` runs at enqueue and `renderEmail`
+ * runs at send, and until the locale landed on the row there was nothing tying them to one language.
+ */
+function renderContext(
+  payload: Record<string, unknown>,
+  entry: Compiled,
+  theme: EmailTheme,
+  translator: Translator,
+): Record<string, unknown> {
+  return {
+    ...payload,
+    theme,
+    layoutWidth: widthPx(entry.def.width),
+    // What the document declares itself as. `lang` is the catalog locale — the language the words are
+    // actually in — and `dir` is what an RTL reader's client needs before it lays anything out.
+    lang: translator.catalogLocale,
+    dir: translator.direction,
+    [TRANSLATOR_KEY]: translator,
+  };
 }
 
 function trimTrailingSlash(value: string): string {
@@ -215,6 +326,7 @@ export async function renderEmail(
   payload: unknown,
   theme: EmailTheme,
   tracking?: RenderTracking,
+  translator: Translator = ENGLISH,
 ): Promise<RenderResult> {
   const entry = compiled.get(templateId);
   if (!entry) throw new EmailTemplateNotFoundError({ detail: `no template registered with id '${templateId}'` });
@@ -234,11 +346,12 @@ export async function renderEmail(
     });
   }
 
-  const context: Record<string, unknown> = {
-    ...(parsed.data as Record<string, unknown>),
+  const context: Record<string, unknown> = renderContext(
+    parsed.data as Record<string, unknown>,
+    entry,
     theme,
-    layoutWidth: widthPx(entry.def.width),
-  };
+    translator,
+  );
   let unsubscribeUrl: string | undefined;
 
   if (tracking) {

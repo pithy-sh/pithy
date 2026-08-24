@@ -1,0 +1,51 @@
+{
+  "name": "@pithy-sh/i18n",
+  "version": "0.0.0",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    "./src/react/translator": "./src/react/translator.tsx",
+    "./src/*": "./src/*.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit false --outDir dist",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.browser.json",
+    "test": "vitest run",
+    "test:node": "vitest run --project=node --project=dom",
+    "test:workers": "vitest run --project=workers",
+    "clean": "rm -rf dist .turbo",
+    "reset": "bun run clean && rm -rf node_modules"
+  },
+  "dependencies": {
+    "@pithy-sh/core": "workspace:*",
+    "hono": "^4.13.2",
+    "zod": "^4.0.0"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.0.0",
+    "@pithy-sh/auth": "workspace:*",
+    "@pithy-sh/payments": "workspace:*",
+    "@pithy-sh/tsconfig": "workspace:*",
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitest/coverage-v8": "^4.1.0",
+    "happy-dom": "^20.11.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.115.0"
+  }
+}

@@ -1,5 +1,8 @@
 import type { AuthFetch } from "@pithy-sh/auth/src/client/api";
 import { sendMagicLink, startSocialSignIn } from "@pithy-sh/auth/src/client/api";
+import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
+import type { Translator } from "@pithy-sh/core/src/i18n/translator";
+import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
 import { type FormEvent, type ReactNode, useCallback, useMemo, useState } from "react";
 import { authConfig } from "../../pithy-config";
 import { Turnstile, turnstilePending, turnstileRequest } from "../../turnstile";
@@ -48,6 +51,35 @@ const BRAND: ReactNode = null;
 /** The compact mark, for the widths the panel is not on. Yours. */
 const MARK: ReactNode = null;
 
+/**
+ * This screen's English, baked in.
+ *
+ * **The catalog that survives being copied.** This file is written into your repository once and
+ * belongs to you afterwards, so the English cannot live in a package you might never install: it lives
+ * here, and a project that composes no `i18n` capability renders exactly these sentences with no
+ * negotiation, no merge and no config.
+ *
+ * With `i18n` composed it becomes the *last* layer instead — your own catalog first, then the kit's
+ * translation, then this. So a key nobody has translated still renders a sentence rather than a key.
+ *
+ * Edit the words here to change the English. Translate them by adding the same keys under a locale in
+ * `i18n({ messages })`; the key is `<capability>/<path>` and it is the join between the two.
+ */
+const EN = {
+  "auth/sign_in.title": "Welcome.",
+  "auth/sign_in.provider.label": "Continue with {provider}",
+  "auth/sign_in.provider_unconfigured": "{provider} is not configured here. Use the link instead.",
+  "auth/sign_in.provider_silent": "{provider} didn't answer. Use the link instead.",
+  "auth/sign_in.divider": "or",
+  "auth/sign_in.email.label": "Email",
+  "auth/sign_in.submit": "Email me a link",
+  "auth/sign_in.signup.prompt": "No account yet?",
+  "auth/sign_in.signup.answer": "Signing in creates one.",
+  "auth/sign_in.signup.closed": "Existing accounts only.",
+  "auth/sign_in.sent.title": "Check your inbox.",
+  "auth/sign_in.sent.body": "If that address can sign in, a link is on its way. The link expires shortly.",
+} satisfies MessageCatalog;
+
 /** The auth capability's client-safe projection — the half of it this screen reads. */
 export interface AuthProjection {
   /** Where the auth handler mounts, e.g. `/auth`. */
@@ -75,6 +107,14 @@ export interface HumanityCheck {
 const NO_CHECK: HumanityCheck = { widget: null, pending: false, attach: (body) => ({ body, headers: {} }) };
 
 export interface SignInScreenProps {
+  /**
+   * The translator this screen renders through.
+   *
+   * A prop for the reason `fetch` and `redirect` are: what a screen says in a second language is a
+   * *rendered* fact no assertion about source text can reach. Absent, the screen reads the provider a
+   * `TranslatorProvider` mounted, and with no provider it reads {@link EN}.
+   */
+  readonly t?: Translator;
   /** The auth capability's projection. */
   readonly auth: AuthProjection;
   /** The humanity check. Absent means none is composed. */
@@ -246,10 +286,9 @@ const SOCIAL: readonly { id: string; label: string; mark: ReactNode }[] = [
 /** Why a provider button did not take you anywhere. Two faults, because they need two sentences. */
 type Refusal = { provider: string; reason: "unconfigured" | "silent" } | null;
 
-function refusalText(refusal: NonNullable<Refusal>): string {
-  return refusal.reason === "unconfigured"
-    ? `${refusal.provider} is not configured here. Use the link instead.`
-    : `${refusal.provider} didn't answer. Use the link instead.`;
+function refusalText(t: Translator, refusal: NonNullable<Refusal>): string {
+  const key = refusal.reason === "unconfigured" ? "auth/sign_in.provider_unconfigured" : "auth/sign_in.provider_silent";
+  return t.t(key, { provider: refusal.provider });
 }
 
 /**
@@ -288,6 +327,10 @@ function Frame(props: { brand: ReactNode; mark: ReactNode; children: ReactNode }
  */
 export function SignInScreen(props: SignInScreenProps): ReactNode {
   const { auth } = props;
+  // Called unconditionally, and chosen from afterwards: `props.t ?? useTranslator(EN)` would skip the
+  // hook whenever the prop is passed, which is a hook count that changes between renders.
+  const baked = useTranslator(EN);
+  const t = props.t ?? baked;
   const check = props.check ?? NO_CHECK;
   // Where the auth routes are, and the fetch to reach them with. Everything else about the request —
   // the base-path join, the cookie mode, the same-origin refusal, the failure directions — belongs to
@@ -334,15 +377,15 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
   if (sent) {
     return (
       <Frame brand={props.brand} mark={props.mark}>
-        <h1>Check your inbox.</h1>
-        <p className="muted">If that address can sign in, a link is on its way. The link expires shortly.</p>
+        <h1>{t.t("auth/sign_in.sent.title")}</h1>
+        <p className="muted">{t.t("auth/sign_in.sent.body")}</p>
       </Frame>
     );
   }
 
   return (
     <Frame brand={props.brand} mark={props.mark}>
-      <h1>Welcome.</h1>
+      <h1>{t.t("auth/sign_in.title")}</h1>
 
       {/* The providers first, and the refusal line directly under them — a failure belongs beside the
           control that caused it, not at the foot of the screen where it reads as being about the form. */}
@@ -354,7 +397,7 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
                 key={provider.id}
                 type="button"
                 className="secondary auth__provider"
-                aria-label={`Continue with ${provider.label}`}
+                aria-label={t.t("auth/sign_in.provider.label", { provider: provider.label })}
                 onClick={() => void social(provider)}
               >
                 {/* The mark is decorative and `aria-hidden`; the visible label is the one word. The
@@ -366,14 +409,14 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
               </button>
             ))}
           </div>
-          {refusal && <p className="auth__failed">{refusalText(refusal)}</p>}
-          <div className="divider">or</div>
+          {refusal && <p className="auth__failed">{refusalText(t, refusal)}</p>}
+          <div className="divider">{t.t("auth/sign_in.divider")}</div>
         </>
       )}
 
       <form className="stack" onSubmit={(event) => void sendLink(event)}>
         <div>
-          <label htmlFor="email">Email</label>
+          <label htmlFor="email">{t.t("auth/sign_in.email.label")}</label>
           <input
             id="email"
             type="email"
@@ -390,7 +433,7 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
         <div className="auth__check">{check.widget}</div>
 
         <button type="submit" disabled={busy || !email || check.pending}>
-          Email me a link
+          {t.t("auth/sign_in.submit")}
         </button>
       </form>
 
@@ -401,10 +444,10 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
       <p className="auth__signup">
         {auth.signUpEnabled ? (
           <>
-            No account yet? <strong>Signing in creates one.</strong>
+            {t.t("auth/sign_in.signup.prompt")} <strong>{t.t("auth/sign_in.signup.answer")}</strong>
           </>
         ) : (
-          "Existing accounts only."
+          t.t("auth/sign_in.signup.closed")
         )}
       </p>
     </Frame>

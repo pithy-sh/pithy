@@ -97,6 +97,15 @@ function layout(body: string): string {
   return `{{> emailHead}}${body}{{> emailFoot}}`;
 }
 
+/**
+ * The salutation every kit-authored template opens with, named when the payload carries a name.
+ *
+ * Two catalog keys rather than one sentence with an optional placeholder: a language that greets an
+ * unnamed reader differently — not merely with the name deleted — has nowhere to say so otherwise.
+ * `{{#if name}}` stays in the template because the *choice* is structural and the *words* are not.
+ */
+const greeting = `{{#if name}}{{t "email/shell.greeting_named" name=name}}{{else}}{{t "email/shell.greeting"}}{{/if}}`;
+
 // --- Payload schemas (the typed contracts) ---
 
 const MagicLinkPayload = z
@@ -364,11 +373,11 @@ export const templates: Record<string, EmailTemplate> = {
     kind: "transactional",
     width: "narrow",
     payload: MagicLinkPayload,
-    subject: "Your sign-in link",
+    subject: `{{t "email/magic_link.subject"}}`,
     html: layout(
-      `${heading("Sign in")}<p style="margin:0 0 16px">Hi{{#if name}} {{name}}{{/if}}, use the button below to sign in. It expires in {{expiresMinutes}} minutes.</p>${button("url", "Sign in")}<p class="t-subtle" style="margin:16px 0 0; font-size:13px; color:{{theme.light.textSubtle}}">If you didn't request this, you can ignore this email.</p>`,
+      `${heading('{{t "email/magic_link.heading"}}')}<p style="margin:0 0 16px">${greeting} {{t "email/magic_link.instruction"}} {{tn "email/magic_link.expiry" count=expiresMinutes}}</p>${button("url", '{{t "email/magic_link.cta"}}')}<p class="t-subtle" style="margin:16px 0 0; font-size:13px; color:{{theme.light.textSubtle}}">{{t "email/magic_link.ignore"}}</p>`,
     ),
-    text: "Hi{{#if name}} {{name}}{{/if}},\n\nUse this link to sign in (expires in {{expiresMinutes}} minutes):\n{{url}}\n\nIf you didn't request this, ignore this email.",
+    text: `${greeting}\n\n{{tn "email/magic_link.text_instruction" count=expiresMinutes}}\n{{url}}\n\n{{t "email/magic_link.text_ignore"}}`,
     links: [{ path: "url", label: "magic-link" }],
   },
   otp: {
@@ -377,11 +386,11 @@ export const templates: Record<string, EmailTemplate> = {
     kind: "transactional",
     width: "narrow",
     payload: OtpPayload,
-    subject: "Your verification code",
+    subject: `{{t "email/otp.subject"}}`,
     html: layout(
-      `${heading("Your code")}<p style="margin:0 0 12px">Hi{{#if name}} {{name}}{{/if}}, your verification code is:</p><p class="t-ink" style="font-size:32px; font-weight:700; letter-spacing:6px; color:{{theme.accent}}; margin:16px 0">{{code}}</p><p style="margin:0">It expires in {{expiresMinutes}} minutes.</p>`,
+      `${heading('{{t "email/otp.heading"}}')}<p style="margin:0 0 12px">${greeting} {{t "email/otp.lead"}}</p><p class="t-ink" style="font-size:32px; font-weight:700; letter-spacing:6px; color:{{theme.accent}}; margin:16px 0">{{code}}</p><p style="margin:0">{{tn "email/otp.expiry" count=expiresMinutes}}</p>`,
     ),
-    text: "Hi{{#if name}} {{name}}{{/if}},\n\nYour verification code is {{code}}. It expires in {{expiresMinutes}} minutes.",
+    text: `${greeting}\n\n{{tn "email/otp.text_body" count=expiresMinutes code=code}}`,
     links: [],
   },
   welcome: {
@@ -390,11 +399,11 @@ export const templates: Record<string, EmailTemplate> = {
     kind: "transactional",
     width: "narrow",
     payload: WelcomePayload,
-    subject: "Welcome to {{theme.appName}}",
+    subject: `{{t "email/welcome.subject" app=theme.appName}}`,
     html: layout(
-      `${heading("Welcome to {{theme.appName}}")}<p style="margin:0 0 8px">Hi {{name}}, welcome to {{theme.appName}}. We're glad you're here.</p>${button("ctaUrl", "{{ctaLabel}}")}`,
+      `${heading('{{t "email/welcome.heading" app=theme.appName}}')}<p style="margin:0 0 8px">{{t "email/welcome.body" name=name app=theme.appName}}</p>${button("ctaUrl", "{{ctaLabel}}")}`,
     ),
-    text: "Hi {{name}},\n\nWelcome to {{theme.appName}}. We're glad you're here.\n\n{{ctaLabel}}: {{ctaUrl}}",
+    text: `{{t "email/shell.greeting_named" name=name}}\n\n{{t "email/welcome.text_body" app=theme.appName}}\n\n{{ctaLabel}}: {{ctaUrl}}`,
     links: [{ path: "ctaUrl", label: "welcome-cta" }],
   },
   securityAlert: {
@@ -403,11 +412,11 @@ export const templates: Record<string, EmailTemplate> = {
     kind: "transactional",
     width: "narrow",
     payload: SecurityAlertPayload,
-    subject: "Security alert: {{event}}",
+    subject: `{{t "email/security_alert.subject" event=event}}`,
     html: layout(
-      `${heading("Security alert")}<p style="margin:0 0 8px">Hi{{#if name}} {{name}}{{/if}}, {{event}} on {{when}}.{{#if ipAddress}} IP address: {{ipAddress}}.{{/if}}</p><p style="margin:0 0 8px">If this was you, no action is needed.</p>${button("actionUrl", "Review activity")}`,
+      `${heading('{{t "email/security_alert.heading"}}')}<p style="margin:0 0 8px">${greeting} {{t "email/security_alert.body" event=event when=when}}{{#if ipAddress}} {{t "email/security_alert.ip" ip=ipAddress}}{{/if}}</p><p style="margin:0 0 8px">{{t "email/security_alert.reassure"}}</p>${button("actionUrl", '{{t "email/security_alert.cta"}}')}`,
     ),
-    text: "Hi{{#if name}} {{name}}{{/if}},\n\n{{event}} on {{when}}.{{#if ipAddress}} IP: {{ipAddress}}.{{/if}}\n\nIf this wasn't you, secure your account: {{actionUrl}}",
+    text: `${greeting}\n\n{{t "email/security_alert.body" event=event when=when}}{{#if ipAddress}} {{t "email/security_alert.text_ip" ip=ipAddress}}{{/if}}\n\n{{t "email/security_alert.text_action"}} {{actionUrl}}`,
     links: [{ path: "actionUrl", label: "security-action" }],
   },
   invite: {
@@ -416,11 +425,11 @@ export const templates: Record<string, EmailTemplate> = {
     kind: "transactional",
     width: "narrow",
     payload: InvitePayload,
-    subject: "{{inviterName}} invited you to {{organizationName}}",
+    subject: `{{t "email/invite.subject" inviter=inviterName organization=organizationName}}`,
     html: layout(
-      `${heading("You're invited")}<p style="margin:0 0 8px">{{inviterName}} invited you to join <strong class="t-ink" style="color:{{theme.light.text}}">{{organizationName}}</strong> on {{theme.appName}}.</p>${button("acceptUrl", "Accept invitation")}`,
+      `${heading('{{t "email/invite.heading"}}')}<p style="margin:0 0 8px">{{t "email/invite.body" inviter=inviterName organization=organizationName app=theme.appName}}</p>${button("acceptUrl", '{{t "email/invite.cta"}}')}`,
     ),
-    text: "{{inviterName}} invited you to join {{organizationName}} on {{theme.appName}}.\n\nAccept: {{acceptUrl}}",
+    text: `{{t "email/invite.body" inviter=inviterName organization=organizationName app=theme.appName}}\n\n{{t "email/invite.text_accept"}} {{acceptUrl}}`,
     links: [{ path: "acceptUrl", label: "invite-accept" }],
   },
   testerNudge: {
@@ -447,11 +456,11 @@ export const templates: Record<string, EmailTemplate> = {
     kind: "transactional",
     width: "narrow",
     payload: PasswordChangedPayload,
-    subject: "Your password was changed",
+    subject: `{{t "email/password_changed.subject"}}`,
     html: layout(
-      `${heading("Your password was changed")}<p style="margin:0 0 8px">Hi{{#if name}} {{name}}{{/if}}, your account credentials were changed on {{when}}.</p><p style="margin:0 0 8px">If this wasn't you, contact support immediately.</p>${button("supportUrl", "Contact support")}`,
+      `${heading('{{t "email/password_changed.heading"}}')}<p style="margin:0 0 8px">${greeting} {{t "email/password_changed.body" when=when}}</p><p style="margin:0 0 8px">{{t "email/password_changed.warn"}}</p>${button("supportUrl", '{{t "email/password_changed.cta"}}')}`,
     ),
-    text: "Hi{{#if name}} {{name}}{{/if}},\n\nYour account credentials were changed on {{when}}. If this wasn't you, contact support: {{supportUrl}}",
+    text: `${greeting}\n\n{{t "email/password_changed.text_body" when=when}} {{supportUrl}}`,
     links: [{ path: "supportUrl", label: "password-support" }],
   },
   operationalNotice: {
@@ -520,11 +529,11 @@ export const templates: Record<string, EmailTemplate> = {
     kind: "elective",
     width: "narrow",
     payload: LeadCapturePayload,
-    subject: "Your download: {{assetName}}",
+    subject: `{{t "email/lead_capture.subject" asset=assetName}}`,
     html: layout(
-      `${heading("Your download is ready")}<p style="margin:0 0 8px">Hi{{#if name}} {{name}}{{/if}}.</p>{{#if message}}<p style="margin:0 0 8px">{{message}}</p>{{/if}}<p style="margin:0 0 8px">Your copy of <strong class="t-ink" style="color:{{theme.light.text}}">{{assetName}}</strong> is ready.</p>${button("assetUrl", "Download now")}`,
+      `${heading('{{t "email/lead_capture.heading"}}')}<p style="margin:0 0 8px">${greeting}</p>{{#if message}}<p style="margin:0 0 8px">{{message}}</p>{{/if}}<p style="margin:0 0 8px">{{t "email/lead_capture.ready" asset=assetName}}</p>${button("assetUrl", '{{t "email/lead_capture.cta"}}')}`,
     ),
-    text: "Hi{{#if name}} {{name}}{{/if}},\n\n{{#if message}}{{message}}\n\n{{/if}}Your copy of {{assetName}} is ready: {{assetUrl}}",
+    text: `${greeting}\n\n{{#if message}}{{message}}\n\n{{/if}}{{t "email/lead_capture.text_ready" asset=assetName}} {{assetUrl}}`,
     links: [{ path: "assetUrl", label: "lead-asset" }],
   },
   marketingCampaign: {

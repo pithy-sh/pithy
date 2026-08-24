@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 
 /**
  * `@pithy-sh/turnstile` throw sugar. The `turnstile/*` codes live in core's closed `KitErrorPayload`
@@ -18,6 +19,11 @@ interface TurnstileErrorArgs {
   action?: string;
   /** Internal context for logs + audit. Never serialized to clients. */
   detail?: string;
+  /**
+   * Values a translating client interpolates into its own wording for this code. Client-facing, so —
+   * unlike `action` and `detail` — these cross the boundary with `message`.
+   */
+  params?: MessageParams;
 }
 
 /** The request carried no Turnstile response token where one was required. */
@@ -30,6 +36,7 @@ export class TurnstileMissingTokenError extends PithyError {
         message: args.message ?? "A humanity-check token is required.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -50,6 +57,7 @@ export class TurnstileFailedError extends PithyError {
         message: args.message ?? "The humanity check did not pass.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -66,6 +74,7 @@ export class TurnstileConfigError extends PithyError {
         message: args.message ?? "Turnstile is not configured.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );

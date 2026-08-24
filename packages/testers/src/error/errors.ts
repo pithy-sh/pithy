@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 
 /**
  * The `testers/*` throw vehicles.
@@ -20,6 +21,11 @@ interface TestersErrorArgs {
   message?: string;
   action?: string;
   detail?: string;
+  /**
+   * Values a translating client interpolates into its own wording for this code. Client-facing, so —
+   * unlike `action` and `detail` — these cross the boundary with `message`.
+   */
+  params?: MessageParams;
 }
 
 /** No cohort answers to that id. */
@@ -32,6 +38,7 @@ export class TestersCohortNotFoundError extends PithyError {
         message: args.message ?? "No such cohort.",
         action: args.action ?? "List your cohorts with `pithy testers list` and retry with an id from there.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -48,6 +55,7 @@ export class TestersMemberNotFoundError extends PithyError {
         message: args.message ?? "No such tester on that cohort.",
         action: args.action ?? "Check the roster with `pithy testers roster <cohort>`.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -70,6 +78,7 @@ export class TestersInvalidTokenError extends PithyError {
         message: args.message ?? "That confirmation link is no longer valid.",
         action: args.action ?? "Ask the developer who invited you to send a fresh invitation.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -86,6 +95,7 @@ export class TestersRosterFullError extends PithyError {
         message: args.message ?? "That cohort's roster is full.",
         action: args.action ?? "Remove a lapsed tester, or raise the cohort's maximum roster size.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -102,6 +112,7 @@ export class TestersAlreadyOnRosterError extends PithyError {
         message: args.message ?? "That tester is already on this cohort.",
         action: args.action ?? "Use resend to send them another invitation without losing their history.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -118,6 +129,7 @@ export class TestersNudgeCooldownError extends PithyError {
         message: args.message ?? "Every one of those testers was nudged too recently.",
         action: args.action ?? "Wait for the cooldown to pass, or select testers who have not been nudged.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -150,6 +162,7 @@ export class TestersWithdrawnError extends PithyError {
           args.action ??
           "Their decision stands. Invite somebody else, or ask them directly and start a new cohort if they agree.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -174,6 +187,7 @@ export class TestersCohortClosedError extends PithyError {
         message: args.message ?? "That cohort is closed.",
         action: args.action ?? "Create a new cohort. A closed one keeps its history but sends nothing further.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -190,6 +204,7 @@ export class TestersCopyNotAllowedError extends PithyError {
         message: args.message ?? "This deployment does not accept supplied nudge copy.",
         action: args.action ?? "Send the nudge without a subject or body, or enable nudges.allowCopyOverride.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -206,6 +221,7 @@ export class TestersNotConfiguredError extends PithyError {
         message: args.message ?? "The testers capability is not fully configured.",
         action: args.action ?? "Complete the testers block in pithy.config.ts and redeploy.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );

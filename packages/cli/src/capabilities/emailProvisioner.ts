@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { email_0001_suppressions } from "@pithy-sh/email/src/migrations/0001_suppressions";
@@ -77,6 +78,15 @@ export interface CloudflareEmailProvisionerOptions {
   storeId: string;
   /** The resolved brand theme (from the app's `email()` config), serialized into the worker's `EMAIL_THEME` var. */
   theme: EmailTheme;
+  /**
+   * The project's email catalogs, from the composed capabilities' `hostCatalogs()` — serialized into
+   * the worker's `EMAIL_MESSAGES` var.
+   *
+   * The same journey the theme makes, because the host worker composes nothing and both are things
+   * only a provision run can hand it. Empty for a project that composed no i18n capability, and then
+   * no var is written.
+   */
+  messages: LocaleCatalogs;
   /** Resolve the per-env app DB id, secrets DB id, and base URL — injected so it is testable + decoupled. */
   resolveEnv: ResolveEmailEnv;
   /**
@@ -103,6 +113,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
   readonly #apiToken: string;
   readonly #storeId: string;
   readonly #theme: EmailTheme;
+  readonly #messages: LocaleCatalogs;
   readonly #resolveEnv: ResolveEmailEnv;
   readonly #routing?: { zoneId: string; address: string; appWorkerName: string };
   readonly #audit: CliAuditEmit;
@@ -114,6 +125,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
     this.#apiToken = options.apiToken;
     this.#storeId = options.storeId;
     this.#theme = options.theme;
+    this.#messages = options.messages;
     this.#resolveEnv = options.resolveEnv;
     this.#routing = options.routing;
     this.#audit = options.audit ?? (async () => {});
@@ -184,6 +196,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
       storeId: this.#storeId,
       baseUrl,
       theme: this.#theme,
+      messages: this.#messages,
     });
     const configPath = join(dir, `.wrangler.${env}.json`);
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);

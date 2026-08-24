@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 
 /**
  * `@pithy-sh/support` throw sugar. The `support/*` codes live in core's closed `KitErrorPayload` union
@@ -22,6 +23,11 @@ interface SupportErrorArgs {
   action?: string;
   /** Internal context for logs + audit. Never serialized to clients. */
   detail?: string;
+  /**
+   * Values a translating client interpolates into its own wording for this code. Client-facing, so —
+   * unlike `action` and `detail` — these cross the boundary with `message`.
+   */
+  params?: MessageParams;
 }
 
 /** A requested thread, message, or attachment does not exist. */
@@ -34,6 +40,7 @@ export class SupportNotFoundError extends PithyError {
         message: args.message ?? "That support thread does not exist.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -50,6 +57,7 @@ export class SupportInvalidCategoryError extends PithyError {
         message: args.message ?? "That support category is not valid.",
         action: args.action ?? "Use a lowercase snake_case key with one instructional sentence describing it.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -66,6 +74,7 @@ export class SupportUnparseableMessageError extends PithyError {
         message: args.message ?? "That message could not be read as email.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -82,6 +91,7 @@ export class SupportRejectedError extends PithyError {
         message: args.message ?? "That message was refused by the inbound guard.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -98,6 +108,7 @@ export class SupportClassificationError extends PithyError {
         message: args.message ?? "Support classification could not complete.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -114,6 +125,7 @@ export class SupportReplyFailedError extends PithyError {
         message: args.message ?? "That reply could not be sent.",
         action: args.action ?? "Add the email capability and provision it, then retry.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );

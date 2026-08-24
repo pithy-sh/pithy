@@ -63,6 +63,66 @@ beforeEach(async () => {
   await migrate();
 });
 
+describe("the reader's stored locale", () => {
+  /**
+   * **The gate on `user.additionalFields`, and it has to be end-to-end.**
+   *
+   * Better Auth's Kysely adapter writes only the fields its options declare and projects only those
+   * back, so a `locale` column present in the migration and in the `User` Zod object and absent from
+   * `KIT_USER_FIELDS` is null forever and missing from every user object the instance returns. Nothing
+   * about that is a type error and nothing about it is a schema mismatch — it is a column that silently
+   * does nothing, which is exactly how it shipped once (#441): reverting the declaration left all 405
+   * tests green.
+   *
+   * Asserted here rather than against `makeAuth`'s options because `betterAuth()` cannot be constructed
+   * without a real database, and because the options are not the property anyway. What matters is
+   * whether the value survives a write and a read through the adapter.
+   */
+  async function signIn(auth: ReturnType<typeof makeAuth>, mailbox: AuthEmailMessage[], email: string) {
+    await auth.api.sendVerificationOTP({ body: { email, type: "sign-in" }, headers: new Headers() });
+    const otp = mailbox.find((m) => m.template === "otp");
+    if (otp?.template !== "otp") throw new Error("no OTP sent");
+    const signedIn = await auth.api.signInEmailOTP({ body: { email, otp: otp.code }, headers: new Headers() });
+    return signedIn.token;
+  }
+
+  test("a reader sets a locale, reads it back, and can clear it again", async () => {
+    const { auth, mailbox } = instanceWithMailbox();
+    const token = await signIn(auth, mailbox, "locale@example.test");
+    const headers = new Headers({ authorization: `Bearer ${token}` });
+
+    // Absent until chosen. That null is what makes the server fall back to `Accept-Language`.
+    const fresh = await auth.api.getSession({ headers });
+    expect((fresh?.user as { locale?: unknown } | undefined)?.locale ?? null).toBeNull();
+
+    await auth.api.updateUser({ body: { locale: "es-AR" }, headers });
+    const chosen = await auth.api.getSession({ headers });
+    expect((chosen?.user as { locale?: unknown } | undefined)?.locale).toBe("es-AR");
+
+    // And the round trip really reached the column, not just the session projection.
+    const row = await env.DB.prepare("select locale from pithy_auth_users where email = ?")
+      .bind("locale@example.test")
+      .first<{ locale: string | null }>();
+    expect(row?.locale).toBe("es-AR");
+
+    // Taking it back is the case a bare `Locale` validator refused. Null is an ordinary state here.
+    await auth.api.updateUser({ body: { locale: null }, headers });
+    const cleared = await auth.api.getSession({ headers });
+    expect((cleared?.user as { locale?: unknown } | undefined)?.locale ?? null).toBeNull();
+  });
+
+  test("a locale that is not a language tag is refused, so no read can be poisoned", async () => {
+    // Every read of the column goes through `User.parse`, and the admin listing parses a page of rows
+    // at a time — so one junk write would throw for every operator, not only for whoever wrote it. The
+    // validator is what keeps that impossible rather than unlikely.
+    const { auth, mailbox } = instanceWithMailbox();
+    const token = await signIn(auth, mailbox, "junk@example.test");
+    const headers = new Headers({ authorization: `Bearer ${token}` });
+    await expect(auth.api.updateUser({ body: { locale: "not a tag" }, headers })).rejects.toThrow();
+    await expect(auth.api.updateUser({ body: { locale: "x".repeat(5000) }, headers })).rejects.toThrow();
+  });
+});
+
 describe("Better Auth ⇄ CamelCasePlugin on snake_case D1 tables", () => {
   /** Sign a user in via email-OTP and return the session token (usable as `Authorization: Bearer`). */
   async function signInViaOtp(auth: ReturnType<typeof makeAuth>, mailbox: AuthEmailMessage[], email: string) {

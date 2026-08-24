@@ -1,5 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { PithyLocale } from "./pithy-locale";
 import { Router } from "./router";
 // Yours, and Pithy's. `styles.css` is written once and then belongs to you; `pithy-screens.css` carries
 // the classes Pithy's own screens render, in a cascade layer, so anything you write here wins over it.
@@ -28,8 +29,23 @@ import "./pithy-screens.css";
 const container = document.body.appendChild(document.createElement("div"));
 container.id = "root";
 
+/**
+ * The app, in one language.
+ *
+ * `<PithyLocale>` is the whole of the i18n wiring, and it is one component rather than a call here
+ * because `lang` on the document and the words on the page have to come from a **single** resolved
+ * locale. They used to come from two places: this file negotiated a locale and set `lang` from it, and
+ * nothing mounted a translator at all — so a Spanish reader met `<html lang="es">` over a page rendering
+ * English, which is worse for a screen reader than never having negotiated. `src/pithy-locale.tsx` holds
+ * the argument in full.
+ *
+ * With no i18n capability composed it renders its children untouched, and every screen reads the English
+ * it was scaffolded with. Your own catalogs go on it: `<PithyLocale messages={{ fr: … }}>`.
+ */
 createRoot(container).render(
   <StrictMode>
-    <Router />
+    <PithyLocale>
+      <Router />
+    </PithyLocale>
   </StrictMode>,
 );

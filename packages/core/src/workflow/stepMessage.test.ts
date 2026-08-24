@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
+import { RateLimitError } from "../error/pithyError";
 import {
   decodeWorkflowStepMessage,
   encodeWorkflowStepMessage,
@@ -115,5 +116,43 @@ describe("the code grammar has one statement", () => {
     });
     expect(splitWorkflowStepCode("Secret not found.")).toEqual({ rest: "Secret not found." });
     expect(splitWorkflowStepCode("Secrets/Already: Gone.")).toEqual({ rest: "Secrets/Already: Gone." });
+  });
+});
+
+/**
+ * **`params` does not cross this boundary, and that is a decision rather than an oversight.**
+ *
+ * The channel is one string the engine records off the throw, and its reader is an operator — the CLI's
+ * `kitSentence`, and a human in the Cloudflare dashboard at three in the morning. That reader wants the
+ * English sentence and the remedy, which is exactly what the encoding carries. `params` exists so a
+ * *client* can render a code in its own words from a catalog it holds; no client ever reads a step
+ * record, and a serialized record here would either need a second grammar or turn the two readable
+ * lines back into JSON — the trade the docblock above already declined.
+ *
+ * Nothing is lost by dropping them, because `message` is the field they accompany rather than replace:
+ * it is English permanently, already carries the interpolated value, and is the fallback every
+ * translating client falls back to. So a step's text loses the raw values and keeps the sentence.
+ *
+ * Asserted rather than assumed, because "it does not survive" is only a fact while somebody is checking.
+ */
+describe("what a step's text deliberately leaves behind", () => {
+  test("params do not cross the boundary; the sentence and the remedy do", () => {
+    const thrown = new RateLimitError({
+      message: "Too many requests. Try again in 30 seconds.",
+      action: "Raise `rateLimit.perMinute` in pithy.config.ts.",
+      params: { retryAfter: 30 },
+      detail: "bucket auth:otp:192.0.2.1 exhausted",
+    });
+    const { code, message, action } = thrown.payload;
+    const text = encodeWorkflowStepMessage({ code, message, action });
+    const read = decodeWorkflowStepMessage(text);
+
+    expect(read).toEqual({
+      code: "rate_limit/exceeded",
+      message: "Too many requests. Try again in 30 seconds.",
+      action: "Raise `rateLimit.perMinute` in pithy.config.ts.",
+    });
+    expect(Object.hasOwn(read ?? {}, "params")).toBe(false);
+    expect(text).not.toContain("retryAfter");
   });
 });

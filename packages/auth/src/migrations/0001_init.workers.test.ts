@@ -48,6 +48,13 @@ async function authIndexes(): Promise<string[]> {
   return rows.results.map((row) => row.name).sort();
 }
 
+async function userColumns(): Promise<string[]> {
+  const rows = await env.DB.prepare("select name from pragma_table_info('pithy_auth_users')").all<{
+    name: string;
+  }>();
+  return rows.results.map((row) => row.name).sort();
+}
+
 async function sessionColumns(): Promise<string[]> {
   const rows = await env.DB.prepare("select name from pragma_table_info('pithy_auth_sessions')").all<{
     name: string;
@@ -84,6 +91,19 @@ describe("auth_0001_init", () => {
     ]);
     // The session carries its refresh-token family, and the reuse-detection ledger exists.
     expect(await sessionColumns()).toContain("family_id");
+    // The stored language preference (#441). Asserted as the whole column set rather than a
+    // `toContain`, because the failure this guards is a column arriving in `betterAuth.ts` and never
+    // in the DDL — which a positive check on one name would not see.
+    expect(await userColumns()).toEqual([
+      "created_at",
+      "email",
+      "email_verified",
+      "id",
+      "image",
+      "locale",
+      "name",
+      "updated_at",
+    ]);
 
     // Proves the camelCase model fields landed as snake_case columns (the casing the Better-Auth
     // adapter relies on via the shared CamelCasePlugin).
@@ -96,6 +116,31 @@ describe("auth_0001_init", () => {
       .bind("user-1")
       .first<{ email: string; email_verified: number }>();
     expect(row).toEqual({ email: "ada@example.com", email_verified: 1 });
+  });
+
+  test("the locale column is nullable and round-trips a BCP-47 tag", async () => {
+    // Both halves matter and only one of them is about storage. Nullable, because SQLite cannot add a
+    // NOT NULL column without a constant default and Better Auth inserts a user who never chose a
+    // language — a NOT NULL `locale` would fail every sign-up. And a tag stored verbatim, because the
+    // matcher downstream reads region and script off it (`es-AR` is not `es`).
+    await runMigrations(env.DB, provider());
+    const insert = (id: string, locale: string | null): Promise<unknown> =>
+      env.DB.prepare(
+        "insert into pithy_auth_users (id, name, email, email_verified, locale, created_at, updated_at) values (?, 'Ada', ?, 1, ?, '2026-06-19T00:00:00.000Z', '2026-06-19T00:00:00.000Z')",
+      )
+        .bind(id, `${id}@example.com`, locale)
+        .run();
+
+    await insert("u-unset", null);
+    await insert("u-set", "es-AR");
+    const rows = await env.DB.prepare("select id, locale from pithy_auth_users order by id").all<{
+      id: string;
+      locale: string | null;
+    }>();
+    expect(rows.results).toEqual([
+      { id: "u-set", locale: "es-AR" },
+      { id: "u-unset", locale: null },
+    ]);
   });
 
   test("a rotated-token ledger row round-trips on snake_case columns", async () => {
@@ -148,5 +193,8 @@ describe("auth_0001_init", () => {
     ]);
     expect(await authTables()).toEqual([]);
     expect(await authIndexes()).toEqual([]);
+    // `down` drops the whole table, so the amended column needs no inverse of its own — stated here
+    // rather than assumed, because a column added by a later `ALTER` would have needed one.
+    expect(await userColumns()).toEqual([]);
   });
 });

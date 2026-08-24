@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "@pithy-sh/auth": "workspace:*",
+    "@pithy-sh/i18n": "workspace:*",
     "@pithy-sh/payments": "workspace:*",
     "@pithy-sh/support": "workspace:*",
     "@pithy-sh/tsconfig": "workspace:*",

@@ -1,3 +1,5 @@
+import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
+import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
 import { type ComponentType, lazy, type ReactNode, Suspense, use, useEffect, useState } from "react";
 
 /**
@@ -404,6 +406,7 @@ export function useSignedIn(): boolean | null {
 
 /** Renders its children only for a signed-in visitor; everyone else is sent to the sign-in screen. */
 function Guarded(props: { children: ReactNode }): ReactNode {
+  const t = useTranslator(EN);
   const table = use(routeTable());
   const signedIn = useSignedIn();
 
@@ -412,7 +415,7 @@ function Guarded(props: { children: ReactNode }): ReactNode {
   }, [signedIn, table]);
 
   if (signedIn === true) return props.children;
-  return <p className="muted">One moment.</p>;
+  return <p className="muted">{t.t("app/loading")}</p>;
 }
 
 /** Does the visitor hold `key`? True when no payments module exists, so a guard cannot lock a screen shut. */
@@ -430,6 +433,7 @@ async function holdsEntitlement(key: string): Promise<boolean> {
  * arrives at the paywall instead of watching a screen fill with 403s.
  */
 function Entitled(props: { entitlement: string; children: ReactNode }): ReactNode {
+  const t = useTranslator(EN);
   const table = use(routeTable());
   const [state, setState] = useState<"checking" | "in" | "out">("checking");
 
@@ -448,8 +452,26 @@ function Entitled(props: { entitlement: string; children: ReactNode }): ReactNod
   }, [state, table]);
 
   if (state === "in") return props.children;
-  return <p className="muted">One moment.</p>;
+  return <p className="muted">{t.t("app/loading")}</p>;
 }
+
+/**
+ * The router's own English, baked in — the only catalog that survives being copied into your repository.
+ *
+ * Keyed under `app/` rather than a capability name because that is what this file is: the shell of
+ * *your* application, not a screen a kit capability ships. A capability may only declare keys under its
+ * own name, and nothing named `router` is composed.
+ *
+ * One waiting line for all three places that wait — a guard reading the session, a guard reading an
+ * entitlement, and the suspense boundary over the route table. They are one sentence to a reader, so
+ * they are one key: three would be three chances for a translation to disagree with itself on screen.
+ */
+const EN = {
+  "app/loading": "One moment.",
+  "app/not_found.title": "Not here.",
+  "app/not_found.body": "Nothing answers {path}.",
+  "app/not_found.home": "Go home",
+} satisfies MessageCatalog;
 
 // ── matching ─────────────────────────────────────────────────────────────────
 
@@ -554,6 +576,7 @@ export function matchPath(
 // ── router ───────────────────────────────────────────────────────────────────
 
 function Screen(): ReactNode {
+  const t = useTranslator(EN);
   const table = use(routeTable());
   const path = usePath();
   const match = matchPath(table.patterns, path);
@@ -562,9 +585,9 @@ function Screen(): ReactNode {
   if (!match || !route) {
     return (
       <main className="screen">
-        <h1>Not here.</h1>
+        <h1>{t.t("app/not_found.title")}</h1>
         <p className="muted">
-          Nothing answers {path}. <Link to="/">Go home</Link>.
+          {t.t("app/not_found.body", { path })} <Link to="/">{t.t("app/not_found.home")}</Link>.
         </p>
       </main>
     );
@@ -586,8 +609,9 @@ function Screen(): ReactNode {
 
 /** Mount this once. It resolves the route table, then renders the screen for the current path. */
 export function Router(): ReactNode {
+  const t = useTranslator(EN);
   return (
-    <Suspense fallback={<p className="muted">One moment.</p>}>
+    <Suspense fallback={<p className="muted">{t.t("app/loading")}</p>}>
       <Screen />
     </Suspense>
   );

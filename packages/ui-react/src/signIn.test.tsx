@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import type { AuthFetch } from "@pithy-sh/auth/src/client/api";
+import type { Translator } from "@pithy-sh/core/src/i18n/translator";
+import { createTranslator } from "@pithy-sh/core/src/i18n/translator";
+// The kit's translations, read as the value `@pithy-sh/i18n` composes into its layers rather than as
+// files on disk. A locale directory nobody imported into that map ships to nobody, so this is the set
+// of languages a reader can actually be served — see `packages/cli/src/ci/catalogCoverage.test.ts`.
+import { KIT_CATALOGS } from "@pithy-sh/i18n/src/catalogs/kit";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, test } from "vitest";
@@ -379,6 +385,111 @@ describe("the provider marks", () => {
     // (WCAG 2.5.3, Label in Name).
     for (const button of all(container, ".auth__provider")) {
       expect(button.getAttribute("aria-label")).toContain(button.textContent);
+    }
+  });
+});
+
+/**
+ * The two invariants this screen holds **per language**, checked in every language the kit ships.
+ *
+ * Both were asserted in English only, and English is the one language where neither could have been
+ * wrong: the copy and the assertion were written on the same afternoon by the same person. A
+ * translation is the first time the words change without the screen changing, and it is the first time
+ * either invariant can break with nothing in the diff to notice.
+ *
+ * The screen is driven through its `t` prop with a translator over the locale's catalog **and no
+ * English layer behind it**, which is deliberate and makes these cases stricter than the real render.
+ * A key with no translation falls through to the key itself — `t.t` returns what it was asked for —
+ * so an untranslated `auth/sign_in.provider.label` renders `auth/sign_in.provider.label` as the
+ * accessible name, which does not contain `Google`, and the WCAG case below fails naming the language.
+ * In production the baked English catches that fall-through and the screen reads fine; here it must
+ * not, because "reads fine in English" is exactly the state this is looking for.
+ */
+describe("every language the kit ships", () => {
+  /** The locales `@pithy-sh/i18n` composes. Read, never listed — a language added is a language tested. */
+  const LOCALES = Object.keys(KIT_CATALOGS);
+
+  /**
+   * The word a sign-in button may not say, in each language.
+   *
+   * **The rule has to be re-stated per locale, and that is a property of the rule rather than an
+   * oversight.** The English case a few describes up forbids `/code/i`, and what it is really enforcing
+   * is semantic: this screen offers exactly one way in — the magic link — because two passwordless
+   * paths on one screen is two things to explain, two surfaces to rate-limit, and two inboxes' worth of
+   * mail for one intent. A substring match cannot carry a meaning across a language. `código` shares no
+   * letters with `code` that matter to a regular expression, so the English pattern passes a Spanish
+   * screen that offers a code in as many words.
+   *
+   * So each language names its own word, and a locale with no entry fails the first case below rather
+   * than being waved through. That is the whole mechanism: adding French costs one line here, and not
+   * adding it costs a red build instead of a silent gap.
+   */
+  const OTP_WORD: Record<string, RegExp> = {
+    // `código` and the unaccented spelling a catalog may arrive with. Not `codificar` or `codigo
+    // postal` — neither is a sign-in affordance — but the screen's whole vocabulary is eleven strings,
+    // so the loose match costs nothing and the tight one would need re-tightening per catalog edit.
+    es: /c[oó]digo/i,
+  };
+
+  /** The screen rendered in `locale`, with that locale's catalog as its only layer. */
+  function inLocale(locale: string, auth: AuthProjection = ALL_PROVIDERS): HTMLElement {
+    const t: Translator = createTranslator({ catalogLocale: locale, layers: [KIT_CATALOGS[locale]] });
+    return mount(<SignInScreen auth={auth} t={t} fetch={recorder().fetch} origin="https://x" />);
+  }
+
+  test("is a language this file knows the vocabulary of", () => {
+    // The forcing function. A locale that ships with nobody having said what "code" is in it would make
+    // the second case below vacuous for that language, and vacuous is what passing looks like.
+    expect(LOCALES.length, "the kit ships no translation at all").toBeGreaterThanOrEqual(1);
+    expect(LOCALES.filter((locale) => OTP_WORD[locale] === undefined)).toEqual([]);
+  });
+
+  test("puts the visible word inside the accessible name — WCAG 2.5.3, in every language", () => {
+    // Label in Name. The visible word is the brand and is never translated; the sentence around it is.
+    // A translation that dropped `{provider}`, or reordered the sentence into something that no longer
+    // contains the mark's own word, breaks voice control for every reader of that language — "click
+    // Google" matches nothing — and it breaks it silently, because the button still looks right.
+    for (const locale of LOCALES) {
+      const container = inLocale(locale);
+      const buttons = all(container, ".auth__provider");
+      expect(buttons, locale).toHaveLength(4);
+      for (const button of buttons) {
+        expect(button.getAttribute("aria-label"), `${locale}: ${button.textContent}`).toContain(button.textContent);
+      }
+      mounted?.unmount();
+      mounted = null;
+    }
+  });
+
+  test("offers no second passwordless path, in the words of the language it is offering it in", () => {
+    for (const locale of LOCALES) {
+      const container = inLocale(locale, AUTH);
+      const words = all(container, "button").map((button) => button.textContent ?? "");
+      expect(
+        words.filter((word) => (OTP_WORD[locale] as RegExp).test(word)),
+        locale,
+      ).toEqual([]);
+      // One submit, and it is the form's — the same statement the English case makes, and it is about
+      // structure rather than words, so a translation cannot change the answer. It is repeated here so
+      // that a locale-specific screen variant, if one ever lands, is held to it too.
+      expect(all(container, "button[type=submit]"), locale).toHaveLength(1);
+      mounted?.unmount();
+      mounted = null;
+    }
+  });
+
+  test("renders the language it was handed, so the two cases above are not reading English", () => {
+    // The anti-vacuity guard for the whole describe. Every assertion above is a `not` or a `contain`,
+    // and both are satisfied by a screen that quietly rendered English — which is precisely what a
+    // translator with no catalog would produce. This is the one case that fails if it did.
+    for (const locale of LOCALES) {
+      const container = inLocale(locale);
+      const heading = one(container, "h1").textContent ?? "";
+      expect(heading, locale).not.toBe("Welcome.");
+      expect(heading.length, locale).toBeGreaterThan(0);
+      expect(heading, locale).not.toContain("auth/sign_in");
+      mounted?.unmount();
+      mounted = null;
     }
   });
 });

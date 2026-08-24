@@ -18,6 +18,8 @@ import { buildDbRegistry, composeDatabases, type DbRegistry } from "./data/datab
 import { noEntitlementProvider } from "./entitlement/entitlement";
 import { pithyErrorHandler } from "./error/http";
 import { ValidationError } from "./error/pithyError";
+import { catalogFor, composeMessages } from "./i18n/registry";
+import { bakedTranslator, DEFAULT_LOCALE } from "./i18n/translator";
 import { buildKvRegistry, composeKv, type KvRegistry } from "./kv/namespaces";
 import type { Logger } from "./logger/logger";
 import { bindRequestContext, createWorkerLogger } from "./logger/worker";
@@ -147,6 +149,12 @@ export function createBackend<
   recordComposition(all);
 
   const databases = composeDatabases(all);
+  // Every composed capability's English, merged under the domain rule. Built once at assembly rather
+  // than per request: it is a pure function of the capability set, which cannot change between them.
+  const messages = composeMessages(all);
+  // The seam's behavior with no i18n capability composed — the baked English, no negotiation, no merge.
+  // `@pithy-sh/i18n`'s middleware replaces it per request; nothing else ever does.
+  const defaultTranslator = bakedTranslator(catalogFor(messages, DEFAULT_LOCALE));
   const namespaces = composeKv(all);
   const workflows = composeWorkflows(all);
 
@@ -182,6 +190,11 @@ export function createBackend<
       validated = true;
     }
     if (c.get("auth") === undefined) c.set("auth", null);
+    // Null means nothing negotiated, which is not the same fact as "the default was chosen" — only
+    // `@pithy-sh/i18n` ever sets it, and `c.var.t` works either way.
+    if (c.get("locale") === undefined) c.set("locale", null);
+    // Zero-config like `log`: a real translator is always present, so no capability null-checks one.
+    if (c.get("t") === undefined) c.set("t", defaultTranslator);
     // Its own variable, never folded into `auth`: a management client is not a user of this app, so a
     // control-plane call must not satisfy any capability's `requireAuth()`. Null until the seam's
     // middleware verifies a credential, which is what makes every control-plane route default-denied.

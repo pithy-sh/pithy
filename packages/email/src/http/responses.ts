@@ -77,6 +77,12 @@ export const EmailJobDetail = EmailJobListItem.omit({ recipient: true, failed: t
     messageId: z.string().nullable().describe("The Email Service message id a later bounce is attributed through."),
     error: z.string().nullable().describe("The last error recorded against this job; null when healthy."),
     bounceCode: z.string().nullable().describe("The SMTP or Email Service code from a bounce; null unless it bounced."),
+    locale: z
+      .string()
+      .nullable()
+      .describe(
+        'The language this message was written in, as a BCP-47 tag; null when the recipient never chose one and it went out in the kit\'s English. Here because the subject above is the one piece of rendered content this view carries, and an operator who cannot read it has nothing else that explains why — a support pane answering "why did this arrive in Spanish" was otherwise reduced to guessing from the address.',
+      ),
     timezone: z.string().nullable().describe("The recipient's IANA timezone, for a `timezone`-mode send."),
     localTime: z.string().nullable().describe("The recipient-local time-of-day, for a `timezone`-mode send."),
     openTracking: z.boolean().describe("Whether an open-tracking pixel was injected."),

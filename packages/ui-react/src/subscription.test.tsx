@@ -1,10 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { bakedTranslator, createTranslator, type Translator } from "@pithy-sh/core/src/i18n/translator";
+// The kit's translations, read as the value `@pithy-sh/i18n` composes into its layers rather than as
+// files on disk — the same import `signIn.test.tsx` makes, for the same reason.
+import { KIT_CATALOGS } from "@pithy-sh/i18n/src/catalogs/kit";
 import { PAYMENTS_HOSTED_RAILS, type PaymentsClientRail } from "@pithy-sh/payments/src/client/api";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, test } from "vitest";
+import { failureText } from "../templates/src/payments";
 import { SubscriptionScreen } from "../templates/src/routes/pithy/subscription";
 
 /**
@@ -122,5 +127,166 @@ describe("the scaffolded subscription screen", () => {
     for (const rail of PAYMENTS_HOSTED_RAILS) rails[rail] = true;
     const drawn = await buttons(rails);
     expect(drawn.filter((label) => label === "Manage billing")).toHaveLength(1);
+  });
+});
+
+/**
+ * The same screen, in a second language — and in none.
+ *
+ * **Both directions, because only one of them was ever asserted.** Every case above states the English,
+ * and the English is unchanged by design: a screen that renders `t.t(key)` over its own baked catalog
+ * says exactly what the literal said, so the whole set stayed green across the change that introduced
+ * the translator. A gate that cannot fail on the work it covers is not covering it.
+ *
+ * What is actually at stake here is two properties that pull against each other. A project composing
+ * `i18n` must render the reader's language — including the *date*, which was `toLocaleDateString()` and
+ * therefore followed the device rather than the app. And a project composing nothing must render the
+ * English byte for byte, because that is the whole of what makes the capability optional.
+ *
+ * The Spanish translator is built with the locale's catalog and **no English layer behind it**, which
+ * makes these cases stricter than the real render: a key nobody translated falls through to the key
+ * itself rather than quietly reading well in English.
+ */
+describe("the subscription screen's language", () => {
+  /** When the entitlement lapses. A day under 13, so the two locales order it differently. */
+  const WHEN = "2027-02-01T00:00:00.000Z";
+
+  /** One entitlement that renews, which is the branch carrying a formatted date. */
+  const HOLDING = { key: "pro", granted: true, expiresAt: WHEN };
+
+  /** A fetch that answers with {@link HOLDING} and nothing else. */
+  const holding: typeof fetch = (async () => Response.json({ entitlements: [HOLDING] })) as unknown as typeof fetch;
+
+  /** Spanish, over the kit's catalog alone. */
+  const es: Translator = createTranslator({ catalogLocale: "es", layers: [KIT_CATALOGS.es] });
+
+  /** The screen for one project, with a translator or without one. */
+  async function rendered(t?: Translator): Promise<string> {
+    const container = await mount(
+      <SubscriptionScreen
+        rails={{ ...NONE, stripe: true }}
+        client={{ fetch: holding }}
+        paywallPath={PAYWALL}
+        {...(t ? { t } : {})}
+      />,
+    );
+    expect(container.querySelector("h1"), "the screen is still loading — the read never resolved").not.toBeNull();
+    return container.textContent ?? "";
+  }
+
+  test("renders the words of the language it was handed", async () => {
+    const text = await rendered(es);
+    // Read from the catalog rather than restated here: a sentence this file wrote down would be a second
+    // copy of the Spanish, and the first thing to drift from it.
+    for (const key of [
+      "payments/subscription.subscribed",
+      "payments/subscription.manage",
+      "payments/subscription.more",
+    ]) {
+      const sentence = KIT_CATALOGS.es?.[key];
+      expect(sentence, `the kit ships no Spanish for ${key}`).toBeTypeOf("string");
+      expect(text, key).toContain(sentence);
+    }
+    // And it is not quietly English. The anti-vacuity half: every assertion above is a `toContain`, and
+    // a screen that ignored its `t` prop would still have to fail this one.
+    expect(text).not.toContain("You're subscribed.");
+  });
+
+  test("renders the renewal date in the app's language, not the device's", async () => {
+    // The one thing no catalog can carry, and the line that was `new Date(…).toLocaleDateString()` —
+    // which follows whatever language the *device* is set to. A reader who chose Spanish inside a
+    // Spanish app read a date in the language their laptop happened to be in, and on a right-to-left
+    // locale the sentence and the number disagreed about direction as well.
+    const spanish = new Intl.DateTimeFormat("es").format(new Date(WHEN));
+    const english = new Intl.DateTimeFormat("en").format(new Date(WHEN));
+    // The precondition that makes the assertion mean anything: the two orderings really do differ, so a
+    // date rendered through the device's formatter cannot pass by coincidence.
+    expect(spanish).not.toBe(english);
+
+    expect(await rendered(es)).toContain(spanish);
+  });
+
+  /**
+   * The code the refusing fetch answers with. A real kit code with a real Spanish sentence behind it,
+   * looked up rather than written down — a sentence restated here would be the first thing to drift.
+   */
+  const REFUSED = "payments/entitlement_required";
+
+  /** The English the server puts on the wire. Invented, so no catalog can answer with it by accident. */
+  const SERVER_ENGLISH = "pithy-gate-canary-server-said-this";
+
+  /** A worker that refuses the entitlements read the way the real one does: `{ error: { code, message } }`. */
+  const refusing: typeof fetch = (async () =>
+    Response.json({ error: { code: REFUSED, message: SERVER_ENGLISH } }, { status: 403 })) as unknown as typeof fetch;
+
+  test("a refusal from the server is read in the reader's language, not the wire's", async () => {
+    // **The server never localizes an error.** `message` is English permanently — it is simultaneously
+    // the operator's diagnostic and the fallback for every client that does not translate. So a screen
+    // that renders it raw turns Spanish into English at the exact moment something has gone wrong,
+    // which is the moment the words matter most and the moment nothing was ever asserted about.
+    const spanish = KIT_CATALOGS.es?.[REFUSED];
+    expect(spanish, `the kit ships no Spanish for ${REFUSED}`).toBeTypeOf("string");
+
+    const container = await mount(
+      <SubscriptionScreen
+        rails={{ ...NONE, stripe: true }}
+        client={{ fetch: refusing }}
+        paywallPath={PAYWALL}
+        t={es}
+      />,
+    );
+    expect(container.querySelector("h1"), "the screen is still loading — the read never resolved").not.toBeNull();
+    const text = container.textContent ?? "";
+    expect(text, "the failure rendered the server's English under a Spanish page").toContain(spanish);
+    expect(text).not.toContain(SERVER_ENGLISH);
+  });
+
+  test("with no translator, a refusal reads exactly as the server sent it", async () => {
+    // The other direction, and the whole of what keeps the capability optional: a project that never
+    // composed `i18n` has no catalog to find the code in, so `t.maybe` misses and the server's own
+    // sentence comes through byte for byte — which is what this screen did before any of this existed.
+    const container = await mount(
+      <SubscriptionScreen rails={{ ...NONE, stripe: true }} client={{ fetch: refusing }} paywallPath={PAYWALL} />,
+    );
+    expect(container.textContent).toContain(SERVER_ENGLISH);
+  });
+
+  test("with no translator at all, renders the English it was scaffolded with", async () => {
+    // The other direction, and the one the capability's optionality rests on. `useTranslator` with no
+    // provider is a translator over the screen's own baked catalog, so a project that never composed
+    // `i18n` must read exactly as it did before any of this existed — including the date, which
+    // `bakedTranslator` formats in `en` rather than in the host's locale.
+    const text = await rendered();
+    expect(text).toContain("You're subscribed.");
+    expect(text).toContain("Manage billing");
+    expect(text).toContain("See what else there is");
+    expect(text).toContain(new Intl.DateTimeFormat("en").format(new Date(WHEN)));
+    // And no Spanish leaked into it from a provider nothing mounted.
+    expect(text).not.toContain(KIT_CATALOGS.es?.["payments/subscription.subscribed"] ?? "«no es catalog»");
+  });
+});
+
+describe("a translated server failure renders its values, not its placeholders", () => {
+  /**
+   * The contract `docs/I18N.md` states is `t.maybe(code, params) ?? message`, and `failureText` used
+   * to call it with the code alone. Nothing failed, because no kit throw site passes `params` yet and
+   * the shipped `es` catalog names no placeholder — so the day either changes, three payments screens
+   * would have rendered `{board}` at a reader instead of the English they were improving on.
+   */
+  test("the params from the wire reach the catalog's sentence", () => {
+    const t = bakedTranslator({ "payments/product_not_found": "No existe {product}." }, "es");
+    const failure = {
+      code: "payments/product_not_found",
+      message: "That product does not exist: pro.",
+      action: null,
+      params: { product: "pro" },
+    };
+    expect(failureText(t, failure)).toBe("No existe pro.");
+  });
+
+  test("and an untranslated code still falls back to the English the server sent", () => {
+    const t = bakedTranslator({}, "es");
+    const failure = { code: "payments/product_not_found", message: "That product does not exist.", action: null };
+    expect(failureText(t, failure)).toBe("That product does not exist.");
   });
 });

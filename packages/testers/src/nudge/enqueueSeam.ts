@@ -27,6 +27,17 @@ export interface NudgeEnqueueEnv {
   EMAIL_FROM_NAME?: string;
   /** The resolved email theme, as the email worker carries it. */
   EMAIL_THEME?: string;
+  /**
+   * The project's message catalogs as one JSON var, exactly as the email host worker carries them.
+   *
+   * The **shell** is what this moves — the document's `lang` and `dir`, the footer's opt-out word. A
+   * nudge's own words are the adopter's copy, supplied per message and never in a catalog, so a
+   * translated tester email is only as translated as the copy somebody wrote for it. This capability
+   * holds no per-tester locale to choose with either: a roster is a list of addresses, and inventing a
+   * language for one of them would be worse than the honest English. So the catalogs are threaded and
+   * the tag is not, and the day a member row carries one, this is already the seam it renders through.
+   */
+  [catalogVar: `EMAIL_MESSAGES_${string}`]: unknown;
   /** The email send Workflow, so an immediate job dispatches now rather than waiting for a cron tick. */
   EMAIL_SENDER?: { create(options: { params: { jobIds: string[] } }): Promise<unknown> };
 }
@@ -56,7 +67,10 @@ export async function buildNudgeEnqueue(
     const { enqueueEmail } = await import("@pithy-sh/email/src/send/enqueue");
     const { emailDatabase } = await import("@pithy-sh/email/src/data/tables");
     const { defaultTheme, EmailTheme } = await import("@pithy-sh/email/src/templates/theme");
+    const { catalogLayers, catalogsFromEnv } = await import("@pithy-sh/email/src/templates/messages");
     const theme = env.EMAIL_THEME ? EmailTheme.parse(JSON.parse(env.EMAIL_THEME)) : defaultTheme;
+    // One variable per locale, collected and validated by the same seam the email host uses.
+    const layersFor = catalogLayers(catalogsFromEnv(env as unknown as Record<string, unknown>));
     const fromAddress = env.EMAIL_FROM_ADDRESS;
     const fromName = env.EMAIL_FROM_NAME;
     return async (input) =>
@@ -66,6 +80,7 @@ export async function buildNudgeEnqueue(
           fromAddress,
           fromName,
           theme,
+          layersFor,
           sender: env.EMAIL_SENDER,
           // Read here, per nudge — see the note above. Hoisting this out of the closure is the
           // double-send.

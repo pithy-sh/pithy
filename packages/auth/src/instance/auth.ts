@@ -5,6 +5,7 @@ import type { AuditEmit } from "@pithy-sh/core/src/audit/recorder";
 import { type BetterAuthPlugin, betterAuth } from "better-auth";
 import { APIError, createAuthMiddleware } from "better-auth/api";
 import { emitAfterRequest, emitProviderUnavailable } from "../audit/emit";
+import { KIT_SESSION_FIELDS, KIT_USER_FIELDS } from "../data/kitFields";
 import type { AuthDatabase } from "../data/tables";
 import { parseDeviceMeta, registerDevice } from "../device/registry";
 import { kitPlugins } from "./plugins";
@@ -264,17 +265,20 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
       storage: "database",
       modelName: "pithyAuthRateLimit",
     },
-    user: { modelName: "pithyAuthUsers" },
+    user: {
+      modelName: "pithyAuthUsers",
+      // One declaration, shared with the schema baseline in `../migrations/pluginTables.ts`. See
+      // `../data/kitFields.ts` for why a column missing here is invisible to Better Auth, and why the
+      // two used to be written out twice.
+      additionalFields: KIT_USER_FIELDS,
+    },
     session: {
       modelName: "pithyAuthSessions",
       expiresIn: deps.sessionExpiresIn,
       updateAge: deps.sessionUpdateAge,
       // Server-set session fields clients never supply: the bound device, and the refresh-token family
       // (carried across rotations via createSession override, like deviceId — see `token/rotation.ts`).
-      additionalFields: {
-        deviceId: { type: "string", required: false, input: false },
-        familyId: { type: "string", required: false, input: false },
-      },
+      additionalFields: KIT_SESSION_FIELDS,
     },
     account: {
       modelName: "pithyAuthAccounts",

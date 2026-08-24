@@ -67,6 +67,7 @@ const APP_USER = {
   email: "jim@pithy.sh",
   emailVerified: true,
   image: null,
+  locale: null,
   createdAt: new Date(1_800_000_000_000),
   updatedAt: new Date(1_800_000_000_000),
 };

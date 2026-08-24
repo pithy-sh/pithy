@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
-import { isEmailCapability, type ResolvedEmailConfig } from "@pithy-sh/email/src/capability";
+import { type EmailCapability, isEmailCapability } from "@pithy-sh/email/src/capability";
 import { deprovisionEmail, provisionEmail } from "@pithy-sh/email/src/provision/provisionEmail";
 import { type RenderTracking, renderEmail } from "@pithy-sh/email/src/templates/engine";
 import { samplePayloads } from "@pithy-sh/email/src/templates/samples";
@@ -31,7 +31,13 @@ import {
   requireProjectName,
 } from "../project/config";
 import { resolveWorkerAddress } from "../project/workerAddress";
-import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
+import {
+  composedProjectCapabilities,
+  projectCapabilities,
+  type ResolvedWorker,
+  resolveSingleWorker,
+  resolveWorkers,
+} from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -56,12 +62,34 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
 }
 
 /**
- * Load the email capability's resolved config (identity + brand theme). Capabilities live in each Worker's
- * `apps/<name>/pithy.config.ts`, and the config is one brand identity for the project, so the first Worker
- * composing `email` provides it.
+ * Load the composed email capability. Capabilities live in each Worker's `apps/<name>/pithy.config.ts`,
+ * and the config is one brand identity for the project, so the first Worker composing `email` provides
+ * it.
+ *
+ * The **capability**, not its `emailConfig`, because two of the three things a provision run stamps into
+ * the host's vars now come from it: the theme off `emailConfig`, and the catalogs off `hostCatalogs()`,
+ * which only answers correctly once `compose` has run. Returning the resolved config alone left the
+ * catalogs unreachable, and the `EMAIL_MESSAGES` var unwritten (pithy-sh/pithy#441).
+ *
+ * **The project's whole capability surface, assembled, and that is deliberate rather than a shortcut
+ * past per-Worker composition.** The Worker this stamps is `<project>-<env>-email`: it composes
+ * nothing, it is deployed once for the project, and it sends every Worker's mail. So the catalogs it
+ * carries are the project's, not one app Worker's — a project where `apps/web` composes `i18n()` and
+ * `apps/api` composes `email()` gets a host that speaks Spanish, which is the only useful answer for a
+ * Worker that belongs to neither. `capabilities/compose.ts` states the rule once for all three CLI
+ * sites that resolve a host.
+ *
+ * Exported for `capabilities/emailHostCatalogs.test.ts`, which is what proves this command reads a *composed*
+ * capability rather than a freshly built one — the wiring existed and nothing held the command to it.
+ * `resolve` is the filesystem seam that test drives it through.
  */
-async function loadEmailConfig(projectDir: string): Promise<ResolvedEmailConfig> {
-  const capabilities = await resolveWorkers({ projectDir }).then(projectCapabilities);
+export async function loadEmailCapability(
+  projectDir: string,
+  resolve: (options: { projectDir: string }) => Promise<ResolvedWorker[]> = resolveWorkers,
+): Promise<EmailCapability> {
+  // A hook that refuses here refuses for the same reason the Worker would refuse to boot, which is
+  // worth knowing before a host is deployed for it rather than after.
+  const capabilities = await resolve({ projectDir }).then(composedProjectCapabilities);
   const cap = capabilities.find(isEmailCapability);
   if (!cap) {
     throw new ValidationError({
@@ -69,7 +97,7 @@ async function loadEmailConfig(projectDir: string): Promise<ResolvedEmailConfig>
       action: "Add `email({ ... })` to a worker's pithy.config.ts (run `pithy add email`).",
     });
   }
-  return cap.emailConfig;
+  return cap;
 }
 
 /**
@@ -270,7 +298,7 @@ const provision = defineCommand({
       // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
       const environments = loadProjectEnvironments(config);
       const { account, accountId, apiToken, storeId } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
-      const { theme } = await loadEmailConfig(projectDir);
+      const emailCapability = await loadEmailCapability(projectDir);
       const appWorker = await resolveSingleWorker({
         projectDir,
         ...(args.worker !== undefined ? { worker: args.worker } : {}),
@@ -282,7 +310,11 @@ const provision = defineCommand({
         account,
         apiToken,
         storeId,
-        theme,
+        theme: emailCapability.emailConfig.theme,
+        // Read now, after `loadEmailCapability` ran every capability's `compose` hook — the adopter's
+        // overrides and the kit's translations, flattened for the standalone host. Read before that,
+        // this is `{}` and the host is deployed English-only.
+        messages: emailCapability.hostCatalogs(),
         resolveEnv: buildResolveEnv(appWorker, cf, project, account),
         routing,
         audit: await buildAudit(projectDir, accountId, apiToken),
@@ -353,7 +385,7 @@ const test = defineCommand({
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
       const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
-      const { fromAddress, fromName, baseUrl, theme } = await loadEmailConfig(projectDir);
+      const { fromAddress, fromName, baseUrl, theme } = (await loadEmailCapability(projectDir)).emailConfig;
       const payload = samplePayloads[args.template];
       if (!payload) {
         throw new ValidationError({

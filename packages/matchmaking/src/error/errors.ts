@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 
 /**
  * `@pithy-sh/matchmaking` throw sugar. The `matchmaking/*` codes live in core's closed `KitErrorPayload`
@@ -12,6 +13,11 @@ interface MatchmakingErrorArgs {
   message?: string;
   action?: string;
   detail?: string;
+  /**
+   * Values a translating client interpolates into its own wording for this code. Client-facing, so —
+   * unlike `action` and `detail` — these cross the boundary with `message`.
+   */
+  params?: MessageParams;
 }
 
 export class MatchmakingRoomNotFoundError extends PithyError {
@@ -23,6 +29,7 @@ export class MatchmakingRoomNotFoundError extends PithyError {
         message: args.message ?? "That room does not exist.",
         action: args.action ?? "Ask the host for a fresh code — it may have expired or been used up.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -38,6 +45,7 @@ export class MatchmakingRoomFullError extends PithyError {
         message: args.message ?? "That room code is used up.",
         action: args.action ?? "Ask the host to open a new room.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -53,6 +61,7 @@ export class MatchmakingInvalidCodeError extends PithyError {
         message: args.message ?? "That is not a valid room code.",
         action: args.action ?? "Enter the code exactly as shared, e.g. WXYZ-1234.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -68,6 +77,7 @@ export class MatchmakingInviteNotFoundError extends PithyError {
         message: args.message ?? "That invite does not exist.",
         action: args.action ?? "It may have been accepted, declined, or expired.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -83,6 +93,7 @@ export class MatchmakingInviteForbiddenError extends PithyError {
         message: args.message ?? "This invite is not yours to act on.",
         action: args.action ?? "Only the inviter or the invitee may act on an invite.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -98,6 +109,7 @@ export class MatchmakingUserNotFoundError extends PithyError {
         message: args.message ?? "No single user matches that invite.",
         action: args.action ?? "Invite by email for a unique identity — a display name may be ambiguous.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -113,6 +125,7 @@ export class MatchmakingAlreadyFriendsError extends PithyError {
         message: args.message ?? "You are already connected, or a request is already pending.",
         action: args.action ?? "Wait for the pending request, or you are already friends.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -128,6 +141,7 @@ export class MatchmakingFriendRequestNotFoundError extends PithyError {
         message: args.message ?? "There is no pending friend request to act on.",
         action: args.action ?? "The request may have been withdrawn or already answered.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -143,6 +157,7 @@ export class MatchmakingNotQueuedError extends PithyError {
         message: args.message ?? "You are not in this queue.",
         action: args.action ?? "Enqueue before checking your status or leaving.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );

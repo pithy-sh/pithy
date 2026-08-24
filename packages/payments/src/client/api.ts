@@ -218,6 +218,17 @@ export interface PaymentsFailure {
   message: string;
   /** What to do next, when the server offered one. */
   action: string | null;
+  /**
+   * The values a translating client interpolates into its own wording for `code`, when the server sent
+   * any.
+   *
+   * **Carried because the documented contract is `t.maybe(code, params) ?? message`**, and a decoder
+   * that drops `params` makes the first half of it a lie: `interpolate` leaves an unsupplied
+   * placeholder exactly as written, so a screen renders `That board does not exist: {board}.` — worse
+   * than the English it was trying to improve on. No kit throw site passes `params` today, which is
+   * precisely why this is easy to leave out and expensive to notice later.
+   */
+  params?: Record<string, string | number | boolean>;
 }
 
 /** Either the value, or a failure to render. Never a throw. */
@@ -453,9 +464,25 @@ function globals(options: PaymentsClientOptions | undefined): PaymentsGlobal {
 /** A failure read off `{ error: { code, message, action } }`, or the generic one when the body is not that. */
 function readFailure(body: unknown): PaymentsFailure {
   if (!isRecord(body) || !isRecord(body.error)) return PAYMENTS_UNREADABLE;
-  const { code, message, action } = body.error;
+  const { code, message, action, params } = body.error;
   if (typeof code !== "string" || typeof message !== "string") return PAYMENTS_UNREADABLE;
-  return { code, message, action: typeof action === "string" ? action : null };
+  // `params` is scalars keyed by placeholder name on the wire. Anything else is dropped rather than
+  // passed on: this module is Zod-free by design, so the check is the shape a caller depends on and
+  // nothing more.
+  const scalars = isRecord(params)
+    ? Object.fromEntries(
+        Object.entries(params).filter(
+          (entry): entry is [string, string | number | boolean] =>
+            typeof entry[1] === "string" || typeof entry[1] === "number" || typeof entry[1] === "boolean",
+        ),
+      )
+    : undefined;
+  return {
+    code,
+    message,
+    action: typeof action === "string" ? action : null,
+    ...(scalars && Object.keys(scalars).length > 0 ? { params: scalars } : {}),
+  };
 }
 
 /**

@@ -20,13 +20,19 @@ describe("schema descriptions (CLAUDE.md §Zod: schemas are the docs)", () => {
     // nothing produces no findings, and no findings is what passing looks like — so the population is
     // pinned in three places, and a collapse in any one of them is loud.
     //
-    // Near-exact, not a comfortable floor: measured at 112 modules, 95 schemas and 1144 fields on
-    // 2026-08-15, and each floor is 95% of that. The slack is there so deleting a module is not a red
+    // Near-exact, not a comfortable floor: measured at 129 modules, 114 schemas and 1441 fields on
+    // 2026-08-23, and each floor is 95% of that. The slack is there so deleting a module is not a red
     // build; it is nowhere near enough for a glob that lost the package.
+    //
+    // The field count moved by 242 in one edit (#441): `params` was added to `publicFields` in
+    // ./error/payload, which is spread into all 120 kit `...Public` members and into `ExtendedPublic`,
+    // and each of those is extended once more into a full member. That is what "one edit propagates
+    // everywhere" looks like from here — so the floor is **re-measured** after such a change, never
+    // nudged until it goes green.
     const walk = undescribedExports(modules);
-    expect(walk.modules).toBeGreaterThanOrEqual(106);
-    expect(walk.schemas).toBeGreaterThanOrEqual(90);
-    expect(walk.fields).toBeGreaterThanOrEqual(1086);
+    expect(walk.modules).toBeGreaterThanOrEqual(122);
+    expect(walk.schemas).toBeGreaterThanOrEqual(108);
+    expect(walk.fields).toBeGreaterThanOrEqual(1368);
   });
 
   test("every exported object/enum/union — and every field — carries a .describe()", () => {

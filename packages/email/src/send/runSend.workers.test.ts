@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
 import { beforeEach, describe, expect, test } from "vitest";
 import { SPENT_PAYLOAD } from "../data/emailJob";
 import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
 import { retryJob } from "../jobs/retry";
 import { email_0001_init } from "../migrations/0001_init";
 import { email_0001_suppressions } from "../migrations/0001_suppressions";
+import { catalogLayers } from "../templates/messages";
 import { defaultTheme, type EmailTheme } from "../templates/theme";
 import { enqueueEmail } from "./enqueue";
 import { runSend, type SendDeps } from "./runSend";
@@ -52,7 +54,27 @@ function sendDeps(sender: EmailSender, overrides: Partial<SendDeps> = {}): SendD
   };
 }
 
-async function enqueue(input: Parameters<typeof enqueueEmail>[1], idSeed = "job"): Promise<string> {
+/**
+ * A second language, as a project would compose one.
+ *
+ * The catalogs reach `@pithy-sh/email` as **data** — `layersFor`, filled by a composed `i18n`
+ * capability in the app worker and by the `EMAIL_MESSAGES` var in the standalone host. This package
+ * imports no i18n capability, so the test writes the sentences rather than reaching for the shipped
+ * Spanish, which would be asserting a dependency that must not exist.
+ */
+const CATALOGS: LocaleCatalogs = {
+  es: {
+    "email/welcome.subject": "Te damos la bienvenida a {app}",
+    "email/welcome.heading": "Te damos la bienvenida a {app}",
+    "email/welcome.body": "Hola {name}: te damos la bienvenida a {app}.",
+  },
+};
+
+async function enqueue(
+  input: Parameters<typeof enqueueEmail>[1],
+  idSeed = "job",
+  layersFor = catalogLayers(CATALOGS),
+): Promise<string> {
   let n = 0;
   const result = await enqueueEmail(
     {
@@ -60,6 +82,7 @@ async function enqueue(input: Parameters<typeof enqueueEmail>[1], idSeed = "job"
       fromAddress: "noreply@pithy.sh",
       fromName: "Acme",
       theme,
+      layersFor,
       now,
       newId: () => `${idSeed}-${++n}`,
     },
@@ -597,5 +620,74 @@ describe("runSend", () => {
       .bind(jobId)
       .first<{ status: string }>();
     expect(row?.status).toBe("failed");
+  });
+});
+
+/**
+ * The recipient's language, from the enqueue that knew them to the send that does not.
+ *
+ * The two render sites are in different Workers at different times — `renderSubject` inside a request
+ * handler, `renderEmail` inside a Workflow hours later — and until the tag was on the row the only
+ * thing making them agree was that both defaulted to English. These are the tests that say they agree
+ * because of the column.
+ */
+describe("a job carries its language from the enqueue to the send", () => {
+  test("the subject is stored in the recipient's language, and the body arrives in it too", async () => {
+    const jobId = await enqueue({
+      to: "u@example.com",
+      template: "welcome",
+      payload: { name: "Sam", ctaUrl: "https://acme.test/go", ctaLabel: "Go" },
+      locale: "es",
+    });
+
+    const stored = await env.DB.prepare("select subject, locale from pithy_email_jobs where id = ?")
+      .bind(jobId)
+      .first<{ subject: string; locale: string | null }>();
+    expect(stored).toEqual({ subject: "Te damos la bienvenida a Acme", locale: "es" });
+
+    const { sender, sent } = fakeSender(() => ({ messageId: "m-es" }));
+    await runSend(sendDeps(sender, { layersFor: catalogLayers(CATALOGS) }), jobId);
+
+    expect(sent[0]?.subject).toBe("Te damos la bienvenida a Acme");
+    expect(sent[0]?.html).toContain("Hola Sam: te damos la bienvenida a Acme.");
+    // The shell declares the language it is written in. There was no `dir` in it at all before
+    // pithy-sh/pithy#441.
+    expect(sent[0]?.html).toContain('<html lang="es" dir="ltr"');
+  });
+
+  test("a job that chose no language sends the kit's English, exactly as before", async () => {
+    const jobId = await enqueue({
+      to: "v@example.com",
+      template: "welcome",
+      payload: { name: "Sam", ctaUrl: "https://acme.test/go", ctaLabel: "Go" },
+    });
+
+    const { sender, sent } = fakeSender(() => ({ messageId: "m-en" }));
+    await runSend(sendDeps(sender, { layersFor: catalogLayers(CATALOGS) }), jobId);
+
+    expect(sent[0]?.subject).toBe("Welcome to Acme");
+    expect(sent[0]?.html).toContain('<html lang="en" dir="ltr"');
+  });
+
+  test("the stored subject becomes the one that was actually delivered", async () => {
+    // `runSend` sends a *fresh* render rather than `job.subject`, so the column was only ever the
+    // enqueue's guess. A catalog sentence retranslated between the queue and the send used to leave the
+    // send log describing a message nobody received; now the row is rewritten from what went out.
+    const jobId = await enqueue({
+      to: "w@example.com",
+      template: "welcome",
+      payload: { name: "Sam", ctaUrl: "https://acme.test/go", ctaLabel: "Go" },
+      locale: "es",
+    });
+
+    const retranslated: LocaleCatalogs = { es: { "email/welcome.subject": "Bienvenido a {app}" } };
+    const { sender, sent } = fakeSender(() => ({ messageId: "m-drift" }));
+    await runSend(sendDeps(sender, { layersFor: catalogLayers(retranslated) }), jobId);
+
+    const row = await env.DB.prepare("select subject from pithy_email_jobs where id = ?")
+      .bind(jobId)
+      .first<{ subject: string }>();
+    expect(sent[0]?.subject).toBe("Bienvenido a Acme");
+    expect(row?.subject).toBe(sent[0]?.subject);
   });
 });

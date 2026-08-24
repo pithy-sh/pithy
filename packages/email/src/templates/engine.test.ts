@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
 import { describe, expect, test } from "vitest";
 import { verifyToken } from "../crypto/token";
 import { CALLBACK_BASE, listTemplates, renderEmail } from "./engine";
+import { catalogLayers, emailTranslator } from "./messages";
 import { templates } from "./registry";
 import { defaultTheme, type EmailTheme } from "./theme";
 
@@ -449,8 +451,39 @@ describe("a template's variables must be declared on its payload", () => {
     return found;
   }
 
-  /** Values the engine injects onto the render context after the payload is parsed. */
-  const ENGINE_INJECTED = new Set(["theme", "layoutWidth", "openPixelUrl", "unsubscribeUrl"]);
+  /**
+   * Names passed as a helper's `key=value` argument — `{{t "email/welcome.body" name=name}}`.
+   *
+   * The third way a payload field can reach a template, and the one the catalog introduced
+   * (pithy-sh/pithy#441). Neither pattern above sees it: the plain-variable ones need `}}` immediately
+   * after the name, and the positional-argument one needs the name to be the helper's *first*
+   * argument, which for `t` and `tn` is always a quoted key. Without this, moving a sentence into the
+   * catalog would move every field it interpolates out of this test's reach — reopening exactly the
+   * hole the test was written for, on the change that touched every template at once.
+   *
+   * Values are matched inside mustaches only, so the `=` in an inline `style="…"` is invisible, and a
+   * dotted path (`app=theme.appName`) is reduced to its head because that is the name the payload would
+   * have to declare.
+   */
+  function helperHashArguments(source: string): Set<string> {
+    const found = new Set<string>();
+    for (const mustache of source.match(/\{\{[^}]*\}\}/g) ?? []) {
+      for (const match of mustache.matchAll(/[a-zA-Z_][a-zA-Z0-9_]*=([a-zA-Z_][a-zA-Z0-9_.]*)/g)) {
+        const head = match[1]?.split(".")[0];
+        if (head) found.add(head);
+      }
+    }
+    return found;
+  }
+
+  /**
+   * Values the engine injects onto the render context after the payload is parsed.
+   *
+   * `lang`, `dir` and `i18n` arrive with the render's translator: the first two are what the shell
+   * declares the document as, and the third is the translator itself, which the `t` / `tn` /
+   * `severityLabel` helpers read off `@root`.
+   */
+  const ENGINE_INJECTED = new Set(["theme", "layoutWidth", "openPixelUrl", "unsubscribeUrl", "lang", "dir", "i18n"]);
 
   test("no template references a variable its payload schema would strip", () => {
     // The failure this catches, and which shipped once: `testerNudge`'s body rendered an
@@ -462,7 +495,11 @@ describe("a template's variables must be declared on its payload", () => {
     for (const [id, def] of Object.entries(templates)) {
       const declared = new Set(Object.keys((def.payload as unknown as { shape: Record<string, unknown> }).shape ?? {}));
       for (const source of [def.html, def.text, def.subject]) {
-        for (const variable of [...referencedVariables(source), ...helperArguments(source)]) {
+        for (const variable of [
+          ...referencedVariables(source),
+          ...helperArguments(source),
+          ...helperHashArguments(source),
+        ]) {
           if (ENGINE_INJECTED.has(variable) || declared.has(variable)) continue;
           missing.push(`${id}: {{${variable}}} is rendered but not declared on its payload schema`);
         }
@@ -496,5 +533,62 @@ describe("a template's variables must be declared on its payload", () => {
       expect(result.html).not.toContain("opt-out");
       expect(result.text).not.toContain("opt-out");
     });
+  });
+});
+
+/**
+ * The shell's own words, in a language that is not the kit's.
+ *
+ * Two strings in this package are rendered by the *engine* rather than by a template's payload — the
+ * severity word (`engine.ts`'s `severityLabel` helper) and the footer's opt-out link
+ * (`partials.ts`) — and both moved into the catalog for #441 with nothing exercising the move. The
+ * tests that looked like they covered it could not: one asserted that three keys exist in
+ * `EMAIL_MESSAGES.en` without ever constructing a translator, and the other asserted
+ * `toContain("Unsubscribe")` and `not.toContain("Unsubscribe")`, both of which the English catalog
+ * value satisfies whether the word comes from the catalog or from a literal baked into the partial.
+ * Reverting either change left the whole email suite green.
+ *
+ * So the assertion has to be a **non-English** render, and it has to say the English is gone as well as
+ * that the Spanish is there. The sentences are written here rather than imported from `@pithy-sh/i18n`
+ * for the reason `runSend.workers.test.ts` gives: this package must not acquire that dependency, and
+ * the catalogs reach it as data. The kit's real Spanish is bound to these same keys by
+ * `cli/src/ci/catalogCoverage.test.ts`.
+ */
+describe("the words the shell itself renders follow the reader's language", () => {
+  const es: LocaleCatalogs = {
+    es: {
+      "email/severity.info": "Aviso",
+      "email/severity.warning": "Requiere acción",
+      "email/severity.critical": "Crítico",
+      "email/shell.unsubscribe": "Cancelar la suscripción",
+    },
+  };
+  const spanish = emailTranslator("es", catalogLayers(es));
+
+  const SEVERITIES = [
+    { severity: "info", spanish: "Aviso", english: "Notice" },
+    { severity: "warning", spanish: "Requiere acción", english: "Action needed" },
+    { severity: "critical", spanish: "Crítico", english: "Critical" },
+  ] as const;
+
+  for (const { severity, spanish: word, english } of SEVERITIES) {
+    test(`\`${severity}\` is said in the reader's language, in all three parts`, async () => {
+      const notice = { ...(validPayloads.operationalNotice as Record<string, unknown>), severity };
+      const result = await renderEmail("operationalNotice", notice, theme, undefined, spanish);
+      // Subject, body and text part, because a severity that is only in one of them is a severity a
+      // reader can miss — the whole reason `severity.ts` carries a word and not just a color.
+      for (const part of [result.subject, result.html, result.text]) {
+        expect(part).toContain(word);
+        expect(part).not.toContain(english);
+      }
+    });
+  }
+
+  test("the footer's opt-out link is said in the reader's language", async () => {
+    const result = await renderEmail("newsletter", validPayloads.newsletter, theme, { ...tracking }, spanish);
+    expect(result.html).toContain("Cancelar la suscripción");
+    expect(result.html).not.toContain("Unsubscribe");
+    // Still the link it reports, so `List-Unsubscribe` and the body cannot disagree in any language.
+    expect(result.html).toContain(result.unsubscribeUrl ?? "");
   });
 });

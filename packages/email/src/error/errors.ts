@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 
 /**
  * `@pithy-sh/email` throw sugar. The `email/*` codes live in core's closed `KitErrorPayload` union
@@ -18,6 +19,11 @@ interface EmailErrorArgs {
   action?: string;
   /** Internal context for logs + audit. Never serialized to clients. */
   detail?: string;
+  /**
+   * Values a translating client interpolates into its own wording for this code. Client-facing, so —
+   * unlike `action` and `detail` — these cross the boundary with `message`.
+   */
+  params?: MessageParams;
 }
 
 /** The requested template id is not registered. */
@@ -30,6 +36,7 @@ export class EmailTemplateNotFoundError extends PithyError {
         message: args.message ?? "Email template not found.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -46,6 +53,7 @@ export class EmailInvalidPayloadError extends PithyError {
         message: args.message ?? "Email template payload failed validation.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -62,6 +70,7 @@ export class EmailInvalidTokenError extends PithyError {
         message: args.message ?? "This link is invalid or has expired.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -78,6 +87,7 @@ export class EmailSuppressedError extends PithyError {
         message: args.message ?? "This address is suppressed and cannot be emailed.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -94,6 +104,7 @@ export class EmailRateLimitedError extends PithyError {
         message: args.message ?? "The email rate limit was exceeded.",
         action: args.action ?? "Retry with backoff.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -110,6 +121,7 @@ export class EmailSendFailedError extends PithyError {
         message: args.message ?? "The email could not be sent.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );

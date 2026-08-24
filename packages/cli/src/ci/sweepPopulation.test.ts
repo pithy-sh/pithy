@@ -76,6 +76,7 @@ const GUARDED = [
   "core/src/worker-safety.test.ts",
   "core/src/workflow/retryClassification.test.ts",
   "email/src/schema-descriptions.test.ts",
+  "i18n/src/schema-descriptions.test.ts",
   "leaderboard/src/schema-descriptions.test.ts",
   "ledger/src/schema-descriptions.test.ts",
   "matchmaking/src/schema-descriptions.test.ts",

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { JsonDate, SQLiteBoolean } from "@pithy-sh/core/src/data/codecs";
+import { Locale } from "@pithy-sh/core/src/i18n/locale";
 import { z } from "zod";
 
 /**
@@ -37,6 +38,9 @@ export const User = z
       "Whether the email has been verified. Stored as `0|1`; magic-link/OTP sign-in sets it true.",
     ),
     image: z.string().nullable().describe("URL of the user's avatar from a social profile, or null."),
+    locale: Locale.nullable().describe(
+      "The reader's chosen language as a BCP-47 tag, or null when they have never chosen. Null is not the default locale: it means negotiate from `Accept-Language`, so an unchosen reader follows their device. A stored tag outranks the header.",
+    ),
     createdAt: BetterAuthDate.describe(
       "When the user record was created. ISO-8601 text in SQLite; a `Date` in app code.",
     ),

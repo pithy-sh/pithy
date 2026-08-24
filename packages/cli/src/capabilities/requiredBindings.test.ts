@@ -87,6 +87,7 @@ const SHIPPED_MANIFESTS = [
   "auth",
   "core",
   "email",
+  "i18n",
   "leaderboard",
   "ledger",
   "matchmaking",

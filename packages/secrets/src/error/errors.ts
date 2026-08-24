@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 
 /**
  * `@pithy-sh/secrets` throw sugar. The `secrets/*` codes live in core's closed `KitErrorPayload`
@@ -19,6 +20,11 @@ interface SecretErrorArgs {
   action?: string;
   /** Internal context for logs + audit. Never serialized to clients. */
   detail?: string;
+  /**
+   * Values a translating client interpolates into its own wording for this code. Client-facing, so —
+   * unlike `action` and `detail` — these cross the boundary with `message`.
+   */
+  params?: MessageParams;
 }
 
 /** A requested secret is not present in the store. */
@@ -31,6 +37,7 @@ export class SecretNotFoundError extends PithyError {
         message: args.message ?? "Secret not found.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -47,6 +54,7 @@ export class SecretAlreadyExistsError extends PithyError {
         message: args.message ?? "A secret with this name already exists.",
         action: args.action ?? "Use `update` to change an existing secret.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -63,6 +71,7 @@ export class SecretInvalidValueError extends PithyError {
         message: args.message ?? "Secret value failed validation.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -90,6 +99,7 @@ export class SecretRotationUnrecordedError extends PithyError {
         message: args.message ?? "A credential was rolled at its issuer and its successor was not stored.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -120,6 +130,7 @@ export class SecretRotationUnsupportedError extends PithyError {
         message: args.message ?? "This secret cannot be rotated from here.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -136,6 +147,7 @@ export class SecretCryptoError extends PithyError {
         message: args.message ?? "Could not encrypt or decrypt the secret.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );

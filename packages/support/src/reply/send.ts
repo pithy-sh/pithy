@@ -79,6 +79,8 @@ export interface ReplyDeps {
     template: string;
     payload: unknown;
     replyTo?: string;
+    /** The language to write the shell in — the reporter's, taken off their submission context. */
+    locale?: string;
     inReplyTo?: string;
     references?: string;
   }) => Promise<{ jobId: string }>;
@@ -151,7 +153,7 @@ export async function sendReply(deps: ReplyDeps, input: ReplyInput): Promise<Rep
   // real id we never learned.
   const parent = await deps.db
     .selectFrom(SUPPORT_MESSAGES_TABLE)
-    .select(["mimeMessageId", "mimeReferences"])
+    .select(["mimeMessageId", "mimeReferences", "context"])
     .where("threadId", "=", input.threadId)
     .where("direction", "=", "inbound")
     .orderBy("receivedAt", "desc")
@@ -161,6 +163,25 @@ export async function sendReply(deps: ReplyDeps, input: ReplyInput): Promise<Rep
     .orderBy("id", "desc")
     .limit(1)
     .executeTakeFirst();
+
+  /**
+   * The language to answer in: the one the reporter's app was rendering in when they wrote.
+   *
+   * **The customer's, never the agent's.** A reply is composed inside an operator's request, and that
+   * request's negotiated locale is the operator's — so reading `c.var.t` here would answer a Spanish
+   * customer in whatever language the support console happens to be open in. The submission context is
+   * the only thing on this thread that says something about the *reader*, and it is already collected
+   * because a locale-shaped bug is only reproducible in the reporter's locale.
+   *
+   * It moves the shell and not the letter. `supportReply`'s words are the adopter's — a human wrote
+   * them, and a catalog cannot translate a sentence it has never seen — so what follows this tag is the
+   * document's `lang` and `dir` and the footer. That is the honest half, and it is the half that decides
+   * whether an Arabic reply lays out right-to-left.
+   *
+   * Absent on every mail-path message, which is most of them, and absent renders as it always has.
+   */
+  const parentContext = SupportMessage.shape.context.safeParse(parent?.context);
+  const replyLocale = parentContext.success ? (parentContext.data?.locale ?? undefined) : undefined;
 
   const parentReferences = SupportMessage.shape.mimeReferences.safeParse(parent?.mimeReferences);
   const chain = parentReferences.success && Array.isArray(parentReferences.data) ? parentReferences.data : [];
@@ -212,6 +233,7 @@ export async function sendReply(deps: ReplyDeps, input: ReplyInput): Promise<Rep
         template: "supportReply",
         payload: { subject, body: input.body, ...(input.agentName ? { agentName: input.agentName } : {}) },
         replyTo,
+        locale: replyLocale,
         inReplyTo: parent?.mimeMessageId ? `<${parent.mimeMessageId}>` : undefined,
         references: references.length > 0 ? references : undefined,
       });

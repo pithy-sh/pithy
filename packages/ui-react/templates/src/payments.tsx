@@ -1,4 +1,5 @@
-import { getEntitlements } from "@pithy-sh/payments/src/client/api";
+import type { Translator } from "@pithy-sh/core/src/i18n/translator";
+import { getEntitlements, type PaymentsFailure } from "@pithy-sh/payments/src/client/api";
 import type { PriceVisitor } from "@pithy-sh/payments/src/pricing/location";
 import { fetchPriceVisitor, type PriceVisitorOptions } from "@pithy-sh/payments/src/pricing/visitor";
 import { useEffect, useState } from "react";
@@ -55,6 +56,36 @@ export const CHECKOUT_FRAME = "pithy-checkout";
  * in the secrets store and are not expressible in a projection.
  */
 export const paddleSetup = paymentsConfig.paddle;
+
+/**
+ * What a refusal from the store reads as, in the reader's language.
+ *
+ * **A `PaymentsFailure` carries a namespaced `code`, and the code is the catalog key.** Every screen
+ * here used to render `failure.message` — the sentence the server put on the wire, which is English and
+ * is only ever English, because `message` is written at the throw site in the one language a throw site
+ * has. So a reader on an otherwise-Spanish page met English the moment anything went wrong, which is
+ * the moment copy matters most and the moment nobody tests.
+ *
+ * This is the contract `docs/I18N.md` § *Errors* states, and the reason it is `maybe` rather than `t`:
+ * `t` is total, so a code no catalog covers would render as the code itself — `payments/product_not_found`
+ * on a buyer's screen, in place of the English sentence the server took care to send. `maybe` answers
+ * null on a miss, and the `??` is what makes the server's own words the floor.
+ *
+ * So a project that never composed `i18n` renders exactly what it always did, byte for byte: the baked
+ * translator holds only the screen's own English, no key matches a `payments/…` code, and the message
+ * comes straight through. The `client/…` sentinels this package mints for a browser that is offline or
+ * an answer it cannot read take the same path, and their English is likewise unchanged.
+ *
+ * It lives here, with `CHECKOUT_FRAME`, for the same reason that does: three screens render a failure,
+ * and three copies of one lookup is two screens that keep saying it in English the day somebody fixes
+ * the third.
+ */
+export function failureText(t: Translator, failure: PaymentsFailure): string {
+  // `params` and not just the code: `interpolate` leaves an unsupplied placeholder exactly as written,
+  // so a translated sentence that names one would render `{board}` on the screen — worse than the
+  // English it replaced. `docs/I18N.md` states the contract as `t.maybe(code, params) ?? message`.
+  return t.maybe(failure.code, failure.params) ?? failure.message;
+}
 
 /**
  * Whether the visitor holds `key` right now.

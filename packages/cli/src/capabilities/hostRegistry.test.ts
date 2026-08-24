@@ -108,6 +108,9 @@ describe("the host-worker registry", () => {
     const composed = {
       name: "email",
       emailConfig: { baseUrl: "https://api.acme.com", theme: undefined, devDelivery: "simulator" },
+      // The local host is stamped with the project's catalogs the way the deployed one is, so the
+      // stand-in has to answer the question — a project speaking one language answers with none.
+      hostCatalogs: () => ({}),
     } as unknown as Capability;
     const config = await spec?.resolve(await readHostTemplate("@pithy-sh/email/src/workflows/worker"), {
       ...devContext(),

@@ -24,10 +24,17 @@ export const NoticeSeverity = z
   );
 export type NoticeSeverity = z.output<typeof NoticeSeverity>;
 
-/** One severity's presentation: the word it is called, and the color that reinforces it in each mode. */
+/** One severity's presentation: the key its word is looked up under, and the color that reinforces it. */
 interface SeverityPresentation {
-  /** The word in the subject line, the body, and the text part. */
-  label: string;
+  /**
+   * The catalog key holding the word — in the subject line, the body, and the text part.
+   *
+   * A key rather than the word itself, because the word is the half of this table that changes with the
+   * reader. The colors below do not: an accent belongs to a brand and "this is on fire" belongs to
+   * everyone, so they stay literals here while the label goes through `email/severity.*` in the
+   * catalog. `messages.ts` writes the English; `@pithy-sh/i18n` ships the rest.
+   */
+  labelKey: string;
   /** The light-mode color, applied inline. Contrast-checked against the card white every preset uses. */
   light: string;
   /** The dark-mode color, swapped in by class under `prefers-color-scheme: dark`. */
@@ -43,9 +50,9 @@ interface SeverityPresentation {
  * card every preset ships, the dark values against the near-black one.
  */
 const PRESENTATION = {
-  info: { label: "Notice", light: "#475467", dark: "#98A2B3" },
-  warning: { label: "Action needed", light: "#B54708", dark: "#FEC84B" },
-  critical: { label: "Critical", light: "#B42318", dark: "#FDA29B" },
+  info: { labelKey: "email/severity.info", light: "#475467", dark: "#98A2B3" },
+  warning: { labelKey: "email/severity.warning", light: "#B54708", dark: "#FEC84B" },
+  critical: { labelKey: "email/severity.critical", light: "#B42318", dark: "#FDA29B" },
 } as const satisfies Record<NoticeSeverity, SeverityPresentation>;
 
 /**
@@ -57,14 +64,25 @@ const PRESENTATION = {
  * is the notice nobody receives.
  */
 function presentationOf(severity: unknown): SeverityPresentation {
-  return typeof severity === "string" && severity in PRESENTATION
+  // `Object.hasOwn`, not `in`: `in` walks the prototype, so `severity === "constructor"` would answer
+  // true and hand back `Object` itself. Unreachable today — the payload is `NoticeSeverity`-parsed
+  // before a render — but it is the same read the i18n lookups were fixed for, and one site left
+  // spelled the other way is the one somebody copies.
+  return typeof severity === "string" && Object.hasOwn(PRESENTATION, severity)
     ? PRESENTATION[severity as NoticeSeverity]
     : PRESENTATION.info;
 }
 
-/** The `{{severityLabel severity}}` helper: the word this level is called. */
-export function severityLabel(severity: unknown): string {
-  return presentationOf(severity).label;
+/**
+ * The catalog key holding the word this level is called.
+ *
+ * The engine's `{{severityLabel severity}}` helper resolves this through the render's translator, so
+ * the level is said in the recipient's language in all three places it appears. Exported as a key and
+ * not as a word, because a function returning a word would have to be handed a translator, and then
+ * every caller would carry one to ask a question about an enum.
+ */
+export function severityLabelKey(severity: unknown): string {
+  return presentationOf(severity).labelKey;
 }
 
 /** The `{{severityColor severity}}` helper: the light-mode color, applied inline like every other one. */

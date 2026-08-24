@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 
 /**
  * `@pithy-sh/payments` throw sugar. The `payments/*` codes live in core's closed `KitErrorPayload` union
@@ -24,6 +25,11 @@ interface PaymentsErrorArgs {
   message?: string;
   action?: string;
   detail?: string;
+  /**
+   * Values a translating client interpolates into its own wording for this code. Client-facing, so —
+   * unlike `action` and `detail` — these cross the boundary with `message`.
+   */
+  params?: MessageParams;
 }
 
 /** The receipt could not be read at all. Nothing was asked of the provider. */
@@ -36,6 +42,7 @@ export class PaymentsInvalidReceiptError extends PithyError {
         message: args.message ?? "That receipt could not be read.",
         action: args.action ?? "Submit the transaction exactly as the store SDK returned it.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -52,6 +59,7 @@ export class PaymentsVerificationFailedError extends PithyError {
         message: args.message ?? "The store did not recognize that purchase.",
         action: args.action ?? "Restore purchases and retry. If it persists, contact support.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -71,6 +79,7 @@ export class PaymentsWebhookUnverifiedError extends PithyError {
         message: args.message ?? "That notification could not be verified.",
         action: args.action ?? "Check the webhook signing secret registered for this environment.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -87,6 +96,7 @@ export class PaymentsRailNotConfiguredError extends PithyError {
         message: args.message ?? "That payment method is not available.",
         action: args.action ?? "Enable the rail in the `rails` block of pithy.config.ts and redeploy.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -103,6 +113,7 @@ export class PaymentsProductNotFoundError extends PithyError {
         message: args.message ?? "That product is not for sale here.",
         action: args.action ?? "Add the SKU to the `products` catalog in pithy.config.ts and redeploy.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -122,6 +133,7 @@ export class PaymentsEnvironmentMismatchError extends PithyError {
         message: args.message ?? "That purchase belongs to a different store environment.",
         action: args.action ?? "Use a production purchase against production, and a sandbox one against sandbox.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -142,6 +154,7 @@ export class PaymentsReceiptAlreadyOwnedError extends PithyError {
         message: args.message ?? "That purchase belongs to another account.",
         action: args.action ?? "Sign in as the account that made the purchase, then restore it.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -161,6 +174,7 @@ export class PaymentsProviderUnavailableError extends PithyError {
         message: args.message ?? "The store did not answer.",
         action: args.action ?? "Retry shortly. Your purchase is safe and will be reconciled either way.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -186,6 +200,7 @@ export class PaymentsClawbackFailedError extends PithyError {
         message: args.message ?? "That refund could not be reversed against the balance.",
         action: args.action ?? "Review the account's ledger. The balance was spent before the refund arrived.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -216,6 +231,7 @@ export class PaymentsEntitlementNotInCatalogError extends PithyError {
           args.action ??
           "Grant a key one of the catalog's products lists, or declare it in `manualEntitlements` in pithy.config.ts.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -232,6 +248,7 @@ export class PaymentsEntitlementRequiredError extends PithyError {
         message: args.message ?? "This feature requires an active subscription or purchase.",
         action: args.action ?? "Purchase or restore the product that grants access, then retry.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -258,6 +275,7 @@ export class PaymentsDiscountInvalidError extends PithyError {
         message: args.message ?? "That discount code was not accepted.",
         action: args.action ?? "Check the code, or continue without one.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -296,6 +314,7 @@ export class PaymentsSubjectUnresolvedError extends PithyError {
           args.action ??
           'This project sets `billingSubject: "organization"`. Have the subject resolver in pithy.config.ts return the organization the caller is acting for.',
         detail: args.detail,
+        params: args.params,
       },
       options,
     );

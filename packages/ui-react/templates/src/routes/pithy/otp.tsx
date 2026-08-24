@@ -1,4 +1,6 @@
 import { sendOtp, signInWithOtp } from "@pithy-sh/auth/src/client/api";
+import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
+import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
 import { useCallback, useRef, useState } from "react";
 import { authConfig } from "../../pithy-config";
 import { navigate, useSearchParam } from "../../router";
@@ -23,7 +25,25 @@ export const path = "/otp";
 // way in — does not apply. And an address in a path is PII in every access log and referrer along the
 // way: the same argument that favours the path for a token, pointing the other way for an email.
 
+/**
+ * This screen's English, baked in — the only catalog that survives being copied into your repository.
+ *
+ * The digit count is a real count, so it goes through `plural` rather than being concatenated onto a
+ * noun: `otpLength` is configurable, and a locale with more than two plural forms has no way to say
+ * "digits" correctly from a single string.
+ */
+const EN = {
+  "auth/otp.title": "Enter the code.",
+  "auth/otp.sent.one": "We sent {count} digit to {email}.",
+  "auth/otp.sent.other": "We sent {count} digits to {email}.",
+  "auth/otp.inbox": "your inbox",
+  "auth/otp.failed": "That code didn't work. Try again, or send a new one.",
+  "auth/otp.submit": "Sign in",
+  "auth/otp.resend": "Send a new code",
+} satisfies MessageCatalog;
+
 export default function Otp() {
+  const t = useTranslator(EN);
   const email = useSearchParam("email") ?? "";
   const [digits, setDigits] = useState<string[]>(() => Array.from({ length: authConfig.otpLength }, () => ""));
   const [captcha, setCaptcha] = useState<string | null>(null);
@@ -62,9 +82,9 @@ export default function Otp() {
 
   return (
     <main className="screen">
-      <h1>Enter the code.</h1>
+      <h1>{t.t("auth/otp.title")}</h1>
       <p className="muted">
-        We sent {authConfig.otpLength} digits to {email || "your inbox"}.
+        {t.plural("auth/otp.sent", authConfig.otpLength, { email: email || t.t("auth/otp.inbox") })}
       </p>
 
       <div className="otp">
@@ -85,11 +105,11 @@ export default function Otp() {
         ))}
       </div>
 
-      {error && <p className="muted">That code didn't work. Try again, or send a new one.</p>}
+      {error && <p className="muted">{t.t("auth/otp.failed")}</p>}
 
       <div className="stack">
         <button type="button" disabled={busy || code.length < authConfig.otpLength} onClick={() => void verify()}>
-          Sign in
+          {t.t("auth/otp.submit")}
         </button>
         {/* Resending goes back through the gated send route, so the widget belongs here too. */}
         <Turnstile onToken={onToken} />
@@ -99,7 +119,7 @@ export default function Otp() {
           disabled={busy || turnstilePending(captcha)}
           onClick={() => void resend()}
         >
-          Send a new code
+          {t.t("auth/otp.resend")}
         </button>
       </div>
     </main>

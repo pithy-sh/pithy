@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 
 /**
  * `@pithy-sh/rating` throw sugar. The `rating/*` codes live in core's closed `KitErrorPayload` union
@@ -18,6 +19,11 @@ interface RatingErrorArgs {
   action?: string;
   /** Internal context for logs + audit. Never serialized to clients. */
   detail?: string;
+  /**
+   * Values a translating client interpolates into its own wording for this code. Client-facing, so —
+   * unlike `action` and `detail` — these cross the boundary with `message`.
+   */
+  params?: MessageParams;
 }
 
 /** A game wires a rating algorithm id that no one registered. Thrown at assembly. */
@@ -31,6 +37,7 @@ export class RatingUnknownAlgorithmError extends PithyError {
         action:
           args.action ?? "Use a built-in (elo, glicko, trueskill) or register one with registerRatingAlgorithm().",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -47,6 +54,7 @@ export class RatingUnsupportedPlayerCountError extends PithyError {
         message: args.message ?? "This algorithm cannot rate that game's shape.",
         action: args.action ?? "Use trueskill for N-player or team games; elo and glicko are 1v1 only.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -63,6 +71,7 @@ export class RatingInvalidParamsError extends PithyError {
         message: args.message ?? "The algorithm's tuning is invalid.",
         action: args.action ?? "Fix the game's `algoParams` block in pithy.config.ts.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -79,6 +88,7 @@ export class RatingGameNotFoundError extends PithyError {
         message: args.message ?? "That game does not exist.",
         action: args.action ?? "Check the game key against the `games` list in pithy.config.ts.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -95,6 +105,7 @@ export class RatingPoolNotFoundError extends PithyError {
         message: args.message ?? "That rating pool does not exist.",
         action: args.action ?? "Reference a pool a configured game reads or writes.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -111,6 +122,7 @@ export class RatingRecordForbiddenError extends PithyError {
         message: args.message ?? "You may not record game outcomes.",
         action: args.action ?? "Record outcomes from a trusted server holding the record scope.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );

@@ -26,6 +26,10 @@ import type { AdminDeviceView, AdminSessionView, AdminUserView } from "./respons
  * is the entire job of a support pane, and `auth:users:read` is precisely the grant an adopter makes
  * when they accept that. Nothing else on `pithy_auth_users` is withheld because nothing else on it is
  * sensitive — the table holds no credential at all, which is what passwordless-only buys.
+ *
+ * `locale` is projected for the same reason: a support pane answering "why is this person getting
+ * English emails" needs to see whether they ever chose, and null — never chosen — is the answer half
+ * the time. It is a preference, not a credential.
  */
 export function userView(user: User): AdminUserView {
   return {
@@ -34,6 +38,7 @@ export function userView(user: User): AdminUserView {
     name: user.name,
     emailVerified: user.emailVerified,
     image: user.image,
+    locale: user.locale,
     createdAt: user.createdAt.toISOString(),
     updatedAt: user.updatedAt.toISOString(),
   };

@@ -96,6 +96,7 @@ const LEDGER: Record<string, Held> = {
     why: "#392, and the first clause it earned; #398 did better than the clause. The declaration is generated from the four declared client projections now, so the shape has one statement and there is no second one for an adopter's copy to disagree with — the invariant was removed rather than gated. What is kept is smaller and different in kind: that the committed artifact is the current emit. It needs the kit's projection sources, which a scaffolded project has not got, and the party who could break it is still the kit.",
   },
   "src/client.tsx": { gate: "src/client.test.tsx", expectation: "canary" },
+  "src/pithy-locale.tsx": { gate: "src/pithy-locale.test.tsx", expectation: "canary" },
   "src/pithy-config.tsx": {
     ungated:
       '#391 item C, declined. Its disabled branch restates four capability defaults, "cf-turnstile-response" among them. Every consumer narrows on `enabled` first, so the restated values are unreachable — there is no wrong runtime for a gate to notice, which is the first property failing, not a gate missing. The available fix imports kit constants into a file that is the adopter\'s, trading a dead literal for a live coupling.',
@@ -129,7 +130,7 @@ const LEDGER: Record<string, Held> = {
   // ── payments ────────────────────────────────────────────────────────────────────────────────────
   "src/payments.tsx": {
     ungated:
-      "A bridge, not a contract: it binds one base path from `pithy-config.tsx` and re-exports the checkout frame class the two selling screens share. templates.test.ts already holds the frame class to being rendered wherever it is named.",
+      "A bridge, not a contract: it binds one base path from `pithy-config.tsx`, re-exports the checkout frame class the two selling screens share, and holds `failureText`, the one lookup that turns a refusal's code into the reader's language. templates.test.ts already holds the frame class to being rendered wherever it is named, and templateCopy.test.ts bans every other template from reading a failure's `message` — so a screen that goes around the helper is red in the kit rather than English in an adopter's repository.",
   },
   "src/routes/pithy/paywall.tsx": {
     ungated:
@@ -260,9 +261,9 @@ describe("a seeded gate does not write down the value it is checking", () => {
       ).toBe(true);
       checked += 1;
     }
-    // Near-exact, not a comfortable floor. Four canary gates were seeded, by #383, #393 and #394. A
-    // sweep that found three has stopped reading one, and a sweep that found none passes over nothing.
-    expect(checked, "the canary sweep no longer reads every canary gate the ledger names").toBeGreaterThanOrEqual(4);
+    // Near-exact, not a comfortable floor. Five canary gates are seeded, by #383, #393, #394 and #441.
+    // A sweep that found four has stopped reading one, and a sweep that found none passes over nothing.
+    expect(checked, "the canary sweep no longer reads every canary gate the ledger names").toBeGreaterThanOrEqual(5);
   });
 
   test("every kept gate is a file that exists, outside the tree, with the reason it stayed", async () => {
@@ -291,11 +292,11 @@ describe("a seeded gate does not write down the value it is checking", () => {
 
 describe("the floors", () => {
   test("the tree is the size the ledger was written about", () => {
-    // Near-exact rather than comfortable: twenty-one subjects across three groups and two home
-    // variants, held by four seeded gates and seven kept ones. A manifest that collapsed under either
+    // Near-exact rather than comfortable: twenty-two subjects across three groups and two home
+    // variants, held by five seeded gates and seven kept ones. A manifest that collapsed under either
     // sweep above would make it vacuous, and a floor set well below the real population is the shape of
     // a guard rather than one.
-    expect(SUBJECTS.length).toBeGreaterThanOrEqual(21);
-    expect(GATES.length).toBeGreaterThanOrEqual(4);
+    expect(SUBJECTS.length).toBeGreaterThanOrEqual(22);
+    expect(GATES.length).toBeGreaterThanOrEqual(5);
   });
 });

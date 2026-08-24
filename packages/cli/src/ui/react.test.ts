@@ -92,14 +92,18 @@ describe("the React 19 stub", () => {
     expect(Object.keys(BARE).sort()).toEqual([
       "client-env.d.ts",
       "index.html",
-      // The two gates base seeds. `client.tsx` mounts into a node it creates rather than one an id in
-      // `index.html` names (#394), and `router.tsx` sends a guard to the path the screen declares
-      // rather than to a copy of it (#393). Both breaks were silent, so both gates travel (#391).
+      // The three gates base seeds. `client.tsx` mounts into a node it creates rather than one an id in
+      // `index.html` names (#394), `router.tsx` sends a guard to the path the screen declares rather
+      // than to a copy of it (#393), and `pithy-locale.tsx` makes the language the document declares and
+      // the language it renders one value (#441). All three breaks were silent, so all three gates
+      // travel (#391).
       "src/client.test.tsx",
       "src/client.tsx",
       // Base for the same reason `pithy-config.tsx` is: it is written whenever it is absent, which is
       // what makes a later `--auth` backfill produce screens whose classes something defines.
       "src/pithy-config.tsx",
+      "src/pithy-locale.test.tsx",
+      "src/pithy-locale.tsx",
       "src/pithy-screens.css",
       "src/router.test.tsx",
       "src/router.tsx",
@@ -341,6 +345,7 @@ describe("the React 19 stub", () => {
     expect(config).toContain('import authModule from "virtual:pithy/auth"');
     expect(config).toContain('import turnstileModule from "virtual:pithy/turnstile"');
     expect(config).toContain('import paymentsModule from "virtual:pithy/payments"');
+    expect(config).toContain('import i18nModule from "virtual:pithy/i18n"');
     // Narrowed on the discriminant, not asserted past it.
     expect(config).toContain("authModule.enabled");
     expect(config).toContain("turnstileModule.enabled");
@@ -480,11 +485,12 @@ describe("the React 19 stub", () => {
     expect(otp).toContain("Array.from({ length: authConfig.otpLength }");
   });
 
-  test("client-env.d.ts is seeded verbatim, and every template carries all four modules", async () => {
+  test("client-env.d.ts is seeded verbatim, and every template carries every module", async () => {
     // Create-never-overwrite means a later `pithy ui add --payments` cannot come back and add the
-    // modules a payments screen reads, so the bare scaffold has to carry all four or a backfilled
+    // modules a payments screen reads, so the bare scaffold has to carry them all or a backfilled
     // screen would not typecheck. Support's is here for the same reason: a screen that posts a feedback
-    // form is written later, against a file this run is the only chance to write.
+    // form is written later, against a file this run is the only chance to write. i18n's is here
+    // because `src/pithy-config.tsx` narrows it for every scaffold, composed or not.
     //
     // **What the declarations say is deliberately not asserted here (#392, #398).** This file used to
     // check that the ambient types contained `otpLength: number;` and eleven other strings somebody had
@@ -492,13 +498,13 @@ describe("the React 19 stub", () => {
     // matters, a field a capability's `client` projection stopped emitting.
     //
     // There is nothing left here to drift from. Since #398 the declarations are **generated** from the
-    // four declared projection types — `@pithy-sh/vite`'s `clientEnvDeclaration.ts` emits the file and
+    // declared projection types — `@pithy-sh/vite`'s `clientEnvDeclaration.ts` emits the file and
     // `clientEnvDeclaration.test.ts` holds the generator — so a projection losing a field changes the
     // template, rather than disagreeing with it. What is left here is the CLI's own claim: the bytes it
     // writes are that file's, unaltered, in every scaffold.
     const gated = await readFile(join(TEMPLATE_DIR, "client-env.d.ts"), "utf8");
     const modules = [...gated.matchAll(/declare module "virtual:pithy\/([^"]+)"/g)].map((match) => match[1]);
-    expect(modules.sort()).toEqual(["auth", "payments", "support", "turnstile"]);
+    expect(modules.sort()).toEqual(["auth", "i18n", "payments", "support", "turnstile"]);
     for (const files of [BARE, AUTH, PAY, BOTH]) expect(files["client-env.d.ts"]).toBe(gated);
   });
 
@@ -543,9 +549,59 @@ describe("the React 19 stub", () => {
     }
     // Named, so dropping the package is a deliberate edit rather than a loop that silently sees nothing.
     expect(Object.keys(reactStub.devDependencies)).toContain("@pithy-sh/vite");
+    // The other one core's train has to carry, and the one a scaffolded front end cannot build without.
+    expect(Object.keys(reactStub.dependencies)).toContain("@pithy-sh/i18n");
   });
 
-  test("@pithy-sh/vite ships on core's release train — the only thing that makes that range honest", async () => {
+  test("every @pithy-sh package the templates import is one the scaffolded worker actually has", async () => {
+    // **The gate the i18n work needed and did not have.** `src/client.tsx`, `src/router.tsx` and the bare
+    // home screen are all `base` — written on every scaffold — and all three gained an import of
+    // `@pithy-sh/i18n`, which the stub declared nowhere. `pithy ui add react` on a project that had not
+    // composed i18n wrote a front end whose `vite build` could not resolve it, and nothing here noticed,
+    // because every existing assertion about the manifest reads the packages it lists rather than the
+    // packages the files need.
+    //
+    // Three ways a bare specifier resolves in `apps/<worker>/`, and no fourth: the stub declares it, the
+    // scaffolded worker already declares it (`@pithy-sh/core`, which `stampWorkerManifest` writes), or the
+    // capability whose group the file rides in installs it — `pithy add auth` runs `bun add
+    // @pithy-sh/auth`, and `pithy ui add --auth` refuses a worker that has not composed it.
+    const declared = new Set(Object.keys({ ...reactStub.dependencies, ...reactStub.devDependencies }));
+    /** Written into the worker's own manifest by `pithy init` / `pithy worker add`, before any of this. */
+    const worker = new Set(["@pithy-sh/core"]);
+    /** The package a capability group's screens may reach, because composing the capability installs it. */
+    const byGroup: Record<string, string> = { auth: "@pithy-sh/auth", payments: "@pithy-sh/payments" };
+
+    let seen = 0;
+    const invocations = [
+      { files: BARE, groups: [] as string[] },
+      { files: AUTH, groups: ["auth"] },
+      { files: PAY, groups: ["payments"] },
+      { files: BOTH, groups: ["auth", "payments"] },
+    ];
+    for (const { files, groups } of invocations) {
+      const allowed = new Set([...declared, ...worker, ...groups.map((group) => byGroup[group] ?? "")]);
+      for (const [path, contents] of Object.entries(files)) {
+        if (!path.endsWith(".ts") && !path.endsWith(".tsx")) continue;
+        // Blanked with the shared stripper, so a docblock naming a package it tells you NOT to import is
+        // prose rather than a finding — and so a `//` inside a string cannot switch the scan off (#439).
+        for (const match of blankComments(contents).matchAll(/from "(@pithy-sh\/[a-z0-9-]+)/g)) {
+          const pkg = match[1] ?? "";
+          seen += 1;
+          expect(
+            allowed.has(pkg),
+            `pithy ui add react${groups.map((group) => ` --${group}`).join("")} writes ${path}, which imports ${pkg} — and nothing installs it there`,
+          ).toBe(true);
+        }
+      }
+    }
+    // The anti-vacuity floor, near-exact rather than comfortable. A regex that stopped matching would
+    // pass every invocation above in silence, which is the same green a correct scaffold gives. The four
+    // invocations read a hundred and twelve kit imports between them today, and a sweep that found half
+    // of them has stopped reading a whole group.
+    expect(seen, "the import sweep read nothing — it is passing over an empty set").toBeGreaterThanOrEqual(100);
+  });
+
+  test("every package ranged off core's version ships on core's release train", async () => {
     // `react.ts` writes `kitRange(PACKAGE_VERSION)`, core's version, for a sibling. `stampWorkerManifest`
     // forbids exactly that ("there is no honest range to invent for a sibling") and it is right: with
     // `linked` and `fixed` both empty, the first release that touched only core would have written a
@@ -559,15 +615,25 @@ describe("the React 19 stub", () => {
     // more machinery for less: `scripts/stampVersions.ts` stamps capability packages, keyed on
     // `src/capability.ts`, and vite is a Vite plugin with no capability and no runtime that reports a
     // version. It has no reason to carry a constant — only a reason to carry core's number.
+    //
+    // **`@pithy-sh/i18n` is on the same train for the same reason, and it is the harder case.** It is a
+    // capability, and a capability normally versions on its own — its stamped version is what
+    // `GET /control-plane/manifest` reports. But every screen `pithy ui add react` writes renders through
+    // its React seam, so the stub has to name a range for it, and the CLI has no honest way to read that
+    // package's version: it must not depend on an optional capability. Core's number, plus the train, is
+    // what makes the range resolvable. The cost is that i18n releases whenever core does — which
+    // `updateInternalDependencies: "patch"` already made true, since i18n depends on core.
     const config = JSON.parse(await readFile(join(REPO_ROOT, ".changeset", "config.json"), "utf8")) as {
       fixed?: string[][];
     };
-    const group = (config.fixed ?? []).find((entry) => entry.includes("@pithy-sh/vite"));
-    expect(group, "@pithy-sh/vite must be in a Changesets `fixed` group with core").toBeDefined();
-    expect(group).toContain("@pithy-sh/core");
+    for (const name of ["@pithy-sh/vite", "@pithy-sh/i18n"]) {
+      const group = (config.fixed ?? []).find((entry) => entry.includes(name));
+      expect(group, `${name} must be in a Changesets \`fixed\` group with core`).toBeDefined();
+      expect(group, name).toContain("@pithy-sh/core");
 
-    // And the guarantee, checked rather than assumed: today both are 0.0.0, and after the first release
-    // this is what turns red if the group is ever loosened.
-    expect(await declaredVersion("@pithy-sh/vite")).toBe(PACKAGE_VERSION);
+      // And the guarantee, checked rather than assumed: today every one of them is 0.0.0, and after the
+      // first release this is what turns red if the group is ever loosened.
+      expect(await declaredVersion(name), name).toBe(PACKAGE_VERSION);
+    }
   });
 });

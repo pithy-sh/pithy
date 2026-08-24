@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 import type { z } from "zod";
 
 /**
@@ -20,6 +21,11 @@ interface CloudflareErrorArgs {
   action?: string;
   /** Internal context for logs + audit. Never serialized to clients. */
   detail?: string;
+  /**
+   * Values a translating client interpolates into its own wording for this code. Client-facing, so —
+   * unlike `action` and `detail` — these cross the boundary with `message`.
+   */
+  params?: MessageParams;
 }
 
 /** A required piece of configuration (token, account id, resource id) is missing. */
@@ -32,6 +38,7 @@ export class CloudflareNotConfiguredError extends PithyError {
         message: args.message ?? "The Cloudflare REST client is not fully configured.",
         action: args.action ?? "Provide apiToken, accountId, and any required resource id.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -48,6 +55,7 @@ export class CloudflareRequestError extends PithyError {
         message: args.message ?? "A Cloudflare REST API call failed.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -64,6 +72,7 @@ export class CloudflareInvalidResponseError extends PithyError {
         message: args.message ?? "A Cloudflare REST API response had an unexpected shape.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );

@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { normalizeAddress } from "@pithy-sh/core/src/address/address";
+import { isLocale } from "@pithy-sh/core/src/i18n/locale";
 import type { EmailJob } from "../data/emailJob";
 import { EmailJob as EmailJobSchema } from "../data/emailJob";
 import type { EmailJobStatus, SendMode, SuppressionReason } from "../data/enums";
 import type { EmailDatabase, EmailSuppressionDatabase } from "../data/tables";
 import { EmailInvalidPayloadError } from "../error/errors";
 import { getTemplate, renderSubject, templateKind } from "../templates/engine";
+import { type EmailMessageLayers, emailTranslator, kitEmailLayers } from "../templates/messages";
 import type { EmailTheme } from "../templates/theme";
 import { mintBatchId } from "./batchIdentity";
 import { recordEvent } from "./events";
@@ -69,6 +71,20 @@ export interface EnqueueInput {
   /** The marketing campaign id, for attribution. */
   campaignId?: string;
   /**
+   * The language to write this message in, as a BCP-47 tag. Omit where the recipient has not chosen one.
+   *
+   * **The recipient's, never the caller's.** A magic link is answered by the person who asked for it,
+   * and the request that triggers it is theirs — but a nudge, an invitation and an operational notice
+   * are all enqueued by somebody else's request, or by a cron with no request at all. So the tag comes
+   * from what is known about the *recipient* (`pithy_auth_users.locale` for a signed-up reader, the
+   * negotiated request locale for somebody signing in for the first time), and it is stored on the row
+   * so the send Workflow renders the body in the language the subject was already written in.
+   *
+   * Omitted renders the kit's English, which is the seam's behavior everywhere: a project that never
+   * composed an i18n capability sends exactly what it sent before any of this landed.
+   */
+  locale?: string;
+  /**
    * What this message is *about*, when the template id does not say it on its own.
    *
    * The discriminator for a template that carries more than one kind of message (pithy-sh/pithy#382).
@@ -113,6 +129,13 @@ export interface EnqueueDeps {
   fromAddress: string;
   fromName: string;
   theme: EmailTheme;
+  /**
+   * Where the words for a locale come from — the composed project's catalogs.
+   *
+   * Absent walks this package's own English, which is what keeps the i18n capability optional. The
+   * email capability fills it from a composed `i18n` at assembly; nothing here imports that package.
+   */
+  layersFor?: EmailMessageLayers;
   /** The send Workflow binding. When present, an immediate job is dispatched now; absent, the scheduler takes it. */
   sender?: SendWorkflowBinding;
   /**
@@ -178,8 +201,10 @@ function resolveSchedule(input: EnqueueInput, now: Date): { mode: SendMode; send
 /** Enqueue an email job, dispatching the send Workflow immediately when the mode is `immediate`. */
 export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Promise<EnqueueResult> {
   const template = getTemplate(input.template);
-  // Validates the payload against the template schema and computes the stored subject.
-  const subject = renderSubject(input.template, input.payload, deps.theme);
+  // Validates the payload against the template schema and computes the stored subject — in the
+  // recipient's language, which is also what the row records so the body can be rendered in it later.
+  const translator = emailTranslator(input.locale, deps.layersFor ?? kitEmailLayers);
+  const subject = renderSubject(input.template, input.payload, deps.theme, translator);
   const { mode, sendAt, status: scheduled } = resolveSchedule(input, deps.now);
 
   /**
@@ -263,6 +288,16 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
     timezone: input.timezone ?? null,
     localTime: input.localTime ?? null,
     campaignId: input.campaignId ?? null,
+    // Normalized, never taken on trust. `EmailJob.encode` below enforces `Locale` — the BCP-47 shape
+    // and an `Intl` refinement — so a tag that fails it throws a raw `ZodError` at the insert, and the
+    // caller sees `core/internal` with nothing an operator can act on. `en_US` is not a hypothetical
+    // shape either: it is exactly what Android, iOS and Java `Locale.toString()` produce, so a mobile
+    // client reporting its own locale sends one.
+    //
+    // Callers that already validate lose nothing (every kit feeder is a `Locale` column or the
+    // negotiated `LocaleContext`), and a caller that does not gets the kit's English rather than a 500.
+    // The same shape as `renderLocale` on the send side, and for the same reason.
+    locale: isLocale(input.locale ?? "") ? (input.locale ?? null) : null,
     correlation: input.correlation ?? null,
     openTracking: input.openTracking ?? marketing,
     clickTracking: input.clickTracking ?? marketing,

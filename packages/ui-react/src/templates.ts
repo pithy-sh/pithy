@@ -67,6 +67,16 @@ export const TEMPLATE_GROUPS = {
     // repository Pithy will never see again.
     "src/client.test.tsx",
     "src/pithy-config.tsx",
+    // **The language the document declares and the language the page renders are one value, and this
+    // file is where it is resolved.** `client.tsx` used to negotiate a locale, put it on `<html lang>`,
+    // and mount no translator at all — so a project composing i18n served `lang="es"` over a page of
+    // English, which a screen reader believes and mispronounces. Base rather than an i18n group, for
+    // `pithy-config.tsx`'s reason: it compiles with nothing composed, where it renders its children
+    // untouched and no catalog is ever fetched.
+    "src/pithy-locale.tsx",
+    // The gate travels with it: the two halves are asserted from one mount, which is the only way to
+    // state the invariant at all.
+    "src/pithy-locale.test.tsx",
     "src/router.tsx",
     // The router's half of #393: a guard's destination is the path the screen declares, and this is
     // what keeps it so once `router.tsx` is a file in somebody else's repository.

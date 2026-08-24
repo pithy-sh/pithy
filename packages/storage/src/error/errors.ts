@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 
 /**
  * `@pithy-sh/storage` throw sugar. The `storage/*` codes live in core's closed `KitErrorPayload` union
@@ -17,6 +18,11 @@ interface StorageErrorArgs {
   message?: string;
   action?: string;
   detail?: string;
+  /**
+   * Values a translating client interpolates into its own wording for this code. Client-facing, so —
+   * unlike `action` and `detail` — these cross the boundary with `message`.
+   */
+  params?: MessageParams;
 }
 
 export class StorageNotFoundError extends PithyError {
@@ -28,6 +34,7 @@ export class StorageNotFoundError extends PithyError {
         message: args.message ?? "That file does not exist.",
         action: args.action ?? "Check the object id. A file you do not own reads as missing, not as forbidden.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -43,6 +50,7 @@ export class StorageForbiddenError extends PithyError {
         message: args.message ?? "That file is not yours.",
         action: args.action ?? "Sign in as the owner, or ask them for a share link.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -58,6 +66,7 @@ export class StorageQuotaExceededError extends PithyError {
         message: args.message ?? "That upload would put you over your storage quota.",
         action: args.action ?? "Delete something first, or raise the quota in pithy.config.ts.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -73,6 +82,7 @@ export class StorageUploadIncompleteError extends PithyError {
         message: args.message ?? "That file has not finished uploading.",
         action: args.action ?? "Upload every part, then complete the upload.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -90,6 +100,7 @@ export class StorageMultipartFailedError extends PithyError {
         // finish an upload it half-made has been told nothing useful.
         message: args.message ?? "The upload could not be assembled. GET /storage/<id>/parts to see what is missing.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -105,6 +116,7 @@ export class StorageShareExpiredError extends PithyError {
         message: args.message ?? "That share link has expired.",
         action: args.action ?? "Ask the owner for a new one.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -120,6 +132,7 @@ export class StorageShareRevokedError extends PithyError {
         message: args.message ?? "That share link was revoked.",
         action: args.action ?? "Ask the owner for a new one.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );

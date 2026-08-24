@@ -3,8 +3,9 @@
 
 import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { describe, expect, test } from "vitest";
+import { catalogsFromEnv } from "../templates/messages";
 import { defaultTheme } from "../templates/theme";
-import { type EmailWorkerWranglerTemplate, resolveEmailConfig } from "./resolveEmailConfig";
+import { type EmailWorkerWranglerTemplate, MAX_WORKER_VAR_BYTES, resolveEmailConfig } from "./resolveEmailConfig";
 
 const template: EmailWorkerWranglerTemplate = {
   name: "pithy-email",
@@ -132,5 +133,101 @@ describe("how mail leaves the host under pithy dev", () => {
 
     expect(remote.send_email).toEqual([{ name: "EMAIL", remote: true }]);
     expect(simulated).toEqual(remote);
+  });
+});
+
+/**
+ * The catalogs the host renders in — **the var, asserted on the provisioner's output**.
+ *
+ * This is the gate for the defect that made the whole translated-body path dead in any real deployment
+ * (pithy-sh/pithy#441). `EMAIL_MESSAGES` was read by `workflows/worker.ts` and by `@pithy-sh/testers`'s
+ * enqueue seam, declared on `hostEnv.ts` as something `pithy email provision` writes, and written by
+ * nothing: the send Workflow rendered the kit's English whatever tag was on the row, and discarded the
+ * translated subject the app worker had computed at enqueue when it re-rendered.
+ *
+ * It asserts what the resolver *produced*, never that a constant exists. A test over `EMAIL_MESSAGES.en`
+ * passes just as happily when nobody deploys it, which is exactly how this got through.
+ */
+describe("the words the host is deployed with", () => {
+  const base = {
+    project: "acme",
+    env: "prod" as const,
+    appDatabaseId: "app-123",
+    suppressionDatabaseId: "sup-456",
+    secretsDatabaseId: "sec-789",
+    storeId: "store-abc",
+    baseUrl: "https://api.example.com",
+    theme: defaultTheme,
+  };
+
+  test("each locale is stamped into its own var, parseable by the seam the host reads it with", () => {
+    const messages = {
+      es: { "email/magic_link.subject": "Tu enlace de acceso" },
+      fr: { "email/magic_link.subject": "Votre lien de connexion" },
+    };
+    const config = resolveEmailConfig(template, { ...base, messages });
+    expect(config.vars.EMAIL_MESSAGES_ES).toBeDefined();
+    expect(config.vars.EMAIL_MESSAGES_FR).toBeDefined();
+    // And no mega pack: the thing that used to hold every locale at once is gone.
+    expect(config.vars.EMAIL_MESSAGES).toBeUndefined();
+    // Round-tripped through the seam the host actually collects them with, so a value this test can
+    // read but the host cannot is not a value that was delivered.
+    expect(catalogsFromEnv(config.vars)).toEqual(messages);
+  });
+
+  test("a regional tag becomes a legal var name, and comes back as the tag", () => {
+    const messages = { "pt-BR": { "email/magic_link.subject": "Seu link de acesso" } };
+    const config = resolveEmailConfig(template, { ...base, messages });
+    expect(config.vars.EMAIL_MESSAGES_PT_BR).toBeDefined();
+    expect(catalogsFromEnv(config.vars)).toEqual(messages);
+  });
+
+  test("a project with no catalogs gets no var, rather than an empty one", () => {
+    // Absent is how the host spells "the English I bundle". `"{}"` in a deployed config reads like a
+    // value somebody failed to fill.
+    expect(catalogsFromEnv(resolveEmailConfig(template, base).vars)).toEqual({});
+    expect(catalogsFromEnv(resolveEmailConfig(template, { ...base, messages: {} }).vars)).toEqual({});
+    expect(catalogsFromEnv(resolveEmailConfig(template, { ...base, messages: { es: {} } }).vars)).toEqual({});
+  });
+
+  test("twenty languages deploy, because the ceiling is per pack and not per project", () => {
+    // The shape this replaced held every locale in one var, so twenty 3 KB packs became one 62 KB
+    // value and the project could not deploy a second language. Each pack is read on its own — the
+    // host renders one email, in one locale — so each travels on its own.
+    const messages: Record<string, Record<string, string>> = {};
+    for (const tag of ["es", "fr", "de", "it", "pt", "nl", "pl", "tr", "ru", "uk"]) {
+      const catalog: Record<string, string> = {};
+      for (let i = 0; i < 50; i += 1) catalog[`email/key_${i}`] = "x".repeat(50);
+      messages[tag] = catalog;
+    }
+    const config = resolveEmailConfig(template, { ...base, messages });
+    expect(Object.keys(catalogsFromEnv(config.vars))).toHaveLength(10);
+    for (const [name, value] of Object.entries(config.vars)) {
+      if (!name.startsWith("EMAIL_MESSAGES_")) continue;
+      expect(new TextEncoder().encode(value).length, name).toBeLessThanOrEqual(MAX_WORKER_VAR_BYTES);
+    }
+  });
+
+  test("one language pack too large for a var is refused, naming that language", () => {
+    // Cloudflare's ceiling is 5 KB per variable and the upload fails with error 10054 — an exit nobody
+    // can act on, in the middle of a run that has already created databases. A silently shortened
+    // catalog would be worse: a locale rendering half in Spanish and half in English, with nothing
+    // anywhere saying so. Now that each pack travels alone, this guards the only thing left that can
+    // trip it, and names the language to shorten.
+    const filler = "a".repeat(200);
+    const es: Record<string, string> = {};
+    for (let i = 0; i < 40; i += 1) es[`email/overflow.key_${i}`] = filler;
+    expect(() => resolveEmailConfig(template, { ...base, messages: { es } })).toThrow(
+      /The `es` email catalog is \d+ bytes; a Cloudflare Worker variable holds 5120/,
+    );
+  });
+
+  test("a pack that fits is not refused — the limit is a ceiling, not a ban on catalogs", () => {
+    const es: Record<string, string> = {};
+    for (let i = 0; i < 20; i += 1) es[`email/fits.key_${i}`] = "x".repeat(100);
+    const config = resolveEmailConfig(template, { ...base, messages: { es } });
+    expect(new TextEncoder().encode(config.vars.EMAIL_MESSAGES_ES ?? "").length).toBeLessThanOrEqual(
+      MAX_WORKER_VAR_BYTES,
+    );
   });
 });

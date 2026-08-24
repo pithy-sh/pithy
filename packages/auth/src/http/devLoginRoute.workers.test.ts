@@ -39,6 +39,7 @@ const ADA = {
   email: "ada@example.com",
   emailVerified: true,
   image: null,
+  locale: null,
   createdAt: new Date(1_800_000_000_000),
   updatedAt: new Date(1_800_000_000_000),
 };

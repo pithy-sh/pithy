@@ -178,6 +178,14 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
         // the app's own address in the one environment this resolver is used from.
         baseUrl: context.baseUrl,
         theme: composed?.emailConfig.theme ?? defaultTheme,
+        // The local host renders through the same catalogs the deployed one is stamped with, so a
+        // Spanish magic link looks the same on a developer's machine as it does in production. Empty
+        // when nothing composed an i18n capability, and then no var is written at all.
+        //
+        // True only because `discoverHostWorkers` assembles the set before handing a capability here —
+        // `hostCatalogs()` answers `{}` on one whose `compose` hook has not run, and this sentence was
+        // false for exactly as long as it did not (pithy-sh/pithy#441).
+        messages: composed?.hostCatalogs() ?? {},
         devDelivery: context.simulateDelivery ? "simulator" : composed?.emailConfig.devDelivery,
       });
     },

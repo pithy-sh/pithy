@@ -68,6 +68,48 @@ declare module "virtual:pithy/auth" {
   export default config;
 }
 
+declare module "virtual:pithy/i18n" {
+  /**
+   * Whether this capability is composed and serving on this worker. Also the union's discriminant.
+   *
+   * The only named export, deliberately. Every other key is reached through the default export and a
+   * narrowing — see the note at the top of this file.
+   */
+  export const enabled: boolean;
+
+  const config:
+    | {
+        /**
+         * The i18n capability is not composed. Every screen renders the English it was scaffolded with,
+         * byte for byte as it did before any of this landed — which is what makes the capability optional.
+         */
+        enabled: false;
+      }
+    | {
+        /** The i18n capability is composed, and these are the languages this project serves. */
+        enabled: true;
+        /** Every locale this project serves, as BCP-47 tags. The browser negotiates within this set. */
+        supportedLocales: string[];
+        /** The locale served when nothing in the browser chain answers. Always in `supportedLocales`. */
+        defaultLocale: string;
+        /** The query parameter an explicit choice arrives on — `?lang=es`. */
+        queryParam: string;
+        /** The `localStorage` key this device's remembered locale is written under. */
+        storageKey: string;
+        /**
+         * The browser chain, in the order it is asked: `query`, `account`, `storage`, `server`, `default`.
+         * Projected so the front end resolves in the order the project configured, not one it assumed.
+         */
+        browserResolvers: string[];
+        /**
+         * Language ranges the matcher cannot derive, as range → supported locale. Usually empty; it
+         * carries the historical pairs (`nb` meaning `no`) that no truncation of a tag would reach.
+         */
+        exceptions: Record<string, string>;
+      };
+  export default config;
+}
+
 declare module "virtual:pithy/payments" {
   /**
    * Whether this capability is composed and serving on this worker. Also the union's discriminant.

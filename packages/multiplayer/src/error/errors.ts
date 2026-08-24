@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 
 /**
  * `@pithy-sh/multiplayer` throw sugar. The `multiplayer/*` codes live in core's closed `KitErrorPayload`
@@ -18,6 +19,11 @@ interface MultiplayerErrorArgs {
   action?: string;
   /** Internal context for logs + audit. Never serialized to clients. */
   detail?: string;
+  /**
+   * Values a translating client interpolates into its own wording for this code. Client-facing, so —
+   * unlike `action` and `detail` — these cross the boundary with `message`.
+   */
+  params?: MessageParams;
 }
 
 export class MultiplayerGameNotFoundError extends PithyError {
@@ -29,6 +35,7 @@ export class MultiplayerGameNotFoundError extends PithyError {
         message: args.message ?? "That game does not exist.",
         action: args.action ?? "Check the game key against the `games` list in pithy.config.ts.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -44,6 +51,7 @@ export class MultiplayerSessionNotFoundError extends PithyError {
         message: args.message ?? "That session does not exist.",
         action: args.action ?? "Create a session first, then share its id with the other player.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -59,6 +67,7 @@ export class MultiplayerNotAMemberError extends PithyError {
         message: args.message ?? "You are not a member of this session.",
         action: args.action ?? "Join the session before acting in it.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -74,6 +83,7 @@ export class MultiplayerSessionFullError extends PithyError {
         message: args.message ?? "This session is full.",
         action: args.action ?? "Create a new session — this one already has both players.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -90,6 +100,7 @@ export class MultiplayerInvalidTransitionError extends PithyError {
         action:
           args.action ?? "Check the session's phase before acting — you may have already committed, or it may be over.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -105,6 +116,7 @@ export class MultiplayerInvalidMoveError extends PithyError {
         message: args.message ?? "That move is not allowed.",
         action: args.action ?? "Commit the exact number of distinct moves the game requires, each from its move set.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );

@@ -53,13 +53,26 @@ export const SupportSubmissionContext = z
       .describe(
         "Which environment the client was pointed at. A report from staging read as production is a bug hunted in the wrong database, and the client is the only thing that knows.",
       ),
+    // **A bounded string, and the tag is validated where it is used rather than here.**
+    //
+    // This is the *public submission body*. A `Locale` on it rejects the whole bug report with
+    // `validation/invalid_input` when the tag is not well-formed — and `en_US` is exactly what Android,
+    // iOS and Java `Locale.toString()` produce, which is to say the likeliest thing a mobile client
+    // sends. Losing a report because its diagnostic metadata had an underscore in it is a far worse
+    // trade than losing the metadata, and a report is the one thing this route exists to not lose.
+    //
+    // The boundary that matters is the one into `pithy_email_jobs.locale`, whose column really is
+    // `Locale`-constrained: `enqueueEmail` normalizes an unusable tag to `null` there, so a malformed
+    // value stored here degrades the language of one reply and breaks nothing. `.catch(undefined)`
+    // would express that here, but `asRead` cannot derive a reader's contract from a `ZodCatch`, and
+    // the admin view is projected from this schema.
     locale: z
       .string()
       .min(1)
       .max(32)
       .optional()
       .describe(
-        "The locale the app was rendering in. Carried because a whole class of reports — a date a day out, a currency in the wrong place, text that overflows — is only reproducible in the reporter's locale.",
+        "The locale the app was rendering in. Carried because a whole class of reports — a date a day out, a currency in the wrong place, text that overflows — is only reproducible in the reporter's locale. Not validated as a tag here: see `enqueueEmail`, which normalizes it before it reaches a column that is.",
       ),
   })
   .strict()

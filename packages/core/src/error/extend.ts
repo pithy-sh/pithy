@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { MessageParams } from "../i18n/catalog";
 import type { ErrorPayload, KitErrorDomain } from "./payload";
 import { ExtendedErrorPayload } from "./payload";
 import { InternalError } from "./pithyError";
@@ -99,6 +100,15 @@ export function defineErrorPayload<const Code extends `${string}/${string}`>(
     action?: string;
     /** Internal context for logs + audit. NEVER serialized to clients — the HTTP codec strips it. */
     detail?: string;
+    /**
+     * Values a translating client interpolates into its own wording for this code. Client-facing:
+     * these cross the boundary with `message`, unlike `action` and `detail`.
+     *
+     * Stated here because this parameter type is **hand-written**, not derived from the schema, and
+     * the `as ErrorPayloadOf<Code>` below hides the gap from the compiler. A field left off this
+     * literal is not a type error anywhere — it is simply a field an adopter cannot pass.
+     */
+    params?: MessageParams;
   } & ReservedDomain<Code>,
 ): ErrorPayloadOf<Code> {
   const parsed = ExtendedErrorPayload.safeParse(payload);

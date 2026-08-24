@@ -19,7 +19,8 @@ beforeEach(async () => {
       email_verified integer,
       image text,
       created_at text,
-      updated_at text
+      updated_at text,
+      locale text
     )`,
   ).run();
 });

@@ -6,6 +6,7 @@ import type { BetterAuthOptions, BetterAuthPlugin } from "better-auth";
 import { getSchema } from "better-auth/db";
 import type { Kysely } from "kysely";
 import type { Migration } from "kysely/migration";
+import { KIT_SESSION_FIELDS, KIT_USER_FIELDS } from "../data/kitFields";
 import { authTables } from "../data/tables";
 import { kitPlugins } from "../instance/plugins";
 
@@ -40,14 +41,12 @@ import { kitPlugins } from "../instance/plugins";
  */
 export function authSchemaOptions(plugins: readonly BetterAuthPlugin[]): BetterAuthOptions {
   return {
-    user: { modelName: "pithyAuthUsers" },
-    session: {
-      modelName: "pithyAuthSessions",
-      additionalFields: {
-        deviceId: { type: "string", required: false, input: false },
-        familyId: { type: "string", required: false, input: false },
-      },
-    },
+    // The kit's own extra columns, from the one module that declares them. The baseline is what each
+    // plugin's schema is *subtracted from*, so a kit column missing here is reported as something the
+    // plugin brought — see `../data/kitFields.ts` for what that costs on a database with no
+    // transactional DDL.
+    user: { modelName: "pithyAuthUsers", additionalFields: KIT_USER_FIELDS },
+    session: { modelName: "pithyAuthSessions", additionalFields: KIT_SESSION_FIELDS },
     account: { modelName: "pithyAuthAccounts" },
     verification: { modelName: "pithyAuthVerifications" },
     rateLimit: { enabled: true, storage: "database", modelName: "pithyAuthRateLimit" },

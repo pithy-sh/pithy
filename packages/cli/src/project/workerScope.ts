@@ -5,6 +5,7 @@ import { access } from "node:fs/promises";
 import { join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { NotFoundError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { composeCapabilities } from "../capabilities/compose";
 import { allCapabilities, loadWorkerConfig, type WorkerConfig } from "./config";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
 
@@ -155,6 +156,20 @@ export function projectCapabilities(workers: readonly ResolvedWorker[]): Capabil
     }
   }
   return [...byName.values()];
+}
+
+/**
+ * The same union, **assembled** — every capability's `compose` hook run over it, the way a Worker runs
+ * them at startup.
+ *
+ * The pairing is deliberate. {@link projectCapabilities} is a pure fold and stays one, because most of
+ * its callers want the binding surface and nothing else. A caller that goes on to *read* a value off a
+ * capability — `hostCatalogs()`, `layersFor`, `composedMessages` — wants this one, because those are
+ * the values a hook fills and they are placeholders until it has. See {@link composeCapabilities} for
+ * what an uncomposed read produces, and why it is silent.
+ */
+export function composedProjectCapabilities(workers: readonly ResolvedWorker[]): Capability[] {
+  return composeCapabilities(projectCapabilities(workers));
 }
 
 /** Options for {@link resolveSingleWorker}. */

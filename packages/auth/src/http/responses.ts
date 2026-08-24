@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { Locale } from "@pithy-sh/core/src/i18n/locale";
 import { z } from "zod";
 import { DevicePlatform } from "../data/device";
 
@@ -43,6 +44,11 @@ export const AdminUserView = z
     name: z.string().describe("The display name from the provider profile or sign-up."),
     emailVerified: z.boolean().describe("Whether the address has been verified."),
     image: z.string().nullable().describe("The avatar URL from a social profile, or null."),
+    // `Locale`, not a bare string: it is a plain schema with checks and no transform, so parsing a
+    // response still hands back exactly what went in — which is what `responses.test.ts` compares.
+    locale: Locale.nullable().describe(
+      "The reader's chosen language as a BCP-47 tag, or null when they have never chosen one.",
+    ),
     createdAt: z.iso.datetime().describe("When the user was created, ISO-8601."),
     updatedAt: z.iso.datetime().describe("When the row was last written, ISO-8601."),
   })

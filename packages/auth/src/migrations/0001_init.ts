@@ -19,6 +19,18 @@ import type { Migration } from "kysely/migration";
  *
  * `down` is the tested inverse — indexes then tables, in reverse creation order (D1 has no
  * transactional DDL, so order matters).
+ *
+ * **Amended in place on 2026-08-23** for `locale` on `pithy_auth_users` (pithy-sh/pithy#441), and the
+ * condition was checked rather than assumed, because CONTRIBUTING.md asks a later reader to check it:
+ *
+ * - `@pithy-sh/auth` is at `0.0.0` and `https://registry.npmjs.org/@pithy-sh/auth` is a 404. Nothing
+ *   has been released, so no `0300_auth_0001_init` has run anywhere a chain would be replayed against.
+ * - `packages/cli/src/migrations/oneMigration.test.ts` gates that same condition repo-wide and is green,
+ *   which is what keeps this an amendment rather than a `0002`.
+ *
+ * **The moment either stops being true this file is history, and the chain is append-only.** A version
+ * cut and the next column is a `0002`. Nothing about a tidy `0001` tells a reader which side of that
+ * line they are on — re-run the two checks, do not infer them.
  */
 export const auth_0001_init: Migration = {
   up: async (db: Kysely<unknown>): Promise<void> => {
@@ -29,6 +41,16 @@ export const auth_0001_init: Migration = {
       .addColumn("email", "text", (c) => c.notNull().unique())
       .addColumn("emailVerified", "integer", (c) => c.notNull().defaultTo(0))
       .addColumn("image", "text")
+      // The reader's chosen language, as a BCP-47 tag, or null for "has not chosen" — which is not the
+      // same as the default locale, and the distinction is the whole point of the column. A null means
+      // negotiate from `Accept-Language` on every request, so a reader who has never picked follows the
+      // device they are holding; a stored tag means they picked, and it outranks the header everywhere.
+      //
+      // **Nullable, and it could not be otherwise.** Better Auth owns the inserts into this table and
+      // supplies no value for a user who never chose one, so the column has to accept its absence. It is
+      // written through `user.additionalFields` in `instance/auth.ts` — without that declaration the
+      // adapter would never read or write it and this column would be null forever.
+      .addColumn("locale", "text")
       .addColumn("createdAt", "text", (c) => c.notNull())
       .addColumn("updatedAt", "text", (c) => c.notNull())
       .execute();

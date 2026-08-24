@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { SQLiteBoolean, SQLiteDate, sqliteJson } from "@pithy-sh/core/src/data/codecs";
+import { Locale } from "@pithy-sh/core/src/i18n/locale";
 import { z } from "zod";
 import { EmailJobStatus, SendMode, TemplateCategory } from "./enums";
 
@@ -80,6 +81,9 @@ export const EmailJob = z
       .string()
       .nullish()
       .describe("The marketing campaign this job belongs to, for click/open attribution; null for transactional."),
+    locale: Locale.nullish().describe(
+      "The language this message is written in, as a BCP-47 tag; null when the recipient never chose one. **Null is not `en`** — it means nothing was chosen, so the render falls back to the kit's English rather than asserting English was picked, the same distinction `pithy_auth_users.locale` draws. It lives on the row because the two renders happen in different places at different times: the subject at enqueue, inside a request that knows the reader, and the body at send, inside a Workflow with no request on it at all. Without a stored locale those two could agree only by accident, and an operator opening a send log had nothing that explained why a subject read the way it did.",
+    ),
     correlation: z
       .string()
       .nullish()

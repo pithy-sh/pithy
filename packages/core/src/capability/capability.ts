@@ -14,6 +14,9 @@ import type { DatabaseSpecMap } from "../data/databases";
 import type { EntitlementResolver } from "../entitlement/entitlement";
 import type { AuthContext } from "../http/authContext";
 import type { SameOriginGate } from "../http/sameOrigin";
+import type { LocaleCatalogs } from "../i18n/catalog";
+import type { LocaleContext } from "../i18n/locale";
+import type { Translator } from "../i18n/translator";
 import type { KvNamespaceSpecMap } from "../kv/namespaces";
 import type { Logger } from "../logger/logger";
 import type { SeedSet } from "../seed/seed";
@@ -26,6 +29,24 @@ import type { CapabilitySettings } from "./settings";
 export interface PithyVars {
   /** The authenticated identity, populated by `@pithy-sh/auth`; `null` until a strategy sets it. */
   auth: AuthContext | null;
+  /**
+   * The resolved request locale, populated by `@pithy-sh/i18n`'s middleware; `null` in a Worker that
+   * does not compose it — which is what "nothing was negotiated" looks like, as distinct from "the
+   * default was chosen".
+   *
+   * Read {@link PithyVars.t} to render a message. This is here for the surfaces that need the tags
+   * themselves: `lang`/`dir` on a document, the locale stamped onto an email job's row.
+   */
+  locale: LocaleContext | null;
+  /**
+   * The translator seam (`c.var.t`) — every user-facing string a capability renders goes through it.
+   *
+   * **Zero-config, so nothing null-checks it**, exactly like {@link PithyVars.log}. With no i18n
+   * capability composed it is a translator over the baked English every composed capability
+   * contributed through {@link Capability.messages}, which is why a project that never opts in behaves
+   * byte for byte as it did before.
+   */
+  t: Translator;
   /**
    * The verified control-plane caller (`c.var.controlPlane`), populated only by the `control-plane`
    * middleware; `null` on every other request. Read through `requireControlPlane(scope)`.
@@ -253,6 +274,23 @@ export interface Capability<
   dependsOn?: readonly string[];
   /** Validated env/config/secrets for this capability. */
   config?: z.ZodType;
+  /**
+   * The user-facing strings this capability owns, keyed by locale then by `<domain>/<path>` —
+   * the peer of {@link Capability.migrations} and {@link Capability.seeds}, merged the same way.
+   *
+   * **A capability may only declare keys under its own `name`**, and `composeMessages` refuses
+   * anything else. That is the `pithy_<capability>_<table>` rule and the `auth/invalid_token` rule,
+   * for the third time and for the same reason: the domain segment is what makes two capabilities'
+   * contributions incapable of colliding. For an error the key *is* the code, so `KitErrorCode` is the
+   * checklist a locale has to cover and there is no second identifier to keep in sync.
+   *
+   * Kit packages contribute their **English**, which is what makes the i18n capability optional: with
+   * nothing composed, `c.var.t` is a translator over exactly this. Translations ship in
+   * `@pithy-sh/i18n`, so a typo fix or a new locale reaches every adopter as a package upgrade rather
+   * than as a merge into files they own. An adopter's own `app` capability contributes here too, under
+   * its own domain, exactly as a kit package does.
+   */
+  messages?: LocaleCatalogs;
   /**
    * The secrets this capability reads, as a registry slice (CLAUDE.md §secrets). Additive and
    * optional. `@pithy-sh/secrets` aggregates every capability's slice into one combined registry at
