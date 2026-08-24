@@ -210,7 +210,16 @@ async function seedUser(id: string, email: string, ageMinutes: number): Promise<
   await db()
     .insertInto("pithyAuthUsers")
     .values(
-      User.encode({ id, name: "Ada Lovelace", email, emailVerified: true, image: null, createdAt: at, updatedAt: at }),
+      User.encode({
+        id,
+        name: "Ada Lovelace",
+        email,
+        emailVerified: true,
+        image: null,
+        locale: null,
+        createdAt: at,
+        updatedAt: at,
+      }),
     )
     .execute();
 }

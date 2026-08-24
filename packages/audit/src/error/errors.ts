@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: FSL-1.1-MIT
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 
 /**
  * Audit recorder throw sugar. The `audit/*` codes live in core's closed `KitErrorPayload` union
@@ -23,6 +24,11 @@ interface AuditErrorArgs {
   action?: string;
   /** Internal context for logs + audit. Never serialized to clients. */
   detail?: string;
+  /**
+   * Values a translating client interpolates into its own wording for this code. Client-facing, so —
+   * unlike `action` and `detail` — these cross the boundary with `message`.
+   */
+  params?: MessageParams;
 }
 
 /** An audit event failed validation against the `AuditEvent` schema (bad action, outcome, or actor). */
@@ -35,6 +41,7 @@ export class AuditInvalidEventError extends PithyError {
         message: args.message ?? "An audit event failed validation.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -51,6 +58,7 @@ export class AuditWriteFailedError extends PithyError {
         message: args.message ?? "Failed to persist an audit event.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );

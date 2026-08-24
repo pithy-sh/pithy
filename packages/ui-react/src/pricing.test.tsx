@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { createTranslator, type Translator } from "@pithy-sh/core/src/i18n/translator";
+// The kit's translations, read as the value `@pithy-sh/i18n` composes into its layers rather than as
+// files on disk — the same import `signIn.test.tsx` makes, for the same reason.
+import { KIT_CATALOGS } from "@pithy-sh/i18n/src/catalogs/kit";
 import { GB, US_COUNTRY_ONLY, US_NEW_YORK } from "@pithy-sh/payments/src/client/fixtures/pricePreview";
 import type {
   PaddleInitializer,
@@ -132,6 +136,7 @@ async function screen(
   answer: unknown,
   signedIn: boolean | null = true,
   visitor: PriceVisitor | null = null,
+  t?: Translator,
 ): Promise<HTMLElement> {
   const container = await mount(
     <PricingScreen
@@ -143,12 +148,17 @@ async function screen(
       visitor={visitor}
       client={{ fetch: noFetch }}
       paddle={{ initialize: stubInitializer(stubPaddle(answer)), registry: paddlePage() }}
+      {...(t ? { t } : {})}
     />,
   );
   // The loading branch renders "Getting your price." and no figure at all, so a test whose quote never
   // landed would report "no Estimated." and pass the negative case for the wrong reason.
+  //
+  // Looked up through the translator in play rather than written down once, because a screen rendering
+  // Spanish never says the English sentence and this guard would then be watching for a string that
+  // could not appear — a floor that holds for one language only is no floor.
   expect(container.textContent, "the quote never landed — the screen is still loading").not.toContain(
-    "Getting your price.",
+    t ? t.t("payments/pricing.loading") : "Getting your price.",
   );
   return container;
 }
@@ -265,5 +275,59 @@ describe("the scaffolded pricing screen", () => {
     expect(buttons.map((button) => button.textContent)).toEqual(["Buy Pro"]);
     expect(buttons[0]?.disabled).toBe(true);
     expect([...container.querySelectorAll("a")].map((link) => link.getAttribute("href"))).not.toContain(SIGN_IN);
+  });
+});
+
+/**
+ * The same screen, in a second language — and in none.
+ *
+ * The argument is `subscription.test.tsx`'s, and this screen adds the half that one has not got: a
+ * **count**. `every()` used to be `frequency === 1 ? \`a ${interval}\` : \`every ${frequency} ${interval}s\``,
+ * which is not a plural form in any language but English — Spanish has two, Russian three, and a
+ * comparison against `1` has none. It goes through `t.plural` now, and that is a rendered fact.
+ *
+ * **No figure is asserted in Spanish, and none may be.** Every price on this screen comes from Paddle
+ * for this visitor; what is under test here is the sentences around it.
+ */
+describe("the pricing screen's language", () => {
+  /** Spanish, over the kit's catalog alone — no English layer, so an untranslated key renders the key. */
+  const es: Translator = createTranslator({ catalogLocale: "es", layers: [KIT_CATALOGS.es] });
+
+  test("renders the words of the language it was handed", async () => {
+    const container = await screen(GB, true, LONDON, es);
+    const text = container.textContent ?? "";
+    for (const key of ["payments/pricing.title", "payments/pricing.body", "payments/pricing.holdings"]) {
+      const sentence = KIT_CATALOGS.es?.[key];
+      expect(sentence, `the kit ships no Spanish for ${key}`).toBeTypeOf("string");
+      expect(text, key).toContain(sentence);
+    }
+    // The anti-vacuity half: a screen that ignored its `t` prop passes every `toContain` above and fails
+    // this one.
+    expect(text).not.toContain("What it costs.");
+  });
+
+  test("says how often a price bills through the plural of the locale, not a comparison against one", async () => {
+    // The recorded quote bills monthly — `{ interval: "month", frequency: 1 }` — so the Spanish reads the
+    // `.one` form. `month` stays English because it is Paddle's word, arriving from their API rather than
+    // from a catalog, which is stated in the screen's own docblock and is what an adopter overrides in
+    // `messages` if it matters to them.
+    const container = await screen(GB, true, LONDON, es);
+    expect(container.textContent, "the billing period is not rendered through the catalog at all").toContain(
+      "al month",
+    );
+    // And the English form is gone from the page, which is what fails if `every()` goes back to a literal.
+    expect(container.textContent).not.toContain("a month");
+  });
+
+  test("with no translator at all, renders the English it was scaffolded with", async () => {
+    // The direction the whole capability's optionality rests on: `useTranslator` with no provider is a
+    // translator over the screen's own baked catalog, so a project that never composed `i18n` reads
+    // exactly as it did before any of this existed.
+    const text = (await screen(GB, true, LONDON)).textContent ?? "";
+    expect(text).toContain("What it costs.");
+    expect(text).toContain("Prices are for where you are. Tax is Paddle's to calculate, not ours.");
+    expect(text).toContain("What do I already have?");
+    expect(text).toContain("a month");
+    expect(text).not.toContain(KIT_CATALOGS.es?.["payments/pricing.title"] ?? "«no es catalog»");
   });
 });

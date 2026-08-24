@@ -161,6 +161,35 @@ describe("email_0001_init (app database: jobs + events)", () => {
     expect(row?.correlation).toBeNull();
   });
 
+  /**
+   * `locale`, folded into `0001_init` on 2026-08-23 (pithy-sh/pithy#441) under the same rule
+   * `correlation` was: nothing is published, so the initial migration *is* the schema and a `0002`
+   * would be a step from a shape that never ran to one that never shipped.
+   *
+   * Null, and null is not `en`. A job whose recipient never chose a language renders the kit's English
+   * because that is the fallback, not because anybody decided English was right for them — exactly the
+   * distinction `pithy_auth_users.locale` draws, and the reason a default here would be a lie the
+   * moment a project served a second language.
+   */
+  test("a job whose recipient chose no language holds null there, not the default locale", async () => {
+    await runMigrations(env.DB, provider("app"));
+
+    await env.DB.prepare(
+      "insert into pithy_email_jobs (id, to_address, recipient_key, from_address, from_name, subject, template, category, payload, status, mode, attempts, send_at, open_tracking, click_tracking, created_at, updated_at) values ('job-3', 'u@example.com', 'u@example.com', 'noreply@pithy.sh', 'Pithy', 'Hi', 'magicLink', 'transactional', '{}', 'pending', 'immediate', 0, 1000, 0, 0, 1000, 1000)",
+    ).run();
+    await env.DB.prepare(
+      "insert into pithy_email_jobs (id, to_address, recipient_key, from_address, from_name, subject, template, category, payload, status, mode, attempts, send_at, open_tracking, click_tracking, created_at, updated_at, locale) values ('job-4', 'v@example.com', 'v@example.com', 'noreply@pithy.sh', 'Pithy', 'Hola', 'magicLink', 'transactional', '{}', 'pending', 'immediate', 0, 1000, 0, 0, 1000, 1000, 'es')",
+    ).run();
+
+    const rows = await env.DB.prepare(
+      "select id, locale from pithy_email_jobs where id in ('job-3', 'job-4') order by id",
+    ).all<{ id: string; locale: string | null }>();
+    expect(rows.results).toEqual([
+      { id: "job-3", locale: null },
+      { id: "job-4", locale: "es" },
+    ]);
+  });
+
   test("down drops the app tables and indexes", async () => {
     const p = provider("app");
     await runMigrations(env.DB, p);

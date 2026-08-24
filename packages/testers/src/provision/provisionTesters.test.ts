@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
+import { catalogsFromEnv } from "@pithy-sh/email/src/templates/messages";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import { describe, expect, test } from "vitest";
@@ -17,7 +18,7 @@ import {
   type TestersProvisioner,
   testersWorkerName,
 } from "./provisionTesters";
-import { resolveTestersConfig } from "./resolveTestersConfig";
+import { resolveTestersConfig, type TestersEmailIdentity } from "./resolveTestersConfig";
 
 /**
  * The orchestration is tested against a fake that records its call order, with no Cloudflare account —
@@ -150,10 +151,7 @@ describe("resolving the host template", () => {
 
   const CONFIG = TestersConfig.parse({ baseUrl: "https://api.example.test" });
 
-  function resolve(
-    env: ManagedEnvironment = "prod",
-    email?: { fromAddress: string; fromName: string; theme: unknown },
-  ) {
+  function resolve(env: ManagedEnvironment = "prod", email?: TestersEmailIdentity) {
     return resolveTestersConfig(TEMPLATE, {
       project: PROJECT,
       env,
@@ -209,6 +207,7 @@ describe("resolving the host template", () => {
       fromAddress: "hi@example.test",
       fromName: "Acme",
       theme: { appName: "Acme" },
+      messages: {},
     });
     expect(resolved.vars?.EMAIL_FROM_ADDRESS).toBe("hi@example.test");
     expect(resolved.vars?.EMAIL_FROM_NAME).toBe("Acme");
@@ -221,6 +220,58 @@ describe("resolving the host template", () => {
     const resolved = resolve();
     expect(resolved.vars?.EMAIL_FROM_ADDRESS).toBeUndefined();
     expect(resolved.vars?.EMAIL_FROM_NAME).toBeUndefined();
+  });
+
+  /**
+   * **The var this worker reads and nobody wrote.**
+   *
+   * `nudge/enqueueSeam.ts` collects the catalog vars into `catalogLayers` "exactly as the
+   * email host worker carries them" — and the resolver that fills this host's vars wrote the from
+   * address, the from name and the theme, and not that. So a project speaking two languages nudged its
+   * testers in the kit's English whatever `i18n({ supportedLocales })` said. It is literally the
+   * pithy-sh/pithy#441 defect surviving on the second Worker that reads the var, which is why the field
+   * it travels in is required rather than optional: the same rule the email provisioner already ran on
+   * (pithy-sh/pithy#441).
+   */
+  test("carries the project's catalogs, because this host composes nothing and can be told no other way", () => {
+    const resolved = resolve("staging", {
+      fromAddress: "hi@example.test",
+      fromName: "Acme",
+      theme: { appName: "Acme" },
+      messages: { es: { "email/shell.unsubscribe": "Darse de baja" } },
+    });
+    const stamped = resolved.vars?.EMAIL_MESSAGES_ES;
+    expect(stamped, "the daily-pass host was resolved with no `es` catalog var").toBeDefined();
+    // The var holds one locale's catalog, not a map of every locale — that is the whole of the split.
+    // Read back through the seam the host collects them with, which restores the tag from the name.
+    expect(JSON.parse(stamped ?? "{}")).toEqual({ "email/shell.unsubscribe": "Darse de baja" });
+    expect(catalogsFromEnv(resolved.vars ?? {})).toEqual({ es: { "email/shell.unsubscribe": "Darse de baja" } });
+  });
+
+  test("and writes no var for a project with nothing to carry, which is the English it always sent", () => {
+    const resolved = resolve("staging", {
+      fromAddress: "hi@example.test",
+      fromName: "Acme",
+      theme: { appName: "Acme" },
+      messages: {},
+    });
+    // Absent is how the seam spells "the kit's English": `catalogLayers({})` still ends at this
+    // package's own catalogs. An empty object in a deployed config reads like a value nobody filled.
+    expect(resolved.vars?.EMAIL_MESSAGES_ES).toBeUndefined();
+  });
+
+  test("a catalog set too large for a Worker var is refused, with the ceiling named", () => {
+    // The same 5 KB ceiling and the same refusal `@pithy-sh/email` composes for its own host — reused,
+    // not restated, because the second copy is the one that drifts. Error 10054 mid-provision is a
+    // wrangler exit nobody can act on.
+    expect(() =>
+      resolve("staging", {
+        fromAddress: "hi@example.test",
+        fromName: "Acme",
+        theme: { appName: "Acme" },
+        messages: { es: { "email/shell.unsubscribe": "x".repeat(6 * 1024) } },
+      }),
+    ).toThrowError(/a Cloudflare Worker variable holds 5120/);
   });
 
   test("leaves the template untouched, so resolving twice cannot compound", () => {

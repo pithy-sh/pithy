@@ -20,13 +20,13 @@ describe("schema descriptions (CLAUDE.md §Zod: schemas are the docs)", () => {
     // nothing produces no findings, and no findings is what passing looks like — so the population is
     // pinned in three places, and a collapse in any one of them is loud.
     //
-    // Near-exact, not a comfortable floor: measured at 35 modules, 34 schemas and 142 fields on
-    // 2026-08-15, and each floor is 95% of that. The slack is there so deleting a module is not a red
+    // Near-exact, not a comfortable floor: measured at 39 modules, 34 schemas and 152 fields on
+    // 2026-08-23, and each floor is 95% of that. The slack is there so deleting a module is not a red
     // build; it is nowhere near enough for a glob that lost the package.
     const walk = undescribedExports(modules);
-    expect(walk.modules).toBeGreaterThanOrEqual(33);
+    expect(walk.modules).toBeGreaterThanOrEqual(37);
     expect(walk.schemas).toBeGreaterThanOrEqual(32);
-    expect(walk.fields).toBeGreaterThanOrEqual(134);
+    expect(walk.fields).toBeGreaterThanOrEqual(144);
   });
 
   test("every exported object/enum/union — and every field — carries a .describe()", () => {

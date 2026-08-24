@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
 import { emailWorkerName, suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
 import type { EmailTheme } from "@pithy-sh/email/src/templates/theme";
 import { describe, expect, test, vi } from "vitest";
@@ -30,6 +31,14 @@ function fakeCf() {
 /** A stand-in theme — these tests never touch `deployWorker`, the only method that reads it. */
 const fakeTheme = {} as EmailTheme;
 
+/**
+ * No catalogs. Same reason as the theme: `deployWorker` is the only method that reads them, and it is
+ * not what these tests drive. Stated rather than defaulted, because the option is required — a
+ * provisioner that forgot the catalogs is what left `EMAIL_MESSAGES` written by nobody
+ * (pithy-sh/pithy#441), and a field with a default cannot be forgotten out loud.
+ */
+const noCatalogs: LocaleCatalogs = {};
+
 describe("CloudflareEmailProvisioner", () => {
   test("ensureSuppressionDatabase audits a create, and records nothing when it reuses the database", async () => {
     const { cf, findDatabaseByName, createDatabase } = fakeCf();
@@ -41,6 +50,7 @@ describe("CloudflareEmailProvisioner", () => {
       apiToken: "tok",
       storeId: "store-1",
       theme: fakeTheme,
+      messages: noCatalogs,
       resolveEnv: async () => {
         throw new Error("not used by these tests");
       },
@@ -82,6 +92,7 @@ describe("CloudflareEmailProvisioner", () => {
       apiToken: "tok",
       storeId: "store-1",
       theme: fakeTheme,
+      messages: noCatalogs,
       resolveEnv: async () => {
         throw new Error("not used by these tests");
       },
@@ -117,6 +128,7 @@ describe("CloudflareEmailProvisioner", () => {
       apiToken: "tok",
       storeId: "store-1",
       theme: fakeTheme,
+      messages: noCatalogs,
       resolveEnv: async () => {
         throw new Error("not used by these tests");
       },
@@ -226,6 +238,7 @@ describe("teardown refuses an unconfirmed account", () => {
       apiToken: "tok",
       storeId: "store-1",
       theme: fakeTheme,
+      messages: noCatalogs,
       resolveEnv: async () => ({ appDatabaseId: "app-db", secretsDatabaseId: "sec-db", baseUrl: "https://x.test" }),
     });
 

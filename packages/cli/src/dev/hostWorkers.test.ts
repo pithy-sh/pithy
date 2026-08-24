@@ -7,6 +7,9 @@ import { isAbsolute, join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
+import { email } from "@pithy-sh/email/src/capability";
+import { catalogsFromEnv } from "@pithy-sh/email/src/templates/messages";
+import { i18n } from "@pithy-sh/i18n/src/capability";
 import { parse } from "comment-json";
 import { describe, expect, test } from "vitest";
 import type { WorkerTarget } from "../project/workers";
@@ -154,5 +157,68 @@ describe("materializeHostConfigs", () => {
     await rm(projectDir, { recursive: true, force: true });
     expect(result.failed).toEqual(["email"]);
     expect(result.notes[0]).toBe("email: its host worker could not be resolved, so it will not run.");
+  });
+});
+
+/**
+ * **The local host has to speak the languages the deployed one does.**
+ *
+ * `pithy dev` materialises the same host `pithy email provision` deploys, from the same committed
+ * template through the same resolver — so the same thing has to reach it. The catalogs come off the
+ * composed email capability's `hostCatalogs()`, and that value answers `{}` until every capability's
+ * `compose` hook has run. Discovery built its capability set and read that value without running them,
+ * which meant the app Worker enqueued a Spanish subject and stored `locale='es'` while the local host
+ * re-rendered in English — and, because `runSend` overwrites the stored subject with its own render,
+ * threw the Spanish one away. That is the two-Workers-disagree failure the var exists to close,
+ * reproduced on a developer's machine (pithy-sh/pithy#441).
+ *
+ * Driven through the **real** registry entry and the **real** committed `wrangler.jsonc`: the seam
+ * being proved is the whole path from `apps/<name>/pithy.config.ts` to a var on disk, and a fixture
+ * template in the middle of it is a fixture of the thing under test.
+ */
+describe("a dev session for a project that speaks two languages", () => {
+  async function materialize(...capabilities: Capability[]) {
+    const projectDir = await mkdtemp(join(tmpdir(), "pithy-hosts-i18n-"));
+    const found = await discoverHostWorkers({
+      projectDir,
+      workers: [apps[0] as WorkerTarget],
+      capabilitiesFor: async () => capabilities,
+    });
+    const result = await materializeHostConfigs({
+      projectDir,
+      project: "acme",
+      baseUrl: "http://localhost:8787",
+      hosts: found.hosts,
+    });
+    const written = parse(
+      await readFile(join(hostWorkerDir(projectDir, "email"), "wrangler.jsonc"), "utf8"),
+    ) as unknown as WorkflowHostTemplate;
+    await rm(projectDir, { recursive: true, force: true });
+    return { written, result };
+  }
+
+  test("the local email host is written carrying the words it will render in", async () => {
+    const { written, result } = await materialize(
+      i18n({ supportedLocales: ["en", "es"] }),
+      email({ fromAddress: "noreply@acme.test", baseUrl: "https://api.acme.test" }),
+    );
+    expect(result.failed).toEqual([]);
+
+    const stamped = written.vars?.EMAIL_MESSAGES_ES;
+    // Named first, so an unassembled capability reads as the absent var it is rather than as a parse
+    // error twenty characters later.
+    expect(stamped, "the local host was written with no `es` catalog var").toBeDefined();
+
+    // Collected through the seam the host itself reads them with — a value this test can read and the
+    // host cannot is not a value that was delivered.
+    const carried = catalogsFromEnv(written.vars ?? {});
+    expect(carried.es?.["email/welcome.subject"]).toBe("Te damos la bienvenida a {app}");
+  });
+
+  test("and a project with no i18n capability gets no var at all, which is the English it always sent", async () => {
+    const { written } = await materialize(
+      email({ fromAddress: "noreply@acme.test", baseUrl: "https://api.acme.test" }),
+    );
+    expect(written.vars?.EMAIL_MESSAGES_ES).toBeUndefined();
   });
 });

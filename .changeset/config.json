@@ -2,7 +2,7 @@
   "$schema": "https://unpkg.com/@changesets/config@4.0.0/schema.json",
   "changelog": ["@changesets/changelog-github", { "repo": "pithy-sh/pithy" }],
   "commit": false,
-  "fixed": [["@pithy-sh/core", "@pithy-sh/vite"]],
+  "fixed": [["@pithy-sh/core", "@pithy-sh/i18n", "@pithy-sh/vite"]],
   "linked": [],
   "access": "public",
   "baseBranch": "main",

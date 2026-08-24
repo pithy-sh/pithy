@@ -47,15 +47,16 @@ export interface DeclaredModule {
 }
 
 /**
- * The four modules the declaration covers, in the order they are emitted.
+ * The modules the declaration covers, in the order they are emitted.
  *
- * This list is the whole reach of the generated file: a fifth capability projecting to a browser is a
- * fifth entry here, and until it is one, nothing declares it. The specifiers resolve because each
+ * This list is the whole reach of the generated file: a further capability projecting to a browser is
+ * a further entry here, and until it is one, nothing declares it. The specifiers resolve because each
  * capability is a devDependency of `@pithy-sh/vite` — a build-time dependency, like the compiler. An
  * adopter installs none of them to use the plugin, and never runs this module.
  */
 export const DECLARED_MODULES: readonly DeclaredModule[] = [
   { module: "auth", specifier: "@pithy-sh/auth/src/client/projection", type: "AuthClientProjection" },
+  { module: "i18n", specifier: "@pithy-sh/i18n/src/client/projection", type: "I18nClientProjection" },
   { module: "payments", specifier: "@pithy-sh/payments/src/client/projection", type: "PaymentsClientProjection" },
   { module: "support", specifier: "@pithy-sh/support/src/client/projection", type: "SupportClientProjection" },
   { module: "turnstile", specifier: "@pithy-sh/turnstile/src/client/projection", type: "TurnstileClientProjection" },

@@ -25,18 +25,36 @@ const outPath = join(here, "..", "src", "templates", "precompiled.generated.ts")
 // both `build` and `test:node`, so the repo would oscillate and CI would flap.
 const { license } = JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8")) as { license: string };
 
+/**
+ * Data frames are compiled in, on every spec.
+ *
+ * The `t` / `tn` / `severityLabel` helpers read the render's translator off `@root`, which only exists
+ * where the compiler emitted a data frame. Handlebars decides that per template by looking for a `@`
+ * variable in the source, and none of these bodies has one — so without this flag the helpers would
+ * find no root, silently fall back to English, and every translated email would render in the language
+ * the kit is written in with nothing failing anywhere. Asked for explicitly rather than inferred, for
+ * that reason: the failure mode is silent and it is the whole point of the feature.
+ *
+ * Never per locale. One spec per template id, one partial registry, and the words come from the
+ * catalog at render — see `src/templates/messages.ts` for why duplicating 132KB of identical table
+ * markup per language was the wrong trade.
+ */
+const DATA_FRAME = { data: true } as const;
+
 const partials: Record<string, string> = { emailHead, emailFoot };
 const partialSpecs = Object.entries(partials).map(
-  ([name, source]) => `  ${JSON.stringify(name)}: ${Handlebars.precompile(source)},`,
+  ([name, source]) => `  ${JSON.stringify(name)}: ${Handlebars.precompile(source, DATA_FRAME)},`,
 );
 
 const templateSpecs: string[] = [];
 for (const def of Object.values(templates)) {
   templateSpecs.push(
-    `  ${JSON.stringify(`${def.id}:subject`)}: ${Handlebars.precompile(def.subject, { noEscape: true })},`,
+    `  ${JSON.stringify(`${def.id}:subject`)}: ${Handlebars.precompile(def.subject, { ...DATA_FRAME, noEscape: true })},`,
   );
-  templateSpecs.push(`  ${JSON.stringify(`${def.id}:html`)}: ${Handlebars.precompile(def.html)},`);
-  templateSpecs.push(`  ${JSON.stringify(`${def.id}:text`)}: ${Handlebars.precompile(def.text, { noEscape: true })},`);
+  templateSpecs.push(`  ${JSON.stringify(`${def.id}:html`)}: ${Handlebars.precompile(def.html, DATA_FRAME)},`);
+  templateSpecs.push(
+    `  ${JSON.stringify(`${def.id}:text`)}: ${Handlebars.precompile(def.text, { ...DATA_FRAME, noEscape: true })},`,
+  );
 }
 
 // The SPDX header is emitted here rather than stamped afterwards: this file is rewritten on every

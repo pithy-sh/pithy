@@ -10,6 +10,7 @@ import { EmailJob, SPENT_PAYLOAD } from "../data/emailJob";
 import type { EmailJobStatus, SuppressionReason } from "../data/enums";
 import type { EmailDatabase, EmailSuppressionDatabase, EmailTables } from "../data/tables";
 import { type RenderTracking, redactsPayloadOnDelivery, renderEmail, templateKind } from "../templates/engine";
+import { type EmailMessageLayers, emailTranslator, kitEmailLayers } from "../templates/messages";
 import type { EmailTheme } from "../templates/theme";
 import { classifySendError } from "./errorMapping";
 import { recordEvent } from "./events";
@@ -52,6 +53,15 @@ export interface SendDeps {
   suppressionDb: EmailSuppressionDatabase;
   sender: EmailSender;
   theme: EmailTheme;
+  /**
+   * Where the words for a locale come from.
+   *
+   * The host that runs this is a standalone Worker — nothing composes capabilities inside it — so it
+   * cannot be handed a composed project's layers the way the app worker's enqueue is. It reads the
+   * catalogs off its own env instead (`EMAIL_MESSAGES`) and turns them into this. Absent walks the
+   * kit's English, which is what a project that never opted into a second language gets.
+   */
+  layersFor?: EmailMessageLayers;
   /** The public base URL for callback links. */
   baseUrl: string;
   /** The signing key for tracking/unsubscribe links. Absent disables tracking (and blocks marketing sends). */
@@ -197,7 +207,17 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
   const attempts = job.attempts + 1;
   await patchJob(deps, jobId, { status: "sending", attempts });
 
-  const rendered = await renderEmail(job.template, job.payload, deps.theme, tracking);
+  // The job's own locale, not a request's — there is no request here, which is exactly why the tag is
+  // on the row. This is the second of the two render sites, and the column is what makes it agree with
+  // the first: the subject stored at enqueue and the body composed now are one language by
+  // construction rather than by two call sites happening to choose alike.
+  const rendered = await renderEmail(
+    job.template,
+    job.payload,
+    deps.theme,
+    tracking,
+    emailTranslator(job.locale, deps.layersFor ?? kitEmailLayers),
+  );
   // Stamp the origin job and environment so the single (production) inbound worker can attribute an
   // async bounce/complaint back to where it came from. Suppression itself is global, so it applies
   // regardless; these headers carry the per-job/per-env context the platform send response cannot.
@@ -241,6 +261,12 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
       status: "sent",
       sentAt: SQLiteDate.encode(deps.passStartedAt),
       messageId: result.messageId ?? null,
+      // The subject that actually went out, which is not necessarily the one enqueue stored.
+      // `runSend` sends a *fresh* render rather than `job.subject`, so the column was only ever the
+      // enqueue's guess at it — and a template corrected, a theme renamed, or a catalog sentence
+      // retranslated between the queue and the send made the send log describe a message nobody
+      // received. An operator reading the row is reading the delivered subject now.
+      subject: rendered.subject,
       error: null,
       ...(spent ? { payload: SPENT_PAYLOAD, payloadRedactedAt: SQLiteDate.encode(deps.passStartedAt) } : {}),
     });

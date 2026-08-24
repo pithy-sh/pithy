@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
 import type {
   HostD1Binding,
   HostSecretsStoreBinding,
@@ -13,6 +15,7 @@ import { workflowKey } from "@pithy-sh/core/src/workflow/naming";
 import type { WorkflowRegistry } from "@pithy-sh/core/src/workflow/spec";
 import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
+import { emailCatalogVarName } from "../templates/messages";
 import type { EmailTheme } from "../templates/theme";
 import { EmailScheduleParams, EmailSendParams } from "../workflows/params";
 import { type DevMailDelivery, emailRemoteBindings } from "./devDelivery";
@@ -71,6 +74,56 @@ export const emailWorkflowRegistry: WorkflowRegistry = Object.fromEntries(
   }),
 );
 
+/**
+ * The most one Cloudflare Worker variable holds. **Per variable, and that is the whole design.**
+ *
+ * Cloudflare's documented limit is 5 KB per variable, on Free and Paid alike, and a Worker carries 64
+ * of them on Free and 128 on Paid. The failure it produces is API error 10054 at upload — a wrangler
+ * exit nobody can act on, in the middle of a provision run that has already created databases.
+ *
+ * So each locale travels in its own variable. One pack of the kit's Spanish is about 3 KB, which
+ * leaves 2 KB of room inside its own ceiling, and twenty languages is twenty variables rather than one
+ * 62 KB value that is refused outright. The host renders one email in one locale and never needs the
+ * other nineteen, so nothing is paid for the split.
+ *
+ * The check below therefore guards what it should: a single language pack growing past what a variable
+ * holds, which would take the kit's email copy growing by about two thirds. It is deliberately a
+ * refusal and not a truncation — a shortened catalog is a letter half in Spanish and half in English,
+ * with nothing anywhere failing to say so.
+ */
+export const MAX_WORKER_VAR_BYTES = 5 * 1024;
+
+/**
+ * One `EMAIL_MESSAGES_<LOCALE>` var per locale, or nothing when the project has no catalogs to carry.
+ *
+ * A locale with an empty catalog is omitted rather than written as `"{}"`: the host reads an absent
+ * variable as the kit's English, which is exactly what that means, and an empty object in the deployed
+ * config reads like a value somebody failed to fill.
+ *
+ * **Exported because this is not the only host that carries them.** `@pithy-sh/testers`' daily-pass
+ * worker reads the same variables through the same `catalogsFromEnv` seam, against the same ceiling —
+ * so the limit, the naming and the refusal are composed here once rather than restated there, where
+ * the second copy is the one that drifts.
+ */
+export function emailMessagesVars(messages: LocaleCatalogs | undefined): Record<string, string> {
+  if (!messages) return {};
+  const vars: Record<string, string> = {};
+  for (const [locale, catalog] of Object.entries(messages)) {
+    if (!catalog || Object.keys(catalog).length === 0) continue;
+    const serialized = JSON.stringify(catalog);
+    const bytes = new TextEncoder().encode(serialized).length;
+    if (bytes > MAX_WORKER_VAR_BYTES) {
+      throw new ValidationError({
+        message: `The \`${locale}\` email catalog is ${bytes} bytes; a Cloudflare Worker variable holds ${MAX_WORKER_VAR_BYTES}.`,
+        action: `Shorten the \`email/\` sentences for \`${locale}\` in i18n({ messages }), or drop that locale from supportedLocales.`,
+        detail: `${emailCatalogVarName(locale)} serialized to ${bytes} bytes over the ${MAX_WORKER_VAR_BYTES}-byte limit; Cloudflare refuses the upload with error 10054.`,
+      });
+    }
+    vars[emailCatalogVarName(locale)] = serialized;
+  }
+  return vars;
+}
+
 /** The resolved resource ids + per-env values for one environment's email-worker deploy. */
 export interface EmailConfigParams {
   /**
@@ -98,6 +151,15 @@ export interface EmailConfigParams {
   baseUrl: string;
   /** The resolved brand theme — serialized into the worker's `EMAIL_THEME` var. */
   theme: EmailTheme;
+  /**
+   * This project's email catalogs — serialized into the worker's `EMAIL_MESSAGES` var.
+   *
+   * The same journey `theme` makes, and for the same reason: the host composes no capabilities, so
+   * anything the adopter configured has to arrive as data. `emailHostCatalogs` builds it from the
+   * composed project's layers; a project that composed no i18n capability passes `{}` or omits it, and
+   * the var is not written at all.
+   */
+  messages?: LocaleCatalogs;
   /**
    * What the host's `send_email` binding does under `pithy dev` — the adopter's `email({ devDelivery })`.
    * Defaults to `remote`, which sends real mail from the developer's machine. Ignored outside `dev`.
@@ -146,7 +208,9 @@ export function resolveEmailConfig(
     secretsStoreId: storeId,
     // The master key entry is project- and env-scoped, matching what the secrets manager wrote.
     masterKeySecretName: masterKeySecretName(project, env),
-    vars: { EMAIL_THEME: JSON.stringify(theme), BASE_URL: baseUrl },
+    // The theme and the catalogs travel the same way, and they have to: the host composes no
+    // capabilities, so the brand and the words are both things only a provision run can hand it.
+    vars: { EMAIL_THEME: JSON.stringify(theme), BASE_URL: baseUrl, ...emailMessagesVars(params.messages) },
     // The `send_email` binding's `remote` flag, which the committed template deliberately no longer
     // carries: the resolver only ever *adds* `remote`, so a hardcoded `true` could never be turned
     // off and the documented simulator flag would have had nothing to act on. See `devDelivery.ts`.

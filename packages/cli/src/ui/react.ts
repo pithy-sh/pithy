@@ -53,6 +53,18 @@ export const reactStub: UiStub = {
   dependencies: {
     react: "^19.2.8",
     "react-dom": "^19.2.8",
+    // **Every screen renders through the translator seam, so the front end depends on it the way it
+    // depends on React.** This is not the auth/payments pattern and could not be: those screens are
+    // written only when their capability is composed, and their package arrives with `pithy add auth`.
+    // `src/pithy-locale.tsx`, `src/router.tsx` and the home screen all reach it — all `base`, all
+    // written on every scaffold — so a project that never composes `i18n` still imports the package, and
+    // before this line `vite build` could not resolve it. The alternative was to un-translate the base
+    // screens, which is the feature.
+    //
+    // A dependency rather than a devDependency, for the reason `react` is one: it is bundled into what
+    // the browser downloads. And core's `PACKAGE_VERSION` for the reason `@pithy-sh/vite` uses it —
+    // the release train below is what makes that honest, and `react.test.ts` holds both halves.
+    "@pithy-sh/i18n": kitRange(PACKAGE_VERSION),
   },
   devDependencies: {
     "@cloudflare/vite-plugin": "^1.48.0",

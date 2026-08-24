@@ -1,4 +1,5 @@
 import authModule from "virtual:pithy/auth";
+import i18nModule from "virtual:pithy/i18n";
 import paymentsModule from "virtual:pithy/payments";
 import turnstileModule from "virtual:pithy/turnstile";
 
@@ -64,4 +65,29 @@ export const paymentsConfig = paymentsModule.enabled
         name: string;
         skus: { stripe: string | null; lemonSqueezy: string | null; paddle: string | null };
       }[],
+    };
+
+/**
+ * The i18n capability's projection, narrowed the same way. `enabled` is false unless the capability is
+ * composed, and then every screen renders the English it was scaffolded with — which is the whole of
+ * what makes this capability optional.
+ *
+ * **Locale metadata only. Never catalogs.** The projection is inlined into the main chunk, so a catalog
+ * carried here would be downloaded by every reader in every language before the first paint. Catalogs
+ * arrive by dynamic import, one chunk per locale, from `@pithy-sh/i18n`.
+ *
+ * The disabled branch is the kit's own defaults, for the reason the three above carry theirs: a screen
+ * reads a field without a guard. `en` is not a claim that this project speaks English — it is what the
+ * templates are written in, and it is what `t()` falls back to when nothing negotiated.
+ */
+export const i18nConfig = i18nModule.enabled
+  ? i18nModule
+  : {
+      enabled: false as const,
+      supportedLocales: ["en"],
+      defaultLocale: "en",
+      queryParam: "lang",
+      storageKey: "pithy.locale",
+      browserResolvers: ["query", "account", "storage", "navigator", "server", "default"],
+      exceptions: {} as Record<string, string>,
     };

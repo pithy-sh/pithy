@@ -14,6 +14,7 @@ import { mintBatchId } from "../send/batchIdentity";
 import type { SendWorkflowBinding } from "../send/enqueue";
 import { emailWorkflowRetry } from "../send/retryPolicy";
 import type { EmailSender } from "../send/sender";
+import { catalogLayers, catalogsFromEnv } from "../templates/messages";
 import { createEmailHostApp } from "./hostApp";
 import { type EmailHostEnv, emailHostEnv } from "./hostEnv";
 import { isLiveInstanceStatus } from "./instanceLiveness";
@@ -64,6 +65,11 @@ export interface EmailWorkerEnv extends SecretsStoreEnv {
   EMAIL_SCHEDULER: { create(): Promise<unknown> };
   /** The resolved brand theme as a JSON string (the full `EmailTheme`), set at provision from the app config. */
   EMAIL_THEME?: string;
+  /**
+   * The project's catalogs arrive as one variable per locale — `EMAIL_MESSAGES_ES` and friends — read
+   * through `catalogsFromEnv`. Not declared here, because the names are the project's locales.
+   */
+  [catalogVar: `EMAIL_MESSAGES_${string}`]: unknown;
   BASE_URL: string;
   // ENVIRONMENT is inherited from SecretsStoreEnv (a `ManagedEnvironment`); never redeclare it as a plain string.
   LINK_TTL_DAYS?: string;
@@ -101,6 +107,9 @@ async function buildSendDeps(env: EmailWorkerEnv): Promise<SendBatchDeps> {
     suppressionDb: emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS),
     sender: env.EMAIL,
     theme: config.EMAIL_THEME,
+    // The catalogs, as a seam over the one JSON var. A body renders in the job's own locale from here;
+    // with the var absent this resolves to the kit's English, unchanged from before #441.
+    layersFor: catalogLayers(catalogsFromEnv(env as unknown as Record<string, unknown>)),
     baseUrl: config.BASE_URL,
     signing: key ? { key, kid: keys.currentVersion } : undefined,
     linkTtlDays: config.LINK_TTL_DAYS,

@@ -73,6 +73,12 @@ export const CATALOG: readonly CatalogEntry[] = [
       "Transactional and lifecycle email — magic link, OTP, welcome, alerts — sent as durable, tracked jobs.",
   },
   {
+    name: "i18n",
+    package: "@pithy-sh/i18n",
+    whenToEnable:
+      "Enable it when your app serves readers in more than one language. It adds a translator seam every screen, error and email renders through, negotiates each reader's locale from the URL, their account, a cookie and Accept-Language, and formats dates, numbers and currency with Intl. Ships Spanish; add your own catalogs a sentence at a time.",
+  },
+  {
     name: "turnstile",
     package: "@pithy-sh/turnstile",
     whenToEnable:

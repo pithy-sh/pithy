@@ -202,6 +202,11 @@ export const emailHostEnv = defineHostEnv({
     // Written from the adopter's own `email()` config, so the fix is in `pithy.config.ts` and only
     // then in a provision run. Named as the config key, because that is where a person edits it.
     EMAIL_THEME: { kind: "config", name: "email({ theme, customTheme })", command: PROVISION },
+    // The catalogs are deliberately absent from this map and from the schema above. Their variable
+    // *names* are the project's locales — `EMAIL_MESSAGES_ES`, `EMAIL_MESSAGES_PT_BR` — and neither a
+    // Zod object nor a fixed declaration table can name a key that is a decision made downstream.
+    // `catalogsFromEnv` collects them off the raw env and validates each value; a missing one is not a
+    // fault, because a project that serves only English has none to carry.
     ENVIRONMENT: provisionedVar("ENVIRONMENT"),
     LINK_TTL_DAYS: tunedVar("LINK_TTL_DAYS"),
     MAX_ATTEMPTS: tunedVar("MAX_ATTEMPTS"),

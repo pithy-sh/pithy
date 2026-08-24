@@ -112,8 +112,14 @@ interface HostCoverage {
  */
 const READS_THE_MASTER_KEY: ReadonlySet<string> = new Set(["email", "media", "storage", "payments", "secrets"]);
 
-/** The sending identity testers copies from the email capability when a project composes one. */
-const TESTERS_EMAIL = { fromAddress: "beta@acme.test", fromName: "Acme Beta", theme: defaultTheme };
+/**
+ * The sending identity testers copies from the email capability when a project composes one.
+ *
+ * `messages` states the project that speaks one language, out loud. The field is required rather than
+ * optional for exactly that: a provisioner that forgot the catalogs is what left `EMAIL_MESSAGES`
+ * written by nobody, twice (pithy-sh/pithy#441).
+ */
+const TESTERS_EMAIL = { fromAddress: "beta@acme.test", fromName: "Acme Beta", theme: defaultTheme, messages: {} };
 
 /** One configured vector index, since the `vectorize` array is rebuilt from config rather than filled. */
 const VECTOR_INDEX = VectorConfig.parse({

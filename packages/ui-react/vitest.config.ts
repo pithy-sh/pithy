@@ -47,6 +47,7 @@ export default defineConfig({
         resolve: {
           alias: {
             "virtual:pithy/auth": virtualStub("virtualAuth"),
+            "virtual:pithy/i18n": virtualStub("virtualI18n"),
             "virtual:pithy/payments": virtualStub("virtualPayments"),
             "virtual:pithy/turnstile": virtualStub("virtualTurnstile"),
           },

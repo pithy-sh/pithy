@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { auth } from "@pithy-sh/auth/src/capability";
 import { resolveClientProjection } from "@pithy-sh/core/src/capability/client";
+import { i18n } from "@pithy-sh/i18n/src/capability";
 import { payments } from "@pithy-sh/payments/src/capability";
 import { support } from "@pithy-sh/support/src/capability";
 import { turnstile } from "@pithy-sh/turnstile/src/capability";
@@ -21,7 +22,7 @@ import {
 import { renderVirtualModule } from "./virtualModule";
 
 /**
- * **The declaration an adopter is given is emitted from the four declared projections (#398).**
+ * **The declaration an adopter is given is emitted from the declared projections (#398).**
  *
  * #392 held `templates/client-env.d.ts` against those projections with a spawned compiler, because the
  * file was hand-written and there was no faithful source to generate it from. #395 supplied one: the
@@ -126,6 +127,8 @@ describe("client-env.d.ts is emitted from the declared projections", () => {
     expect(blocks.length).toBe(DECLARED_MODULES.length);
     const projections = [
       resolveClientProjection(auth({ baseURL: "https://api.example.com" }), { environment: "prod" }),
+      // Positional against `blocks`, which are in `DECLARED_MODULES` order — so this list is too.
+      resolveClientProjection(i18n({ supportedLocales: ["en", "es"] }), { environment: "prod" }),
       resolveClientProjection(
         payments({
           billingSubject: "user",
@@ -150,7 +153,7 @@ describe("client-env.d.ts is emitted from the declared projections", () => {
       expect(renderVirtualModule(projections[index] ?? { enabled: false })).toContain("export const enabled = ");
     }
     // A sweep that matched nothing would read the same as a file that promised nothing.
-    expect(named).toBe(4);
+    expect(named).toBe(DECLARED_MODULES.length);
   });
 
   test("the fixed text is written, not derived", async () => {

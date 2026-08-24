@@ -1,3 +1,5 @@
+import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
+import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
 import {
   PAYMENTS_HOSTED_RAILS,
   type PaymentsHostedRail,
@@ -7,7 +9,7 @@ import { useCheckout, usePaddleCheckout, usePurchase } from "@pithy-sh/payments/
 import { useEffect, useState } from "react";
 // `CHECKOUT_FRAME` is imported rather than declared here: the two screens that sell share one class, and
 // `.pithy-checkout` is a hook you are meant to style. Two copies is one styled checkout and one bare one.
-import { CHECKOUT_FRAME, paymentsClient } from "../../payments";
+import { CHECKOUT_FRAME, failureText, paymentsClient } from "../../payments";
 import { paymentsConfig } from "../../pithy-config";
 import { Link, useScreenPath } from "../../router";
 import "../../pithy-screens.css";
@@ -40,7 +42,30 @@ function purchasable(product: { skus: Record<PaymentsHostedRail, string | null> 
   return PAYMENTS_HOSTED_RAILS.some((rail) => paymentsConfig.rails[rail] && product.skus[rail] !== null);
 }
 
+/**
+ * This screen's English, baked in — the only catalog that survives being copied into your repository.
+ *
+ * A project composing no `i18n` capability renders exactly these sentences. With it composed they
+ * become the last layer: your own catalog first, then the kit's translation, then this.
+ *
+ * `pithy.config.ts` is not in a message. A file name is not copy, and a translator who rendered it in
+ * their own language would name a file that does not exist.
+ */
+const EN = {
+  "payments/paywall.title": "Go further.",
+  "payments/paywall.body": "Pick what you need. You can change your mind later.",
+  "payments/paywall.buy": "Buy {product}",
+  "payments/paywall.in_app": "Available in the app.",
+  "payments/paywall.holdings": "What do I already have?",
+  "payments/paywall.empty.title": "Nothing for sale.",
+  "payments/paywall.empty.body": "This project has no catalog yet. Add products to",
+  "payments/paywall.done.title": "You're set.",
+  "payments/paywall.done.body": "Thanks. Your purchase is on your account.",
+  "payments/paywall.done.home": "Go home",
+} satisfies MessageCatalog;
+
 export default function Paywall() {
+  const t = useTranslator(EN);
   // Read before the early returns, because it is a hook — and read at all, rather than written out as
   // `/subscription`, because the subscription screen declares its own path (#393).
   const subscriptionPath = useScreenPath("subscription");
@@ -68,9 +93,9 @@ export default function Paywall() {
   if (!paymentsConfig.enabled) {
     return (
       <main className="screen">
-        <h1>Nothing for sale.</h1>
+        <h1>{t.t("payments/paywall.empty.title")}</h1>
         <p className="muted">
-          This project has no catalog yet. Add products to <code>pithy.config.ts</code>.
+          {t.t("payments/paywall.empty.body")} <code>pithy.config.ts</code>.
         </p>
       </main>
     );
@@ -79,10 +104,10 @@ export default function Paywall() {
   if (returned && purchase.purchase) {
     return (
       <main className="screen">
-        <h1>You're set.</h1>
-        <p className="muted">Thanks. Your purchase is on your account.</p>
+        <h1>{t.t("payments/paywall.done.title")}</h1>
+        <p className="muted">{t.t("payments/paywall.done.body")}</p>
         <div className="stack">
-          <Link to="/">Go home</Link>
+          <Link to="/">{t.t("payments/paywall.done.home")}</Link>
         </div>
       </main>
     );
@@ -90,12 +115,12 @@ export default function Paywall() {
 
   return (
     <main className="screen">
-      <h1>Go further.</h1>
-      <p className="muted">Pick what you need. You can change your mind later.</p>
+      <h1>{t.t("payments/paywall.title")}</h1>
+      <p className="muted">{t.t("payments/paywall.body")}</p>
 
-      {purchase.failure && <p className="muted">{purchase.failure.message}</p>}
-      {checkout.failure && <p className="muted">{checkout.failure.message}</p>}
-      {opened.failure && <p className="muted">{opened.failure.message}</p>}
+      {purchase.failure && <p className="muted">{failureText(t, purchase.failure)}</p>}
+      {checkout.failure && <p className="muted">{failureText(t, checkout.failure)}</p>}
+      {opened.failure && <p className="muted">{failureText(t, opened.failure)}</p>}
 
       <div className="stack">
         {paymentsConfig.products.map((product) => (
@@ -109,12 +134,12 @@ export default function Paywall() {
                 disabled={checkout.starting || opened.opening}
                 onClick={() => void checkout.start(product.id)}
               >
-                Buy {product.name}
+                {t.t("payments/paywall.buy", { product: product.name })}
               </button>
             ) : (
               // Display only. StoreKit and Play Billing need native app code to present a purchase sheet,
               // so a web page can say a product exists and where to get it, and nothing more.
-              <p className="muted">Available in the app.</p>
+              <p className="muted">{t.t("payments/paywall.in_app")}</p>
             )}
           </div>
         ))}
@@ -127,7 +152,7 @@ export default function Paywall() {
 
       <div className="stack">
         <Link className="muted" to={subscriptionPath}>
-          What do I already have?
+          {t.t("payments/paywall.holdings")}
         </Link>
       </div>
     </main>

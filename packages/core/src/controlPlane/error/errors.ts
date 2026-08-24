@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PithyError } from "../../error/pithyError";
+import type { MessageParams } from "../../i18n/catalog";
 
 /**
  * The `control-plane` strategy's throw sugar. The `controlplane/*` codes live in core's closed
@@ -21,6 +22,11 @@ interface ControlPlaneErrorArgs {
   message?: string;
   action?: string;
   detail?: string;
+  /**
+   * Values a translating client interpolates into its own wording for this code. Client-facing, so —
+   * unlike `action` and `detail` — these cross the boundary with `message`.
+   */
+  params?: MessageParams;
 }
 
 /**
@@ -36,6 +42,7 @@ export class ControlPlaneNotConnectedError extends PithyError {
         message: args.message ?? "No management client is connected to this environment.",
         action: args.action ?? "Run pithy dashboard connect --env <environment> to register one.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -55,6 +62,7 @@ export class ControlPlaneInvalidCredentialError extends PithyError {
         message: args.message ?? "That credential is not valid here.",
         action: args.action ?? "Rotate the connection's key, or re-run pithy dashboard connect --update.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -71,6 +79,7 @@ export class ControlPlaneInsufficientScopeError extends PithyError {
         message: args.message ?? "This connection is not scoped for that operation.",
         action: args.action ?? "Re-run pithy dashboard connect --update and grant the scope this call needs.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -87,6 +96,7 @@ export class ControlPlaneKeyNotFoundError extends PithyError {
         message: args.message ?? "No registered key answers to that key id.",
         action: args.action ?? "Read GET /control-plane/keys for the keys this connection currently trusts.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -107,6 +117,7 @@ export class ControlPlaneKeyConflictError extends PithyError {
         message: args.message ?? "That key operation conflicts with the connection's current state.",
         action: args.action ?? "Register the replacement key and prove it with a ping before expiring this one.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );

@@ -49,6 +49,16 @@
     {
       "path": "plugins/no-process-io.grit",
       "includes": ["**/packages/*/src/**", "!**/packages/cli/**", "!**/*.test.ts", "!**/test-utils/**"]
+    },
+    // `no-z-config.grit` refuses Zod's global error map. It is the widest scope of the four and takes
+    // no exclusion at all — not even for tests — because the failure it prevents is a Worker isolate
+    // outliving one request and carrying that request's locale into the next one's parse (#441). A test
+    // that sets the global poisons every file sharing its worker, which is the same defect wearing a
+    // flake's clothes. Note the shape the two entries above live with: `"!**/*.test.ts"` does not
+    // exclude a `.tsx`, so an exclusion list here would have been a hole rather than a scope.
+    {
+      "path": "plugins/no-z-config.grit",
+      "includes": ["**/packages/*/src/**"]
     }
   ],
   "formatter": {

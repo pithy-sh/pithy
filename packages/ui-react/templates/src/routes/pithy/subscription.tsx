@@ -1,3 +1,6 @@
+import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
+import type { Translator } from "@pithy-sh/core/src/i18n/translator";
+import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
 import {
   PAYMENTS_HOSTED_RAILS,
   type PaymentsClientOptions,
@@ -5,7 +8,7 @@ import {
 } from "@pithy-sh/payments/src/client/api";
 import { useSubscription } from "@pithy-sh/payments/src/client/hooks";
 import type { ReactNode } from "react";
-import { paymentsClient } from "../../payments";
+import { failureText, paymentsClient } from "../../payments";
 import { paymentsConfig } from "../../pithy-config";
 import { Link, useScreenPath } from "../../router";
 import "../../pithy-screens.css";
@@ -24,6 +27,28 @@ export const session = "required";
 // Pithy's screen. Yours to override: put your own file at this path under src/routes/app/ and it wins.
 
 /**
+ * This screen's English, baked in — the only catalog that survives being copied into your repository.
+ *
+ * The renewal date is not in here, and could not be: a date is `Intl`'s to render, in the reader's own
+ * locale, from the translator's `formattingLocale`. What the message carries is the sentence around it.
+ */
+const EN = {
+  "payments/subscription.subscribed": "You're subscribed.",
+  "payments/subscription.empty": "Nothing yet.",
+  "payments/subscription.unreadable": "We couldn't check.",
+  "payments/subscription.nothing_held": "You don't hold anything on this account.",
+  "payments/subscription.loading": "One moment.",
+  "payments/subscription.holding.ended": "Ended.",
+  "payments/subscription.holding.ended_not_renewing": "Ended, and not renewing.",
+  "payments/subscription.holding.kept": "Yours to keep.",
+  "payments/subscription.holding.renews": "Renews {date}.",
+  "payments/subscription.manage": "Manage billing",
+  "payments/subscription.apple": "Bought on the App Store",
+  "payments/subscription.google": "Bought on Google Play",
+  "payments/subscription.more": "See what else there is",
+} satisfies MessageCatalog;
+
+/**
  * What to say about one entitlement.
  *
  * `granted` comes first, and that ordering is the whole point: the server applies the expiry itself on every
@@ -31,14 +56,28 @@ export const session = "required";
  * refunded non-consumable is `{ granted: false, expiresAt: null }`, and reading only the date printed
  * "Yours to keep." over a purchase the holder no longer has.
  */
-function holding(entitlement: { granted: boolean; expiresAt: string | null }): string {
-  if (!entitlement.granted) return entitlement.expiresAt === null ? "Ended." : "Ended, and not renewing.";
-  return entitlement.expiresAt === null
-    ? "Yours to keep."
-    : `Renews ${new Date(entitlement.expiresAt).toLocaleDateString()}.`;
+function holding(t: Translator, entitlement: { granted: boolean; expiresAt: string | null }): string {
+  if (!entitlement.granted) {
+    return entitlement.expiresAt === null
+      ? t.t("payments/subscription.holding.ended")
+      : t.t("payments/subscription.holding.ended_not_renewing");
+  }
+  if (entitlement.expiresAt === null) return t.t("payments/subscription.holding.kept");
+  // The app's locale, not the browser's. A bare `toLocaleDateString()` follows whatever language the
+  // device is set to, so a reader who chose Spanish inside a Spanish app still read an English date —
+  // and on a right-to-left locale the two disagreed about direction as well.
+  return t.t("payments/subscription.holding.renews", { date: t.formatDate(new Date(entitlement.expiresAt)) });
 }
 
 export interface SubscriptionScreenProps {
+  /**
+   * The translator this screen renders through.
+   *
+   * A prop for the reason `client` is: what a screen says in a second language is a *rendered* fact no
+   * assertion about source text can reach. Absent, the screen reads the provider a `TranslatorProvider`
+   * mounted, and with no provider it reads {@link EN}.
+   */
+  readonly t?: Translator;
   /**
    * Which rails this project sells through — `paymentsConfig.rails`.
    *
@@ -65,11 +104,15 @@ export interface SubscriptionScreenProps {
  * this against a Paddle-only project and looks for the button — which is the whole of #336, checked the
  * way a user would check it.
  */
-export function SubscriptionScreen({ rails, client, paywallPath }: SubscriptionScreenProps): ReactNode {
+export function SubscriptionScreen({ rails, client, paywallPath, t: given }: SubscriptionScreenProps): ReactNode {
   const { entitlements, subscribed, loading, manage, manageStore, managing, failure, readFailure } =
     useSubscription(client);
+  // Called unconditionally, and chosen from afterwards: `given ?? useTranslator(EN)` would skip the hook
+  // whenever the prop is passed, which is a hook count that changes between renders.
+  const baked = useTranslator(EN);
+  const t = given ?? baked;
 
-  if (loading) return <p className="muted">One moment.</p>;
+  if (loading) return <p className="muted">{t.t("payments/subscription.loading")}</p>;
 
   return (
     <main className="screen">
@@ -77,23 +120,29 @@ export function SubscriptionScreen({ rails, client, paywallPath }: SubscriptionS
           Worker tells a paying subscriber they have no subscription, and this screen is one click from
           the paywall that would sell them a second one. So the failure gets its own heading and the
           empty state is never rendered from an answer nobody received. */}
-      <h1>{readFailure ? "We couldn't check." : subscribed ? "You're subscribed." : "Nothing yet."}</h1>
+      <h1>
+        {readFailure
+          ? t.t("payments/subscription.unreadable")
+          : subscribed
+            ? t.t("payments/subscription.subscribed")
+            : t.t("payments/subscription.empty")}
+      </h1>
 
       {readFailure ? (
-        <p className="muted">{readFailure.message}</p>
+        <p className="muted">{failureText(t, readFailure)}</p>
       ) : entitlements.length === 0 ? (
-        <p className="muted">You don't hold anything on this account.</p>
+        <p className="muted">{t.t("payments/subscription.nothing_held")}</p>
       ) : (
         <div className="stack">
           {entitlements.map((entitlement) => (
             <p key={entitlement.key}>
-              <strong>{entitlement.key}</strong> <span className="muted">{holding(entitlement)}</span>
+              <strong>{entitlement.key}</strong> <span className="muted">{holding(t, entitlement)}</span>
             </p>
           ))}
         </div>
       )}
 
-      {failure && <p className="muted">{failure.message}</p>}
+      {failure && <p className="muted">{failureText(t, failure)}</p>}
 
       {/* Managing a subscription belongs to whoever sold it, under their own rules. A hosted rail's portal
           is a session the server mints; Apple's and Google's are pages in their own stores, and a web page
@@ -105,22 +154,22 @@ export function SubscriptionScreen({ rails, client, paywallPath }: SubscriptionS
             screen without an edit, in a repo that copied it a year ago. */}
         {PAYMENTS_HOSTED_RAILS.some((rail) => rails[rail]) && (
           <button type="button" disabled={managing} onClick={() => void manage()}>
-            Manage billing
+            {t.t("payments/subscription.manage")}
           </button>
         )}
         {/* Named one at a time, and correctly so: each store has its own sentence, and neither is a set. */}
         {rails.apple && (
           <button type="button" className="secondary" onClick={() => manageStore("apple")}>
-            Bought on the App Store
+            {t.t("payments/subscription.apple")}
           </button>
         )}
         {rails.google && (
           <button type="button" className="secondary" onClick={() => manageStore("google")}>
-            Bought on Google Play
+            {t.t("payments/subscription.google")}
           </button>
         )}
         <Link className="muted" to={paywallPath}>
-          See what else there is
+          {t.t("payments/subscription.more")}
         </Link>
       </div>
     </main>

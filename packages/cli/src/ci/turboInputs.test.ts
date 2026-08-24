@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -617,10 +617,17 @@ describe("a gate is keyed on what it reads", () => {
   });
 
   test("the test tasks of a package that names its own inputs are keyed identically", async () => {
-    // Not tidiness. `test` and `test:node` run the same vitest for every package in the register, and
-    // the guard above runs in the `test` one. A `test` keyed more narrowly than the `test:node` CI runs
-    // — or the reverse — would replay a green guard over a declaration that had gone stale. Equal sets
-    // is the cheapest way to say that and the only one a reader can check at a glance.
+    // Not tidiness. The three tasks run one package's vitest over one tree: `test` runs every project
+    // it declares, and `test:node` and `test:workers` between them run every project too — which is a
+    // claim rather than an assumption, so the sweep below holds them to it. `@pithy-sh/i18n` is why it
+    // has to be put that way: its `test` runs `node`, `dom` and `workers`, its `test:node` runs the
+    // first two and its `test:workers` the third, so "the same vitest" is false of any pair of them and
+    // "the same files, between them" is true of all three.
+    //
+    // The guard above runs in `test`, and CI runs the other two (`.github/workflows/ci.yml`). So a
+    // `test` keyed more narrowly than the `test:node` CI runs — or the reverse — would replay a green
+    // guard over a declaration that had gone stale. Equal sets is the cheapest way to say that and the
+    // only one a reader can check at a glance.
     const named = [...(await registered()).keys()];
     const plans = new Map(await Promise.all(TEST_TASKS.map(async (task) => [task, await planned(task)] as const)));
 
@@ -682,4 +689,129 @@ describe("a gate is keyed on what it reads", () => {
       "the register already reports these reading past their package — the entry says nothing",
     ).toEqual([]);
   });
+});
+
+/**
+ * **A vitest project no CI task names is a project nobody runs.**
+ *
+ * The sibling above holds three task keys equal to each other, and its comment used to justify that by
+ * asserting `test` and `test:node` "run the same vitest for every package in the register". That was
+ * false, and the false half is the interesting one: `@pithy-sh/ui-react` declares a `dom` project — the
+ * rendering tests for the sign-in screen an adopter meets first — and its `test:node` named `--project=node`
+ * alone. CI runs `turbo run test:node test:workers` and never `test`, so eleven test files were collected
+ * by nobody for as long as that stood. Nothing was red. There was nothing to be red.
+ *
+ * So the premise is asserted rather than written down. Every project is asked of vitest itself
+ * (`vitest list --filesOnly --json`, which reports the project each collected file belongs to) and the
+ * task list is read out of the workflow, because a package's own scripts cannot say which of them CI
+ * calls. A task that names no `--project` runs them all, which is how `@pithy-sh/cli` — one unnamed
+ * project, `test:node` spelled `vitest run` — passes without being an exception.
+ */
+
+/**
+ * Two at a time, and the budget that pays for it.
+ *
+ * Each package is one short-lived `vitest list`, which still loads that package's config — a workers
+ * config takes about a second and a half of it. Twenty-two at once is a runner's memory; four at once,
+ * measured, starved the rest of this suite badly enough to time out three of its own siblings. Two, with
+ * a budget of its own, costs about half a minute and takes nothing from anybody.
+ */
+const LIST_CONCURRENCY = 2;
+
+/** How long the sweep may take. `UNIT_BUDGETS`' 60s is a per-test budget, and this test is twenty-two spawns. */
+const LIST_BUDGET = 300_000;
+
+/**
+ * The test tasks CI runs, read out of the workflow rather than written down here a second time.
+ *
+ * `test` is deliberately not among them, which is the whole reason this sweep exists: the task a
+ * developer runs locally is not the task that gates a merge, so what `test` covers proves nothing.
+ */
+function ciTestTasks(): string[] {
+  const workflow = readFileSync(join(REPO_ROOT, ".github", "workflows", "ci.yml"), "utf8");
+  const found = new Set<string>();
+  for (const line of workflow.split("\n")) {
+    const invocation = /\bturbo\S*\s+run\s+((?:test[\w:]*\s+)+)/.exec(line);
+    if (invocation === null) continue;
+    for (const task of (invocation[1] as string).trim().split(/\s+/)) found.add(task);
+  }
+  return [...found].sort();
+}
+
+/**
+ * Every vitest project holding at least one test file in `directory`, as vitest itself lists them.
+ *
+ * The empty string is a package whose config declares one project and gives it no name — real, and
+ * unnameable by a `--project=` filter, so the only task that can cover it is one that filters nothing.
+ * The package's own `node_modules/.bin/vitest` rather than a package runner: the same reach as
+ * {@link TURBO} above, and it resolves the version the package actually tests with.
+ */
+async function vitestProjects(directory: string): Promise<Set<string>> {
+  const vitest = join(directory, "node_modules", ".bin", "vitest");
+  const { stdout } = await run(vitest, ["list", "--filesOnly", "--json"], {
+    cwd: directory,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const at = stdout.search(/^\[$/m);
+  if (at === -1) throw new Error(`${fromRoot(directory)}: vitest listed no files as JSON`);
+  const listed = JSON.parse(stdout.slice(at)) as { file: string; projectName?: string }[];
+  return new Set(listed.map((entry) => entry.projectName ?? ""));
+}
+
+/** What `tasks` cover in a package with these `scripts`: every project, or the ones they name. */
+function ciCoverage(scripts: Record<string, string>, tasks: readonly string[]): { all: boolean; named: Set<string> } {
+  let all = false;
+  const named = new Set<string>();
+  for (const task of tasks) {
+    const script = scripts[task];
+    if (script === undefined) continue;
+    const filters = [...script.matchAll(/--project[= ](\S+)/g)].map((match) => match[1] as string);
+    if (filters.length === 0) all = true;
+    for (const filter of filters) named.add(filter);
+  }
+  return { all, named };
+}
+
+describe("every vitest project a package declares is a project CI runs", () => {
+  test(
+    "no project's test files are collected by a task no merge gate calls",
+    async () => {
+      const tasks = ciTestTasks();
+      expect(tasks, "no `turbo run test…` invocation in the CI workflow — the sweep has nothing to check").toContain(
+        "test:node",
+      );
+      expect(tasks, "CI runs `test` now, and this sweep's premise has moved with it").not.toContain("test");
+
+      const packages = readdirSync(join(REPO_ROOT, "packages")).sort();
+      expect(packages.length, "no packages found at all").toBeGreaterThan(15);
+
+      const unrun: string[] = [];
+      const seen = new Set<string>();
+      for (let index = 0; index < packages.length; index += LIST_CONCURRENCY) {
+        await Promise.all(
+          packages.slice(index, index + LIST_CONCURRENCY).map(async (name) => {
+            const directory = join(REPO_ROOT, "packages", name);
+            const manifest = join(directory, "package.json");
+            if (!existsSync(manifest)) return;
+            const scripts = (JSON.parse(readFileSync(manifest, "utf8")) as { scripts?: Record<string, string> })
+              .scripts;
+            if (scripts?.test === undefined) return;
+            const projects = await vitestProjects(directory);
+            for (const project of projects) seen.add(project);
+            const { all, named } = ciCoverage(scripts, tasks);
+            if (all) return;
+            for (const project of projects) {
+              if (!named.has(project)) unrun.push(`packages/${name} → ${project === "" ? "<unnamed>" : project}`);
+            }
+          }),
+        );
+      }
+
+      expect(unrun, "these vitest projects hold test files and no task CI runs collects them").toEqual([]);
+      // The floor. An empty answer above is also what a sweep that stopped listing anything would give,
+      // and `dom` is the project this gate exists for — the one CI was not running.
+      expect([...seen], "the sweep no longer sees the project that went unrun").toContain("dom");
+    },
+    LIST_BUDGET,
+  );
 });

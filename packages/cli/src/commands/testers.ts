@@ -5,10 +5,12 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
+import type { EmailMessageLayers } from "@pithy-sh/email/src/templates/messages";
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { parse } from "comment-json";
@@ -21,11 +23,17 @@ import { cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/conf
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment, requireManagedEnvironment } from "../project/environment";
-import { projectCapabilities, resolveWorkers } from "../project/workerScope";
+import { composedProjectCapabilities, projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { openSeedDriver } from "../seed/drivers";
 import { createCliLogger } from "../terminal/logger";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim, saffron } from "../terminal/style";
+
+/**
+ * The sending identity the deployed daily-pass host is stamped with. Referenced by type only, the way
+ * `capabilities/testersProvisioner.ts` does, so the CLI gains no dependency on the optional package.
+ */
+type TestersEmailIdentity = import("@pithy-sh/testers/src/provision/resolveTestersConfig").TestersEmailIdentity;
 
 /**
  * `pithy testers` — run a closed test from the terminal.
@@ -251,7 +259,7 @@ export async function loadOptionalEmail<T>(load: () => Promise<T> | T): Promise<
  * the only two silences** — see {@link loadOptionalEmail} for why an installed-and-broken package is
  * not a third.
  */
-async function buildEnqueue(workers: Awaited<ReturnType<typeof resolveWorkers>>, d1: D1Database) {
+export async function buildEnqueue(workers: Awaited<ReturnType<typeof resolveWorkers>>, d1: D1Database) {
   const modules = await loadOptionalEmail(async () => ({
     ...(await import("@pithy-sh/email/src/capability")),
     ...(await import("@pithy-sh/email/src/send/enqueue")),
@@ -260,10 +268,36 @@ async function buildEnqueue(workers: Awaited<ReturnType<typeof resolveWorkers>>,
   if (!modules) return undefined;
   const { isEmailCapability, enqueueEmail, emailDatabase } = modules;
 
-  const email = projectCapabilities(workers).find(isEmailCapability);
+  // **Assembled, not merely collected.** `layersFor` below is a value an i18n capability fills in its
+  // `compose` hook, and reading it off an unassembled capability is silent: the layers are all empty,
+  // so every kit `email/*` key renders as its own key string and this command mails a footer link
+  // labeled `email/shell.unsubscribe`. Worse than the English it replaced, because `enqueueEmail`
+  // falls back to the kit's own catalogs when it is handed no `layersFor` at all — so adding `i18n()`
+  // broke a path that was correct without it. See `capabilities/compose.ts`.
+  const capabilities = composedProjectCapabilities(workers);
+
+  const email = capabilities.find(isEmailCapability);
   if (!email) return undefined;
 
   const config = email.emailConfig;
+  /**
+   * The language a nudge goes out in: the project's default, and nothing narrower.
+   *
+   * This runs from a terminal. There is no request to negotiate from and no per-tester preference on a
+   * roster row, so the only truthful answer is the language the project itself declares — which is what
+   * the composed `i18n` capability's `defaultLocale` is. Duck-typed off the composed set rather than
+   * imported, because `@pithy-sh/i18n` is optional and the CLI must not hard-depend on a capability an
+   * adopter may never add; absent, the nudge is written in the kit's English exactly as before.
+   *
+   * It moves the shell only. A nudge's words are supplied per message by whoever asked for it, so this
+   * decides the document's `lang` and `dir` and the footer, not the letter.
+   */
+  const i18n = capabilities.find(
+    (candidate): candidate is Capability & { layersFor: EmailMessageLayers; i18nConfig: { defaultLocale: string } } =>
+      candidate.name === "i18n" &&
+      typeof (candidate as { layersFor?: unknown }).layersFor === "function" &&
+      typeof (candidate as { i18nConfig?: { defaultLocale?: unknown } }).i18nConfig?.defaultLocale === "string",
+  );
   return async (input: { to: string; template: string; payload: unknown }) =>
     enqueueEmail(
       {
@@ -272,13 +306,14 @@ async function buildEnqueue(workers: Awaited<ReturnType<typeof resolveWorkers>>,
         fromName: config.fromName,
         // Already resolved on the capability — the preset and any overrides were merged at assembly.
         theme: config.theme,
+        ...(i18n ? { layersFor: i18n.layersFor } : {}),
         // No send-Workflow binding from a terminal, so the row stays `pending` and the email worker's
         // every-minute scheduler picks it up. Slower by up to a minute, and it loses nothing.
         sender: undefined,
         now: new Date(),
         newId: () => crypto.randomUUID(),
       },
-      input,
+      i18n ? { ...input, locale: i18n.i18nConfig.defaultLocale } : input,
     );
 }
 
@@ -314,7 +349,9 @@ async function buildProvisioner(projectDir: string) {
   }
 
   const workers = await resolveWorkers({ projectDir });
-  const capabilities = projectCapabilities(workers);
+  // Assembled, for the same reason the enqueue seam above is: the catalogs stamped into the deployed
+  // host come off `hostCatalogs()`, which answers `{}` until every `compose` hook has run.
+  const capabilities = composedProjectCapabilities(workers);
   const { isTestersCapability } = await loadTesters();
   const testers = capabilities.find(isTestersCapability);
   if (!testers) {
@@ -331,11 +368,16 @@ async function buildProvisioner(projectDir: string) {
   // other half of the same mistake.
   const emailModule = await loadOptionalEmail(() => import("@pithy-sh/email/src/capability"));
   const composed = emailModule && capabilities.find(emailModule.isEmailCapability);
-  const email: { fromAddress: string; fromName: string; theme: unknown } | undefined = composed
+  const email: TestersEmailIdentity | undefined = composed
     ? {
         fromAddress: composed.emailConfig.fromAddress,
         fromName: composed.emailConfig.fromName,
         theme: composed.emailConfig.theme,
+        // The same journey the theme makes, and for the same reason: the daily-pass host composes
+        // nothing, so the project's catalogs can only reach it as a var a provision run writes. Without
+        // it the host reads `env.EMAIL_MESSAGES` and finds a var nobody wrote — the defect this
+        // capability's own `enqueueSeam.ts` documents, surviving on the second Worker that reads it.
+        messages: composed.hostCatalogs(),
       }
     : undefined;
 

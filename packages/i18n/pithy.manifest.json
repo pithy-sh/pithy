@@ -1,0 +1,18 @@
+{
+  "name": "i18n",
+  "package": "@pithy-sh/i18n",
+  "requiredBindings": [],
+  "whenToEnable": "Enable it when your app serves readers in more than one language. It adds a translator seam every screen, error and email renders through, negotiates each reader's locale from the URL, their account, a cookie and Accept-Language, and formats dates, numbers and currency with Intl. Ships Spanish; add your own catalogs a sentence at a time.",
+  "scaffold": [
+    "Set `supportedLocales` to the languages you serve, least specific first — `es`, not `es-ES`.",
+    "Run `pithy doctor` to see which messages have no translation yet in each locale.",
+    "Override any kit sentence with one entry in `messages`; everything you do not mention keeps arriving with each release."
+  ],
+  "configOptions": [
+    {
+      "key": "defaultLocale",
+      "default": "en",
+      "describe": "The locale served when nothing else answers. Must be one of supportedLocales."
+    }
+  ]
+}

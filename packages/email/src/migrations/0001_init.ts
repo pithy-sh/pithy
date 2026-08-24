@@ -19,8 +19,9 @@ import type { Migration } from "kysely/migration";
  * walking a database that already holds rows from an old shape to a new one — and there is no such
  * database, so a `0002` would be a step from a shape that never ran to a shape that never shipped.
  *
- * **Amended in place on 2026-08-16** for `correlation` (pithy-sh/pithy#382), and the condition was
- * checked rather than assumed, because CONTRIBUTING.md asks a later reader to check it:
+ * **Amended in place on 2026-08-23** for `locale` (pithy-sh/pithy#441), and **on 2026-08-16** for
+ * `correlation` (pithy-sh/pithy#382). The condition was re-checked on each occasion rather than
+ * assumed, because CONTRIBUTING.md asks a later reader to check it:
  *
  * - `@pithy-sh/email` is at `0.0.0` and `npm view @pithy-sh/email version` is a 404. Nothing has been
  *   released, so no `0200_email_0001_init` has run anywhere a chain would be replayed against.
@@ -64,6 +65,17 @@ export const email_0001_init: Migration = {
       .addColumn("timezone", "text")
       .addColumn("localTime", "text")
       .addColumn("campaignId", "text")
+      // The language this message is written in, as a BCP-47 tag. Null means nobody chose one, and the
+      // render falls back to the kit's English — which is not the same statement as `en`, exactly as
+      // `pithy_auth_users.locale` distinguishes them.
+      //
+      // On the row rather than re-derived at send, and that is the whole of pithy-sh/pithy#441 for this
+      // table. The subject is rendered at enqueue, inside a request that knows the reader; the body is
+      // rendered hours later inside a Workflow that has no request at all. Two renders, two chances to
+      // choose a language, and until this column they could only agree by accident. It is also what a
+      // support pane needs to answer "why did this letter arrive in Spanish" — an operator reading a
+      // subject they cannot parse otherwise has nothing on the row that explains it.
+      .addColumn("locale", "text")
       // What the message was *about*, as the caller names it — the discriminator for a template that
       // carries more than one kind of message (pithy-sh/pithy#382). Six of the dashboard's account
       // notices ride one `operationalNotice` to the same addresses, so `(recipient_key, template)`

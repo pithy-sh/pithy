@@ -13,8 +13,16 @@
  * is not the brand's to set — see `severity.ts`. They live here because this is where every other
  * dark-mode swap lives, and they are generated from the same table the inline light colors come from.
  *
+ * **The shell speaks the job's language.** `lang` and `dir` are injected by the engine from the
+ * render's translator, so a document is declared in the language it is actually written in and an RTL
+ * locale lays out right-to-left rather than being mirrored by hand — there was no `dir` here at all
+ * before pithy-sh/pithy#441, which meant an Arabic body inherited a left-to-right shell. The footer's
+ * opt-out word comes from the catalog for the same reason: it is the one sentence in this file, and a
+ * Spanish reader offered `Unsubscribe` has been told the rest of the letter was a translation of
+ * something.
+ *
  * Restyled from the Leed/Pithy email shell. Variables are Handlebars: `{{theme.*}}`, `{{layoutWidth}}`,
- * `{{openPixelUrl}}`, `{{unsubscribeUrl}}`.
+ * `{{lang}}`, `{{dir}}`, `{{openPixelUrl}}`, `{{unsubscribeUrl}}`.
  */
 
 import { severityDarkModeCss } from "./severity";
@@ -23,7 +31,7 @@ const FONT = "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helve
 
 /** Doctype, head (with the dark-mode style block), body open, the branded masthead, and the content cell. */
 export const emailHead = `<!DOCTYPE html>
-<html lang="en" xmlns:v="urn:schemas-microsoft-com:vml">
+<html lang="{{lang}}" dir="{{dir}}" xmlns:v="urn:schemas-microsoft-com:vml">
 <head>
 <meta charset="utf-8">
 <meta name="x-apple-disable-message-reformatting">
@@ -46,7 +54,7 @@ ${severityDarkModeCss}
 </style>
 </head>
 <body class="email-bg" style="margin: 0; width: 100%; background-color: {{theme.light.background}}; padding: 0; -webkit-font-smoothing: antialiased; word-break: break-word">
-<div role="article" aria-roledescription="email" lang="en">
+<div role="article" aria-roledescription="email" lang="{{lang}}" dir="{{dir}}">
 {{#if openPixelUrl}}<img src="{{openPixelUrl}}" width="1" height="1" alt="" style="position: absolute; left: 0; top: 0; max-width: 1px; max-height: 1px; opacity: 0; border: 0">{{/if}}
 <div class="email-bg" style="background-color: {{theme.light.background}}; font-family: ${FONT}; padding: 0 16px">
   <table align="center" cellpadding="0" cellspacing="0" role="none" style="width: {{layoutWidth}}px; max-width: {{layoutWidth}}px">
@@ -67,7 +75,7 @@ export const emailFoot = `</td>
             <p class="t-subtle" style="margin: 0; color: {{theme.light.textSubtle}}">{{theme.appName}}</p>
             {{#if theme.links.length}}<p style="margin: 12px 0 0">{{#each theme.links}}{{#unless @first}} &middot; {{/unless}}<a href="{{href}}" class="hover-underline t-muted" style="color: {{../theme.light.textMuted}}; text-decoration: none">{{label}}</a>{{/each}}</p>{{/if}}
             {{#if theme.footerAddress}}<p class="t-subtle" style="margin: 14px 0 0; color: {{theme.light.textSubtle}}">{{theme.footerAddress}}</p>{{/if}}
-            {{#if unsubscribeUrl}}<p style="margin: 12px 0 0"><a href="{{unsubscribeUrl}}" class="hover-underline t-subtle" style="color: {{theme.light.textSubtle}}; text-decoration: underline">Unsubscribe</a></p>{{/if}}
+            {{#if unsubscribeUrl}}<p style="margin: 12px 0 0"><a href="{{unsubscribeUrl}}" class="hover-underline t-subtle" style="color: {{theme.light.textSubtle}}; text-decoration: underline">{{t "email/shell.unsubscribe"}}</a></p>{{/if}}
           </td>
         </tr>
         <tr role="separator"><td style="line-height: 40px">&zwj;</td></tr>

@@ -100,6 +100,7 @@ export function jobDetailView(job: EmailJob): EmailJobDetail {
     messageId: job.messageId ?? null,
     error: job.error ?? null,
     bounceCode: job.bounceCode ?? null,
+    locale: job.locale ?? null,
     timezone: job.timezone ?? null,
     localTime: job.localTime ?? null,
     openTracking: job.openTracking,

@@ -4,6 +4,7 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
 import { z } from "zod";
 import { createBounceHandler } from "./bounce/handler";
 import { emailSigningRegistry } from "./crypto/signingKey";
@@ -20,9 +21,11 @@ import { registerEmailAdminRoutes } from "./http/routes";
 import { email_0001_init } from "./migrations/0001_init";
 import { email_0001_suppressions } from "./migrations/0001_suppressions";
 import { DevMailDelivery } from "./provision/devDelivery";
+import { emailHostCatalogs } from "./provision/hostCatalogs";
 import { emailSettings } from "./provision/settingsCheck";
 import { type EnqueueInput, type EnqueueResult, enqueueEmail } from "./send/enqueue";
 import { type EmailSenderEnv, emailSenderBinding } from "./send/senderBinding";
+import { EMAIL_MESSAGES, type EmailMessageLayers, kitEmailLayers } from "./templates/messages";
 import { CustomTheme, type EmailTheme, resolveTheme } from "./templates/theme";
 import { PACKAGE_VERSION } from "./version.generated";
 import { EmailScheduleParams, EmailSendParams } from "./workflows/params";
@@ -146,6 +149,19 @@ export interface EmailCapability extends Capability {
    * lives behind, exactly as it owns `DB` and `EMAIL_SENDER`.
    */
   suppressions: (env: EmailEnqueueEnv) => EmailSuppressionDatabase;
+  /**
+   * The catalogs `pithy email provision` stamps into the host worker's `EMAIL_MESSAGES` var.
+   *
+   * A function rather than a field, and read after composition rather than at construction, for the
+   * reason the `compose` hook below exists at all: a capability sees only itself when it is built, and
+   * the translations belong to a capability that may be composed after this one. A snapshot taken in
+   * the returned object literal would be the pre-compose English, permanently — the same trap
+   * `@pithy-sh/i18n` names on its own `composedMessages` accessor.
+   *
+   * Empty when nothing composed an i18n capability, which is what a project serving one language wants:
+   * no var is written and the host renders the English it bundles.
+   */
+  hostCatalogs: () => LocaleCatalogs;
 }
 
 /**
@@ -159,6 +175,23 @@ export function email(config: EmailConfigInput): EmailCapability {
   const resolved = EmailConfig.parse(config);
   // Build the full theme from the preset, deep-merging any customTheme override.
   const theme = resolveTheme(resolved.theme, resolved.customTheme);
+  /**
+   * Where an enqueue finds words for a locale — this package's own English until `compose` says
+   * otherwise.
+   *
+   * Reassigned rather than resolved once at construction, because a capability sees only itself when it
+   * is built and the translations belong to a capability that may be composed after this one.
+   */
+  let layersFor: EmailMessageLayers = kitEmailLayers;
+  /**
+   * The locales the project told the i18n capability it serves — the keys `pithy email provision`
+   * flattens a catalog for.
+   *
+   * `layersFor` alone cannot answer this. It is a function of a locale, so it can say what `es` reads
+   * and never that `es` is one of the languages this project speaks; the set lives on the i18n
+   * capability's own config, and this is the only thing that knows it.
+   */
+  let supportedLocales: readonly string[] = [];
   const capability = defineCapability({
     name: "email",
     // The package version this capability ships at, stamped by `scripts/stampVersions.ts` — a Worker
@@ -169,6 +202,39 @@ export function email(config: EmailConfigInput): EmailCapability {
     dependsOn: ["secrets"],
     // The slice of secrets email reads — aggregated into the shared per-invocation accessor at startup.
     secretRegistry: emailSigningRegistry,
+    /**
+     * This capability's own copy, in the language it is written in — the seven templates whose words
+     * the kit owns, plus the shell's severity vocabulary and its opt-out link. All under `email/`,
+     * which `composeMessages` enforces.
+     *
+     * English only. The translations of it ship in `@pithy-sh/i18n`, so a corrected sentence or a new
+     * locale reaches an adopter as a package upgrade rather than as a merge into a file they own.
+     */
+    messages: EMAIL_MESSAGES,
+    /**
+     * Take the composed project's catalog layers, when it has any.
+     *
+     * Duck-typed, and deliberately not an import. `@pithy-sh/i18n` is optional — a project composing
+     * only `email` must not acquire it as a dependency — and CLAUDE.md's rule is that capabilities
+     * depend on core seams rather than on each other. `layersFor` is that seam's shape
+     * (`(locale) => catalogs`), declared in `@pithy-sh/core`'s i18n module and published by the i18n
+     * capability, so recognizing it structurally is the whole of the coupling.
+     *
+     * What arrives is the full stack in the right order: the adopter's overrides, the kit's
+     * translation, every composed capability's English. Absent, {@link kitEmailLayers} answers and a
+     * project sends what it always sent.
+     */
+    compose: ({ capabilities }) => {
+      for (const composed of capabilities) {
+        if (composed.name !== "i18n") continue;
+        const candidate = (composed as { layersFor?: unknown }).layersFor;
+        if (typeof candidate === "function") layersFor = candidate as EmailMessageLayers;
+        // Duck-typed on the same terms as `layersFor`: `i18nConfig.supportedLocales` is the shape the
+        // i18n capability publishes, and recognizing it structurally is the whole of the coupling.
+        const locales = (composed as { i18nConfig?: { supportedLocales?: unknown } }).i18nConfig?.supportedLocales;
+        if (Array.isArray(locales)) supportedLocales = locales.filter((tag) => typeof tag === "string");
+      }
+    },
     // Email provisioning wires inbound bounce routing (Email Routing rules), so the CI credential that
     // provisions email needs that scope — contributed into the one `ci-system` token.
     ciPermissions: ["email:routing"],
@@ -279,6 +345,9 @@ export function email(config: EmailConfigInput): EmailCapability {
         fromAddress: resolved.fromAddress,
         fromName: resolved.fromName,
         theme,
+        // Read through the closure, not captured: `compose` runs after this function is defined and
+        // before any request reaches it, so a snapshot taken here would be the pre-compose English.
+        layersFor: (locale) => layersFor(locale),
         sender: emailSenderBinding(env),
         // Read straight off the env the consumer forwarded. This one line is what makes suppression
         // automatic: a consumer names nothing, and a hard-bounced address is never queued for a send.
@@ -299,6 +368,9 @@ export function email(config: EmailConfigInput): EmailCapability {
     },
     enqueue,
     suppressions,
+    // Read through the closures, never captured — `compose` runs after this object is built, and both
+    // values it fills are the whole point of the call.
+    hostCatalogs: () => emailHostCatalogs(supportedLocales, (locale) => layersFor(locale)),
   });
 }
 

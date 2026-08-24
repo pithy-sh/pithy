@@ -352,6 +352,10 @@ describe("no module writes its own walk over a directory tree", () => {
       walk: "templateSources",
       why: "The same cycle as its sibling above, for the same reason and not a new one: `@pithy-sh/ui-react` cannot depend on `@pithy-sh/cli` without inverting the workspace graph. It sweeps the same committed `packages/ui-react/templates` tree, so it inherits that entry's argument entirely — nothing scaffolds into or deletes from it mid-run. Arrived with #340, which needed to assert that no template writes a price down.",
     },
+    "packages/ui-react/src/templateCopy.test.ts": {
+      walk: "templateSources",
+      why: "The third in this package and the same wall as the two above, not a new one: `@pithy-sh/ui-react` cannot depend on `@pithy-sh/cli` without inverting the workspace graph. It sweeps the same committed `packages/ui-react/templates` tree, so it inherits their argument whole — nothing scaffolds into or deletes from it mid-run. Arrived with #441, which needed to assert that no seeded screen writes a sentence a translator cannot reach.",
+    },
     "tooling/license-headers/src/workspace.ts": {
       walk: "walk",
       // #211 decided this one rather than leaving it implied. The edge is one line — `"@pithy-sh/cli":

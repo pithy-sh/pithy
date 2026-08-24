@@ -70,7 +70,7 @@ function makeApp(input: MatchmakingConfigInput = CONFIG) {
 
 async function seedAuthUser(id: string, email: string, name: string): Promise<void> {
   await env.DB.exec(
-    "CREATE TABLE IF NOT EXISTS pithy_auth_users (id TEXT PRIMARY KEY, name TEXT, email TEXT, email_verified INTEGER, image TEXT, created_at TEXT, updated_at TEXT)",
+    "CREATE TABLE IF NOT EXISTS pithy_auth_users (id TEXT PRIMARY KEY, name TEXT, email TEXT, email_verified INTEGER, image TEXT, created_at TEXT, updated_at TEXT, locale TEXT)",
   );
   await env.DB.prepare(
     "INSERT INTO pithy_auth_users (id, name, email, email_verified, image, created_at, updated_at) VALUES (?, ?, ?, 1, NULL, ?, ?)",

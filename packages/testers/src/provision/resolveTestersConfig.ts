@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
 import { hostWorkflowsFor, resolveWorkflowHost, type WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
+import { emailMessagesVars } from "@pithy-sh/email/src/provision/resolveEmailConfig";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import type { TestersConfig } from "../config/config";
 import { TESTERS_CAPABILITY, testersWorkflowRegistry } from "../workflows/specs";
@@ -30,6 +32,26 @@ export interface TestersEmailIdentity {
   readonly fromName: string;
   /** The resolved email theme, serialized into the host's `EMAIL_THEME` var. */
   readonly theme: unknown;
+  /**
+   * The project's email catalogs, from the composed email capability's `hostCatalogs()` — serialized
+   * into the host's `EMAIL_MESSAGES` var.
+   *
+   * The same journey the theme makes, and it has to be: this host composes nothing. `nudge/enqueueSeam.ts`
+   * reads `env.EMAIL_MESSAGES` "exactly as the email host worker carries them", and until this field
+   * existed nothing wrote it — so the nudge shell was the kit's English however many languages the
+   * project spoke, which is the pithy-sh/pithy#441 defect surviving on the second Worker that reads
+   * the var.
+   *
+   * The **shell** is what it moves — the document's `lang` and `dir`, the footer's opt-out word. A
+   * nudge's own words are the adopter's copy, supplied per message and never in a catalog.
+   *
+   * **Required, and `{}` is the way to say "none".** `CloudflareEmailProvisionerOptions.messages` is
+   * required for the same reason and it is the same reason twice: a provisioner that forgot the
+   * catalogs is exactly what left this var written by nobody, and a field carrying a default cannot be
+   * forgotten out loud. Empty writes no var at all, which is the host's own spelling of "the English I
+   * bundle" and what a project serving one language wants.
+   */
+  readonly messages: LocaleCatalogs;
 }
 
 /** The resolved ids and per-env values for one environment's daily-pass deploy. */
@@ -95,6 +117,11 @@ export function resolveTestersConfig(
             EMAIL_FROM_ADDRESS: email.fromAddress,
             EMAIL_FROM_NAME: email.fromName,
             EMAIL_THEME: JSON.stringify(email.theme),
+            // Through `@pithy-sh/email`'s own composer, not a local `JSON.stringify`: it is the same
+            // var against the same 5 KB Cloudflare ceiling on the same account, and error 10054 in
+            // the middle of a provision run is a wrangler exit nobody can act on. One refusal, one
+            // action line, for both hosts.
+            ...emailMessagesVars(email.messages),
           }
         : {}),
     },

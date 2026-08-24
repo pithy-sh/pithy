@@ -4,6 +4,7 @@
 import type { PithyHonoEnv, PithyMiddleware } from "@pithy-sh/core/src/capability/capability";
 import { UnauthorizedError } from "@pithy-sh/core/src/error/pithyError";
 import { AuthContext } from "@pithy-sh/core/src/http/authContext";
+import { isLocale } from "@pithy-sh/core/src/i18n/locale";
 import type { MiddlewareHandler } from "hono";
 import type { AuthWiring } from "../capability";
 import { getAuthInstance } from "./resolve";
@@ -24,7 +25,21 @@ export function createSessionMiddleware(wiring: AuthWiring): PithyMiddleware {
           const instance = await getAuthInstance(c, wiring);
           const session = await instance.api.getSession({ headers });
           if (session) {
-            c.set("auth", AuthContext.parse({ userId: session.user.id, sessionId: session.session.id, scopes: [] }));
+            // `locale` comes off the user row the session lookup already loaded, so publishing it
+            // costs nothing — and it is the `user` link of `@pithy-sh/i18n`'s server chain, the one
+            // that makes a reader's stored choice outrank their device's `Accept-Language`. Read
+            // through `AuthContext.parse`, so a column holding something that is not a tag lands as
+            // `undefined` rather than reaching `Intl`.
+            const stored = (session.user as { locale?: unknown }).locale;
+            c.set(
+              "auth",
+              AuthContext.parse({
+                userId: session.user.id,
+                sessionId: session.session.id,
+                scopes: [],
+                locale: typeof stored === "string" && isLocale(stored) ? stored : null,
+              }),
+            );
           }
         } catch {
           // Leave `auth` null; the credential was missing/invalid.

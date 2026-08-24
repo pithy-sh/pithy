@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { z } from "zod";
+import type { MessageParams } from "../i18n/catalog";
 import type { ValidationIssue } from "./payload";
 import { ErrorPayload } from "./payload";
 
@@ -33,6 +34,12 @@ interface ErrorArgs {
   action?: string;
   /** Internal context for logs + audit. Never serialized to clients. */
   detail?: string;
+  /**
+   * Values a translating client interpolates into its own wording for this code. Client-facing, so —
+   * unlike `action` and `detail` — these cross the boundary with `message`. The `code` is the catalog
+   * key, so a throw site that fills a placeholder states it once, here.
+   */
+  params?: MessageParams;
 }
 
 export class ValidationError extends PithyError {
@@ -46,6 +53,7 @@ export class ValidationError extends PithyError {
         message: args.message ?? "Invalid input.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
         issues: args.issues ?? [],
       },
       options,
@@ -64,6 +72,7 @@ export class UnauthorizedError extends PithyError {
         message: args.message ?? "Invalid or expired credentials.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -86,6 +95,7 @@ export class WebhookUnverifiedError extends PithyError {
         message: args.message ?? "That delivery could not be verified.",
         action: args.action ?? "Sign the request with this endpoint's current secret and send it promptly.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -103,6 +113,7 @@ export class ForbiddenError extends PithyError {
         message: args.message ?? "Forbidden.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -120,6 +131,7 @@ export class NotFoundError extends PithyError {
         message: args.message ?? "Not found.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -137,6 +149,7 @@ export class ConflictError extends PithyError {
         message: args.message ?? "Conflict.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -154,6 +167,7 @@ export class RateLimitError extends PithyError {
         message: args.message ?? "Too many requests.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -171,6 +185,7 @@ export class InternalError extends PithyError {
         message: args.message ?? "Something unexpected happened.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -194,6 +209,7 @@ export class UpstreamError extends PithyError {
         message: args.message ?? "An upstream service could not be reached.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -212,6 +228,7 @@ export class UpstreamTimeoutError extends PithyError {
         message: args.message ?? "An upstream service did not answer in time.",
         action: args.action ?? "Try again in a moment.",
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -229,7 +246,13 @@ export function fromZodError(error: z.ZodError, args: ErrorArgs = {}): Validatio
     message: issue.message,
     code: issue.code,
   }));
-  return new ValidationError({ message: args.message, action: args.action, detail: args.detail, issues });
+  return new ValidationError({
+    message: args.message,
+    action: args.action,
+    detail: args.detail,
+    params: args.params,
+    issues,
+  });
 }
 
 /**

@@ -55,6 +55,7 @@ Phase 0 — the foundation. `init`, the Worker contract, the migration runner, a
 - [`docs/CLI.md`](docs/CLI.md) — command behavior, flags, output.
 - [`docs/NAMING.md`](docs/NAMING.md) — how every provisioned resource is named, and what a project is.
 - [`docs/UI.md`](docs/UI.md) — front ends: `pithy ui`, the React stub, one origin.
+- [`docs/I18N.md`](docs/I18N.md) — language: the translator seam, catalog keys, and what stays English.
 - [`docs/STACK.md`](docs/STACK.md) — the toolchain.
 - [`docs/BRAND.md`](docs/BRAND.md) — identity and voice.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to work in this repo.

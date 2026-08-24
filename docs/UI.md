@@ -45,6 +45,8 @@ apps/api/
     styles.css               new   yours: the palette tokens, the reset, body
     pithy-screens.css        new   Pithy's: every class Pithy's own screens render
     pithy-config.tsx         new   the one module that imports virtual:pithy/*
+    pithy-locale.tsx         new   the negotiated locale: <html lang> and the translator, one value
+    pithy-locale.test.tsx    new   the gate that fails if the page stops speaking the language it declares
     session.tsx              new   --auth  session hook, signOut, signed-in guard
     turnstile.tsx            new   --auth  the widget and its token placement
     turnstile.test.tsx       new   --auth  the gate that fails if the widget stops reading it
@@ -78,6 +80,8 @@ Pithy writes a file **once**, and from that moment the file is yours.
 - `src/routes/app/` is written exactly once, at the initial scaffold, and never written again. It is your application. Pithy has no business in it.
 
 The practical upshot: edit anything. Delete `src/routes/pithy/sign-in.tsx` and write your own. Rewrite `styles.css` from scratch. Nothing upstream will argue with you, and nothing will silently revert.
+
+**A screen's baked catalog inherits that promise, and no release will ever add a locale file to your repository.** Each screen carries its own English in a `satisfies MessageCatalog` block inside the file, so from the moment it is written those sentences are yours like the rest of it — a later release adding a line to the kit's sign-in screen changes the template in `@pithy-sh/ui-react`, never your copy. The translations of those sentences are the other half, and they are never written into your tree at all: they ship inside `@pithy-sh/i18n` and arrive as a package upgrade. So there is no locale directory to review, no merge to take, and no file here that a future release wants back.
 
 ### The tests that come with them
 
@@ -119,6 +123,70 @@ Under `--json`, all three report the list as `unstyled`.
 Two things it deliberately does not do. It does not look at `src/routes/app/` — that is your application, and a report auditing your own screens' class names is Pithy inspecting your code. And it reads only class names written as **literals**: `className="stack"` and `className={busy ? "a" : "b"}` are read, `className={SOME_CONSTANT}` is not. If you want a name checked, write it as a literal.
 
 The fix is a rule, not a stub. `.stack {}` will pass this and change nothing on the page — restoring `src/pithy-screens.css`, or defining what you meant to define, is what the message is asking for. Deleting the class from the screen is also a fix; the screen is yours.
+
+### Two catalogs, and why
+
+Every screen Pithy writes renders through a translator. No sentence is a bare string in the JSX; each one is `t.t("auth/sign_in.title")`, and the English that key resolves to sits in a `satisfies MessageCatalog` block at the top of the same file.
+
+```tsx
+import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
+import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
+
+const EN = {
+  "auth/sign_in.title": "Welcome.",
+  "auth/sign_in.submit": "Email me a link",
+} satisfies MessageCatalog;
+
+export function SignInScreen(): ReactNode {
+  const t = useTranslator(EN);
+  return <h1>{t.t("auth/sign_in.title")}</h1>;
+}
+```
+
+Like the stylesheets, they are two catalogs because ownership says they must be — and the split falls in the same place, along the same line.
+
+`EN` is yours, and it is **the catalog that survives being copied**. It is in the file because the file is in your repository and the English cannot live in a package you might never install: a project that composes no `i18n` capability renders exactly these sentences, with no negotiation, no merge and no config, byte for byte as it did before any of this existed. Edit the words to change the English. There is no other place to change them.
+
+The translations are Pithy's, and they are **never copied into your tree**. They ship inside `@pithy-sh/i18n` as one catalog per locale. If the Spanish for `auth/sign_in.title` lived in your repository, a typo fix or a new language could never reach you and every adopter would be a fork on the day they scaffolded.
+
+The merge mechanism is `useTranslator`, and it puts the baked catalog **last**:
+
+1. your own catalog, from `i18n({ messages })`, for the reader's locale,
+2. that catalog for the project default,
+3. Pithy's translation for the reader's locale,
+4. `EN`, the sentences in the file.
+
+Per key, never per catalog — overriding one sentence is one entry and every key you did not mention keeps flowing from the package. `useTranslator` **never throws for want of a provider**: with none, it is exactly a translator over `EN`, which is what a copied screen does in a project that never composed the capability. A key nobody has renders as the key, because a blank reads like finished copy and would ship.
+
+Two rules keep it working. **Write copy as a key, not as a string** — a bare sentence added to a screen renders perfectly and is the one line your Spanish readers meet in English, so `packages/ui-react/src/templateCopy.test.ts` sweeps the templates for prose outside a catalog. And **key it under a real domain**: `<capability>/<path>` for a capability's screen, `app/…` for your own, which is what makes the sentence reachable from your `pithy.config.ts`. [`docs/I18N.md`](I18N.md) is the whole grammar.
+
+### Mounting a language
+
+The catalogs above answer *what* a screen says. What decides *which* language it says it in is one file, `src/pithy-locale.tsx`, and `client.tsx` renders the whole app inside it.
+
+```tsx
+createRoot(container).render(
+  <StrictMode>
+    <PithyLocale>
+      <Router />
+    </PithyLocale>
+  </StrictMode>,
+);
+```
+
+`PithyLocale` does two things that have to be one thing. It negotiates the reader's locale from `virtual:pithy/i18n` — the query parameter, this device's memory, whatever the server put on `<html lang>`, in the order your `pithy.config.ts` configured — and it puts `lang` and `dir` on the document. Then it loads that locale's catalog and mounts a `TranslatorProvider` over the app, so every screen under it renders those words.
+
+**Both come from the same resolved value, and that is the point of the file.** `lang` is a promise to assistive technology: a screen reader believes it, switches voice, and pronounces what follows with that language's phonetics. A page that declares `es` and renders English is worse for that reader than one that never negotiated at all — so the attribute and the words are one statement here, and `src/pithy-locale.test.tsx` is the gate that keeps them one after the file is yours.
+
+With no `i18n` capability composed it renders its children untouched: no provider, no catalog fetched, no chunk downloaded, and the document keeps the `lang` your `index.html` declared. Removing the capability puts the app back exactly where it started.
+
+Your own catalogs go on it, and they are the top layer:
+
+```tsx
+<PithyLocale messages={{ fr: { "app/home.title": "Vous y êtes." } }}>
+```
+
+That is also how a language Pithy writes nothing in gets its words. The kit ships one catalog per locale it has translated; a locale it has not renders the baked English under a correct `lang`, and what closes that gap is your entry here or in `i18n({ messages })`. [`docs/I18N.md`](I18N.md) has the resolver order, where a signed-in reader's locale lives, and what never gets translated.
 
 ### Where the templates live
 
@@ -220,7 +288,7 @@ The exact shape of each projection is declared in `client-env.d.ts`, which is wh
 
 **Import the default and narrow on `enabled`. Do not import a projection key by name.** A capability that is not composed projects `{ enabled: false }` and nothing else, so `import { sitekey } from "virtual:pithy/turnstile"` is a missing export — and the build fails on precisely the case the mechanism exists to survive. Each module's declared type is a union discriminated on `enabled`, so narrowing is what makes the other fields visible, and TypeScript will not let you read one without it.
 
-The scaffold does this in exactly one place. `src/pithy-config.tsx` imports each virtual module, narrows it once, and re-exports `authConfig`, `turnstileConfig` and `paymentsConfig`; every screen reads those. It is written by every scaffold, not by a capability's own group, precisely because it belongs to all of them. If you add a screen of your own, read it from there too — or import the virtual module directly and narrow it yourself. Either is fine; a bare named import is not.
+The scaffold does this in exactly one place. `src/pithy-config.tsx` imports each virtual module, narrows it once, and re-exports `authConfig`, `turnstileConfig`, `paymentsConfig` and `i18nConfig`; every screen reads those. It is written by every scaffold, not by a capability's own group, precisely because it belongs to all of them. If you add a screen of your own, read it from there too — or import the virtual module directly and narrow it yourself. Either is fine; a bare named import is not.
 
 Four things make this work the way it does.
 
@@ -232,7 +300,7 @@ Four things make this work the way it does.
 
 **The types are ambient.** `client-env.d.ts` declares the `virtual:pithy/*` modules for the client tsconfig, which is why the import above type-checks with no path mapping.
 
-That file is the one thing here that *is* an artifact, and **it is generated, not written**. Each capability declares its client projection as a type — `src/client/projection.ts`, the same type its `client:` closure is checked against — and `@pithy-sh/vite`'s `src/clientEnvDeclaration.ts` emits those four declarations, unions and doc comments included, at kit build time. So the shape has one statement and cannot drift from itself: a field a projection stops emitting is a compile error where it is projected, and the declaration changes in the same commit. #398, on #392's finding and #395's measurement.
+That file is the one thing here that *is* an artifact, and **it is generated, not written**. Each capability declares its client projection as a type — `src/client/projection.ts`, the same type its `client:` closure is checked against — and `@pithy-sh/vite`'s `src/clientEnvDeclaration.ts` emits every one of those declarations, unions and doc comments included, at kit build time. `virtual:pithy/i18n` is one of them: locale metadata only, never catalogs, because the projection is inlined into the main chunk and a catalog there would be downloaded by every reader in every language before the first paint. So the shape has one statement and cannot drift from itself: a field a projection stops emitting is a compile error where it is projected, and the declaration changes in the same commit. #398, on #392's finding and #395's measurement.
 
 ## The sign-in screen
 
@@ -456,6 +524,7 @@ One route is deliberately never allowlisted: one your app capability mounts at *
 |---|---|---|
 | `react` | 19.2.8 | The client |
 | `react-dom` | 19.2.8 | The client |
+| `@pithy-sh/i18n` | matching your CLI | The translator every seeded screen renders through |
 | `@types/react` | 19.2.17 | Types |
 | `@types/react-dom` | 19.2.3 | Types |
 | `vite` | ^8.0.16 | Dev server and build |
@@ -464,11 +533,13 @@ One route is deliberately never allowlisted: one your app capability mounts at *
 | `wrangler` | ^4.115.0 | Deploy |
 | `@pithy-sh/vite` | matching your CLI | Serves the `virtual:pithy/*` modules |
 
-Two exceptions to the table, and `@pithy-sh/vite` is the only row either touches.
+**`@pithy-sh/i18n` is a dependency of the front end whether or not you compose the capability**, and that is not the pattern the auth and payments screens follow. Those are written only when their capability is composed, and their package arrives with `pithy add <capability>`. The translator is different because every seeded screen reads it — `src/router.tsx` and your home screen included, both written on every scaffold — so the import is there before you have decided anything about language. Composing nothing still renders the English baked into each screen, byte for byte: `useTranslator` with no provider is a translator over that catalog and nothing else. See [Two catalogs, and why](#two-catalogs-and-why), and [`docs/I18N.md`](I18N.md) for the rest.
 
-The first is yours: if it is already provided by a checkout linked into your `node_modules`, `pithy ui add` writes no range for it. The package resolves either way, and a range naming a version the registry does not have would fail your next install.
+Two exceptions to the table, and they touch only the two `@pithy-sh/*` rows.
 
-The second is ours, and applies to every project until `@pithy-sh/*` publishes: there is no version to name yet, so the line is dropped for everyone. `pithy ui add` says so — the same notice `pithy init` and `pithy worker add` print — and the install it then tells you to run will succeed while the build fails on the missing plugin. Link the kit from a checkout before installing. The day the scope publishes, the range is written with no change on your side.
+The first is yours: if one is already provided by a checkout linked into your `node_modules`, `pithy ui add` writes no range for it. The package resolves either way, and a range naming a version the registry does not have would fail your next install.
+
+The second is ours, and applies to every project until `@pithy-sh/*` publishes: there is no version to name yet, so the line is dropped for everyone. `pithy ui add` says so — the same notice `pithy init` and `pithy worker add` print — and the install it then tells you to run will succeed while the build fails on the missing package. Link the kit from a checkout before installing. The day the scope publishes, the range is written with no change on your side.
 
 The versions are a set, not a menu. `@vitejs/plugin-react` 6.x is the Vite-8 line — 5.1.x does not support Vite 8 — and `@cloudflare/vite-plugin` 1.48 peers on `vite ^6.1 || ^7 || ^8` and `wrangler ^4.115.0`. Downgrading one of them alone will not resolve.
 
@@ -476,6 +547,7 @@ Install with whichever package manager your project uses. Pithy does not pin you
 
 ## See also
 
-- [`docs/CLI.md`](CLI.md) §7 — the binding specification for `pithy ui add|sync|list`: every flag, the `--json` shapes, and the errors.
-- [`docs/CLI.md`](CLI.md) §6 — how `pithy dev` supervises the worker set and substitutes `{port}`.
+- [`docs/commands/ui.md`](commands/ui.md) — the binding specification for `pithy ui add|sync|list`: every flag, the `--json` shapes, and the errors.
+- [`docs/commands/dev.md`](commands/dev.md) — how `pithy dev` supervises the worker set and substitutes `{port}`.
+- [`docs/I18N.md`](I18N.md) — the catalog key grammar, where a reader's locale lives, and what stays English.
 - [`docs/DEPLOY.md`](DEPLOY.md) — migrate and deploy, by hand and in CI.

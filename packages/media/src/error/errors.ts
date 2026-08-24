@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 
 /**
  * `@pithy-sh/media` throw sugar. The `media/*` codes live in core's closed `KitErrorPayload` union
@@ -18,6 +19,11 @@ interface MediaErrorArgs {
   action?: string;
   /** Internal context for logs + audit. Never serialized to clients. */
   detail?: string;
+  /**
+   * Values a translating client interpolates into its own wording for this code. Client-facing, so —
+   * unlike `action` and `detail` — these cross the boundary with `message`.
+   */
+  params?: MessageParams;
 }
 
 /** A requested media record does not exist (or was soft-deleted). */
@@ -30,6 +36,7 @@ export class MediaNotFoundError extends PithyError {
         message: args.message ?? "That media does not exist.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -46,6 +53,7 @@ export class MediaUnsupportedError extends PithyError {
         message: args.message ?? "That media type or format is not supported for this operation.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -62,6 +70,7 @@ export class MediaStorageError extends PithyError {
         message: args.message ?? "The storage backend could not complete the request.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );
@@ -78,6 +87,7 @@ export class MediaEnrichmentError extends PithyError {
         message: args.message ?? "Media enrichment could not complete.",
         action: args.action,
         detail: args.detail,
+        params: args.params,
       },
       options,
     );

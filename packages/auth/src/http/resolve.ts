@@ -9,7 +9,7 @@ import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import type { Context } from "hono";
 import type { AuthWiring } from "../capability";
 import { authDatabase } from "../data/tables";
-import { makeSendAuthEmail } from "../email/send";
+import { makeSendAuthEmail, type ResolveRecipientLocale } from "../email/send";
 import { type AuthInstance, makeAuth } from "../instance/auth";
 import { resolveProvider } from "../instance/providers";
 import {
@@ -41,6 +41,30 @@ export function resolveDb(env: Record<string, unknown>, bindingName: string): D1
     });
   }
   return binding as D1Database;
+}
+
+/**
+ * The language to write a sign-in email in, for one address.
+ *
+ * **The stored preference first, the request's negotiation second** (pithy-sh/pithy#441). Somebody who
+ * picked a language in a settings pane has said something durable about themselves; the device they are
+ * signing in from tonight has only sent an `Accept-Language`. But most of what this is asked about is a
+ * *first* sign-in, where no row exists yet — and that is precisely the message a project cannot afford
+ * to send in the wrong language, because passwordless has no password to fall back to. So the header's
+ * answer, which `@pithy-sh/i18n` has already matched against this project's supported set and put on
+ * `c.var.locale`, is what covers that case.
+ *
+ * One indexed lookup on a unique column, per sign-in email, and only for the two templates that send
+ * one. `null` when neither answers, which renders the kit's English — not the same statement as `en`.
+ *
+ * `c.var.locale` is null unless the i18n capability is composed, so a project that never opted in gets
+ * a resolver that reads a column nobody fills and returns null: the behavior it had before any of this.
+ */
+function recipientLocale(c: Context<PithyHonoEnv>, db: ReturnType<typeof authDatabase>): ResolveRecipientLocale {
+  return async (email) => {
+    const row = await db.selectFrom("pithyAuthUsers").select("locale").where("email", "=", email).executeTakeFirst();
+    return row?.locale ?? c.var.locale?.catalogLocale ?? null;
+  };
 }
 
 export function getAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): Promise<AuthInstance> {
@@ -102,7 +126,11 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     apple,
     facebook,
     github,
-    sendEmail: makeSendAuthEmail((input) => enqueueEmail(env, input), expiresMinutes),
+    sendEmail: makeSendAuthEmail(
+      (input) => enqueueEmail(env, input),
+      expiresMinutes,
+      recipientLocale(c, authDatabase(resolveDb(c.env, cfg.database))),
+    ),
     sessionExpiresIn: cfg.sessionExpiresIn,
     sessionUpdateAge: cfg.sessionUpdateAge,
     verificationExpiresIn: cfg.verificationExpiresIn,

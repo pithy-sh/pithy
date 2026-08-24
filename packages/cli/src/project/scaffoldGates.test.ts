@@ -302,6 +302,28 @@ describe("after pithy ui add react", () => {
     expect({ code, output }).toMatchObject({ code: 0 });
   }, 60_000);
 
+  test("runs the gates the front end seeds — in a project with no alias of the kit's in the path", async () => {
+    // **The half that was missing, and the reason it mattered (#441).** `pithy ui add` seeds test files
+    // into the adopter's repository — that is the whole of `docs/CONVENTIONS.md` § *Seeded files* — and
+    // nothing here had ever run one. The suite above runs `vitest` before the front end exists, so every
+    // seeded gate was proven only in `@pithy-sh/ui-react`, whose own Vitest config aliases the
+    // `virtual:pithy/*` modules to stubs. A gate that reaches one of those resolves here and nowhere
+    // else: `src/client.test.tsx` shipped in exactly that state, green in the kit and red on the first
+    // `vitest run` in every repository it was written into.
+    //
+    // So this runs them where they will actually run. The scaffolded project has no alias of ours, so a
+    // seeded gate that needs one fails here — which is the point, and is what a unit test over the
+    // template text cannot see.
+    // `--reporter=verbose` because the default one prints counts and no names on a green run, and the
+    // name is the assertion: `passWithNoTests` is on in the starter, so an `include` that admits no
+    // `.tsx` exits 0 with the whole front end untested — #245's other half, and silent by construction.
+    const { code, output } = await run(dir, vitest(dir), ["run", "--reporter=verbose"]);
+    expect({ code, output }).toMatchObject({ code: 0 });
+    for (const gate of ["src/client.test.tsx", "src/pithy-locale.test.tsx", "src/router.test.tsx"]) {
+      expect(output, `the scaffolded runner never collected ${gate}`).toContain(gate);
+    }
+  }, 180_000);
+
   /**
    * **#399's three contracts, each a relative path frozen into a file the adopter owns.**
    *

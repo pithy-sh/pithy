@@ -1,0 +1,34 @@
+// Gate for issue #441's per-request locale. Scoped by biome.jsonc to packages/*/src/**.
+//
+// `z.config({ localeError: … })` sets Zod's error map GLOBALLY, on the module. A Worker isolate is
+// reused across requests — that is the whole performance model — so a locale written into the global
+// on request A is still there on request B, and request B's validation failure renders in request A's
+// language. The window is every request in between, the failure is silent, and it is not reproducible
+// locally where one request arrives at a time.
+//
+// So the locale never leaves the request. Pass the error map per parse — `Schema.parse(value, { error })`,
+// or the same option on `safeParse` — and each parse renders in the language of the request that made
+// it, with nothing shared between two of them.
+//
+// **There are zero hits today, and that is why this exists now rather than later.** The per-parse form
+// is more typing than the global one, so it reads as a thing to tidy up; the tidy-up is the bug, it
+// lands as a two-line diff, and the review that would catch it needs someone who already knows what an
+// isolate is. A gate is cheaper than that review, and it carries the reason with it.
+//
+// Not scoped away from tests, deliberately. `"!**/*.test.ts"` does not exclude `.tsx` — the exclusion
+// beside this one in biome.jsonc has that hole and lives with it — and a test that calls `z.config` is
+// a test that has just poisoned every other file sharing its worker, which is a worse failure than the
+// one in production because it looks like a flake.
+//
+// The match is the MEMBER EXPRESSION rather than the call, for the reason `no-console.grit` gives:
+// `queueMicrotask(z.config)` is the same accident as calling it, and a matcher aimed only at the call
+// walks past every way to reach the function without parentheses. A call contains a member access, so
+// this still reports exactly once.
+language js
+
+or {
+  `z.config`,
+  `zod.config`
+} as $ref where {
+  register_diagnostic(span=$ref, message="z.config sets Zod's error map globally, and a Worker isolate outlives the request. A locale written there renders the NEXT request's validation failure in the LAST request's language. Pass the map per parse instead: Schema.parse(value, { error }).")
+}

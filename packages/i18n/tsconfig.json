@@ -1,0 +1,13 @@
+{
+  "extends": "@pithy-sh/tsconfig/base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"]
+  },
+  // The Worker program. `src/browser/**` and `src/react/**` are excluded on purpose: they touch
+  // `window` and `document`, and pulling the DOM library in here would make those globals resolvable
+  // from the middleware too. They compile under `tsconfig.browser.json` instead.
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/browser/**", "src/react/**"]
+}

@@ -7,6 +7,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
+import { composeCapabilities } from "../capabilities/compose";
 import {
   HOST_WORKERS,
   type HostDeliveryIdentity,
@@ -25,7 +26,7 @@ import type { WorkerTarget } from "../project/workers";
  *
  * `apps/` is the app-Worker registry and stays exactly that. Beside it, each composed capability that
  * owns Workflows contributes the prebuilt host Worker `pithy <capability> provision` would deploy —
- * resolved through the same seam the provisioners use ({@link HOST_WORKERS}), materialised into a
+ * resolved through the same seam the provisioners use ({@link HOST_WORKERS}), materialized into a
  * git-ignored directory, and handed to the orchestrator as an ordinary {@link WorkerTarget}. From
  * there it is not a special case: it gets a pinned port out of `.dev.config.json`, a label and a
  * color, an entry in `.dev-state.json`, and it is reaped with everything else.
@@ -62,7 +63,7 @@ import type { WorkerTarget } from "../project/workers";
  * else opens an empty database and fails `no such table` on its first query.
  */
 
-/** Where a materialised host config lives, under the already-ignored `.wrangler/`. */
+/** Where a materialized host config lives, under the already-ignored `.wrangler/`. */
 export function hostWorkerDir(projectDir: string, capability: string): string {
   return join(projectDir, ".wrangler", "pithy", "hosts", capability);
 }
@@ -136,6 +137,29 @@ export async function discoverHostWorkers(options: DiscoverHostWorkersOptions): 
     }
   }
 
+  // **Assembled before a single host reads one of them.** A capability object is a placeholder for
+  // half of what it reports until its `compose` hook has run, and the email host's resolver reads
+  // exactly such a value: `hostCatalogs()` answers `{}` on an unassembled capability, so `pithy dev`
+  // materialized an English-only host for a project that speaks two languages. The app Worker enqueued
+  // a Spanish subject and stored `locale='es'`; the local host re-rendered in English and — because
+  // `runSend` overwrites the stored subject with its own render — threw the Spanish one away. That is
+  // the two-Workers-disagree failure the `EMAIL_MESSAGES` var exists to close, reproduced on a
+  // developer's machine. See `capabilities/compose.ts`, and `emailProvisioner.ts` for the deployed half.
+  //
+  // **Degraded, not fatal, for the same reason the read above is.** A compose hook throws — `auth`
+  // refuses a plugin claiming a kit table, `payments` checks its ledger grants — and this sweep runs
+  // them over the **project-wide union** rather than any one Worker's own set. So a pair of Workers can
+  // collide here on something neither of them would refuse at its own boot, and an uncaught throw would
+  // end the whole `pithy dev` session rather than the one host it concerns. A session that starts
+  // without the email host and says why is worth more than one that does not start.
+  try {
+    composeCapabilities([...composed.values()].map((entry) => entry.capability));
+  } catch (error) {
+    notes.push("The capability hosts could not be assembled, so none of them will run.");
+    notes.push(`  ${messageOf(error)}`);
+    return { hosts: [], notes };
+  }
+
   const taken = new Set(options.workers.map((worker) => worker.name));
   const hosts: HostWorker[] = [];
   for (const spec of HOST_WORKERS) {
@@ -180,7 +204,7 @@ export interface MaterializeHostConfigsOptions {
 }
 
 /**
- * What materialisation produced: the lines to say, and the hosts that have no config on disk.
+ * What materialization produced: the lines to say, and the hosts that have no config on disk.
  *
  * The second list is not decoration. A host whose resolution threw has no directory — `mkdir` runs on
  * the write path and never got there — so spawning `wrangler dev` in it fails with ENOENT, the
@@ -251,7 +275,7 @@ export function capabilityHostsWorkflows(capability: string): boolean {
  * preflighted with no change here or there.
  *
  * A host whose package will not load answers nothing rather than failing the session: the
- * materialisation that follows names that same failure, and once is enough.
+ * materialization that follows names that same failure, and once is enough.
  */
 export async function hostDeliveryIdentity(hosts: readonly HostWorker[]): Promise<HostDeliveryIdentity | undefined> {
   for (const host of hosts) {

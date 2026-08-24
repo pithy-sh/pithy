@@ -37,6 +37,9 @@ export const authExampleSeed: SeedSet = defineSeed({
         email: identity.email,
         emailVerified: true,
         image: null,
+        // The example cast has never picked a language, which is the state most real users are in:
+        // negotiate from `Accept-Language` until they do.
+        locale: null,
         createdAt: new Date(),
         updatedAt: new Date(),
       })),

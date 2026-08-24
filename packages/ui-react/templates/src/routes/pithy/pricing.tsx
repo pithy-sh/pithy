@@ -1,3 +1,6 @@
+import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
+import type { Translator } from "@pithy-sh/core/src/i18n/translator";
+import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
 import type { PaymentsClientOptions } from "@pithy-sh/payments/src/client/api";
 import { useCheckout, usePaddleCheckout, usePricePreview } from "@pithy-sh/payments/src/client/hooks";
 import { type PaddleOptions, type PaddleSetup, priceSummary } from "@pithy-sh/payments/src/client/paddle";
@@ -10,7 +13,7 @@ import {
 import type { ReactNode } from "react";
 // `CHECKOUT_FRAME` is imported rather than declared here: the two screens that sell share one class, and
 // `.pithy-checkout` is a hook you are meant to style. Two copies is one styled checkout and one bare one.
-import { CHECKOUT_FRAME, paddleSetup, paymentsClient, usePriceVisitor } from "../../payments";
+import { CHECKOUT_FRAME, failureText, paddleSetup, paymentsClient, usePriceVisitor } from "../../payments";
 import { paymentsConfig } from "../../pithy-config";
 import { Link, useOptionalScreenPath, useScreenPath, useSignedIn } from "../../router";
 import "../../pithy-screens.css";
@@ -38,10 +41,46 @@ const PADDLE_PRODUCTS =
       )
     : [];
 
-/** How often a price bills, in words. Null for a one-off, which needs no suffix. */
-function every(cycle: { interval: string; frequency: number } | null): string | null {
+/**
+ * This screen's English, baked in — the only catalog that survives being copied into your repository.
+ *
+ * **No figure is in here, and none ever may be.** Every price this screen renders comes from Paddle,
+ * for this visitor, in their own currency and under their own tax convention; a number written into a
+ * message would be wrong in every country whose convention differs from the one it was typed in, and
+ * wrong silently. `templates.test.ts` sweeps this file for one.
+ *
+ * `{interval}` is Paddle's word for the billing period — `month`, `year` — and arrives from their API
+ * rather than from a catalog, so a translated `every` message still names the period in English. Say
+ * the period yourself in `messages` if that matters to you; the kit will not invent a vocabulary for
+ * somebody else's API.
+ */
+const EN = {
+  "payments/pricing.title": "What it costs.",
+  "payments/pricing.body": "Prices are for where you are. Tax is Paddle's to calculate, not ours.",
+  "payments/pricing.anonymous": "Anyone can read a price. Buying needs an account.",
+  "payments/pricing.loading": "Getting your price.",
+  "payments/pricing.estimated": "Estimated.",
+  "payments/pricing.unavailable": "We couldn't get a price. You'll see it at checkout.",
+  "payments/pricing.sign_in": "Sign in to buy {product}",
+  "payments/pricing.buy": "Buy {product}",
+  "payments/pricing.holdings": "What do I already have?",
+  "payments/pricing.every.one": "a {interval}",
+  "payments/pricing.every.other": "every {count} {interval}s",
+  "payments/pricing.empty.title": "Nothing priced here.",
+  "payments/pricing.empty.body": "This screen prices what you sell through Paddle. Add a",
+  "payments/pricing.empty.body_end": "block to a product in",
+} satisfies MessageCatalog;
+
+/**
+ * How often a price bills, in words. Null for a one-off, which needs no suffix.
+ *
+ * Through `plural` rather than a comparison against `1`, because the frequency is a count and a count
+ * is what a second locale asks a different question about: English has two forms here, Russian three,
+ * and `frequency === 1 ? … : …` has none of them.
+ */
+function every(t: Translator, cycle: { interval: string; frequency: number } | null): string | null {
   if (cycle === null) return null;
-  return cycle.frequency === 1 ? `a ${cycle.interval}` : `every ${cycle.frequency} ${cycle.interval}s`;
+  return t.plural("payments/pricing.every", cycle.frequency, { interval: cycle.interval });
 }
 
 /** One product, as this screen needs it: what to call it, and which price to quote. */
@@ -55,6 +94,14 @@ export interface PricedProduct {
 }
 
 export interface PricingScreenProps {
+  /**
+   * The translator this screen renders through.
+   *
+   * A prop for the reason `visitor` and `paddle` are: what a screen says in a second language is a
+   * *rendered* fact no assertion about source text can reach. Absent, the screen reads the provider a
+   * `TranslatorProvider` mounted, and with no provider it reads {@link EN}.
+   */
+  readonly t?: Translator;
   /** What this project sells through Paddle. Empty is a real state, and it has its own screen. */
   readonly products: readonly PricedProduct[];
   /** What Paddle.js starts with, or null when the rail is off. */
@@ -111,7 +158,12 @@ export function PricingScreen({
   visitor,
   client,
   paddle,
+  t: given,
 }: PricingScreenProps): ReactNode {
+  // Called unconditionally, and chosen from afterwards: `given ?? useTranslator(EN)` would skip the hook
+  // whenever the prop is passed, which is a hook count that changes between renders.
+  const baked = useTranslator(EN);
+  const t = given ?? baked;
   /**
    * One quote per product, asked for in one round trip.
    *
@@ -143,9 +195,9 @@ export function PricingScreen({
   if (products.length === 0) {
     return (
       <main className="screen">
-        <h1>Nothing priced here.</h1>
+        <h1>{t.t("payments/pricing.empty.title")}</h1>
         <p className="muted">
-          This screen prices what you sell through Paddle. Add a <code>paddle</code> block to a product in{" "}
+          {t.t("payments/pricing.empty.body")} <code>paddle</code> {t.t("payments/pricing.empty.body_end")}{" "}
           <code>pithy.config.ts</code>.
         </p>
       </main>
@@ -154,27 +206,27 @@ export function PricingScreen({
 
   return (
     <main className="screen">
-      <h1>What it costs.</h1>
-      <p className="muted">Prices are for where you are. Tax is Paddle's to calculate, not ours.</p>
+      <h1>{t.t("payments/pricing.title")}</h1>
+      <p className="muted">{t.t("payments/pricing.body")}</p>
 
       {/* Said once, at the top, and said before the click rather than after it. A purchase attaches to an
           account, so there has to be one; the visitor who has none learns that from a sentence and a
           named link, not from a redirect that lost what they were doing. */}
-      {signedIn === false && <p className="muted">Anyone can read a price. Buying needs an account.</p>}
+      {signedIn === false && <p className="muted">{t.t("payments/pricing.anonymous")}</p>}
 
       {/* A failed quote shows no price at all. Falling back to a figure written here would be the exact
           defect this screen exists to remove — and a wrong price is worse than a missing one, because a
           buyer only finds out at the card form. The button still works: checkout is Paddle's own, and it
           quotes again on its own page. */}
-      {quoted.failure && <p className="muted">{quoted.failure.message}</p>}
-      {checkout.failure && <p className="muted">{checkout.failure.message}</p>}
-      {opened.failure && <p className="muted">{opened.failure.message}</p>}
+      {quoted.failure && <p className="muted">{failureText(t, quoted.failure)}</p>}
+      {checkout.failure && <p className="muted">{failureText(t, checkout.failure)}</p>}
+      {opened.failure && <p className="muted">{failureText(t, opened.failure)}</p>}
 
       <div className="stack">
         {products.map((product) => {
           const line = quoted.preview?.lines.find((quote) => quote.priceId === product.priceId) ?? null;
           const summary = line && quoted.preview ? priceSummary(quoted.preview, line) : null;
-          const cycle = line ? every(line.billingCycle) : null;
+          const cycle = line ? every(t, line.billingCycle) : null;
           return (
             <div key={product.id}>
               <p>
@@ -184,7 +236,7 @@ export function PricingScreen({
                   price goes is worse than a beat of waiting, and a beat of waiting is far better than a
                   number that corrects itself in front of the buyer. */}
               {quoted.loading ? (
-                <p className="muted">Getting your price.</p>
+                <p className="muted">{t.t("payments/pricing.loading")}</p>
               ) : summary ? (
                 <p>
                   <strong>{summary.headline}</strong>
@@ -196,14 +248,16 @@ export function PricingScreen({
                       from. Show what you know, label it, recalculate at the address: an estimate that
                       resolves at checkout is correct behaviour, and an estimate rendered as though it
                       were final is not. */}
-                  {quoteIsEstimated(location, summary.estimated) && <span className="muted"> Estimated.</span>}
+                  {quoteIsEstimated(location, summary.estimated) && (
+                    <span className="muted"> {t.t("payments/pricing.estimated")}</span>
+                  )}
                   {summary.note && <span className="muted"> {summary.note}</span>}
                 </p>
               ) : (
-                <p className="muted">We couldn't get a price. You'll see it at checkout.</p>
+                <p className="muted">{t.t("payments/pricing.unavailable")}</p>
               )}
               {signedIn === false ? (
-                signInPath && <Link to={signInPath}>Sign in to buy {product.name}</Link>
+                signInPath && <Link to={signInPath}>{t.t("payments/pricing.sign_in", { product: product.name })}</Link>
               ) : (
                 <button
                   type="button"
@@ -212,7 +266,7 @@ export function PricingScreen({
                   disabled={signedIn === null || checkout.starting || opened.opening}
                   onClick={() => void checkout.start(product.id)}
                 >
-                  Buy {product.name}
+                  {t.t("payments/pricing.buy", { product: product.name })}
                 </button>
               )}
             </div>
@@ -227,7 +281,7 @@ export function PricingScreen({
 
       <div className="stack">
         <Link className="muted" to={subscriptionPath}>
-          What do I already have?
+          {t.t("payments/pricing.holdings")}
         </Link>
       </div>
     </main>

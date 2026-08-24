@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
+import { MessageParams } from "../i18n/catalog";
 
 /**
  * The error object model. One Zod schema is the whole definition of every failure Pithy
@@ -25,9 +26,25 @@ export const ValidationIssue = z
   .describe("A single field-level validation failure, mirrored from a ZodIssue.");
 export type ValidationIssue = z.infer<typeof ValidationIssue>;
 
-/** Fields safe to expose to clients. Present on every member, public and wire alike. */
+/**
+ * Fields safe to expose to clients. Present on every member, public and wire alike.
+ *
+ * **`params` is here because the server never localizes an error.** `message` is English permanently:
+ * it is the operator's diagnostic in the log line and the audit row *and* the fallback for every client
+ * that does not translate, and translating it server-side trades the first for the second against a
+ * locale the caller may never have declared. So the wire carries the two halves a translation needs and
+ * nothing more — the `code`, which is already the discriminator and *is* the catalog key
+ * (`../i18n/catalog`), and the values its placeholders take. A translating client renders
+ * `t.maybe(payload.code, payload.params) ?? payload.message`.
+ *
+ * Optional and absent rather than `.default({})`, so an error that names no placeholder puts no key on
+ * the wire and every client already deployed parses exactly the bytes it parsed yesterday.
+ */
 const publicFields = {
   message: z.string().describe("Public, safe-to-expose summary. Sent to clients and shown in the terminal."),
+  params: MessageParams.optional().describe(
+    "Values a translating client interpolates into its own wording for this code. Client-facing, so it crosses the boundary with `message` — unlike `action` and `detail`, which the HTTP codec strips.",
+  ),
 };
 
 /**

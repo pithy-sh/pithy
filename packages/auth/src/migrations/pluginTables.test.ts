@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { Locale } from "@pithy-sh/core/src/i18n/locale";
 import type { BetterAuthPlugin } from "better-auth";
+import { getSchema } from "better-auth/db";
 import { admin } from "better-auth/plugins/admin";
 import { organization } from "better-auth/plugins/organization";
 import { describe, expect, test } from "vitest";
-import { authPluginPlan, pluginMigrationKey, pluginSchemaDelta } from "./pluginTables";
+import { User } from "../data/betterAuth";
+import { KIT_SESSION_FIELDS, KIT_USER_FIELDS } from "../data/kitFields";
+import { authPluginPlan, authSchemaOptions, pluginMigrationKey, pluginSchemaDelta } from "./pluginTables";
 
 describe("pluginSchemaDelta()", () => {
   test("organization → its three tables, and the session column it puts the active org in", () => {
@@ -53,6 +57,79 @@ describe("pluginSchemaDelta()", () => {
     // every plugin would claim `pithy_auth_users` and every table beside it.
     const inert: BetterAuthPlugin = { id: "inert" };
     expect(pluginSchemaDelta(inert)).toEqual({ tables: [], columns: [] });
+  });
+
+  test("a plugin declaring a user column the kit already owns adds nothing — the baseline knows it", () => {
+    // The concrete failure `authSchemaOptions` carrying `user.additionalFields` prevents. An adopter
+    // plugin that declares its own user `locale` is diffed against a baseline that already has ours, so
+    // it contributes no column. Drop the declaration from `authSchemaOptions` and this emits an
+    // `ALTER TABLE pithy_auth_users ADD COLUMN locale` against a table `0001_init` already gave one —
+    // a duplicate-column error part-way through a migration D1 cannot roll back, having no
+    // transactional DDL.
+    const clashing: BetterAuthPlugin = {
+      id: "clashing",
+      schema: { user: { fields: { locale: { type: "string", required: false } } } },
+    };
+    expect(pluginSchemaDelta(clashing)).toEqual({ tables: [], columns: [] });
+  });
+});
+
+describe("authSchemaOptions()", () => {
+  test("the baseline names every column of the `User` schema", () => {
+    // Comparing against the `User` Zod object — the table definition of record — so the next column to
+    // land is caught too, not just `locale`. `id` is not a Better Auth *field*; it is the model's key.
+    //
+    // This used to claim to be the guard holding `makeAuth`'s options and this baseline in step. It was
+    // not: it never imported `makeAuth`, so reverting the live declaration left the whole suite green
+    // while Better Auth silently stopped writing the column. There is nothing to hold in step now —
+    // both read `KIT_USER_FIELDS` from `../data/kitFields.ts`, and the test below is what proves this
+    // baseline really carries what that module declares.
+    const fields = getSchema(authSchemaOptions([])).pithyAuthUsers?.fields ?? {};
+    const declared = Object.keys(User.shape).filter((name) => name !== "id");
+    expect(Object.keys(fields).sort()).toEqual(declared.sort());
+  });
+
+  test("the user locale is client-settable and validated by the same schema every read uses", () => {
+    // `input` is not left to default here: a locale is the reader's own preference, so a client must be
+    // able to set it — and the thing that makes that safe is the validator, since every read of the
+    // column goes through `User.parse` and an unvalidated write would poison the admin listing for
+    // every operator, not just for whoever wrote it.
+    const locale = getSchema(authSchemaOptions([])).pithyAuthUsers?.fields.locale;
+    expect(locale?.input).toBe(true);
+    expect(locale?.required).toBe(false);
+    expect(locale?.validator?.input).toBe(KIT_USER_FIELDS.locale.validator.input);
+  });
+
+  test("a reader can set a locale, and can take it back", () => {
+    // Asserted through the validator Better Auth will actually run (`parseInputData`), not through the
+    // schema this file happens to import — the point is what a client can write.
+    //
+    // **Null is the case that was wrong.** The column is nullable, the `User` field is nullable and
+    // `AdminUserView` is nullable, and all three mean "this reader has not chosen", which is what makes
+    // the server fall back to `Accept-Language`. A validator of bare `Locale` accepted `es-AR` and
+    // refused `null`, so a reader could pick a language and never take it back: `updateUser({ locale:
+    // null })` answered 400 for the one state the schema calls ordinary.
+    const validator = getSchema(authSchemaOptions([])).pithyAuthUsers?.fields.locale?.validator?.input;
+    expect(validator).toBeDefined();
+    expect(Locale.nullable().safeParse("es-AR").success).toBe(true);
+    expect(Locale.nullable().safeParse(null).success).toBe(true);
+    expect(Locale.nullable().safeParse("not a tag").success).toBe(false);
+    expect(Locale.nullable().safeParse("x".repeat(5000)).success).toBe(false);
+  });
+
+  test("the live instance declares the same fields this baseline does", () => {
+    // The duplication that used to be watched, removed instead: `makeAuth` and `authSchemaOptions` both
+    // spread `KIT_USER_FIELDS`, so there is no second declaration to drift. This asserts the baseline
+    // really is built from that module rather than from a literal that happens to match it today —
+    // reverting either call site to an inline object fails here.
+    const fields = getSchema(authSchemaOptions([])).pithyAuthUsers?.fields ?? {};
+    for (const name of Object.keys(KIT_USER_FIELDS)) {
+      expect(Object.keys(fields), `the baseline dropped \`${name}\``).toContain(name);
+    }
+    const sessionFields = getSchema(authSchemaOptions([])).pithyAuthSessions?.fields ?? {};
+    for (const name of Object.keys(KIT_SESSION_FIELDS)) {
+      expect(Object.keys(sessionFields), `the baseline dropped \`${name}\``).toContain(name);
+    }
   });
 });
 
