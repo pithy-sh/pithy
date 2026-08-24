@@ -4,6 +4,7 @@
 import { type LocaleCatalogs, MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 import { parseLocale } from "@pithy-sh/core/src/i18n/locale";
 import { createTranslator, DEFAULT_LOCALE, type Translator } from "@pithy-sh/core/src/i18n/translator";
+import { EMAIL_ES } from "./messages.es";
 
 /**
  * The words this capability writes, in the language it writes them in.
@@ -140,7 +141,15 @@ const EMAIL_EN: MessageCatalog = {
  * every adopter as a package upgrade rather than as a merge into files they own. Keys are all under
  * `email/`, which `composeMessages` enforces.
  */
-export const EMAIL_MESSAGES: LocaleCatalogs = { en: EMAIL_EN };
+/**
+ * Every language this capability's own copy is written in.
+ *
+ * **Bundled, not stamped.** The send Worker is deployed with this map inside it, so adding a language
+ * to the kit costs an adopter a package upgrade and no configuration at all — which is the whole of
+ * #442. What still travels as a variable is the adopter's diff against this: usually nothing, and at
+ * most the sentences they changed.
+ */
+export const EMAIL_MESSAGES: LocaleCatalogs = { en: EMAIL_EN, es: EMAIL_ES };
 
 /**
  * How the render engine finds words for a locale: the catalogs to walk, most-specific first.

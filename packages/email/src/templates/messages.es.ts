@@ -8,9 +8,21 @@ import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
 /**
  * The kit-authored email copy, in Spanish.
  *
- * Only the seven templates whose words the kit writes — `magicLink`, `otp`, `welcome`, `securityAlert`,
- * `invite`, `passwordChanged`, `leadCapture` — plus the shell: the severity labels and the footer's
- * unsubscribe link.
+ * **Beside the English rather than in `@pithy-sh/i18n`, and that is the point of #442.** The send
+ * Workflow runs in its own Worker, deployed by `pithy email provision` with no request and no access
+ * to the adopter's config — so anything it does not *bundle* has to be stamped into it as a variable.
+ * Held in the translations package, the kit's own Spanish was static data traveling through a
+ * configuration channel every provision run, against a 5 KB per-variable ceiling. Held here, the host
+ * is built with it and the variable carries only what an adopter changed, which is usually nothing.
+ *
+ * It also puts this file where the domain rule already says it belongs: a capability may only declare
+ * keys under its own name, and `@pithy-sh/email` contributes `email/` in every language it has rather
+ * than English alone. `@pithy-sh/i18n` never imports a capability and no capability imports it —
+ * principle 4 holds in both directions, which a dependency edge for this data would have broken.
+ *
+ * Only the seven templates whose words the kit writes — `magicLink`, `otp`, `welcome`,
+ * `securityAlert`, `invite`, `passwordChanged`, `leadCapture` — plus the shell: the severity labels
+ * and the footer's unsubscribe link.
  *
  * The five templates whose words arrive as payload (`testerNudge`, `supportReply`,
  * `operationalNotice`, `newsletter`, `marketingCampaign`) are the adopter's copy and are not here.
@@ -18,23 +30,8 @@ import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
  * adopter's own copy** — a job at locale `es` renders the severity word from this catalog and the
  * summary from the adopter's payload. That is the right behavior and it is a surprise unless stated,
  * so `docs/I18N.md` states both halves.
- *
- * Every key here answers one in `@pithy-sh/email`'s own English (`src/templates/messages.ts`), which is
- * the baseline `pithy doctor`'s coverage check measures a locale against. A key that exists there and
- * not here is a sentence a Spanish reader meets in English; a key here and not there is dead weight
- * nothing renders.
- *
- * **Nothing in this file carries markup**, and that is a constraint rather than a habit. `subject` and
- * the plain-text part are precompiled with escaping off, so a value substituted into them is
- * substituted verbatim — the HTML body escapes what it renders, but the other two parts are not HTML
- * contexts and have nothing to escape into. Interpolated parameters (`{name}`, `{app}`) are escaped
- * along with the sentence that carries them wherever escaping applies.
- *
- * Word order is deliberately the translator's. Several sentences here place `{app}` or `{organization}`
- * where Spanish wants it rather than where English left it, which is the whole reason a sentence is one
- * catalog value instead of three fragments the template concatenates.
  */
-export const esEmail: MessageCatalog = {
+export const EMAIL_ES: MessageCatalog = {
   // --- The shared shell ---
   // Two greetings, because Spanish addresses an unnamed reader differently rather than with the name
   // removed — the case that made a single string with an optional placeholder the wrong shape.

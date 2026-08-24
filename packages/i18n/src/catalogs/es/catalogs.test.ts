@@ -3,7 +3,6 @@
 
 import { MessageKey } from "@pithy-sh/core/src/i18n/catalog";
 import { describe, expect, test } from "vitest";
-import { esEmail } from "./email";
 import { esErrors } from "./errors";
 import { es } from "./index";
 import { esScreens } from "./screens";
@@ -32,7 +31,6 @@ import { esScreens } from "./screens";
 const FILES = {
   errors: esErrors,
   screens: esScreens,
-  email: esEmail,
 } as const;
 
 /** Every entry across all three, tagged with the file it came from. */
@@ -77,18 +75,20 @@ const ENGLISH_WORD = new RegExp(`\\b(?:${ENGLISH_ONLY.join("|")})\\b`, "i");
 
 describe("the catalogs are the size they are", () => {
   test("each file carries what it is for, so every comparison below has something in it", () => {
-    // The anti-vacuity guard, per file rather than in total: each of the three can empty on its own,
-    // and a total would hide one going to zero while another grew. Near-exact, measured on 2026-08-23
-    // — 71 screen keys and 51 email keys — and floors rather than equalities for the two that grow
-    // with ordinary work. The error catalog is pinned exactly, because it answers to a closed taxonomy.
+    // The anti-vacuity guard, per file rather than in total: either can empty on its own, and a total
+    // would hide one going to zero while the other grew. Near-exact, measured on 2026-08-24 — 71
+    // screen keys — and a floor rather than an equality for the one that grows with ordinary work. The
+    // error catalog is pinned exactly, because it answers to a closed taxonomy.
+    //
+    // The email copy is counted by `@pithy-sh/email`'s own suite now, not here: it moved beside that
+    // capability's English in #442, so the send Worker is built with it rather than sent it.
     expect(Object.keys(esScreens).length).toBeGreaterThanOrEqual(71);
-    expect(Object.keys(esEmail).length).toBeGreaterThanOrEqual(51);
     expect(Object.keys(esErrors)).toHaveLength(120);
-    expect(ENTRIES.length).toBeGreaterThanOrEqual(242);
+    expect(ENTRIES.length).toBeGreaterThanOrEqual(191);
   });
 
-  test("the assembled catalog is every key from all three, with nothing lost to the merge", () => {
-    // `es` is `{ ...esErrors, ...esScreens, ...esEmail }`. Spreading is silent about a collision, so
+  test("the assembled catalog is every key from both, with nothing lost to the merge", () => {
+    // `es` is `{ ...esErrors, ...esScreens }`. Spreading is silent about a collision, so
     // the count is what says the merge kept everything.
     expect(Object.keys(es)).toHaveLength(ENTRIES.length);
   });
@@ -114,13 +114,6 @@ describe("every key is a catalog key", () => {
       ({ file, key }) => `${file}: ${key}`,
     );
     expect(refused).toEqual([]);
-  });
-
-  test("the email copy writes only under `email/`", () => {
-    // The domain rule, for the third time and for the same reason as `pithy_<capability>_<table>`:
-    // the segment is what makes two capabilities' contributions incapable of colliding. A translation
-    // is as subject to it as the English, because a key under the wrong domain answers nothing.
-    expect(Object.keys(esEmail).filter((key) => !key.startsWith("email/"))).toEqual([]);
   });
 
   test("the screens write under a screen's domain, never under `email/` or a code's", () => {
@@ -191,8 +184,11 @@ describe("placeholders are spelled the way `interpolate` spells them", () => {
   });
 
   test("the catalogs really do carry placeholders, so that sweep is not over nothing", () => {
+    // Re-measured on 2026-08-24 at 14, down from 30: the email copy moved to `@pithy-sh/email` in
+    // #442 and took most of the interpolated sentences with it. Counted there now, in that package's
+    // own suite, against the English it sits beside.
     const withParams = ENTRIES.filter(({ message }) => message.includes("{")).length;
-    expect(withParams).toBeGreaterThanOrEqual(30);
+    expect(withParams).toBeGreaterThanOrEqual(13);
   });
 
   test("no error entry carries one", () => {
@@ -222,6 +218,8 @@ describe("a plural family is complete", () => {
   });
 
   test("there are plural families at all", () => {
-    expect(Object.keys(es).filter((key) => key.endsWith(".other")).length).toBeGreaterThanOrEqual(6);
+    // Two, and pinned at two rather than at 95% of it: four of the six lived in the email copy, which
+    // moved out in #442, and a population this small has no slack to give. It can only grow.
+    expect(Object.keys(es).filter((key) => key.endsWith(".other")).length).toBeGreaterThanOrEqual(2);
   });
 });

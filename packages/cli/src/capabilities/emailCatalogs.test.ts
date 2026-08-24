@@ -5,7 +5,12 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { email } from "@pithy-sh/email/src/capability";
 import { type EmailWorkerWranglerTemplate, resolveEmailConfig } from "@pithy-sh/email/src/provision/resolveEmailConfig";
 import { renderEmail } from "@pithy-sh/email/src/templates/engine";
-import { catalogLayers, catalogsFromEnv, emailTranslator } from "@pithy-sh/email/src/templates/messages";
+import {
+  catalogLayers,
+  catalogsFromEnv,
+  EMAIL_MESSAGES,
+  emailTranslator,
+} from "@pithy-sh/email/src/templates/messages";
 import { defaultTheme } from "@pithy-sh/email/src/templates/theme";
 import { i18n } from "@pithy-sh/i18n/src/capability";
 import { describe, expect, test } from "vitest";
@@ -31,7 +36,7 @@ import { describe, expect, test } from "vitest";
  */
 
 /** The composed English + kit Spanish sentence for `welcome`, as `@pithy-sh/i18n` ships it. */
-const KIT_ES_WELCOME_SUBJECT = "Te damos la bienvenida a {app}";
+const OVERRIDDEN = "Hola y bienvenido a {app}";
 
 /** The committed template's shape, reduced to what this resolution needs. */
 const template: EmailWorkerWranglerTemplate = {
@@ -82,9 +87,12 @@ function emailCapability() {
 }
 
 describe("a project composing i18n() alongside email()", () => {
-  test("the host worker is deployed carrying the words it will render in", () => {
+  test("the host worker is deployed carrying the words the adopter changed", () => {
+    // **Only the diff, since #442.** The kit's own Spanish is bundled into the host, so what a
+    // provision run has to carry is what this project said differently — and a project that said
+    // nothing differently carries nothing at all, which the next case pins.
     const mail = emailCapability();
-    compose(i18n({ supportedLocales: ["en", "es"] }), mail);
+    compose(i18n({ supportedLocales: ["en", "es"], messages: { es: { "email/welcome.subject": OVERRIDDEN } } }), mail);
 
     const config = resolveEmailConfig(template, { ...resolveParams, messages: mail.hostCatalogs() });
     const stamped = config.vars.EMAIL_MESSAGES_ES;
@@ -92,14 +100,20 @@ describe("a project composing i18n() alongside email()", () => {
 
     // Collected through the seam the host itself reads them with — a value this test can read and the
     // host cannot is not a value that was delivered.
-    expect(stamped).toBeDefined();
     const carried = catalogsFromEnv(config.vars);
-    expect(carried.es?.["email/welcome.subject"]).toBe(KIT_ES_WELCOME_SUBJECT);
+    expect(carried.es).toEqual({ "email/welcome.subject": OVERRIDDEN });
     // Only this capability's domain travels. A screen's copy or an error's translation in this var is
     // weight against a hard 5 KB ceiling for a key no template will ever ask for.
     expect(Object.keys(carried.es ?? {}).every((key) => key.startsWith("email/"))).toBe(true);
-    // And nothing that merely repeats the English the host already bundles.
+    // And nothing that merely repeats what the host already bundles, in English or in Spanish.
     expect(carried.en).toBeUndefined();
+  });
+
+  test("and a project that changed nothing deploys no catalog variable at all", () => {
+    const mail = emailCapability();
+    compose(i18n({ supportedLocales: ["en", "es"] }), mail);
+    const config = resolveEmailConfig(template, { ...resolveParams, messages: mail.hostCatalogs() });
+    expect(catalogsFromEnv(config.vars)).toEqual({});
   });
 
   test("and rendering through them is what a Spanish reader actually receives", async () => {
@@ -107,6 +121,9 @@ describe("a project composing i18n() alongside email()", () => {
     compose(i18n({ supportedLocales: ["en", "es"] }), mail);
     const config = resolveEmailConfig(template, { ...resolveParams, messages: mail.hostCatalogs() });
 
+    // The var is empty here, and the render is still Spanish — which is the property. The host is
+    // built with the kit's words, so `catalogLayers` finds them in `EMAIL_MESSAGES` rather than in
+    // anything a provision run sent.
     // Exactly what `workflows/worker.ts` does with the var, and then exactly what `runSend` does with
     // the result: `catalogLayers(...)` into `emailTranslator(job.locale, ...)` into `renderEmail`.
     const layers = catalogLayers(catalogsFromEnv(config.vars));
@@ -133,11 +150,20 @@ describe("a project composing i18n() alongside email()", () => {
       mail,
     );
 
+    // **Per key, not per catalog — and since #442 that is visible in two places rather than one.**
+    //
+    // What *travels* is the one sentence they wrote: every other key is already in the host's bundle,
+    // so sending it back would be sending the Worker words it was built with.
     const carried = mail.hostCatalogs();
-    // Per key, not per catalog: the one sentence they wrote is theirs and every other key still
-    // arrives from the package.
-    expect(carried.es?.["email/welcome.subject"]).toBe("Hola, {app}");
-    expect(carried.es?.["email/welcome.heading"]).toBe("Te damos la bienvenida a {app}");
+    expect(carried.es).toEqual({ "email/welcome.subject": "Hola, {app}" });
+
+    // What the host *renders* is still the whole catalog — their sentence over the kit's, and the kit's
+    // for everything they did not mention. That is the property the adopter actually feels, and it is
+    // asserted through the same layer walk `runSend` uses.
+    const layers = catalogLayers(carried);
+    const t = emailTranslator("es", layers);
+    expect(t.t("email/welcome.subject")).toBe("Hola, {app}");
+    expect(t.t("email/welcome.heading")).toBe(EMAIL_MESSAGES.es?.["email/welcome.heading"]);
   });
 
   test("a project that composes no i18n capability deploys no var at all", () => {

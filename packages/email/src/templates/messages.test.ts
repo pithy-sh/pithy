@@ -57,15 +57,17 @@ describe("the words come from the catalog, and the layout does not", () => {
   });
 
   test("a sentence the catalog does not answer falls back to English rather than to its key", async () => {
-    // The half-translated locale, which is the normal state of one. `ES` above has no `magic_link.cta`
-    // and no `magic_link.ignore`, and a reader must meet the English for those — not `email/…`, which
-    // is what a lookup with no fallback layer would render.
+    // The half-translated locale, which is the normal state of one — and since #442 that means a
+    // locale **the kit does not ship**, because a locale it does ship is bundled complete. So this is
+    // French with six sentences in it: no `magic_link.cta`, no `magic_link.ignore`, and a reader must
+    // meet the English for those — not `email/…`, which is what a lookup with no fallback would render.
+    const partial: LocaleCatalogs = { fr: { ...(ES.es ?? {}) } };
     const result = await renderEmail(
       "magicLink",
       MAGIC_LINK,
       theme,
       undefined,
-      emailTranslator("es", catalogLayers(ES)),
+      emailTranslator("fr", catalogLayers(partial)),
     );
 
     // The apostrophe arrives HTML-escaped, which is the sentence being escaped on exactly the path a

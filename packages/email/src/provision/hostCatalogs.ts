@@ -68,7 +68,6 @@ function rendersOnTheHost(key: string): boolean {
  * none, gets `{}`, and deploys a host with no var at all — which is the same English it always sent.
  */
 export function emailHostCatalogs(locales: readonly string[], layersFor: EmailMessageLayers): LocaleCatalogs {
-  const english = EMAIL_MESSAGES.en ?? {};
   const catalogs: LocaleCatalogs = {};
   for (const locale of locales) {
     const merged: MessageCatalog = {};
@@ -80,8 +79,24 @@ export function emailHostCatalogs(locales: readonly string[], layersFor: EmailMe
         if (rendersOnTheHost(key)) merged[key] = value;
       }
     }
+    // **What travels is the adopter's diff, and nothing else (#442).**
+    //
+    // The host is deployed carrying `EMAIL_MESSAGES` — the kit's own copy in every language it is
+    // written in — so a key whose merged value is already what the host holds for this locale is a
+    // sentence it would render identically with no variable at all. Sending it is sending the Worker
+    // words it was built with.
+    //
+    // It used to be compared against the English alone, which meant the kit's own Spanish rode along:
+    // static data through a configuration channel, every provision run, against a 5 KB per-variable
+    // ceiling that a language pack filled to 61%. Compared against the locale's own bundled copy, a
+    // project that overrides nothing deploys no variable, and adding a language the kit ships costs no
+    // configuration growth at all.
+    //
+    // The English fallback stays in the comparison because that is what the host renders for a key no
+    // translation covers — dropping only against the locale would send back every untranslated key.
+    const bundled = { ...(EMAIL_MESSAGES.en ?? {}), ...(EMAIL_MESSAGES[locale] ?? {}) };
     for (const [key, value] of Object.entries(merged)) {
-      if (english[key] === value) delete merged[key];
+      if (bundled[key] === value) delete merged[key];
     }
     if (Object.keys(merged).length > 0) catalogs[locale] = merged;
   }

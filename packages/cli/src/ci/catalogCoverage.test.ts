@@ -415,11 +415,30 @@ const ENGLISH = new Map<string, string>([
 ]);
 
 /** The locales that ship, and their keys — the map `@pithy-sh/i18n` actually composes into its layers. */
-const SHIPPED = Object.entries(KIT_CATALOGS).map(([locale, catalog]) => ({
-  locale,
-  keys: Object.keys(catalog ?? {}),
-  entries: Object.entries(catalog ?? {}),
-}));
+/**
+ * Every locale the kit ships, and every sentence in it — **from both places a kit translation lives**.
+ *
+ * `@pithy-sh/i18n` holds what no capability can: the error taxonomy, whose domains are not capability
+ * names, and the screens, which are copied into an adopter's repository rather than imported. A
+ * capability holds its own domain, in every language it is written in — `@pithy-sh/email` carries its
+ * `email/` Spanish beside its English, because the send Worker is a separate deploy that has to be
+ * *built* with the words or else be sent them as configuration on every provision run (#442).
+ *
+ * Read as a union rather than from one of them, because which package a sentence lives in is a fact
+ * about how it reaches a Worker, and this file is asking a different question: whether the sentence
+ * exists at all. A gate that read only `KIT_CATALOGS` would report every email key as untranslated
+ * the day one moved, which is exactly what it did.
+ */
+const SHIPPED = [
+  ...new Set([
+    ...Object.keys(KIT_CATALOGS),
+    ...CONTRIBUTED.flatMap(({ catalogs }) => Object.keys(catalogs).filter((locale) => locale !== "en")),
+  ]),
+].map((locale) => {
+  const merged: Record<string, string> = { ...(KIT_CATALOGS[locale] ?? {}) };
+  for (const { catalogs } of CONTRIBUTED) Object.assign(merged, catalogs[locale] ?? {});
+  return { locale, keys: Object.keys(merged), entries: Object.entries(merged) };
+});
 
 /** `{placeholder}`, spelled exactly as `interpolate` spells it. Anything between braces counts. */
 const PLACEHOLDER = /\{([^}]*)\}/g;
@@ -462,7 +481,7 @@ describe("the catalogs cover what the kit says", () => {
     }).filter(([, keys]) => keys.length > 0);
     expect(
       Object.fromEntries(missing),
-      "A kit sentence has no translation. Add it to `packages/i18n/src/catalogs/<locale>/`.",
+      "A kit sentence has no translation. Add it to `packages/i18n/src/catalogs/<locale>/`, or beside the capability's own English.",
     ).toEqual({});
   });
 
