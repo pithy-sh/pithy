@@ -8,7 +8,6 @@ import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
 import { validationHook } from "@pithy-sh/core/src/http/validation";
 import { TURNSTILE_LOGIN_ACTION } from "@pithy-sh/turnstile/src/config/config";
 import { turnstile } from "@pithy-sh/turnstile/src/http/middleware";
-import { isAPIError } from "better-auth/api";
 import type { Context, Hono } from "hono";
 import { correlation, emitDenied, emitDeviceRevoked, emitTokenRefresh, emitTokenReuseDetected } from "../audit/emit";
 import type { AuthWiring } from "../capability";
@@ -52,8 +51,8 @@ function db(c: Ctx, wiring: AuthWiring) {
  * | `*    /admin/*`            | control-plane   | see `./adminRoutes`         |
  *
  * The catch-all takes NO validator, deliberately: `handleBetterAuth` hands Better Auth `c.req.raw`,
- * and reading the body first would consume the stream. Better Auth validates its own endpoints, and
- * `apiErrorToPithy` re-homes what it rejects.
+ * and reading the body first would consume the stream. Better Auth validates its own endpoints and
+ * answers its own refusals; what it rejects reaches a caller in its shape, not ours.
  *
  * **The admin routes must be registered before the catch-all, and it is not a style preference.**
  * `handleBetterAuth` returns a Response, which ends the chain — so a route registered after
@@ -96,25 +95,94 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
   };
 }
 
-/** Delegate to Better Auth's fetch handler; record denied attempts and re-home errors as PithyError. */
+/** The statuses that mean somebody was turned away, rather than that something is broken. */
+const DENIED_STATUSES = new Set([400, 401, 403]);
+
+/**
+ * Whether a refused request on this path was an attempt to authenticate.
+ *
+ * **The audit action is `auth/signin`, so the path has to earn it.** `emitDenied` records
+ * `auth/signin outcome=denied actorType=anonymous`, which is the row a brute-force alert counts — and
+ * the catch-all under `basePath` carries far more than sign-in. Recording every 4xx there would write
+ * a *failed sign-in* for a logged-out tab polling `/update-user` with a stale cookie, and would let an
+ * unauthenticated loop against `/list-sessions` bury real credential-stuffing under noise wearing the
+ * same anonymous shape.
+ *
+ * So: the routes where presenting something and being refused *is* the failed attempt — starting a
+ * sign-in, completing one at an OAuth callback, and asking for the credential that starts one.
+ */
+function isSignInAttempt(path: string): boolean {
+  return (
+    path.includes("/sign-in/") ||
+    path.includes("/callback/") ||
+    path.includes("/magic-link/") ||
+    path.includes("/email-otp/")
+  );
+}
+
+/**
+ * Record a Better Auth refusal on the audit trail.
+ *
+ * **Read off the Response, because a refusal never arrives as a throw.** `onAPIError: { throw: true }`
+ * reads as though an endpoint's `APIError` reaches this module, and it does not: better-auth's
+ * `onError` re-raises it (`better-auth/dist/api/index.mjs:193`) directly into better-call's own catch
+ * (`better-call@1.4.0`, `dist/router.mjs:83-89`), which renders an `APIError` as a Response and returns
+ * it. The throw is swallowed one frame later by the library that asked for it.
+ *
+ * So the `emitDenied` call this replaces — gated on catching an `APIError` — had never run once. No
+ * failed one-time code, no bad magic link, no refused OAuth callback has ever reached
+ * `pithy_audit_events`, which is the largest class of security event this capability has (#449).
+ *
+ * **The body is cloned, never consumed.** The Response is handed back to the caller untouched: Better
+ * Auth's own flat shape is a contract adopters read through `createAuthClient`, and the browser client
+ * reads it too, so nothing here rewrites it.
+ */
+async function auditRefusal(c: Ctx, response: Response): Promise<void> {
+  if (!DENIED_STATUSES.has(response.status)) return;
+  if (!isSignInAttempt(new URL(c.req.raw.url).pathname)) return;
+
+  let body: unknown;
+  try {
+    body = await response.clone().json();
+  } catch {
+    // A body that will not parse still refused somebody, but names no reason worth a row.
+    return;
+  }
+  const code = (body as { code?: unknown } | null)?.code;
+
+  // Record only the Better-Auth error *code* (e.g. INVALID_OTP) — never the message, which can
+  // carry the submitted email or other request context (no PII in the audit trail).
+  await emitDenied(c.var.emit, {
+    ...correlation(c.req.raw.headers),
+    detail: typeof code === "string" ? code : undefined,
+  });
+}
+
+/**
+ * Delegate to Better Auth's fetch handler, and record what it refused.
+ *
+ * **The answer is returned exactly as Better Auth wrote it.** Re-homing its flat `{ message, code }`
+ * into the kit envelope was tried and taken back out: `packages/auth/README.md` documents
+ * `createAuthClient` from `better-auth/client` as a first-class client surface (#271), and
+ * `@better-fetch/fetch` builds its error as `{ ...parsedBody, status }` — so rewriting the body would
+ * make `error.code` `undefined` for every adopter on the documented path. The wire is Better Auth's
+ * contract. `readFailure` in `../client/api` learns to read it instead (#449).
+ *
+ * The `catch` covers what better-call genuinely hands on: a non-`APIError` throw from an endpoint
+ * (`router.mjs:88`), and a throw from a plugin's `onRequest` hook, which runs outside the router's own
+ * try. A failure building the instance does **not** come this way — `getAuthInstance` is called before
+ * it, and what that throws is already a `PithyError` for `pithyErrorHandler` to render.
+ */
 async function handleBetterAuth(c: Ctx, wiring: AuthWiring): Promise<Response> {
   const instance = await getAuthInstance(c, wiring);
+  let response: Response;
   try {
-    return await instance.handler(c.req.raw);
+    response = await instance.handler(c.req.raw);
   } catch (error) {
-    if (isAPIError(error)) {
-      const status = (error as { statusCode?: number }).statusCode ?? 500;
-      if (status === 400 || status === 401 || status === 403) {
-        // Record only the Better-Auth error *code* (e.g. INVALID_OTP) — never the message, which can
-        // carry the submitted email or other request context (no PII in the audit trail).
-        await emitDenied(c.var.emit, {
-          ...correlation(c.req.raw.headers),
-          detail: (error as { body?: { code?: string } }).body?.code,
-        });
-      }
-    }
     throw apiErrorToPithy(error);
   }
+  await auditRefusal(c, response);
+  return response;
 }
 
 /** The raw bearer token presented on the Authorization header, or undefined when none/malformed. */

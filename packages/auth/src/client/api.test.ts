@@ -333,3 +333,57 @@ describe("the one home for a reader's language", () => {
     expect(calls, "the cookie mode was handed to somebody else's host").toEqual([]);
   });
 });
+
+/**
+ * The two shapes this Worker answers with, and the one it does not (#449).
+ *
+ * Everything this capability writes answers the kit envelope; every route Better Auth owns answers its
+ * own flat `{ message, code }`, because better-call renders an endpoint's `APIError` into a Response
+ * inside `instance.handler`. Reading only the envelope meant every Better Auth refusal — a mistyped
+ * one-time code, an expired magic link, a signed-out write — arrived as `client/unreadable`, and the
+ * screen could only say the answer could not be read.
+ */
+describe("readFailure, through callAuth", () => {
+  /** A fetch that answers one refusal, so the decoding is what is under test and nothing else. */
+  function refusing(status: number, body: unknown): AuthFetch {
+    return async () => ({ ok: false, status, json: async () => body });
+  }
+
+  test("reads the kit envelope", async () => {
+    const result = await getSession({
+      fetch: refusing(401, {
+        error: { code: "auth/invalid_token", message: "Sign in first.", action: "Go to /sign-in." },
+      }),
+    });
+    expect(result).toEqual({
+      ok: false,
+      failure: { code: "auth/invalid_token", message: "Sign in first.", action: "Go to /sign-in." },
+    });
+  });
+
+  test("reads Better Auth's flat shape", async () => {
+    const result = await getSession({ fetch: refusing(400, { message: "Invalid OTP", code: "INVALID_OTP" }) });
+    // Better Auth's vocabulary, surfaced as it is. The two are told apart by shape — `auth/invalid_token`
+    // is ours, `INVALID_OTP` is theirs — and a screen matching a code expects the route's own.
+    expect(result).toEqual({ ok: false, failure: { code: "INVALID_OTP", message: "Invalid OTP", action: null } });
+  });
+
+  test("keeps the flat shape's message when the i18n plugin translated it", async () => {
+    // `@better-auth/i18n` substitutes `message` and keeps the English on `originalMessage` (#452). The
+    // translated sentence is the one a screen renders; the extra field is ignored rather than surfaced.
+    const result = await getSession({
+      fetch: refusing(400, { code: "INVALID_OTP", message: "Código no válido", originalMessage: "Invalid OTP" }),
+    });
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.failure.message).toBe("Código no válido");
+  });
+
+  test("a body that is neither shape is still unreadable", async () => {
+    // The sentinel has to keep meaning "whatever answered was not this Worker" — a proxy's HTML page, a
+    // shape change — or a screen cannot tell a refusal from a broken deployment.
+    for (const body of [{ detail: "nope" }, { message: 42, code: "X" }, { code: "X" }, "a string", null, []]) {
+      const result = await getSession({ fetch: refusing(400, body) });
+      expect(result, JSON.stringify(body)).toEqual({ ok: false, failure: AUTH_UNREADABLE });
+    }
+  });
+});

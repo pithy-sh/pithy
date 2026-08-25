@@ -508,3 +508,83 @@ describe("auth HTTP routes", () => {
     expect(res.status).toBe(200);
   });
 });
+
+/**
+ * A refused sign-in reaches the audit trail (#449).
+ *
+ * **The call this covers had never run.** `onAPIError: { throw: true }` reads as though an endpoint's
+ * `APIError` reaches `handleBetterAuth`'s `catch`, and it does not — better-auth re-raises it into
+ * better-call's own catch, which renders it as a Response. So the `emitDenied` that was gated on
+ * catching one recorded nothing, ever: no failed one-time code, no bad magic link, no refused OAuth
+ * callback, which is the largest class of security event this capability has.
+ *
+ * `errors.test.ts` could not catch that, because it hands `apiErrorToPithy` an `APIError` it built
+ * itself — proving the function and never the wiring. These drive real refusals through the mounted
+ * stack and read the emit seam.
+ */
+describe("a refused sign-in", () => {
+  /** A wrong one-time code — the commonest real denial there is, and a 400 from Better Auth. */
+  async function badOtp(app: Hono<PithyHonoEnv>): Promise<Response> {
+    return await app.request(
+      "/auth/sign-in/email-otp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "http://localhost" },
+        body: JSON.stringify({ email: "nobody@example.test", otp: "000000" }),
+      },
+      appEnv(),
+    );
+  }
+
+  test("is recorded as denied, carrying the code and never the message", async () => {
+    const { emit, events } = capturingEmit();
+    await badOtp(buildApp(buildWiring(), emit));
+
+    const denied = events.filter((event) => event.outcome === "denied");
+    expect(denied).toHaveLength(1);
+    expect(denied[0]?.action).toBe("auth/signin");
+    // The Better-Auth *code*, which is what an operator counts. Never the message: it is built from
+    // request context and routinely carries the address somebody typed, and the trail holds no PII.
+    expect((denied[0]?.metadata as { reason?: string } | undefined)?.reason).toBe("INVALID_OTP");
+    expect(JSON.stringify(denied[0])).not.toContain("nobody@example.test");
+  });
+
+  test("reaches the caller in Better Auth's own shape, untouched", async () => {
+    // Deliberately not the kit envelope. `packages/auth/README.md` documents `createAuthClient`, whose
+    // fetch layer reads `error.code` off this body — rewriting it would break every adopter on the
+    // documented path. `../client/api`'s `readFailure` learns to read this instead.
+    const res = await badOtp(buildApp(buildWiring()));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ message: "Invalid OTP", code: "INVALID_OTP" });
+  });
+
+  test("a refusal that is not a sign-in attempt writes no failed sign-in", async () => {
+    // `auth/signin outcome=denied` is the row a brute-force alert counts. A logged-out tab polling a
+    // Better-Auth-owned route with a stale cookie is not a failed sign-in, and recording it as one
+    // would let an unauthenticated loop bury real credential-stuffing under noise of the same shape.
+    const { emit, events } = capturingEmit();
+    const res = await buildApp(buildWiring(), emit).request(
+      "/auth/update-user",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "http://localhost" },
+        body: JSON.stringify({ locale: "es" }),
+      },
+      appEnv(),
+    );
+
+    expect(res.status).toBe(401);
+    expect(events.filter((event) => event.outcome === "denied")).toEqual([]);
+  });
+
+  test("a success writes nothing, and its body is not consumed on the way past", async () => {
+    // The audit read clones the response. `get-session` signed out is the cheapest real 2xx on a
+    // Better-Auth-owned route, and `null` is a body — an empty one would pass while proving nothing.
+    const { emit, events } = capturingEmit();
+    const res = await buildApp(buildWiring(), emit).request("/auth/get-session", {}, appEnv());
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toBeNull();
+    expect(events.filter((event) => event.outcome === "denied")).toEqual([]);
+  });
+});
