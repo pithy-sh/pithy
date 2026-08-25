@@ -230,6 +230,7 @@ describe("getUser and userProviders", () => {
       .values({
         id: "acct-1",
         accountId: "google-sub-1",
+        issuer: "https://accounts.google.com",
         providerId: "google",
         userId: "u-1",
         accessToken: "ya29.super-secret",

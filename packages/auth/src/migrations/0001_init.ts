@@ -74,6 +74,13 @@ export const auth_0001_init: Migration = {
     await db.schema
       .createTable("pithyAuthAccounts")
       .addColumn("id", "text", (c) => c.primaryKey())
+      // `issuer` is 1.7's account identity, and it is `required: true` in Better Auth's own model
+      // (#451). An account is the pair `(issuer, accountId)` now rather than `(providerId, accountId)`,
+      // because a provider id is ours to name and an issuer is the identity provider's own — two
+      // providers configured against one directory could otherwise mint the same `accountId` and land
+      // on different rows. `local:credential` for a password, the discovery URL for an OIDC provider,
+      // `local:oauth:<id>` for an OAuth provider that publishes none.
+      .addColumn("issuer", "text", (c) => c.notNull())
       .addColumn("accountId", "text", (c) => c.notNull())
       .addColumn("providerId", "text", (c) => c.notNull())
       .addColumn("userId", "text", (c) => c.notNull())
@@ -105,6 +112,11 @@ export const auth_0001_init: Migration = {
       .addColumn("privateKey", "text", (c) => c.notNull())
       .addColumn("createdAt", "text", (c) => c.notNull())
       .addColumn("expiresAt", "text")
+      // `alg` and `crv` arrived with better-auth 1.7's jwt plugin (#451). Both are `required: false`
+      // in its own model, so both are nullable here — and a key written by 1.6 has neither, which is
+      // the state the plugin already reads through its `?? "EdDSA"` fallback.
+      .addColumn("alg", "text")
+      .addColumn("crv", "text")
       .execute();
 
     await db.schema
@@ -148,6 +160,16 @@ export const auth_0001_init: Migration = {
     await db.schema.createIndex("pithyAuthSessionsUserIdIdx").on("pithyAuthSessions").column("userId").execute();
     await db.schema.createIndex("pithyAuthSessionsDeviceIdIdx").on("pithyAuthSessions").column("deviceId").execute();
     await db.schema.createIndex("pithyAuthAccountsUserIdIdx").on("pithyAuthAccounts").column("userId").execute();
+    // The identity 1.7 looks an account up by, and unique because the pair *is* the identity: two rows
+    // sharing it are two records of one account at one provider, which is the account-confusion state
+    // Better Auth's own 1.7 upgrade guide has adopters audit for before adding this (#451). Declared
+    // here rather than backfilled, because nothing is published and no row predates it.
+    await db.schema
+      .createIndex("pithyAuthAccountsIssuerAccountIdIdx")
+      .on("pithyAuthAccounts")
+      .columns(["issuer", "accountId"])
+      .unique()
+      .execute();
     await db.schema
       .createIndex("pithyAuthVerificationsIdentifierIdx")
       .on("pithyAuthVerifications")
@@ -187,6 +209,7 @@ export const auth_0001_init: Migration = {
     await db.schema.dropIndex("pithyAuthRotatedTokensRotatedAtIdx").execute();
     await db.schema.dropIndex("pithyAuthRotatedTokensFamilyIdIdx").execute();
     await db.schema.dropIndex("pithyAuthVerificationsIdentifierIdx").execute();
+    await db.schema.dropIndex("pithyAuthAccountsIssuerAccountIdIdx").execute();
     await db.schema.dropIndex("pithyAuthAccountsUserIdIdx").execute();
     await db.schema.dropIndex("pithyAuthSessionsDeviceIdIdx").execute();
     await db.schema.dropIndex("pithyAuthSessionsUserIdIdx").execute();
