@@ -120,9 +120,35 @@ async function branchExists(git: GitRunner, branch: string, cwd?: string): Promi
   );
 }
 
-/** The trunk to cut a fresh feature branch from: `origin/main` when it exists, else the current `HEAD`. */
+/**
+ * The trunk to cut a fresh feature branch from: local `main` when it exists, else the current `HEAD`.
+ *
+ * **Local, never `origin/main` — `#454`.** It preferred the remote whenever the ref existed, which meant a
+ * feature cut on a repository holding unpushed work started before that work. On `pithy-sh/dashboard` that
+ * was 159 commits, and the symptom was a config error naming a field the branch was too old to have — a
+ * sentence that says nothing about the base it was cut from. Where the old config still parses there is no
+ * symptom at all: the branch is simply rooted in the past, and the operator learns at merge.
+ *
+ * A remote that is *ahead* is the ordinary case and not this function's business: cutting from a `main`
+ * that is a few commits behind is usually fine and sometimes deliberate. {@link behindRemote} is how the
+ * operator gets told, because being told is what stops it becoming a surprise at merge time.
+ */
 async function baseRef(git: GitRunner): Promise<string> {
-  return (await gitTry(git, ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"])) ? "origin/main" : "HEAD";
+  return (await gitTry(git, ["rev-parse", "--verify", "--quiet", "refs/heads/main"])) ? "main" : "HEAD";
+}
+
+/**
+ * How many commits local `main` is behind `origin/main`, or `null` when the question does not arise —
+ * no remote ref, no local `main`, or nothing behind.
+ *
+ * Reported rather than refused, and the caller decides how to say it. A repository with no `origin` is the
+ * ordinary case for a fresh `pithy init`, and a count of zero is the ordinary case for everybody else.
+ */
+export async function behindRemote(git: GitRunner = defaultGit): Promise<number | null> {
+  if (!(await gitTry(git, ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"]))) return null;
+  if (!(await gitTry(git, ["rev-parse", "--verify", "--quiet", "refs/heads/main"]))) return null;
+  const behind = Number.parseInt(await git(["rev-list", "--count", "main..origin/main"]), 10);
+  return Number.isFinite(behind) && behind > 0 ? behind : null;
 }
 
 /** The outcome of {@link createWorktree}: the composed names and whether a new worktree was created. */

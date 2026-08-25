@@ -30,6 +30,8 @@ pithy feature destroy [--env <environment>] [--local-only] [--json]
 
 ## What it does
 
+**The branch is cut from local `main`.** Not from `origin/main`: a repository holding unpushed work would otherwise start every feature *before* that work, and where the older tree still loads there is no symptom at all — just a branch rooted in the past, found at merge. When local `main` is behind its remote the run says so and carries on, because cutting from a `main` a few commits behind is usually fine and sometimes deliberate; being told is what stops it becoming a surprise. A repository with no local `main` cuts from `HEAD`.
+
 **`create`** validates the issue number and the slug at the boundary — before a branch or a worktree exists, so a refusal leaves nothing behind — then cuts the worktree and its `feature/<issue>-<slug>` branch, installs dependencies, reserves a port block, pins one port per Worker, and migrates and seeds the local `dev` backend. Port allocation is [`dev.md` §Per-feature ports](dev.md#per-feature-ports-run-many-worktrees-at-once) in full: a lock over the machine's `<config>/dev-ports.json`, the lowest free non-overlapping block across every checkout on the machine, and a per-worktree `.dev.config.json` that fixes each Worker's port for the life of the feature. Assignment is sticky and never probed at startup, which is what lets several worktrees run at once.
 
 **`sync`** makes the worktree's local environment ready, whatever state it is in, and covers the two everyday cases with one command: you added a Worker, or a colleague pushed the branch and you pulled it. None of that state is in git — the `.dev.config.json` and the port reservation are both machine-local — so a sync creates them on *your* machine, with your own free block. It reconciles ports through the same code `create` uses, then migrates and seeds the local backend. Every step is idempotent, so running it when nothing is missing reports that nothing moved.
@@ -45,6 +47,8 @@ pithy feature destroy [--env <environment>] [--local-only] [--json]
 **A feature has no secrets manager, deliberately.** `ManagedEnvironment` is the set the project declared, and everything iterating it multiplies with it — most of all a manager Worker with its own D1 and rotation cron. One per open pull request is not a cost a branch should carry. So `pithy secrets create` targets a declared environment, never a feature: a secret a feature needs beyond its master key is one the report names as unbound, with the command that creates it.
 
 **`destroy`** deletes the feature's Cloudflare resources — first by the exact ids in the worktree's manifest, then by recomputing every name the enabled capabilities could have produced and deleting what still exists — then frees the port block, prunes the worktree, and deletes the branch if it has been merged. That second pass is what catches a partly-failed `provision`.
+
+**`destroy` does not need a Worker config to load.** Its local half — free the port block, prune the worktree — is derived from the branch and the root `pithy.config.ts`, and that is deliberate: the state it is most needed in is a `create` that failed partway, which leaves a worktree whose Worker config throws. A teardown that loaded it first was unavailable in exactly that state, and the port block leaked to a branch that no longer existed. The remote half genuinely cannot run without those configs, so an unloadable one is refused unless `--local-only` says the remote half is not wanted.
 
 Missing credentials are a hard failure on `destroy` rather than a silent skip, and the reason is worth stating: skipping the remote half would leak every D1, KV, and R2 while reporting success, and the teardown then deletes the branch the resource names are derived from — so a later attempt could no longer work out what to delete. A CI job whose credentials did not propagate must fail loudly. `--local-only` is the deliberate opt-out.
 
@@ -65,6 +69,7 @@ $ pithy feature create media-cli --issue 69 --json
 | `branch` | `string` | The feature branch created or attached |
 | `worktree` | `string` | The absolute worktree path |
 | `worktreeCreated` | `boolean` | Whether a new worktree was created. False on an idempotent re-run over an existing one |
+| `behindRemote` | `number \| null` | How many commits local `main` is behind `origin/main`, or null when it is level, has no remote, or the repository has no local `main`. The branch is cut from **local** `main` either way — this reports it rather than refusing |
 | `dev` | `object` | The feature's dev config — the document written to the worktree's `.dev.config.json` |
 | `dev.version` | `1` | Dev-config schema version |
 | `dev.branch` | `string` | The branch this config belongs to |
