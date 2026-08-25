@@ -12,6 +12,30 @@ Links in a tracked email are HMAC-signed callbacks. A click goes through `/_pith
 
 `pithy add email` mints this project's **dev** signing key into the dev secrets file as `email-link-signing-key` — any random string signs a link this app also verifies, so there is nothing for you to invent. It is written only when absent: a new key breaks every link already in an inbox. Deployed environments need their own, with `pithy secrets create email-link-signing-key`.
 
+### What an enqueue answers with
+
+The job id, the status it was born as, the reason it was withheld if it was — and **the subject the row was written with**, in the recipient's language.
+
+```ts
+const { jobId, status, subject } = await emailCapability.enqueue(env, {
+  to: "someone@example.com",
+  template: "invite",
+  payload: { inviterName: "Sam", organizationName: "Acme", acceptUrl },
+  locale: "es",
+});
+// subject === "Sam te ha invitado a Acme" — the sentence the row was born with, not a second rendering of it.
+```
+
+That is for the caller with an administrative trail to write. Re-rendering the subject to record it means restating the theme you configured and the layer stack you composed, then pinning your copy against the kit's catalog to notice when the kit's wording moves. An audit row written at enqueue instead reads the same string the job row was written with.
+
+**Locale is what makes it more than a convenience.** A trail that mirrors the English sentence by hand agrees with the row by coincidence, for as long as there is one language. Pass a `locale` and the template renders the recipient's catalog while the mirror keeps restating English — and the trail then claims a subject nobody was ever sent.
+
+**It is the enqueue-time render, and `runSend` remains the authority on what was delivered** — because the send renders again, in the send Worker, at the moment the message leaves, and rewrites `pithy_email_jobs.subject` from that render. Three things part the two renders: a template corrected, a theme renamed, or a catalog sentence retranslated. A subject can interpolate your theme (`welcome`'s takes `theme.appName`), so a rename parts them with no catalog movement at all.
+
+**And the gap between the two is not only the wait in the queue.** Waiting sets one bound on it, seconds for an immediate send and days for a `scheduled` one. The other is that the send Workflow is its own deploy: it carries the kit's email copy in its own bundle, and your theme and override sentences in vars stamped at provision ([docs/I18N.md](../../docs/I18N.md)). So a send Worker whose copy has drifted from the Worker that enqueued is not a window a fast send outruns — it stands until the two are back in step, and an immediate send lands inside it like any other. So record it as what you queued. A trail that has to reflect delivery reads the row back after the send.
+
+Every result carries it, a `suppressed` one included: the withheld row has a rendered subject like any other, no send will ever rewrite it, and a message that reached nobody is the one an operator most needs on the record. The body is deliberately not here — it is large, it is the thing this capability is careful never to log, and it is rendered inside the Workflow at the moment it leaves.
+
 ### Sending from your own Workflow
 
 A route reaches `enqueue` through the `compose` hook, and should keep doing that — it is typed and explicit. **A Workflow class has no such route:** the runtime constructs it with the worker `env` and nothing else, `enqueue` is a closure rather than a binding, and Workflow params are serialized so a closure cannot travel in one either. Rebuilding the send identity inside the step would put your sending address in a second place, free to drift from `pithy.config.ts`.

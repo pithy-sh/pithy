@@ -182,6 +182,47 @@ export interface EnqueueResult {
    * operator's next move depends on.
    */
   suppressionReason?: SuppressionReason;
+  /**
+   * The **enqueue-time** render — the sentence this call wrote to `pithy_email_jobs.subject`, in the
+   * recipient's language, and the value the row is born with (pithy-sh/pithy#443).
+   *
+   * **For the caller that has to say what it queued.** Enqueuing is what a surface does; auditing it is
+   * what a surface with an administrative trail also does. Without this, that caller had to render the
+   * same key a second time — restating the theme it configured and the layer stack it composed, then
+   * holding a test pinning its own copy against the kit's catalog to notice when the kit's wording
+   * moved. An audit row written at enqueue now reads the same string the job row was written with,
+   * rather than a second rendering free to disagree with it.
+   *
+   * **Locale is what makes it more than a convenience.** A caller that mirrored the English sentence by
+   * hand agreed with the row by coincidence, for as long as there was one language. Pass a `locale` and
+   * the template renders the recipient's catalog while the mirror keeps restating English, and the trail
+   * then claims a subject nobody was ever sent.
+   *
+   * **{@link import("./runSend").runSend} remains the authority on what was *delivered***, because it
+   * renders again — in the send Worker, at the moment the message leaves — and rewrites this column
+   * from that render. Three things part the two renders — the three `runSend` names at the line where
+   * it rewrites: a template corrected, a theme renamed, or a catalog sentence retranslated. A subject
+   * can interpolate the theme (`welcome`'s takes `theme.appName`), so a rename parts them with no
+   * catalog movement at all.
+   *
+   * **And the gap between the two is not only the wait in the queue.** Waiting sets one bound on it,
+   * seconds for an immediate send and days for a `scheduled` one. The other is that the send Workflow
+   * is its own deploy: it carries the kit's email copy in its own bundle, and the theme and any
+   * override sentences in vars stamped at provision (`docs/I18N.md`). So a send Worker whose copy has
+   * drifted from the Worker that enqueued is not a window a fast send outruns — it stands until the two
+   * are back in step, and an immediate send lands inside it like any other. This is a record of what
+   * was queued, never a promise about the delivered sentence — a trail that must reflect delivery reads
+   * the row back after the send.
+   *
+   * Present on every result, including a `suppressed` one: the withheld row carries a rendered subject
+   * like any other, no send will ever rewrite it, and a message that reached nobody is the one an
+   * operator most needs on the record.
+   *
+   * **Deliberately not the body.** A body is large, it is the thing this capability is careful never to
+   * log, and no caller has a reason to hold one — `runSend` renders it inside the Workflow, at the
+   * moment it leaves, and that is the only place it exists.
+   */
+  subject: string;
 }
 
 /** Resolve the absolute send time and initial status from the requested mode. */
@@ -327,7 +368,7 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
   // looks exactly like a job still waiting its turn.
   if (blocked) {
     await recordEvent(deps.db, { jobId: job.id, recipient, type: "suppressed", detail: blocked }, deps.now);
-    return { jobId: job.id, status, suppressionReason: blocked };
+    return { jobId: job.id, status, subject, suppressionReason: blocked };
   }
 
   // Immediate sends start the Workflow now for lowest latency, under the id the row already carries —
@@ -346,5 +387,5 @@ export async function enqueueEmail(deps: EnqueueDeps, input: EnqueueInput): Prom
     }
   }
 
-  return { jobId: job.id, status };
+  return { jobId: job.id, status, subject };
 }
