@@ -12,7 +12,12 @@ import type { EmailCapability } from "@pithy-sh/email/src/capability";
 import { isEmailCapability } from "@pithy-sh/email/src/capability";
 import type { Migration } from "kysely/migration";
 import type { SupportClientProjection } from "./client/projection";
-import { type SupportConfig, type SupportConfigInput, SupportConfig as SupportConfigSchema } from "./config/config";
+import {
+  type SupportConfig,
+  type SupportConfigInput,
+  SupportConfig as SupportConfigSchema,
+  supportNeedsBucket,
+} from "./config/config";
 import { resolveCategories, type SupportCategories } from "./data/categories";
 import { supportTables } from "./data/tables";
 import { makeResolveDeps } from "./http/resolve";
@@ -211,9 +216,18 @@ export function support(options: SupportOptions = {}): SupportCapability {
   const requiredBindings: BindingSpecInput[] = [
     // The app database every support table lives in.
     { type: "d1", name: "DB" },
-    // Attachment and raw-message bytes. Optional: an inbox with attachments off never writes an
-    // object, and a project that has not provisioned must still boot and still receive mail.
-    { type: "r2", name: "SUPPORT_BUCKET", optional: true },
+    // Attachment and raw-message bytes. Optional: a project that has not provisioned yet must still
+    // boot and still receive mail, which is why the runtime has a path for the bucket's absence
+    // (`http/resolve.ts:77`).
+    //
+    // **Declared only when this configuration would ever write to it.** A manifest is one static file
+    // and cannot vary with config, so the manifest says `optional` and the composed instance decides
+    // — which is exactly what the CLI's `effectiveBindings` reads, and what `controlplane` has always
+    // done for its KV. Declaring it unconditionally made `pithy upgrade` write six R2 stanzas across
+    // three environments for an inbox with attachments off, and `pithy doctor` call them missing
+    // forever once they were deleted by hand (#440). The three settings behind `supportNeedsBucket`
+    // all default `true`, so nothing changes for a project that has not turned one off.
+    ...(supportNeedsBucket(resolved) ? [{ type: "r2" as const, name: "SUPPORT_BUCKET", optional: true }] : []),
     // The classification Workflow the inbound handler dispatches to, derived from the spec rather
     // than listed again — one declaration, so a binding rename cannot leave the two disagreeing.
     ...workflowBindings(supportWorkflows),

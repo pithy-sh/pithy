@@ -7,6 +7,7 @@ import {
   MAX_SUBMISSION_BODY_CHARS,
   MAX_SUBMISSION_SUBJECT_CHARS,
   SupportConfig,
+  supportNeedsBucket,
 } from "./config";
 
 describe("SupportConfig defaults", () => {
@@ -167,5 +168,35 @@ describe("SupportConfig adopter records", () => {
 
   test("a snippet missing a body is refused, so a broken picker entry fails at config time", () => {
     expect(SupportConfig.safeParse({ reply: { snippets: { broken: { label: "Broken" } } } }).success).toBe(false);
+  });
+});
+
+describe("supportNeedsBucket", () => {
+  /** Parse once per case, so the predicate is asked the same shape the capability asks it. */
+  const needs = (input: Parameters<typeof SupportConfig.parse>[0]) => supportNeedsBucket(SupportConfig.parse(input));
+
+  test("the default configuration needs one", () => {
+    // All three writers default on, so adding this predicate changed nothing for an ordinary project
+    // — which is the property that made it safe to land on a capability people already compose.
+    expect(needs({})).toBe(true);
+  });
+
+  test("only all three off answers no", () => {
+    expect(
+      needs({
+        attachments: { enabled: false, retainRaw: false },
+        submission: { attachments: { enabled: false } },
+      }),
+    ).toBe(false);
+  });
+
+  test("each writer alone is enough", () => {
+    // Three settings, three independent reasons to hold a bucket: stored mail attachments, the raw
+    // MIME copy that makes a re-parse possible, and an in-app submission's files. A predicate that
+    // asks about only two of them is the bug this replaced (#440).
+    const off = { attachments: { enabled: false, retainRaw: false }, submission: { attachments: { enabled: false } } };
+    expect(needs({ ...off, attachments: { enabled: true, retainRaw: false } })).toBe(true);
+    expect(needs({ ...off, attachments: { enabled: false, retainRaw: true } })).toBe(true);
+    expect(needs({ ...off, submission: { attachments: { enabled: true } } })).toBe(true);
   });
 });
