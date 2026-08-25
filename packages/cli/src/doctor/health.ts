@@ -5,6 +5,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { type AvailableManifests, availableManifests, type ManifestFault } from "../capabilities/manifests";
 import type { MissingPrerequisite } from "../capabilities/prerequisites";
 import {
+  type BindingDeclines,
   type BuildReconcilePlanOptions,
   buildReconcilePlan,
   type EntitlementGap,
@@ -13,6 +14,7 @@ import {
 } from "../capabilities/reconcile";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import type { ProjectLedger, readProjectLedger } from "../migrations/run";
+import type { WorkerConfig } from "../project/config";
 
 /**
  * The read-only project-health engine behind `pithy doctor`'s `Project health` block — the *same*
@@ -46,6 +48,17 @@ export interface BindingHealth {
   missing: { name: string; type: string; envs: string[] }[];
   /** Durable Object classes bound in `wrangler.jsonc` that this Worker's entry does not export. */
   missingExports: string[];
+  /**
+   * Optional bindings this Worker's `pithy.config.ts` declines, resolved against what it composes.
+   *
+   * Taken from the plan **by reference**, never re-projected: `groupMissingBindings` below constructs a
+   * fresh object per binding, and a field that had to survive that construction is a field the two
+   * commands would eventually disagree about — which is #440 itself, one level up.
+   *
+   * An honored decline does not fail `ok`. A decline that cannot be honored does, because it means
+   * the adopter believes a binding is being left out that is not.
+   */
+  declinedBindings: BindingDeclines;
 }
 
 /**
@@ -182,6 +195,13 @@ export interface HealthWorker {
   dir: string;
   /** That Worker's composed capabilities, forwarded to the plan for its migration count. */
   capabilities?: Capability[];
+  /**
+   * That Worker's own `pithy.config.ts`, as `resolveWorkers` already returns it. The plan reads
+   * `declinedBindings` off it — the whole object, because the reader also refuses a key that is nearly
+   * that one and can only see one if it is handed what the adopter wrote. Optional because the
+   * resolver is a test seam: a double with no config is a Worker that declines nothing.
+   */
+  config?: WorkerConfig;
 }
 
 /** Options for {@link buildProjectHealth}. */
@@ -230,7 +250,19 @@ function healthFromPlan(worker: string, plan: ReconcilePlan): WorkerHealth {
   const missing = groupMissingBindings(plan);
   // Deduplicated across capabilities: two capabilities binding one class is one missing export.
   const missingExports = [...new Set(plan.perCapability.flatMap((cap) => cap.missingEntryExports))];
-  const bindings: BindingHealth = { ok: missing.length === 0 && missingExports.length === 0, missing, missingExports };
+  // A decline that cannot be honored is a defect in the declaration and fails the check. `unrecognized`
+  // does not: `pithy remove <capability>` produces it, and a red no command can clear is worse than the
+  // line that reports it.
+  const declinedBindings = plan.declinedBindings;
+  const badDeclines =
+    declinedBindings.state === "invalid" ||
+    declinedBindings.declines.some((decline) => decline.state === "required" || decline.state === "undeclinable");
+  const bindings: BindingHealth = {
+    ok: missing.length === 0 && missingExports.length === 0 && !badDeclines,
+    missing,
+    missingExports,
+    declinedBindings,
+  };
 
   // `ok` only on a whole read with nothing on either side of it. A `partial` ledger is a database this
   // check did not compare, and a check that did not run is not a check that passed — the same standard
@@ -302,6 +334,7 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
         env: options.env,
         account: options.account,
         capabilities: worker.capabilities,
+        ...(worker.config ? { workerConfig: worker.config } : {}),
         readLedger: options.readLedger,
       });
     } catch {

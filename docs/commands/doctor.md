@@ -135,6 +135,32 @@ Project health:
     entitlements no gated route without a provider ✓
 ```
 
+The `bindings` line also reports what a Worker **declines**. A capability marks a binding `optional` when its own code has a path for the binding's absence; naming it in `declinedBindings` in that Worker's `pithy.config.ts` says this Worker takes that path deliberately (see `docs/CLI.md` §Declining an optional binding). Doctor prints the reason back, names the capability whose optional path is being taken, and — because declining stops a binding coming back rather than deleting one already written — names the environments whose stanza still carries it:
+
+```
+Project health:
+  dashboard:
+    prereqs      every composed capability has its peers ✓
+    config       parses against every capability schema ✓
+    bindings     all required bindings present ✓
+                 SUPPORT_BUCKET (r2) declined in pithy.config.ts — no R2 in this account yet
+                 support takes its optional path. Still in wrangler.jsonc for dev, staging, prod.
+    migrations   none pending, none undeclared ✓
+    entitlements no gated route without a provider ✓
+```
+
+**This is the one block that appears on a project where every check passes**, and a Worker that declines something is never collapsed to `healthy ✓`. Silence here would put the next person back where this started: unable to tell a deliberate absence from a forgotten one. It does not fail the exit — a decline is a configuration, not a defect.
+
+A decline that cannot be honored does fail it, and `pithy upgrade` refuses before writing anything. A required binding is never left out; a Workflow binding absent means *not provisioned*, which `pithy <capability> provision` fixes; a Durable Object cannot be declined because its class migration tag is written once and never revisited. A decline naming a binding nothing composes is reported and stays green — `pithy remove <capability>` leaves exactly that state, and a red no command could clear would be worse than the line naming it:
+
+```
+    bindings     all required bindings present ✓
+                 SUORT_BUCKET declined in pithy.config.ts, and nothing here declares it
+                 Nothing is being left out for it. Delete the line, or fix the name.
+```
+
+In `--json`, the resolved declines ride under `project.health.workers[].bindings.declinedBindings`, in the shape `pithy upgrade --json` documents.
+
 The block's first per-Worker line is **`prereqs`**, and it is the only check here that is not drift. A capability's manifest declares the capabilities it composes against — `auth` declares `secrets` and `email`, `email` declares `secrets` — and `createBackend` refuses to assemble without them. So a Worker failing this line does not start at all, and every other line below it is describing a Worker that is down. It is reported first for that reason.
 
 ```

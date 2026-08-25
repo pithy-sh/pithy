@@ -2,18 +2,21 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import type { ErrorPayload } from "@pithy-sh/core/src/error/payload";
+import { operatorError } from "@pithy-sh/core/src/error/terminal";
 import { defineCommand } from "citty";
 import { availableManifests, type ManifestFault } from "../capabilities/manifests";
 import {
   applyReconcilePlan,
   buildReconcilePlan,
+  declineRefusal,
   type ReadLedger,
   type ReconcileApplied,
   type ReconcilePlan,
   type RunMigrate,
 } from "../capabilities/reconcile";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
-import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
+import { loadProject, projectCloudflareAccount, requireProjectName, type WorkerConfig } from "../project/config";
 import { envArg, requireEnvironment } from "../project/environment";
 import { resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -36,6 +39,15 @@ export interface UpgradeWorker {
   dir: string;
   /** The capabilities that Worker's own `pithy.config.ts` composes. */
   capabilities: Capability[];
+  /**
+   * That Worker's own `pithy.config.ts`, as `resolveWorkers` already returns it.
+   *
+   * Only `declinedBindings` is read from it here, and it is taken from the loaded config rather than
+   * re-read, so the write this run makes and the report an adopter compares it against are built from
+   * one read of one file. Optional because the seam predates it and a caller with no config to give is
+   * a caller that declines nothing.
+   */
+  config?: WorkerConfig;
 }
 
 /** Options for {@link runUpgrade} — every filesystem and migration dependency is injectable for tests. */
@@ -109,6 +121,20 @@ export type UpgradeWorkerResult =
       worker: string;
       /** What the run set out to do. What of it landed is not established — that is the whole of this state. */
       plan: ReconcilePlan;
+    }
+  | {
+      /**
+       * The plan was built and refused before the first write. **Distinct from `unapplied`, and the
+       * distinction is the fact an adopter needs**: nothing was written, so there is no half-reconciled
+       * wiring to inspect — only a declaration to fix.
+       */
+      state: "refused";
+      /** The Worker's name. */
+      worker: string;
+      /** What the run would have done, reported so the adopter sees the cost of the refusal. */
+      plan: ReconcilePlan;
+      /** Why, as the operator's own problem and action lines rather than a swallowed throw. */
+      refusal: ErrorPayload;
     };
 
 /**
@@ -175,10 +201,22 @@ export async function runUpgrade(options: UpgradeRunOptions): Promise<UpgradeRun
         env: options.env,
         account: options.account,
         capabilities: worker.capabilities,
+        // The whole config, not just `declinedBindings` — the reader also refuses a key that is nearly
+        // that one, and it can only see such a key if it is handed what the adopter actually wrote.
+        ...(worker.config ? { workerConfig: worker.config } : {}),
         ...(options.readLedger ? { readLedger: options.readLedger } : {}),
       });
     } catch {
       results.push({ state: "unplanned", worker: worker.name });
+      continue;
+    }
+    // **Before the dry-run branch, not after it.** A dry run's whole job is to predict the write, and
+    // the refusal is the thing that stops it — so a `--dry-run` that printed "Nothing to upgrade." and
+    // exited 0 where the real run exits 1 is the one report that must never disagree with the run it
+    // describes. Nothing is written on either path, so refusing costs the dry run nothing.
+    const refusal = declineRefusal(plan);
+    if (refusal) {
+      results.push({ state: "refused", worker: worker.name, plan, refusal: refusal.payload });
       continue;
     }
     if (options.dryRun) {
@@ -286,6 +324,34 @@ function ledgerLines(plan: ReconcilePlan): string[] {
   return lines;
 }
 
+/**
+ * The lines a declined binding earns in either tense.
+ *
+ * Only the two states an upgrade acts on quietly: an honored decline, which is a binding this run
+ * deliberately did not write, and a stale one, which names nothing and is ignored. The two refusals
+ * never reach a renderer — `applyReconcilePlan` throws on them before it writes, so they arrive as an
+ * error with an action line rather than as a report of work done.
+ *
+ * Appended after `Nothing to upgrade.` rather than before it, and deliberately: a run that wrote
+ * nothing *did* write nothing, and a decline is why part of that is true rather than a contradiction
+ * of it.
+ */
+function declineLines(plan: ReconcilePlan): string[] {
+  if (plan.declinedBindings.state !== "read") return [];
+  return plan.declinedBindings.declines.flatMap((decline) => {
+    if (decline.state === "honored") {
+      return [`${decline.capability}: ${decline.name} (${decline.type}) declined in pithy.config.ts. Not written.`];
+    }
+    if (decline.state === "unrecognized") {
+      return [`declinedBindings: ${decline.name} is declined, and nothing here declares it. Ignored.`];
+    }
+    return [];
+  });
+}
+
+/** What a Worker with no drift says, rather than saying nothing and reading as skipped. */
+const NOTHING_TO_UPGRADE = "Nothing to upgrade.";
+
 /** The human-readable lines for one Worker's dry-run plan. */
 function planLines(plan: ReconcilePlan): string[] {
   const lines: string[] = [];
@@ -301,7 +367,8 @@ function planLines(plan: ReconcilePlan): string[] {
   if (exports.length > 0) lines.push(`Worker entry: export ${exports.join(", ")}.`);
   if (plan.missingVersionMetadata) lines.push("version_metadata: add CF_VERSION_METADATA.");
   lines.push(...ledgerLines(plan));
-  if (lines.length === 0) lines.push("Nothing to upgrade.");
+  if (lines.length === 0) lines.push(NOTHING_TO_UPGRADE);
+  lines.push(...declineLines(plan));
   return lines;
 }
 
@@ -336,7 +403,8 @@ function appliedLines(applied: ReconcileApplied, plan: ReconcilePlan): string[] 
   } else {
     lines.push(...ledgerLines(plan));
   }
-  if (lines.length === 0) lines.push("Nothing to upgrade.");
+  if (lines.length === 0) lines.push(NOTHING_TO_UPGRADE);
+  lines.push(...declineLines(plan));
   return lines;
 }
 
@@ -367,6 +435,17 @@ function workerLines(result: UpgradeWorkerResult): string[] {
       "Couldn't be planned. Its pithy.config.ts or wrangler.jsonc would not read.",
       "Nothing was written for it.",
     ];
+  }
+  if (result.state === "refused") {
+    // The plan is printed under it deliberately: the refusal says what to fix, and the plan says what
+    // the Worker gives up until it is fixed. Neither alone is the whole answer.
+    //
+    // Except when the plan's answer is nothing. `planLines` fills an empty plan with `Nothing to
+    // upgrade.` so a Worker with no drift is never silent — but under a refusal that sentence reads as
+    // a contradiction of the two lines above it, and the honest thing to print is neither.
+    const pending = planLines(result.plan);
+    const gives = pending.length === 1 && pending[0] === NOTHING_TO_UPGRADE ? [] : pending;
+    return [result.refusal.message, ...(result.refusal.action ? [result.refusal.action] : []), ...gives];
   }
   if (result.state === "unapplied") {
     return [
@@ -416,7 +495,12 @@ export default defineCommand({
             ? { state: result.state, ...(result.applied ?? result.plan) }
             : result.state === "unapplied"
               ? { state: result.state, worker: result.worker, plan: result.plan }
-              : { state: result.state, worker: result.worker },
+              : result.state === "refused"
+                ? // `operatorError` rather than the raw payload: this line is the operator's, so it
+                  // carries `action` — the field `clientError` strips and the one naming the entry to
+                  // remove. A consumer reading this is driving the CLI, not receiving a response.
+                  { state: result.state, worker: result.worker, plan: result.plan, ...operatorError(result.refusal) }
+                : { state: result.state, worker: result.worker },
         );
         process.stdout.write(
           `${formatJsonLine({ command: "upgrade", env, dryRun, workers, manifestFaults: run.manifestFaults })}\n`,

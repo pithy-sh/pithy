@@ -599,6 +599,37 @@ const config = { domains: DOMAINS, capabilities: [ … ], app };
 
 Name it for the Worker, not for the capability that asked first. The first project to write this called it `AUTH_BASE_URL`, and that is part of why `email` and `payments` kept their hardcoded URLs for days — the constant read as auth's private business when it is the Worker's address.
 
+#### Declining an optional binding
+
+A capability marks a binding `optional` when its own code has a path for the binding's absence — `@pithy-sh/support`'s `SUPPORT_BUCKET` is one, and `resolveStore` answering `undefined` is that path. Most of the time you never think about it: a capability declares an optional binding only when its config asks for the feature behind it, so turning the feature off makes the binding disappear and there is nothing to decide.
+
+Sometimes the feature is on and the resource is deliberately not there. Name the binding in `declinedBindings`, with the reason:
+
+```ts
+const config = {
+  domains: DOMAINS,
+  capabilities: [ … ],
+  declinedBindings: {
+    SUPPORT_BUCKET: "no R2 in this account yet; the inbox runs without stored bytes",
+  },
+  app,
+};
+```
+
+`pithy upgrade` leaves it out of `wrangler.jsonc`, and `pithy doctor` reports it as declined rather than missing — so a stanza you delete by hand stays deleted instead of coming back on the next upgrade.
+
+**The reason is required, and it is the point.** A binding simply absent is indistinguishable from one somebody forgot, which is the state this replaced. `pithy doctor` prints your sentence back on every run, so write it for whoever reads the report next.
+
+**Reach for the capability's own config first.** Turning attachments off is a better answer than declining the bucket, because the capability then declares nothing at all. This is the escape hatch for the case a config option does not cover.
+
+Three declines are refused, and `pithy upgrade` stops before it writes anything rather than half-reconciling the Worker:
+
+- **A required binding.** `optional` is the capability's statement that its code has a path for the absence. A required binding has none, so leaving it out is a boot failure, not a configuration.
+- **A Workflow.** `optional` there means *not provisioned yet* — `pithy <capability> provision` is the fix, and declining only hides the instruction.
+- **A Durable Object.** A class migration tag is written once and never revisited, so a decline arriving after an upgrade cannot undo what that upgrade stamped.
+
+A decline naming a binding nothing composes is reported and never fatal: `pithy remove <capability>` leaves exactly that state, and a failure no command could clear would be worse than the line that names it. Declining also never *deletes* a binding an earlier upgrade wrote — `pithy doctor` names the environments it survives in, and removing them is your call.
+
 **An environment absent from `domains` resolves to `http://localhost`, never to another environment's origin.** An undeclared environment is an unpublished one, and the only unpublished environment is the local one — so the fallback fails closed: a link that goes nowhere, which is useless rather than harmful. A *deployed* environment must never keep it, and it cannot: `pithy deploy --env <name>` refuses an environment whose config declares no origin, and `pithy doctor` reports it first.
 
 **One origin deliberately does not derive: `controlplane.issuer`.** It is an identity, not an address. A connection stores the issuer it was created with and verification checks that stored value, so a per-environment issuer would make a connection minted in staging unverifiable in production. That may well be the better isolation, but it is a decision about trust rather than about reachability — write it, do not derive it.

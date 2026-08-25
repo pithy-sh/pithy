@@ -80,10 +80,16 @@ $ pithy upgrade --json
 | `env` | string | The environment the run targeted — the validated `--env` |
 | `dryRun` | boolean | Whether `--dry-run` was passed. **This is what says which shape `workers` carries** |
 | `workers` | array | One entry per Worker in scope, in discovery order. A plan when `dryRun` is true, an applied result otherwise |
-| `workers[].state` | `"reconciled"` \| `"unplanned"` \| `"unapplied"` | Whether this Worker was reconciled, could not be planned at all, or was planned and failed partway through the apply. The fields below appear on `reconciled` alone |
+| `workers[].state` | `"reconciled"` \| `"unplanned"` \| `"unapplied"` \| `"refused"` | Whether this Worker was reconciled, could not be planned at all, was planned and failed partway through the apply, or was refused before the first write. The fields below appear on `reconciled` alone |
 | `manifestFaults` | array | Installed packages shipping a `pithy.manifest.json` that is present and unusable. Project-wide, not per Worker. Empty on a healthy install |
 | `manifestFaults[].package` | string | The package the manifest was read from, as an adopter names it: `@pithy-sh/audit` |
 | `manifestFaults[].reason` | string | Why it could not be used — the schema's refusal text, or the errno where the file would not open |
+
+### `workers[]` when a Worker was refused
+
+A Worker whose `declinedBindings` cannot be honored carries `{"state":"refused","worker":"api","plan":{…},"code":…,"message":…,"status":…,"action":…}`. **Distinct from `unapplied`, and the distinction is the fact you need**: nothing was written, so there is no half-reconciled wiring to inspect — only a declaration to fix. `message` and `action` are the operator's own problem and remedy lines, in the shape every `pithy` error uses; `plan` is what the Worker gives up until the declaration is fixed.
+
+It is refused on `--dry-run` too. A dry run's job is to predict the write, and this is the thing that stops it, so both tenses report it and both exit non-zero.
 
 ### `workers[]` when a Worker could not be reconciled
 
@@ -121,6 +127,16 @@ a weaker gate than the failure it replaced.
 | `perCapability[].missingConfigKeys[].describe` | string | The option's rationale, rendered as the comment above it |
 | `perCapability[].missingEntryExports` | string[] | Durable Object classes this capability binds in this Worker that the module its `main` names does not export. wrangler resolves `class_name` against that module and refuses the deploy without it. An apply writes them |
 | `ejectedSkipped` | string[] | Ejected capabilities, by name. Never reconciled — ejected code no longer tracks its package |
+| `declinedBindings` | object | This Worker's `declinedBindings`, resolved against what it composes. **The entries sit behind `state`**, so a declaration that would not parse cannot be read as declining nothing |
+| `declinedBindings.state` | `"read"` \| `"invalid"` | Whether the declaration parsed |
+| `declinedBindings.problem` | string | Present when `invalid`: what is wrong, naming the entry |
+| `declinedBindings.declines` | array | Present when `read`: one entry per declined binding, sorted by name |
+| `declinedBindings.declines[].state` | `"honored"` \| `"required"` \| `"undeclinable"` \| `"unrecognized"` | Whether the decline is being applied, or refused because the binding is required, refused because its kind cannot be declined (Workflow, Durable Object), or names nothing this Worker composes |
+| `declinedBindings.declines[].name` | string | The binding name, as declared |
+| `declinedBindings.declines[].type` | string | The kind of Cloudflare resource. Absent on `unrecognized` — nothing declares it, so there is no kind to report |
+| `declinedBindings.declines[].capability` | string | The composed capability that declares the binding. Absent on `unrecognized` for the same reason |
+| `declinedBindings.declines[].reason` | string | The reason written in `pithy.config.ts` |
+| `declinedBindings.declines[].stillPresentIn` | string[] | Present when `honored`: environments whose stanza still carries the binding, written by an upgrade that ran before the decline. Declining stops it coming back; it never deletes what is there |
 | `ledger` | object | What `env`'s databases have applied against what this Worker declares. **The counts sit behind `state`**, so a sum taken over some of the databases cannot be read as a sum over all of them |
 | `ledger.state` | `"read"` \| `"partial"` \| `"unavailable"` | Whether every database in scope answered, some did, or none did |
 | `ledger.pending` | integer | Unapplied migrations for `env` across this Worker's databases. Applied only with `--migrate`. Present on `read` alone |
