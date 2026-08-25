@@ -79,6 +79,7 @@ describe("auth_0001_init", () => {
     // CamelCasePlugin snake-cased the explicit indexes; SQLite's UNIQUE autoindexes are named
     // `sqlite_autoindex_*` and don't match the prefix filter.
     expect(await authIndexes()).toEqual([
+      "pithy_auth_accounts_issuer_account_id_idx",
       "pithy_auth_accounts_user_id_idx",
       // The two keyset cursors the control-plane admin listings page on, composite and in sort order.
       "pithy_auth_devices_last_seen_at_idx",

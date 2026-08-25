@@ -93,6 +93,11 @@ export type Session = z.output<typeof Session>;
 export const Account = z
   .object({
     id: z.string().describe("Primary key. A random/UUID text id."),
+    issuer: z
+      .string()
+      .describe(
+        "Who asserted this identity, as the identity provider names itself: an OIDC issuer URL (`https://accounts.google.com`), `local:oauth:<id>` for an OAuth provider that publishes none, or `local:credential` for a password. With `accountId` it is the account's identity and carries a unique index — a provider slug is a name this project chose, so two providers pointed at one directory could assert the same `accountId` and land on two rows.",
+      ),
     accountId: z.string().describe("The provider's stable id for this user (e.g. the Google `sub` claim)."),
     providerId: z
       .string()
@@ -168,6 +173,18 @@ export const Jwks = z
     expiresAt: BetterAuthDate.nullable().describe(
       "When the keypair is retired. Retired keys stay published through their grace window so in-flight tokens still verify. Nullable.",
     ),
+    alg: z
+      .string()
+      .nullable()
+      .describe(
+        "The signing algorithm this keypair is for (`EdDSA`, `RS256`), published in the key's JWKS entry so a verifier picks the right one without guessing. Nullable because Better Auth declares it optional and a key minted before 1.7 has none — the plugin falls back to `EdDSA`, which is what those keys are.",
+      ),
+    crv: z
+      .string()
+      .nullable()
+      .describe(
+        "The elliptic curve for an EC or OKP key (`Ed25519`, `P-256`), and null for RSA, which has no curve. Published beside `alg` for the same reason.",
+      ),
   })
   .describe(
     "A signing keypair in `pithy_auth_jwks` — rotation keeps prior public keys published so issued tokens keep verifying.",
