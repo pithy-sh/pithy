@@ -322,6 +322,12 @@ export async function deprovisionFeature(options: DeprovisionFeatureOptions): Pr
     }
 
     // Reconcile by exact expected name — a resource `provision` may have created but not yet recorded.
+    //
+    // **Deliberately unfiltered by `declinedBindings`.** Every other reader of this function skips a
+    // declined binding, and this one must not: a decline stops a resource being *created*, and says
+    // nothing about one created before the decline was written. Filtering here would leave exactly those
+    // resources behind — a teardown that exits 0 having orphaned the thing it was run to remove, which is
+    // the worst failure a cleanup path has. Teardown scans the whole declared set, always.
     for (const { binding, kind } of provisionableBindings(options.capabilities)) {
       const name = featureResourceName(options.identity, binding, kind);
       const found = await options.provisioners[kind].find(name);

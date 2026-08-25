@@ -64,13 +64,27 @@ export function serviceBindings(capabilities: Capability[]): ServiceBinding[] {
   return result;
 }
 
-export function provisionableBindings(capabilities: Capability[]): ProvisionableBinding[] {
+export function provisionableBindings(
+  capabilities: readonly Capability[],
+  declined: ReadonlySet<string> = new Set(),
+): ProvisionableBinding[] {
   const seen = new Set<string>();
   const result: ProvisionableBinding[] = [];
   for (const capability of capabilities) {
     for (const spec of capability.requiredBindings) {
       const kind = PROVISIONABLE[spec.type];
       if (!kind || seen.has(spec.name)) continue;
+      // **A declined binding gets no resource.** Stopping `pithy upgrade` writing the binding while
+      // provisioning still created the bucket behind it handed the adopter exactly the resource they had
+      // declined (#440). `declined` is resolved once, by `honoredDeclines` in the reconcile engine, so
+      // this reads an answer rather than deciding one — a second expression of that rule is how the two
+      // would come to disagree.
+      //
+      // `spec.optional` is asked again anyway, and deliberately. `resolveDeclines` already refuses a
+      // decline of a required binding, but this function is reached by a different command through a
+      // different path, and a provisioning step that could skip a required resource on a name alone is
+      // one bad set away from a project whose database was never created.
+      if (spec.optional && declined.has(spec.name)) continue;
       seen.add(spec.name);
       result.push({ binding: spec.name, kind });
     }

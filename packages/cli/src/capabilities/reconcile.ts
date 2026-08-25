@@ -579,6 +579,39 @@ function resolveDeclines(
     });
 }
 
+/**
+ * The binding names a Worker is leaving out, resolved from its config against what it composes.
+ *
+ * **The one export of this rule, for callers that hold no plan.** `pithy provision` and `pithy feature
+ * create` create the resource behind each provisionable binding, and a decline that stopped `pithy
+ * upgrade` writing a binding while provisioning still made the bucket handed the adopter exactly the
+ * resource they had declined (#440). They reach the same {@link resolveDeclines} the plan does rather
+ * than re-deciding what "declined" means — a second expression of a four-state rule is how two commands
+ * come to disagree, which is this issue one level up.
+ *
+ * No stanzas, because `stillPresentIn` is a fact about a `wrangler.jsonc` and provisioning is not
+ * reading one; the field is empty here and nothing consumes it. Only `honored` names come back, so a
+ * refused decline changes nothing about what is provisioned — exactly as it changes nothing about what
+ * is written.
+ */
+export function honoredDeclineNames(options: {
+  /** Every installed capability manifest, read once by the caller — this is called per Worker. */
+  manifests: readonly CapabilityManifest[];
+  /** That Worker's composed capabilities. */
+  capabilities: readonly Capability[];
+  /** That Worker's own `pithy.config.ts`. Absent means it declines nothing. */
+  workerConfig?: WorkerConfig | undefined;
+  /** Capabilities this Worker has ejected, whose manifests no longer describe its wiring. */
+  ejected?: readonly string[];
+}): ReadonlySet<string> {
+  const read = readDeclinedBindings(options.workerConfig ?? { capabilities: [] });
+  if (read.state === "invalid") return new Set();
+  const composed = new Set(options.capabilities.map((capability) => capability.name));
+  const byName = new Map(options.capabilities.map((capability) => [capability.name, capability]));
+  const declines = resolveDeclines(read.declared, options.manifests, composed, options.ejected ?? [], [], byName);
+  return new Set(declines.filter((decline) => decline.state === "honored").map((decline) => decline.name));
+}
+
 function honoredDeclines(plan: ReconcilePlan): ReadonlySet<string> {
   if (plan.declinedBindings.state !== "read") return new Set();
   return new Set(

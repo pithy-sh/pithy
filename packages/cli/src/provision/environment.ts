@@ -6,10 +6,12 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { ProvisionScope } from "@pithy-sh/core/src/naming/provisionScope";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import { availableManifests } from "../capabilities/manifests";
+import { honoredDeclineNames } from "../capabilities/reconcile";
 import { provisionableBindings, serviceBindings } from "../feature/bindings";
 import type { FeatureResource } from "../feature/manifest";
 import { migrateProject } from "../migrations/run";
-import { loadProject, loadProjectCloudflare, requireProjectName } from "../project/config";
+import { loadProject, loadProjectCloudflare, requireProjectName, type WorkerConfig } from "../project/config";
 import { resolveWorkers } from "../project/workerScope";
 import { seedProject } from "../seed/run";
 import { AUDIT_RESOURCE_TYPE, ProvisionAuditActions, type ResourceProvisioners } from "./resources";
@@ -167,6 +169,12 @@ export interface ProvisionWorker {
   dir: string;
   /** That Worker's own capabilities, from its `apps/<name>/pithy.config.ts`. */
   capabilities: Capability[];
+  /**
+   * That Worker's own `pithy.config.ts`. Only `declinedBindings` is read from it — a binding this Worker
+   * declines gets no resource created for it, because the decline said the resource is not wanted.
+   * Optional: the resolver is a seam, and a caller with no config to give is a Worker declining nothing.
+   */
+  config?: WorkerConfig;
 }
 
 /** Options for {@link provisionEnvironment}. */
@@ -233,6 +241,7 @@ const defaultResolveWorkers = async (projectDir: string): Promise<ProvisionWorke
     name: worker.name,
     dir: worker.dir,
     capabilities: worker.capabilities,
+    config: worker.config,
   }));
 
 /**
@@ -270,10 +279,34 @@ function resolveServiceTarget(workers: readonly ProvisionWorker[], target: strin
 export async function provisionEnvironment(options: ProvisionEnvironmentOptions): Promise<ProvisionReport> {
   const audit = options.audit ?? (async () => {});
   const { scope } = options;
-  const bindings = provisionableBindings(options.capabilities);
   // Resolve the Workers first. Their deploy names are what every service binding is retargeted at, so an
   // unresolvable target must fail here — before a single Cloudflare resource is created.
   const workers = await (options.resolveWorkers ?? defaultResolveWorkers)(options.projectDir);
+
+  // **Declines are per Worker, and a resource survives one Worker declining it.** The environment
+  // provisions one resource per binding *name* — that is how two Workers share a database — so a binding
+  // is skipped only when every Worker that declares it declines it. Resolved through the reconcile
+  // engine's own `honoredDeclineNames` so `pithy upgrade` and `pithy provision` cannot come to mean two
+  // different things by "declined" (#440).
+  const manifests = (await availableManifests(options.projectDir)).manifests;
+  const declinedPerWorker = new Map<string, ReadonlySet<string>>();
+  for (const worker of workers) {
+    declinedPerWorker.set(
+      worker.name,
+      honoredDeclineNames({ manifests, capabilities: worker.capabilities, workerConfig: worker.config }),
+    );
+  }
+  const wantedSomewhere = new Set(
+    workers.flatMap((worker) =>
+      provisionableBindings(worker.capabilities, declinedPerWorker.get(worker.name)).map((b) => b.binding),
+    ),
+  );
+  // The union is still the source of the *kinds* — `options.capabilities` spans the environment, and a
+  // Worker resolver seam may hand back fewer Workers than that union was built from. Only names no
+  // Worker wants are dropped.
+  const bindings = provisionableBindings(options.capabilities).filter(
+    (binding) => workers.length === 0 || wantedSomewhere.has(binding.binding),
+  );
   const services = serviceBindings(options.capabilities).map((service) => ({
     binding: service.binding,
     service: scope.worker(resolveServiceTarget(workers, service.target)),
@@ -317,7 +350,9 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   const secrets: ProvisionedSecret[] = [];
   const configs: ProvisionedConfig[] = [];
   for (const worker of workers) {
-    const declared = new Set(provisionableBindings(worker.capabilities).map((binding) => binding.binding));
+    const declared = new Set(
+      provisionableBindings(worker.capabilities, declinedPerWorker.get(worker.name)).map((binding) => binding.binding),
+    );
     const workerSecrets = (await options.secretBindings?.(worker.capabilities)) ?? {
       bound: [],
       missing: [],
