@@ -123,6 +123,18 @@ async function tick(at: Date, workflows: Workflows): Promise<string[][]> {
   return dispatched;
 }
 
+/**
+ * The rendered subject a result now carries (pithy-sh/pithy#443), matched as `expect.any(String)` in the
+ * two whole-object comparisons below.
+ *
+ * A literal would work and is the wrong instrument: it would pin the kit's English `email/magic_link.subject`
+ * here, so a copy edit would turn this file red and send whoever ran it looking for a batching bug. This file
+ * claims a dispatcher's presence or absence reaches the caller and the row alike; the subject's own contract
+ * is pinned in `enqueue.workers.test.ts`, against the stored value rather than against any wording. So the
+ * comparison stays a whole-object comparison and nothing about the sentence is asserted.
+ */
+const ANY_SUBJECT = expect.any(String);
+
 /** What the caller is handed back — the half of the claim that is not in the row. */
 type EnqueueOptions = { workflows?: Workflows; batchId?: string; mode?: "immediate" | "scheduled"; at?: Date };
 
@@ -290,7 +302,7 @@ describe("an absent dispatcher and a failing one are different facts", () => {
   test("with nothing to dispatch on, the row and the result both say nobody is coming", async () => {
     const result = await enqueueResult({});
 
-    expect(result).toEqual({ jobId: "job-1", status: "undispatched" });
+    expect(result).toEqual({ jobId: "job-1", status: "undispatched", subject: ANY_SUBJECT });
     expect(await rowOf("job-1")).toEqual({ status: "undispatched", batch_id: null });
     // **And it is still recoverable.** The status is the truth at enqueue time — nobody is coming for
     // it, and a caller rendering "check your inbox" off it is reporting a delivery that cannot happen.
@@ -308,7 +320,7 @@ describe("an absent dispatcher and a failing one are different facts", () => {
     const result = await enqueueResult({ workflows });
 
     // The safety net is real here — the host worker exists, its cron runs — so the row waits for it.
-    expect(result).toEqual({ jobId: "job-1", status: "pending" });
+    expect(result).toEqual({ jobId: "job-1", status: "pending", subject: ANY_SUBJECT });
     expect(await rowOf("job-1")).toEqual({ status: "pending", batch_id: "enqueue-batch" });
     expect(await tick(LATER, workflows)).toEqual([["job-1"]]);
   });

@@ -11,7 +11,7 @@ import { email_0001_init } from "../migrations/0001_init";
 import { email_0001_suppressions } from "../migrations/0001_suppressions";
 import { catalogLayers } from "../templates/messages";
 import { defaultTheme, type EmailTheme } from "../templates/theme";
-import { enqueueEmail } from "./enqueue";
+import { type EnqueueResult, enqueueEmail } from "./enqueue";
 import { runSend, type SendDeps } from "./runSend";
 import type { EmailMessage, EmailSender, EmailSendResult } from "./sender";
 import { blockingSuppression, suppress } from "./suppression";
@@ -70,13 +70,13 @@ const CATALOGS: LocaleCatalogs = {
   },
 };
 
-async function enqueue(
+async function enqueueResult(
   input: Parameters<typeof enqueueEmail>[1],
   idSeed = "job",
   layersFor = catalogLayers(CATALOGS),
-): Promise<string> {
+): Promise<EnqueueResult> {
   let n = 0;
-  const result = await enqueueEmail(
+  return await enqueueEmail(
     {
       db: emailDatabase(env.DB),
       fromAddress: "noreply@pithy.sh",
@@ -88,7 +88,11 @@ async function enqueue(
     },
     input,
   );
-  return result.jobId;
+}
+
+/** The id alone, which is all almost every test below needs. */
+async function enqueue(...args: Parameters<typeof enqueueResult>): Promise<string> {
+  return (await enqueueResult(...args)).jobId;
 }
 
 beforeEach(async () => {
@@ -669,11 +673,17 @@ describe("a job carries its language from the enqueue to the send", () => {
     expect(sent[0]?.html).toContain('<html lang="en" dir="ltr"');
   });
 
-  test("the stored subject becomes the one that was actually delivered", async () => {
+  test("the delivered subject is the send's own render, not the one enqueue answered with", async () => {
     // `runSend` sends a *fresh* render rather than `job.subject`, so the column was only ever the
     // enqueue's guess. A catalog sentence retranslated between the queue and the send used to leave the
     // send log describing a message nobody received; now the row is rewritten from what went out.
-    const jobId = await enqueue({
+    //
+    // **And this is the boundary on `EnqueueResult.subject` (pithy-sh/pithy#443).** That field is the
+    // enqueue-time render — what a caller queued, and what its audit row can say it queued. It is not a
+    // promise about the delivered sentence, and a scheduled send whose catalog moved underneath it is
+    // where the two part company. Prose said so; this says so in a way that fails when it stops being
+    // true.
+    const enqueued = await enqueueResult({
       to: "w@example.com",
       template: "welcome",
       payload: { name: "Sam", ctaUrl: "https://acme.test/go", ctaLabel: "Go" },
@@ -682,12 +692,15 @@ describe("a job carries its language from the enqueue to the send", () => {
 
     const retranslated: LocaleCatalogs = { es: { "email/welcome.subject": "Bienvenido a {app}" } };
     const { sender, sent } = fakeSender(() => ({ messageId: "m-drift" }));
-    await runSend(sendDeps(sender, { layersFor: catalogLayers(retranslated) }), jobId);
+    await runSend(sendDeps(sender, { layersFor: catalogLayers(retranslated) }), enqueued.jobId);
 
     const row = await env.DB.prepare("select subject from pithy_email_jobs where id = ?")
-      .bind(jobId)
+      .bind(enqueued.jobId)
       .first<{ subject: string }>();
     expect(sent[0]?.subject).toBe("Bienvenido a Acme");
     expect(row?.subject).toBe(sent[0]?.subject);
+    // What the caller was handed at enqueue, unchanged by any of that — and no longer the row's.
+    expect(enqueued.subject).toBe("Te damos la bienvenida a Acme");
+    expect(enqueued.subject).not.toBe(row?.subject);
   });
 });
