@@ -126,6 +126,18 @@ export interface LiveApp {
   events: AuditEventInput[];
   /** Read the email jobs the app enqueued — the evidence a gated route did or did not reach its handler. */
   enqueued(): Promise<EnqueuedEmail[]>;
+  /**
+   * The one-time code this app last mailed to an address, read out of the job payload.
+   *
+   * **What it is for is a signed-in browser.** A suite about a route that needs a session has to get
+   * one the way a reader does — ask for a code, then post it back — and the code exists nowhere a
+   * browser can see it. Reading the enqueued job is the harness standing in for the mailbox, and it is
+   * the only stand-in available: no Workflow runs here, so nothing is ever delivered or redacted.
+   *
+   * `null` when nothing was mailed to that address, which is a suite asserting on a send that never
+   * happened rather than a code that was blank.
+   */
+  mailedOtp(to: string): Promise<string | null>;
   /** Stop the server and dispose the runtime. Always from a `finally` or an `afterAll`. */
   close(): Promise<void>;
 }
@@ -198,6 +210,18 @@ export async function startLiveApp(options: LiveAppOptions): Promise<LiveApp> {
         template: row.template,
         to: row.to_address,
       }));
+    },
+    mailedOtp: async (to) => {
+      const row = await db
+        .prepare(
+          "select payload from pithy_email_jobs where to_address = ? and template = 'otp' order by rowid desc limit 1",
+        )
+        .bind(to)
+        .first<{ payload: string }>();
+      if (!row) return null;
+      const parsed: unknown = JSON.parse(row.payload);
+      const code = typeof parsed === "object" && parsed !== null ? (parsed as { code?: unknown }).code : undefined;
+      return typeof code === "string" ? code : null;
     },
     close: async () => {
       // Deliberately **not** `resetSharedSecrets()`. That configuration is module-scoped, as it is in a

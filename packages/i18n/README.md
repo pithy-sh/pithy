@@ -109,6 +109,7 @@ const t = useTranslator(EN);
 `useNegotiatedLocale` (`@pithy-sh/i18n/src/react/useNegotiatedLocale`) runs the browser chain, loads the matching kit catalog by dynamic import, and keeps `<html lang>` and `dir` in step with it. It is the whole of the wiring for an app that renders none of the kit's screens.
 
 ```tsx
+import { updateUser } from "@pithy-sh/auth/src/client/api";
 import { TranslatorProvider } from "@pithy-sh/i18n/src/react/translator";
 import { useNegotiatedLocale } from "@pithy-sh/i18n/src/react/useNegotiatedLocale";
 import i18nConfig from "virtual:pithy/i18n";
@@ -122,7 +123,9 @@ export function Shell({ children }: { children: ReactNode }) {
     // The signed-in reader's stored locale, when you know it. It outranks this device's memory.
     account: session?.user.locale,
     // Called when a reader picks a language, so the choice follows them to their next device.
-    persist: (next) => updateUser({ locale: next }),
+    persist: (next) => {
+      void updateUser({ locale: next });
+    },
   });
   // `source` is null only until this locale's catalog lands — a few milliseconds, during which every
   // screen renders the English it was scaffolded with.
@@ -131,7 +134,9 @@ export function Shell({ children }: { children: ReactNode }) {
 }
 ```
 
-**`persist` is the half that keeps one home.** `account` outranks `storage` in the chain precisely so a reader who picks Spanish on their phone is not reading French on their laptop — and without a write-through, that ordering describes a value nothing updates. The kit cannot do it for you: `pithy_auth_users.locale` is written through Better Auth's own `updateUser`, which is `@pithy-sh/auth`'s client to call, and this package never imports it. It is called and not awaited, and a rejection is caught rather than reported, so a failed preference write never costs the reader the language they just picked.
+**`persist` is the half that keeps one home.** `account` outranks `storage` in the chain precisely so a reader who picks Spanish on their phone is not reading French on their laptop — and without a write-through, that ordering describes a value nothing updates. This package cannot do it for you: `pithy_auth_users.locale` is written through `updateUser` (`@pithy-sh/auth/src/client/api`), which is a call `@pithy-sh/auth` owns and this package never imports. It is called and not awaited, and a rejection is caught rather than reported, so a failed preference write never costs the reader the language they just picked.
+
+**The `void` above is the discard, and it earns its keep.** `persist` returns `void | Promise<void>` while `updateUser` resolves to an `AuthResult`, so returning the call straight does not typecheck; the explicit discard is the form that does. Nothing is lost by dropping it: `updateUser` never throws — every refusal, a signed-out reader's included, is a value it hands back — so there is no rejection here for the hook's `catch` to have caught anyway. If a dropped write is worth knowing about, `await` it inside the callback and read `result.ok` there, where you know what your app should say.
 
 ## Already running an i18n stack?
 
