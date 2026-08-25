@@ -84,7 +84,7 @@ beforeEach(async () => {
 });
 
 describe("an adopter's plugin, composed and migrated", () => {
-  test("the kit's four still answer — the adopter's list added to them, it did not replace them", async () => {
+  test("the kit's own still answer — the adopter's list added to them, it did not replace them", async () => {
     const { auth, mailbox } = instanceWithMailbox();
 
     await auth.api.sendVerificationOTP({ body: { email: "ada@example.com", type: "sign-in" }, headers: new Headers() });

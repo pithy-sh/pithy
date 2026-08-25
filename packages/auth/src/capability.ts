@@ -103,7 +103,7 @@ export const AuthConfig = z
       .array(AuthPlugin)
       .default([])
       .describe(
-        "Additional Better Auth plugins to compose — `organization()`, `passkey()`, `twoFactor()`, `apiKey()`, a generic OAuth provider. Additive: they join the four the kit composes (bearer, jwt, magic-link, email-otp) and cannot replace one. Tables a plugin declares are created by `pithy migrate`; add the matching client plugin to `createAuthClient` for its typed client surface.",
+        "Additional Better Auth plugins to compose — `organization()`, `passkey()`, `twoFactor()`, `apiKey()`, a generic OAuth provider. Additive: they join the set the kit composes (i18n, bearer, jwt, magic-link, email-otp) and cannot replace one. Tables a plugin declares are created by `pithy migrate`; add the matching client plugin to `createAuthClient` for its typed client surface.",
       ),
   })
   .describe("Configuration for the auth capability.");

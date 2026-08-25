@@ -21,8 +21,8 @@ import { kitPlugins } from "../instance/plugins";
  * migration model; the capability simply declares more of it.
  *
  * **The diff is against a baseline, not against nothing.** `getSchema` answers with the *whole* schema
- * for a set of options, so the same call is made twice — once with only the kit's four plugins, once
- * with the kit's four plus one adopter plugin — and the difference is what that plugin brought. That is
+ * for a set of options, so the same call is made twice — once with only the kit's own plugins, once
+ * with the kit's own plus one adopter plugin — and the difference is what that plugin brought. That is
  * what keeps the derived migration from re-creating `pithy_auth_users` on every project.
  *
  * **A plugin brings two kinds of change and both matter.** `organization` adds three tables *and* an

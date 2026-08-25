@@ -134,7 +134,7 @@ describe("additional Better Auth plugins", () => {
     expect(build({ plugins: [admin()] }).extensions).toEqual([{ kind: "better-auth-plugin", id: "admin", tables: [] }]);
   });
 
-  test("a config naming one of the kit's own four is refused, naming it", () => {
+  test("a config naming one of the kit's own is refused, naming it", () => {
     expect(() => build({ plugins: [magicLink({ sendMagicLink: async () => {} })] })).toThrow(ValidationError);
     expect(() => build({ plugins: [magicLink({ sendMagicLink: async () => {} })] })).toThrow(/magic-link/);
   });

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { i18n } from "@better-auth/i18n";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { BetterAuthPlugin } from "better-auth";
 import { bearer } from "better-auth/plugins/bearer";
@@ -8,6 +9,7 @@ import { emailOTP } from "better-auth/plugins/email-otp";
 import { jwt } from "better-auth/plugins/jwt";
 import { magicLink } from "better-auth/plugins/magic-link";
 import { z } from "zod";
+import { authErrorTranslations } from "../i18n/errorCopy";
 import type { SendAuthEmail } from "./auth";
 
 /**
@@ -20,9 +22,9 @@ import type { SendAuthEmail } from "./auth";
  * see from their config. The adopter's list is therefore **additive**: it extends this set, never
  * replaces a member of it.
  */
-export const KIT_PLUGIN_IDS = ["bearer", "jwt", "magic-link", "email-otp"] as const;
+export const KIT_PLUGIN_IDS = ["i18n", "bearer", "jwt", "magic-link", "email-otp"] as const;
 
-/** What the kit's four plugins need to be constructed. The subset of `AuthInstanceDeps` they read. */
+/** What the kit's own plugins need to be constructed. The subset of `AuthInstanceDeps` they read. */
 export interface KitPluginDeps {
   /** Magic-link / OTP token lifetime in seconds. */
   verificationExpiresIn: number;
@@ -32,6 +34,19 @@ export interface KitPluginDeps {
   disableSignUp: boolean;
   /** Deliver a magic link or OTP. Enqueues an email job; never sends inline. */
   sendEmail: SendAuthEmail;
+  /**
+   * The catalog locale this request negotiated, or `null`/absent when nothing did.
+   *
+   * Read from `c.var.locale` where the instance is built, which is per request — so this is the locale
+   * the *project* resolved through its own configured chain, never a second negotiation of Better
+   * Auth's own. Without that a reader who chose Spanish with `?lang=es` would get Spanish screens and
+   * English refusals on the same page, because the two chains ask different signals in different
+   * orders (#452).
+   *
+   * `null` is the ordinary state of a project that never composed `i18n`, and it means English — which
+   * is what the plugin answers with anyway, so its absence is not a special case.
+   */
+  locale?: string | null;
 }
 
 /**
@@ -41,6 +56,11 @@ export interface KitPluginDeps {
  * spreads the two lists together.
  */
 export type KitPlugins = [
+  // Widened where the other four are not, and it costs nothing: the translator contributes no
+  // endpoints and no `$Infer` surface, so there is no adopter-visible type to erase. Its own return
+  // type names an internal `MiddlewareOptions` that cannot be named from here, which is a TS4058 on
+  // `makeAuth`'s declaration emit rather than anything about the composition.
+  BetterAuthPlugin,
   ReturnType<typeof bearer>,
   ReturnType<typeof jwt>,
   ReturnType<typeof magicLink>,
@@ -48,13 +68,29 @@ export type KitPlugins = [
 ];
 
 /**
- * Build the kit's own four plugins. **One definition, two readers**: `makeAuth` composes these into the
+ * Build the kit's own plugins. **One definition, two readers**: `makeAuth` composes these into the
  * live instance, and the migration builder composes the same four into the baseline schema it diffs an
  * adopter's plugins against. Two copies of this list would be drift that no test could see — the
  * baseline would claim a table the instance never created, or miss one it did.
  */
 export function kitPlugins(deps: KitPluginDeps): KitPlugins {
   return [
+    /**
+     * Better Auth's own refusals, in the reader's language (#452).
+     *
+     * **First in the list deliberately.** It works by wrapping the error rendering of the plugins
+     * registered around it, so anything composed before it answers in English regardless.
+     *
+     * `getLocale` is the whole of the integration: one chain, the project's, resolved before this
+     * instance was built. The plugin's own `header`/`cookie`/`session` strategies are deliberately
+     * unused — each is a second negotiation, and two chains over one page is the bug where the screens
+     * and the errors disagree about who is reading.
+     */
+    i18n({
+      translations: authErrorTranslations(),
+      detection: ["callback"],
+      getLocale: () => deps.locale ?? null,
+    }),
     bearer(),
     jwt({ schema: { jwks: { modelName: "pithyAuthJwks" } } }),
     magicLink({
@@ -97,7 +133,7 @@ export const AuthPlugin = z
     message: "Expected a Better Auth plugin — an object with a non-empty string `id`.",
   })
   .describe(
-    "An additional Better Auth plugin, e.g. `organization()`, `passkey()`, `twoFactor()`. Added to the four the kit composes, never in place of one.",
+    "An additional Better Auth plugin, e.g. `organization()`, `passkey()`, `twoFactor()`. Added to the set the kit composes, never in place of one.",
   );
 
 /**
