@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "vitest";
 import { I18nConfig, type I18nConfigInput } from "../config/config";
-import { resolveBrowserLocale } from "./browser";
+import { type BrowserChain, resolveBrowserLocale } from "./browser";
 
 /**
  * The browser chain — a separate chain from the server's, over the same `resolveChain`.
@@ -149,5 +149,41 @@ describe("a first-time visitor is answered by their own browser", () => {
   test("an empty or absent list contributes nothing rather than answering", () => {
     expect(resolveBrowserLocale({ navigator: [] }, SERVES_ES).resolvedBy).toBe("default");
     expect(resolveBrowserLocale({ navigator: null }, SERVES_ES).resolvedBy).toBe("default");
+  });
+});
+
+describe("the shape a browser actually holds", () => {
+  /**
+   * **The chain resolves from the projection, not from a config only a Worker has.**
+   *
+   * `virtual:pithy/i18n` carries locale metadata and nothing else — no catalogs, no cookie name, no
+   * server chain — and it is what every screen imports. Asking for an `I18nConfig` here asked each
+   * adopter to widen one into the other and to first work out that three of its fields were dead on
+   * this path. The projection satisfies `BrowserChain` as it stands, and so does the resolved config.
+   */
+  const PROJECTED = {
+    supportedLocales: ["en", "es"],
+    defaultLocale: "en",
+    queryParam: "lang",
+    storageKey: "pithy.locale",
+    browserResolvers: ["query", "storage", "default"],
+    exceptions: {},
+  } satisfies BrowserChain;
+
+  test("resolves from what `virtual:pithy/i18n` projects", () => {
+    const resolved = resolveBrowserLocale({ query: "es" }, PROJECTED);
+    expect(resolved.catalogLocale).toBe("es");
+    expect(resolved.resolvedBy).toBe("query");
+  });
+
+  test("a link this build has never heard of contributes nothing rather than throwing", () => {
+    // The projection carries the chain as plain strings, because the ambient declaration in an
+    // adopter's Worker cannot name a type it does not import. A project one release ahead of the SPA
+    // bundle serving it names a link this build does not know: the links around it are still asked,
+    // each in its own place.
+    const ahead: BrowserChain = { ...PROJECTED, browserResolvers: ["telepathy", "storage", "default"] };
+    expect(() => resolveBrowserLocale({ storage: "es" }, ahead)).not.toThrow();
+    expect(resolveBrowserLocale({ storage: "es" }, ahead).resolvedBy).toBe("storage");
+    expect(resolveBrowserLocale({}, ahead).resolvedBy).toBe("default");
   });
 });

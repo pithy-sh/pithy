@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { I18nConfig } from "../config/config";
-import type { BrowserLocaleSignals } from "../resolve/browser";
+import type { BrowserChain, BrowserLocaleSignals } from "../resolve/browser";
 
 /**
  * The browser-side edge of locale resolution: the three signals a page can read for itself.
@@ -23,8 +22,11 @@ import type { BrowserLocaleSignals } from "../resolve/browser";
  * a private window, behind a site-data block, and in some embedded views; and during a server render
  * there is no `window` or `document` at all. A reader whose browser refuses storage still gets a
  * language — just not a remembered one.
+ *
+ * Takes the two names a page looks itself up by and nothing else, so the projection a browser holds and
+ * the config a Worker resolves both answer it without either being widened into the other.
  */
-export function readBrowserSignals(config: I18nConfig): BrowserLocaleSignals {
+export function readBrowserSignals(config: Pick<BrowserChain, "queryParam" | "storageKey">): BrowserLocaleSignals {
   return {
     query: read(() => new URL(window.location.href).searchParams.get(config.queryParam)),
     storage: read(() => window.localStorage.getItem(config.storageKey)),
@@ -36,7 +38,7 @@ export function readBrowserSignals(config: I18nConfig): BrowserLocaleSignals {
 }
 
 /** Remember `locale` on this device. Silent when storage is unavailable — a preference is not worth a throw. */
-export function rememberBrowserLocale(locale: string, config: I18nConfig): void {
+export function rememberBrowserLocale(locale: string, config: Pick<BrowserChain, "storageKey">): void {
   try {
     window.localStorage.setItem(config.storageKey, locale);
   } catch {

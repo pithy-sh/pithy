@@ -4,6 +4,8 @@
 import { formattingLocaleOf, type LocaleContext, localeDirection } from "@pithy-sh/core/src/i18n/locale";
 import { matchLocale } from "@pithy-sh/core/src/i18n/match";
 import type { I18nClientProjection } from "../client/projection";
+import type { BrowserResolver } from "../config/config";
+import { recognizedResolvers } from "../resolve/browser";
 import { applyDocumentLocale } from "./signals";
 
 /**
@@ -18,7 +20,8 @@ import { applyDocumentLocale } from "./signals";
  * **It takes the projection, not an `I18nConfig`.** The projection is browser-safe by construction and
  * is what a client actually holds: `browserResolvers` arrives as `string[]` because the generated
  * ambient declaration in an adopter's Worker cannot name a type it does not import, so the chain is
- * walked by name and an unrecognized link contributes nothing rather than throwing.
+ * walked by name and an unrecognized link contributes nothing rather than throwing. `recognizedResolvers`
+ * is where that happens, once, for this pass and for `useNegotiatedLocale` both.
  *
  * **This is the first pass, not the decision.** It reaches only what a page can see before it renders:
  * the URL, this device's memory, and whatever the server put on `<html lang>`. A signed-in reader's
@@ -40,7 +43,7 @@ import { applyDocumentLocale } from "./signals";
 export function applyProjectedLocale(projection: I18nClientProjection): LocaleContext | null {
   if (!projection.enabled) return null;
   const wanted: string[] = [];
-  for (const resolver of projection.browserResolvers) {
+  for (const resolver of recognizedResolvers(projection.browserResolvers)) {
     const tag = signal(resolver, projection);
     if (tag) wanted.push(tag);
   }
@@ -65,11 +68,20 @@ export function applyProjectedLocale(projection: I18nClientProjection): LocaleCo
  * `account` answers nothing: there is no session before a render, and inventing one here would be a
  * second source of truth for a fact `pithy_auth_users.locale` owns. It stays in the list so the
  * configured order is walked whole, and so the link that follows it is still asked in its own place.
+ *
+ * Takes a `BrowserResolver` rather than a `string`, so the switch is exhaustive: `recognizedResolvers`
+ * has already dropped anything this build does not know, and a link added to the enum tomorrow is a red
+ * build here rather than a silently inert first paint.
  */
-function signal(resolver: string, projection: Extract<I18nClientProjection, { enabled: true }>): string | null {
+function signal(
+  resolver: BrowserResolver,
+  projection: Extract<I18nClientProjection, { enabled: true }>,
+): string | null {
   switch (resolver) {
     case "query":
       return read(() => new URL(window.location.href).searchParams.get(projection.queryParam));
+    case "account":
+      return null;
     case "storage":
       return read(() => window.localStorage.getItem(projection.storageKey));
     case "navigator":
@@ -81,8 +93,6 @@ function signal(resolver: string, projection: Extract<I18nClientProjection, { en
       return read(() => document.documentElement.lang || null);
     case "default":
       return projection.defaultLocale;
-    default:
-      return null;
   }
 }
 

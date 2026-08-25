@@ -1,8 +1,63 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { BrowserResolver, I18nConfig } from "../config/config";
-import { type ResolvedLocale, type ResolverLink, resolveChain, tagLink } from "./chain";
+import type { BrowserResolver } from "../config/config";
+import { type LocaleSet, type ResolvedLocale, type ResolverLink, resolveChain, tagLink } from "./chain";
+
+/**
+ * What the browser side of this package reads: the languages, the chain order, and the two names a page
+ * looks itself up by.
+ *
+ * **The shape `I18nClientProjection` and `I18nConfig` both already are.** The browser holds the
+ * projection — locale metadata and nothing else, no catalogs, no cookie name, no server chain — so
+ * asking a page for an `I18nConfig` asks it for three fields it has no business knowing, and every
+ * adopter widens one into the other the same five ways. Declaring what is actually read costs nothing
+ * on the server, where the resolved config satisfies it as it stands.
+ *
+ * `browserResolvers` is `readonly string[]` for the same reason the projection's is: the ambient
+ * declaration `pithy ui add react` copies into an adopter's Worker cannot name a type it does not
+ * import. The chain is walked by name — see {@link recognizedResolvers}.
+ */
+export interface BrowserChain extends LocaleSet {
+  /** The query parameter an explicit choice arrives on — `?lang=es`. */
+  readonly queryParam: string;
+  /** The `localStorage` key this device's remembered locale is written under. */
+  readonly storageKey: string;
+  /** The browser chain, in the order it is asked. Names this build does not know contribute nothing. */
+  readonly browserResolvers: readonly string[];
+}
+
+/**
+ * Every link this build knows, as a record rather than a list.
+ *
+ * **A record so a new `BrowserResolver` cannot be forgotten here.** Adding a member to the enum leaves
+ * this object missing a property, which is a red build — the same guarantee the exhaustive switch in
+ * {@link linkFor} gives, in the one place a `string[]` has to be turned back into enum members.
+ *
+ * Written out rather than read off `BrowserResolver.options`, and that is a bundle decision, not a
+ * preference. `config/config.ts` is a Zod module, and everything under `src/browser/**` and
+ * `src/react/**` imports the config type-only precisely so that no scaffolded SPA ships Zod to walk a
+ * chain of six names. A value import here would put it in every adopter's main chunk.
+ */
+const KNOWN_RESOLVERS: Readonly<Record<BrowserResolver, true>> = {
+  query: true,
+  account: true,
+  storage: true,
+  navigator: true,
+  server: true,
+  default: true,
+};
+
+/**
+ * The links of `names` this build recognizes, in the order given, dropping the rest.
+ *
+ * The browser walks its chain by name because that is how the projection carries it, so a link this
+ * build has never heard of — a project one release ahead of the SPA bundle it is serving — contributes
+ * nothing rather than throwing. The links around it are still asked, each in its own place.
+ */
+export function recognizedResolvers(names: readonly string[]): BrowserResolver[] {
+  return names.filter((name): name is BrowserResolver => Object.hasOwn(KNOWN_RESOLVERS, name));
+}
 
 /**
  * What a browser knows about the reader's language.
@@ -40,13 +95,14 @@ export interface BrowserLocaleSignals {
  * the next. A `?lang=` choice by a signed-in reader is written through to their account rather than
  * only to `localStorage`, which is what keeps the fact in one home; `docs/I18N.md` states it once.
  */
-export function resolveBrowserLocale(signals: BrowserLocaleSignals, config: I18nConfig): ResolvedLocale {
-  const links: ResolverLink[] = config.browserResolvers.map((resolver) => linkFor(resolver, signals, config));
+export function resolveBrowserLocale(signals: BrowserLocaleSignals, config: BrowserChain): ResolvedLocale {
+  const chain = recognizedResolvers(config.browserResolvers);
+  const links: ResolverLink[] = chain.map((resolver) => linkFor(resolver, signals, config));
   return resolveChain(links, config);
 }
 
 /** One link, by name. A standalone function so the switch stays exhaustive under `verbatimModuleSyntax`. */
-function linkFor(resolver: BrowserResolver, signals: BrowserLocaleSignals, config: I18nConfig): ResolverLink {
+function linkFor(resolver: BrowserResolver, signals: BrowserLocaleSignals, config: LocaleSet): ResolverLink {
   switch (resolver) {
     case "query":
       return tagLink(resolver, signals.query);
