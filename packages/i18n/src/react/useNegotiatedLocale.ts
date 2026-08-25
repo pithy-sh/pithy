@@ -34,9 +34,9 @@ export interface NegotiatedLocaleOptions {
    * Write a signed-in reader's choice through to their account. Omit it and a choice is remembered on
    * this device only.
    *
-   * **A seam rather than something the kit does for you, because the kit cannot.** `pithy_auth_users.locale`
-   * is written through Better Auth's own `updateUser`, which is `@pithy-sh/auth`'s client to call —
-   * and this package never imports it. What it can do is call you at the moment the choice is made.
+   * **A seam rather than something this package does for you, because it cannot.** `pithy_auth_users.locale`
+   * is written through `updateUser` (`@pithy-sh/auth/src/client/api`) — a call `@pithy-sh/auth` owns and
+   * this package never imports. What it can do is call you at the moment the choice is made.
    *
    * It matters more than a convenience: `account` outranks `storage` in the browser chain precisely so
    * a reader who picks Spanish on their phone is not reading French on their laptop. Without the

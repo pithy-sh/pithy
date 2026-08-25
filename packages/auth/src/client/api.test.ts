@@ -16,6 +16,7 @@ import {
   signInWithOtp,
   signOut,
   startSocialSignIn,
+  updateUser,
 } from "./api";
 
 /**
@@ -271,5 +272,64 @@ describe("a provider button is never a control that cannot complete", () => {
   test("a worker that did not answer is a different fault, and says so", async () => {
     const result = await startSocialSignIn(input, { fetch: answering(500, "nope") });
     expect(result).toEqual({ kind: "refused", failure: AUTH_UNREADABLE });
+  });
+});
+describe("the one home for a reader's language", () => {
+  /** A check that would put its token in the body and in a header, so a leak of either is visible. */
+  const everywhere = (body: Record<string, unknown>) => ({
+    body: { ...body, "cf-turnstile-response": "tok" },
+    headers: { "x-turnstile": "tok" },
+  });
+
+  test("a chosen tag posts to the route that stores it, with the content type the route wants", async () => {
+    const { fetch: send, calls } = recorder();
+    await updateUser({ locale: "es-AR" }, { fetch: send });
+    expect(calls[0]?.url).toBe("/auth/update-user");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(calls[0]?.init?.credentials).toBe("include");
+    expect(calls[0]?.init?.headers?.["content-type"]).toBe("application/json");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ locale: "es-AR" });
+  });
+
+  test("`null` crosses the wire as null, because taking a choice back is an ordinary thing", async () => {
+    // Not dropped, and not the empty string: the column is nullable and null is "has not chosen", which
+    // is the state that makes the server fall back to `Accept-Language`.
+    const { fetch: send, calls } = recorder();
+    await updateUser({ locale: null }, { fetch: send });
+    expect(String(calls[0]?.init?.body)).toBe('{"locale":null}');
+  });
+
+  test("naming no field still writes `{}` and declares the type, rather than the empty body a 415 is", async () => {
+    // About the wire, not about the outcome: the real route answers 400 "No fields to update" to this,
+    // which a stub cannot see. What is asserted is that the request is one the route gets to refuse on
+    // its own terms — a declared JSON type with no body at all never reaches the handler.
+    const { fetch: send, calls } = recorder();
+    await updateUser({}, { fetch: send });
+    expect(calls[0]?.init?.body).toBe("{}");
+    expect(calls[0]?.init?.headers?.["content-type"]).toBe("application/json");
+  });
+
+  test("the humanity check never rides on it — this is not one of the two gated routes", async () => {
+    const { fetch: send, calls } = recorder();
+    await updateUser({ locale: "fr" }, { fetch: send, gate: everywhere });
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ locale: "fr" });
+    expect(calls[0]?.init?.headers?.["x-turnstile"]).toBeUndefined();
+  });
+
+  // No stubbed-refusal test here, deliberately. `/update-user` is Better Auth's own route and never
+  // produces the kit's error envelope — its `APIError`s become Responses inside `instance.handler`, so
+  // they never reach `apiErrorToPithy` — and `callAuth`'s decoding of a well-formed envelope is already
+  // proved above. What a refusal on *this* route actually reads as is asserted against the live route,
+  // in `../http/clientRoundTrip.test.ts`.
+
+  test("a worker that cannot be reached costs the reader the write and nothing else", async () => {
+    expect(await updateUser({ locale: "es" }, { global: {} })).toEqual({ ok: false, failure: AUTH_UNREACHABLE });
+  });
+
+  test("a basePath naming somewhere else never puts the session on that wire", async () => {
+    const { fetch: send, calls } = recorder();
+    const result = await updateUser({ locale: "es" }, { fetch: send, basePath: "https://evil.example/auth" });
+    expect(result).toEqual({ ok: false, failure: AUTH_CROSS_ORIGIN });
+    expect(calls, "the cookie mode was handed to somebody else's host").toEqual([]);
   });
 });

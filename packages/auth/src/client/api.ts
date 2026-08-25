@@ -3,7 +3,8 @@
 
 /**
  * The browser half of `@pithy-sh/auth`: the one place that knows how a browser program makes a
- * same-origin, cookie-bearing request to this Worker, and the six calls a scaffolded screen makes.
+ * same-origin, cookie-bearing request to this Worker, and the calls made through it — the six a
+ * scaffolded screen makes, and {@link updateUser}, which an adopter's own screen calls.
  *
  * **This module lives in the package for the reason `@pithy-sh/payments`'s counterpart does, only more
  * so.** `pithy ui add` writes the auth screens once and may never rewrite them: they are copied into
@@ -306,6 +307,72 @@ export function signOut(options?: AuthClientOptions): Promise<AuthResult<Record<
   return callAuth(
     "/sign-out",
     { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    options,
+    isObject,
+  );
+}
+
+/**
+ * Store something on the signed-in reader's own account. Today that is their language, and only that.
+ *
+ * **The rule it exists to serve is `docs/I18N.md`'s: `pithy_auth_users.locale` is the one home for a
+ * person's language — do not put language in your own preferences table.** A preferences table is the
+ * right home for time zone, date format, a 24-hour clock; none of those is language. Two homes for one
+ * fact is not a duplicate row, it is a magic-link email in the wrong language with nothing anywhere
+ * failing to say so, because the send Workflow reads the auth column and the settings pane reads the
+ * other one. This is the write that keeps the home single, and `useNegotiatedLocale`'s `persist` seam
+ * (`@pithy-sh/i18n`) is the caller it was written for: `persist: (next) => { void updateUser({ locale: next }); }`.
+ * The discard is deliberate: `persist` returns `void | Promise<void>` and this resolves to an
+ * `AuthResult`, so returning the call straight does not typecheck — and nothing is lost by dropping
+ * it, because nothing here throws.
+ *
+ * **`locale` is the only field it takes, because it is the only kit user field declared `input: true`**
+ * (`../data/kitFields`). Every other column Pithy adds is server-set — a client that could name its own
+ * device or token family could name somebody else's — while a language is the reader's own preference
+ * and no admin route is a thing a reader has. What makes taking it from a client safe is the `Locale`
+ * validator on the field rather than this signature: Better Auth runs it before the write, so the same
+ * schema that guards every read guards the write one hop earlier, and a megabyte of junk is a 400 here
+ * instead of a row that throws for every operator who later lists users.
+ *
+ * **`null` is accepted deliberately, and it is not the empty string.** Null means *this reader has not
+ * chosen*, which is what makes the server fall back to `Accept-Language`; taking a language choice back
+ * is an ordinary thing a reader does, and a call that refused it would answer 400 for the one state the
+ * schema calls ordinary.
+ *
+ * **Not `jsonPost`, for the reason {@link signOut} is not.** That folds in the humanity check, and this
+ * is not a gated route: `createAuthRoutes` stacks the Turnstile gate on `/sign-in/magic-link` and
+ * `/email-otp/send-verification-otp` and on nothing else, so a token folded in here would be an
+ * unexpected field on a request Better Auth validates itself. The content type and the `{}` body are
+ * the same 415 story as sign-out — a declared JSON type with no body is refused just as an undeclared
+ * one is.
+ *
+ * **And it is kit code rather than an adopter's, because both alternatives are worse than this
+ * function.** Standing up a second Better Auth client with `inferAdditionalFields` duplicates
+ * configuration `@pithy-sh/auth` already owns. Reaching for {@link callAuth} instead means an adopter
+ * spelling out the path, the content type and the guard themselves, one deep import below the surface
+ * every other auth call in their app goes through — written into a file Pithy can never fix (#446).
+ *
+ * **The answer carries no user, whatever the route's own OpenAPI block advertises.** Better Auth's
+ * `/update-user` ends `ctx.json({ status: true })`, so `value` is `{ status: true }` and
+ * `value.locale` is `undefined`. Nothing is lost by that — a screen already has the value it just
+ * wrote — but do not reach into it for the row.
+ *
+ * **A refusal is a failure to render and never a throw, and it is `client/unreadable` more often than
+ * it looks.** This is Better Auth's own route, and Better Auth turns its own `APIError`s into
+ * Responses inside `instance.handler`, so they never reach the `apiErrorToPithy` re-homing in
+ * `../http/routes`. The body stays Better Auth's flat `{ message, code }` rather than the kit's error
+ * envelope, and {@link AUTH_UNREADABLE} is what `readFailure` makes of anything that is not that
+ * envelope: a signed-out reader's 401 reads as `client/unreadable`, and so does a tag the `Locale`
+ * validator rejected. Which is enough for the caller this exists for — `useNegotiatedLocale` drops a
+ * failed preference write either way, because the reader already has the language they picked.
+ */
+export function updateUser(
+  fields: { locale?: string | null },
+  options?: AuthClientOptions,
+): Promise<AuthResult<Record<string, unknown>>> {
+  return callAuth(
+    "/update-user",
+    { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...fields }) },
     options,
     isObject,
   );

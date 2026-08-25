@@ -3,6 +3,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
+  AUTH_UNREADABLE,
   type AuthFetch,
   getSession,
   sendMagicLink,
@@ -10,6 +11,7 @@ import {
   signInWithOtp,
   signOut,
   startSocialSignIn,
+  updateUser,
 } from "../client/api";
 import { type LiveApp, resetLiveSecrets, startLiveApp } from "../test-utils/liveApp";
 
@@ -165,5 +167,71 @@ describe("what the primitive refuses before the wire", () => {
     );
     expect(result.ok).toBe(true);
     expect(attempts).toBe(1);
+  });
+});
+
+describe("the reader's language, against the route that stores it", () => {
+  /**
+   * **Why this one is driven through a real sign-in rather than asserted on a stub.**
+   *
+   * `/update-user` is Better Auth's own route, reached through the catch-all, and everything that could
+   * be wrong with the request is invisible to a stub: the path, the content type, the session cookie,
+   * and the `Locale` validator `KIT_USER_FIELDS` puts on the field. A screen writing a reader's
+   * language has no way to tell a 404 from a 401 from a 415 — each is a failure it renders identically
+   * — so the only place the wiring can be proved is here (#446).
+   *
+   * The sign-in is the one a reader does: ask for a code, read it out of the mailbox the harness
+   * stands in for, post it back. The cookie the route sets rides on every later call in the jar.
+   */
+  const READER = "locale-round-trip@example.test";
+
+  /** Sign a browser in over the real routes, and hand back the fetch carrying its session cookie. */
+  async function signedIn(): Promise<AuthFetch> {
+    const browser = browserLike(app.origin);
+    const options = { basePath: BASE_PATH, fetch: browser };
+    expect((await sendOtp({ email: READER, type: "sign-in" }, options)).ok).toBe(true);
+    const code = await app.mailedOtp(READER);
+    expect(code, "no code was mailed, so nothing below is signed in").toMatch(/^\d{6}$/);
+    expect((await signInWithOtp({ email: READER, otp: String(code) }, options)).ok).toBe(true);
+    return browser;
+  }
+
+  test("a reader picks a language, it comes back on their session, and they can take it back", async () => {
+    const options = { basePath: BASE_PATH, fetch: await signedIn() };
+
+    const wrote = await updateUser({ locale: "es-AR" }, options);
+    // The body pinned, because the docblock describes it and `Record<string, unknown>` cannot. Better
+    // Auth's `/update-user` ends `ctx.json({ status: true })` — the updated row is never in the answer,
+    // whatever the route's OpenAPI block advertises — so `value.locale` would be `undefined` and an
+    // adopter reaching for it gets nothing. If that ever changes, it changes here first.
+    expect(wrote).toEqual({ ok: true, value: { status: true } });
+    const chosen = await getSession(options);
+    expect(chosen.ok && (chosen.value?.user as { locale?: unknown } | undefined)?.locale).toBe("es-AR");
+
+    // Null is the state the schema calls ordinary, and it has to survive the wire as itself.
+    expect((await updateUser({ locale: null }, options)).ok).toBe(true);
+    const cleared = await getSession(options);
+    expect(cleared.ok && ((cleared.value?.user as { locale?: unknown } | undefined)?.locale ?? null)).toBeNull();
+  });
+
+  test("a tag that is not one is refused, so no later read of the column can be poisoned", async () => {
+    // The validator on the field, over the wire. Every read of `locale` goes through `User.parse`, and
+    // the admin listing parses a page of rows at a time — one junk write would throw for every operator.
+    const result = await updateUser({ locale: "not a tag" }, { basePath: BASE_PATH, fetch: await signedIn() });
+    expect(result.ok).toBe(false);
+  });
+
+  test("a signed-out reader is refused as `client/unreadable`, which is the shape of this whole route", async () => {
+    // A fresh jar: nobody is signed in, and the route answers 401 `{"message":"Unauthorized","code":
+    // "UNAUTHORIZED"}` — Better Auth's own shape, not the kit's error envelope. Better Auth converts
+    // its `APIError`s to Responses inside `instance.handler`, so they never reach `handleBetterAuth`'s
+    // `apiErrorToPithy` re-homing, and `readFailure` calls anything that is not the envelope
+    // unreadable. So every refusal on this route reads the same, a 401 and a rejected tag alike — the
+    // one thing worth saying out loud about it, and pinned here so nobody expects `auth/…` back.
+    //
+    // It is enough for the caller this exists for. `useNegotiatedLocale` drops a failed preference
+    // write whatever it says, because the reader already has the language they picked.
+    const result = await updateUser({ locale: "es" }, { basePath: BASE_PATH, fetch: browserLike(app.origin) });
+    expect(result).toEqual({ ok: false, failure: AUTH_UNREADABLE });
   });
 });
