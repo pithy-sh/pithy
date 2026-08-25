@@ -16,9 +16,20 @@ import { isAPIError } from "better-auth/api";
 /**
  * Translate a thrown Better-Auth `APIError` into the matching `PithyError` subclass, by HTTP status.
  *
- * Better Auth's handler runs with `onAPIError.throw`, so its errors bubble to the Hono boundary as
- * `APIError` (`{ statusCode, status, message, body: { message, code } }`). We re-home them in the one
- * `PithyError` family so the HTTP codec owns the response shape and strips `detail`. For 4xx the
+ * **What reaches here is a much smaller set than `onAPIError: { throw: true }` suggests.** That option
+ * reads as though every endpoint's `APIError` bubbles to the Hono boundary, and none of them do:
+ * better-auth's `onError` re-raises (`better-auth/dist/api/index.mjs:193`) straight into better-call's
+ * own catch (`better-call@1.4.0`, `dist/router.mjs:83-89`), which renders an `APIError` as a Response
+ * and returns it. An endpoint refusal is therefore an ordinary non-2xx answer, and `handleBetterAuth`
+ * hands it back untouched (#449).
+ *
+ * What still arrives is what better-call declined to handle: a non-`APIError` throw from an endpoint
+ * (`throw error` at `router.mjs:88` — a database failure, a genuine bug), and a throw from a plugin's
+ * `onRequest` hook, which runs outside the router's try. The `isAPIError` branch is kept for those,
+ * which can carry one, and because a caller other than the delegating route may hand this anything.
+ *
+ * The shape, when it is one: `{ statusCode, status, message, body: { message, code } }`. We re-home it
+ * in the one `PithyError` family so the HTTP codec owns the response shape and strips `detail`. For 4xx the
  * Better-Auth message is user-actionable and safe to surface (it never reveals account existence —
  * sign-up is silently no-op'd for unknown users); 5xx gets a generic public message. The Better-Auth
  * status + error code stay in `detail` (logs/audit only, never the client).

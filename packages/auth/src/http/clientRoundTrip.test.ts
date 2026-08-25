@@ -219,19 +219,24 @@ describe("the reader's language, against the route that stores it", () => {
     // the admin listing parses a page of rows at a time — one junk write would throw for every operator.
     const result = await updateUser({ locale: "not a tag" }, { basePath: BASE_PATH, fetch: await signedIn() });
     expect(result.ok).toBe(false);
+    // And the refusal is legible now rather than `client/unreadable`, so a screen that wants to say why
+    // can (#449). The code is Better Auth's validator speaking, in its own vocabulary.
+    expect(result.ok === false && result.failure).not.toEqual(AUTH_UNREADABLE);
+    expect(result.ok === false && typeof result.failure.message).toBe("string");
   });
 
-  test("a signed-out reader is refused as `client/unreadable`, which is the shape of this whole route", async () => {
+  test("a signed-out reader is refused in Better Auth's own words, and the client reads them", async () => {
     // A fresh jar: nobody is signed in, and the route answers 401 `{"message":"Unauthorized","code":
-    // "UNAUTHORIZED"}` — Better Auth's own shape, not the kit's error envelope. Better Auth converts
-    // its `APIError`s to Responses inside `instance.handler`, so they never reach `handleBetterAuth`'s
-    // `apiErrorToPithy` re-homing, and `readFailure` calls anything that is not the envelope
-    // unreadable. So every refusal on this route reads the same, a 401 and a rejected tag alike — the
-    // one thing worth saying out loud about it, and pinned here so nobody expects `auth/…` back.
+    // "UNAUTHORIZED"}` — Better Auth's own shape rather than the kit envelope, because better-call
+    // renders an endpoint's `APIError` into a Response inside `instance.handler` and `handleBetterAuth`
+    // hands it back untouched. The wire is Better Auth's contract and `createAuthClient` reads it.
     //
-    // It is enough for the caller this exists for. `useNegotiatedLocale` drops a failed preference
-    // write whatever it says, because the reader already has the language they picked.
+    // What changed in #449 is this side: `readFailure` reads that shape too, so a screen gets a code and
+    // a sentence instead of "the server answered with something we couldn't read." Every Better-Auth-owned
+    // route was unreadable before it — the one-time code, the magic link, sign-out, all of them.
     const result = await updateUser({ locale: "es" }, { basePath: BASE_PATH, fetch: browserLike(app.origin) });
-    expect(result).toEqual({ ok: false, failure: AUTH_UNREADABLE });
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.failure.code).toBe("UNAUTHORIZED");
+    expect(result.ok === false && result.failure).not.toEqual(AUTH_UNREADABLE);
   });
 });

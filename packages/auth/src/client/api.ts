@@ -171,12 +171,44 @@ function isSameOriginPath(path: string): boolean {
   return second !== "/" && second !== "\\";
 }
 
-/** A failure read off `{ error: { code, message, action } }`, or the generic one when the body is not that. */
+/**
+ * A failure read off either shape this Worker answers with, or the generic one when the body is neither.
+ *
+ * **Two shapes, because two packages own routes here and only one of them is ours.** Everything this
+ * capability writes answers `{ error: { code, message, action } }` through `pithyErrorHandler`. Every
+ * route Better Auth owns — the one-time code, the magic link, sign-out, `get-session`, the social
+ * handoff, `update-user` — answers its own flat `{ message, code }`, because better-call renders an
+ * endpoint's `APIError` into a Response inside `instance.handler` and nothing on our side of that ever
+ * sees it (#449).
+ *
+ * Reading only the envelope meant every one of those refusals arrived as {@link AUTH_UNREADABLE}, so a
+ * reader who mistyped their one-time code was told the app was broken rather than that the code was
+ * wrong — in a screen `pithy ui add` copies into an adopter's repository, where it can never be fixed.
+ *
+ * **The flat shape is read rather than rewritten on the server, deliberately.** `packages/auth/README.md`
+ * documents `createAuthClient` from `better-auth/client` as a first-class client surface (#271), and
+ * `@better-fetch/fetch` builds its error as `{ ...parsedBody, status }` — so an adopter on that path
+ * reads `error.code === "INVALID_OTP"` today. Re-homing the body into our envelope would make that
+ * `undefined` for every one of them. The wire is Better Auth's contract; this side learns to read it.
+ *
+ * So `code` arrives in whichever vocabulary produced it, and the two are told apart by their shape:
+ * `auth/invalid_token` is ours, `INVALID_OTP` is Better Auth's. A screen matching on a code should
+ * expect the one belonging to the route it called.
+ */
 function readFailure(body: unknown): AuthFailure {
-  if (!isRecord(body) || !isRecord(body.error)) return AUTH_UNREADABLE;
-  const { code, message, action } = body.error;
+  if (!isRecord(body)) return AUTH_UNREADABLE;
+
+  // The kit's envelope, which every route this capability writes answers with.
+  if (isRecord(body.error)) {
+    const { code, message, action } = body.error;
+    if (typeof code !== "string" || typeof message !== "string") return AUTH_UNREADABLE;
+    return { code, message, action: typeof action === "string" ? action : null };
+  }
+
+  // Better Auth's own, which every route it owns answers with.
+  const { code, message } = body;
   if (typeof code !== "string" || typeof message !== "string") return AUTH_UNREADABLE;
-  return { code, message, action: typeof action === "string" ? action : null };
+  return { code, message, action: null };
 }
 
 /**
