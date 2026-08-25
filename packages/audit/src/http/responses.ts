@@ -20,6 +20,12 @@ import { z } from "zod";
  *
  * The projections that fill these live in `views.ts`, which documents *why* each field is in one view
  * and not the other. This file is the shape; that file is the argument.
+ *
+ * **A field added here later is `.optional()`, not merely `.nullable()`.** This module is read across a
+ * version boundary — a management client validates a response with this schema against a customer's
+ * Worker at whatever kit version it is on — so an additive required key fails `safeParse` for everyone
+ * below that release and takes the whole pane with it (#450). Absent then means *this Worker cannot
+ * say*, which is a different fact from `null`.
  */
 
 /** Where a page resumes, or the end of the list. */
