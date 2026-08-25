@@ -38,6 +38,15 @@ export const EmailJobListItem = z
       .string()
       .describe("The template that produced this email. Structural, so it names the kind of mail with no content."),
     category: TemplateCategory.describe("`transactional` or `marketing`."),
+    // Says what the tag *is*, and nothing about where it lives: this one declaration is also the
+    // detail's, so a sentence placing the field on the list would be false on the route that inherits
+    // it. Why the tag earns the list at all is argued in `view.ts`, which is where an argument belongs.
+    locale: z
+      .string()
+      .nullable()
+      .describe(
+        "The language this message was written in, as a BCP-47 tag; null when the recipient never chose one and it went out in the kit's English.",
+      ),
     status: EmailJobStatus.describe("The lifecycle state."),
     mode: SendMode.describe("How the send time was decided."),
     attempts: z.number().int().describe("How many send attempts have been made."),
@@ -65,6 +74,10 @@ export type EmailJobListItem = z.output<typeof EmailJobListItem>;
  *
  * Re-described after `.omit()`/`.extend()`: each builds a new schema, and a description does not
  * follow it.
+ *
+ * `locale` is **not** re-declared below. It is on the list item, so the detail inherits it and there is
+ * one sentence describing the tag rather than two free to drift — and the fact the detail's own copy
+ * used to carry, that null means nobody chose, is the fact the list needs most.
  */
 export const EmailJobDetail = EmailJobListItem.omit({ recipient: true, failed: true })
   .extend({
@@ -77,12 +90,6 @@ export const EmailJobDetail = EmailJobListItem.omit({ recipient: true, failed: t
     messageId: z.string().nullable().describe("The Email Service message id a later bounce is attributed through."),
     error: z.string().nullable().describe("The last error recorded against this job; null when healthy."),
     bounceCode: z.string().nullable().describe("The SMTP or Email Service code from a bounce; null unless it bounced."),
-    locale: z
-      .string()
-      .nullable()
-      .describe(
-        'The language this message was written in, as a BCP-47 tag; null when the recipient never chose one and it went out in the kit\'s English. Here because the subject above is the one piece of rendered content this view carries, and an operator who cannot read it has nothing else that explains why — a support pane answering "why did this arrive in Spanish" was otherwise reduced to guessing from the address.',
-      ),
     timezone: z.string().nullable().describe("The recipient's IANA timezone, for a `timezone`-mode send."),
     localTime: z.string().nullable().describe("The recipient-local time-of-day, for a `timezone`-mode send."),
     openTracking: z.boolean().describe("Whether an open-tracking pixel was injected."),

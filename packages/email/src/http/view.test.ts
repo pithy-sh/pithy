@@ -78,6 +78,29 @@ describe("the template payload never leaves the Worker", () => {
   });
 });
 
+describe("the list carries what a message was, not what it said", () => {
+  test("the locale tag is projected, and nothing chosen reads as null", () => {
+    // Null is the fact an operator is scanning for: nobody chose, so it went out in the kit's English.
+    // The `undefined` the projection normalizes is a type-level state, not a stored one. `EmailJob.locale`
+    // is `Locale.nullish()`, so the key is optional on the in-memory job — which is why the `job()`
+    // fixture above omits it entirely. Nothing D1 hands back is ever `undefined`: `locale` was folded
+    // into `0001_init`, so no persisted row predates the column, and `selectAll()` reads an unset one as
+    // SQL null. The projection settles it rather than handing a client a third state the schema never
+    // declared.
+    expect(jobListView(job({ locale: "es-AR" })).locale).toBe("es-AR");
+    expect(jobListView(job()).locale).toBeNull();
+  });
+
+  test("the subject does not come along with it", () => {
+    // A tag is structural — the kind of mail, with none of its words. The rendered subject line names
+    // the recipient's own things, so it stays on the detail route beside the address it describes.
+    // Named, not searched for in the serialized body: the guards above hunt a value that must not
+    // appear in any shape, while this one is a field, and a body search would pass the day the fixture
+    // stopped saying "Your sign-in link".
+    expect(jobListView(job())).not.toHaveProperty("subject");
+  });
+});
+
 describe("the list masks the recipient and the detail does not", () => {
   test("the list shows two characters and the domain", () => {
     expect(jobListView(job()).recipient).toBe("ad***@example.com");
