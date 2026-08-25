@@ -38,6 +38,12 @@ import { SupportSubmissionContext } from "../data/message";
  * which took `pithy-sh/dashboard`'s client build down on an error in `@pithy-sh/auth` (#419). The rule is
  * held by `tooling/browser-scopes`, which compiles this module with `types: []` and asks the compiler
  * which files that program included.
+ *
+ * **A field added here later is `.optional()`, not merely `.nullable()`.** This module is read across a
+ * version boundary — a management client validates a response with this schema against a customer's
+ * Worker at whatever kit version it is on — so an additive required key fails `safeParse` for everyone
+ * below that release and takes the whole pane with it (#450). Absent then means *this Worker cannot
+ * say*, which is a different fact from `null`.
  */
 
 /** Where a page resumes, or the end of the list. */

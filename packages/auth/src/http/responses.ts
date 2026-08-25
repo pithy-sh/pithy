@@ -21,6 +21,12 @@ import { DevicePlatform } from "../data/device";
  *
  * The projections that fill these live in `views.ts`, which documents *why* a credential is absent
  * from each. This file is the shape; that file is the argument.
+ *
+ * **A field added here later is `.optional()`, not merely `.nullable()`.** This module is read across a
+ * version boundary — a management client validates a response with this schema against a customer's
+ * Worker at whatever kit version it is on — so an additive required key fails `safeParse` for everyone
+ * below that release and takes the whole pane with it (#450). Absent then means *this Worker cannot
+ * say*, which is a different fact from `null`.
  */
 
 /** Where a page resumes, or the end of the list. */
@@ -46,9 +52,11 @@ export const AdminUserView = z
     image: z.string().nullable().describe("The avatar URL from a social profile, or null."),
     // `Locale`, not a bare string: it is a plain schema with checks and no transform, so parsing a
     // response still hands back exactly what went in — which is what `responses.test.ts` compares.
-    locale: Locale.nullable().describe(
-      "The reader's chosen language as a BCP-47 tag, or null when they have never chosen one.",
-    ),
+    locale: Locale.nullable()
+      .optional()
+      .describe(
+        "The reader's chosen language as a BCP-47 tag; null when they have never chosen one, and absent when the Worker that answered predates the field (#450).",
+      ),
     createdAt: z.iso.datetime().describe("When the user was created, ISO-8601."),
     updatedAt: z.iso.datetime().describe("When the row was last written, ISO-8601."),
   })

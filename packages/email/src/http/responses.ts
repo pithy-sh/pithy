@@ -19,6 +19,12 @@ import { EmailJobStatus, SendMode, SuppressionReason, TemplateCategory } from ".
  *
  * The projections live in `view.ts`, which documents *why* the list masks a recipient and the detail
  * does not, and why `payload` appears in neither. This file is the shape; that file is the argument.
+ *
+ * **A field added here later is `.optional()`, not merely `.nullable()`.** This module is read across a
+ * version boundary — a management client validates a response with this schema against a customer's
+ * Worker at whatever kit version it is on — so an additive required key fails `safeParse` for everyone
+ * below that release and takes the whole pane with it (#450). Absent then means *this Worker cannot
+ * say*, which is a different fact from `null`.
  */
 
 /** Where a page resumes, or the end of the list. */
@@ -44,8 +50,9 @@ export const EmailJobListItem = z
     locale: z
       .string()
       .nullable()
+      .optional()
       .describe(
-        "The language this message was written in, as a BCP-47 tag; null when the recipient never chose one and it went out in the kit's English.",
+        "The language this message was written in, as a BCP-47 tag; null when the recipient never chose one and it went out in the kit's English, and absent when the Worker that answered predates the field (#450).",
       ),
     status: EmailJobStatus.describe("The lifecycle state."),
     mode: SendMode.describe("How the send time was decided."),

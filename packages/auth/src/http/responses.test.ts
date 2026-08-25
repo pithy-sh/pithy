@@ -116,3 +116,35 @@ describe("auth admin response schemas", () => {
     expect(Object.keys(AdminRevokeResponse.shape)).toEqual(["revoked"]);
   });
 });
+
+/**
+ * A Worker one release behind still renders its pane (#450).
+ *
+ * These schemas are read across a version boundary: the dashboard validates every response with the
+ * capability's own exported schema, against *other people's* Workers at whatever kit version each is
+ * on. So a field added as a required key fails `safeParse` for everyone below that release and takes
+ * the whole pane with it — on the day the dashboard deploys, not on any day the customer acted.
+ *
+ * `locale` was the second one to do it. It went unnoticed the first time because the kit and the
+ * dashboard were upgraded in one step, by one person, on one afternoon.
+ */
+describe("a response from a Worker that predates a field", () => {
+  test("parses, and the field reads as absent rather than failing the envelope", () => {
+    const { locale: _dropped, ...before } = userView(USER);
+    const parsed = AdminUserView.safeParse(before);
+    expect(parsed.success, parsed.error?.message).toBe(true);
+    expect(parsed.success && "locale" in parsed.data).toBe(false);
+  });
+
+  test("and absent is distinguishable from null, which is a different fact", () => {
+    // `null` is "this reader has never chosen." Absent is "this Worker cannot say." Collapsing them
+    // would report every reader on an older Worker as having declined to pick a language.
+    const withNull = AdminUserView.safeParse({ ...userView(USER), locale: null });
+    expect(withNull.success && withNull.data.locale).toBeNull();
+  });
+
+  test("a current Worker still sends it", () => {
+    // `.optional()` relaxes the reader, never the producer.
+    expect(userView(USER)).toHaveProperty("locale");
+  });
+});

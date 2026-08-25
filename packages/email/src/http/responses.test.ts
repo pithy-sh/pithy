@@ -147,3 +147,40 @@ describe("email response schemas", () => {
     accepts(EmailUnsuppressResponse, { email: "ada@example.test", removed: true });
   });
 });
+
+/**
+ * A Worker one release behind still renders its pane (#450).
+ *
+ * **These schemas are read across a version boundary, which is what makes an additive field a break.**
+ * A project talking to its own Worker ships both halves together and never notices; the dashboard reads
+ * *other people's* Workers, each at whatever kit version it happens to be on, and validates every
+ * response with the capability's own exported schema — the rule #113 established, and the right one.
+ *
+ * So a field that did not exist, added as a required key, fails `safeParse` on every Worker below that
+ * release and takes the whole pane with it — on the day the *dashboard* deploys, rather than on any day
+ * the customer changed something. A column nobody asked for costs a send log.
+ *
+ * `.optional()` alongside `.nullable()` is the whole fix, and it leaves the reader the three states it
+ * genuinely has: a tag, `null` for asked-and-never-chose, and absent for this-Worker-cannot-say.
+ */
+describe("a response from a Worker that predates a field", () => {
+  test("parses, and the field reads as absent rather than failing the envelope", () => {
+    const { locale: _dropped, ...before } = jobListView(JOB);
+    const parsed = EmailJobListItem.safeParse(before);
+    expect(parsed.success, parsed.error?.message).toBe(true);
+    expect(parsed.success && "locale" in parsed.data).toBe(false);
+  });
+
+  test("and absent is distinguishable from null, which is a different fact", () => {
+    // `null` is "the recipient never chose one." Absent is "this Worker is too old to say." A pane that
+    // collapsed them would report every old Worker's mail as having gone out in the kit's English.
+    const withNull = EmailJobListItem.safeParse({ ...jobListView(JOB), locale: null });
+    expect(withNull.success && withNull.data.locale).toBeNull();
+  });
+
+  test("a current Worker still sends it, so the column is not quietly optional in practice", () => {
+    // The producer is unchanged: `.optional()` relaxes the *reader*, and a Worker on this release
+    // always projects the key. Otherwise the fix would have removed the feature rather than the break.
+    expect(jobListView(JOB)).toHaveProperty("locale");
+  });
+});
