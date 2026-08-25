@@ -108,6 +108,8 @@ const t = useTranslator(EN);
 
 `useNegotiatedLocale` (`@pithy-sh/i18n/src/react/useNegotiatedLocale`) runs the browser chain, loads the matching kit catalog by dynamic import, and keeps `<html lang>` and `dir` in step with it. It is the whole of the wiring for an app that renders none of the kit's screens.
 
+**It takes what a browser holds.** `virtual:pithy/i18n` is locale metadata and nothing else — the languages, the chain order, the two names a page looks itself up by — so nothing asks your front end for the catalogs, the cookie name or the server chain that only a Worker has. Your own catalogs go in through `messages`, above the kit's.
+
 ```tsx
 import { TranslatorProvider } from "@pithy-sh/i18n/src/react/translator";
 import { useNegotiatedLocale } from "@pithy-sh/i18n/src/react/useNegotiatedLocale";
@@ -125,7 +127,9 @@ export function Shell({ children }: { children: ReactNode }) {
     persist: (next) => updateUser({ locale: next }),
   });
   // `source` is null only until this locale's catalog lands — a few milliseconds, during which every
-  // screen renders the English it was scaffolded with.
+  // screen renders the English it was scaffolded with. It is also the one line that handles a project
+  // with no `i18n` composed at all: the projection says so, nothing is negotiated, no chunk is
+  // downloaded, and every screen keeps its baked English permanently.
   if (!source) return children;
   return <TranslatorProvider value={source}>{children}</TranslatorProvider>;
 }

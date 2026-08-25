@@ -4,7 +4,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { I18nConfig, type I18nConfigInput } from "../config/config";
+import type { I18nClientProjection } from "../client/projection";
 import { type NegotiatedLocaleOptions, useNegotiatedLocale } from "./useNegotiatedLocale";
 
 /**
@@ -22,8 +22,26 @@ import { type NegotiatedLocaleOptions, useNegotiatedLocale } from "./useNegotiat
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const config = (input: I18nConfigInput = {}): I18nConfig =>
-  I18nConfig.parse({ supportedLocales: ["en", "es", "ar"], defaultLocale: "en", ...input });
+/** What a composed project projects into `virtual:pithy/i18n` — the object every screen imports. */
+type Composed = Extract<I18nClientProjection, { enabled: true }>;
+
+/**
+ * A composed project's projection, with the defaults `i18n()` would have projected.
+ *
+ * **This is the hook's parameter, and that it is stated here in full is the point.** Nothing is parsed
+ * into it and nothing is widened: a browser holds exactly these fields, which is why the hook takes
+ * them rather than a config carrying catalogs, a cookie name and a server chain no page has.
+ */
+const config = (over: Partial<Composed> = {}): I18nClientProjection => ({
+  enabled: true,
+  supportedLocales: ["en", "es", "ar"],
+  defaultLocale: "en",
+  queryParam: "lang",
+  storageKey: "pithy.locale",
+  browserResolvers: ["query", "account", "storage", "navigator", "server", "default"],
+  exceptions: {},
+  ...over,
+});
 
 /** What the probe reports back, flattened into text one assertion can read. */
 interface Reading {
@@ -43,8 +61,8 @@ let latest: Reading | null = null;
 /** The key the reading looks up — a real one, from the kit's own Spanish screens. */
 const KEY = "auth/sign_in.title";
 
-function Probe({ config: resolved, options }: { config: I18nConfig; options?: NegotiatedLocaleOptions }) {
-  const { source, locale, choose } = useNegotiatedLocale(resolved, options);
+function Probe({ config: projection, options }: { config: I18nClientProjection; options?: NegotiatedLocaleOptions }) {
+  const { source, locale, choose } = useNegotiatedLocale(projection, options);
   latest = {
     locale,
     source: source === null ? null : `${source.catalogLocale}|${source.formattingLocale}`,
@@ -90,22 +108,33 @@ async function settle(): Promise<void> {
     if (Date.now() > deadline) {
       throw new Error(`The catalog never landed: \`source\` is still null after ${SETTLE_DEADLINE_MS}ms.`);
     }
-    await act(async () => {
-      await new Promise((resume) => setTimeout(resume, SETTLE_POLL_MS));
-    });
+    await turn();
   }
 }
 
-/** Mount one probe, letting every effect — including the catalog's dynamic import — settle. */
-async function mount(resolved: I18nConfig, options?: NegotiatedLocaleOptions) {
+/** One macrotask under `act`, so a pending effect and the re-render it causes both run. */
+async function turn(): Promise<void> {
+  await act(async () => {
+    await new Promise((resume) => setTimeout(resume, SETTLE_POLL_MS));
+  });
+}
+
+/**
+ * Mount one probe and flush its effects, without waiting on a catalog.
+ *
+ * **Split from {@link mount} so a case can assert a negative.** A projection with the capability
+ * uncomposed never produces a source, by design — so a helper that waits for one would hang the case
+ * that is about exactly that, instead of stating it.
+ */
+async function render(projection: I18nClientProjection, options?: NegotiatedLocaleOptions) {
   const container = document.createElement("div");
   document.body.append(container);
   let root: Root | null = null;
   await act(async () => {
     root = createRoot(container);
-    root.render(<Probe config={resolved} options={options} />);
+    root.render(<Probe config={projection} options={options} />);
   });
-  await settle();
+  await turn();
   return {
     container,
     /** Click one of the probe's buttons, which calls `choose(locale)`. */
@@ -113,11 +142,24 @@ async function mount(resolved: I18nConfig, options?: NegotiatedLocaleOptions) {
       await act(async () => {
         container.querySelector<HTMLButtonElement>(`[data-pick="${locale}"]`)?.click();
       });
-      await settle();
+      await turn();
     },
     unmount() {
       act(() => root?.unmount());
       container.remove();
+    },
+  };
+}
+
+/** Mount one probe, letting every effect — including the catalog's dynamic import — settle. */
+async function mount(projection: I18nClientProjection, options?: NegotiatedLocaleOptions) {
+  const view = await render(projection, options);
+  await settle();
+  return {
+    ...view,
+    async choose(locale: string) {
+      await view.choose(locale);
+      await settle();
     },
   };
 }
@@ -149,6 +191,104 @@ afterEach(() => {
   document.documentElement.dir = "";
   at("/");
   latest = null;
+});
+
+describe("a caller whose projection is a fresh object every render", () => {
+  /**
+   * How many renders the hook is allowed before the case calls it a loop, and the point at which the
+   * probe stops handing it a new object.
+   *
+   * A settled mount is two renders — the first, then the one the catalog's arrival causes. Twenty is
+   * generous enough that no legitimate re-render trips it, and it is also the **cap**: past it the probe
+   * freezes the identity, so a regression quiesces and fails on the count in milliseconds instead of
+   * spinning inside `act` until the suite's 60s timeout, which is what a runaway looks like without it.
+   */
+  const RENDER_CAP = 20;
+
+  /**
+   * **The one caller shape the hook cannot forbid, and the one it must survive.**
+   *
+   * A projection reaches a component as `{ ...i18nConfig, supportedLocales: mine }`, or as a parse in a
+   * component body — both give the hook a new object identity on every render. That is fine for a memo,
+   * which merely recomputes. It is fatal for the catalog effect: keyed on that identity the effect
+   * re-runs every render, its `.then` sets a fresh `kit` object, that renders, and the effect re-runs.
+   * An unbounded loop of dynamic imports and renders, and no error anywhere to read it by. Both effects
+   * depend on a boolean instead, which is stable by value however a caller spells its projection.
+   */
+  test("quiesces rather than re-rendering itself forever", async () => {
+    let renders = 0;
+    const stable = config();
+    function Unstable() {
+      renders += 1;
+      // Fresh identity every render, until the cap: past it the same object goes back, so a hook that is
+      // looping settles and the assertion below reports a number rather than the case hanging.
+      useNegotiatedLocale(renders > RENDER_CAP ? stable : { ...stable });
+      return null;
+    }
+    const container = document.createElement("div");
+    document.body.append(container);
+    let root: Root | null = null;
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<Unstable />);
+    });
+    // Two turns: one for the catalog to land and re-render, one for a loop to prove itself on.
+    await turn();
+    await turn();
+    expect(renders).toBeLessThanOrEqual(RENDER_CAP);
+    act(() => root?.unmount());
+    container.remove();
+  });
+});
+
+describe("a project that never composed the capability", () => {
+  /**
+   * **The absence of the capability is not a branch the caller writes.**
+   *
+   * `virtual:pithy/i18n` projects `{ enabled: false }` for a project with no `i18n`, and the hook is
+   * handed it like any other projection. What it answers is the null a caller already renders through
+   * while a catalog is in flight — so `if (!source) return children` is the whole of the handling, and
+   * every screen keeps rendering the English it was scaffolded with, byte for byte as it did before
+   * any of this landed.
+   *
+   * Rendered rather than mounted: waiting for a source that must never arrive would hang the case
+   * instead of stating it. `loadKitCatalog` needs no chunk for English — it answers `{}` off a static
+   * map — so had the effect run at all, `kit` would have landed within the turn `render` already
+   * flushes and `source` would be reading it.
+   */
+  test("negotiates nothing, and mounts no provider over the English already on screen", async () => {
+    at("/?lang=es");
+    window.localStorage.setItem("pithy.locale", "es");
+    const probe = await render({ enabled: false });
+    expect(latest?.source).toBeNull();
+    expect(latest?.locale).toBe("en");
+    probe.unmount();
+  });
+
+  test("leaves the document exactly as `index.html` shipped it", async () => {
+    // `templates/index.html` ships `lang="en"` as static text. Nothing negotiated a locale here, so
+    // nothing declares one — restamping the document with a language no chain chose is the "declares a
+    // language it does not speak" failure with the negotiation removed rather than added.
+    document.documentElement.lang = "en";
+    const probe = await render({ enabled: false });
+    expect(document.documentElement.lang).toBe("en");
+    expect(document.documentElement.dir).toBe("");
+    probe.unmount();
+  });
+
+  test("`choose` is inert: no language to take, and no key to remember one under", async () => {
+    // A copied screen may render a language control whatever the project composed. The projection
+    // carries no `storageKey` here, so a choice has nowhere to go and must not invent one.
+    const written: string[] = [];
+    const probe = await render({ enabled: false }, { persist: (locale) => void written.push(locale) });
+    await probe.choose("es");
+    expect(latest?.locale).toBe("en");
+    expect(latest?.source).toBeNull();
+    expect(window.localStorage.getItem("pithy.locale")).toBeNull();
+    expect(written).toEqual([]);
+    expect(document.documentElement.lang).toBe("");
+    probe.unmount();
+  });
 });
 
 describe("the browser chain, run from a component", () => {

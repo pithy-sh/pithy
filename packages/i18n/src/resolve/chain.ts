@@ -3,8 +3,27 @@
 
 import type { LocaleContext } from "@pithy-sh/core/src/i18n/locale";
 import { formattingLocaleOf, localeDirection } from "@pithy-sh/core/src/i18n/locale";
+import type { LocaleExceptions } from "@pithy-sh/core/src/i18n/match";
 import { matchLocale } from "@pithy-sh/core/src/i18n/match";
-import type { I18nConfig } from "../config/config";
+
+/**
+ * The languages a chain may land on: what it matches against, what it falls back to, and the pairs no
+ * truncation of a tag would reach.
+ *
+ * **Three fields rather than `I18nConfig`, because a browser holds neither the catalogs nor the cookie
+ * name nor the server chain.** `virtual:pithy/i18n` projects locale metadata and nothing else, and this
+ * is the part of it a match is made from — so the projection satisfies this shape as it stands and the
+ * resolved config satisfies it too. Structural on purpose: one type both sides already are beats a
+ * conversion every caller has to work out for itself.
+ */
+export interface LocaleSet {
+  /** Every locale this project serves. A chain answers with one of these or with nothing. */
+  readonly supportedLocales: readonly string[];
+  /** The locale served when no link answers. Always one of `supportedLocales`. */
+  readonly defaultLocale: string;
+  /** Language ranges the matcher cannot derive, as range → supported locale. Usually empty. */
+  readonly exceptions: LocaleExceptions;
+}
 
 /** One link of a resolver chain: where the ranges came from, and what they were. */
 export interface ResolverLink {
@@ -42,10 +61,10 @@ export function tagLink(name: string, tag: string | null | undefined): ResolverL
  * Total. Every construction on the way through is guarded, so a chain fed nothing but malformed input
  * lands on the project default rather than throwing.
  */
-export function resolveChain(links: readonly ResolverLink[], config: I18nConfig): ResolvedLocale {
+export function resolveChain(links: readonly ResolverLink[], locales: LocaleSet): ResolvedLocale {
   for (const link of links) {
     if (link.ranges.length === 0) continue;
-    const match = matchLocale(link.ranges, config.supportedLocales, config.exceptions);
+    const match = matchLocale(link.ranges, locales.supportedLocales, locales.exceptions);
     if (!match) continue;
     // The reader's own tag, canonicalized and stripped of extension subtags — `es-ar` becomes `es-AR`,
     // and `en-u-nu-hanidec` becomes `en`. A range that is not a constructible tag (a wildcard, an
@@ -59,9 +78,9 @@ export function resolveChain(links: readonly ResolverLink[], config: I18nConfig)
     };
   }
   return {
-    catalogLocale: config.defaultLocale,
-    formattingLocale: config.defaultLocale,
-    direction: localeDirection(config.defaultLocale),
+    catalogLocale: locales.defaultLocale,
+    formattingLocale: locales.defaultLocale,
+    direction: localeDirection(locales.defaultLocale),
     resolvedBy: "default",
   };
 }
