@@ -32,7 +32,7 @@ Everything lives in the Worker's own directory. New files are marked; the rest w
 ```
 apps/api/
   index.html                 new   Vite entry document
-  vite.config.ts             new   cloudflare() + react() + pithy()
+  vite.config.ts             new   cloudflare() + react() + pithy(), and one React
   tsconfig.client.json       new   jsx + DOM; covers src/**/*.tsx and client-env.d.ts
   tsconfig.node.json         new   types: ["node"]; covers vite.config.ts
   client-env.d.ts            new   ambient declarations for virtual:pithy/*
@@ -544,6 +544,22 @@ The second is ours, and applies to every project until `@pithy-sh/*` publishes: 
 The versions are a set, not a menu. `@vitejs/plugin-react` 6.x is the Vite-8 line — 5.1.x does not support Vite 8 — and `@cloudflare/vite-plugin` 1.48 peers on `vite ^6.1 || ^7 || ^8` and `wrangler ^4.115.0`. Downgrading one of them alone will not resolve.
 
 Install with whichever package manager your project uses. Pithy does not pin you to Bun for adoption.
+
+### One React
+
+Two copies of React is `invalid hook call`, and the stack blames the component rather than the resolution. It is the one failure a linked checkout produces on its own, so both files that resolve modules carry the answer: `pithy ui add` writes the Worker's half, and `pithy init` ships the project root's.
+
+Vite resolves a symlinked package from its realpath. A package linked in from somewhere else — the kit, a design system, any workspace you point at by path — therefore imports `react` out of *its* tree, not out of yours. Nothing goes wrong until the first component from that package is mounted, which in a project that owns its screens can be months.
+
+`apps/<worker>/vite.config.ts` states it as `resolve.dedupe`. `vitest.config.ts` at your project root states the same rule as an explicit `resolve.alias`, and the difference is not style. `dedupe` re-resolves the names it is given from Vite's root: at the Worker that is a directory where `react` is a dependency, and at the project root it is a directory where React is not installed at all. `dedupe` there finds nothing, changes nothing, and says nothing — which is worse than omitting it, because it reads as covered.
+
+The alias names no Worker. It takes the first `apps/*` that resolves React and points everything at that copy, so renaming a Worker or adding a second one changes nothing. Both files are yours from the moment they land; keep the rule, and it costs nothing the day `@pithy-sh/*` publishes and you install the kit like any other dependency.
+
+**Nothing you can re-run adds either half to a file you already have, so what an existing project is missing depends on when each of its two files was written.** Both are written once and never rewritten. The root `vitest.config.ts` comes from `pithy init`, which does not run twice, and the only file `pithy ui add` writes outside the Worker's own directory is your root `tsconfig.json`. `pithy ui add` writes `apps/<worker>/vite.config.ts` only where no such file exists yet: it refuses the whole run when one is already there, and on a backfill it skips that file and reports it — no byte already written changes either way. `pithy ui sync` creates no files at all.
+
+**If your front end was scaffolded after this landed, you have the Worker's half.** Your dev server and your build resolve one React; your `.tsx` tests still resolve two. Copy the head of [`templates/starter/vitest.config.ts`](https://github.com/pithy-sh/pithy/blob/main/templates/starter/vitest.config.ts) into your own — its imports, `PROJECT_ROOT`, `packageDir`, `oneReact`, `ONE_REACT` — together with the `resolve: { alias: ONE_REACT }` line it feeds into the `node` project.
+
+**If your front end predates it too, you have neither half**, and that is the one that throws in the browser. Do the copy above, and add `resolve: { dedupe: ["react", "react-dom"] }` to `apps/<worker>/vite.config.ts` by hand — a top-level key of the object you pass `defineConfig`, beside `plugins`. No command will put it there for you. Until it is there, `invalid hook call` is exactly where it was.
 
 ## See also
 

@@ -289,6 +289,27 @@ describe("the React 19 stub", () => {
     expect(config).toContain("inspectorPort: false");
   });
 
+  test("vite.config.ts resolves one React, so a linked package cannot bring a second", () => {
+    // #447. Vite resolves a symlinked package from its realpath, so a kit consumed from a sibling
+    // checkout — which is every adopter until `@pithy-sh/*` publishes — imports `react` out of the kit's
+    // tree. Two Reacts is `invalid hook call` on the first kit component mounted, and the stack names
+    // that component rather than the resolution, which is why nobody debugs it from the error.
+    //
+    // **`dedupe` is the right instrument in *this* file and the wrong one in the project's
+    // `vitest.config.ts`, and the difference is Vite's root.** `dedupe` re-resolves the names it is given
+    // from the root; the root here is `apps/<worker>/`, where `react` is a declared dependency, so there
+    // is something to find. At the repository root there is not, and `dedupe` there finds nothing and
+    // changes nothing without a word — measured on vite 8.2.0 against a fixture with a second React in a
+    // linked checkout: `dedupe` left the import on the linked copy, an explicit alias moved it. The
+    // starter's config carries that alias for that reason; `scaffoldGates.test.ts` is what proves it.
+    //
+    // Both packages, deliberately. `react-dom` holds the renderer's own module state, and one React with
+    // two `react-dom`s fails the same way.
+    for (const template of [AUTH, BARE]) {
+      expect(template["vite.config.ts"] ?? "").toContain('resolve: { dedupe: ["react", "react-dom"] }');
+    }
+  });
+
   test("the client is cookie/session — no token store, no bearer header, no rotation", () => {
     // Every template, not only the auth one: a scaffold that only leaked a token when payments was
     // requested would be a scaffold nobody checked.

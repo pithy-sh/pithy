@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -420,4 +421,214 @@ describe("after pithy ui add react", () => {
     const { code, output } = await run(dir, tsc(dir), ["-b", "--force", `apps/${WORKER}/tsconfig.client.json`]);
     expect({ code, output }).toMatchObject({ code: 0 });
   }, 120_000);
+});
+
+/**
+ * **One React, proven by planting a second one (#447).**
+ *
+ * Nothing under `@pithy-sh/*` is published, so an adopter consumes the kit from a sibling checkout by
+ * symlink — and Vite resolves a symlinked package from its realpath, so a kit package importing `react`
+ * gets the *kit checkout's* copy. Two Reacts is `invalid hook call` on the first kit component the
+ * project mounts, and the stack blames that component (`TranslatorProvider`, `useNegotiatedLocale`)
+ * rather than the resolution. Nobody debugs it from the error.
+ *
+ * `templates/starter/vitest.config.ts` answers it with an explicit `resolve.alias`, and the reason it is
+ * an alias rather than `resolve.dedupe` is the whole subtlety: `dedupe` re-resolves the names it is given
+ * from Vite's **root**, and this config's root is the project root, where React is not installed. It
+ * finds nothing and changes nothing, silently — which is worse than nothing, because it reads as covered.
+ *
+ * **So this plants the second React rather than reading the config's text.** A linked checkout with its
+ * own `node_modules/react` and one package inside it, symlinked into the project exactly as a linked kit
+ * is; a seeded `.tsx` test asserting the project and that package hold one React; and then the same run
+ * again with the alias removed, which must fail. A gate that only asserts the alias is present cannot
+ * tell a rule that resolves from a rule that resolves nothing, and that distinction *is* the bug.
+ *
+ * Only `react` is duplicated. `react-dom` fails the same way and is aliased for the same reason, but one
+ * duplicated package is enough to prove the resolution and a second would prove it twice.
+ */
+describe("one React, however many checkouts the packages live in", () => {
+  /** The line the starter states the rule on. Stripped below, and a miss is a failure rather than a pass. */
+  const ALIAS = "resolve: { alias: ONE_REACT },";
+
+  // Empty until `beforeAll` says otherwise, so the teardown below removes nothing it never made.
+  let linked = "";
+  let config = "";
+  let configPath = "";
+  let seeded = "";
+
+  beforeAll(async () => {
+    linked = await mkdtemp(join(tmpdir(), "pithy-linked-"));
+
+    // The second React. It only has to be a package named `react` that the resolver reaches first from
+    // inside this checkout — what the assertion reads is whether the project's real one displaced it.
+    const second = join(linked, "node_modules", "react");
+    await mkdir(second, { recursive: true });
+    await writeFile(
+      join(second, "package.json"),
+      JSON.stringify({ name: "react", version: "19.2.8", type: "module", main: "index.js" }),
+    );
+    await writeFile(join(second, "index.js"), "export const theOtherCheckoutsCopy = true;\n");
+
+    // The linked package, shaped like a kit package: raw TypeScript reached through a `./src/*` export.
+    const widget = join(linked, "widget");
+    await mkdir(join(widget, "src"), { recursive: true });
+    await writeFile(
+      join(widget, "package.json"),
+      JSON.stringify({ name: "linked-widget", version: "0.0.0", type: "module", exports: { "./src/*": "./src/*.ts" } }),
+    );
+    await writeFile(
+      join(widget, "src", "hook.ts"),
+      'import * as React from "react";\n\nexport const reactTheLinkedPackageGot = React;\n',
+    );
+    await symlink(widget, join(dir, "node_modules", "linked-widget"));
+
+    // A `.tsx` test, because `.tsx` is what a front end's tests are and what the node project had to be
+    // taught to collect (#245). It renders nothing: two module namespaces either are one object or are not.
+    seeded = join(dir, "apps", WORKER, "src", "one-react.test.tsx");
+    await writeFile(
+      seeded,
+      [
+        'import * as React from "react";',
+        'import { reactTheLinkedPackageGot } from "linked-widget/src/hook";',
+        'import { expect, test } from "vitest";',
+        "",
+        'test("the linked package and this project hold one React", () => {',
+        '  expect(typeof React.useMemo).toBe("function");',
+        "  expect(reactTheLinkedPackageGot.useMemo).toBe(React.useMemo);",
+        "});",
+        "",
+      ].join("\n"),
+    );
+
+    configPath = join(dir, "vitest.config.ts");
+    config = await readFile(configPath, "utf8");
+  }, 60_000);
+
+  afterAll(async () => {
+    if (seeded !== "") await rm(seeded, { force: true });
+    if (linked !== "") {
+      await rm(join(dir, "node_modules", "linked-widget"), { force: true });
+      await rm(linked, { recursive: true, force: true });
+    }
+    // Restored whatever happened above, so nothing added after this block inherits a stripped config.
+    if (config !== "") await writeFile(configPath, config);
+  });
+
+  test("a linked package resolves the project's React, not the one beside it", async () => {
+    const { code, output } = await run(dir, vitest(dir), ["run", "--project=node", "--reporter=verbose", "one-react"]);
+    expect({ code, output }).toMatchObject({ code: 0 });
+    // `passWithNoTests` is on, so a filter that matched nothing would exit 0 with the whole gate unrun.
+    expect(output, "the seeded runner never collected one-react.test.tsx").toContain("one-react.test.tsx");
+  }, 180_000);
+
+  test("and the alias is what does it — remove it and the second copy wins", async () => {
+    // The half that separates a rule which resolves from a rule which resolves nothing. Without it this
+    // file would pass just as happily against `resolve: { dedupe: [...] }`, which is the defect.
+    const stripped = config.replace(ALIAS, "");
+    expect(stripped, `templates/starter/vitest.config.ts no longer states \`${ALIAS}\``).not.toBe(config);
+    await writeFile(configPath, stripped);
+    try {
+      const { code, output } = await run(dir, vitest(dir), ["run", "--project=node", "one-react"]);
+      expect({ code, output }).not.toMatchObject({ code: 0 });
+      // Failed for the stated reason, not because the run fell over. A config that no longer loads, or a
+      // runner that never started, would satisfy a bare non-zero and prove nothing at all.
+      expect(output).toContain("one-react.test.tsx");
+      expect(output).toContain("the linked package and this project hold one React");
+    } finally {
+      await writeFile(configPath, config);
+    }
+  }, 180_000);
+});
+
+/**
+ * **The three answers the fixture above never reaches (#447).**
+ *
+ * `oneReact` in `templates/starter/vitest.config.ts` walks `apps/*` in name order and takes the first
+ * Worker that resolves both React packages. The scaffolded fixture has one Worker and resolves it on the
+ * first iteration, so three of the function's four exits run in no gate: no `apps/` at all, a Worker that
+ * resolves nothing and is skipped, and no Worker resolving anything. An unrun `continue` is the same
+ * defect the alias exists to fix — a rule that reads as covered while resolving nothing.
+ *
+ * **And an empty `apps/<name>/` added to that fixture would not reach them.** Node resolves outward, the
+ * link farm puts React in the project's own `node_modules`, and hoisting to the root is what npm and pnpm
+ * do — so *every* directory under `apps/` resolves React there and the skip never happens. The skip is
+ * real in the other layout, Bun's, where a workspace member's dependencies sit beside the member and a
+ * Worker with no front end genuinely has no React above it. That is the layout built here.
+ *
+ * So this copies the template into throwaway roots and imports it. `PROJECT_ROOT` is that file's own
+ * directory, which is what makes a copy a different project; each root holds a `node_modules` with
+ * `vitest` alone, enough for the config's own import and deliberately no React, so nothing above `apps/`
+ * answers. The exported config's alias list is the whole assertion — nothing is spawned, nothing is run.
+ */
+describe("the starter's alias when there is no React to point at", () => {
+  /** `vitest` where this test file resolves it, which is the copy the copied config will import. */
+  const VITEST = dirname(createRequire(import.meta.url).resolve("vitest/package.json"));
+
+  const roots: string[] = [];
+
+  /** A throwaway project root holding the starter's `vitest.config.ts` and nothing that resolves React. */
+  async function starterRoot(): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), "pithy-onereact-"));
+    roots.push(root);
+    await mkdir(join(root, "node_modules"), { recursive: true });
+    await symlink(VITEST, join(root, "node_modules", "vitest"));
+    await cp(join(REPO, "templates", "starter", "vitest.config.ts"), join(root, "vitest.config.ts"));
+    return root;
+  }
+
+  /** The alias rules the copied config resolved, read off the `node` project it is stated on. */
+  async function aliasIn(root: string): Promise<{ find: RegExp; replacement: string }[]> {
+    const module = (await import(join(root, "vitest.config.ts"))) as {
+      default: { test: { projects: [{ resolve: { alias: { find: RegExp; replacement: string }[] } }] } };
+    };
+    return module.default.test.projects[0].resolve.alias;
+  }
+
+  /** A Worker with a front end: both packages beside it, as a workspace install leaves them. */
+  async function withReact(worker: string): Promise<void> {
+    for (const name of ["react", "react-dom"]) {
+      const pkg = join(worker, "node_modules", name);
+      await mkdir(pkg, { recursive: true });
+      await writeFile(join(pkg, "package.json"), JSON.stringify({ name, version: "19.2.8", main: "index.js" }));
+    }
+  }
+
+  afterAll(async () => {
+    for (const root of roots) await rm(root, { recursive: true, force: true });
+  });
+
+  test("a project with no apps/ at all resolves nothing, and does not throw doing it", async () => {
+    // The defensive exit, and a scaffolded project never reaches it: `scaffoldProject` copies the whole
+    // starter in one pass, `apps/api/` included, so the config and a Worker land together. What reaches
+    // it is a config copied into a project that has no `apps/` yet — an adopter pasting the block in by
+    // hand, following docs/UI.md § One React. Empty rather than a throw, because this file is the
+    // adopter's and a missing directory is not a reason to fail their whole suite.
+    expect(await aliasIn(await starterRoot())).toEqual([]);
+  });
+
+  test("a Worker with no React is skipped, and the next one answers", async () => {
+    // The `continue`, and the reason the loop is a loop. `admin` sorts before `board` and has no front
+    // end; a function that took the first *directory* rather than the first that resolves would alias
+    // nothing here and leave every `.tsx` test on whatever the linked checkout brought.
+    const root = await starterRoot();
+    await mkdir(join(root, "apps", "admin"), { recursive: true });
+    await mkdir(join(root, "apps", "board"), { recursive: true });
+    await withReact(join(root, "apps", "board"));
+
+    const alias = await aliasIn(root);
+    expect(alias).toHaveLength(4);
+    for (const rule of alias) {
+      expect(rule.replacement, "the alias points somewhere other than the Worker that has React").toContain(
+        join("apps", "board", "node_modules"),
+      );
+    }
+  });
+
+  test("apps/ with no React anywhere under it resolves nothing", async () => {
+    // The exit after the loop. A backend-only project has Workers and no client, and this file is in it
+    // either way — silence is the answer, and it is asserted rather than assumed.
+    const root = await starterRoot();
+    await mkdir(join(root, "apps", "admin"), { recursive: true });
+    expect(await aliasIn(root)).toEqual([]);
+  });
 });

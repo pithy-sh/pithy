@@ -80,8 +80,8 @@ const LEDGER: Record<string, Held> = {
       "Nothing reads anything it declares. Since #394 the mount node is created in src/client.tsx; the id set on it is a styling hook that no code looks up, and there is no second string left to disagree with.",
   },
   "vite.config.ts": {
-    keptGate: "packages/cli/src/project/scaffoldGates.test.ts",
-    why: '#391 item H, closed by #399, and the second clause in its other shape. `persistState: "../../.wrangler/state"` is a depth: right relative to `apps/<worker>/` and wrong anywhere else, and a wrong one silently gives two Workers separate copies of one database. A unit test over the template can only assert the string reads as written, which a rename of the layout sails through. So the gate resolves it — from a scaffolded project\'s real `apps/<worker>/` against the store `pithy seed` uses — and that needs a scaffolded project, which is not something a seeded `vitest run` has.',
+    ungated:
+      'Two invariants in one file since #447, and one of them is a decline — so the entry is one, rather than a wall stated over a rule that has none. The first is `persistState: "../../.wrangler/state"`, #391 item H, closed by #399: a depth, right relative to `apps/<worker>/` and wrong anywhere else, and a wrong one silently gives two Workers separate copies of one database. That one is held from outside, at `packages/cli/src/project/scaffoldGates.test.ts`, because resolving it needs a scaffolded project and a seeded `vitest run` has not got one — the two tsconfig entries below name the same kept gate and keep its path from rotting. The second is `resolve.dedupe: ["react", "react-dom"]`, without which a linked checkout gives the Worker a second React and the first kit component mounted throws `invalid hook call` at a stack that blames the component. Neither wall covers it: the party who can break it is the adopter, and a seeded test reading this file\'s text would run perfectly well. It is declined because the text is all such a test could see. The rule protects Vite\'s resolution, and the runner that would host the test is the project\'s own `vitest.config.ts` — an inline `node` project collecting `apps/*/src/**` that never loads this file — so a `.tsx` test proving one React proves that config\'s alias and says nothing about this one. What is left is a string match over a config the adopter is expected to edit, which refuses a Worker stating the same rule another way (an explicit alias, a shared config it imports) and fails a correct build over the spelling of a setting that is theirs. The loss is real and is the point of writing it here: delete the line and the second React comes back, silently, until something from the kit renders. `packages/cli/src/ui/react.test.ts` keeps the kit from shipping the line missing and `docs/UI.md` § One React tells an older project to paste it in, and neither notices a deletion afterwards.',
   },
   "tsconfig.client.json": {
     keptGate: "packages/cli/src/project/scaffoldGates.test.ts",
@@ -284,16 +284,18 @@ describe("a seeded gate does not write down the value it is checking", () => {
       ).toBeGreaterThan(80);
       checked += 1;
     }
-    // Seven: the ambient declarations, both halves of the palette, the three build contracts #399
-    // moved to the scaffolder's suite, and the bare home screen #400 made one statement.
-    expect(checked, "the kept-gate sweep no longer reads every such gate the ledger names").toBeGreaterThanOrEqual(7);
+    // Six: the ambient declarations, both halves of the palette, two of the three build contracts #399
+    // moved to the scaffolder's suite, and the bare home screen #400 made one statement. `vite.config.ts`
+    // was the third of those until #447 added a second invariant to it that no wall accounts for; its
+    // entry is a decline now, and it is read by the sweep above rather than by this one.
+    expect(checked, "the kept-gate sweep no longer reads every such gate the ledger names").toBeGreaterThanOrEqual(6);
   });
 });
 
 describe("the floors", () => {
   test("the tree is the size the ledger was written about", () => {
     // Near-exact rather than comfortable: twenty-two subjects across three groups and two home
-    // variants, held by five seeded gates and seven kept ones. A manifest that collapsed under either
+    // variants, held by five seeded gates and six kept ones. A manifest that collapsed under either
     // sweep above would make it vacuous, and a floor set well below the real population is the shape of
     // a guard rather than one.
     expect(SUBJECTS.length).toBeGreaterThanOrEqual(22);
