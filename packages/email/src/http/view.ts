@@ -43,6 +43,19 @@ import type { EmailJobDetail, EmailJobListItem, EmailSuppressionView } from "./r
  *
  * The suppression list is the deliberate exception: an address *is* the record there, so masking it
  * would leave a list of blocks nobody could act on. That is exactly why reading it is its own scope.
+ *
+ * ## Structural on the list, rendered on the detail
+ *
+ * The line the list holds is not "less data" — it is *kind* of data. `template`, `category`, `mode`,
+ * `bounceType` and `locale` each name what a message was, and none of them carries a character of what
+ * it said or of who read it, so a hundred of them in one response is a hundred facts about this
+ * project rather than a hundred facts about people. `subject` is the other kind. It is rendered copy,
+ * it routinely names the recipient's own order or their own document, and it stays beside the whole
+ * address on the detail route, where the disclosure is one job at a time and the audit trail names it.
+ *
+ * `locale` earns the list on exactly that test. "Why is half this account getting English" is a
+ * question about a page of rows, and answering it through the detail route means a hundred audited
+ * disclosures of a hundred addresses to render one column.
  */
 
 /**
@@ -76,6 +89,7 @@ export function jobListView(job: EmailJob): EmailJobListItem {
     recipient: maskAddress(job.toAddress),
     template: job.template,
     category: job.category,
+    locale: job.locale ?? null,
     status: job.status,
     mode: job.mode,
     attempts: job.attempts,
@@ -100,7 +114,6 @@ export function jobDetailView(job: EmailJob): EmailJobDetail {
     messageId: job.messageId ?? null,
     error: job.error ?? null,
     bounceCode: job.bounceCode ?? null,
-    locale: job.locale ?? null,
     timezone: job.timezone ?? null,
     localTime: job.localTime ?? null,
     openTracking: job.openTracking,
