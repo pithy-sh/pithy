@@ -120,6 +120,11 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     // the config records. The gate lives in `baseURLResolver` and nowhere else; outside `dev` this is
     // `cfg.baseURL`, unchanged. Resolved here because the instance is itself built per request.
     baseURL: baseURLResolver(cfg.baseURL)(c.req.raw),
+    // The language this request negotiated, for the translator plugin. `c.var.locale` is the project's
+    // own chain already resolved — never a second negotiation of Better Auth's, which would let the
+    // screens and the refusals disagree about who is reading (#452). `null` when nothing negotiated,
+    // which is every project that does not compose `i18n`, and which means English.
+    locale: c.var.locale?.catalogLocale ?? null,
     basePath: cfg.basePath,
     trustedOrigins: cfg.trustedOrigins,
     google,

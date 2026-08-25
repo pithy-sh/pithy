@@ -588,3 +588,69 @@ describe("a refused sign-in", () => {
     expect(events.filter((event) => event.outcome === "denied")).toEqual([]);
   });
 });
+
+/**
+ * Better Auth's refusals, in the reader's language (#452).
+ *
+ * The last English sentences on an otherwise translated screen, and met by the most ordinary mistake
+ * there is. `@better-auth/i18n` substitutes the message server-side for a code it has words for, which
+ * is the one place these can be translated at all: Better Auth answers its own routes before anything
+ * of ours sees the failure, so there is no `PithyError` for the client seam to key on.
+ *
+ * The locale is `c.var.locale`, the project's own negotiated chain — never a second one of the
+ * plugin's. A reader who chose Spanish with `?lang=es` must not get Spanish screens and English errors.
+ */
+describe("a refusal in the reader's language", () => {
+  /** A wrong one-time code, with a locale already negotiated onto the request. */
+  async function badOtp(locale: string | null): Promise<Response> {
+    const app = new Hono<PithyHonoEnv>();
+    app.onError(pithyErrorHandler);
+    app.use("*", async (c, next) => {
+      c.set("emit", noopEmit);
+      c.set("auth", null);
+      // What `@pithy-sh/i18n`'s middleware publishes when it is composed, and `null` when it is not.
+      c.set("locale", locale === null ? null : { catalogLocale: locale, formattingLocale: locale, direction: "ltr" });
+      await next();
+    });
+    const wiring = buildWiring();
+    publishSameOrigin(wiring)(app);
+    app.use(`${wiring.config.basePath}/*`, createRateLimitMiddleware(wiring.config.rateLimiterBinding));
+    createSessionMiddleware(wiring)(app);
+    createAuthRoutes(wiring)(app);
+
+    return await app.request(
+      "/auth/sign-in/email-otp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "http://localhost" },
+        body: JSON.stringify({ email: "lector@example.test", otp: "000000" }),
+      },
+      appEnv(),
+    );
+  }
+
+  test("a Spanish reader is refused in Spanish", async () => {
+    const body = await (await badOtp("es")).json<{ message?: string; code?: string; originalMessage?: string }>();
+    expect(body.message).toBe("El código no es válido.");
+    // The code is untouched — it is the machine-readable half, and what a screen or a client matches on.
+    expect(body.code).toBe("INVALID_OTP");
+    // And the English survives beside it, for whoever reads a log rather than a screen.
+    expect(body.originalMessage).toBe("Invalid OTP");
+  });
+
+  test("a project that negotiated nothing is byte-identical to before", async () => {
+    // The capability's absence is not a special case: `c.var.locale` is null in every project that
+    // never composed `i18n`, and those read exactly what they read before this landed.
+    const body = await (await badOtp(null)).json<{ message?: string; code?: string }>();
+    expect(body).toEqual({ message: "Invalid OTP", code: "INVALID_OTP" });
+  });
+
+  test("a language nobody wrote falls back to English rather than to nothing", async () => {
+    const body = await (await badOtp("ja")).json<{ message?: string; code?: string }>();
+    // `ja` is a language the plugin ships but for which nobody wrote `INVALID_OTP`, so the sentence
+    // falls through to the English. A missing key must never render as blank or as the code itself.
+    expect(typeof body.message).toBe("string");
+    expect(body.message).not.toBe("");
+    expect(body.message).not.toBe("INVALID_OTP");
+  });
+});

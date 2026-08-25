@@ -18,8 +18,10 @@ const deps = {
 };
 
 describe("kitPlugins()", () => {
-  test("composes exactly the four the kit promises, in a stable order", () => {
-    expect(kitPlugins(deps).map((plugin) => plugin.id)).toEqual(["bearer", "jwt", "magic-link", "email-otp"]);
+  test("composes exactly the set the kit promises, in a stable order", () => {
+    // `i18n` leads, and the order is the point rather than a detail: it translates the refusals of the
+    // plugins registered around it, so one composed ahead of it would answer in English regardless.
+    expect(kitPlugins(deps).map((plugin) => plugin.id)).toEqual(["i18n", "bearer", "jwt", "magic-link", "email-otp"]);
   });
 
   test("KIT_PLUGIN_IDS is what kitPlugins() actually returns — the guard cannot drift from the set", () => {
@@ -27,8 +29,10 @@ describe("kitPlugins()", () => {
   });
 
   test("jwt keeps the pithy-prefixed jwks model — a plugin list must not rename the kit's own table", () => {
-    const jwtPlugin = kitPlugins(deps).find((plugin) => plugin.id === "jwt");
-    const schema = jwtPlugin?.schema as Record<string, { modelName?: string }> | undefined;
+    const jwtPlugin = kitPlugins(deps).find((plugin) => plugin.id === "jwt") as
+      | { schema?: Record<string, { modelName?: string }> }
+      | undefined;
+    const schema = jwtPlugin?.schema;
     expect(schema?.jwks?.modelName).toBe("pithyAuthJwks");
   });
 });

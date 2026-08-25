@@ -96,7 +96,7 @@ export type SendAuthEmail = (message: AuthEmailMessage) => Promise<void>;
  * Everything the Better-Auth instance needs, resolved per invocation from config + request env.
  *
  * Generic in the adopter's plugin tuple so the composed instance's type — and therefore its `$Infer`
- * surface — reflects what was actually composed rather than only the kit's four.
+ * surface — reflects what was actually composed rather than only the kit's own.
  */
 export interface AuthInstanceDeps<Plugins extends readonly BetterAuthPlugin[] = readonly BetterAuthPlugin[]>
   extends ResolvedProviders {
@@ -115,6 +115,13 @@ export interface AuthInstanceDeps<Plugins extends readonly BetterAuthPlugin[] = 
   // precondition: `db` and `secret` above fail the whole instance, and a provider does not (#381).
   /** Deliver a magic link or OTP. Enqueues an email job; never sends inline. */
   sendEmail: SendAuthEmail;
+  /**
+   * The catalog locale this request negotiated, or `null` when nothing did.
+   *
+   * Threaded through to the translator plugin, which is what puts Better Auth's own refusals in the
+   * reader's language (#452). An instance is built per request, so this is that request's locale.
+   */
+  locale?: string | null;
   /** Session lifetime in seconds. */
   sessionExpiresIn: number;
   /** How often (seconds) an active session's expiry slides forward. */
@@ -129,7 +136,7 @@ export interface AuthInstanceDeps<Plugins extends readonly BetterAuthPlugin[] = 
   emit: AuditEmit;
   /**
    * The adopter's additional Better Auth plugins, from `auth({ plugins: [...] })`. Composed **after**
-   * the kit's four, never in place of one — `assertAdditivePlugins` has already refused a list that
+   * the kit's own, never in place of one — `assertAdditivePlugins` has already refused a list that
    * names one of them.
    */
   plugins: Plugins;
