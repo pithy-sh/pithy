@@ -76,6 +76,39 @@ describe("support capability", () => {
     expect(bindings.SUPPORT_CLASSIFY).toMatchObject({ type: "workflow", optional: true });
   });
 
+  test("declares no bucket when nothing this Worker composes would write to one", () => {
+    // The manifest cannot vary with config, so `SUPPORT_BUCKET` is declared `optional` there; the
+    // composed instance is what says whether this Worker needs it, and `effectiveBindings` in the CLI
+    // reads exactly that. Declaring it unconditionally made `pithy upgrade` write six R2 stanzas
+    // across three environments for an inbox that never writes an object, and `pithy doctor` report
+    // them missing forever once they were deleted by hand (#440).
+    const bindings = support({
+      inboundAddresses: INBOUND,
+      attachments: { enabled: false, retainRaw: false },
+      submission: { attachments: { enabled: false } },
+    }).requiredBindings;
+    expect(bindings.map((binding) => binding.name)).not.toContain("SUPPORT_BUCKET");
+    // DB and the workflow are untouched by the bucket question.
+    expect(bindings.map((binding) => binding.name)).toEqual(["DB", "SUPPORT_CLASSIFY"]);
+  });
+
+  test("any one of the three writers is enough to declare it", () => {
+    // Three independent settings put bytes in that bucket, and each was worth a case: mail
+    // attachments (`ingest.ts:200`), the raw MIME copy (`ingest.ts:346`), and an in-app submission's
+    // files (`submit.ts:268`). The third is the one a two-flag predicate misses, which is what
+    // `supportProvisioner` did — it would skip creating a bucket that submissions then wrote to.
+    const declares = (options: Parameters<typeof support>[0]) =>
+      support({ inboundAddresses: INBOUND, ...options }).requiredBindings.some(
+        (binding) => binding.name === "SUPPORT_BUCKET",
+      );
+    const off = { attachments: { enabled: false, retainRaw: false }, submission: { attachments: { enabled: false } } };
+    expect(declares({ ...off, attachments: { enabled: true, retainRaw: false } })).toBe(true);
+    expect(declares({ ...off, attachments: { enabled: false, retainRaw: true } })).toBe(true);
+    expect(declares({ ...off, submission: { attachments: { enabled: true } } })).toBe(true);
+    // And the all-off build really is off, or the three cases above prove nothing.
+    expect(declares(off)).toBe(false);
+  });
+
   test("depends on secrets, because attachment presigning reads an R2 credential through it", () => {
     expect(composed().dependsOn).toContain("secrets");
   });

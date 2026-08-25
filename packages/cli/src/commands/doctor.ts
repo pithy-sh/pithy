@@ -7,7 +7,13 @@ import { platform as osPlatform, release as osRelease } from "node:os";
 import { join } from "node:path";
 import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
-import { type BuildReconcilePlanOptions, buildReconcilePlan, type ReconcilePlan } from "../capabilities/reconcile";
+import {
+  type BindingDeclines,
+  type BuildReconcilePlanOptions,
+  buildReconcilePlan,
+  type ReconcilePlan,
+  undeclinableReason,
+} from "../capabilities/reconcile";
 import { pithyOffline } from "../cloudflare/config";
 import { type CloudflareAccess, checkCloudflareAccess, describeCloudflareAccess } from "../doctor/cloudflare";
 import { checkDevPreferences, type DevPreferencesCheck, describeDevPreferences } from "../doctor/devPreferences";
@@ -797,7 +803,14 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
       // function. A doctor that counted pending migrations against one account and named another in the
       // line beside it would be two reports in one (#234).
       account,
-      workers: workers.map((worker) => ({ name: worker.name, dir: worker.dir, capabilities: worker.capabilities })),
+      workers: workers.map((worker) => ({
+        name: worker.name,
+        dir: worker.dir,
+        capabilities: worker.capabilities,
+        // Optional-chained because `resolveWorkers` is a test seam: a double that supplies no config
+        // is a Worker that declines nothing, not a crash in the report it was called to produce.
+        config: worker.config,
+      })),
       buildPlan: options.buildPlan,
       readLedger: options.readLedger,
     });
@@ -1143,6 +1156,74 @@ function migrationLines(health: MigrationHealth): string[] {
 }
 
 /** One Worker's five check lines. Every check is shown, so a passing one still reads as checked. */
+/**
+ * The `bindings` lines for a Worker's declined optional bindings.
+ *
+ * Four states, four sentences, in the house shape: state, then the cause in a comma clause, then the
+ * consequence. Each honored decline gets a continuation line rather than a longer first line, because
+ * the reason is the adopter's own text and a fixed-width report cannot budget for it.
+ *
+ * The two refusals name what to do; the stale one names both ways out, because either is correct and
+ * only the adopter knows which they meant.
+ */
+/** Whether any Worker in the project has something to say about a declined binding. */
+function projectHasDeclines(health: ProjectHealth): boolean {
+  return health.workers.some((worker) => worker.state !== "unavailable" && hasDeclines(worker));
+}
+
+/** Whether a Worker's checks carry anything to say about a declined binding. */
+function hasDeclines(worker: WorkerChecks): boolean {
+  const declines = worker.bindings.declinedBindings;
+  return declines.state === "invalid" || declines.declines.length > 0;
+}
+
+function declineLines(declines: BindingDeclines): string[] {
+  if (declines.state === "invalid") {
+    return ["`declinedBindings` in pithy.config.ts cannot be read", `${HEALTH_CONT}${declines.problem}`];
+  }
+  return declines.declines.flatMap((decline) => {
+    switch (decline.state) {
+      case "honored":
+        return [
+          `${decline.name} (${decline.type}) declined in pithy.config.ts — ${decline.reason}`,
+          `${HEALTH_CONT}${decline.capability} takes its optional path.${
+            decline.stillPresentIn.length === 0
+              ? ""
+              : ` Still in wrangler.jsonc for ${decline.stillPresentIn.join(", ")}.`
+          }`,
+        ];
+      case "required":
+        return [
+          `${decline.name} (${decline.type}) declined in pithy.config.ts, and ${decline.capability} requires it`,
+          `${HEALTH_CONT}A required binding is never left out. Remove the line.`,
+        ];
+      case "undeclinable":
+        // The second line has to fit the kind. It said "run provision" for a Durable Object, which is
+        // wrong on both halves: no capability exposes a DO provision command, and the reason a Durable
+        // Object is refused is the write-once class migration tag, not provisioning.
+        return [
+          `${decline.name} (${decline.type}) declined in pithy.config.ts, and this kind cannot be declined`,
+          `${HEALTH_CONT}${undeclinableReason(decline.type)} ${
+            decline.type === "durable_object"
+              ? "Remove the line."
+              : `Run \`pithy ${decline.capability} provision\`, or remove the line.`
+          }`,
+        ];
+      case "unrecognized":
+        return [
+          `${decline.name} declined in pithy.config.ts, and nothing here declares it`,
+          `${HEALTH_CONT}Nothing is being left out for it. Delete the line, or fix the name.`,
+        ];
+    }
+    // Unreachable: the switch covers `BindingDecline` exhaustively. `satisfies never` is what keeps it
+    // that way — a fifth decline state stops compiling here rather than silently printing nothing about
+    // itself, which for a report whose whole purpose is not being silent would be the worst failure it
+    // could have.
+    decline satisfies never;
+    return [];
+  });
+}
+
 function workerHealthLines(health: WorkerChecks): string[] {
   const lines: string[] = [];
 
@@ -1172,23 +1253,37 @@ function workerHealthLines(health: WorkerChecks): string[] {
     for (const cap of rest) lines.push(`${HEALTH_CONT}${cap.capability}: ${cap.keys.join(", ")}`);
   }
 
+  // **One accumulator, labeled by whether anything has been written yet.** Three lists share the
+  // `bindings` label now, and the `index === 0 && previousList.length === 0` arithmetic that carried
+  // two of them does not extend to a third — each new list would have to know the length of every list
+  // before it. `bindingLine` asks the only question the label actually turns on.
+  const bindingLines: string[] = [];
+  const bindingLine = (text: string) =>
+    bindingLines.push(healthLine(bindingLines.length === 0 ? "bindings" : "", text));
+
   if (health.bindings.ok) {
-    lines.push(healthLine("bindings", "all required bindings present ✓"));
+    bindingLine("all required bindings present ✓");
   } else {
-    health.bindings.missing.forEach((binding, index) => {
-      const label = index === 0 ? "bindings" : "";
-      lines.push(healthLine(label, `${binding.name} (${binding.type}) missing from wrangler.jsonc`));
-      lines.push(`${HEALTH_CONT}env: ${binding.envs.join(", ")}`);
-    });
+    for (const binding of health.bindings.missing) {
+      bindingLine(`${binding.name} (${binding.type}) missing from wrangler.jsonc`);
+      bindingLines.push(`${HEALTH_CONT}env: ${binding.envs.join(", ")}`);
+    }
     // The other half of a Durable Object binding, and the half that lives in the adopter's code.
     // wrangler resolves `class_name` against the module `main` names, so a class missing there is a
     // deploy this project cannot make — reported under `bindings` because it is one binding written in
     // two files (#428).
-    health.bindings.missingExports.forEach((className, index) => {
-      const label = index === 0 && health.bindings.missing.length === 0 ? "bindings" : "";
-      lines.push(healthLine(label, `${className} not exported from this worker's entry — run \`pithy upgrade\``));
-    });
+    for (const className of health.bindings.missingExports) {
+      bindingLine(`${className} not exported from this worker's entry — run \`pithy upgrade\``);
+    }
   }
+  // Declines print whether or not the checks above passed, and that is the whole point: a binding an
+  // adopter deliberately left out is invisible on a green report otherwise, and the next person cannot
+  // tell "chosen" from "never heard of it" (#440).
+  for (const line of declineLines(health.bindings.declinedBindings)) {
+    if (line.startsWith(HEALTH_CONT)) bindingLines.push(line);
+    else bindingLine(line);
+  }
+  lines.push(...bindingLines);
 
   if (health.migrations.ok) {
     lines.push(healthLine("migrations", "none pending, none undeclared ✓"));
@@ -1239,7 +1334,11 @@ function healthBlock(health: ProjectHealth): string {
       lines.push(`${HEALTH_INDENT}Its pithy.config.ts or wrangler.jsonc would not read. Nothing below is about it.`);
       continue;
     }
-    if (worker.ok) {
+    // A Worker with a decline is never collapsed to one line, even when every check passes. The
+    // decline is the fact this Worker's operator most needs to see and the one nothing else records —
+    // a `healthy ✓` here is how a deliberate absence becomes indistinguishable from a forgotten one,
+    // which is the collapse #440 exists to remove.
+    if (worker.ok && !hasDeclines(worker)) {
       lines.push(`  ${worker.worker}: healthy ✓`);
       continue;
     }
@@ -1654,7 +1753,12 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     blocks.push(
       ["Project: pithy.config.ts found", capabilitiesBlock(report.project.capabilities, report.offline)].join("\n"),
     );
-    if (!report.project.health.ok) blocks.push(healthBlock(report.project.health));
+    // Or when a Worker declines something. The block is the only place a decline is reported, and a
+    // project whose every check passes is exactly the project a decline is working on — gating the
+    // block on `ok` alone would print the feature's output on every report except the ones it is for.
+    if (!report.project.health.ok || projectHasDeclines(report.project.health)) {
+      blocks.push(healthBlock(report.project.health));
+    }
   } else {
     blocks.push("Project: no pithy.config.ts here — run `pithy init`, or change to a project directory");
   }

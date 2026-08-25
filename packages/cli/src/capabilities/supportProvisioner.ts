@@ -39,6 +39,7 @@ import { deleteR2BucketWithContents } from "./r2Bucket";
 type SupportProvisionModule = typeof import("@pithy-sh/support/src/provision/provisionSupport");
 type SupportResolveModule = typeof import("@pithy-sh/support/src/provision/resolveSupportConfig");
 type SupportCapabilityModule = typeof import("@pithy-sh/support/src/capability");
+type SupportConfigModule = typeof import("@pithy-sh/support/src/config/config");
 
 /** The provisioner seams, referenced by type only so the CLI gains no dependency on the package. */
 type SupportProvisioner = import("@pithy-sh/support/src/provision/provisionSupport").SupportProvisioner;
@@ -46,7 +47,10 @@ type SupportDeprovisioner = import("@pithy-sh/support/src/provision/provisionSup
 type SupportConfig = import("@pithy-sh/support/src/config/config").SupportConfig;
 
 /** Everything `pithy support` loads out of the optional package, in one guarded import. */
-export type SupportModule = SupportProvisionModule & SupportResolveModule & SupportCapabilityModule;
+export type SupportModule = SupportProvisionModule &
+  SupportResolveModule &
+  SupportCapabilityModule &
+  SupportConfigModule;
 
 /**
  * Load `@pithy-sh/support` from the project's own install. The one place the optional dependency is
@@ -55,12 +59,15 @@ export type SupportModule = SupportProvisionModule & SupportResolveModule & Supp
  */
 export async function loadSupport(): Promise<SupportModule> {
   try {
-    const [provision, resolve, capability] = await Promise.all([
+    const [provision, resolve, capability, config] = await Promise.all([
       import("@pithy-sh/support/src/provision/provisionSupport"),
       import("@pithy-sh/support/src/provision/resolveSupportConfig"),
       import("@pithy-sh/support/src/capability"),
+      // `supportNeedsBucket` comes from here. The predicate must be the capability's own — the CLI
+      // holding a second copy is exactly the drift that let provisioning and declaration disagree.
+      import("@pithy-sh/support/src/config/config"),
     ]);
-    return { ...provision, ...resolve, ...capability };
+    return { ...provision, ...resolve, ...capability, ...config };
   } catch (error) {
     throw capabilityLoadError("support", "@pithy-sh/support", error);
   }
@@ -201,15 +208,22 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
   /**
    * Reuse the bucket if it exists, otherwise create it — unless nothing will be written to it.
    *
-   * Gated on attachments **or** raw retention, not attachments alone. The bucket holds both, so
-   * keying only on `attachments.enabled` meant an adopter who turned off attachment storage also,
-   * silently, lost the immutable raw MIME that makes re-parsing and re-sanitizing possible — a
-   * property the message schema documents as load-bearing. Two settings, two reasons to need it.
+   * **Gated on `supportNeedsBucket`, which is the same predicate the capability declares the binding
+   * with.** Three settings put bytes here and each has its own writer: mail attachments, the raw MIME
+   * copy, and an in-app submission's files. This gate asked about the first two and never about the
+   * third, so a project that wanted uploads but no mail attachments got a `SUPPORT_BUCKET` binding
+   * pointing at a bucket nothing had created, and every submitted file was dropped with a warning
+   * (#440). Asking the capability's own predicate is what keeps provisioning and declaration from
+   * drifting again — a fourth writer teaches both at once.
+   *
+   * Why the raw copy earns a flag of its own: keying on `attachments.enabled` alone meant an adopter
+   * who turned off attachment storage also, silently, lost the immutable raw MIME that makes
+   * re-parsing and re-sanitizing possible — a property the message schema documents as load-bearing.
    */
   async ensureBucket(): Promise<{ bucket: string; created: boolean; skipped: boolean }> {
-    const { attachments } = this.#supportConfig;
+    const { supportNeedsBucket } = await loadSupport();
     const name = supportBucketName(this.#project);
-    if (!attachments.enabled && !attachments.retainRaw) {
+    if (!supportNeedsBucket(this.#supportConfig)) {
       return { bucket: name, created: false, skipped: true };
     }
     const existing = await this.#cf.r2Provisioner().findBucketByName(name);

@@ -242,7 +242,7 @@ describe("docs/commands/doctor.md", () => {
   test("pastes exactly the blocks pinned below, and nothing else", () => {
     // An unclassified block, a fourth transcript, or a second sample would be an unpinned example. The
     // page total counts the synopsis too, so a worked example added anywhere lands in one of these.
-    expect(WHAT_BLOCKS).toHaveLength(11);
+    expect(WHAT_BLOCKS).toHaveLength(13);
     expect(EXAMPLE_BLOCKS).toHaveLength(2);
     expect(JSON_SAMPLES).toHaveLength(1);
     expect(fencedBlocks(PAGE)).toHaveLength(WHAT_BLOCKS.length + EXAMPLE_BLOCKS.length + JSON_SAMPLES.length + 1);
@@ -280,6 +280,7 @@ describe("docs/commands/doctor.md", () => {
               ledger: { state: "read", pending: 2, undeclared: [] },
               entitlements: { state: "read", gates: [] },
               missingPrerequisites: [],
+              declinedBindings: { state: "read", declines: [] },
               missingVersionMetadata: false,
             },
           }),
@@ -400,6 +401,71 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
+   * The honored-decline fragment (#440), pinned against a Worker declining an optional binding.
+   *
+   * **The only block on this page produced by a project where every check passes.** That is what makes
+   * it worth pasting and what makes it fragile: two gates in the renderer have to hold for it to appear
+   * at all — the Worker must not collapse to `healthy ✓`, and the health block must be pushed despite
+   * `ok`. A regression in either prints nothing, on exactly the reports the feature exists for, and no
+   * other test on this page would notice because every other block comes from a project in drift.
+   */
+  test("the declined-binding fragment is what the renderer prints for a Worker that declines one", async () => {
+    const report = await buildDoctorReport(
+      docOptions(
+        harness.baseOptions({
+          resolveWorkers: async () => workerSet("dashboard"),
+          buildPlan: planStub({
+            ...cleanPlanFor("dashboard"),
+            declinedBindings: {
+              state: "read",
+              declines: [
+                {
+                  state: "honored",
+                  name: "SUPPORT_BUCKET",
+                  type: "r2",
+                  capability: "support",
+                  reason: "no R2 in this account yet",
+                  stillPresentIn: ["dev", "staging", "prod"],
+                },
+              ],
+            },
+          }),
+        }),
+      ),
+    );
+    const fragment = FRAGMENTS[3];
+    if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the declined-binding fragment.`);
+    expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  /**
+   * The stale-decline fragment (#440), pinned against a decline naming a binding nothing composes.
+   *
+   * Pasted because it is the one bad state that stays green, and an adopter meeting it needs to know
+   * that: `pithy remove <capability>` produces it, so failing on it would create a red no command could
+   * clear. The page shows both ways out because either is correct and only the adopter knows which.
+   */
+  test("the stale-decline fragment is what the renderer prints for a name nothing declares", async () => {
+    const report = await buildDoctorReport(
+      docOptions(
+        harness.baseOptions({
+          resolveWorkers: async () => workerSet("dashboard"),
+          buildPlan: planStub({
+            ...cleanPlanFor("dashboard"),
+            declinedBindings: {
+              state: "read",
+              declines: [{ state: "unrecognized", name: "SUORT_BUCKET", reason: "typo, kept on purpose" }],
+            },
+          }),
+        }),
+      ),
+    );
+    const fragment = FRAGMENTS[4];
+    if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the stale-decline fragment.`);
+    expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  /**
    * The prereqs fragment (#273), pinned against a Worker composing `auth` with neither peer beside it.
    *
    * The one check in the block that is not drift: `createBackend` refuses to assemble that composition, so
@@ -421,7 +487,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[3];
+    const fragment = FRAGMENTS[5];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the prerequisites fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -452,7 +518,7 @@ describe("docs/commands/doctor.md", () => {
       ],
       manifests: { ok: true, faults: [] },
     };
-    const fragment = FRAGMENTS[4];
+    const fragment = FRAGMENTS[6];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the unchecked-worker fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -480,7 +546,7 @@ describe("docs/commands/doctor.md", () => {
         faults: [{ package: "@pithy-sh/leaderboard", reason: "configOptions[0].key: not a bare identifier" }],
       },
     };
-    const fragment = FRAGMENTS[5];
+    const fragment = FRAGMENTS[7];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the Project health fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -506,7 +572,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[6];
+    const fragment = FRAGMENTS[8];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the unknown-alias fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -532,7 +598,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[7];
+    const fragment = FRAGMENTS[9];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the offline fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -580,7 +646,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[8];
+    const fragment = FRAGMENTS[10];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the settings fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -604,7 +670,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[9];
+    const fragment = FRAGMENTS[11];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the local delivery fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });

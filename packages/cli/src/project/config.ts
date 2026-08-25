@@ -215,6 +215,145 @@ export interface WorkerConfig {
    * import, because this file is the adopter's own TypeScript and nothing else checks it.
    */
   domains?: unknown;
+  /**
+   * Optional bindings this Worker will not have, each mapped to the reason it will not.
+   *
+   * A capability marks a binding `optional` when its own code has a path for the binding's absence.
+   * Naming one here says this Worker takes that path deliberately: `pithy upgrade` leaves it out of
+   * `wrangler.jsonc`, and `pithy doctor` reports it as declined rather than missing — so a stanza
+   * deleted by hand stays deleted instead of returning on the next upgrade (#440).
+   *
+   * **The capability's own config is the first place to look.** Turning a feature off is a better
+   * answer than declining its binding, because the capability then declares nothing and there is
+   * nothing to decline. This is for the case where the feature is on and the resource is deliberately
+   * not provisioned.
+   *
+   * Typed `unknown` for the same reason {@link WorkerConfig.domains} is, and read through
+   * {@link readDeclinedBindings} — which reports rather than throws, because `pithy doctor` must
+   * still produce a report for a Worker whose declaration is malformed.
+   */
+  declinedBindings?: unknown;
+}
+
+/**
+ * The reason a Worker gives for declining an optional binding.
+ *
+ * **Required, and that is the feature.** A silent omission is what existed before #440 and is
+ * indistinguishable from having forgotten; `pithy doctor` prints this back on every run, so the next
+ * person reads why rather than guessing whether the absence was a choice. Single-line and bounded
+ * because it lands in a fixed-width terminal report beside the binding it explains.
+ */
+export const DeclineReason = z
+  .string()
+  .trim()
+  .min(1)
+  .max(160)
+  .refine((reason) => !/[\r\n]/.test(reason), { message: "A reason is one line." })
+  .describe(
+    "Why this Worker will not have the binding. Printed back by `pithy doctor` on every run, so write it for the next person: one line, up to 160 characters.",
+  );
+export type DeclineReason = z.infer<typeof DeclineReason>;
+
+/**
+ * A Worker's declined optional bindings — binding name to reason.
+ *
+ * A record rather than an array of objects because the binding name is the key everything downstream
+ * joins on, and a record makes a name declared twice unrepresentable rather than a case to resolve.
+ */
+/**
+ * A Worker env binding name, as a capability declares it and wrangler writes it.
+ *
+ * Its own schema rather than the reason's: keying a record on `DeclineReason` typechecked and held, but
+ * it reported "A reason is one line." about a malformed *key*, silently trimmed `" DB "` into `DB`, and
+ * let a 160-character sentence stand where a binding name belongs. A key and a value are different
+ * things and the failure an adopter reads should say which one they got wrong.
+ *
+ * Shaped the way every binding in the kit is: `SCREAMING_SNAKE_CASE`. That is a real constraint rather
+ * than a style note — an entry that cannot name a binding can only ever resolve `unrecognized`, so
+ * refusing it here turns a line that would be silently inert into one that says so.
+ */
+export const BindingName = z
+  .string()
+  .regex(/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$/, {
+    message: "A binding name is SCREAMING_SNAKE_CASE, like `DB` or `SUPPORT_BUCKET`.",
+  })
+  .max(64)
+  .describe("A Worker env binding name, as the capability declares it — SCREAMING_SNAKE_CASE.");
+export type BindingName = z.infer<typeof BindingName>;
+
+export const DeclinedBindings = z
+  .record(BindingName, DeclineReason)
+  .describe(
+    "Optional bindings this Worker will not have, keyed by binding name. `pithy upgrade` leaves each out of wrangler.jsonc; `pithy doctor` reports it as declined rather than missing.",
+  );
+export type DeclinedBindings = z.infer<typeof DeclinedBindings>;
+
+/**
+ * What a Worker's `declinedBindings` declaration turned out to be.
+ *
+ * `invalid` rather than a throw: `pithy doctor` reads this, and a doctor that refuses to report
+ * because one declaration is malformed is a doctor that goes silent exactly when something is wrong.
+ * `pithy upgrade` turns the same state into a refusal at its own gate, before it writes anything.
+ */
+export type DeclinedBindingsRead =
+  | { state: "read"; declared: DeclinedBindings }
+  | { state: "invalid"; problem: string };
+
+/**
+ * The spellings of `declinedBindings` that are near enough to be a typo rather than an unrelated key.
+ *
+ * Compared on lowercase alphanumerics, so `declinedBinding`, `declineBindings` and `declined_bindings`
+ * all land here. An adopter's own unrelated key is untouched — this only fires on something that was
+ * plainly meant to be this one and would otherwise be ignored in silence, which is the failure mode the
+ * whole feature exists to remove.
+ */
+const DECLINE_NEAR_MISSES = [
+  // The canonical key's own normalization, which catches every case difference and separator an
+  // adopter might reach for: `declined_bindings`, `DeclinedBindings`, `declined-bindings`.
+  "declinedbindings",
+  "declinedbinding",
+  "declinebindings",
+  "declinebinding",
+  "declinedbindingnames",
+];
+
+/** Normalize a config key for near-miss comparison: lowercase, letters and digits only. */
+function normalizeKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * Read a Worker's `declinedBindings` declaration.
+ *
+ * Absent is not an error; it is the ordinary state of every Worker that declines nothing. A key that is
+ * *nearly* `declinedBindings` is an error, because the scaffolded `const config = { … }` is an
+ * unannotated literal — TypeScript accepts the misspelling, nothing reads it, and the binding an
+ * adopter thought they had declined comes back on the next upgrade with no line anywhere saying why.
+ */
+export function readDeclinedBindings(config: WorkerConfig): DeclinedBindingsRead {
+  const record = config as unknown as Record<string, unknown>;
+  const nearMiss = Object.keys(record).find(
+    (key) => key !== "declinedBindings" && DECLINE_NEAR_MISSES.includes(normalizeKey(key)),
+  );
+  if (nearMiss !== undefined) {
+    return {
+      state: "invalid",
+      problem: `\`${nearMiss}\` is not a key this Worker's config declares. Did you mean \`declinedBindings\`?`,
+    };
+  }
+  if (record.declinedBindings === undefined || record.declinedBindings === null) {
+    return { state: "read", declared: {} };
+  }
+  const parsed = DeclinedBindings.safeParse(record.declinedBindings);
+  if (!parsed.success) {
+    return {
+      state: "invalid",
+      problem: parsed.error.issues
+        .map((issue) => `${issue.path.join(".") || "declinedBindings"}: ${issue.message}`)
+        .join("; "),
+    };
+  }
+  return { state: "read", declared: parsed.data };
 }
 
 /**

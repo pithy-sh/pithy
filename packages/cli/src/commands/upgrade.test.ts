@@ -5,8 +5,9 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import type { ReconcileApplied, ReconcilePlan } from "../capabilities/reconcile";
+import { declineRefusal, type ReconcileApplied, type ReconcilePlan } from "../capabilities/reconcile";
 import { scaffoldProject } from "../project/scaffold";
 import upgrade, {
   __test,
@@ -70,6 +71,7 @@ const plan: ReconcilePlan = {
   ledger: { state: "read", pending: 3, undeclared: [] },
   entitlements: { state: "read", gates: [] },
   missingPrerequisites: [],
+  declinedBindings: { state: "read", declines: [] },
   missingVersionMetadata: false,
 };
 
@@ -111,6 +113,7 @@ describe("plan rendering", () => {
       ledger: { state: "read", pending: 0, undeclared: [] },
       entitlements: { state: "read", gates: [] },
       missingPrerequisites: [],
+      declinedBindings: { state: "read", declines: [] },
       missingVersionMetadata: false,
     };
     expect(__test.planLines(clean)).toEqual(["Nothing to upgrade."]);
@@ -176,6 +179,7 @@ describe("worker grouping", () => {
       ledger: { state: "read", pending: 0, undeclared: [] },
       entitlements: { state: "read", gates: [] },
       missingPrerequisites: [],
+      declinedBindings: { state: "read", declines: [] },
       missingVersionMetadata: false,
     };
     const out = __test.renderUpgrade({
@@ -218,6 +222,7 @@ describe("worker grouping", () => {
       ledger: { state: "read", pending: 0, undeclared: [] },
       entitlements: { state: "read", gates: [] },
       missingPrerequisites: [],
+      declinedBindings: { state: "read", declines: [] },
       missingVersionMetadata: false,
     };
     expect(__test.renderUpgrade({ workers: [entry(clean)], manifestFaults: [] })).toEqual([
@@ -457,6 +462,7 @@ describe("manifest faults", () => {
       ledger: { state: "read", pending: 0, undeclared: [] },
       entitlements: { state: "read", gates: [] },
       missingPrerequisites: [],
+      declinedBindings: { state: "read", declines: [] },
       missingVersionMetadata: false,
     };
     expect(__test.renderUpgrade({ workers: [entry(clean)], manifestFaults: [fault] })).toEqual([
@@ -477,6 +483,7 @@ describe("manifest faults", () => {
       ledger: { state: "read", pending: 0, undeclared: [] },
       entitlements: { state: "read", gates: [] },
       missingPrerequisites: [],
+      declinedBindings: { state: "read", declines: [] },
       missingVersionMetadata: false,
     };
     expect(__test.renderUpgrade({ workers: [entry(clean)], manifestFaults: [] })).toEqual([
@@ -614,5 +621,162 @@ describe("runUpgrade — a worker that will not reconcile", () => {
     const partial = __test.workerLines({ state: "unapplied", worker: "collab", plan: { ...plan, worker: "collab" } });
     expect(partial[0]).toBe("Upgrade failed partway. Its wiring may hold part of the plan below.");
     expect(partial[1]).toBe("Check it, then re-run: pithy upgrade --worker collab --env dev.");
+  });
+});
+
+/**
+ * What `pithy upgrade` says about a declined binding (#440).
+ *
+ * Two tenses and one refusal. The refusal is the case worth having a test for: it happens **before the
+ * first write**, and every other failure out of `applyReconcilePlan` reports as "Upgrade failed partway.
+ * Its wiring may hold part of the plan" — a sentence that would send an adopter looking for damage in a
+ * file nothing touched, and that swallows the action line naming the entry to remove.
+ */
+describe("declined bindings", () => {
+  const declining = (declines: ReconcilePlan["declinedBindings"]): ReconcilePlan => ({
+    ...plan,
+    perCapability: [],
+    ejectedSkipped: [],
+    ledger: { state: "read", pending: 0, undeclared: [] },
+    declinedBindings: declines,
+  });
+
+  test("an honored decline is named in both tenses, under the capability that declares it", () => {
+    const built = declining({
+      state: "read",
+      declines: [
+        {
+          state: "honored",
+          name: "SUPPORT_BUCKET",
+          type: "r2",
+          capability: "support",
+          reason: "no R2 yet",
+          stillPresentIn: [],
+        },
+      ],
+    });
+    expect(__test.planLines(built)).toContain("support: SUPPORT_BUCKET (r2) declined in pithy.config.ts. Not written.");
+  });
+
+  test("it sits beside `Nothing to upgrade.`, not instead of it", () => {
+    // A run that wrote nothing did write nothing. The decline says why part of that is true; it does not
+    // contradict it, and an adopter reading only the first line is not misled by either.
+    const lines = __test.planLines(
+      declining({
+        state: "read",
+        declines: [
+          {
+            state: "honored",
+            name: "SUPPORT_BUCKET",
+            type: "r2",
+            capability: "support",
+            reason: "no R2 yet",
+            stillPresentIn: [],
+          },
+        ],
+      }),
+    );
+    expect(lines[0]).toBe("Nothing to upgrade.");
+    expect(lines).toHaveLength(2);
+  });
+
+  test("a stale decline says it is ignored, and nothing else changes", () => {
+    const lines = __test.planLines(
+      declining({ state: "read", declines: [{ state: "unrecognized", name: "GONE", reason: "removed it" }] }),
+    );
+    expect(lines).toContain("declinedBindings: GONE is declined, and nothing here declares it. Ignored.");
+  });
+
+  test("a refusal reports its own problem and action, and never claims a partial write", () => {
+    // The distinction `refused` exists for. `unapplied` means files were opened; this means they were
+    // not, and telling the two apart is the difference between "go inspect your wiring" and "fix one
+    // line".
+    const built = declining({
+      state: "read",
+      declines: [{ state: "required", name: "DB", type: "d1", capability: "auth", reason: "own database" }],
+    });
+    const refusal = declineRefusal(built);
+    expect(refusal).not.toBeNull();
+    const lines = __test.workerLines({
+      state: "refused",
+      worker: "api",
+      plan: built,
+      // biome-ignore lint/style/noNonNullAssertion: asserted non-null on the line above.
+      refusal: refusal!.payload,
+    });
+    expect(lines[0]).toContain("cannot decline");
+    expect(lines.join("\n")).toContain("Remove the entry");
+    expect(lines.join("\n")).toContain("auth requires it");
+    expect(lines.join("\n")).not.toContain("failed partway");
+  });
+
+  test("a refused Worker fails the run, and an honored decline does not", () => {
+    // The exit gate is what CI reads. A decline that is working must not turn every headless run red;
+    // a decline that cannot be honored must not be exited 0 around.
+    const honored = declining({
+      state: "read",
+      declines: [
+        {
+          state: "honored",
+          name: "SUPPORT_BUCKET",
+          type: "r2",
+          capability: "support",
+          reason: "no R2 yet",
+          stillPresentIn: [],
+        },
+      ],
+    });
+    expect(upgradeIncomplete({ workers: [entry(honored, null)], manifestFaults: [] })).toBe(false);
+    expect(
+      upgradeIncomplete({
+        workers: [
+          {
+            state: "refused",
+            worker: "api",
+            plan: honored,
+            // A real payload from the real gate, not a hand-built one: the exit gate must key on the
+            // state rather than on anything about the error, and a fabricated payload could not show that.
+            refusal: new ValidationError({ message: "This Worker declines a binding it cannot decline." }).payload,
+          },
+        ],
+        manifestFaults: [],
+      }),
+    ).toBe(true);
+  });
+});
+
+/**
+ * `--dry-run` and the real run must agree about a refusal (#440 review).
+ *
+ * A dry run's whole job is to predict the write, and a refused decline is the thing that stops it. The
+ * first implementation returned at the dry-run branch *before* asking, so `pithy upgrade --dry-run`
+ * printed "Nothing to upgrade." and exited 0 where the identical un-flagged run exited 1.
+ */
+describe("a refused decline in both tenses", () => {
+  const refusing: ReconcilePlan = {
+    ...plan,
+    perCapability: [],
+    ejectedSkipped: [],
+    ledger: { state: "read", pending: 0, undeclared: [] },
+    declinedBindings: {
+      state: "read",
+      declines: [{ state: "required", name: "DB", type: "d1", capability: "auth", reason: "own database" }],
+    },
+  };
+
+  test("the plan itself carries the refusal, so both paths read one fact", () => {
+    // Neither tense recomputes anything: the refusal is a function of the plan, and the plan is built
+    // once. That is what makes "they agree" structural rather than a pair of code paths kept in step.
+    expect(declineRefusal(refusing)).not.toBeNull();
+    expect(declineRefusal({ ...refusing, declinedBindings: { state: "read", declines: [] } })).toBeNull();
+  });
+
+  test("a refused Worker fails the exit whether or not anything was written", () => {
+    const refusal = declineRefusal(refusing);
+    // biome-ignore lint/style/noNonNullAssertion: asserted non-null in the case above.
+    const result = { state: "refused" as const, worker: "api", plan: refusing, refusal: refusal!.payload };
+    expect(upgradeIncomplete({ workers: [result], manifestFaults: [] })).toBe(true);
+    // And the lines it renders are the refusal's own, in either tense — there is one renderer.
+    expect(__test.workerLines(result).join("\n")).not.toContain("Nothing to upgrade.");
   });
 });

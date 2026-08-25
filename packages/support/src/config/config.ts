@@ -379,3 +379,22 @@ export const SupportConfig = z
   );
 export type SupportConfig = z.output<typeof SupportConfig>;
 export type SupportConfigInput = z.input<typeof SupportConfig>;
+
+/**
+ * Would this configuration ever put a byte in `SUPPORT_BUCKET`?
+ *
+ * **The one place the question is answered, because three independent settings answer it and each has
+ * its own writer.** `attachments.enabled` gates stored mail attachments (`inbound/ingest.ts:200`),
+ * `attachments.retainRaw` gates the raw MIME copy (`inbound/ingest.ts:346`), and
+ * `submission.attachments.enabled` gates an in-app submission's files (`submission/submit.ts:268`).
+ * All three default `true`, so the ordinary project is unaffected by this predicate existing.
+ *
+ * Two callers, and they must agree: `capability.ts` declares the binding only when this is true, and
+ * `pithy support provision` creates the bucket only when this is true. They disagreed before #440 —
+ * the provisioner asked about `enabled` and `retainRaw` and never about submissions, so a project that
+ * wanted uploads but no mail attachments got a binding pointing at a bucket nothing had created, and
+ * every submitted file was dropped with a warning. One predicate is what makes that unrepresentable.
+ */
+export function supportNeedsBucket(config: SupportConfig): boolean {
+  return config.attachments.enabled || config.attachments.retainRaw || config.submission.attachments.enabled;
+}

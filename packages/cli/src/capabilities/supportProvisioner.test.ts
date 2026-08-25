@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
-import { SupportConfig } from "@pithy-sh/support/src/config/config";
+import { SupportConfig, type SupportConfigInput } from "@pithy-sh/support/src/config/config";
 import { supportRoutingRuleName, supportWorkerName } from "@pithy-sh/support/src/provision/provisionSupport";
 import { resolveSupportConfig } from "@pithy-sh/support/src/provision/resolveSupportConfig";
 import { parse } from "comment-json";
@@ -45,21 +45,25 @@ function fakeCf() {
   return { cf, findBucketByName, createBucket, ensureWorkerRoute, removeWorkerRoute };
 }
 
-function provisioner(cf: CloudflareClients, events: CliAuditEvent[], overrides?: RoutingSlice) {
+function provisioner(cf: CloudflareClients, events: CliAuditEvent[], overrides?: ProvisionerSlice) {
+  const { supportConfig, ...rest } = overrides ?? {};
   return new CloudflareSupportProvisioner({
     cf,
     project: PROJECT,
     account: { accountId: "acct-1", confirmation: "pinned" },
     apiToken: "tok",
-    supportConfig: SupportConfig.parse({}),
+    supportConfig: SupportConfig.parse(supportConfig ?? {}),
     resolveEnv: async () => ({ appDatabaseId: "app-db" }),
-    ...overrides,
+    ...rest,
     audit: async (event) => void events.push(event),
   });
 }
 
-/** Only the routing slice varies between the cases below. */
-type RoutingSlice = { routing?: { zoneId: string; address: string; appWorkerName: string } };
+/** Only the routing slice and the support config vary between the cases below. */
+type ProvisionerSlice = {
+  routing?: { zoneId: string; address: string; appWorkerName: string };
+  supportConfig?: SupportConfigInput;
+};
 
 describe("names", () => {
   test("the bucket is one per project, shared across that project's environments", () => {
@@ -91,6 +95,48 @@ describe("ensureBucket", () => {
     expect(findBucketByName).toHaveBeenCalledWith(supportBucketName(PROJECT));
     expect(createBucket).not.toHaveBeenCalled();
     expect(events).toEqual([]);
+  });
+
+  test("creates nothing when no setting would ever write to it", async () => {
+    // The bucket holds three kinds of byte and each has its own flag. With all three off nothing is
+    // ever written, so creating one is an account-wide name claimed for nothing.
+    const { cf, findBucketByName, createBucket } = fakeCf();
+    const events: CliAuditEvent[] = [];
+
+    expect(
+      await provisioner(cf, events, {
+        supportConfig: {
+          inboundAddresses: ["support@help.example.com"],
+          attachments: { enabled: false, retainRaw: false },
+          submission: { attachments: { enabled: false } },
+        },
+      }).ensureBucket(),
+    ).toEqual({ bucket: supportBucketName(PROJECT), created: false, skipped: true });
+    expect(findBucketByName).not.toHaveBeenCalled();
+    expect(createBucket).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+  });
+
+  test("creates it for in-app submissions alone, with both mail settings off", async () => {
+    // The case the old two-flag gate missed. `submission/submit.ts` writes an in-app submission's
+    // files to this same bucket, so a project that wants uploads but no mail attachments got a
+    // binding pointing at a bucket nothing had created — and every submitted file was dropped with a
+    // warning nobody was reading (#440). One predicate now answers for all three writers.
+    const { cf, findBucketByName, createBucket } = fakeCf();
+    const events: CliAuditEvent[] = [];
+    findBucketByName.mockResolvedValue(null);
+    createBucket.mockResolvedValue({ name: supportBucketName(PROJECT) });
+
+    expect(
+      await provisioner(cf, events, {
+        supportConfig: {
+          inboundAddresses: ["support@help.example.com"],
+          attachments: { enabled: false, retainRaw: false },
+          submission: { attachments: { enabled: true } },
+        },
+      }).ensureBucket(),
+    ).toEqual({ bucket: supportBucketName(PROJECT), created: true, skipped: false });
+    expect(createBucket).toHaveBeenCalledWith(supportBucketName(PROJECT));
   });
 
   test("creates it when absent, and audits the project alongside the name", async () => {

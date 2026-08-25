@@ -163,6 +163,7 @@ describe("renderDoctorText", () => {
           ledger: { state: "read", pending: 2, undeclared: [] },
           entitlements: { state: "read", gates: [] },
           missingPrerequisites: [],
+          declinedBindings: { state: "read", declines: [] },
           missingVersionMetadata: false,
         }),
       }),
@@ -819,7 +820,12 @@ describe("project health — installed is not composed (regression)", () => {
 
   test("a worker composing nothing is healthy and exits zero", async () => {
     const report = await buildDoctorReport(realEngine([worker("web", web, [])]));
-    expect(checkedWorker(report.project?.health).bindings).toEqual({ ok: true, missing: [], missingExports: [] });
+    expect(checkedWorker(report.project?.health).bindings).toEqual({
+      ok: true,
+      missing: [],
+      missingExports: [],
+      declinedBindings: { state: "read", declines: [] },
+    });
     expect(report.project?.health.ok).toBe(true);
     expect(doctorExitCode(report)).toBe(0);
   });

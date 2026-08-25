@@ -28,6 +28,7 @@ function clean(worker: string): ReconcilePlan {
     ledger: { state: "read", pending: 0, undeclared: [] },
     entitlements: { state: "read", gates: [] },
     missingPrerequisites: [],
+    declinedBindings: { state: "read", declines: [] },
     missingVersionMetadata: false,
   };
 }

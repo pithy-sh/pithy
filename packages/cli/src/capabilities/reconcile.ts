@@ -3,7 +3,7 @@
 
 import { readFile, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { type BindingSpec, BindingType } from "@pithy-sh/core/src/capability/bindings";
+import { type BindingSpec, BindingType, isProvisionedBinding } from "@pithy-sh/core/src/capability/bindings";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import {
   type CapabilityManifest,
@@ -12,7 +12,7 @@ import {
   renderConfigOptionComment,
   renderConfigOptionLine,
 } from "@pithy-sh/core/src/capability/manifest";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { type PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { type DatabaseRun, migrateProject, ProjectLedger, readProjectLedger } from "../migrations/run";
@@ -24,7 +24,7 @@ import {
   stanzaHasBinding,
   type WranglerStanza,
 } from "../project/bindingEntries";
-import { allCapabilities, loadWorkerConfig } from "../project/config";
+import { allCapabilities, loadWorkerConfig, readDeclinedBindings, type WorkerConfig } from "../project/config";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { applyVersionMetadata, hasVersionMetadata } from "../project/versionMetadata";
 import { workerIdentity } from "../project/workerIdentity";
@@ -82,6 +82,125 @@ export const SkippedBinding = MissingBinding.extend({
   "A required binding `pithy upgrade` could not write. Named rather than counted: reporting the plan instead of the write is what made `upgrade` claim five bindings it had declined, while `doctor` correctly still called them missing (#318).",
 );
 export type SkippedBinding = z.infer<typeof SkippedBinding>;
+
+/**
+ * One entry in a Worker's `declinedBindings`, resolved against what it actually composes.
+ *
+ * **Four states, because "declined" is a claim that can be wrong in three distinct ways**, and each
+ * wants a different sentence from an operator surface. `honored` is the working case. `required` and
+ * `undeclinable` are refusals — an upgrade stops before it writes anything, because both mean the
+ * adopter believes a binding is being left out that is not. `unrecognized` is neither: nothing is
+ * being left out for it, which is worth a line and is never worth failing a project over, since
+ * `pithy remove <capability>` produces it and no command could then clear the red.
+ */
+export const BindingDecline = z
+  .discriminatedUnion("state", [
+    z
+      .object({
+        state: z.literal("honored").describe("The decline is being applied — this binding is left out."),
+        name: z.string().describe("The binding name, as the adopter wrote it and as the capability declares it."),
+        type: BindingType.describe("The kind of Cloudflare resource the declined binding refers to."),
+        capability: z.string().describe("The composed capability that declares this binding as optional."),
+        reason: z.string().describe("The adopter's own reason, printed back verbatim by `pithy doctor`."),
+        stillPresentIn: z
+          .array(z.string())
+          .describe(
+            "Environments whose wrangler.jsonc still carries a stanza for it — written by an upgrade that ran before the decline. Declining stops the binding being re-added; it never deletes what is already there, because removing a binding an adopter may still be pointing at is not a reporting command's decision.",
+          ),
+      })
+      .describe("A decline this Worker's composition supports, and which upgrade is applying."),
+    z
+      .object({
+        state: z.literal("required").describe("The binding is not optional — the decline is refused."),
+        name: z.string().describe("The binding name the adopter declined."),
+        type: BindingType.describe("The kind of Cloudflare resource it refers to."),
+        capability: z.string().describe("A composed capability that requires this binding outright."),
+        reason: z.string().describe("The adopter's stated reason, carried so the refusal can quote the line."),
+      })
+      .describe(
+        "A decline of a binding some composed capability requires. Refused: `optional` is the capability's own statement that its code has a path for the absence, and a required binding has none — leaving it out is a boot failure, not a configuration.",
+      ),
+    z
+      .object({
+        state: z.literal("undeclinable").describe("The binding's kind cannot be declined — the decline is refused."),
+        name: z.string().describe("The binding name the adopter declined."),
+        type: BindingType.describe("The kind that cannot be declined: workflow or durable_object."),
+        capability: z.string().describe("The composed capability that declares it."),
+        reason: z.string().describe("The adopter's stated reason, carried so the refusal can quote the line."),
+      })
+      .describe(
+        "A decline of a kind where `optional` does not mean what it means elsewhere. For a Workflow, absent means *not provisioned yet* — `pithy <capability> provision` is the fix, and declining it only hides the instruction. For a Durable Object it is worse: a class migration tag is written once and never revisited, so a decline that arrives after one upgrade cannot undo what an earlier one stamped.",
+      ),
+    z
+      .object({
+        state: z.literal("unrecognized").describe("Nothing this Worker composes declares this binding."),
+        name: z.string().describe("The binding name the adopter declined."),
+        reason: z.string().describe("The adopter's stated reason, carried so the line can quote it."),
+      })
+      .describe(
+        "A decline naming a binding no composed capability declares. Reported, never fatal: `pithy remove <capability>` leaves exactly this state behind, and a CLI that failed on it would create a red no command could clear.",
+      ),
+  ])
+  .describe("One `declinedBindings` entry, resolved against what this Worker composes.");
+export type BindingDecline = z.infer<typeof BindingDecline>;
+
+/**
+ * A Worker's whole `declinedBindings` declaration, or the fact that it could not be read.
+ *
+ * The same two-state shape as {@link EntitlementGap} and the ledger, for the same reason: a declaration
+ * that does not parse is neither "declines nothing" nor a crash, and a count cannot say so. `pithy
+ * doctor` reports it; `pithy upgrade` refuses on it before writing.
+ */
+export const BindingDeclines = z
+  .discriminatedUnion("state", [
+    z
+      .object({
+        state: z.literal("read").describe("The declaration parsed."),
+        declines: z.array(BindingDecline).describe("Every entry, resolved. Empty is the ordinary case."),
+      })
+      .describe("A `declinedBindings` declaration that parsed, with each entry resolved."),
+    z
+      .object({
+        state: z.literal("invalid").describe("The declaration is present and malformed."),
+        problem: z
+          .string()
+          .describe("What is wrong with it, naming the entry — an operator's sentence, not a Zod dump."),
+      })
+      .describe("A `declinedBindings` declaration that is present and cannot be read."),
+  ])
+  .describe(
+    "This Worker's declined optional bindings, resolved against its composition — or the fact that the declaration could not be read.",
+  );
+export type BindingDeclines = z.infer<typeof BindingDeclines>;
+
+/**
+ * Whether a binding of this kind may never be declined.
+ *
+ * **Two rules, and only one of them is hand-written.** A *provisioned* kind — `secret`, `workflow`,
+ * `vectorize` — is one whose resource exists only after `pithy <capability> provision`, so `optional`
+ * there means *not provisioned yet*, never *not wanted*: declining it suppresses the very binding the
+ * provision command exists to supply, and hides the instruction that would have fixed it. That set is
+ * asked of {@link isProvisionedBinding} rather than copied, because a copy is a list that stops
+ * agreeing the day a kind joins it — the first draft here listed only `workflow` and silently admitted
+ * declines of the other two.
+ *
+ * A Durable Object is refused for a different reason and so is named separately:
+ * `appendDurableObjectMigrations` writes a `new_sqlite_classes` tag once and never revisits a class
+ * already named by one, so a decline arriving after an upgrade cannot undo that upgrade's stamp and
+ * would leave the tag and the binding disagreeing permanently. Un-stamping one is how a Durable Object
+ * loses its storage, so there is no repair to offer either.
+ */
+function isUndeclinableKind(type: BindingType): boolean {
+  return isProvisionedBinding(type) || type === "durable_object";
+}
+
+/** The sentence that says what a kind's absence actually means, for an operator reading a refusal. */
+export function undeclinableReason(type: BindingType): string {
+  if (type === "durable_object") {
+    return "A Durable Object's class migration tag is written once and never revisited, so this cannot be taken back later.";
+  }
+  return "Absent means not provisioned.";
+}
 
 /** A capability config option present in the manifest but not yet written into its pithy.config.ts call. */
 export const MissingConfigKey = z
@@ -190,6 +309,9 @@ export const ReconcilePlan = z
       .describe(
         "Capabilities this Worker composes whose manifest declares a peer it does not compose. The Worker will not assemble: createBackend refuses on exactly this pair, so it is a boot failure rather than drift. Report-only, like the entitlement gap — composing a capability is the adopter's decision, and `pithy add <cap> --with-prerequisites` is the command that makes it.",
       ),
+    declinedBindings: BindingDeclines.describe(
+      "Optional bindings this Worker's pithy.config.ts declines, each resolved against what it composes. An honored decline is left out of wrangler.jsonc by an upgrade and reported as declined rather than missing by doctor; a refused one stops an upgrade before it writes. It rides the plan because `applyReconcilePlan` re-reads nothing — plan and write must be one decision, which is what #318 cost when they were two.",
+    ),
     missingVersionMetadata: z
       .boolean()
       .describe(
@@ -293,6 +415,20 @@ export interface BuildReconcilePlanOptions {
    * throw through here.
    */
   findGap?: (workerDir: string, capabilities: readonly Capability[]) => Promise<string[]>;
+  /**
+   * This Worker's own `pithy.config.ts`, as its caller already loaded it.
+   *
+   * Only `declinedBindings` is read from it, and **the whole object rather than that one field on
+   * purpose**: {@link readDeclinedBindings} also refuses a key that is nearly `declinedBindings`, and
+   * it can only see such a key if it is handed the object the adopter actually wrote. Passing the
+   * field alone made that check unreachable — every real config arrived as a synthetic two-key object
+   * and `declined_bindings` sailed through, which is the silence this whole feature removes.
+   *
+   * It travels beside `capabilities` rather than being re-read here for the same reason `capabilities`
+   * does: both callers already hold the loaded config, and reading it twice is how the two commands
+   * would come to disagree about one Worker.
+   */
+  workerConfig?: WorkerConfig;
 }
 
 /** Escape a capability name for use inside a `RegExp`. */
@@ -318,14 +454,169 @@ function escapeRegExp(text: string): string {
  * binding written by any CLI path and a hard assembly failure at boot. Taking the composed instance's
  * list wholesale instead would make the manifest dead weight and would report nothing at all for a
  * caller that passes a name-only capability marker.
+ *
+ * **`declined` is the third source, and the adopter's.** A capability can only say a binding is optional;
+ * it cannot know that this Worker's account has no R2. Only the `optional` half is filtered, so a
+ * decline can never remove a binding the composition genuinely requires.
+ *
+ * The parameter is required and undefaulted **on purpose**. This is the single function every consumer
+ * resolves `optional` through — the plan, the entry-export check, the stanza writer, the Durable Object
+ * migration tagger, and the entry-export writer — and #318 was exactly the shape where one of them
+ * answered from a different list than the others. A sixth consumer must be a compile error, not a
+ * silent write.
  */
-function effectiveBindings(manifest: CapabilityManifest, composed: Capability | undefined): BindingSpec[] {
+function effectiveBindings(
+  manifest: CapabilityManifest,
+  composed: Capability | undefined,
+  declined: ReadonlySet<string>,
+): BindingSpec[] {
   const required = manifest.requiredBindings.filter((binding) => !binding.optional);
   const optional = manifest.requiredBindings.filter((binding) => binding.optional);
   if (optional.length === 0) return required;
 
   const needed = new Set((composed?.requiredBindings ?? []).map((binding) => `${binding.type}:${binding.name}`));
-  return [...required, ...optional.filter((binding) => needed.has(`${binding.type}:${binding.name}`))];
+  return [
+    ...required,
+    ...optional.filter((binding) => needed.has(`${binding.type}:${binding.name}`) && !declined.has(binding.name)),
+  ];
+}
+
+/**
+ * The binding names an upgrade is actually leaving out, from a plan.
+ *
+ * One helper rather than a filter at each apply-side call site, so three writers cannot each decide
+ * what "declined" means. Only `honored` entries count: a refused decline is refused everywhere, and an
+ * unrecognized one names nothing to leave out.
+ */
+/**
+ * Resolve a Worker's declared declines against the capabilities it actually composes.
+ *
+ * Every entry lands in exactly one of {@link BindingDecline}'s four states, decided in this order:
+ *
+ * 1. **`required`** if *any* composed capability declares the binding non-optionally. Any, not all:
+ *    two capabilities may share a binding name — that is how Workers share one D1 — and a binding one
+ *    of them needs outright is not declinable because another calls it optional.
+ * 2. **`undeclinable`** if the binding's kind is one where `optional` does not mean "not wanted".
+ * 3. **`honored`** if some composed capability declares it optionally.
+ * 4. **`unrecognized`** otherwise. Nothing is being left out for it.
+ *
+ * Sorted by name so two runs of `pithy doctor` over one unchanged project print the same report — a
+ * `--json` consumer diffing two runs must not see a reordering as a change.
+ */
+function resolveDeclines(
+  declared: Record<string, string>,
+  manifests: readonly CapabilityManifest[],
+  composed: ReadonlySet<string>,
+  ejected: readonly string[],
+  stanzas: readonly { env: string; stanza: WranglerStanza }[],
+  instances: ReadonlyMap<string, Capability>,
+): BindingDecline[] {
+  // Only what this Worker composes and has not ejected — the same scope the rest of the plan uses.
+  // An ejected capability's code no longer tracks its package, so its manifest says nothing about
+  // what this Worker binds.
+  // **Sorted, because the capability named in the report is chosen from this order.** `manifests` comes
+  // from an unsorted `readdir`, and fifteen shipped capabilities declare `d1 DB` — so declining it named
+  // `auth` on one machine and `media` on another, in the terminal and in `--json` alike. The decision is
+  // the same either way; the sentence must not be, or two runs of one unchanged project disagree.
+  const relevant = manifests
+    .filter((manifest) => composed.has(manifest.name) && !ejected.includes(manifest.name))
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return Object.entries(declared)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, reason]): BindingDecline => {
+      const declarers = relevant.flatMap((manifest) =>
+        manifest.requiredBindings.filter((binding) => binding.name === name).map((binding) => ({ manifest, binding })),
+      );
+      // **Both sources, and either one is enough to refuse.** `effectiveBindings` states the rule this
+      // follows: the manifest says what is required everywhere, and the composed instance says what is
+      // required *here*. `@pithy-sh/core` is the live case — its manifest marks `CONTROL_PLANE`
+      // optional, because a manifest is one static file and cannot vary with config, while
+      // `controlplane({ replayBackend: "kv" })` pushes the same binding non-optionally, because under
+      // that setting the replay guard reads it on every request and there is no absence path at all.
+      // Reading the manifest alone resolved that decline as `honored` and had `pithy doctor` print
+      // "takes its optional path" about a Worker that would 500 on every control-plane route.
+      const requiredBy =
+        declarers.find(({ binding }) => !binding.optional) ??
+        declarers.find(({ manifest }) =>
+          (instances.get(manifest.name)?.requiredBindings ?? []).some(
+            (binding) => binding.name === name && !binding.optional,
+          ),
+        );
+      if (requiredBy) {
+        return {
+          state: "required",
+          name,
+          type: requiredBy.binding.type,
+          capability: requiredBy.manifest.name,
+          reason,
+        };
+      }
+      const optionalBy = declarers[0];
+      if (!optionalBy) return { state: "unrecognized", name, reason };
+      if (isUndeclinableKind(optionalBy.binding.type)) {
+        return {
+          state: "undeclinable",
+          name,
+          type: optionalBy.binding.type,
+          capability: optionalBy.manifest.name,
+          reason,
+        };
+      }
+      return {
+        state: "honored",
+        name,
+        type: optionalBy.binding.type,
+        capability: optionalBy.manifest.name,
+        reason,
+        // Computed from the stanzas already read, so declining tells the adopter what an earlier
+        // upgrade left behind rather than leaving them to find it. It is reported, never deleted:
+        // removing a binding they may still be pointing at is not a reporting command's decision.
+        stillPresentIn: stanzas
+          .filter(({ stanza }) => stanzaHasBinding(stanza, optionalBy.binding) === true)
+          .map(({ env }) => env),
+      };
+    });
+}
+
+/**
+ * The binding names a Worker is leaving out, resolved from its config against what it composes.
+ *
+ * **The one export of this rule, for callers that hold no plan.** `pithy provision` and `pithy feature
+ * create` create the resource behind each provisionable binding, and a decline that stopped `pithy
+ * upgrade` writing a binding while provisioning still made the bucket handed the adopter exactly the
+ * resource they had declined (#440). They reach the same {@link resolveDeclines} the plan does rather
+ * than re-deciding what "declined" means — a second expression of a four-state rule is how two commands
+ * come to disagree, which is this issue one level up.
+ *
+ * No stanzas, because `stillPresentIn` is a fact about a `wrangler.jsonc` and provisioning is not
+ * reading one; the field is empty here and nothing consumes it. Only `honored` names come back, so a
+ * refused decline changes nothing about what is provisioned — exactly as it changes nothing about what
+ * is written.
+ */
+export function honoredDeclineNames(options: {
+  /** Every installed capability manifest, read once by the caller — this is called per Worker. */
+  manifests: readonly CapabilityManifest[];
+  /** That Worker's composed capabilities. */
+  capabilities: readonly Capability[];
+  /** That Worker's own `pithy.config.ts`. Absent means it declines nothing. */
+  workerConfig?: WorkerConfig | undefined;
+  /** Capabilities this Worker has ejected, whose manifests no longer describe its wiring. */
+  ejected?: readonly string[];
+}): ReadonlySet<string> {
+  const read = readDeclinedBindings(options.workerConfig ?? { capabilities: [] });
+  if (read.state === "invalid") return new Set();
+  const composed = new Set(options.capabilities.map((capability) => capability.name));
+  const byName = new Map(options.capabilities.map((capability) => [capability.name, capability]));
+  const declines = resolveDeclines(read.declared, options.manifests, composed, options.ejected ?? [], [], byName);
+  return new Set(declines.filter((decline) => decline.state === "honored").map((decline) => decline.name));
+}
+
+function honoredDeclines(plan: ReconcilePlan): ReadonlySet<string> {
+  if (plan.declinedBindings.state !== "read") return new Set();
+  return new Set(
+    plan.declinedBindings.declines.filter((decline) => decline.state === "honored").map((decline) => decline.name),
+  );
 }
 
 /** Every required binding absent from an environment, across every environment. Unsupported kinds are skipped. */
@@ -333,9 +624,10 @@ function computeMissingBindings(
   manifest: CapabilityManifest,
   stanzas: { env: string; stanza: WranglerStanza }[],
   composed: Capability | undefined,
+  declined: ReadonlySet<string>,
 ): MissingBinding[] {
   const missing: MissingBinding[] = [];
-  for (const binding of effectiveBindings(manifest, composed)) {
+  for (const binding of effectiveBindings(manifest, composed, declined)) {
     for (const { env, stanza } of stanzas) {
       const has = stanzaHasBinding(stanza, binding);
       if (has === null) break; // unsupported kind — the same for every env, skip it entirely
@@ -578,18 +870,36 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   // be — see `effectiveBindings`.
   const byName = new Map(capabilities.map((capability) => [capability.name, capability]));
 
+  // Resolved before the loop below, because every one of that loop's three contributors resolves
+  // `optional` through `effectiveBindings` and must resolve it the same way. `readDeclinedBindings`
+  // reports rather than throws: a declaration that will not parse costs its own line and leaves the
+  // rest of the plan standing, exactly as the ledger and entitlement contributors do (#371).
+  const read = readDeclinedBindings(options.workerConfig ?? { capabilities });
+  const declinedBindings: BindingDeclines =
+    read.state === "invalid"
+      ? { state: "invalid", problem: read.problem }
+      : { state: "read", declines: resolveDeclines(read.declared, manifests, composed, ejected, stanzas, byName) };
+  // The names an upgrade is actually leaving out. A refused decline changes nothing about what is
+  // written — the refusal happens at the apply gate, so the plan still reports the binding as missing
+  // and the adopter sees both facts.
+  const honored = new Set(
+    declinedBindings.state === "read"
+      ? declinedBindings.declines.filter((decline) => decline.state === "honored").map((decline) => decline.name)
+      : [],
+  );
+
   const perCapability: CapabilityReconcile[] = [];
   for (const manifest of manifests) {
     if (ejected.includes(manifest.name)) continue; // ejected — reported below, never reconciled
     if (!composed.has(manifest.name)) continue; // installed at the root for another Worker — not this one's
     perCapability.push({
       name: manifest.name,
-      missingBindings: computeMissingBindings(manifest, stanzas, byName.get(manifest.name)),
+      missingBindings: computeMissingBindings(manifest, stanzas, byName.get(manifest.name), honored),
       missingConfigKeys: computeMissingConfigKeys(manifest, configSource),
       // The same binding set the stanzas are compared against — a class is exported exactly when this
       // Worker binds it.
       missingEntryExports: computeMissingEntryExports(
-        effectiveBindings(manifest, byName.get(manifest.name)),
+        effectiveBindings(manifest, byName.get(manifest.name), honored),
         entrySource,
       ),
     });
@@ -645,6 +955,7 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
     env,
     perCapability,
     ejectedSkipped,
+    declinedBindings,
     ledger,
     entitlements,
     // Across every composed capability, ejected ones included: eject copies the source, it does not
@@ -671,13 +982,14 @@ function appendBindings(
   manifest: CapabilityManifest,
   scope: BindingScope,
   composed: Capability | undefined,
+  declined: ReadonlySet<string>,
 ): { written: MissingBinding[]; skipped: SkippedBinding[] } {
   const written: MissingBinding[] = [];
   const skipped: SkippedBinding[] = [];
   // Same source of truth as the plan — see `effectiveBindings`. Writing from the manifest here while the
   // plan reported from the composed instance would make `upgrade` decline to write the binding it had
   // just told the adopter was missing.
-  for (const binding of effectiveBindings(manifest, composed)) {
+  for (const binding of effectiveBindings(manifest, composed, declined)) {
     const write = appendBinding(stanza, binding, scope);
     // `present` and `unsupported` are neither: the first is idempotency (the plan already excluded it),
     // the second a kind with no array to be missing from, which `computeMissingBindings` skips too.
@@ -865,6 +1177,10 @@ async function applyBindings(
   capabilities: readonly Capability[],
 ): Promise<Map<string, { written: MissingBinding[]; skipped: SkippedBinding[] }>> {
   const added = new Map<string, { written: MissingBinding[]; skipped: SkippedBinding[] }>();
+  // The one list every writer below resolves `optional` through, taken from the plan rather than
+  // recomputed — `applyReconcilePlan` re-reads no file, so the plan is the only place the decline
+  // exists on this side.
+  const honored = honoredDeclines(plan);
   const caps = plan.perCapability.filter((cap) => cap.missingBindings.length > 0);
   if (caps.length === 0) return added;
 
@@ -886,6 +1202,7 @@ async function applyBindings(
         manifest,
         { ...(project === undefined ? {} : { project }), env, capability: manifest.name },
         composedByName.get(cap.name),
+        honored,
       );
       written.push(...result.written);
       skipped.push(...result.skipped);
@@ -894,7 +1211,7 @@ async function applyBindings(
     // class against the script, and one for a binding this Worker does not derive registers an actor
     // nothing can reach. A tag is applied once and never revisited, so it is not a mistake a later run
     // repairs — `capabilities/add.ts`'s `wiredBindings` states the rule for the other writer.
-    appendDurableObjectMigrations(config, effectiveBindings(manifest, composedByName.get(cap.name)));
+    appendDurableObjectMigrations(config, effectiveBindings(manifest, composedByName.get(cap.name), honored));
     added.set(cap.name, { written, skipped });
     // Only a real write dirties the file. A capability whose every binding was declined leaves
     // `wrangler.jsonc` byte-identical, and rewriting it would be a diff saying nothing happened.
@@ -937,11 +1254,14 @@ async function applyEntryExports(
 ): Promise<string[]> {
   const byName = new Map((await availableManifests(projectDir)).manifests.map((manifest) => [manifest.name, manifest]));
   const composedByName = new Map(capabilities.map((capability) => [capability.name, capability]));
+  // Same list the stanza writer used. A declined Durable Object would otherwise stay exported from the
+  // entry, pulling the class into the bundle for a binding nothing declares — #428's shape.
+  const honored = honoredDeclines(plan);
   const exports = plan.perCapability.flatMap((cap) => {
     const manifest = byName.get(cap.name);
     // Same source of truth as the binding writer — see `effectiveBindings`. Exporting a class this Worker
     // does not bind would pull a Durable Object into the bundle for nothing.
-    return manifest ? durableObjectExports(effectiveBindings(manifest, composedByName.get(cap.name))) : [];
+    return manifest ? durableObjectExports(effectiveBindings(manifest, composedByName.get(cap.name), honored)) : [];
   });
   if (exports.length === 0) return [];
 
@@ -1021,6 +1341,66 @@ function refuseUnwritableConfigKeys(plan: ReconcilePlan): void {
 }
 
 /**
+ * Every decline this Worker's composition cannot honor, refused before the first write.
+ *
+ * Three states get here and all three mean the adopter believes a binding is being left out that is
+ * not — a belief that must be corrected before an upgrade writes, not after. `invalid` is the
+ * declaration itself; `required` is a binding some capability needs outright, where leaving it out is a
+ * boot failure rather than a configuration; `undeclinable` is a kind where `optional` means "not
+ * provisioned yet" and declining only hides the command that fixes it.
+ *
+ * **`unrecognized` is deliberately not here.** `pithy remove <capability>` leaves exactly that state
+ * behind, and a CLI that refused on it would create a failure no command could clear. It is reported by
+ * `doctor` and by the upgrade summary, and it changes nothing about what gets written.
+ *
+ * Named together for the same reason `refuseUnwritableConfigKeys` names its options together: an
+ * adopter fixing this edits one file once.
+ */
+function refuseUnhonorableDeclines(plan: ReconcilePlan): void {
+  const refusal = declineRefusal(plan);
+  if (refusal) throw refusal;
+}
+
+/**
+ * The refusal a plan's declines earn, or `null` if it has none.
+ *
+ * **Separated from the throw so a caller can ask before it calls.** `applyReconcilePlan` catches
+ * nothing and reports one shape for every failure — "Upgrade failed partway. Its wiring may hold part
+ * of the plan" — which is true of a write that died mid-file and false of this, which happens before
+ * the first byte. An adopter told their wiring is half-written when it is untouched will go looking for
+ * damage that is not there, and never sees the action line naming the entry to remove.
+ *
+ * So `pithy upgrade` asks first and reports the refusal with its own words; `applyReconcilePlan` still
+ * throws, because every other caller wants the failure rather than a value to inspect.
+ *
+ * The config-key refusal beside it is deliberately not folded in here: it has the same shape and the
+ * same defect, and moving it changes output this issue did not touch. It wants its own change.
+ */
+export function declineRefusal(plan: ReconcilePlan): PithyError | null {
+  if (plan.declinedBindings.state === "invalid") {
+    return new ValidationError({
+      message: "This Worker's `declinedBindings` declaration is not valid.",
+      action: `Fix \`declinedBindings\` in ${plan.worker}'s pithy.config.ts. Each entry is a binding name mapped to a one-line reason. ${plan.declinedBindings.problem}`,
+    });
+  }
+  const refused = plan.declinedBindings.declines.filter(
+    (decline) => decline.state === "required" || decline.state === "undeclinable",
+  );
+  if (refused.length === 0) return null;
+  const lines = refused.map((decline) =>
+    decline.state === "required"
+      ? `${decline.name} (${decline.type}) — ${decline.capability} requires it, so it is never left out.`
+      : `${decline.name} (${decline.type}) — this kind cannot be declined. ${undeclinableReason(decline.type)}${
+          decline.type === "durable_object" ? "" : ` Run \`pithy ${decline.capability} provision\`.`
+        }`,
+  );
+  return new ValidationError({
+    message: `This Worker declines ${refused.length === 1 ? "a binding it cannot decline" : "bindings it cannot decline"}.`,
+    action: `Remove ${refused.length === 1 ? "the entry" : "these entries"} from \`declinedBindings\` in ${plan.worker}'s pithy.config.ts. ${lines.join(" ")}`,
+  });
+}
+
+/**
  * Apply a reconcile plan — the write step behind `pithy upgrade`, never called by `doctor`. Adds the
  * missing bindings to the Worker's `wrangler.jsonc` and the missing config keys to its `pithy.config.ts`
  * (a one-liner call becomes block form; an existing block gains only the absent keys — an adopter-changed
@@ -1045,6 +1425,10 @@ export async function applyReconcilePlan(options: ApplyReconcilePlanOptions): Pr
   // Named together rather than one at a time: an adopter fixing config edits one file once, and a refusal
   // that surfaces the second required option only after they have fixed the first is two round trips for
   // one edit.
+  // Before `refuseUnwritableConfigKeys`, and in that slot for exactly that comment's reason: a decline
+  // this composition cannot honor is unfixable from here, and raising it after `applyBindings` has
+  // rewritten `wrangler.jsonc` would leave the Worker half-reconciled against a belief that was wrong.
+  refuseUnhonorableDeclines(plan);
   refuseUnwritableConfigKeys(plan);
 
   const addedBindings = await applyBindings(projectDir, workerDir, plan, options.project, capabilities);

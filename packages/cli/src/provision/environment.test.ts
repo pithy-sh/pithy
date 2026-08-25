@@ -106,6 +106,109 @@ describe("provisionEnvironment, for a declared environment", () => {
     expect([...stores.d1.keys()]).toEqual(["replay-staging-db"]);
   });
 
+  test("creates nothing for a binding this Worker declines", async () => {
+    // The other half of #440. Stopping `pithy upgrade` writing the binding while `pithy provision` still
+    // created the bucket handed the adopter exactly the resource the decline said they did not want.
+    // The manifest has to be installed for the decline to resolve at all — a decline resolves against
+    // what the Worker composes, and a name nothing declares is `unrecognized` and changes nothing.
+    const optional = defineCapability({
+      name: "app",
+      requiredBindings: [
+        { type: "d1", name: "DB" },
+        { type: "kv", name: "CACHE" },
+        { type: "r2", name: "ASSETS", optional: true },
+      ] satisfies BindingSpecInput[],
+    });
+    const pkgDir = join(dir, "node_modules", "@pithy-sh", "app");
+    await mkdir(pkgDir, { recursive: true });
+    await writeFile(
+      join(pkgDir, "pithy.manifest.json"),
+      JSON.stringify({
+        name: "app",
+        package: "@pithy-sh/app",
+        requiredBindings: [
+          { type: "d1", name: "DB" },
+          { type: "kv", name: "CACHE" },
+          { type: "r2", name: "ASSETS", optional: true },
+        ],
+      }),
+    );
+    const { stores, provisioners } = fakeProvisioners();
+
+    const report = await provisionEnvironment({
+      projectDir: dir,
+      scope,
+      capabilities: [optional],
+      provisioners,
+      resolveWorkers: async () => [
+        {
+          name: "replay-board",
+          dir: workerDir,
+          capabilities: [optional],
+          config: { capabilities: [], declinedBindings: { ASSETS: "no R2 in this account" } } as never,
+        },
+      ],
+      ...noBackend,
+    });
+
+    expect(report.resources.map((resource) => resource.kind)).toEqual(["d1", "kv"]);
+    // The bucket was never created, which is the whole point — a report that merely omitted it while the
+    // provisioner had made one would read identically.
+    expect([...stores.r2.keys()]).toEqual([]);
+    // And the two the Worker still wants are untouched.
+    expect([...stores.d1.keys()]).toEqual(["replay-staging-db"]);
+    expect([...stores.kv.keys()]).toEqual(["replay-staging-cache"]);
+  });
+
+  test("a resource survives one Worker declining it while another still wants it", async () => {
+    // The environment provisions one resource per binding *name* — that is how two Workers share a
+    // database. So a decline is only decisive when every Worker that declares the binding declines it;
+    // one Worker opting out must not take the other's bucket away.
+    const optional = defineCapability({
+      name: "app",
+      requiredBindings: [
+        { type: "d1", name: "DB" },
+        { type: "r2", name: "ASSETS", optional: true },
+      ] satisfies BindingSpecInput[],
+    });
+    const pkgDir = join(dir, "node_modules", "@pithy-sh", "app");
+    await mkdir(pkgDir, { recursive: true });
+    await writeFile(
+      join(pkgDir, "pithy.manifest.json"),
+      JSON.stringify({
+        name: "app",
+        package: "@pithy-sh/app",
+        requiredBindings: [
+          { type: "d1", name: "DB" },
+          { type: "r2", name: "ASSETS", optional: true },
+        ],
+      }),
+    );
+    const secondDir = join(dir, "apps", "collab");
+    await mkdir(secondDir, { recursive: true });
+    await writeFile(join(secondDir, "wrangler.jsonc"), '{\n  "name": "replay-collab"\n}\n');
+    const { stores, provisioners } = fakeProvisioners();
+
+    await provisionEnvironment({
+      projectDir: dir,
+      scope,
+      capabilities: [optional],
+      provisioners,
+      resolveWorkers: async () => [
+        {
+          name: "replay-board",
+          dir: workerDir,
+          capabilities: [optional],
+          config: { capabilities: [], declinedBindings: { ASSETS: "not here" } } as never,
+        },
+        { name: "replay-collab", dir: secondDir, capabilities: [optional] },
+      ],
+      ...noBackend,
+    });
+
+    expect([...stores.r2.keys()]).toEqual(["replay-staging-assets"]);
+  });
+
   test("writes the ids into the env.<name> stanza of each Worker's own wrangler.jsonc", async () => {
     const { provisioners } = fakeProvisioners();
     await provisionEnvironment({

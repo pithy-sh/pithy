@@ -28,6 +28,8 @@ pithy support provision --routing-zone <zone-id> --inbound-address support@help.
 
 One command, idempotent, safe to re-run. It creates the `SUPPORT_BUCKET` R2 bucket, deploys the prebuilt classification worker for each environment, and creates the Email Routing rule that delivers your support address to your app worker. `--json` prints one machine-readable line, so CI and agents drive the same command a human does.
 
+The bucket is created only if something would write to it — mail attachments, the raw MIME copy, or in-app uploads. Turn all three off and no bucket is created and no `SUPPORT_BUCKET` binding is written, which is the right shape for an inbox that never needs a screenshot. Turn any one back on and the next `pithy upgrade` writes the binding and the next provision creates the bucket.
+
 The routing flags are all-or-nothing and deliberately explicit. Creating a rule on the wrong zone would move your real mail, and that is not a mistake a provisioning command gets to make on your behalf. Leave them off and everything else still provisions; add the rule when you have decided.
 
 Teardown is `pithy support deprovision --routing-zone <zone-id>`, which removes the routing rule first — so mail stops arriving before the workers that would have handled it go away — and leaves your stored correspondence alone unless you pass `--storage`. The zone is named for the same reason it is on provision: a rule is addressed through its zone, and this command will not go looking through your domains for one. Leave it off and the rule stays, which the command tells you.
