@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { MAX_ISSUE_DIGITS } from "@pithy-sh/core/src/naming/limits";
@@ -11,17 +10,13 @@ import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { createFeature } from "../feature/create";
 import { type DestroyReport, destroyedBeforeFailure, destroyFeature } from "../feature/destroy";
-import {
-  branchIdentity,
-  branchIdentityWithoutWorkers,
-  deriveIdentityFromBranch,
-  projectCapabilitiesOrNull,
-} from "../feature/identity";
+import { branchIdentityWithoutWorkers, deriveIdentityFromBranch } from "../feature/identity";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { behindRemote, mainRepoRoot } from "../feature/worktree";
 import { migrateProject } from "../migrations/run";
 import { loadProject, loadProjectCloudflare, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireEnvironment } from "../project/environment";
+import { type CapabilitySet, isUnknown, projectCapabilitySet } from "../project/workerScope";
 import { AUDIT_DESTINATION_ENV, cloudflareProvisioners, type ResourceProvisioners } from "../provision/resources";
 import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
 import { seedProject } from "../seed/run";
@@ -76,7 +71,7 @@ function buildStore(account: CloudflareAccountSelection | null): SecretsStore | 
  */
 async function buildAudit(
   projectDir: string,
-  capabilities: Capability[],
+  capabilities: CapabilitySet,
   account: CloudflareAccountSelection | null,
 ): Promise<CliAuditEmit> {
   const vars = cloudflareEnv({ account });
@@ -276,13 +271,16 @@ const destroy = defineCommand({
         `--local-only` says the remote half is not wanted.
       */
       const identity = await branchIdentityWithoutWorkers(projectDir);
-      const capabilities = await projectCapabilitiesOrNull(projectDir);
-      if (capabilities === null && !args["local-only"]) {
+      const capabilities = await projectCapabilitySet(projectDir);
+      if (isUnknown(capabilities) && !args["local-only"]) {
         throw new ValidationError({
-          message: "This project's Worker configuration will not load, so its resources cannot be deleted.",
+          // The set's own diagnosis, which names the worker and says whether the config is broken or
+          // simply absent. Inventing a sentence here is how "will not load" came to point at a file that
+          // does not exist (#454) — the fault that guard was added to stop reporting.
+          message: "This project's capability set is unknown, so its resources cannot be deleted.",
           action:
-            "Fix the config and re-run, or pass --local-only to free this feature's ports and prune its " +
-            "worktree without touching Cloudflare.",
+            `${capabilities.unknown} Fix it and re-run, or pass --local-only to free this feature's ports ` +
+            "and prune its worktree without touching Cloudflare.",
         });
       }
       const account = await projectCloudflareAccount(projectDir);
@@ -307,11 +305,14 @@ const destroy = defineCommand({
         report = await destroyFeature({
           projectDir,
           identity,
-          capabilities: capabilities ?? [],
+          capabilities: isUnknown(capabilities) ? [] : [...capabilities],
           ...(store && !args["local-only"] ? { store } : {}),
           env: requireEnvironment(args.env ?? DEFAULT_FEATURE_ENV),
           ...(provisioners && !args["local-only"] ? { provisioners } : {}),
-          audit: await buildAudit(projectDir, capabilities ?? [], account),
+          // `capabilities`, not `capabilities ?? []`. The teardown below takes the empty set because with
+          // `--local-only` there is nothing remote to reconcile, but auditing must not read *unknowable*
+          // as *this project composed no trail* — that is the conflation this whole change undoes (#455).
+          audit: await buildAudit(projectDir, capabilities, account),
         });
       } catch (error) {
         // A teardown that failed on the fourth delete has already destroyed three, and until #380 the

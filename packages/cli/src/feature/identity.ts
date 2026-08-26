@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { loadProject, requireProjectName } from "../project/config";
-import { projectCapabilities, type ResolveOptions, resolveWorkers } from "../project/workerScope";
+import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { defaultGit, type GitRunner } from "./worktree";
 
 /** A feature's identity as read from its branch: the issue number, the slug, and the full branch name. */
@@ -97,36 +97,4 @@ export async function branchIdentityWithoutWorkers(projectDir: string): Promise<
   const { issue, slug } = await deriveIdentityFromBranch(projectDir);
   const project = requireProjectName(await loadProject(projectDir));
   return { project, issue, slug };
-}
-
-/**
- * The capabilities the feature spans, or `null` when a Worker config will not load — `#454`.
- *
- * `null` is not "none": it is *unknowable from here*, and the caller has to tell the two apart. An empty
- * array would let `destroy` report a clean remote teardown having deleted nothing, which is the silent
- * leak the command's own guard exists to prevent.
- */
-export async function projectCapabilitiesOrNull(
-  projectDir: string,
-  seams: Omit<ResolveOptions, "projectDir"> = {},
-): Promise<Capability[] | null> {
-  try {
-    return projectCapabilities(await resolveWorkers({ projectDir, ...seams }));
-  } catch (error) {
-    /*
-      **A project with no Workers is `[]`, not unknowable.** `resolveWorkers` throws `core/not_found` for
-      exactly that — an empty `apps/`, or one holding only dev-only processes with no `pithy.config.ts` —
-      and nothing was ever named, so the reconcile pass has nothing to recompute and the manifest pass
-      still runs. Swallowed into `null`, destroy refused with a diagnosis that was not true: *this
-      project's Worker configuration will not load*, pointing at a file that does not exist, and a CI
-      teardown failed on it.
-
-      `core/not_found` also covers "no `pithy.config.ts` here", which is not this — but `destroy` cannot
-      reach this call without the root config, because {@link branchIdentityWithoutWorkers} loads it
-      first and throws its own error. Every other caller is welcome to the same reading: no Workers
-      resolved means no capabilities, and a config that *threw* is the only thing nobody here can answer.
-    */
-    if (error instanceof PithyError && error.payload.code === "core/not_found") return [];
-    return null;
-  }
 }

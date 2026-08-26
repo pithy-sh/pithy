@@ -1,16 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { defineCommand } from "citty";
-import { createCliAudit } from "../audit/cliAudit";
+import { createProjectCliAudit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { readProjectLedger } from "../migrations/run";
 import { projectCloudflareAccount } from "../project/config";
 import { deployProject, deployVerificationFailed, pendingWarning, summarizeDeploy } from "../project/deploy";
 import { assertOriginsDeclared } from "../project/domains";
 import { optionalEnvArg, requireEnvironment } from "../project/environment";
-import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { assertWorkflowsBound } from "../project/workflows";
 import { assertEnvironmentProvisioned } from "../provision/unprovisioned";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -58,21 +56,14 @@ async function pendingFor(
  */
 async function buildAudit(projectDir: string, env: string, account: CloudflareAccountSelection | null) {
   const vars = cloudflareEnv({ account });
-  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
-  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
-  if (!accountId || !apiToken) return async () => {};
-  // `audit` composed by any Worker means the project has a trail; deploy spans them all.
-  const capabilities = await resolveWorkers({ projectDir })
-    .then(projectCapabilities)
-    .catch(() => []);
-  return createCliAudit({
+  // `audit` composed by any Worker means the project has a trail; deploy spans them all. Here `env` really
+  // is the environment acted on, so it is also the recorded origin.
+  return createProjectCliAudit({
     projectDir,
+    accountId: vars.CLOUDFLARE_ACCOUNT_ID,
+    apiToken: vars.CLOUDFLARE_API_TOKEN,
     env,
-    // Here `env` really is the environment acted on, so it is also the recorded origin.
     actedOn: env,
-    capabilities,
-    clients: new CloudflareClients({ accountId, apiToken }),
-    apiToken,
   });
 }
 

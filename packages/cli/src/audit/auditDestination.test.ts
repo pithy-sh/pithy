@@ -38,10 +38,24 @@ function commandSources(): Map<string, string> {
   return found;
 }
 
-/** The `createCliAudit({ … })` call bodies in one source, brace-balanced. */
-function auditOptionBodies(source: string): string[] {
-  const bodies: string[] = [];
-  const opener = /createCliAudit\(\{/g;
+/** One audit-builder call: which builder, and the options body it was handed. */
+interface AuditCall {
+  /** The builder's name — `createProjectCliAudit` defaults `env`, the other two require it. */
+  builder: string;
+  /** The brace-balanced options body. */
+  body: string;
+}
+
+/**
+ * The audit-builder calls in one source, brace-balanced.
+ *
+ * Every builder, not just `createCliAudit`: `createProjectCliAudit` is the one the eight provisioning
+ * commands wire through since #455, and a rule that scanned only the older name would have gone quiet on
+ * exactly the call sites it was written for.
+ */
+function auditCalls(source: string): AuditCall[] {
+  const calls: AuditCall[] = [];
+  const opener = /(create(?:Remote|Project)?CliAudit)\(\{/g;
   for (let match = opener.exec(source); match !== null; match = opener.exec(source)) {
     let depth = 1;
     let index = match.index + match[0].length;
@@ -49,10 +63,64 @@ function auditOptionBodies(source: string): string[] {
       if (source[index] === "{") depth += 1;
       else if (source[index] === "}") depth -= 1;
     }
-    if (depth === 0) bodies.push(source.slice(match.index + match[0].length, index - 1));
+    if (depth === 0) {
+      calls.push({ builder: match[1] ?? "", body: source.slice(match.index + match[0].length, index - 1) });
+    }
   }
-  return bodies;
+  return calls;
 }
+
+/**
+ * Every call that records a routing choice as the environment acted on, named.
+ *
+ * A function rather than a loop inside the rule, so the rule can be shown to *fire* against a synthetic
+ * offender. The default-`env` branch below was added blind in #455 and would otherwise be a clause nothing
+ * had ever exercised — passing because the repo is clean, and equally because it never matched anything.
+ */
+function destinationOffenders(sources: Map<string, string>): string[] {
+  const offenders: string[] = [];
+  for (const [name, source] of sources) {
+    for (const { builder, body } of auditCalls(source)) {
+      if (!/\bactedOn:/.test(body)) continue;
+      const hardcoded = /\benv:\s*("[^"]*"|AUDIT_DESTINATION_ENV)/.exec(body);
+      // A literal or a named destination constant means this command's `env` is routing, not truth.
+      // Claiming it as `actedOn` is the regression; stating nothing is correct.
+      if (hardcoded) offenders.push(`${name}: actedOn beside a fixed env (${hardcoded[1]})`);
+      // And an *omitted* `env` on the project builder is the same fact with the literal moved into the
+      // default — the shape the seven provisioning commands now take, so the rule has to read it (#455).
+      // `env[,:]` catches both the shorthand `env,` and an explicit `env: …`; neither is the default.
+      else if (builder === "createProjectCliAudit" && !/\benv[,:]/.test(body)) {
+        offenders.push(`${name}: actedOn beside the default destination env`);
+      }
+    }
+  }
+  return offenders;
+}
+
+describe("destinationOffenders", () => {
+  const offenders = (source: string) => destinationOffenders(new Map([["probe.ts", source]]));
+
+  it("names a fixed destination env claimed as actedOn", () => {
+    expect(offenders('createCliAudit({ env: "dev", actedOn: "dev", capabilities })')).toEqual([
+      'probe.ts: actedOn beside a fixed env ("dev")',
+    ]);
+    expect(offenders("createCliAudit({ env: AUDIT_DESTINATION_ENV, actedOn: env })")).toEqual([
+      "probe.ts: actedOn beside a fixed env (AUDIT_DESTINATION_ENV)",
+    ]);
+  });
+
+  it("names an omitted env on the project builder — the default is a destination too", () => {
+    expect(offenders("createProjectCliAudit({ projectDir, accountId, apiToken, actedOn: args.env })")).toEqual([
+      "probe.ts: actedOn beside the default destination env",
+    ]);
+  });
+
+  it("clears a real --env passed as both destination and truth, and a call with no actedOn at all", () => {
+    expect(offenders("createProjectCliAudit({ projectDir, accountId, apiToken, env, actedOn: env })")).toEqual([]);
+    expect(offenders('createProjectCliAudit({ projectDir, env: "dev" })')).toEqual([]);
+    expect(offenders("createCliAudit({ env, actedOn: env })")).toEqual([]);
+  });
+});
 
 describe("the audit destination is never recorded as the environment acted on", () => {
   const sources = commandSources();
@@ -61,22 +129,12 @@ describe("the audit destination is never recorded as the environment acted on", 
     // Non-vacuity, both halves: a walk that matched no files, or a matcher that found no call, would
     // make the rule below pass forever.
     expect(sources.size).toBeGreaterThan(15);
-    const wired = [...sources.values()].filter((source) => auditOptionBodies(source).length > 0);
+    const wired = [...sources.values()].filter((source) => auditCalls(source).length > 0);
     expect(wired.length).toBeGreaterThan(8);
   });
 
   it("no command passes a hardcoded destination env as `actedOn`", () => {
-    const offenders: string[] = [];
-    for (const [name, source] of sources) {
-      for (const body of auditOptionBodies(source)) {
-        const hardcoded = /\benv:\s*("[^"]*"|AUDIT_DESTINATION_ENV)/.exec(body);
-        if (!hardcoded) continue;
-        // A literal or a named destination constant means this command's `env` is routing, not truth.
-        // Claiming it as `actedOn` is the regression; stating nothing is correct.
-        if (/\bactedOn:/.test(body)) offenders.push(`${name}: actedOn beside a fixed env (${hardcoded[1]})`);
-      }
-    }
-    expect(offenders).toEqual([]);
+    expect(destinationOffenders(sources)).toEqual([]);
   });
 
   it("a command whose env is a real variable does declare what it acted on", () => {
@@ -86,7 +144,7 @@ describe("the audit destination is never recorded as the environment acted on", 
     // the `--env` that decides which row is written is the same one the row is about (#294).
     const declaring: string[] = [];
     for (const [name, source] of sources) {
-      for (const body of auditOptionBodies(source)) {
+      for (const { body } of auditCalls(source)) {
         if (/\benv,/.test(body) && /\bactedOn: env,/.test(body)) declaring.push(name);
       }
     }

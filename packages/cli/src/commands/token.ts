@@ -3,8 +3,12 @@
 
 import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { isPermissionKey, PERMISSION_GROUPS, type PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
-import { resolveTokenProfiles, TOKEN_STORES, type TokenStore } from "@pithy-sh/cloudflare/src/tokens/profiles";
-import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import {
+  resolveTokenProfiles,
+  TOKEN_STORES,
+  type TokenProfile,
+  type TokenStore,
+} from "@pithy-sh/cloudflare/src/tokens/profiles";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { defineCommand } from "citty";
@@ -13,7 +17,15 @@ import { resolveSecretRegistry } from "../capabilities/secrets";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { loadProject, loadProjectCloudflare, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
-import { projectCapabilities, type ResolvedWorker, resolveWorkers } from "../project/workerScope";
+import {
+  type CapabilitySet,
+  capabilitySetOf,
+  isUnknown,
+  projectCapabilities,
+  type ResolvedWorker,
+  resolveWorkerSet,
+  type WorkerSet,
+} from "../project/workerScope";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { tokenOverrideResolver } from "../tokens/config";
 import {
@@ -129,7 +141,7 @@ export function publicToken(result: TokenResult): {
  * shape to the generic `CliAuditEvent` — never the token value, only its id and where it went.
  */
 async function buildAudit(
-  capabilities: readonly Capability[],
+  capabilities: CapabilitySet,
   cf: CloudflareClients,
   projectDir: string,
   env: string,
@@ -166,6 +178,33 @@ function mergedSecretRegistry(workers: readonly ResolvedWorker[]): SecretRegistr
   return Object.assign({}, ...registries) as SecretRegistry;
 }
 
+/**
+ * The profile registry a token operation derives from — **refused when the capability set cannot be read,
+ * never derived from an emptied one** (#455).
+ *
+ * {@link buildEngine} already insists the *root* config is required and never guessed, because `revoke`
+ * deletes every account token of the name it computes. The Worker half was best-effort, and that is the
+ * same mistake one level down: `resolveTokenProfiles([])` returns only `ci-system` and drops every
+ * capability's `ciPermissions`, so `pithy token list <env>` told an operator auditing live credentials that
+ * capability-profile tokens do not exist and exited 0, and `pithy token rotate ci-system <env>` minted a
+ * replacement carrying only the base permissions before deleting the fully-permissioned one it replaced.
+ * CI lost permissions silently, with nothing in the run saying the capability set was unknown.
+ *
+ * A project with genuinely **no** Workers still resolves normally: `ci-system` is a project-level profile
+ * and mints fine before the first `pithy worker add`. See {@link resolveWorkerSet} for the difference.
+ *
+ * The refusal quotes the set's own diagnosis rather than inventing one, so it names the worker.
+ */
+export function tokenProfiles(workers: WorkerSet): Record<string, TokenProfile> {
+  if (!isUnknown(workers)) return resolveTokenProfiles(projectCapabilities(workers));
+  throw new ValidationError({
+    message: "This project's capability set is unknown, so token permissions cannot be derived.",
+    action:
+      `${workers.unknown} Fix it — pithy doctor names the fault — and re-run. Token permissions come from ` +
+      "the composed capabilities, so minting from a partial set narrows what CI can do.",
+  });
+}
+
 /** Assemble the token engine: the aggregated profiles, the secret-registry backends, and the audit sink. */
 async function buildEngine(projectDir: string, env: string): Promise<TokenEngine> {
   // Identity/policy comes from the root config; what the project is *made of* comes from each Worker's.
@@ -177,18 +216,33 @@ async function buildEngine(projectDir: string, env: string): Promise<TokenEngine
   const config = await loadProject(projectDir);
   const { accountId, apiToken, storeId } = loadCreds(loadProjectCloudflare(config) ?? null);
   const cf = new CloudflareClients({ accountId, apiToken });
-  const workers = await resolveWorkers({ projectDir }).catch(() => []);
-  const capabilities = projectCapabilities(workers);
+  // Never best-effort. See {@link tokenProfiles}: an emptied capability set is a silently narrowed credential.
+  const workerSet = await resolveWorkerSet({ projectDir });
+  const workers = isUnknown(workerSet) ? [] : workerSet;
   const registry = mergedSecretRegistry(workers);
   return {
     accountId,
     project: requireProjectName(config),
     projectDir,
     tokens: cf.accountTokens(),
-    profiles: resolveTokenProfiles(capabilities),
+    /*
+      **A getter, so the refusal lands on the operations that actually need the registry.**
+
+      `mint`, `rotate` and `list` each read `profiles` on their first line — the first two to resolve a
+      profile's permissions, the third to recover a profile name by reverse lookup — so an unknown
+      capability set makes all three wrong, and they refuse here. `revoke` reads it never: it deletes
+      every account token of `tokenName(project, env, profile)`, a name composed from the root config
+      alone. Refusing it too would take `#454`'s lesson and repeat it — the one command you need in a
+      credential leak, unavailable because an unrelated Worker's config is broken on this checkout, with
+      no `--local-only` to fall back to.
+    */
+    get profiles() {
+      return tokenProfiles(workerSet);
+    },
     secretBackend: (name) => registry[name]?.backend,
     putSecret: storeId ? (name, value) => cf.secrets(storeId).putSecret(name, value) : undefined,
-    audit: await buildAudit(capabilities, cf, projectDir, env, apiToken),
+    // The set itself when it is unknowable, so the emitter says which worker rather than falling silent.
+    audit: await buildAudit(capabilitySetOf(workerSet), cf, projectDir, env, apiToken),
     override: tokenOverrideResolver(config),
   };
 }

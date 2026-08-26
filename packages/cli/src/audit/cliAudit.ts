@@ -4,11 +4,12 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
-import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { parse } from "comment-json";
 import { loadProject, requireProjectName } from "../project/config";
+import { type CapabilitySet, isUnknown, projectCapabilitySet, type UnknownSet } from "../project/workerScope";
 import { discoverWorkers } from "../project/workers";
+import { AUDIT_DESTINATION_ENV } from "../provision/resources";
 import { createCliLogger } from "../terminal/logger";
 
 /**
@@ -81,6 +82,32 @@ export type CliAuditEmit = (event: CliAuditEvent) => Promise<void>;
  * types — the intent, and the guarantee that calling it is always safe, are identical.
  */
 const NO_OP: CliAuditEmit = async () => {};
+
+/**
+ * The emitter returned when the project's capability set is **unknowable** — a Worker's `pithy.config.ts`
+ * would not load, so whether this project composes `audit` cannot be answered from here (#455).
+ *
+ * It is deliberately *not* {@link NO_OP}. Eight commands built their emitter from a capability list
+ * flattened by `.catch(() => [])`, which made "cannot tell" indistinguishable from "this project never
+ * composed audit" — so one uninstalled capability package in a CI checkout let `pithy deploy --env prod`
+ * ship every Worker, print `Done.`, exit 0, and write no row for a project that audits. This module's own
+ * standard settles it: **an audit trail you cannot tell is broken is worse than none.** So every event
+ * that would have been recorded names itself on the way past, on the same logger a dropped write uses.
+ *
+ * It still never throws. Auditing must not break the command it records — it just stops being silent.
+ */
+function unrecordable(reason: string): CliAuditEmit {
+  const log = createCliLogger().child("audit");
+  return async (event) => {
+    log.error("audit event not recorded", {
+      action: event.action,
+      // The set's own diagnosis, which names the worker. Inventing one here is how the absent-config case
+      // came to be reported as "a config will not load", pointing at a file that does not exist (#454).
+      reason,
+      action_required: "Fix it — pithy doctor names the fault — and re-run to record this event.",
+    });
+  };
+}
 
 /** The `wrangler.jsonc` slice the audit target is resolved from: the app database, per environment. */
 interface WranglerAppConfig {
@@ -241,8 +268,14 @@ export interface CliAuditContext {
    * event it emits, which is where the real answer is known.
    */
   actedOn?: string | null;
-  /** The capabilities in play — auditing is wired only when `audit` is among them. */
-  capabilities: readonly Capability[];
+  /**
+   * The capabilities in play — auditing is wired only when `audit` is among them.
+   *
+   * An {@link UnknownSet} is the third state and is not `[]`: it says the project's capability set could
+   * not be determined, and it produces a loud emitter carrying that set's own diagnosis rather than a
+   * silent one. See {@link unrecordable}.
+   */
+  capabilities: CapabilitySet;
   /** Restrict the audit-database lookup to this Worker (a command's `--worker`). Optional. */
   worker?: string;
 }
@@ -257,7 +290,9 @@ export type CreateCliAuditOptions = CliAuditContext & CliAuditTarget;
  * costs one identity lookup.
  */
 export async function createCliAudit(options: CreateCliAuditOptions): Promise<CliAuditEmit> {
-  if (!options.capabilities.some((capability) => capability.name === "audit")) return NO_OP;
+  const capabilities = options.capabilities;
+  if (isUnknown(capabilities)) return unrecordable(capabilities.unknown);
+  if (!capabilities.some((capability) => capability.name === "audit")) return NO_OP;
 
   // An injected handle skips the lookup entirely — it is already the database the action wrote to, and
   // resolving a second one is how an event ends up recorded against a store nothing touched.
@@ -319,4 +354,53 @@ export async function createCliAudit(options: CreateCliAuditOptions): Promise<Cl
       log.error("audit event dropped", { error });
     }
   };
+}
+
+/** Everything {@link createProjectCliAudit} needs: where the project is, and who is acting. */
+export interface ProjectCliAuditOptions {
+  /** The project root — the parent of `apps/`. */
+  projectDir: string;
+  /** The Cloudflare account id. Absent or empty leaves the emitter inert — there is nowhere to write. */
+  accountId: string | undefined;
+  /** The active CF API token — the actor's identity. Absent or empty leaves the emitter inert. */
+  apiToken: string | undefined;
+  /**
+   * Which database rows land in — a routing choice, not a statement about the action. Defaults to `"dev"`,
+   * the convention for a command that spans every managed environment in one run and so has no single
+   * environment to key on. See {@link CliAuditContext.env}.
+   */
+  env?: string;
+  /** The environment acted on, when one invocation names exactly one. See {@link CliAuditContext.actedOn}. */
+  actedOn?: string | null;
+  /** Restrict the audit-database lookup to this Worker (a command's `--worker`). */
+  worker?: string;
+}
+
+/**
+ * The audit emitter for a command that records against the **project as a whole** — `deploy`, and the
+ * provisioning commands (`email`, `media`, `payments`, `storage`, `support`, `testers`, `turnstile`).
+ *
+ * One helper rather than eight copies, which is the point (#455). Each of those commands carried its own
+ * three-line `buildAudit` ending in `.catch(() => [])`, and every copy folded "a Worker config will not
+ * load" into "this project composed nothing" — so a project that audits shipped unaudited, exited 0, and
+ * said nothing. Threading the third state is a property of the *set* of call sites, exactly like a
+ * migration order or a table prefix: it is only true if no copy is left behind, so there is one copy.
+ *
+ * Capabilities come from {@link projectCapabilitySet} — `audit` composed by any Worker means the project
+ * has a trail, and an unknowable set reaches {@link createCliAudit} carrying the reason it is unknowable.
+ */
+export async function createProjectCliAudit(options: ProjectCliAuditOptions): Promise<CliAuditEmit> {
+  const { accountId, apiToken } = options;
+  // No credentials is not the same fact and is not this module's to shout about: there is no REST client
+  // to write a row with, and every one of these commands refuses on the same absence a moment later.
+  if (!accountId || !apiToken) return NO_OP;
+  return createCliAudit({
+    projectDir: options.projectDir,
+    env: options.env ?? AUDIT_DESTINATION_ENV,
+    ...(options.actedOn !== undefined ? { actedOn: options.actedOn } : {}),
+    capabilities: await projectCapabilitySet(options.projectDir),
+    ...(options.worker !== undefined ? { worker: options.worker } : {}),
+    clients: new CloudflareClients({ accountId, apiToken }),
+    apiToken,
+  });
 }

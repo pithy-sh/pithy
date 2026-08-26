@@ -6,8 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { createCliAudit, createRemoteCliAudit, isRemoteEnv, resolveAuditDatabaseId } from "./cliAudit";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import {
+  createCliAudit,
+  createProjectCliAudit,
+  createRemoteCliAudit,
+  isRemoteEnv,
+  resolveAuditDatabaseId,
+} from "./cliAudit";
 
 /** Clients that would explode if touched — auditing must not reach for them when it is inert. */
 const unusedClients = {
@@ -230,5 +236,76 @@ describe("createCliAudit", () => {
     });
 
     await expect(emit({ action: "feature/resource_deleted", outcome: "success" })).resolves.toBeUndefined();
+  });
+});
+
+describe("an unknowable capability set", () => {
+  let dir: string;
+  let stderr: string[];
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-cliaudit-"));
+    stderr = [];
+    // The CLI logger's default sink is `console.error` — stderr under Node — so that is what is captured.
+    vi.spyOn(console, "error").mockImplementation((...parts: unknown[]) => {
+      stderr.push(parts.map(String).join(" "));
+    });
+  });
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("**createCliAudit says so loudly instead of returning a silent no-op**", async () => {
+    // `null` is *unknowable*, and it must never read as "this project composed no audit". Eight commands
+    // built their emitter from `.catch(() => [])`, so one Worker config that would not import — a fresh CI
+    // checkout where a capability package did not install — made `pithy deploy --env prod` ship every
+    // Worker, print `Done.`, exit 0, and write no audit row for a project that has audit composed. This
+    // module states the standard itself: an audit trail you cannot tell is broken is worse than none.
+    const emit = await createCliAudit({
+      projectDir: dir,
+      env: "prod",
+      capabilities: { unknown: "No pithy.config.ts in collab — every worker under apps/ needs one." },
+      clients: unusedClients,
+      apiToken: "tok",
+    });
+
+    // Still never throws — auditing must not break the command it records. It just stops being silent.
+    await expect(emit({ action: "deploy/worker_deployed", outcome: "success" })).resolves.toBeUndefined();
+    expect(stderr.join("")).toMatch(/deploy\/worker_deployed/);
+    expect(stderr.join("")).toMatch(/not recorded/i);
+    // And it says which worker, quoting the set's own diagnosis rather than inventing one (#454).
+    expect(stderr.join("")).toMatch(/No pithy\.config\.ts in collab/);
+  });
+
+  test("an audit-less project stays silent — absence is a real answer, and a common one", async () => {
+    // The contrast that gives the noise above its meaning: `[]` is a project that never composed audit,
+    // and warning there would put a permanent error in front of every adopter who did not want a trail.
+    const emit = await createCliAudit({
+      projectDir: dir,
+      env: "prod",
+      capabilities: [],
+      clients: unusedClients,
+      apiToken: "tok",
+    });
+
+    await emit({ action: "deploy/worker_deployed", outcome: "success" });
+    expect(stderr.join("")).toBe("");
+  });
+
+  test("**createProjectCliAudit reads a Worker with no pithy.config.ts as unknowable, not as none**", async () => {
+    // The one shared builder the eight copies of `.catch(() => [])` collapse into. `apps/api` carries a
+    // `wrangler.jsonc` and no `pithy.config.ts`, so what it composes is unanswerable from here.
+    await writeWorker(dir, "api", { name: "api", d1_databases: [{ binding: "DB", database_id: "x" }] });
+
+    const emit = await createProjectCliAudit({ projectDir: dir, accountId: "acct", apiToken: "tok", env: "prod" });
+    await emit({ action: "deploy/worker_deployed", outcome: "success" });
+
+    expect(stderr.join("")).toMatch(/not recorded/i);
+  });
+
+  test("createProjectCliAudit is inert without credentials, and reaches for nothing", async () => {
+    const emit = await createProjectCliAudit({ projectDir: dir, accountId: "", apiToken: "", env: "prod" });
+    await expect(emit({ action: "deploy/worker_deployed", outcome: "success" })).resolves.toBeUndefined();
+    expect(stderr.join("")).toBe("");
   });
 });

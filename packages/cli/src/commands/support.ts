@@ -8,7 +8,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { parse } from "comment-json";
-import { createCliAudit } from "../audit/cliAudit";
+import { createProjectCliAudit } from "../audit/cliAudit";
 import { resolveR2Credentials } from "../capabilities/r2Bucket";
 import {
   CloudflareSupportDeprovisioner,
@@ -46,19 +46,9 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
  * capability aren't there.
  */
 async function buildAudit(projectDir: string, accountId: string, apiToken: string, worker?: string) {
-  const capabilities = await resolveWorkers({ projectDir })
-    .then(projectCapabilities)
-    .catch(() => []);
-  return createCliAudit({
-    projectDir,
-    // `env` selects the audit database only. This command spans environments, so no single
-    // value is true for the run; each event states the environment it acted on.
-    env: "dev",
-    capabilities,
-    ...(worker !== undefined ? { worker } : {}),
-    clients: new CloudflareClients({ accountId, apiToken }),
-    apiToken,
-  });
+  // `env` selects the audit database only, and defaults to `dev`: this command spans environments, so no
+  // single value is true for the run; each event states the environment it acted on.
+  return createProjectCliAudit({ projectDir, accountId, apiToken, ...(worker !== undefined ? { worker } : {}) });
 }
 
 /** Load the support capability's resolved config from `pithy.config.ts`. */

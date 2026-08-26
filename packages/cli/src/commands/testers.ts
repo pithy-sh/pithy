@@ -14,7 +14,7 @@ import type { EmailMessageLayers } from "@pithy-sh/email/src/templates/messages"
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { parse } from "comment-json";
-import { createCliAudit } from "../audit/cliAudit";
+import { createProjectCliAudit } from "../audit/cliAudit";
 import { classifyCapabilityLoadFailure } from "../capabilities/loadFailure";
 import { loadTesters } from "../capabilities/testersLoader";
 import { CloudflareTestersProvisioner, loadTestersProvisioning } from "../capabilities/testersProvisioner";
@@ -401,20 +401,9 @@ async function buildProvisioner(projectDir: string) {
 
 /** The audit emitter for a testers command. A no-op without credentials or the audit capability. */
 async function buildAudit(projectDir: string, accountId: string, apiToken: string) {
-  const capabilities = await resolveWorkers({ projectDir })
-    .then(projectCapabilities)
-    .catch(() => []);
-  // Provisioning spans every managed environment at once, so there is no single target env to key the
-  // audit database on — `dev` is the fallback, matching `pithy storage`, `pithy media` and `pithy payments`.
-  return createCliAudit({
-    projectDir,
-    // `env` selects the audit database only. This command spans environments, so no single
-    // value is true for the run; each event states the environment it acted on.
-    env: "dev",
-    capabilities,
-    clients: new CloudflareClients({ accountId, apiToken }),
-    apiToken,
-  });
+  // `env` selects the audit database only, and defaults to `dev`: this command spans environments, so no
+  // single value is true for the run; each event states the environment it acted on.
+  return createProjectCliAudit({ projectDir, accountId, apiToken });
 }
 
 /** A wrangler env stanza — only the fields the host deploy reads from the project's own config. */
