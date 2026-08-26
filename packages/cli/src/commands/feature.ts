@@ -11,9 +11,14 @@ import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { createFeature } from "../feature/create";
 import { type DestroyReport, destroyedBeforeFailure, destroyFeature } from "../feature/destroy";
-import { branchIdentity, deriveIdentityFromBranch } from "../feature/identity";
+import {
+  branchIdentity,
+  branchIdentityWithoutWorkers,
+  deriveIdentityFromBranch,
+  projectCapabilitiesOrNull,
+} from "../feature/identity";
 import { syncFeatureDevConfig } from "../feature/sync";
-import { mainRepoRoot } from "../feature/worktree";
+import { behindRemote, mainRepoRoot } from "../feature/worktree";
 import { migrateProject } from "../migrations/run";
 import { loadProject, loadProjectCloudflare, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireEnvironment } from "../project/environment";
@@ -126,10 +131,22 @@ const create = defineCommand({
         slug: args.slug,
         skipInstall: args["skip-install"],
       });
+      // Only when a branch was actually cut from the trunk. An existing worktree is a no-op and an
+      // existing branch is *attached* — its base is whatever somebody else cut, months ago — so a
+      // sentence about this trunk would be false on both. `#454` is about false sentences over bases.
+      const behind = report.base === null ? null : await behindRemote();
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ ...report })}\n`);
+        process.stdout.write(`${formatJsonLine({ ...report, behindRemote: behind })}\n`);
         return;
+      }
+      // Said, never refused — `#454`. The branch was cut from local `main`, which is usually what somebody
+      // wants and is sometimes deliberate. Being told is what stops it becoming a surprise at merge time.
+      if (behind !== null && report.base !== null) {
+        process.stdout.write(
+          `${report.base} is ${behind} commit(s) behind origin/${report.base}. ` +
+            `Cut from local ${report.base}. git pull to change that.\n`,
+        );
       }
       process.stdout.write(`Worktree ${report.worktree}.\n`);
       process.stdout.write(`Branch ${report.branch}.\n`);
@@ -246,7 +263,28 @@ const destroy = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const { identity, capabilities } = await branchIdentity(projectDir);
+      /*
+        Identity without the Worker configs, and capabilities only if they load — `#454`.
+
+        Teardown's local half frees the port block and prunes the worktree, and needs neither. It is also
+        the half most needed when a Worker config will not load: a `feature create` that failed partway
+        leaves exactly that, and `destroy` used to throw on the same config before reaching the teardown —
+        so the command that frees the block was unavailable in the state that produced the leak.
+
+        The remote half genuinely cannot run without them, and skipping it silently is the worst outcome
+        (every D1/KV/R2 leaks while the run reports success). So an unloadable config is refused unless
+        `--local-only` says the remote half is not wanted.
+      */
+      const identity = await branchIdentityWithoutWorkers(projectDir);
+      const capabilities = await projectCapabilitiesOrNull(projectDir);
+      if (capabilities === null && !args["local-only"]) {
+        throw new ValidationError({
+          message: "This project's Worker configuration will not load, so its resources cannot be deleted.",
+          action:
+            "Fix the config and re-run, or pass --local-only to free this feature's ports and prune its " +
+            "worktree without touching Cloudflare.",
+        });
+      }
       const account = await projectCloudflareAccount(projectDir);
       const provisioners = buildProvisioners(account);
 
@@ -269,11 +307,11 @@ const destroy = defineCommand({
         report = await destroyFeature({
           projectDir,
           identity,
-          capabilities,
+          capabilities: capabilities ?? [],
           ...(store && !args["local-only"] ? { store } : {}),
           env: requireEnvironment(args.env ?? DEFAULT_FEATURE_ENV),
           ...(provisioners && !args["local-only"] ? { provisioners } : {}),
-          audit: await buildAudit(projectDir, capabilities, account),
+          audit: await buildAudit(projectDir, capabilities ?? [], account),
         });
       } catch (error) {
         // A teardown that failed on the fourth delete has already destroyed three, and until #380 the

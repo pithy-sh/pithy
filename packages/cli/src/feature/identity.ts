@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { loadProject, requireProjectName } from "../project/config";
-import { projectCapabilities, resolveWorkers } from "../project/workerScope";
+import { projectCapabilities, type ResolveOptions, resolveWorkers } from "../project/workerScope";
 import { defaultGit, type GitRunner } from "./worktree";
 
 /** A feature's identity as read from its branch: the issue number, the slug, and the full branch name. */
@@ -74,4 +74,59 @@ export async function branchIdentity(
   const project = requireProjectName(config);
   const capabilities = projectCapabilities(await resolveWorkers({ projectDir }));
   return { identity: { project, issue, slug }, capabilities };
+}
+
+/**
+ * The feature's identity without loading a single Worker config — `#454`.
+ *
+ * {@link branchIdentity} answers identity *and* capabilities, and the capabilities come from every
+ * `apps/<name>/pithy.config.ts`. That is right for `provision`, which cannot act without knowing what it
+ * is acting on. It is wrong for `destroy`, whose local half — free the port block, prune the worktree —
+ * needs none of it, and which is most needed in exactly the state where a Worker config will not load.
+ *
+ * A `feature create` that failed partway used to leave a worktree whose config threw, and `destroy` threw
+ * on the same config before it reached the teardown. The one command that removes the worktree and frees
+ * the port block was unavailable in the state it exists for, and the block leaked: the registry kept a
+ * branch that no longer existed, and the way out was editing `<config>/dev-ports.json` by hand.
+ *
+ * The project name still comes from the **root** config, which is project identity and holds no
+ * capabilities — so it loads when a Worker's does not, and teardown keeps deriving resource names the same
+ * way it always did rather than guessing them.
+ */
+export async function branchIdentityWithoutWorkers(projectDir: string): Promise<FeatureIdentity> {
+  const { issue, slug } = await deriveIdentityFromBranch(projectDir);
+  const project = requireProjectName(await loadProject(projectDir));
+  return { project, issue, slug };
+}
+
+/**
+ * The capabilities the feature spans, or `null` when a Worker config will not load — `#454`.
+ *
+ * `null` is not "none": it is *unknowable from here*, and the caller has to tell the two apart. An empty
+ * array would let `destroy` report a clean remote teardown having deleted nothing, which is the silent
+ * leak the command's own guard exists to prevent.
+ */
+export async function projectCapabilitiesOrNull(
+  projectDir: string,
+  seams: Omit<ResolveOptions, "projectDir"> = {},
+): Promise<Capability[] | null> {
+  try {
+    return projectCapabilities(await resolveWorkers({ projectDir, ...seams }));
+  } catch (error) {
+    /*
+      **A project with no Workers is `[]`, not unknowable.** `resolveWorkers` throws `core/not_found` for
+      exactly that — an empty `apps/`, or one holding only dev-only processes with no `pithy.config.ts` —
+      and nothing was ever named, so the reconcile pass has nothing to recompute and the manifest pass
+      still runs. Swallowed into `null`, destroy refused with a diagnosis that was not true: *this
+      project's Worker configuration will not load*, pointing at a file that does not exist, and a CI
+      teardown failed on it.
+
+      `core/not_found` also covers "no `pithy.config.ts` here", which is not this — but `destroy` cannot
+      reach this call without the root config, because {@link branchIdentityWithoutWorkers} loads it
+      first and throws its own error. Every other caller is welcome to the same reading: no Workers
+      resolved means no capabilities, and a config that *threw* is the only thing nobody here can answer.
+    */
+    if (error instanceof PithyError && error.payload.code === "core/not_found") return [];
+    return null;
+  }
 }

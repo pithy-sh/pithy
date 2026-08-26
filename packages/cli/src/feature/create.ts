@@ -84,6 +84,15 @@ export interface CreateReport {
    * inside its own command before it was one across the CLI.
    */
   worktreeCreated: boolean;
+  /**
+   * The ref the branch was cut from — the trunk's name, or `"HEAD"`. **Null when nothing was cut**: an
+   * already-registered worktree, or a branch that already existed and was attached to.
+   *
+   * The command reports how far the trunk is behind its remote, and only when this is non-null. On the
+   * attach path that sentence would be about a base somebody else chose months ago — a false sentence
+   * about a base, which is the defect `#454` is about.
+   */
+  base: string | null;
   /** The feature's dev config — its reserved port block and each worker's pinned endpoint. */
   dev: DevConfig;
 }
@@ -157,6 +166,7 @@ export async function createFeature(options: CreateFeatureOptions): Promise<Crea
     branch: worktree.branch,
     worktree: worktree.wtPath,
     worktreeCreated: worktree.created,
+    base: worktree.base,
     dev,
   };
 }

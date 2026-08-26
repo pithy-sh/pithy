@@ -106,7 +106,17 @@ describe("createFeature → destroyFeature round-trip", () => {
     // is the proof they ran; a `migrated: true, seeded: true` pair beside it is a constant dressed as a
     // fact, and the only branch a consumer could write on it is one that can never fire. `feature sync`
     // has a real answer to give here because `--skip-data` can make it `false`; create has none.
-    expect(Object.keys(createReport).sort()).toEqual(["branch", "command", "dev", "worktree", "worktreeCreated"]);
+    // `base` is the ref a fresh branch was cut from, and null when nothing was cut — `#454`. It is a real
+    // answer rather than a constant: the attach path and an idempotent re-run both report null, and the
+    // command prints its behind-remote line only when it is not.
+    expect(Object.keys(createReport).sort()).toEqual([
+      "base",
+      "branch",
+      "command",
+      "dev",
+      "worktree",
+      "worktreeCreated",
+    ]);
 
     // Destroy reverses everything: frees the port block and prunes the worktree.
     const destroyReport = await destroyFeature({
