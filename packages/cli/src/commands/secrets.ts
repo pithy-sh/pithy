@@ -16,7 +16,7 @@ import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/prov
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { canonicalGlobalEnvironment, type ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
-import { createCliAudit } from "../audit/cliAudit";
+import { createProjectCliAudit } from "../audit/cliAudit";
 import {
   type MintedSecret,
   mintDeclaredSecrets,
@@ -44,7 +44,7 @@ import { resolveDevSecretsFile } from "../devSecrets/location";
 import { mergedSecretRegistry, resolveDevSecretsTargets } from "../devSecrets/targets";
 import { loadProject, projectCloudflareAccount, projectEnvironments, requireProjectName } from "../project/config";
 import { requireManagedEnvironment } from "../project/environment";
-import { projectCapabilities, resolveWorkers } from "../project/workerScope";
+import { resolveWorkers } from "../project/workerScope";
 import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
 import { cloudflareSecretsStore } from "../provision/store";
 import { applySecretBindings } from "../provision/wranglerEnv";
@@ -88,21 +88,14 @@ async function projectSecretRegistry(projectDir: string): Promise<SecretRegistry
  */
 async function buildAudit(projectDir: string, env: string) {
   const vars = cloudflareEnv({ account: await projectCloudflareAccount(projectDir) });
-  const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
-  const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
-  if (!accountId || !apiToken) return async () => {};
-  // Auditing spans the project, not one Worker: `audit` composed anywhere means the trail exists.
-  const capabilities = await resolveWorkers({ projectDir })
-    .then(projectCapabilities)
-    .catch(() => []);
-  return createCliAudit({
+  // Auditing spans the project, not one Worker: `audit` composed anywhere means the trail exists. Here
+  // `env` really is the environment acted on, so it is also the recorded origin.
+  return createProjectCliAudit({
     projectDir,
+    accountId: vars.CLOUDFLARE_ACCOUNT_ID,
+    apiToken: vars.CLOUDFLARE_API_TOKEN,
     env,
-    // Here `env` really is the environment acted on, so it is also the recorded origin.
     actedOn: env,
-    capabilities,
-    clients: new CloudflareClients({ accountId, apiToken }),
-    apiToken,
   });
 }
 

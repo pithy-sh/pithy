@@ -6,7 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { collectPermissionFlags, parsePermissions, parseStore, publicToken, resolveAppDatabaseId } from "./token";
+import {
+  collectPermissionFlags,
+  parsePermissions,
+  parseStore,
+  publicToken,
+  resolveAppDatabaseId,
+  tokenProfiles,
+} from "./token";
 
 describe("collectPermissionFlags", () => {
   test("collects every repeated --permission from raw argv (citty keeps only the last)", () => {
@@ -94,5 +101,42 @@ describe("resolveAppDatabaseId", () => {
 
   test("returns undefined when the project has no workers", async () => {
     expect(await resolveAppDatabaseId(dir, "staging")).toBeUndefined();
+  });
+});
+
+describe("tokenProfiles", () => {
+  /** A resolved worker carrying just its capabilities — the only field the profile fold reads. */
+  const worker = (capabilities: never[] = []) =>
+    ({ name: "api", dir: "/proj/apps/api", config: { capabilities }, capabilities, target: {} }) as never;
+
+  test("**an unknowable capability set is refused, never emptied**", () => {
+    // The docstring over `buildEngine` insists the *root* config is required and never guessed, because
+    // `revoke` deletes every account token of the name it computes — and then the Worker half was
+    // best-effort. With capabilities emptied, `resolveTokenProfiles([])` returns only `ci-system` and drops
+    // every capability's `ciPermissions`. So `pithy token list <env>` reported to an operator auditing live
+    // credentials that capability-profile tokens do not exist, and exited 0; and `pithy token rotate
+    // ci-system <env>` minted a replacement carrying only the base permissions, then deleted the
+    // fully-permissioned token it replaced. CI silently lost permissions and nothing in the run said the
+    // capability set was unknown.
+    const refusal = () => tokenProfiles({ unknown: "No pithy.config.ts in collab." });
+
+    expect(refusal).toThrow(PithyError);
+    expect(refusal).toThrow(/capability set is unknown/i);
+    // And it names the worker, quoting the set's own diagnosis rather than inventing one (#454).
+    try {
+      refusal();
+    } catch (error) {
+      expect((error as PithyError).payload.action).toMatch(/No pithy\.config\.ts in collab\./);
+    }
+  });
+
+  test("a project with no Workers still resolves — ci-system is project-level", () => {
+    // `resolveTokenProfiles([])` is the right answer here, not a refusal: `ci-system` mints fine for a
+    // project that has not added a Worker yet.
+    expect(Object.keys(tokenProfiles([]))).toContain("ci-system");
+  });
+
+  test("a healthy set resolves to its profiles", () => {
+    expect(Object.keys(tokenProfiles([worker()]))).toContain("ci-system");
   });
 });

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { AccountTokenSummary, MintedAccountToken } from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
 import { resolveProfile, resolveTokenProfiles } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
-import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { NAMESPACE_LIMITS } from "@pithy-sh/core/src/naming/limits";
 import { secretsTokenProfile } from "@pithy-sh/secrets/src/capability";
 import { managerCfApiTokenSecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
@@ -333,5 +333,54 @@ describe("revokeProfileToken", () => {
       profile: "ci-system",
       env: "prod",
     });
+  });
+});
+
+/**
+ * Which operations actually need `engine.profiles` — the property `pithy token`'s refusal is built on.
+ *
+ * When the project's capability set is unknowable, `buildEngine` makes `profiles` a getter that throws, so
+ * the refusal lands on the operations that read it and nowhere else. That is only safe while this split
+ * holds, and the split is not obvious from the call sites: `revoke` is one line away from reaching for a
+ * profile it does not need. Asserted directly, in both directions, so a later edit that adds a `profiles`
+ * read to `revoke` fails here rather than silently taking `pithy token revoke` away from an operator in a
+ * credential leak — the shape `#454` is about, with no `--local-only` to fall back on.
+ */
+describe("which operations read the profile registry", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-token-profiles-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** An engine whose profile registry is unreadable — exactly what an unknowable capability set produces. */
+  function engineWithUnreadableProfiles(tokens: AccountTokenControl): TokenEngine {
+    const engine = engineWith(dir, tokens);
+    return Object.defineProperty(engine, "profiles", {
+      get(): never {
+        // The same class `tokenProfiles` refuses with, so this stands in for the real getter exactly.
+        throw new ValidationError({
+          message: "This project's capability set is unknown, so token permissions cannot be derived.",
+        });
+      },
+    }) as TokenEngine;
+  }
+
+  test("**revoke does not — it deletes by a name composed from the root config alone**", async () => {
+    const tokens = fakeControl();
+    const result = await revokeProfileToken(engineWithUnreadableProfiles(tokens), "ci-system", "prod");
+
+    expect(result.revoked).toBe(1);
+    expect(tokens.deletedByName).toEqual([tokenName(PROJECT, "prod", "ci-system")]);
+  });
+
+  test("mint, rotate and list do — each resolves a profile before anything else", async () => {
+    const engine = engineWithUnreadableProfiles(fakeControl());
+
+    await expect(mintProfileToken(engine, "ci-system", "prod")).rejects.toThrow(/capability set is unknown/);
+    await expect(rotateProfileToken(engine, "ci-system", "prod")).rejects.toThrow(/capability set is unknown/);
+    await expect(listProfileTokens(engine, "prod")).rejects.toThrow(/capability set is unknown/);
   });
 });

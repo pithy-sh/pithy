@@ -14,7 +14,7 @@ import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManage
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { parse } from "comment-json";
-import { createCliAudit } from "../audit/cliAudit";
+import { createProjectCliAudit } from "../audit/cliAudit";
 import {
   CloudflareEmailDeprovisioner,
   CloudflareEmailProvisioner,
@@ -33,7 +33,6 @@ import {
 import { resolveWorkerAddress } from "../project/workerAddress";
 import {
   composedProjectCapabilities,
-  projectCapabilities,
   type ResolvedWorker,
   resolveSingleWorker,
   resolveWorkers,
@@ -47,18 +46,9 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
  * aren't there.
  */
 async function buildAudit(projectDir: string, accountId: string, apiToken: string) {
-  const capabilities = await resolveWorkers({ projectDir })
-    .then(projectCapabilities)
-    .catch(() => []);
-  return createCliAudit({
-    projectDir,
-    // `env` selects the audit database only. This command spans environments, so no single
-    // value is true for the run; each event states the environment it acted on.
-    env: "dev",
-    capabilities,
-    clients: new CloudflareClients({ accountId, apiToken }),
-    apiToken,
-  });
+  // `env` selects the audit database only, and defaults to `dev`: this command spans environments, so no
+  // single value is true for the run; each event states the environment it acted on.
+  return createProjectCliAudit({ projectDir, accountId, apiToken });
 }
 
 /**
