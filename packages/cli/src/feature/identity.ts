@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
 import { loadProject, requireProjectName } from "../project/config";
 import { projectCapabilities, type ResolveOptions, resolveWorkers } from "../project/workerScope";
@@ -112,7 +112,21 @@ export async function projectCapabilitiesOrNull(
 ): Promise<Capability[] | null> {
   try {
     return projectCapabilities(await resolveWorkers({ projectDir, ...seams }));
-  } catch {
+  } catch (error) {
+    /*
+      **A project with no Workers is `[]`, not unknowable.** `resolveWorkers` throws `core/not_found` for
+      exactly that — an empty `apps/`, or one holding only dev-only processes with no `pithy.config.ts` —
+      and nothing was ever named, so the reconcile pass has nothing to recompute and the manifest pass
+      still runs. Swallowed into `null`, destroy refused with a diagnosis that was not true: *this
+      project's Worker configuration will not load*, pointing at a file that does not exist, and a CI
+      teardown failed on it.
+
+      `core/not_found` also covers "no `pithy.config.ts` here", which is not this — but `destroy` cannot
+      reach this call without the root config, because {@link branchIdentityWithoutWorkers} loads it
+      first and throws its own error. Every other caller is welcome to the same reading: no Workers
+      resolved means no capabilities, and a config that *threw* is the only thing nobody here can answer.
+    */
+    if (error instanceof PithyError && error.payload.code === "core/not_found") return [];
     return null;
   }
 }

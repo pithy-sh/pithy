@@ -131,7 +131,10 @@ const create = defineCommand({
         slug: args.slug,
         skipInstall: args["skip-install"],
       });
-      const behind = await behindRemote();
+      // Only when a branch was actually cut from the trunk. An existing worktree is a no-op and an
+      // existing branch is *attached* — its base is whatever somebody else cut, months ago — so a
+      // sentence about this trunk would be false on both. `#454` is about false sentences over bases.
+      const behind = report.base === null ? null : await behindRemote();
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ ...report, behindRemote: behind })}\n`);
@@ -139,9 +142,10 @@ const create = defineCommand({
       }
       // Said, never refused — `#454`. The branch was cut from local `main`, which is usually what somebody
       // wants and is sometimes deliberate. Being told is what stops it becoming a surprise at merge time.
-      if (behind !== null) {
+      if (behind !== null && report.base !== null) {
         process.stdout.write(
-          `main is ${behind} commit(s) behind origin/main. Cut from local main. git pull to change that.\n`,
+          `${report.base} is ${behind} commit(s) behind origin/${report.base}. ` +
+            `Cut from local ${report.base}. git pull to change that.\n`,
         );
       }
       process.stdout.write(`Worktree ${report.worktree}.\n`);

@@ -86,11 +86,30 @@ describe("tearing down a feature whose Worker config will not load — #454", ()
     expect(await branchIdentityWithoutWorkers(dir)).toEqual({ project: "probe", issue: "454", slug: "probe" });
   });
 
-  test("**and the capabilities answer null rather than throwing or claiming none**", async () => {
+  test("**and a config that throws answers null rather than throwing or claiming none**", async () => {
     // Null is *unknowable from here*, and the caller has to tell it from "none". An empty array would let
     // destroy report a clean remote teardown having deleted nothing — the silent leak the guard exists for.
+    //
+    // Driven through the seams, because the discovery half has its own suite and this is about the catch.
+    // The first version of this test pointed the real discoverer at a checkout it found no Workers in, so
+    // it was answering "none" and asserting "unknowable" — passing for the opposite of its own reason.
     dir = await brokenWorkerCheckout();
-    expect(await projectCapabilitiesOrNull(dir)).toBeNull();
+    const answered = await projectCapabilitiesOrNull(dir, {
+      discoverWorkers: async () => [{ name: "board", dir: join(dir ?? "", "apps", "board") } as never],
+      loadConfig: async () => {
+        throw new Error("this config will not load");
+      },
+    });
+    expect(answered).toBeNull();
+  });
+
+  test("**a project with no Workers answers `[]`, not `null`** — review of #454", async () => {
+    // `null` means *unknowable*, and destroy refuses on it with "this project's Worker configuration will
+    // not load". For a project that simply has no Workers — an empty `apps/`, or one holding only
+    // dev-only processes — that sentence is false and points at a file that does not exist, and a CI
+    // teardown fails on it. Nothing was ever named, so there is nothing to recompute: the answer is none.
+    dir = await brokenWorkerCheckout();
+    expect(await projectCapabilitiesOrNull(dir, { discoverWorkers: async () => [] })).toEqual([]);
   });
 
   test("a checkout whose Workers do load still answers with them", async () => {

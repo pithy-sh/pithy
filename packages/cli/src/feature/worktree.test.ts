@@ -77,6 +77,56 @@ describe("worktree (real git)", () => {
     expect((await run("git", ["rev-parse", "HEAD"], { cwd: made.wtPath })).stdout.trim()).toBe(head);
   });
 
+  test("**a stale local `main` never beats the repository's real trunk** — review of #454", async () => {
+    /*
+      The regression the first fix introduced. Preferring `refs/heads/main` unconditionally meant a
+      repository whose trunk is `master` — and which therefore has no `origin/main` — went from falling
+      through to `HEAD` (right) to cutting from whatever stale `main` a rename left behind (wrong), with
+      no warning, which is #454 again in a different repo shape.
+
+      The trunk's *name* comes from `origin/HEAD`; the ref cut from is still local.
+    */
+    const origin = await mkdtemp(join(tmpdir(), "pithy-worktree-master-"));
+    await run("git", [...GIT_NO_MAINTENANCE, "init", "--bare", "--initial-branch=master"], { cwd: origin });
+    await run("git", ["branch", "-M", "master"], { cwd: repo });
+    await run("git", ["remote", "add", "origin", origin], { cwd: repo });
+    await run("git", ["push", "-q", "-u", "origin", "master"], { cwd: repo });
+    await run("git", ["remote", "set-head", "origin", "master"], { cwd: repo });
+
+    // The stale leftover, two commits behind the real trunk.
+    await run("git", ["branch", "main", "HEAD"], { cwd: repo });
+    await writeFile(join(repo, "TRUNK.md"), "on master\n");
+    await run("git", ["add", "-A"], { cwd: repo });
+    await run("git", ["commit", "-m", "master moves on"], { cwd: repo });
+    const trunk = (await run("git", ["rev-parse", "master"], { cwd: repo })).stdout.trim();
+    const stale = (await run("git", ["rev-parse", "main"], { cwd: repo })).stdout.trim();
+    expect(trunk).not.toBe(stale);
+
+    const made = await createWorktree({ issue: "454", slug: "trunk" });
+    expect(made.base).toBe("master");
+    expect((await run("git", ["rev-parse", "HEAD"], { cwd: made.wtPath })).stdout.trim()).toBe(trunk);
+    await removeTempDir(origin);
+  });
+
+  test("**an attached branch reports no base, because none was chosen** — review of #454", async () => {
+    // `createWorktree` attaches when the branch already exists — pushed by a colleague, or left by a
+    // teardown — and its base is whatever they cut, months ago. The command prints how far the trunk is
+    // behind its remote off this field, and on this path that sentence would be about somebody else's
+    // decision. Null is what stops it being said.
+    await run("git", ["branch", "feature/454-attached"], { cwd: repo });
+    const made = await createWorktree({ issue: "454", slug: "attached" });
+    expect(made.created).toBe(true);
+    expect(made.base).toBeNull();
+  });
+
+  test("and an already-registered worktree reports no base either", async () => {
+    const first = await createWorktree({ issue: "454", slug: "again" });
+    expect(first.base).not.toBeNull();
+    const second = await createWorktree({ issue: "454", slug: "again" });
+    expect(second.created).toBe(false);
+    expect(second.base).toBeNull();
+  });
+
   test("createWorktree creates the branch and worktree, and is idempotent", async () => {
     const first = await createWorktree({ issue: "77", slug: "demo" });
     expect(first.branch).toBe("feature/77-demo");

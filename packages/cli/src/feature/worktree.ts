@@ -112,6 +112,16 @@ function hasLeftoverFiles(wtPath: string): boolean {
   return readdirSync(wtPath).length > 0;
 }
 
+/** Run git for its output, or `null` when it fails. The `gitTry` of answers rather than of exit codes. */
+async function gitOut(git: GitRunner, args: string[], cwd?: string): Promise<string | null> {
+  try {
+    const out = (await git(args, cwd)).trim();
+    return out === "" ? null : out;
+  } catch {
+    return null;
+  }
+}
+
 /** Whether a ref exists locally or on origin. */
 async function branchExists(git: GitRunner, branch: string, cwd?: string): Promise<boolean> {
   return (
@@ -121,33 +131,53 @@ async function branchExists(git: GitRunner, branch: string, cwd?: string): Promi
 }
 
 /**
- * The trunk to cut a fresh feature branch from: local `main` when it exists, else the current `HEAD`.
+ * The name of this repository's trunk — `main` unless the remote says otherwise.
  *
- * **Local, never `origin/main` — `#454`.** It preferred the remote whenever the ref existed, which meant a
- * feature cut on a repository holding unpushed work started before that work. On `pithy-sh/dashboard` that
- * was 159 commits, and the symptom was a config error naming a field the branch was too old to have — a
- * sentence that says nothing about the base it was cut from. Where the old config still parses there is no
- * symptom at all: the branch is simply rooted in the past, and the operator learns at merge.
+ * **Read from `origin/HEAD`, which is the remote's answer to "what is the default branch".** Only the
+ * *name* comes from the remote; the ref cut from is always the local branch of that name. A repository
+ * whose trunk is `master` and which also carries a stale local `main` — a rename left behind, a fork —
+ * would otherwise have every feature cut from the stale one, silently, which is `#454` again in a
+ * different shape.
  *
- * A remote that is *ahead* is the ordinary case and not this function's business: cutting from a `main`
- * that is a few commits behind is usually fine and sometimes deliberate. {@link behindRemote} is how the
- * operator gets told, because being told is what stops it becoming a surprise at merge time.
+ * `main` when there is no remote to ask. That is this project family's convention and what
+ * `scripts/worktree.ts` has always assumed; a repository with no remote and a non-`main` trunk is the
+ * one case still open, and it resolves through {@link baseRef}'s fallback rather than guessing.
  */
-async function baseRef(git: GitRunner): Promise<string> {
-  return (await gitTry(git, ["rev-parse", "--verify", "--quiet", "refs/heads/main"])) ? "main" : "HEAD";
+async function trunkName(git: GitRunner): Promise<string> {
+  const named = await gitOut(git, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]);
+  return named === null ? "main" : named.replace(/^origin\//, "");
 }
 
 /**
- * How many commits local `main` is behind `origin/main`, or `null` when the question does not arise —
- * no remote ref, no local `main`, or nothing behind.
+ * The trunk to cut a fresh feature branch from: the local trunk branch when it exists, else `HEAD`.
+ *
+ * **Local, never `origin/<trunk>` — `#454`.** It preferred the remote whenever the ref existed, which meant
+ * a feature cut on a repository holding unpushed work started before that work. On `pithy-sh/dashboard`
+ * that was 159 commits, and the symptom was a config error naming a field the branch was too old to have —
+ * a sentence that says nothing about the base it was cut from. Where the old config still parses there is
+ * no symptom at all: the branch is simply rooted in the past, and the operator learns at merge.
+ *
+ * A remote that is *ahead* is the ordinary case and not this function's business: cutting from a trunk that
+ * is a few commits behind is usually fine and sometimes deliberate. {@link behindRemote} is how the operator
+ * gets told, because being told is what stops it becoming a surprise at merge time.
+ */
+async function baseRef(git: GitRunner): Promise<string> {
+  const trunk = await trunkName(git);
+  return (await gitTry(git, ["rev-parse", "--verify", "--quiet", `refs/heads/${trunk}`])) ? trunk : "HEAD";
+}
+
+/**
+ * How many commits the local trunk is behind its remote, or `null` when the question does not arise —
+ * no remote ref, no local trunk, or nothing behind.
  *
  * Reported rather than refused, and the caller decides how to say it. A repository with no `origin` is the
  * ordinary case for a fresh `pithy init`, and a count of zero is the ordinary case for everybody else.
  */
 export async function behindRemote(git: GitRunner = defaultGit): Promise<number | null> {
-  if (!(await gitTry(git, ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"]))) return null;
-  if (!(await gitTry(git, ["rev-parse", "--verify", "--quiet", "refs/heads/main"]))) return null;
-  const behind = Number.parseInt(await git(["rev-list", "--count", "main..origin/main"]), 10);
+  const trunk = await trunkName(git);
+  if (!(await gitTry(git, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${trunk}`]))) return null;
+  if (!(await gitTry(git, ["rev-parse", "--verify", "--quiet", `refs/heads/${trunk}`]))) return null;
+  const behind = Number.parseInt(await git(["rev-list", "--count", `${trunk}..origin/${trunk}`]), 10);
   return Number.isFinite(behind) && behind > 0 ? behind : null;
 }
 
@@ -157,6 +187,15 @@ export interface CreateWorktreeResult extends FeatureNames {
   root: string;
   /** True when a new worktree was created; false when one already existed (idempotent re-run). */
   created: boolean;
+  /**
+   * The ref a fresh branch was cut from — the trunk's name, or `"HEAD"`. **Null when nothing was cut**:
+   * an already-registered worktree, or a branch that already existed and was attached to.
+   *
+   * A caller reporting a base has to know that difference. `feature create` prints how far the trunk is
+   * behind its remote, and on the attach path that sentence would be about a branch somebody else cut
+   * months ago — a false sentence about a base, which is the thing `#454` is about.
+   */
+  base: string | null;
 }
 
 /**
@@ -177,7 +216,7 @@ export async function createWorktree(options: {
   const names = featureNames(options.issue, options.slug, root);
 
   if (await isRegistered(git, names.wtPath)) {
-    return { ...names, root, created: false };
+    return { ...names, root, created: false, base: null };
   }
 
   if (hasLeftoverFiles(names.wtPath)) {
@@ -191,11 +230,14 @@ export async function createWorktree(options: {
   }
 
   if (await branchExists(git, names.branch)) {
+    // Attached, not cut. The branch already exists — pushed by a colleague, or left behind by a teardown —
+    // so its base is whatever it was cut from, months ago and by somebody else. Nothing about this trunk.
     await git(["worktree", "add", names.wtPath, names.branch]);
-  } else {
-    await git(["worktree", "add", names.wtPath, "-b", names.branch, await baseRef(git)]);
+    return { ...names, root, created: true, base: null };
   }
-  return { ...names, root, created: true };
+  const base = await baseRef(git);
+  await git(["worktree", "add", names.wtPath, "-b", names.branch, base]);
+  return { ...names, root, created: true, base };
 }
 
 /** The outcome of {@link teardownWorktree}: what was actually removed. */
