@@ -1,5 +1,7 @@
 # pithy provision
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/provision](https://pithy.sh/docs/cli/commands/provision). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Create an environment's own Cloudflare resources, wire them into every Worker, and migrate.
 
 ## Synopsis

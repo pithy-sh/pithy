@@ -1,5 +1,7 @@
 # Multiplayer costs
 
+_The reader's version of this page is [pithy.sh/docs/capabilities/multiplayer](https://pithy.sh/docs/capabilities/multiplayer). This copy ships in the package because `packages/multiplayer/scripts/costModel.ts` sends an adopter to it by name._
+
 Rates as of **2026-07-16**. Cloudflare's [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/) is the authority — this page explains how a session maps onto it, and carries the two caveats that make a naive estimate wrong. When the two disagree, Cloudflare is right.
 
 A multiplayer session is one Durable Object. You pay for three things: requests, duration, and storage. The shape of the bill is dominated by one fact — **a session waiting on a player's turn hibernates, and a hibernating object bills no duration.** Turn-based, asynchronous play is the quadrant where a Durable Object is genuinely excellent, and it is the only quadrant this capability serves.

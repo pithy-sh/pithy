@@ -23,6 +23,7 @@
     "format": "biome format --write .",
     "clean": "turbo run clean",
     "stamp-versions": "bun scripts/stampVersions.ts",
+    "docs-catalog": "bun packages/cli/src/docs/writeCatalog.ts",
     "worktree": "bun scripts/worktree.ts",
     "reset": "turbo run reset && rm -rf node_modules && bun install",
     "file-modes": "bun scripts/fileModes.ts",

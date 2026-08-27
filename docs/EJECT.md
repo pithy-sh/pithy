@@ -1,5 +1,7 @@
 # Ejecting a capability
 
+_The reader's version of this page is [pithy.sh/docs/build/operations/eject](https://pithy.sh/docs/build/operations/eject). This copy stays in the kit because `packages/cli/src/capabilities/eject.ts` sends an adopter to it by name._
+
 Pithy keeps your repo thin: a capability's handler logic lives in its `@pithy-sh/*` package and upgrades with minor releases (principle 3). `pithy add <capability>` scaffolds only **config** — the registration, bindings, and options in `pithy.config.ts` and `wrangler.jsonc`. It never writes handler source.
 
 Sometimes you need to fork that logic — bend a route, change a flow, do something the config options don't expose. `--eject` is the escape hatch.

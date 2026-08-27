@@ -1,5 +1,7 @@
 # pithy token
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/token](https://pithy.sh/docs/cli/commands/token). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Mint, list, rotate, and revoke the scoped, least-privilege, account-owned Cloudflare API tokens a project needs.
 
 ## Synopsis

@@ -154,16 +154,29 @@ export async function aliasStatus(opts: AliasOptions = {}): Promise<void> {
 }
 
 /**
+ * The hidden root flags, in the order {@link handleHiddenFlags} tests them.
+ *
+ * Hidden from `--help`, not from anything that enumerates what the CLI parses: `bin.ts` answers them
+ * before citty sees the arguments, so they are in no command's `args` and a walk of the command tree
+ * cannot find them. `docs/catalog.ts` reads this rather than restating it — the docs catalog exists so
+ * the site can ask whether a flag it cites is real, and a flag missing from that answer reads as a typo
+ * on a page that is correct.
+ */
+const PITHIEST = "--pithiest";
+const PITHIER = "--pithier";
+export const HIDDEN_ROOT_FLAGS: readonly string[] = [PITHIEST, PITHIER];
+
+/**
  * Handle the hidden root flags. `--pithier` is a synonym for `pithy alias` (install). `--pithiest` is the
  * anti-feature: it prints `Pithy enough.` and writes nothing. Returns whether a flag was handled, so the
  * root dispatch can skip normal command parsing. Neither flag appears in `--help`.
  */
 export async function handleHiddenFlags(argv: string[]): Promise<boolean> {
-  if (argv.includes("--pithiest")) {
+  if (argv.includes(PITHIEST)) {
     emit("Pithy enough.");
     return true;
   }
-  if (argv.includes("--pithier")) {
+  if (argv.includes(PITHIER)) {
     await installAlias();
     return true;
   }

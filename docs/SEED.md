@@ -1,5 +1,7 @@
 # Seeding data (`pithy seed`)
 
+_The reader's version of this page is [pithy.sh/docs/build/operations/seed-test-data](https://pithy.sh/docs/build/operations/seed-test-data). This copy stays in the kit because `packages/cli/src/doctor/devPreferences.ts` sends an adopter to it by name._
+
 `pithy seed` loads test data into a Pithy project from the same Zod schemas and codecs that define your tables and KV stores.
 
 There is no separate fixture format to learn.

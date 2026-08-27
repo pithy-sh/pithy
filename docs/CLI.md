@@ -1,5 +1,7 @@
 # Pithy CLI Specification
 
+_The site renders this for readers: [pithy.sh/docs/cli](https://pithy.sh/docs/cli). This page is the specification it renders — `packages/cli/src/binDocs.test.ts`, `packages/cli/src/commands/doctorDocs.test.ts` and `packages/cli/src/terminal/styleDocs.test.ts` hold the code to it — so it stays here._
+
 > The CLI is the brand's primary interface. Every command, every flag, every output line should feel like Pithy — short, deliberate, and confident. This document specifies what every command shares: the command shape, the flag conventions, the alias, the output styling, the help text, and the update notifier. What one command does is specified on its own page under [`docs/commands/`](commands/) — §1.4 indexes them. For visual identity, voice, and color tokens, see `BRAND.md`.
 
 ---

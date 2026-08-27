@@ -74,6 +74,27 @@ bun scripts/license-headers.ts --fix     # fix it
 
 Two things it deliberately leaves alone. The copyright line is free-form — edit it and the gate won't argue, so naming an entity later costs one pass, not a rewrite of every file. And `templates/` trees are never stamped: those files are copied verbatim into the adopter's repo by `pithy init` and `pithy ui add`, where they become the adopter's code, under the adopter's copyright.
 
+## Where the documentation goes
+
+`pithy.sh/docs` is canonical. A package README is a front door — what the package is, `pithy add <name>`, and the link. Prose goes on the site; it does not go in a README, and it does not come back.
+
+Two exceptions, and both are the same exception. A document a **test reads off disk** is specification rather than documentation, so it stays and the site renders it: `docs/CLI.md`, every page under `docs/commands/`, `docs/NAMING.md`, `docs/I18N.md`, and the sections of the `@pithy-sh/payments`, `@pithy-sh/auth`, `@pithy-sh/matchmaking` and `@pithy-sh/cloudflare` READMEs that say so in their own text. And a document **something in this repository names** — a `whenToEnable` string, a manifest, a source comment — reaches an adopter through a config error, so it stays where it is — in the package, or under `docs/` — and carries a line pointing at its site page. `docs/ACCEPTED-LIMITS.md`, `docs/CONTROL-PLANE.md`, `docs/EJECT.md`, `docs/FIXTURES.md`, `docs/LOGGING.md`, `docs/SEED.md`, `docs/TOKENS.md` and `docs/UI.md` are all that second kind. Check what cites a file before you shrink it, and the check has two answers rather than one. **Preserve** the section where the citation is load-bearing — the four READMEs above each keep one and say so in their own text. **Repoint** the citation at the site where it is a passing reference: `email`'s template registry, `testers`' nudge cooldown, `media`'s record-store `.describe()` and three others named a README section that #459 removed, and each now names the page that carries it. What is never right is leaving the citation pointing at prose that is gone — a `.describe()` is the worst case, because it reaches an adopter through a generated `pithy.config.ts` comment.
+
+`docs/BRAND.md`, `docs/CONVENTIONS.md` and `docs/STACK.md` are neither: they are written for a contributor rather than an adopter, the site does not render them, and they carry no pointer.
+
+### The docs catalog
+
+The site's own check asks whether every `pithy add <name>` on a page names a real capability, every CLI flag it cites exists in that command's parser, and every error code it quotes exists in the kit. It reads `docs/catalog.generated.json`, which this repository writes from the values themselves — the capability catalog, the composed citty tree, `KitErrorPayload`.
+
+```bash
+bun run docs-catalog           # rewrite it
+bun packages/cli/src/docs/writeCatalog.ts --check   # what CI runs
+```
+
+**`commands` answers whether a flag exists, not whether a page may name it**, and a flag check that ignores the difference reports correct pages as wrong. A command page cites other commands' flags (`deploy.md` writes `pithy provision --env <name> --yes` while explaining what deploy refuses), quotes flags belonging to no Pithy command at all (`git rev-parse --git-common-dir`), and — most often — documents flags that deliberately **do not exist**: `secrets.md` argues at length that there is no `--all`, `vector.md` that `reset` takes no `--yes`, `turnstile.md` that there is no `--mode`. So match `<command> --flag` as a pair, and expect the absences to be the loudest thing on the page. `globalFlags` covers the six the walk cannot see, hidden pair included.
+
+It is committed, so a consumer that neither is this repository nor installs it can read it with no build step — and committed means it can go stale, which is what the `--check` in CI's verify job is for. A stale export does not fail the site's check; it makes every page pass against a kit that has moved.
+
 ## Tests do not touch your machine
 
 **No test in this repository resolves your real config directory or your real Cloudflare account.** Two defects in two weeks were the same defect, and it is worth knowing what the guards are before you write a config.

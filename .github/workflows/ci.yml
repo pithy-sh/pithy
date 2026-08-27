@@ -228,6 +228,15 @@ jobs:
       - name: Stamped package versions
         run: bun scripts/stampVersions.ts --check
 
+      # Whole-repo, beside the step above and for its reason. `docs/catalog.generated.json` is read by a script in
+      # ANOTHER repository — the docs site's check, which asks whether every `pithy add <name>`, CLI flag
+      # and error code its 360 pages cite is real. A stale export does not fail there; it reports `ok`
+      # against a kit that has moved, which is the one result worse than no check at all. The generator
+      # composes the whole command tree, so nothing about which packages a pull request touched tells you
+      # whether the answer changed.
+      - name: Docs catalog
+        run: bun packages/cli/src/docs/writeCatalog.ts --check
+
       # Whole-repo for the same reason as the step above, and learned the same way. Two capabilities
       # in flight at once each took migration order 1200 from the same `NEXT_FREE_ORDER`; because both
       # branches bumped the constant to the same value, git merged the registry with no conflict and

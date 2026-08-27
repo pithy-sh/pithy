@@ -23,7 +23,7 @@ import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveW
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
- * `pithy support provision` / `deprovision` — the command the support manifest, README, and wrangler
+ * `pithy support provision` / `deprovision` — the command the support manifest and wrangler
  * template have always pointed at. It creates the `SUPPORT_BUCKET` R2 bucket, deploys the prebuilt
  * classification worker for every managed environment, and creates the Email Routing rule that delivers
  * the support address to the app worker.

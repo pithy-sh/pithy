@@ -1,5 +1,7 @@
 # Front ends: `pithy ui`
 
+_The reader's version of this page is [pithy.sh/docs/front-ends](https://pithy.sh/docs/front-ends). This copy stays in the kit because `packages/cli/src/ui/routeAllowlist.ts` sends an adopter to it by name._
+
 One command puts a React 19 front end inside a Worker you already have, and wires it end to end. The SPA and the API build together, deploy together, and answer on one origin. No second project, no CORS, no second deploy.
 
 ```bash
@@ -441,7 +443,7 @@ Open the printed URL and both halves are there: `/` is the SPA, `/health` and `/
 Two steps, one origin.
 
 ```bash
-pithy deploy --env production
+pithy deploy --env prod
 ```
 
 Under the hood, for a Worker carrying a `ui` block: run `ui.build` (`vite build --configLoader runner`), then `wrangler deploy`.
@@ -566,4 +568,4 @@ The alias names no Worker. It takes the first `apps/*` that resolves React and p
 - [`docs/commands/ui.md`](commands/ui.md) — the binding specification for `pithy ui add|sync|list`: every flag, the `--json` shapes, and the errors.
 - [`docs/commands/dev.md`](commands/dev.md) — how `pithy dev` supervises the worker set and substitutes `{port}`.
 - [`docs/I18N.md`](I18N.md) — the catalog key grammar, where a reader's locale lives, and what stays English.
-- [`docs/DEPLOY.md`](DEPLOY.md) — migrate and deploy, by hand and in CI.
+- [pithy.sh/docs/build/operations/deploy](https://pithy.sh/docs/build/operations/deploy) — migrate and deploy, by hand and in CI.

@@ -1,5 +1,7 @@
 # Matchmaking costs
 
+_The reader's version of this page is [pithy.sh/docs/build/games/what-a-queue-costs](https://pithy.sh/docs/build/games/what-a-queue-costs). This copy ships in the package because `packages/cli/src/capabilities/catalog.ts` sends an adopter to it by name._
+
 Two Durable Objects, one KV prefix, two D1 tables. Cloudflare's [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/) is the authority for the first, and when the two disagree Cloudflare is right. This page does not restate rates — it says how a pairing layer maps onto them, and names the one setting that changes the answer.
 
 [`@pithy-sh/multiplayer`'s costs page](../../multiplayer/docs/costs.md) already records the two platform facts both capabilities inherit, and they are not repeated here: **WebSocket messages bill at a 20:1 ratio**, and **duration bills the full 128 MB, only while an object is awake**. Read that page first. What follows is what matchmaking adds.

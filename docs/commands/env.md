@@ -1,5 +1,7 @@
 # pithy env
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/env](https://pithy.sh/docs/cli/commands/env). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Report every Worker's environments — bindings, resolved ids, provisioned state, base URLs, and Cloudflare dashboard links — reading everything and writing nothing.
 
 ## Synopsis

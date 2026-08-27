@@ -1,5 +1,7 @@
 # pithy secrets
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/secrets](https://pithy.sh/docs/cli/commands/secrets). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Declare, write, rotate, list, and edit a project's secrets — and stand up the per-environment infrastructure that stores them.
 
 ## Synopsis

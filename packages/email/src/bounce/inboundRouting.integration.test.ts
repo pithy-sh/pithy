@@ -199,7 +199,7 @@ describe.skipIf(!routingReady)("Email Routing rules — LIVE", () => {
   });
 
   test("two rules on one zone deliver to two different Workers", async () => {
-    // The README says "one Worker per domain" while `ensureWorkerRoute` takes a Worker per rule. #95's
+    // Routing is one Worker per domain while `ensureWorkerRoute` takes a Worker per rule. #95's
     // multi-project topology turns on which is true, so it is settled here rather than argued.
     const first = routedAddress("sib-a");
     const second = routedAddress("sib-b");

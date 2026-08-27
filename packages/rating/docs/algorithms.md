@@ -1,5 +1,7 @@
 # Choosing a rating algorithm
 
+_The reader's version of this page is [pithy.sh/docs/capabilities/rating/algorithms](https://pithy.sh/docs/capabilities/rating/algorithms). This copy ships in the package because `packages/rating/pithy.manifest.json` sends an adopter to it by name._
+
 The rating tracker holds two numbers per player per pool. Skill rating (MMR) is the matchmaking input — it moves up and down with each result, weighted by opponent strength, and can be hidden from players. Experience (XP) is the visible progression — a monotonic total that only ever rises and drives rank and level. This document is about the first number: which algorithm computes it.
 
 Three algorithms ship behind one seam. Each declares the player counts it supports, and the tracker rejects at assembly a game that wires a 1v1-only algorithm to an N-player game — the same way a bad game config fails on deploy rather than at 3am. You choose one per game and set its pool; you can register your own with `registerRatingAlgorithm`.

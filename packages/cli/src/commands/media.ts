@@ -25,7 +25,7 @@ import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
- * `pithy media provision` / `deprovision` — the command the media manifest, README, and wrangler template
+ * `pithy media provision` / `deprovision` — the command the media manifest and wrangler template
  * have always pointed at. It creates the R2 bucket (and the `MEDIA` KV namespace in KV record-store mode),
  * writes the `media-storage-credentials` and `media-r2-credentials` secrets for every managed
  * environment, and deploys the prebuilt media worker that hosts the four enrichment Workflows.

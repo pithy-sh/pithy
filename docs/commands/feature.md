@@ -1,5 +1,7 @@
 # pithy feature
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/feature](https://pithy.sh/docs/cli/commands/feature). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Stand up an isolated environment for one issue — worktree, ports, local backend, and its own ephemeral Cloudflare resources — and tear the lot back down.
 
 ## Synopsis

@@ -1,5 +1,7 @@
 # Apple sign-in
 
+_The reader's version of this page is [pithy.sh/docs/build/auth-and-accounts/apple-sign-in](https://pithy.sh/docs/build/auth-and-accounts/apple-sign-in). This copy ships in the package because `packages/auth/src/capability.ts` sends an adopter to it by name._
+
 Adding Sign in with Apple to `@pithy-sh/auth`. Step by step.
 
 Apple is first-class here because Pithy is mobile-first. Apple's App Store guidelines require you to offer Sign in with Apple once you offer another third-party sign-in like Google. If your app ships Google, it ships Apple too.

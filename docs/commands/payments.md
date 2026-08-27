@@ -1,5 +1,7 @@
 # pithy payments
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/payments](https://pithy.sh/docs/cli/commands/payments). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Deploy the reconciliation Workflow that keeps stored purchases agreeing with the stores, and run a pass on demand.
 
 ## Synopsis

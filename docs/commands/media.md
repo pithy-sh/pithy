@@ -1,5 +1,7 @@
 # pithy media
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/media](https://pithy.sh/docs/cli/commands/media). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Stands up what `pithy add media` only wired: the per-environment R2 bucket, the `MEDIA` KV namespace when records live in KV, the two credential secrets, and the deployed media worker that hosts the enrichment Workflows.
 
 ## Synopsis

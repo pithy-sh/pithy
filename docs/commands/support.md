@@ -1,5 +1,7 @@
 # pithy support
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/support](https://pithy.sh/docs/cli/commands/support). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Stands up the support inbox: the R2 bucket attachments and raw messages live in, the per-environment classification worker, the full-text index, and — only when you name all three parts — the Email Routing rule that delivers the support address to your app worker.
 
 ## Synopsis

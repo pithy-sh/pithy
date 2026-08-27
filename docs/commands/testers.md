@@ -1,5 +1,7 @@
 # pithy testers
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/testers](https://pithy.sh/docs/cli/commands/testers). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Runs a closed test from the terminal: create a cohort, invite people, see where they stand, chase whoever needs chasing, and deploy the daily pass that does it on a schedule.
 
 **The dashboard is the paid tier; this is not.** Every operation the control-plane routes expose has a command here, each non-interactive and each with `--json`.

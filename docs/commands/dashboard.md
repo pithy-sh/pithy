@@ -1,5 +1,7 @@
 # pithy dashboard
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/dashboard](https://pithy.sh/docs/cli/commands/dashboard). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Register a management client's access to one of your environments, rotate its key, revoke it, and inspect what is registered.
 
 ## Synopsis

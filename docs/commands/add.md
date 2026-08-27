@@ -1,5 +1,7 @@
 # pithy add
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/add](https://pithy.sh/docs/cli/commands/add). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Install a capability, wire it into one Worker's config and bindings, and run that Worker's dev migrations.
 
 ## Synopsis

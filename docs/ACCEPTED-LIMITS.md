@@ -1,5 +1,7 @@
 # Accepted limits
 
+_The reader's version of this page is [pithy.sh/docs/reference/accepted-limits](https://pithy.sh/docs/reference/accepted-limits). This copy stays in the kit because `packages/cli/src/project/scaffold.ts` sends an adopter to it by name._
+
 Five rounds of adversarial review hardened the CLI's filesystem writes: exclusive temp creation, uid-ownership containment for symlinks, handle-based `fchmod`, gated recursive deletes, and tripwires that fail the build on a new producer. What remains is a short list of races Node gives no way to close, and one rule that lives in a test because no linter can express it.
 
 They are written down here because a limit nobody recorded reads as a limit nobody saw.

@@ -1,5 +1,7 @@
 # pithy deploy
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/deploy](https://pithy.sh/docs/cli/commands/deploy). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Ship every Worker in the project to Cloudflare, then prove the version just shipped is the one answering at the address the project claims.
 
 ## Synopsis
@@ -8,7 +10,7 @@ Ship every Worker in the project to Cloudflare, then prove the version just ship
 pithy deploy [--env <env>] [--json]
 ```
 
-The shipping model — environments, credentials, worker discovery, migrate-then-deploy — is [`DEPLOY.md`](../DEPLOY.md). This page is the command surface.
+The shipping model — environments, credentials, worker discovery, migrate-then-deploy — is [pithy.sh/docs/build/operations/deploy](https://pithy.sh/docs/build/operations/deploy). This page is the command surface.
 
 ## Flags
 

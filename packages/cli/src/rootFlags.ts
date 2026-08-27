@@ -14,6 +14,16 @@ const VERSION_FLAGS = new Set(["--version", "-v"]);
 const HELP_FLAGS = new Set(["--help", "-h"]);
 
 /**
+ * Every spelling this module answers to, for anything that has to enumerate the CLI's flags.
+ *
+ * Exported so `docs/catalog.ts` composes the docs catalog's `globalFlags` from the sets that decide,
+ * rather than restating them. These four are in no command's `args` — citty answers one builtin and
+ * this module answers the other, both before a command is dispatched — so a walk of the command tree
+ * finds neither, and a check reading only that walk would call `pithy add --help` a typo.
+ */
+export const ROOT_FLAGS: readonly string[] = [...HELP_FLAGS, ...VERSION_FLAGS];
+
+/**
  * Whether this invocation is asking for the version, on any command.
  *
  * citty ships a version builtin but answers it only when it is the **sole** argument

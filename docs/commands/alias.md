@@ -1,5 +1,7 @@
 # pithy alias
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/alias](https://pithy.sh/docs/cli/commands/alias). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Install, remove, or report the `p.` shell shortcut for `pithy`.
 
 ## Synopsis

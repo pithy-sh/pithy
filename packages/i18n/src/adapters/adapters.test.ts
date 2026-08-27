@@ -177,11 +177,16 @@ describe("plurals stay the wrapped library's business", () => {
   });
 });
 
-describe("the shapes the README documents are the shapes the adapters accept", () => {
+describe("the shapes the adapters document are the shapes they accept", () => {
   /**
-   * **The README's examples, compiled.** Each adapter's whole promise is that the instance an adopter
+   * **The documented examples, compiled.** Each adapter's whole promise is that the instance an adopter
    * already has satisfies its structural type with nothing installed — so the thing worth asserting is
    * that a minimal stand-in for each library type-checks and answers, not that a mock we wrote does.
+   *
+   * The prose lives at pithy.sh/docs/build/language-and-locale/bring-your-own-stack. It named this
+   * package's README until #459, and a test that cites a document by name is a test whose premise the
+   * next edit to that document can quietly falsify — so what is asserted here is the adapters, not the
+   * agreement between the adapters and a file.
    *
    * These are deliberately the members the real libraries expose: i18next's `language` + `t(key,
    * options)`, FormatJS's `locale` + `formatMessage({ id }, values)`, Lingui's `locale` + `_(id,
