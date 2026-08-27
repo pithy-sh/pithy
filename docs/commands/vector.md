@@ -1,5 +1,7 @@
 # pithy vector
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/vector](https://pithy.sh/docs/cli/commands/vector). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Stand up an environment's search indexes, rebuild them from the corpus, and re-embed what they hold.
 
 ## Synopsis

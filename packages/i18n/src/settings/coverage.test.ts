@@ -145,8 +145,10 @@ describe("the kit's own translation counts as coverage", () => {
    * **The arm this describe block exists for was untested until #441's verification pass**, and the
    * reason it survived is worth stating: every other case in this file uses `app/*` keys, and `app/*`
    * is the adopter's own domain — a key that is never in a kit catalog by construction. So deleting
-   * `KIT_CATALOGS[locale]` from the union passed all thirteen of them, while README:119 documents the
-   * arm and the whole "adopt a locale for free" story rests on it.
+   * `KIT_CATALOGS[locale]` from the union passed all thirteen of them, while
+   * pithy.sh/docs/build/language-and-locale/serve-a-second-language documents the arm and the whole
+   * "adopt a locale for free" story rests on it. (It was a line number in this package's README until
+   * #459 shrank that to a pointer; a line number is the citation that rots on the next edit.)
    */
   const KIT_KEY = "auth/sign_in.title";
   const MINE = "app/greeting";

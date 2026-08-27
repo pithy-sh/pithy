@@ -1,5 +1,7 @@
 # Scoped Cloudflare API tokens
 
+_The reader's version of this page is [pithy.sh/docs/core-concepts/cloudflare-tokens](https://pithy.sh/docs/core-concepts/cloudflare-tokens). This copy stays in the kit because `packages/cli/src/doctor/cloudflare.ts` sends an adopter to it by name._
+
 `pithy token` mints the scoped, least-privilege, account-owned Cloudflare API tokens your project needs, so you never hand-craft a token in the dashboard. There are two kinds: the one **`ci-system`** credential your CI pipeline runs under, and **worker-consumer** tokens a deployed Worker reads via its binding (e.g. the secrets manager's runtime token).
 
 ## The bootstrap token
@@ -23,7 +25,7 @@ The store entry a token's value is written to is scoped the same way. The **vari
 CI runs migrate and deploy in one process under one credential, so there is one CI token: `ci-system`. Its permissions are the **base** — deploy Workers, migrate remote D1, read/write the Secrets Store — **plus whatever the composed capabilities need CI to do**. You never hand-list them.
 
 ```bash
-pithy token mint ci-system --env production
+pithy token mint ci-system --env prod
 ```
 
 **How you use it in CI.** CI has no Pithy config directory, and neither secret store is readable from outside a Worker — so the flow is: mint the token, read its value out, and set it as your CI system's `CLOUDFLARE_API_TOKEN` secret. This is exactly why the `dev-vars` and `ephemeral` stores exist.
@@ -94,20 +96,20 @@ Every command is non-interactive, `--json`, `--env`-targeted, and never prints a
 
 ```bash
 # Mint (or reuse a still-valid one) and write it to the token's store.
-pithy token mint ci-system --env production
+pithy token mint ci-system --env prod
 
-# Force a fresh value; redirect the store for this mint.
-pithy token mint ci-system --env production --refresh --store ephemeral
+# Redirect the store for this mint. Every mint regenerates the value, so there is no --refresh.
+pithy token mint ci-system --env prod --store ephemeral
 
 # List minted tokens for an environment — ids and profiles, never values.
-pithy token list --env production
+pithy token list --env prod
 
 # Rotate: mint a new token, store it, delete the old one. --keep-previous holds the old one
 # as a grace window while a Worker consumer picks up the new value (redeploy first).
-pithy token rotate secrets --env production --keep-previous
+pithy token rotate secrets --env prod --keep-previous
 
 # Revoke: delete the profile's token for an environment.
-pithy token revoke ci-system --env production
+pithy token revoke ci-system --env prod
 ```
 
 Minting rolls in place: the token name is a stable `(profile, env)` identity, and each mint regenerates its value with the profile's **current** permissions — so adding a capability's `ciPermissions` takes effect on the next mint, and re-minting never orphans a token. Every mint, rotate, and revoke emits an audit event (`cloudflare/token_minted`, `…_rotated`, `…_revoked`) through the core audit seam **when the project composes `@pithy-sh/audit`**; it is a no-op when it does not (audit stays optional — the CLI never hard-depends on it).

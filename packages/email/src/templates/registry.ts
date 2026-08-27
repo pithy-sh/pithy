@@ -19,7 +19,7 @@ import type { ContentWidth } from "./theme";
  *
  * There is no `registerTemplate`. An adopter composing `email` sends what is in this file, and the
  * argument for that — with what it costs, and what the kit owes in exchange — is in this package's
- * README under *The registry is closed*. The short form is three things, of which the first is not
+ * template model at https://pithy.sh/docs/capabilities/email/template-model. The short form is three things, of which the first is not
  * negotiable by design taste:
  *
  * 1. **The Workers runtime forbids code generation**, so a template cannot be compiled where it runs.

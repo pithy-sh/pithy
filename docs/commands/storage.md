@@ -1,5 +1,7 @@
 # pithy storage
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/storage](https://pithy.sh/docs/cli/commands/storage). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Stands up what `pithy add storage` only wired: the per-environment R2 bucket, the `storage-r2-credentials` secret, and the deployed sweep worker that hosts the daily orphan reconciliation.
 
 ## Synopsis

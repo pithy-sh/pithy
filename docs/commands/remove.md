@@ -1,5 +1,7 @@
 # pithy remove
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/remove](https://pithy.sh/docs/cli/commands/remove). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Unwire a capability from one Worker and uninstall its package — the manual, interactive inverse of `pithy add`.
 
 ## Synopsis

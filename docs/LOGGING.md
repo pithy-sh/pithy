@@ -1,5 +1,7 @@
 # Logging
 
+_The reader's version of this page is [pithy.sh/docs/core-concepts/logging](https://pithy.sh/docs/core-concepts/logging). This copy stays in the kit because `packages/cli/src/project/versionMetadata.ts` sends an adopter to it by name._
+
 Pithy has one `Logger` seam and two adapters. The interface is the same in the `pithy` CLI, a Worker running locally, and a deployed Worker. Only the adapter behind it changes. Capabilities log through `c.var.log`, never `console`.
 
 A log call is a **record**, not a line: `log.info("served", { status, elapsed })`. The message is one pithy line; the data lives in structured fields. Both adapters serialize the same `LogRecord`.

@@ -1,5 +1,7 @@
 # Resource naming
 
+_The site renders this for readers: [pithy.sh/docs/reference/naming-and-limits](https://pithy.sh/docs/reference/naming-and-limits). This page is the specification it renders — `packages/cli/src/project/namingDocs.test.ts` holds the code to it — so it stays here._
+
 Every Cloudflare resource Pithy provisions is named by one rule.
 
 ```

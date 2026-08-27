@@ -1,5 +1,7 @@
 # The control-plane seam
 
+_The reader's version of this page is [pithy.sh/docs/capabilities/control-plane](https://pithy.sh/docs/capabilities/control-plane). This copy stays in the kit because `packages/cli/src/dashboard/contract.ts` sends an adopter to it by name._
+
 How a management client reaches into your Worker, without Pithy operating a data plane.
 
 ---
@@ -430,13 +432,13 @@ Build the paths from the capability's resolved `basePath`, never from its defaul
 Every command is non-interactive and `--json` capable, like the rest of the CLI.
 
 ```
-pithy dashboard connect --env production
-pithy dashboard connect --env production --update --worker-url https://api.example.com
-pithy dashboard connect --env production --public-key ./client.jwk.json --scope manifest:read
-pithy dashboard rotate --env production
-pithy dashboard revoke-key --env production --key-id cpk_2026_07
-pithy dashboard disconnect --env production
-pithy dashboard status --env production
+pithy dashboard connect --env prod
+pithy dashboard connect --env prod --update --worker-url https://api.example.com
+pithy dashboard connect --env prod --public-key ./client.jwk.json --scope manifest:read
+pithy dashboard rotate --env prod
+pithy dashboard revoke-key --env prod --key-id cpk_2026_07
+pithy dashboard disconnect --env prod
+pithy dashboard status --env prod
 ```
 
 Connection is **project-wide, per environment — never per Worker.** Workers share a resource by declaring the same binding name, so one user record lives in one D1 that several Workers touch. A per-Worker credential would produce views where a user is visible in one pane and absent from another.

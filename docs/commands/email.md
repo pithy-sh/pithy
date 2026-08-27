@@ -1,5 +1,7 @@
 # pithy email
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/email](https://pithy.sh/docs/cli/commands/email). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Stands up the email infrastructure — the project's shared suppression database, a per-environment email worker, and optionally the inbound rule that routes bounces back at your app — and sends one rendered template so you can see it arrive.
 
 ## Synopsis

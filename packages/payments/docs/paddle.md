@@ -1,5 +1,7 @@
 # Paddle
 
+_The reader's version of this page is [pithy.sh/docs/build/money/sell-with-paddle](https://pithy.sh/docs/build/money/sell-with-paddle). This copy ships in the package because `packages/payments/src/rails/paddle/discounts.ts` sends an adopter to it by name._
+
 Wiring Paddle into `@pithy-sh/payments`. Step by step.
 
 Paddle is the **merchant of record**, like Lemon Squeezy and unlike Stripe. It is the seller on your customer's statement, it calculates and remits sales tax and VAT worldwide, it issues the invoices, it runs dunning, and it absorbs the chargebacks. What it adds that a redirect-only rail cannot is **Paddle.js**: checkout opens as an overlay over your own page or inline inside it, and the customer portal hands back authenticated links to a specific subscription's cancel and payment-method screens.

@@ -1,7 +1,13 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.8/schema.json",
   "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
-  "files": { "ignoreUnknown": true, "includes": ["**", "!**/*.generated.ts"] },
+  // `*.generated.*` rather than `*.generated.ts`: `docs/catalog.generated.json` is written by
+  // `JSON.stringify(…, 2)`, which expands every array, and Biome's JSON formatter fits short ones onto
+  // one line. Neither is wrong and the two cannot both hold the file — `bun run docs-catalog` and
+  // `biome check --write` would each undo the other, every run. A generated file's formatting belongs to
+  // its generator, which is what this rule already said about the stamped versions and the precompiled
+  // email templates.
+  "files": { "ignoreUnknown": true, "includes": ["**", "!**/*.generated.*"] },
   // Gate 1 of the route request contract. Scoped to the HTTP layer of the capability packages: those
   // are the routes Pithy provides, and the only place `c.req.valid()` is guaranteed to be available.
   // An adopter's own handlers are theirs — we specify the pattern, we don't police their code.

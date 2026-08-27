@@ -1,5 +1,7 @@
 # pithy dev
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/dev](https://pithy.sh/docs/cli/commands/dev). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` and `packages/cli/src/dev/readyWatchDocs.test.ts` hold the code to it — so it stays here._
+
 Start the local development environment — every Worker in `apps/`, plus each composed capability's host Worker and any front end, under one supervising process.
 
 ## Synopsis

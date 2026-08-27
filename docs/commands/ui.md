@@ -1,5 +1,7 @@
 # pithy ui
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/ui](https://pithy.sh/docs/cli/commands/ui). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Scaffold a front end into an existing Worker and wire it end to end — Vite, the SPA entry, the routes, the `assets` stanza, the dev command.
 
 ## Synopsis

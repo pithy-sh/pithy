@@ -1,5 +1,7 @@
 # pithy turnstile
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/turnstile](https://pithy.sh/docs/cli/commands/turnstile). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Wire Cloudflare's Turnstile test keys into dev and staging, provision the real production widget, and tear it back down.
 
 ## Synopsis
@@ -27,7 +29,7 @@ There is no `--mode`. Which widgets exist is declared in the Worker's `pithy.con
 
 `provision` reads the enabled widget modes from config — `visible`, `invisible`, or both — and resolves the production hostname through the one address resolver: the Worker's `domains` declaration for `prod`, else its `env.prod` route, else a hand-set `vars.BASE_URL`. It then does three things per mode. **dev and staging** get Cloudflare's documented test secret, written per environment — dev to `.dev.vars`, staging to its managed store. **`prod`** gets a real widget bound to that hostname, its secret written to the production managed store, and its public sitekey written to the production Worker vars.
 
-**A test key belongs in those two environments and nowhere else, and the gate enforces that.** Cloudflare flags its own answers from a documented test key (`metadata.result_with_testing_key`), so a Worker stamped `prod` — or stamped nothing — refuses one with `turnstile/config` rather than letting a secret that passes everybody stand in for a widget. It is the same flag that lets dev and staging sign in at all: a test key's answer carries no `action`, which the login gate's action binding would otherwise refuse (#374). See [the package README](../../packages/turnstile/README.md#test-keys-and-the-action-binding).
+**A test key belongs in those two environments and nowhere else, and the gate enforces that.** Cloudflare flags its own answers from a documented test key (`metadata.result_with_testing_key`), so a Worker stamped `prod` — or stamped nothing — refuses one with `turnstile/config` rather than letting a secret that passes everybody stand in for a widget. It is the same flag that lets dev and staging sign in at all: a test key's answer carries no `action`, which the login gate's action binding would otherwise refuse (#374). See [pithy.sh/docs/capabilities/turnstile/reference](https://pithy.sh/docs/capabilities/turnstile/reference).
 
 Idempotent: a re-run reuses an existing production widget rather than creating a second one. That reuse has one consequence worth stating, because it is the failure adopters hit. Cloudflare never returns an existing widget's secret, so it cannot be recomposed — a re-run over widgets that already exist leaves the stored secret exactly as it was, and reports that it did. If the secret was never stored, re-running will not heal it; `deprovision` then `provision` is what does.
 

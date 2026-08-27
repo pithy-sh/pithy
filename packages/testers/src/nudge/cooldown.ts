@@ -44,7 +44,7 @@ export function mayNudge(member: TestersMember, cooldownHours: number, now: Date
  *
  * It lives here rather than in the daily pass because the pass is not the only sender. It was read by
  * `dueNudge` alone, so a dashboard holding `testers:nudge:send` could chase an unresponsive address
- * indefinitely — the very thing the README says cannot happen. The same reasoning that makes the
+ * indefinitely — the very thing https://pithy.sh/docs/capabilities/testers/use says cannot happen. The same reasoning that makes the
  * cooldown re-enforced inside every handler applies to the cap.
  */
 export const MAX_UNANSWERED_NUDGES = 3;

@@ -1,5 +1,7 @@
 # pithy doctor
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/doctor](https://pithy.sh/docs/cli/commands/doctor). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` and `packages/cli/src/commands/seedDocs.test.ts` hold the code to it — so it stays here._
+
 Report toolchain state and update status, plus — inside a project — each Worker's config, binding, and migration health.
 
 ## Synopsis

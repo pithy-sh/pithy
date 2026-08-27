@@ -1,5 +1,7 @@
 # What the store APIs actually expose
 
+_The reader's version of this page is [pithy.sh/docs/capabilities/testers/store-apis](https://pithy.sh/docs/capabilities/testers/store-apis). This copy ships in the package because `packages/testers/src/crypto/token.ts` sends an adopter to it by name._
+
 This document exists because the most valuable thing `@pithy-sh/testers` can tell you is what it cannot do.
 
 Read it before assuming any part of this capability talks to Google. It does not. Nothing here reads the Play Console, and nothing here can.

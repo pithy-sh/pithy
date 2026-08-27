@@ -136,7 +136,7 @@ export const MediaConfig = z
       .enum(["d1", "kv"])
       .default("d1")
       .describe(
-        "Where media records live: `d1` (default — transcriptions and extracted text are queryable) or `kv` (key-lookup only; no text search over derived content). Duplicate detection always uses D1 (see the README).",
+        "Where media records live: `d1` (default — transcriptions and extracted text are queryable) or `kv` (key-lookup only; no text search over derived content). Duplicate detection always uses D1 either way.",
       ),
     delivery: MediaDelivery.prefault({}).describe("Public delivery configuration for building consumer media URLs."),
     kvMetadata: z

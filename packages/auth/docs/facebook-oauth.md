@@ -1,5 +1,7 @@
 # Facebook sign-in
 
+_The reader's version of this page is [pithy.sh/docs/build/auth-and-accounts/facebook-sign-in](https://pithy.sh/docs/build/auth-and-accounts/facebook-sign-in). This copy ships in the package because `packages/auth/src/capability.ts` sends an adopter to it by name._
+
 Adding Facebook to `@pithy-sh/auth`. Step by step.
 
 ## Why this part is manual

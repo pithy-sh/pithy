@@ -1,5 +1,7 @@
 # Live test fixtures
 
+_The reader's version of this page is [pithy.sh/docs/build/operations/live-fixtures](https://pithy.sh/docs/build/operations/live-fixtures). This copy stays in the kit because `packages/auth/src/instance/googleProvider.integration.test.ts` sends an adopter to it by name._
+
 Some things cannot be mocked. A Turnstile widget either exists on a real hostname or it does not. Mail is
 either delivered or it is not. A certificate is either issued or it is not. The suites that prove those
 need a **fixture** — a real thing, made once, in a console, by a human.

@@ -1,5 +1,7 @@
 # pithy seed
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/seed](https://pithy.sh/docs/cli/commands/seed). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` and `packages/cli/src/commands/seedDocs.test.ts` hold the code to it — so it stays here._
+
 Load seed and test data into an environment from the same Zod schemas and codecs that define your tables and KV stores.
 
 ## Synopsis

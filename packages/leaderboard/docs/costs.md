@@ -1,10 +1,12 @@
 # What a leaderboard costs
 
+_The reader's version of this page is [pithy.sh/docs/capabilities/leaderboard/costs](https://pithy.sh/docs/capabilities/leaderboard/costs). This copy ships in the package because `packages/leaderboard/src/config/config.ts` sends an adopter to it by name._
+
 **As of 2026-07-16.** Cloudflare's [D1 pricing page](https://developers.cloudflare.com/d1/platform/pricing/) is the authority. Prices, included allowances, and limits can change at any time, and the allowances do most of the work in the numbers below — a change to the 25 billion rows-read allowance alone would move every boundary in this table. Nothing here is a Cloudflare quote, and none of it is a bill you can plan against to the dollar. It is directional engine guidance.
 
 **Pithy never bills you.** This is Cloudflare metering your own Cloudflare account, on prices Pithy does not set and cannot control. We take no cut of any of it.
 
-**We are not the cheapest option, and this page is not a sales pitch.** The free platform SDKs — Game Center, Play Games Services, Steam — cost nothing at any scale, and PlayFab is a few times cheaper than us. See [`differentiation.md`](./differentiation.md) for the full comparison; the short version is that you pay here for cross-platform reach and for owning your data in your own SQL, not for a lower bill. This page exists so you can see that bill before you commit — the mode you pick at 1,000 players decides what it looks like at a million, and growth is the good outcome that still has a cost.
+**We are not the cheapest option, and this page is not a sales pitch.** The free platform SDKs — Game Center, Play Games Services, Steam — cost nothing at any scale, and PlayFab is a few times cheaper than us. See [pithy.sh/docs/capabilities/leaderboard/differentiation](https://pithy.sh/docs/capabilities/leaderboard/differentiation) for the full comparison; the short version is that you pay here for cross-platform reach and for owning your data in your own SQL, not for a lower bill. This page exists so you can see that bill before you commit — the mode you pick at 1,000 players decides what it looks like at a million, and growth is the good outcome that still has a cost.
 
 ## The table
 

@@ -2,130 +2,17 @@
 
 One encapsulated client for every out-of-Worker Cloudflare operation.
 
-## Bindings vs REST
+Inside a Worker you use bindings. Outside one — the CLI, CI, provisioning, anything on Node or Bun — and for the control-plane operations a binding cannot do, you use this. Never both, and never a hand-rolled `fetch` to the Cloudflare API.
 
-Inside a Worker, use bindings — `env.DB`, `env.SESSIONS`, the Email binding. They are faster, cheaper, need no token, and keep data in the user's account.
-
-Outside a Worker — the CLI, CI, provisioning, the control-plane orchestrator — there are no bindings. Remote `pithy migrate`, ephemeral-environment and worktree provisioning, secrets-store and Turnstile management all reach Cloudflare over the REST API. This package is that client. It wraps the official `cloudflare` SDK, falls back to raw `fetch` for the few endpoints the SDK does not type yet, and is the **only** place Pithy talks to the CF API. Never hand-roll `fetch` to the CF API elsewhere.
-
-It is REST-only. It does not accept Worker bindings — that is what bindings are for.
-
-## Configuration
-
-Every manager is configured with a scoped API token and the account it targets:
-
-```ts
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-
-const cf = new CloudflareClients({
-  apiToken: process.env.CLOUDFLARE_API_TOKEN!,
-  accountId: process.env.CLOUDFLARE_ACCOUNT_ID!,
-});
+```sh
+bun add @pithy-sh/cloudflare
 ```
 
-`CloudflareClients` is the entry point. It constructs and memoizes managers on demand: resource-scoped managers (KV, D1, queues, Vectorize indexes, secret stores, hostname zones, R2 buckets) are keyed by resource id; account-scoped managers (AI, Images, Stream, Workers, Builds, Turnstile) are singletons. You can also construct any manager directly.
+It is a library rather than a capability, so it has no `pithy add`. Every capability that provisions anything depends on it already.
 
-## Managers
+**Documentation: [pithy.sh/docs/core-concepts/bindings-or-rest](https://pithy.sh/docs/core-concepts/bindings-or-rest).** Which of the two a given operation takes, and why the rule is absolute. The package list is at [pithy.sh/docs/reference/packages](https://pithy.sh/docs/reference/packages).
 
-### KV
-
-```ts
-const kv = cf.kv("namespace-id");
-await kv.set("auth:session:abc", JSON.stringify(session), { expirationTtl: 3600 });
-const raw = await kv.get("auth:session:abc");
-```
-
-### D1 — also a Kysely dialect
-
-The D1 manager `implements D1Database`, so it backs a Kysely `D1Dialect` (kysely-d1). The same query builder a Worker runs against a binding runs from a CLI/CI context against D1 over REST — this is what `pithy migrate` uses.
-
-```ts
-import { Kysely } from "kysely";
-import { D1Dialect } from "kysely-d1";
-
-const db = new Kysely<Schema>({ dialect: new D1Dialect({ database: cf.d1("database-id") }) });
-const users = await db.selectFrom("users").selectAll().execute();
-```
-
-### Workers, Builds, provisioning
-
-```ts
-const workers = cf.workers();
-const builds = cf.builds();
-const provisioner = cf.provisioner(); // orchestrates Workers + Builds
-```
-
-### Secrets Store
-
-```ts
-const secrets = cf.secrets("store-id");
-await secrets.putSecret("SIGNING_KEY", value);
-```
-
-### Turnstile
-
-```ts
-const turnstile = cf.turnstile();
-const result = await turnstile.verify(token, secret);
-if (!result.success) throw new Error("humanity check failed");
-```
-
-### Media — Images, Stream
-
-```ts
-const images = cf.images();
-const stream = cf.stream();
-```
-
-### R2
-
-R2 is its own capability (`src/r2/`). It speaks the S3 protocol, so it signs presigned URLs with an S3 access-key/secret pair — distinct from the CF API token, and validated through the `R2Credentials` Zod schema. `CloudflareR2Provisioner` handles bucket lifecycle; `CloudflareR2Manager` handles objects.
-
-A presigned PUT signs the content type and byte count, so the client must send exactly those. Presigned URLs last an hour unless `expiresIn` says otherwise.
-
-```ts
-const r2 = cf.r2({ accessKeyId, secretAccessKey, bucketName: "assets" });
-const url = await r2.createUploadUrl("path/to/object", "image/png", 4096);
-const download = await r2.createDownloadUrl("path/to/object", { expiresIn: 300 });
-```
-
-Large uploads go multipart. Only the part upload is presigned — the client never opens, completes or aborts an upload, and never sees the credentials.
-
-```ts
-const uploadId = await r2.createMultipartUpload("path/to/video", "video/mp4");
-const partUrl = await r2.presignUploadPart("path/to/video", uploadId, 1);
-// …the client PUTs its bytes to partUrl and reports back the ETag header…
-await r2.completeMultipartUpload("path/to/video", uploadId, [{ partNumber: 1, etag }]);
-```
-
-`listParts` makes an interrupted upload resumable — ask which parts landed, re-send the rest. `abortMultipartUpload` discards one, and is idempotent so a sweep can re-run. Objects themselves are read and moved server-side with `headObject` (`null` when absent), `listObjects` (one page plus a `cursor`), `copyObject` and `deleteObject`.
-
-### AI and Vectorize
-
-```ts
-const ai = cf.ai();
-const embeddings = await ai.generateEmbeddings("hello world");
-const index = cf.vectorize("index-name");
-```
-
-### Queues and Custom Hostnames
-
-```ts
-const queue = cf.queue("queue-name");
-const hostnames = cf.hostnames("zone-id");
-```
-
-## Errors
-
-Every runtime failure is a `PithyError` (`@pithy-sh/core`), never a plain `Error`. This package adds three `cloudflare/*` codes to the closed error union:
-
-- `cloudflare/not_configured` — a token, account, or resource id is missing.
-- `cloudflare/request_failed` — a CF REST call failed; the cause is kept in internal `detail`.
-- `cloudflare/invalid_response` — a CF response did not match its expected shape.
-
-## Testing
-
-These are out-of-Worker REST clients, so tests mock the `cloudflare` SDK (`vi.mock("cloudflare")`) and run in the node environment — no Miniflare. Every codec round-trips in a test.
+_Everything on the adopter side is on the site. `pithy.sh/docs` is canonical — new adopter prose goes there, not here._
 
 ## Live integration tests
 
@@ -192,3 +79,9 @@ describe.skipIf(!creds.hasCreds)("CloudflareKVManager — LIVE", () => {
 ```
 
 This reference landed first to lock the template; the remaining managers each copy it as their own reviewed slice under [#39](https://github.com/pithy-sh/pithy/issues/39).
+
+**This section stays here.** It is for whoever is working on this package, not for an adopter — the site documents the kit, and a contributor's test harness has no page on it. `src/test-utils/harness.ts`, `src/kv/kvManager.integration.test.ts` and `src/d1/d1Provisioner.integration.test.ts` each point a reader at it by name.
+
+## License
+
+MIT — adopter-side app value. The root `LICENSE` covers it.

@@ -1,5 +1,7 @@
 # pithy init
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/init](https://pithy.sh/docs/cli/commands/init). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Scaffold a new Pithy project — the root config, the gates CI needs, and its first Worker under `apps/`.
 
 ## Synopsis

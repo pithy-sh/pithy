@@ -1,5 +1,7 @@
 # pithy upgrade
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/upgrade](https://pithy.sh/docs/cli/commands/upgrade). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Reconcile every Worker's wiring with the capability manifests the project has installed.
 
 ## Synopsis

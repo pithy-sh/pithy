@@ -1,5 +1,7 @@
 # pithy migrate
 
+_The site renders this for readers: [pithy.sh/docs/cli/commands/migrate](https://pithy.sh/docs/cli/commands/migrate). This page is the specification it renders — `packages/cli/src/commands/doctorDocs.test.ts` holds the code to it — so it stays here._
+
 Run every Worker's migration registry against one environment's D1, or step the latest migration back.
 
 ## Synopsis
@@ -8,7 +10,7 @@ Run every Worker's migration registry against one environment's D1, or step the 
 pithy migrate [--env <env>] [--worker <name>] [--rollback] [--json]
 ```
 
-The shipping model these commands sit in — environments, credentials, the ownership stamp, migrate-then-deploy — is [`DEPLOY.md`](../DEPLOY.md). This page is the command surface.
+The shipping model these commands sit in — environments, credentials, the ownership stamp, migrate-then-deploy — is [pithy.sh/docs/build/operations/deploy](https://pithy.sh/docs/build/operations/deploy). This page is the command surface.
 
 ## Flags
 

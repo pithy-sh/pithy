@@ -1,5 +1,7 @@
 # Lemon Squeezy
 
+_The reader's version of this page is [pithy.sh/docs/build/money/sell-with-lemon-squeezy](https://pithy.sh/docs/build/money/sell-with-lemon-squeezy). This copy ships in the package because `packages/payments/src/rails/lemonSqueezy/verify.ts` sends an adopter to it by name._
+
 Wiring Lemon Squeezy into `@pithy-sh/payments`. Step by step.
 
 Lemon Squeezy is the **merchant of record**, and that is the entire reason to choose it over Stripe. It owns the tax registration, the EU VAT, the invoice, the dunning and the chargebacks — it sells to your buyer and pays you, rather than processing a payment on your behalf. Like Stripe here, it is **hosted only**: Lemon Squeezy presents the payment page and takes the card, Pithy sends a browser there and hears the outcome on a webhook. No card fields in your app, no plan-change or proration logic, and no tax settings of ours to get wrong.
