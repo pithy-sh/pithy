@@ -114,6 +114,8 @@ async function seedDevLogin(): Promise<DevLogin> {
   const prepared = await prepare({
     env: "dev",
     project: "acme",
+    // What the CLI hands a checkout with no port block, and what this set reads either way.
+    origin: null,
     secret: async (name) => (name === AUTH_SESSION_SECRET ? SECRET : undefined),
     preferences: { user: EXAMPLE_ADA.email },
     seeded: collectSeededRows(userSets),

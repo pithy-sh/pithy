@@ -120,6 +120,8 @@ describe("a prepared seed set", () => {
     expect(report.workers[0]?.sets[0]?.d1).toEqual([{ database: "app", table: "things", rows: 1 }]);
     expect(seen[0]?.env).toBe("dev");
     expect(seen[0]?.project).toBe("acme");
+    // The harness project was never allocated a port block, so the run says so rather than inventing one.
+    expect(seen[0]?.origin).toBeNull();
     expect(seen[0]?.preferences).toEqual({ user: "ada@example.com" });
 
     const store = await h.openLocal();

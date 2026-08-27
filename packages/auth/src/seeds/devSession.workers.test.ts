@@ -89,6 +89,8 @@ async function seedDevLogin(user: string, userSets: readonly SeedSet[] = [authEx
   const prepared = await hook({
     env: "dev",
     project: "acme",
+    // What the CLI hands a checkout with no port block, and what this set reads either way.
+    origin: null,
     secret: async (name) => (name === AUTH_SESSION_SECRET ? SECRET : undefined),
     preferences: { user },
     seeded: collectSeededRows(userSets),

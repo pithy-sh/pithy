@@ -149,7 +149,8 @@ export interface SeedArtifact {
 /**
  * What a run gives {@link SeedSet.prepare} so it can compute the fixtures it cannot state statically.
  *
- * Deliberately narrow. `secret` is the only I/O, and it is the reason the hook exists: a fixture that must
+ * Deliberately narrow. `secret` is the only I/O the set performs, and it is the reason the hook exists: a
+ * fixture that must
  * agree with what the running app will verify — a signed cookie, a derived id — needs the same secret the
  * app reads, and a static row cannot hold one. Everything else is passed in already-read, so a capability
  * never touches the filesystem: a capability module is bundled into the Worker, and `node:fs` there is a
@@ -161,6 +162,30 @@ export interface SeedPrepareContext {
   env: string;
   /** The project name (the root `pithy.config.ts` `name`), for messages and per-project lookups. */
   project: string;
+  /**
+   * Where this Worker answers locally — `http://localhost:8807` and the like. `null` outside `dev`, and
+   * `null` in a checkout that was never allocated a port block.
+   *
+   * The one address a fixture cannot write down. A dev port is *allocated*, not configured: a checkout
+   * reserves a block and pins one port per Worker into `.dev.config.json`, so `http://localhost:8787` is
+   * right in the first checkout on a machine and wrong in every other one. A set that has to register a
+   * self-connection had nothing to ask, so it hard-coded that literal and every second checkout addressed
+   * the first one's Worker. This is the string the run was actually allocated — the same one `pithy dev`
+   * exports to this Worker's siblings as `<STEM>_ORIGIN`, read back verbatim and never recomposed from
+   * the port.
+   *
+   * **An address, not an identity.** It says where to reach this Worker, on this machine, now. Anything a
+   * later check compares against a stored value — an issuer, an audience, a signing scope — must not be
+   * built from it: the same project answers on a different port in every checkout and a different origin
+   * in every environment, so a row minted against one is unverifiable against the next. Reachability
+   * moves. Identity must not.
+   *
+   * **`null` is an answer, never a guess.** A plain clone that has never run `pithy dev`, a Worker added
+   * after the block was pinned, or any environment but `dev` — a deployed environment's address is
+   * declared rather than allocated, and `pithy env` is what answers it. An invented origin would be
+   * indistinguishable from a real one, so a set that cannot work without one refuses and says so.
+   */
+  origin: string | null;
   /**
    * Read one of this environment's secrets by name, or `undefined` when it is not set. Local dev resolves
    * every secret from `.dev.vars`, so this answers there; a deployed environment's secrets are not on the

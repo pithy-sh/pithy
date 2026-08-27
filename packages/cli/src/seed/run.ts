@@ -9,6 +9,7 @@ import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { TypedKv } from "@pithy-sh/core/src/kv/kv";
 import { composeKv, type MergedKvNamespaces } from "@pithy-sh/core/src/kv/namespaces";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { ResolvedSeedSet } from "@pithy-sh/core/src/seed/compose";
 import type { D1SeedGroup, KvSeedGroup, MediaSeedItem, R2SeedItem, SeedArtifact } from "@pithy-sh/core/src/seed/seed";
 import { collectSeededRows, type SeededRows } from "@pithy-sh/core/src/seed/seededRows";
@@ -18,6 +19,7 @@ import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsSt
 import type { ZodType } from "zod";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
+import { type DevConfig, devConfigPath, readDevConfig } from "../feature/devConfig";
 import {
   previewReset,
   type ResetPreviewEntry,
@@ -607,6 +609,12 @@ export async function seedProject(options: SeedProjectOptions): Promise<SeedRunR
 interface PreparedRun {
   /** The developer's preferences, read lazily and at most once — no prepared set, no filesystem read. */
   preferences: () => Promise<unknown>;
+  /**
+   * One Worker's pinned local origin, from this checkout's `.dev.config.json`. `null` off `dev`, and `null`
+   * for a Worker the allocation does not name. Per Worker, unlike everything else here, because an address
+   * is: two Workers of one fan-out bind two ports.
+   */
+  origin: (worker: string) => Promise<string | null>;
   /** Resolve a secret by name. */
   secret: (name: string) => Promise<string | undefined>;
   /** The rows this run declares, per table, across the whole fan-out. */
@@ -621,8 +629,29 @@ function preparedRun(options: SeedProjectOptions, composed: readonly ComposedWor
   // Memoized, so two Workers in one fan-out cannot observe one hand-edited file in two states — and so a
   // run with no prepared set never reads it at all.
   let pending: Promise<unknown> | undefined;
+  // `.dev.config.json` is one file for the whole checkout, so it follows the same rule for the same reason.
+  // Lazy too: a run with no prepared set never opens it.
+  let dev: Promise<DevConfig | null> | undefined;
   return {
     preferences: () => (pending ??= read()),
+    // Read back, never recomposed. `buildDevConfig` mints `http://localhost:<port>` in exactly one place;
+    // composing it a second time here is a second rule, and two rules drift.
+    origin: async (worker) => {
+      // Only `dev` allocates a port. A deployed environment's address is declared, and `resolveWorkerAddress`
+      // is what answers it — inventing a localhost URL for staging would be a fixture pointing at nothing.
+      if (options.env !== LOCAL_ENVIRONMENT) return null;
+      // A corrupt or stale config answers `null` rather than failing the run, exactly as `scanPinnedBlocks`
+      // treats the same file. Seeding does not depend on this file: `@pithy-sh/auth`'s dev-session set ships
+      // by default, so almost every project has a prepared set, and a hand-edited trailing comma would
+      // otherwise abort `pithy seed` mid fan-out — after earlier Workers' rows had already landed — over a
+      // value most sets never read. Nothing is hidden by that: `pithy dev` genuinely cannot allocate ports
+      // without this file and still refuses loudly, and `null` is already the documented answer a set that
+      // needs an origin refuses on.
+      dev ??= readDevConfig(devConfigPath(options.projectDir)).catch(() => null);
+      const config = await dev;
+      // Keyed on the name `buildDevConfig` wrote and `pithy worker list` reads back.
+      return config?.workers[worker]?.origin ?? null;
+    },
     // One inventory for the whole run, not one per Worker: a set deduped onto another Worker still writes
     // its rows, so a prepared set must be able to see them wherever the fan-out put them.
     seeded: collectSeededRows(composed.flatMap((entry) => entry.sets.map((resolved) => resolved.set))),
@@ -689,6 +718,11 @@ async function writeWorker(
         ? await resolved.set.prepare({
             env: options.env,
             project: options.project,
+            // The Worker this set is written through: its driver holds the rows and its bindings serve them,
+            // so its address is the only coherent one to hand a fixture. A set deduped across Workers that
+            // share a store is written once, and the writer is the honest answer — it is the Worker whose
+            // report lists the set, the others having recorded it in `shared`.
+            origin: await prepared.origin(entry.worker.name),
             secret: prepared.secret,
             preferences: await prepared.preferences(),
             seeded: prepared.seeded,
