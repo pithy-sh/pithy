@@ -152,12 +152,32 @@ defineSeed({
 });
 ```
 
-The context is deliberately narrow: `env`, `project`, a `secret(name)` reader, the developer's machine-local `preferences`, and `seeded` — the run's own inventory. It hands over **values and callbacks, never the filesystem** — a capability module is bundled into the Worker, where `node:fs` is a build error, so the CLI does every read and write on its behalf.
+The context is deliberately narrow: `env`, `project`, `origin` — where this Worker answers locally — a `secret(name)` reader, the developer's machine-local `preferences`, and `seeded` — the run's own inventory. It hands over **values and callbacks, never the filesystem** — a capability module is bundled into the Worker, where `node:fs` is a build error, so the CLI does every read and write on its behalf.
 
 - Prepared groups go through the identical `schema.encode` validation as static ones. A prepared row is not a privileged row.
 - `artifacts` are written **after** the rows land, into the project's gitignored `logs/`. The directory is not the fixture's to choose, and a file name with any directory part is refused.
 - `secret` resolves from the dev secrets file, which is where local dev's secrets genuinely live — outside the repository, and the same store a deployed environment reads. A deployed environment's secrets are not on the operator's disk, so a set that needs one must be `dev`-only.
 - A dry run never calls `prepare`. Planning touches no backend and needs no credentials.
+
+### Where this Worker answers: `context.origin`
+
+A fixture that registers something pointing back at the app — a self-connection, a webhook target, an OAuth callback — needs the origin the Worker will answer on. In dev that origin is *allocated*, not configured: each checkout reserves a block of ports and pins one per Worker into `.dev.config.json`, so `http://localhost:8787` is right in the first checkout on a machine and wrong in every other one. Writing the literal down gives you a fixture that registers cleanly, pings, and denies every real call in every checkout but one.
+
+`context.origin` is that string, read back off the allocation the CLI actually made — the same one `pithy dev` exports to this Worker's siblings as `<STEM>_ORIGIN`.
+
+```ts
+if (!context.origin) {
+  throw new ValidationError({
+    message: "This set registers a self-connection and needs the origin this Worker answers on.",
+    action: "Run pithy dev once in this checkout to allocate its ports, then seed again.",
+  });
+}
+return { d1: [d1SeedGroup("app", "connections", Connection, [{ id: 1, url: context.origin }])] };
+```
+
+- **It is an address, not an identity.** It says where to reach this Worker, on this machine, now. Never build a stored, later-verified value from it — an issuer, an audience, a signing scope — because the same project answers on a different port in every checkout and a different origin in every environment, so a row minted against one is unverifiable against the next. Reachability moves. Identity must not.
+- **`null` is an answer, never a guess.** A clone that has never run `pithy dev`, a Worker added after the block was pinned, or any environment but `dev`. A deployed environment's address is declared rather than allocated — `pithy env` answers it, and a seed running against one reads it from its own config. A set that cannot work without an origin refuses and says so — with a `ValidationError` from `@pithy-sh/core/src/error/pithyError`, never a bare `Error`, so the CLI renders a problem line and an action rather than a stack, and still says something under `--json`. An invented origin would be indistinguishable from a real one.
+- **It is the Worker the set is written through.** A set composed onto two Workers that share a store is written once, and the origin it sees is the writer's — the Worker whose run report lists the set, the others having recorded it under `shared`.
 
 ### Seeing the rest of the run: `context.seeded`
 

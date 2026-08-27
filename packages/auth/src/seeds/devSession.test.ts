@@ -35,6 +35,9 @@ function context(overrides: Partial<SeedPrepareContext> = {}): SeedPrepareContex
   return {
     env: "dev",
     project: "acme",
+    // `null`, never a port literal: this set's cookie deliberately excludes host and port, so a literal
+    // here would plant the very fixture #458 is about while proving nothing.
+    origin: null,
     secret: async (name) => (name === AUTH_SESSION_SECRET ? SECRET : undefined),
     preferences: { user: EXAMPLE_ADA.email },
     seeded: seededRows(authExampleSeed, appUserSeed),
