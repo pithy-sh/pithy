@@ -29,6 +29,25 @@ export const PROJECT_VAR = "PROJECT";
 export const ENVIRONMENT_VAR = "ENVIRONMENT";
 
 /**
+ * The var carrying a Worker's **own** dev origin, from `pithy dev` to whatever launches that Worker.
+ *
+ * Not stamped into `wrangler.jsonc` like the three above, and that is the whole point of it. A dev port
+ * is *allocated* — every checkout reserves its own block — so this is the one identity value a file in
+ * the repository cannot state: written down, it is right in the first checkout on a machine and wrong
+ * in every other one (#462).
+ *
+ * It lives here for the reason the others do. `pithy dev` writes it and `@pithy-sh/vite` reads it, and
+ * those two packages cannot import each other — the CLI depends on vite's package, and vite's may not
+ * depend on the CLI. A privately declared copy on each side is the arrangement where one rule quietly
+ * becomes two.
+ *
+ * **A carrier, not a binding.** It reaches a *process*, not a Worker: `process.env` inside workerd is
+ * that script's own vars and nothing else. `@pithy-sh/vite`'s `devWorkerConfig()` is what turns it into
+ * the Worker's `BASE_URL`, which is the binding anything at runtime actually reads.
+ */
+export const WORKER_ORIGIN_VAR = "PITHY_WORKER_ORIGIN";
+
+/**
  * The var naming the Worker itself: its `apps/<name>` **directory** name, not its deploy name.
  *
  * The directory name is the identity everything else already keys on — the `apps/*` registry, the

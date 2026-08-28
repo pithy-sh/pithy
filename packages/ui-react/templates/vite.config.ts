@@ -1,4 +1,5 @@
 import { cloudflare } from "@cloudflare/vite-plugin";
+import { devWorkerConfig } from "@pithy-sh/vite/src/devOrigin";
 import { pithy } from "@pithy-sh/vite/src/plugin";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
@@ -25,6 +26,13 @@ export default defineConfig({
   plugins: [
     react(),
     cloudflare({
+      // `BASE_URL` from the port block `pithy dev` allocated *this checkout*, overriding the one in
+      // wrangler.jsonc while dev is running. A dev port is allocated rather than configured, so a
+      // literal there is right in the first checkout on a machine and wrong in every other one — and
+      // `BASE_URL` is the `iss` on every control-plane token this Worker signs and the origin its
+      // callback links are built against. Outside `pithy dev` it does nothing and the declared value
+      // stands, which is what a deployed environment wants. See `devWorkerConfig`.
+      config: devWorkerConfig(),
       // Local state lives at the PROJECT root, not here — the same store pithy dev, migrate, and seed
       // use. Per-worker state would silently give two workers separate copies of a shared database.
       persistState: { path: "../../.wrangler/state" },
