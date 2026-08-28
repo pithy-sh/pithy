@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { WORKER_ORIGIN_VAR } from "@pithy-sh/core/src/worker/identity";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import { ENVIRONMENT_VAR, WORKER_ORIGIN_VAR } from "@pithy-sh/core/src/worker/identity";
 
 /**
  * The slice of `@cloudflare/vite-plugin`'s worker config this touches.
@@ -61,6 +62,20 @@ export function devWorkerConfig(env: NodeJS.ProcessEnv = process.env): (config: 
     // `BASE_URL` is worse than a wrong one: it fails a URL parse somewhere far from here rather than
     // being denied at the seam with the origin named.
     if (origin === undefined || origin.trim() === "") return {};
+    // And never over a config that says, itself, that it is not dev.
+    //
+    // The customizer is applied on `build` as well as on `serve`, and it beats the `vars` the file
+    // declared — so the whole of what keeps a localhost origin out of a deploy is that only
+    // `pithy dev` ever sets `WORKER_ORIGIN_VAR`, on the children it spawns. That is true, and it is
+    // one exported variable away from not being true, and the failure would be silent and severe: a
+    // deployed Worker signing every control-plane token with a `localhost` issuer, and mailing magic
+    // links to an address nobody can reach.
+    //
+    // **Only ever removes the override, and only on a positive answer.** A stanza that does not stamp
+    // `ENVIRONMENT` cannot say which environment it is, and refusing there would silently withhold
+    // the fix from the dev run it exists for — the failure this whole issue was.
+    const environment = config.vars?.[ENVIRONMENT_VAR];
+    if (typeof environment === "string" && environment !== LOCAL_ENVIRONMENT) return {};
     return { vars: { ...config.vars, BASE_URL: origin } };
   };
 }

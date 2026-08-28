@@ -50,6 +50,33 @@ describe("devWorkerConfig", () => {
     expect(devWorkerConfig({ [WORKER_ORIGIN_VAR]: "   " })({ vars: {} })).toEqual({});
   });
 
+  test("a config that says it is not dev is never overridden", () => {
+    // The customizer runs on `build` too and beats the declared `vars`, so the only thing keeping a
+    // localhost origin out of a deploy is that `pithy dev` alone sets the variable. True, and one
+    // exported variable from not being true — and the failure is a deployed Worker signing every
+    // control-plane token with a localhost issuer and mailing magic links nobody can reach.
+    const customize = devWorkerConfig({ [WORKER_ORIGIN_VAR]: "http://localhost:8827" });
+    for (const environment of ["staging", "prod"]) {
+      expect(customize({ vars: { ENVIRONMENT: environment, BASE_URL: "https://app.pithy.sh" } })).toEqual({});
+    }
+  });
+
+  test("it still applies when the stanza says dev", () => {
+    const customize = devWorkerConfig({ [WORKER_ORIGIN_VAR]: "http://localhost:8827" });
+    expect(customize({ vars: { ENVIRONMENT: "dev", BASE_URL: "http://localhost:8787" } })).toEqual({
+      vars: { ENVIRONMENT: "dev", BASE_URL: "http://localhost:8827" },
+    });
+  });
+
+  test("a stanza that stamps no ENVIRONMENT still gets the origin", () => {
+    // Only a *positive* non-dev answer withholds it. A config that cannot say which environment it is
+    // would otherwise silently lose the fix it exists for, which is the failure this issue was.
+    const customize = devWorkerConfig({ [WORKER_ORIGIN_VAR]: "http://localhost:8827" });
+    expect(customize({ vars: { PROJECT: "dash" } })).toEqual({
+      vars: { PROJECT: "dash", BASE_URL: "http://localhost:8827" },
+    });
+  });
+
   test("a Worker with no vars at all still gets one", () => {
     expect(devWorkerConfig({ [WORKER_ORIGIN_VAR]: "http://localhost:8827" })({})).toEqual({
       vars: { BASE_URL: "http://localhost:8827" },
