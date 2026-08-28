@@ -817,10 +817,13 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
 
   emitLine(`Starting ${started.map((s) => s.worker.name).join(", ")}.`);
 
-  for (const { worker, port } of started) {
+  for (const { worker, port, origin } of started) {
     readyState.set(worker.name, false);
     readyRegex.set(worker.name, readyRegexFor(worker));
-    const { command, args } = startCommand(worker, port, launchWrangler, persistTo, baseEnv, hostPorts);
+    // A host is handed no origin of its own: `materializeHostConfigs` already wrote the app's into its
+    // generated config, which is the address its callback links must carry. See `ownOriginVarArgs`.
+    const ownOrigin = hostNames.has(worker.name) ? null : origin;
+    const { command, args } = startCommand(worker, port, ownOrigin, launchWrangler, persistTo, baseEnv, hostPorts);
     const child = spawn(command, args, { cwd: worker.dir, env: childEnv, detached: hasSetsid });
     children.push({ name: worker.name, child });
 
