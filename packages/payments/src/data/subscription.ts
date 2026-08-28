@@ -95,6 +95,13 @@ const Currency = z
  * quote produced. The wire says `"6582"` and means 6582, and a float here would be a rounding error
  * arriving later, in a currency whose minor unit is not a hundredth. `data/money.ts` holds which
  * currencies those are; nothing in this module needs to know, because nothing here scales.
+ *
+ * **`rendered` is the sentence, and it never replaces the number** (#465, 2026-08-28). The shape shipped
+ * with minor units alone, and nothing downstream could turn 6582 into `$65.82`: five of six planned screens
+ * could not state the figure the customer was being asked to confirm, and the adopter dashboard refuses a
+ * bare digit string outright rather than render minor units as a price. So the string sits *beside* the
+ * integer — a consumer comparing amounts still reads `amountMinor`, and a consumer showing one reads
+ * `rendered`. `data/renderMoney.ts` holds how, and holds the measurement that corrected the rule against it.
  */
 export const QuotedMoney = z
   .object({
@@ -105,9 +112,15 @@ export const QuotedMoney = z
         "How much, as an integer in the currency's minor unit. **Signed** — a credit and a refund are negative on the wire, and refusing that refuses every downgrade. Never a float: 6582 is $65.82, and 65.82 is a bug.",
       ),
     currency: Currency.describe("The currency the amount is in, lowercase."),
+    rendered: z
+      .string()
+      .min(1)
+      .describe(
+        "The same amount as a reader sees it — `$65.82` for an English reader, `65,82 US$` for a Spanish one, `¥6,582` where the currency has no subunit. Presentation of `amountMinor` and never a second answer to it: the provider's integer decides how much, and `Intl` decides only how it is spelled.",
+      ),
   })
   .describe(
-    "An amount a provider quoted, in minor units and one currency. Signed, because the provider's own numbers are.",
+    "An amount a provider quoted: minor units for comparing, one currency, and the figure rendered for the reader it is being shown to. Signed, because the provider's own numbers are.",
   );
 export type QuotedMoney = z.output<typeof QuotedMoney>;
 

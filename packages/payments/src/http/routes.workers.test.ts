@@ -13,6 +13,7 @@ import { exportPublicJwk, mintControlPlaneToken } from "@pithy-sh/core/src/contr
 import { CONTROL_PLANE_HEADER } from "@pithy-sh/core/src/controlPlane/wire";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
+import { createTranslator, DEFAULT_LOCALE } from "@pithy-sh/core/src/i18n/translator";
 import { openLedger } from "@pithy-sh/ledger/src/ledger";
 import { ledger_0001_accounts } from "@pithy-sh/ledger/src/migrations/0001_accounts";
 import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
@@ -25,6 +26,7 @@ import { PaymentsAuditActions } from "../audit/actions";
 import { PaymentsConfig, type PaymentsConfigInput } from "../config/config";
 import { PaymentsPurchase, type PurchaseRole } from "../data/purchase";
 import type { PaymentsRail } from "../data/rail";
+import { renderMoney } from "../data/renderMoney";
 import type { PurchaseStatus } from "../data/status";
 import { encodeSubjectReference, type PaymentsSubject } from "../data/subject";
 import { PAYMENTS_PURCHASES_TABLE, paymentsDatabase } from "../data/tables";
@@ -100,7 +102,12 @@ import {
   paymentsSecretsRegistry,
 } from "../secret/registry";
 import { PADDLE_SWEEP_MAX_ATTEMPTS, sweepPaddle } from "../workflows/paddleSweep";
-import { PaymentsEntitlementResponse, PaymentsEntitlementsResponse, PaymentsPricingEnvelope } from "./responses";
+import {
+  PaymentsEntitlementResponse,
+  PaymentsEntitlementsResponse,
+  PaymentsPricingEnvelope,
+  type PaymentsQuotedMoney,
+} from "./responses";
 import { changeableSubscription, registerPaymentsRoutes } from "./routes";
 import {
   PAYMENTS_CONTROL_PLANE_SCOPES,
@@ -551,6 +558,19 @@ function makeApp(input: PaymentsConfigInput = CATALOG, options: AppOptions = {})
     c.set("auth", signedIn ? { userId: signedIn, sessionId: "s1", scopes } : null);
     // Null, not absent, when the seam is not composed — the shape `createBackend` seeds either way.
     c.set("controlPlaneVerifier", verifier);
+    // The translator seam, seeded exactly as `createBackend` seeds it: always present, over the kit's own
+    // English, whether or not `@pithy-sh/i18n` is composed. It was missing from this harness until #465,
+    // and the first route to read `c.var.t` found `undefined` — a 500 in a test double, for a variable
+    // production guarantees. `x-locale` is what an `@pithy-sh/i18n` negotiation would have set as the
+    // *formatting* locale: the catalog stays English because English is what this kit has written.
+    c.set(
+      "t",
+      createTranslator({
+        catalogLocale: DEFAULT_LOCALE,
+        formattingLocale: c.req.header("x-locale") ?? DEFAULT_LOCALE,
+        layers: [],
+      }),
+    );
     c.set("emit", async (event) => {
       emitted.push(event);
       if (options.emit) await options.emit(event);
@@ -588,6 +608,14 @@ interface RequestOptions {
   /** The `Authorization` header — where a Pub/Sub push carries its OIDC token. */
   authorization?: string;
   /**
+   * The locale this reader would have negotiated — what the harness hands the translator seam as its
+   * *formatting* locale, and therefore what any money in the answer is rendered in.
+   *
+   * A stand-in for `@pithy-sh/i18n`'s negotiation, not a protocol field: no route reads a locale off a
+   * request, and the header exists only because this harness has no negotiation of its own.
+   */
+  locale?: string;
+  /**
    * Present a control-plane credential: a real Ed25519 token, minted over the exact bytes this request sends
    * and for the one operation named here. Absent means no credential, which is what every negative case wants.
    */
@@ -608,6 +636,7 @@ async function request(app: Hono<PithyHonoEnv>, method: string, path: string, op
   if (options.user) headers["x-user"] = options.user;
   if (options.organization) headers["x-org"] = options.organization;
   if (options.scopes) headers["x-scopes"] = options.scopes;
+  if (options.locale) headers["x-locale"] = options.locale;
   if (options.authorization) headers.authorization = options.authorization;
   const body =
     options.raw ?? (method !== "GET" && options.body !== undefined ? JSON.stringify(options.body) : undefined);
@@ -5157,11 +5186,42 @@ describe("the subscription lifecycle routes", () => {
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({
         quote: {
-          settlesToday: { outcome: "charge", amount: { amountMinor: 6582, currency: "usd" } },
+          settlesToday: { outcome: "charge", amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" } },
           nextInvoice: null,
-          recurring: { amount: { amountMinor: 11976, currency: "usd" }, startsAt: "2026-09-15T11:42:21.789Z" },
+          recurring: {
+            amount: { amountMinor: 11976, currency: "usd", rendered: "$119.76" },
+            startsAt: "2026-09-15T11:42:21.789Z",
+          },
         },
       });
+    });
+
+    test("states the figure in the reader's own language, from the seam and not from the body", async () => {
+      // #465, end to end. Paddle answers minor units and nothing else, so a response carrying only 6582
+      // leaves a confirmation screen unable to name the amount — and the locale that decides how it is
+      // spelled comes from the translator seam every other string in the same response goes through,
+      // never from a request field. The body below names a product and nothing else, as it always does.
+      await row();
+      const app = makeApp(CATALOG_TWO_PLANS, {
+        paddle: { subscription: ON_PRO, prices: PRICES, preview: UPGRADE_PREVIEW },
+      });
+      const response = await request(app, "POST", "/payments/subscription/preview", {
+        user: "ada",
+        locale: "es",
+        body: { productId: "team_monthly" },
+      });
+
+      expect(response.status).toBe(200);
+      const { quote } = await response.json<{ quote: { settlesToday: { amount: PaymentsQuotedMoney } } }>();
+      expect(quote.settlesToday.amount).toEqual({
+        amountMinor: 6582,
+        currency: "usd",
+        rendered: renderMoney(6582, "usd", "es"),
+      });
+      // The two halves of the point: a Spanish reader does not get the English spelling, and the integer
+      // a client compares on is Paddle's own either way.
+      expect(quote.settlesToday.amount.rendered).not.toBe("$65.82");
+      expect(quote.settlesToday.amount.amountMinor).toBe(6582);
     });
 
     test("quotes a downgrade: nothing today, a credit on the next invoice, and the new rate", async () => {
@@ -5180,10 +5240,13 @@ describe("the subscription lifecycle routes", () => {
         quote: {
           settlesToday: { outcome: "nothing" },
           nextInvoice: {
-            settlement: { outcome: "credit", amount: { amountMinor: 6558, currency: "usd" } },
+            settlement: { outcome: "credit", amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" } },
             at: "2026-09-15T11:42:21.789Z",
           },
-          recurring: { amount: { amountMinor: 653, currency: "usd" }, startsAt: "2026-09-15T11:42:21.789Z" },
+          recurring: {
+            amount: { amountMinor: 653, currency: "usd", rendered: "$6.53" },
+            startsAt: "2026-09-15T11:42:21.789Z",
+          },
         },
       });
     });

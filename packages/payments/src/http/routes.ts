@@ -370,6 +370,28 @@ function deploymentName(c: Context<PithyHonoEnv>): string | undefined {
 }
 
 /**
+ * The locale a figure in this response is rendered for.
+ *
+ * **The translator seam, not the request.** `c.var.t` is always present — core seeds a translator over the
+ * baked English when nothing composes `@pithy-sh/i18n`, and the capability replaces it with one negotiated
+ * from the URL, the reader's account, a cookie and `Accept-Language` — so this is the same locale every
+ * other string in the same response is written in. `@pithy-sh/email` sets the precedent, building a
+ * per-recipient translator from a stored locale rather than a second rule of its own.
+ *
+ * **Not a request field and not a header read here.** A locale a caller can name in a body is a locale a
+ * caller sets, and these are the routes whose rule is that nothing a caller sends names anything.
+ * `Accept-Language` is already one of the four inputs the negotiation weighs, and reading it directly would
+ * put the money in one language and the sentence around it in another.
+ *
+ * `formattingLocale` rather than `catalogLocale`: it is the tag `Intl` is meant to be handed, region and
+ * all, so an `es-AR` reader gets `es-AR` grouping whether or not anybody wrote Spanish copy. The seam
+ * documents that split at the field.
+ */
+function readerLocale(c: Context<PithyHonoEnv>): string {
+  return c.var.t.formattingLocale;
+}
+
+/**
  * The subject filter on a management listing: the pair, or nothing at all.
  *
  * `AdminPurchasesQuery` and its siblings carry the two halves as two optional query fields with a both-or-
@@ -801,6 +823,12 @@ function standingMoved(before: SubscriptionStanding | undefined, after: Subscrip
  * that a second answer to "what will this cost" is a second number for a customer to hold against their
  * statement. The settlements cross verbatim because they already are what a screen renders: a direction
  * and a magnitude, with the direction as the discriminant so the amount cannot be reached without it.
+ *
+ * **The money is already rendered when it gets here, and that is why this function does not render it.**
+ * `QuotedMoney` requires the string, so the figure exists from the moment the quote does — an adopter
+ * calling the rail directly gets the same sentence this response carries, rather than a formatting rule
+ * that lives only on the HTTP path. What this layer supplies is the *locale*, resolved from the translator
+ * seam at the route and handed down through `RailRequestContext`. See `data/renderMoney.ts`.
  */
 function quoteView(quote: SubscriptionChangeQuote): PaymentsSubscriptionQuote {
   return {
@@ -1984,7 +2012,9 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
           // The row, never an id off it: what identifies a subscription at its store differs per rail and
           // some of it survives only in the payload. See `SubscriptionChangeInput.purchase`.
           { purchase, providerProductId: sku },
-          { now: clock(), deployment: deploymentName(c) },
+          // The only rail call carrying a locale, because it is the only one whose answer carries money a
+          // person reads. See `RailRequestContext.locale`.
+          { now: clock(), deployment: deploymentName(c), locale: readerLocale(c) },
         );
         return c.json({ quote: quoteView(quote) } satisfies PaymentsSubscriptionQuoteResponse, 200);
       },

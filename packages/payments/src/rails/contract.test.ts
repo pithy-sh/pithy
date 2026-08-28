@@ -288,10 +288,13 @@ const PURCHASE: PaymentsPurchase = {
 const QUOTE = SubscriptionChangeQuote.parse({
   settlesToday: { outcome: "nothing" },
   nextInvoice: {
-    settlement: { outcome: "credit", amount: { amountMinor: 6558, currency: "usd" } },
+    settlement: { outcome: "credit", amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" } },
     at: "2026-09-15T11:42:21.789736Z",
   },
-  recurring: { amount: { amountMinor: 653, currency: "usd" }, startsAt: "2026-09-15T11:42:21.789736Z" },
+  recurring: {
+    amount: { amountMinor: 653, currency: "usd", rendered: "$6.53" },
+    startsAt: "2026-09-15T11:42:21.789736Z",
+  },
 });
 
 /**

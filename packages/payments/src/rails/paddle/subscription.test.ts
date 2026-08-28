@@ -4,6 +4,8 @@
 import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import type { PaymentsPurchase } from "../../data/purchase";
+import { RENDER_FALLBACK_LOCALE, renderMoney } from "../../data/renderMoney";
+import { PaymentsProviderUnavailableError } from "../../error/errors";
 import type { PaymentsPaddleCredentials } from "../../secret/registry";
 import type { PaddleHttpFetch, PaddleHttpRequest } from "./api";
 import {
@@ -363,9 +365,12 @@ describe("previewPaddleChange", () => {
     const quote = await previewPaddleChange({ purchase: purchase(), providerProductId: TEAM }, options(transport));
 
     expect(quote).toEqual({
-      settlesToday: { outcome: "charge", amount: { amountMinor: 6582, currency: "usd" } },
+      settlesToday: { outcome: "charge", amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" } },
       nextInvoice: null,
-      recurring: { amount: { amountMinor: 11976, currency: "usd" }, startsAt: new Date(PERIOD_END) },
+      recurring: {
+        amount: { amountMinor: 11976, currency: "usd", rendered: "$119.76" },
+        startsAt: new Date(PERIOD_END),
+      },
     });
   });
 
@@ -401,10 +406,10 @@ describe("previewPaddleChange", () => {
     expect(quote).toEqual({
       settlesToday: { outcome: "nothing" },
       nextInvoice: {
-        settlement: { outcome: "credit", amount: { amountMinor: 6558, currency: "usd" } },
+        settlement: { outcome: "credit", amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" } },
         at: new Date(PERIOD_END),
       },
-      recurring: { amount: { amountMinor: 653, currency: "usd" }, startsAt: new Date(PERIOD_END) },
+      recurring: { amount: { amountMinor: 653, currency: "usd", rendered: "$6.53" }, startsAt: new Date(PERIOD_END) },
     });
   });
 
@@ -432,6 +437,57 @@ describe("previewPaddleChange", () => {
     expect(quote.nextInvoice?.settlement.outcome).toBe("credit");
   });
 
+  test("the figure is rendered in the locale the route resolved, not in the kit's", async () => {
+    // #465: Paddle's `subscriptions.preview` returns no formatted total at any depth, so a quote that
+    // did not render one leaves every screen downstream unable to state what the customer is confirming.
+    // The locale is the reader's, threaded from `c.var.t.formattingLocale` through `RailRequestContext`.
+    const transport = paddle({ subscription: subscriptionOn(SOLO, "600"), prices: PRICES, preview: UPGRADE_PREVIEW });
+    const quote = await previewPaddleChange(
+      { purchase: purchase(), providerProductId: TEAM },
+      options(transport),
+      "es",
+    );
+
+    expect(quote.settlesToday).toEqual({
+      outcome: "charge",
+      amount: { amountMinor: 6582, currency: "usd", rendered: renderMoney(6582, "usd", "es") },
+    });
+    // Not merely "some string": a Spanish reader's money must not be spelled in English.
+    expect(quote.settlesToday.outcome === "charge" && quote.settlesToday.amount.rendered).not.toBe("$65.82");
+    expect(quote.recurring?.amount.rendered).toBe(renderMoney(11976, "usd", "es"));
+    // The integer is untouched by any of it — the amount is Paddle's and only its spelling is ours.
+    expect(quote.recurring?.amount.amountMinor).toBe(11976);
+  });
+
+  test("no locale still states the figure, in the kit's own language", async () => {
+    // The stated fallback. A reader whose locale did not resolve loses their language, never the amount:
+    // a confirmation screen with a blank where the price goes is the one outcome worse than English.
+    const transport = paddle({ subscription: subscriptionOn(SOLO, "600"), prices: PRICES, preview: UPGRADE_PREVIEW });
+    const quote = await previewPaddleChange({ purchase: purchase(), providerProductId: TEAM }, options(transport));
+    expect(quote.settlesToday).toEqual({
+      outcome: "charge",
+      amount: { amountMinor: 6582, currency: "usd", rendered: renderMoney(6582, "usd", RENDER_FALLBACK_LOCALE) },
+    });
+  });
+
+  test("a currency nothing can put a symbol on refuses the quote rather than throwing out of `Intl`", async () => {
+    // `currencyOf` lowercases whatever Paddle sent and only refuses an empty string, so a store answering
+    // with something that is not a code reaches the renderer with an amount that parses. `Intl` throws a
+    // `RangeError` on it, which would reach a customer's confirmation screen as a 500. It is refused as
+    // the unreadable response it is — the same answer every other malformed figure in this file gets.
+    const named = {
+      ...UPGRADE_PREVIEW,
+      update_summary: {
+        ...UPGRADE_PREVIEW.update_summary,
+        result: { action: "charge", amount: "6582", currency_code: "DOLLARS" },
+      },
+    };
+    const transport = paddle({ subscription: subscriptionOn(SOLO, "600"), prices: PRICES, preview: named });
+    await expect(
+      previewPaddleChange({ purchase: purchase(), providerProductId: TEAM }, options(transport)),
+    ).rejects.toThrow(PaymentsProviderUnavailableError);
+  });
+
   test("Paddle's uppercase currency is lowered before it reaches the quote", async () => {
     // `QuotedMoney` refuses `"USD"` on purpose: a quote carrying it compares unequal to the purchase rows
     // for the same money and sorts into a second bucket in every report that groups by currency. So the
@@ -440,7 +496,10 @@ describe("previewPaddleChange", () => {
     const transport = paddle({ subscription: subscriptionOn(SOLO, "600"), prices: PRICES, preview: UPGRADE_PREVIEW });
     const quote = await previewPaddleChange({ purchase: purchase(), providerProductId: TEAM }, options(transport));
 
-    expect(quote.settlesToday).toEqual({ outcome: "charge", amount: { amountMinor: 6582, currency: "usd" } });
+    expect(quote.settlesToday).toEqual({
+      outcome: "charge",
+      amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" },
+    });
     expect(quote.recurring?.amount.currency).toBe("usd");
   });
 
@@ -524,7 +583,10 @@ describe("previewPaddleChange", () => {
 
     expect(quote.recurring).toBeNull();
     // And the part that does settle is still stated. A quote with nothing in it is not the honest answer.
-    expect(quote.settlesToday).toEqual({ outcome: "charge", amount: { amountMinor: 6582, currency: "usd" } });
+    expect(quote.settlesToday).toEqual({
+      outcome: "charge",
+      amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" },
+    });
   });
 
   test("a renewal date with no recurring block is the provider declining, and refuses", async () => {

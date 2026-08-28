@@ -194,8 +194,10 @@ export function paddleRail(
       return await readPaddleStanding(purchase, base);
     },
 
-    async previewChange(input: SubscriptionChangeInput): Promise<SubscriptionChangeQuote> {
-      return await previewPaddleChange(input, base);
+    async previewChange(input: SubscriptionChangeInput, context: RailRequestContext): Promise<SubscriptionChangeQuote> {
+      // The one method here that reads the context's locale: its answer is the only one carrying money a
+      // person reads. See `RailRequestContext.locale`.
+      return await previewPaddleChange(input, base, context.locale);
     },
 
     async changePlan(input: SubscriptionChangeInput): Promise<SubscriptionStanding> {

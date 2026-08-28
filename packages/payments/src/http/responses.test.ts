@@ -330,19 +330,19 @@ describe("the subscription lifecycle responses", () => {
 
   /** "$65.82 today, then $119.76 monthly from 15 Sep" — the recorded upgrade. */
   const UPGRADE: SubscriptionChangeQuote = {
-    settlesToday: { outcome: "charge", amount: { amountMinor: 6582, currency: "usd" } },
+    settlesToday: { outcome: "charge", amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" } },
     nextInvoice: null,
-    recurring: { amount: { amountMinor: 11976, currency: "usd" }, startsAt: new Date(PERIOD_END) },
+    recurring: { amount: { amountMinor: 11976, currency: "usd", rendered: "$119.76" }, startsAt: new Date(PERIOD_END) },
   };
 
   /** "Nothing today. $65.58 credit on your next invoice, 15 Sep. Then $6.53/month." */
   const DEFERRED_DOWNGRADE: SubscriptionChangeQuote = {
     settlesToday: { outcome: "nothing" },
     nextInvoice: {
-      settlement: { outcome: "credit", amount: { amountMinor: 6558, currency: "usd" } },
+      settlement: { outcome: "credit", amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" } },
       at: new Date(PERIOD_END),
     },
-    recurring: { amount: { amountMinor: 653, currency: "usd" }, startsAt: new Date(PERIOD_END) },
+    recurring: { amount: { amountMinor: 653, currency: "usd", rendered: "$6.53" }, startsAt: new Date(PERIOD_END) },
   };
 
   /** What a route sends: the encoded standing, the product it is for, and the reading of what comes next. */
@@ -398,18 +398,27 @@ describe("the subscription lifecycle responses", () => {
 
     // "$65.82 today, then $119.76 monthly from 15 Sep"
     const upgrade = PaymentsSubscriptionQuote.parse(SubscriptionChangeQuote.encode(UPGRADE));
-    expect(upgrade.settlesToday).toEqual({ outcome: "charge", amount: { amountMinor: 6582, currency: "usd" } });
+    expect(upgrade.settlesToday).toEqual({
+      outcome: "charge",
+      amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" },
+    });
     expect(upgrade.nextInvoice).toBeNull();
-    expect(upgrade.recurring).toEqual({ amount: { amountMinor: 11976, currency: "usd" }, startsAt: PERIOD_END });
+    expect(upgrade.recurring).toEqual({
+      amount: { amountMinor: 11976, currency: "usd", rendered: "$119.76" },
+      startsAt: PERIOD_END,
+    });
 
     // "Nothing today. $65.58 credit on your next invoice, 15 Sep. Then $6.53/month."
     const downgrade = PaymentsSubscriptionQuote.parse(SubscriptionChangeQuote.encode(DEFERRED_DOWNGRADE));
     expect(downgrade.settlesToday).toEqual({ outcome: "nothing" });
     expect(downgrade.nextInvoice).toEqual({
-      settlement: { outcome: "credit", amount: { amountMinor: 6558, currency: "usd" } },
+      settlement: { outcome: "credit", amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" } },
       at: PERIOD_END,
     });
-    expect(downgrade.recurring).toEqual({ amount: { amountMinor: 653, currency: "usd" }, startsAt: PERIOD_END });
+    expect(downgrade.recurring).toEqual({
+      amount: { amountMinor: 653, currency: "usd", rendered: "$6.53" },
+      startsAt: PERIOD_END,
+    });
   });
 
   test("a next event is never a date without an event, or an event without a date", () => {
@@ -470,7 +479,10 @@ describe("the subscription lifecycle responses", () => {
   });
 
   test("an amount cannot be rendered without its direction", () => {
-    accepts(PaymentsSubscriptionSettlement, { outcome: "charge", amount: { amountMinor: 6582, currency: "usd" } });
+    accepts(PaymentsSubscriptionSettlement, {
+      outcome: "charge",
+      amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" },
+    });
     accepts(PaymentsSubscriptionSettlement, { outcome: "nothing" });
     // `nothing` carries no amount, and one smuggled in does not survive the parse — "nothing to pay
     // today" and "a charge of zero" are different sentences and only one of them is ever true.
@@ -495,16 +507,29 @@ describe("the subscription lifecycle responses", () => {
   test("money is a signed integer of minor units", () => {
     // Signed, because Paddle's own credit amounts are — `.nonnegative()` here refuses every real
     // downgrade. Never a float: 6582 is $65.82, and 65.82 is somebody reading the rendered figure back in.
-    accepts(PaymentsQuotedMoney, { amountMinor: -6961, currency: "usd" });
-    expect(PaymentsQuotedMoney.safeParse({ amountMinor: 65.82, currency: "usd" }).success).toBe(false);
-    expect(PaymentsQuotedMoney.safeParse({ amountMinor: "6582", currency: "usd" }).success).toBe(false);
+    accepts(PaymentsQuotedMoney, { amountMinor: -6961, currency: "usd", rendered: "-$69.61" });
+    expect(PaymentsQuotedMoney.safeParse({ amountMinor: 65.82, currency: "usd", rendered: "$65.82" }).success).toBe(
+      false,
+    );
+    expect(PaymentsQuotedMoney.safeParse({ amountMinor: "6582", currency: "usd", rendered: "$65.82" }).success).toBe(
+      false,
+    );
+  });
+
+  test("money crosses rendered as well as counted, and a blank rendering is not a rendering", () => {
+    // #465: minor units alone cross as bare digits, and a client cannot scale them without carrying the
+    // currency exponents this Worker already has. Both fields, always — one to show, one to compare.
+    const money = PaymentsQuotedMoney.parse({ amountMinor: 6582, currency: "usd", rendered: "$65.82" });
+    expect(money).toEqual({ amountMinor: 6582, currency: "usd", rendered: "$65.82" });
+    expect(PaymentsQuotedMoney.safeParse({ amountMinor: 6582, currency: "usd" }).success).toBe(false);
+    expect(PaymentsQuotedMoney.safeParse({ amountMinor: 6582, currency: "usd", rendered: "" }).success).toBe(false);
   });
 
   test("a currency the wire did not expect does not take the pane down", () => {
     // `data/subscription.ts` refuses anything but lowercase, and that is where a rail that stopped
     // lowering fails. Re-refusing it here would mean a customer's whole subscription pane failing to
     // parse over a casing difference, which is #450's rule read the wrong way round.
-    accepts(PaymentsQuotedMoney, { amountMinor: 6582, currency: "USD" });
+    accepts(PaymentsQuotedMoney, { amountMinor: 6582, currency: "USD", rendered: "$65.82" });
   });
 });
 

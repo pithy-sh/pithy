@@ -3,9 +3,11 @@
 
 import { z } from "zod";
 import type { PaymentsPurchase } from "../../data/purchase";
+import { renderMoney } from "../../data/renderMoney";
 import {
   type DeferredSubscriptionSettlement,
   type SubscriptionChangeQuote as Quote,
+  type QuotedMoney,
   SubscriptionChangeQuote,
   SubscriptionStanding,
 } from "../../data/subscription";
@@ -51,6 +53,12 @@ import {
  * and never scaled, summed, or checked. `data/subscription.ts` holds the longer argument; the short one is
  * that a second answer to "what will this cost" is a second number for a customer to hold against their
  * statement, and the statement is the one they will believe.
+ *
+ * **It does render one, and that is a different verb** (#465, 2026-08-28). Paddle's `subscriptions.preview`
+ * returns no formatted total at any depth — `formatted_totals` exists only on the pricing-preview endpoint,
+ * "for convenience" — so a quote leaves here as minor units or as nothing a screen can print. Every amount
+ * therefore carries `rendered` beside it, placed by `data/renderMoney.ts` in the locale the route resolved.
+ * The integer is Paddle's and is untouched; only its spelling is decided here.
  *
  * **It returns nothing projectable.** Every method answers a `SubscriptionStanding` or a
  * `SubscriptionChangeQuote` and never an `UnboundProviderEvent`. The webhook owns `pithy_payments_purchases`;
@@ -394,11 +402,14 @@ function standingOf(subscription: PaddleSubscription): SubscriptionStanding {
  * has no standing to make, and typing it wider let a `nothing` compile into `nextInvoice.settlement`, which
  * is a row about no money, dated. The narrower union is what refused it, at build time (#465).
  */
-function settlementOf(result: {
-  action: string;
-  amount: string;
-  currency_code?: string | null;
-}): DeferredSubscriptionSettlement {
+function settlementOf(
+  result: {
+    action: string;
+    amount: string;
+    currency_code?: string | null;
+  },
+  locale: string | undefined,
+): DeferredSubscriptionSettlement {
   if (result.action !== "charge" && result.action !== "credit") {
     unreadable(
       `Paddle summarized a subscription change as "${result.action}", which is not an outcome this build maps.`,
@@ -411,7 +422,27 @@ function settlementOf(result: {
       `Paddle summarized a subscription change as ${result.action} of ${JSON.stringify(result.amount)} ${JSON.stringify(result.currency_code)}, which is not an amount this build can state.`,
     );
   }
-  return { outcome: result.action, amount: { amountMinor, currency } };
+  return { outcome: result.action, amount: quotedMoney(amountMinor, currency, locale, result.action) };
+}
+
+/**
+ * One figure, with the string a screen shows it as.
+ *
+ * **Rendering is not the same check as parsing, and this is where the second one fails.** `currencyOf`
+ * lowercases whatever Paddle sent and answers null only for an empty string, so a store answering
+ * `currency_code: "dollars"` reaches here with an amount that parses and a currency nothing can put a
+ * symbol on. `renderMoney` answers null for it, and null is refused the way every other unreadable figure
+ * in this file is — a shape change reported as one, rather than a `RangeError` out of `Intl` arriving at a
+ * customer's confirmation screen as a 500.
+ */
+function quotedMoney(amountMinor: number, currency: string, locale: string | undefined, what: string): QuotedMoney {
+  const rendered = renderMoney(amountMinor, currency, locale);
+  if (rendered === null) {
+    unreadable(
+      `Paddle stated the ${what} of a subscription change in ${JSON.stringify(currency)}, which is not a currency this build can name. The amount parses and cannot be shown to anybody.`,
+    );
+  }
+  return { amountMinor, currency, rendered };
 }
 
 /**
@@ -427,7 +458,7 @@ function settlementOf(result: {
  * A missing summary is a shape change and not a free change, so it throws rather than settling `nothing`.
  * "This costs you nothing" is a sentence that must come from Paddle, never from a field being absent.
  */
-function quoteOf(data: unknown, priceId: string): SubscriptionChangeQuote {
+function quoteOf(data: unknown, priceId: string, locale: string | undefined): SubscriptionChangeQuote {
   const preview = PaddleChangePreview.safeParse(data);
   if (!preview.success) unreadable(`Paddle previewed a move to ${priceId} in a shape this build cannot read.`);
   const answer = preview.data;
@@ -438,7 +469,7 @@ function quoteOf(data: unknown, priceId: string): SubscriptionChangeQuote {
       `Paddle previewed a move to ${priceId} with no \`update_summary\`, so what the change costs is unstated. A quote cannot be built from its absence.`,
     );
   }
-  const settlement = settlementOf(summary.result);
+  const settlement = settlementOf(summary.result, locale);
   const settlesToday = answer.immediate_transaction !== null && answer.immediate_transaction !== undefined;
   const nextBilledAt = orNull(answer.next_billed_at);
 
@@ -451,7 +482,7 @@ function quoteOf(data: unknown, priceId: string): SubscriptionChangeQuote {
   const quote: Quote = {
     settlesToday: settlesToday ? settlement : { outcome: "nothing" },
     nextInvoice: settlesToday || nextBilledAt === null ? null : { settlement, at: new Date(nextBilledAt) },
-    recurring: recurringOf(answer, nextBilledAt, priceId),
+    recurring: recurringOf(answer, nextBilledAt, priceId, locale),
   };
   const parsed = SubscriptionChangeQuote.safeParse(quote);
   if (!parsed.success) {
@@ -474,6 +505,7 @@ function recurringOf(
   answer: z.output<typeof PaddleChangePreview>,
   nextBilledAt: string | null,
   priceId: string,
+  locale: string | undefined,
 ): Quote["recurring"] {
   if (nextBilledAt === null) return null;
 
@@ -485,7 +517,7 @@ function recurringOf(
       `Paddle previewed a move to ${priceId} renewing on ${nextBilledAt} without saying what it pays then. A rail with no recurring answer has a shape change to report, not a null to invent.`,
     );
   }
-  return { amount: { amountMinor, currency }, startsAt: new Date(nextBilledAt) };
+  return { amount: quotedMoney(amountMinor, currency, locale, "renewal"), startsAt: new Date(nextBilledAt) };
 }
 
 /**
@@ -519,10 +551,15 @@ export async function readPaddleStanding(
  * A subscription with a change already scheduled is not refused here. Refusing a read on the grounds of state
  * would hide the figures from the screen that has to explain why the move cannot be made yet, and `changePlan`
  * is where the write is stopped.
+ *
+ * `locale` is the reader the figures are rendered for, and it is a parameter of this method alone: the other
+ * four verbs answer a standing, which carries no amount. Absent, the rendering falls back to the kit's own
+ * locale rather than failing — see `data/renderMoney.ts`.
  */
 export async function previewPaddleChange(
   input: SubscriptionChangeInput,
   options: PaddleSubscriptionOptions,
+  locale?: string,
 ): Promise<SubscriptionChangeQuote> {
   const id = subscriptionIdOf(input.purchase);
   if (id === null) refuse(`Purchase ${input.purchase.id} names no Paddle subscription, so there is nothing to quote.`);
@@ -545,7 +582,7 @@ export async function previewPaddleChange(
       body: changeBody(input.providerProductId, quantity, mode),
     },
   );
-  return quoteOf(answer?.data, input.providerProductId);
+  return quoteOf(answer?.data, input.providerProductId, locale);
 }
 
 /**

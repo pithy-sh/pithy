@@ -291,6 +291,16 @@ export type PaymentsPricingEnvelope = z.output<typeof PaymentsPricingEnvelope>;
  * its provider's casing fails — at the boundary that reads the store. Re-refusing it here would take a
  * customer's whole subscription pane down over a casing difference, which is the failure mode #450
  * names, arrived at from the other direction.
+ *
+ * **`rendered` is what a screen puts in front of the customer, and it is why this response is usable at
+ * all** (#465). Minor units alone cross as bare digits, and a client cannot scale them without carrying
+ * the currency exponents itself — which is the table this Worker already has and the client does not. So
+ * the figure is rendered here, in the locale the request resolved, and crosses beside the integer rather
+ * than instead of it: a client comparing two amounts still reads `amountMinor`.
+ *
+ * **`.min(1)` on it, unlike a `.string()` elsewhere in this file.** An empty string is a confirmation
+ * screen with a blank where the price goes, and a blank is the one thing worse than a figure in the wrong
+ * language.
  */
 export const PaymentsQuotedMoney = z
   .object({
@@ -301,8 +311,14 @@ export const PaymentsQuotedMoney = z
         "How much, as an integer in the currency's minor unit. Signed: a credit is negative on the wire. 6582 is $65.82.",
       ),
     currency: z.string().describe("The ISO currency the amount is in, as this Worker stores it — lowercase."),
+    rendered: z
+      .string()
+      .min(1)
+      .describe(
+        "The same amount, rendered for the reader this response was built for — `$65.82`, `65,82 US$`, `¥6,582`. What a screen displays; `amountMinor` is what it compares. Never a second answer to how much: the store's integer decides the amount and only its spelling is decided here.",
+      ),
   })
-  .describe("An amount a store quoted, in minor units and one currency.");
+  .describe("An amount a store quoted: minor units, one currency, and the figure as this reader reads it.");
 export type PaymentsQuotedMoney = z.output<typeof PaymentsQuotedMoney>;
 
 /**

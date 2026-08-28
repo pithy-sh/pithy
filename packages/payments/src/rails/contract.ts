@@ -103,6 +103,24 @@ export interface RailRequestContext {
    * separate. Optional because the other three stores partition by credential and have nothing to fence.
    */
   deployment?: string;
+  /**
+   * The locale a figure in the answer is rendered for — `Translator.formattingLocale`, region and all.
+   *
+   * **One method reads it: {@link SubscriptionRail.previewChange}**, whose answer carries `rendered` on
+   * every amount, and it is here rather than on {@link SubscriptionChangeInput} because a locale is a fact
+   * about the reader of a response, not about the subscription being changed. Every other call on this
+   * context — a webhook, a verification, a refresh — answers a machine, and a machine has no locale.
+   *
+   * **Never a request field, and never `Accept-Language` read directly.** A locale a client can name in a
+   * body is a locale a client sets, and the header is only one of four inputs the kit's own negotiation
+   * weighs — reading it here would render the money in a language the rest of the same response is not
+   * written in. The route resolves it from the translator seam, which is what `@pithy-sh/email` does per
+   * recipient and what `@pithy-sh/i18n` fills in per request.
+   *
+   * Optional, and its absence is not an error: `data/renderMoney.ts` states the fallback rather than
+   * guessing one, because a quote in the wrong language is recoverable and a quote with no figure is not.
+   */
+  locale?: string;
 }
 
 /**
