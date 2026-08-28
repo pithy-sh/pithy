@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { envStem } from "@pithy-sh/core/src/env/stem";
+import { WORKER_ORIGIN_VAR } from "@pithy-sh/core/src/worker/identity";
 import { describe, expect, test } from "vitest";
 import type { DevConfig } from "../feature/devConfig";
 import { execArgs } from "../project/packageManager";
 import type { WorkerTarget } from "../project/workers";
-import { buildWorkerEnv, startCommand } from "./env";
+import { buildWorkerEnv, childEnvFor, ownOriginFor, startCommand } from "./env";
 
 const config: DevConfig = {
   version: 1,
@@ -36,6 +37,39 @@ describe("buildWorkerEnv", () => {
     expect(env.API_ORIGIN).toBe("http://localhost:8787");
     expect(env.MEDIA_CLI_PORT).toBe("8788");
     expect(env.MEDIA_CLI_ORIGIN).toBe("http://localhost:8788");
+  });
+});
+
+describe("ownOriginFor and childEnvFor", () => {
+  const hosts = new Set(["email"]);
+
+  test("an app worker is its own origin; a capability host is not", () => {
+    // One function, so a host cannot be exempt from the argv carrier and not from the environment one.
+    // Its `BASE_URL` is the *app's* origin, written into its generated config by the CLI already.
+    expect(ownOriginFor("api", "http://localhost:8807", hosts)).toBe("http://localhost:8807");
+    expect(ownOriginFor("email", "http://localhost:8808", hosts)).toBeNull();
+  });
+
+  test("the child that owns an origin carries it; the one that does not is untouched", () => {
+    const shared = { PATH: "/usr/bin", API_ORIGIN: "http://localhost:8807" };
+    expect(childEnvFor(shared, "http://localhost:8807")).toEqual({
+      PATH: "/usr/bin",
+      API_ORIGIN: "http://localhost:8807",
+      [WORKER_ORIGIN_VAR]: "http://localhost:8807",
+    });
+    // Identity, not a copy: a host gets exactly the shared table and nothing added.
+    expect(childEnvFor(shared, null)).toBe(shared);
+  });
+
+  test("it is per child, which is why it cannot live in the shared table", () => {
+    // `buildWorkerEnv` is built once for every child, because `<STEM>_ORIGIN` is the same table of
+    // other people's addresses for everybody. "Where do I answer" is the one fact that differs.
+    const shared = buildWorkerEnv(config, { PATH: "/usr/bin" });
+    const api = childEnvFor(shared, "http://localhost:8807");
+    const web = childEnvFor(shared, "http://localhost:8808");
+    expect(api[WORKER_ORIGIN_VAR]).toBe("http://localhost:8807");
+    expect(web[WORKER_ORIGIN_VAR]).toBe("http://localhost:8808");
+    expect(shared[WORKER_ORIGIN_VAR]).toBeUndefined();
   });
 });
 

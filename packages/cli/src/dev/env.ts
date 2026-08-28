@@ -3,6 +3,7 @@
 
 import { CI_ENV, isContinuousIntegration } from "@pithy-sh/core/src/env/ci";
 import { envStem } from "@pithy-sh/core/src/env/stem";
+import { WORKER_ORIGIN_VAR } from "@pithy-sh/core/src/worker/identity";
 import type { DevConfig } from "../feature/devConfig";
 import { DEV_PORT_TOKEN } from "../project/workerManifest";
 import type { WorkerTarget } from "../project/workers";
@@ -24,6 +25,33 @@ export function buildWorkerEnv(config: DevConfig, base: NodeJS.ProcessEnv = proc
     env[`${stem}_ORIGIN`] = worker.origin;
   }
   return env;
+}
+
+/**
+ * The origin to hand one worker as its own, or `null` when somebody else owns it.
+ *
+ * `null` is a capability host: its `BASE_URL` is the *app's* origin, because it holds no public route
+ * and a verification link it mails has to arrive back at the app. `materializeHostConfigs` writes that
+ * into the host's generated config, so a value from here could only be a second producer of one
+ * setting — and the one it would produce is the wrong one.
+ *
+ * One function rather than a condition repeated at each carrier, so a host cannot be exempt from the
+ * argv path and not from the environment path.
+ */
+export function ownOriginFor(workerName: string, origin: string, hostNames: ReadonlySet<string>): string | null {
+  return hostNames.has(workerName) ? null : origin;
+}
+
+/**
+ * One child's environment: everything {@link buildWorkerEnv} publishes, plus that child's own origin.
+ *
+ * Per child, and that is the point. `buildWorkerEnv` is built once and shared, because `<STEM>_ORIGIN`
+ * is the same table of *other people's* addresses for everybody. "Where do I answer" is the one fact
+ * that differs per child, so it cannot live in the shared object.
+ */
+export function childEnvFor(shared: Record<string, string>, ownOrigin: string | null): Record<string, string> {
+  if (ownOrigin === null) return shared;
+  return { ...shared, [WORKER_ORIGIN_VAR]: ownOrigin };
 }
 
 /** Turn `["dev", "--port", "8787"]` into a spawnable `{ command, args }` via the project's package manager. */

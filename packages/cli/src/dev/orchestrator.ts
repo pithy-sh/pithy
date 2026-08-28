@@ -37,7 +37,7 @@ import { dim, workerColor } from "../terminal/style";
 import { hasCloudflareLogin as defaultHasCloudflareLogin, deliveryFailureNote, deliveryPreflight } from "./delivery";
 import { type DevLoginTarget, devLoginKeyAction, devLoginLines, readDevLogin as readDevLoginDefault } from "./devLogin";
 import { devLoginTargets as devLoginTargetsDefault } from "./devLoginTargets";
-import { buildWorkerEnv, startCommand, type WranglerLauncher } from "./env";
+import { buildWorkerEnv, childEnvFor, ownOriginFor, startCommand, type WranglerLauncher } from "./env";
 import {
   discoverHostWorkers as discoverHostWorkersDefault,
   type HostMaterialization,
@@ -821,10 +821,14 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     readyState.set(worker.name, false);
     readyRegex.set(worker.name, readyRegexFor(worker));
     // A host is handed no origin of its own: `materializeHostConfigs` already wrote the app's into its
-    // generated config, which is the address its callback links must carry. See `ownOriginVarArgs`.
-    const ownOrigin = hostNames.has(worker.name) ? null : origin;
+    // generated config, which is the address its callback links must carry. See `ownOriginFor`.
+    const ownOrigin = ownOriginFor(worker.name, origin, hostNames);
     const { command, args } = startCommand(worker, port, ownOrigin, launchWrangler, persistTo, baseEnv, hostPorts);
-    const child = spawn(command, args, { cwd: worker.dir, env: childEnv, detached: hasSetsid });
+    // Both carriers, from the one value above. The argv `--var` reaches a `wrangler dev`; the
+    // environment reaches a custom `dev.command`, where there is no argv to append to and
+    // `@pithy-sh/vite` turns it into the same binding.
+    const env = childEnvFor(childEnv, ownOrigin);
+    const child = spawn(command, args, { cwd: worker.dir, env, detached: hasSetsid });
     children.push({ name: worker.name, child });
 
     const isHost = hostNames.has(worker.name);
