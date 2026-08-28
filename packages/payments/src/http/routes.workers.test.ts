@@ -23,8 +23,11 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest
 import type { z } from "zod";
 import { PaymentsAuditActions } from "../audit/actions";
 import { PaymentsConfig, type PaymentsConfigInput } from "../config/config";
+import { PaymentsPurchase, type PurchaseRole } from "../data/purchase";
+import type { PaymentsRail } from "../data/rail";
+import type { PurchaseStatus } from "../data/status";
 import { encodeSubjectReference, type PaymentsSubject } from "../data/subject";
-import { paymentsDatabase } from "../data/tables";
+import { PAYMENTS_PURCHASES_TABLE, paymentsDatabase } from "../data/tables";
 import type { PaymentsSubjectSeam } from "../entitlement/subjectSeam";
 import { ledgerAccountId } from "../grants/ledgerSeam";
 import { payments_0001_purchases } from "../migrations/0001_purchases";
@@ -98,7 +101,7 @@ import {
 } from "../secret/registry";
 import { PADDLE_SWEEP_MAX_ATTEMPTS, sweepPaddle } from "../workflows/paddleSweep";
 import { PaymentsEntitlementResponse, PaymentsEntitlementsResponse, PaymentsPricingEnvelope } from "./responses";
-import { registerPaymentsRoutes } from "./routes";
+import { changeableSubscription, registerPaymentsRoutes } from "./routes";
 import {
   PAYMENTS_CONTROL_PLANE_SCOPES,
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
@@ -355,8 +358,40 @@ interface AppOptions {
   stripe?: { checkout?: unknown; portal?: unknown; session?: unknown; status?: number };
   /** What Lemon Squeezy's API answers for a subscription read. Absent is a 404 — the store knows nothing. */
   lemonSqueezy?: { subscription?: unknown };
-  /** What Paddle's API answers, by path fragment. Absent bodies are 404s. */
-  paddle?: { transaction?: unknown; portal?: unknown; discounts?: unknown; status?: number };
+  /**
+   * What Paddle's API answers, by path fragment. Absent bodies are 404s.
+   *
+   * The subscription entries are keyed by the **call**, not by the entity: Paddle answers a subscription
+   * from four endpoints and the point of most of the cases below is *which* of them the Worker reached.
+   * A case that routes only `subscription` and then sees an `update` fail on a 404 is a case that proved
+   * the write happened, which is the opposite of what a stub answering everything would let it prove.
+   */
+  paddle?: {
+    transaction?: unknown;
+    portal?: unknown;
+    discounts?: unknown;
+    status?: number;
+    /** `GET /subscriptions/{id}` — the read every verb makes before it does anything. */
+    subscription?: unknown;
+    /** `GET /prices/{id}`, by price id — what the rail reads to tell an upgrade from a downgrade. */
+    prices?: Readonly<Record<string, unknown>>;
+    /** `PATCH /subscriptions/{id}/preview` — the quote. */
+    preview?: unknown;
+    /** `PATCH /subscriptions/{id}` — a plan change, and the withdrawal of a scheduled cancellation. */
+    update?: unknown;
+    /** `POST /subscriptions/{id}/cancel`. */
+    cancel?: unknown;
+    /**
+     * `GET /transactions/{id}?include=adjustments`, keyed by transaction — the read a refund makes of
+     * every payment before it writes anything. Keyed rather than flat because the whole point of the
+     * refund cases is that a subscription has *several* payments and each is checked on its own.
+     */
+    transactions?: Readonly<Record<string, unknown>>;
+    /** `POST /adjustments`, keyed by the `transaction_id` in the body. A missing entry refuses with 400. */
+    adjustments?: Readonly<Record<string, unknown>>;
+    /** One endpoint that refuses, so a store's own 4xx can be produced without failing the others. */
+    refusal?: { on: "subscription" | "preview" | "update" | "cancel"; status: number; body?: string };
+  };
   /**
    * The control-plane seam. Absent means composed with both payments scopes granted; a shorter list narrows
    * the grant; **`null` means the seam is not composed at all** — a Worker that never added `controlplane()`,
@@ -437,11 +472,49 @@ function paddleTransport(options: AppOptions): PaddleHttpFetch {
     if (options.paddle?.status !== undefined) {
       return { ok: false, status: options.paddle.status, text: async () => "{}" };
     }
-    const body = url.includes("/portal-sessions")
-      ? options.paddle?.portal
-      : url.includes("/discounts")
-        ? options.paddle?.discounts
-        : options.paddle?.transaction;
+    const method = init?.method ?? "GET";
+    const path = url.replace(/^https:\/\/[^/]+/, "").split("?")[0] ?? "";
+    const refusal = options.paddle?.refusal;
+    /** Which of the subscription endpoints this call is, or undefined for everything else. */
+    const endpoint = path.startsWith("/subscriptions/")
+      ? path.endsWith("/preview")
+        ? "preview"
+        : path.endsWith("/cancel")
+          ? "cancel"
+          : method === "PATCH"
+            ? "update"
+            : "subscription"
+      : undefined;
+    if (endpoint !== undefined && refusal?.on === endpoint) {
+      return { ok: false, status: refusal.status, text: async () => refusal.body ?? "{}" };
+    }
+    if (method === "POST" && path === "/adjustments") {
+      const asked = init?.body === undefined ? undefined : (JSON.parse(init.body) as { transaction_id?: string });
+      const answer = options.paddle?.adjustments?.[String(asked?.transaction_id)];
+      if (answer === undefined) {
+        return {
+          ok: false,
+          status: 400,
+          text: async () => JSON.stringify({ error: { code: "adjustment_invalid", detail: "Paddle would not." } }),
+        };
+      }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ data: answer }) };
+    }
+    if (options.paddle?.transactions !== undefined && path.startsWith("/transactions/")) {
+      const found = options.paddle.transactions[path.slice("/transactions/".length)];
+      if (found === undefined) return { ok: false, status: 404, text: async () => "{}" };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ data: found }) };
+    }
+    const body =
+      endpoint !== undefined
+        ? options.paddle?.[endpoint]
+        : path.startsWith("/prices/")
+          ? options.paddle?.prices?.[path.slice("/prices/".length)]
+          : url.includes("/portal-sessions")
+            ? options.paddle?.portal
+            : url.includes("/discounts")
+              ? options.paddle?.discounts
+              : options.paddle?.transaction;
     if (body === undefined) return { ok: false, status: 404, text: async () => "{}" };
     return { ok: true, status: 200, text: async () => JSON.stringify({ data: body }) };
   };
@@ -3706,6 +3779,32 @@ describe("POST /payments/checkout — Paddle", () => {
     expect(response.status).toBe(401);
     expect(paddleCalls.filter((entry) => entry.url.includes("/transactions"))).toEqual([]);
   });
+
+  test("a caller may name this rail, and until #465 could not", async () => {
+    // `CheckoutRequest.rail` was written out by hand as `["stripe", "lemonSqueezy"]` and never grew the
+    // third. So a paywall selling on two rails could put a Paddle button on the page, the button sent the
+    // rail it was for, and the request was a 400 on the one rail the product was actually sold on here —
+    // a rail that ships a checkout module, a portal, and both discount verbs. Nothing was red: a literal
+    // has no other side. `providers.test.ts` is the gate; this is the route it was wrong about.
+    const response = await request(app(), "POST", "/payments/checkout", {
+      user: "ada",
+      body: { productId: "pro_monthly", rail: "paddle" },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ kind: "paddle", transactionId: PADDLE_TRANSACTION });
+  });
+
+  test("naming a store rail is still refused — widening the enum did not widen it to Apple", async () => {
+    // The floor under the case above. `apple` is a member of `PaymentsRail` and not of the hosted subset,
+    // so it never parses, and the refusal is at the schema rather than deep in a handler that has already
+    // resolved a provider.
+    const response = await request(app(), "POST", "/payments/checkout", {
+      user: "ada",
+      body: { productId: "pro_monthly", rail: "apple" },
+    });
+    expect(response.status).toBe(400);
+    expect(paddleCalls.filter((entry) => entry.url.includes("/transactions"))).toEqual([]);
+  });
 });
 
 /**
@@ -4494,5 +4593,1630 @@ describe("a delivery with nothing to project, and a reason", () => {
     const again = await push(app, rtdnRenewed);
     expect(await again.json()).toEqual({ received: true, projected: true, outcome: "created" });
     expect(await purchases()).toHaveLength(1);
+  });
+});
+
+/**
+ * Which subscription a change verb is allowed to act on.
+ *
+ * The helper exists because no request field may name one — not the subscription, not the rail, not the price
+ * — so the caller's own rows are the whole input, and this query is the only thing that could name the wrong
+ * subscription. Most of the cases below are therefore about what it must *not* answer with.
+ *
+ * Rows are written straight into the table, for `projection/owner.workers.test.ts`'s reason: what is under
+ * test is which row a lookup picks and which columns decide it, and the writer's catalog, environment check
+ * and monotonic rule decide none of that. It is also the only way to seed, in one statement, a shape a real
+ * store takes two deliveries and a month to produce — a lapsed cancellation sitting beside a live
+ * subscription, which is what every resubscriber's table looks like.
+ */
+describe("changeableSubscription", () => {
+  const ADA = user("ada");
+  const GRACE = user("grace");
+  /** The same id under both kinds. Nothing in the kit keeps the two namespaces apart, so a case must. */
+  const ACME_ORG = organization("acme");
+  const ACME_USER = user("acme");
+
+  const SUB_A = "sub_01aaaaaaaaaaaaaaaaaaaaaaaa";
+  const SUB_B = "sub_01bbbbbbbbbbbbbbbbbbbbbbbb";
+  const TXN = "txn_01cccccccccccccccccccccccc";
+  const LS_SUB = "subscription:900";
+  const LS_INVOICE = "subscription_invoice:901";
+
+  const EARLIER = new Date(NOW.getTime() - 3_600_000);
+  const LATER = new Date(NOW.getTime() + 86_400_000);
+
+  /** One purchase row, exactly as some rail's event builder would have written it. */
+  async function row(fields: {
+    owner: PaymentsSubject;
+    id: string;
+    /** The family key. Defaults to `id` — the head row every rail writes for a subscription it names. */
+    family?: string | null;
+    rail?: PaymentsRail;
+    status?: PurchaseStatus;
+    role?: PurchaseRole;
+    type?: "subscription" | "consumable";
+    expiresAt?: Date | null;
+    eventAt?: Date;
+  }): Promise<void> {
+    const encoded = PaymentsPurchase.encode({
+      id: `purchase-${fields.owner.subjectType}-${fields.owner.subjectId}-${fields.id}`,
+      subjectType: fields.owner.subjectType,
+      subjectId: fields.owner.subjectId,
+      rail: fields.rail ?? "paddle",
+      providerTransactionId: fields.id,
+      productId: "pro_monthly",
+      providerProductId: PADDLE_PRICE,
+      type: fields.type ?? "subscription",
+      status: fields.status ?? "active",
+      role: fields.role ?? "state",
+      environment: "production",
+      purchasedAt: EARLIER,
+      expiresAt: fields.expiresAt === undefined ? LATER : fields.expiresAt,
+      revokedAt: null,
+      resumesAt: null,
+      originalTransactionId: fields.family === undefined ? fields.id : fields.family,
+      amountMinor: null,
+      currency: null,
+      providerEventAt: fields.eventAt ?? NOW,
+      payload: {},
+      createdAt: EARLIER,
+      updatedAt: NOW,
+    });
+    await db()
+      .insertInto(PAYMENTS_PURCHASES_TABLE)
+      // biome-ignore lint/suspicious/noExplicitAny: an encoded row; Kysely's insert type derives from z.input.
+      .values(encoded as any)
+      .execute();
+  }
+
+  test("answers none when the caller has bought nothing", async () => {
+    expect(await changeableSubscription(env.DB, ADA, NOW)).toEqual({ found: "none" });
+  });
+
+  test("answers the one subscription the caller holds", async () => {
+    await row({ owner: ADA, id: SUB_A });
+    expect(await changeableSubscription(env.DB, ADA, NOW)).toEqual({
+      found: "one",
+      purchase: expect.objectContaining({ providerTransactionId: SUB_A, originalTransactionId: SUB_A }),
+    });
+  });
+
+  test("answers the state row, never one of the invoices under it", async () => {
+    // Lemon Squeezy's shape: the subscription's standing on one row, and a money row per invoice beside it.
+    // The invoices are the newest rows in the table, so anything ordering by time and taking the first would
+    // hand a rail an `subscription_invoice:…` — an id no store will answer a subscription call for.
+    await row({ owner: ADA, id: LS_SUB, rail: "lemonSqueezy", role: "state" });
+    await row({
+      owner: ADA,
+      id: LS_INVOICE,
+      family: LS_SUB,
+      rail: "lemonSqueezy",
+      role: "charge",
+      status: "expired",
+      expiresAt: EARLIER,
+      eventAt: LATER,
+    });
+    expect(await changeableSubscription(env.DB, ADA, NOW)).toEqual({
+      found: "one",
+      purchase: expect.objectContaining({ providerTransactionId: LS_SUB, role: "state" }),
+    });
+  });
+
+  test("answers none when the only row is a charge that merely names a subscription", async () => {
+    // The `?? rows[0]` defect `GET /pricing` still carries, planted: a Paddle money row is `txn_…` and its
+    // *family* is `sub_…`. Handing it to a rail asks a store to change a subscription by a transaction id.
+    //
+    // `in_grace` deliberately, because that is the one status a subscription's money row actually reaches
+    // while it is still actionable — `transactionStatus("past_due", true)`. A completed one is `expired` and
+    // the status filter would have caught it, so a case built on that would prove nothing about this rule.
+    await row({ owner: ADA, id: TXN, family: SUB_A, role: "charge", status: "in_grace", expiresAt: EARLIER });
+    expect(await changeableSubscription(env.DB, ADA, NOW)).toEqual({ found: "none" });
+  });
+
+  test("and picks the subscription out from under its own failed renewal", async () => {
+    // What a Paddle subscriber's table holds mid-dunning: the state row and the transaction that could not be
+    // collected, both `in_grace`, both this caller's. Two rows, one subscription — and the ambiguity refusal
+    // must not fire, because there is nothing ambiguous about it.
+    await row({ owner: ADA, id: SUB_A, status: "in_grace", eventAt: EARLIER });
+    await row({
+      owner: ADA,
+      id: TXN,
+      family: SUB_A,
+      role: "charge",
+      status: "in_grace",
+      expiresAt: EARLIER,
+      eventAt: LATER,
+    });
+    expect(await changeableSubscription(env.DB, ADA, NOW)).toEqual({
+      found: "one",
+      purchase: expect.objectContaining({ providerTransactionId: SUB_A, role: "state" }),
+    });
+  });
+
+  test.each(["active", "in_grace", "on_hold", "canceled", "paused"] as const)(
+    "%s is a subscription there is still something to do to",
+    async (status) => {
+      await row({ owner: ADA, id: SUB_A, status });
+      expect(await changeableSubscription(env.DB, ADA, NOW)).toMatchObject({ found: "one" });
+    },
+  );
+
+  test.each(["expired", "never_paid", "refunded", "revoked"] as const)(
+    "%s is an ending, so there is nothing to act on",
+    async (status) => {
+      await row({ owner: ADA, id: SUB_A, status, expiresAt: EARLIER });
+      expect(await changeableSubscription(env.DB, ADA, NOW)).toEqual({ found: "none" });
+    },
+  );
+
+  test("answers none for a holder whose every subscription has expired", async () => {
+    await row({ owner: ADA, id: SUB_A, status: "expired", expiresAt: EARLIER });
+    await row({ owner: ADA, id: SUB_B, status: "expired", expiresAt: EARLIER, eventAt: LATER });
+    expect(await changeableSubscription(env.DB, ADA, NOW)).toEqual({ found: "none" });
+  });
+
+  test("keeps a cancellation whose paid period is still running", async () => {
+    // What `keepSubscription` acts on, and the reason `canceled` is in the actionable set at all: the holder
+    // still has what they paid for, and withdrawing the cancellation is the one verb left to them.
+    await row({ owner: ADA, id: SUB_A, status: "canceled", expiresAt: LATER });
+    expect(await changeableSubscription(env.DB, ADA, NOW)).toMatchObject({ found: "one" });
+  });
+
+  test("drops a cancellation whose paid period has run out", async () => {
+    await row({ owner: ADA, id: SUB_A, status: "canceled", expiresAt: EARLIER });
+    expect(await changeableSubscription(env.DB, ADA, NOW)).toEqual({ found: "none" });
+  });
+
+  test("a resubscriber acts on the live subscription, not on the one they left", async () => {
+    // The failure this exists to prevent: a dead cancellation the `expired` webhook has not overwritten sits
+    // in the table forever, and counting it makes every resubscriber ambiguous — locked out of managing the
+    // subscription they are currently paying for.
+    await row({ owner: ADA, id: SUB_A, status: "canceled", expiresAt: EARLIER, eventAt: EARLIER });
+    await row({ owner: ADA, id: SUB_B, status: "active", expiresAt: LATER, eventAt: NOW });
+    expect(await changeableSubscription(env.DB, ADA, NOW)).toEqual({
+      found: "one",
+      purchase: expect.objectContaining({ providerTransactionId: SUB_B }),
+    });
+  });
+
+  test("answers many when the caller holds two live subscriptions, and picks neither", async () => {
+    await row({ owner: ADA, id: SUB_A, eventAt: EARLIER });
+    await row({ owner: ADA, id: SUB_B, eventAt: NOW });
+    expect(await changeableSubscription(env.DB, ADA, NOW)).toEqual({
+      found: "many",
+      purchases: [
+        expect.objectContaining({ providerTransactionId: SUB_B }),
+        expect.objectContaining({ providerTransactionId: SUB_A }),
+      ],
+    });
+  });
+
+  test("answers many across rails too — two stores is still two subscriptions", async () => {
+    await row({ owner: ADA, id: SUB_A, rail: "paddle", eventAt: EARLIER });
+    await row({ owner: ADA, id: LS_SUB, rail: "lemonSqueezy", eventAt: NOW });
+    expect(await changeableSubscription(env.DB, ADA, NOW)).toMatchObject({ found: "many" });
+  });
+
+  test("answers none for a subject who owns none of the rows in the table", async () => {
+    await row({ owner: GRACE, id: SUB_A });
+    await row({ owner: ACME_ORG, id: SUB_B });
+    expect(await changeableSubscription(env.DB, ADA, NOW)).toEqual({ found: "none" });
+  });
+
+  test("resolves an organization's subscription under organization billing", async () => {
+    await row({ owner: ACME_ORG, id: SUB_A });
+    expect(await changeableSubscription(env.DB, ACME_ORG, NOW)).toEqual({
+      found: "one",
+      purchase: expect.objectContaining({ providerTransactionId: SUB_A, subjectType: "organization" }),
+    });
+  });
+
+  test("and never lets the two kinds of holder cross on a shared id", async () => {
+    // `user:acme` and `organization:acme` are two holders. An id-only filter would let either cancel the
+    // other's subscription, and nothing in the kit makes the two id namespaces disjoint.
+    await row({ owner: ACME_ORG, id: SUB_A });
+    expect(await changeableSubscription(env.DB, ACME_USER, NOW)).toEqual({ found: "none" });
+  });
+
+  test("ignores a one-off purchase, which has no subscription to change", async () => {
+    await row({ owner: ADA, id: "order:7", type: "consumable", rail: "lemonSqueezy", role: "charge" });
+    expect(await changeableSubscription(env.DB, ADA, NOW)).toEqual({ found: "none" });
+  });
+});
+
+/**
+ * The subscription lifecycle, end to end through the real routes: the caller's own D1 rows, the real
+ * subject seam, the real Paddle rail against the recorded sandbox shapes of 2026-08-28, and the real
+ * audit seam.
+ *
+ * **The read is first because #247 is the reason it exists.** Payments once shipped `entitlements/grant`
+ * and `entitlements/revoke` with no read beside them, and a dashboard's panes computed *absent* against
+ * a live manifest and dropped out of the rail entirely — not blocked, not refused, absent, which no grant
+ * repairs. `GET {base}/subscription` is the half that stops the same thing happening to a cancel button.
+ *
+ * Every fixture below is the shape Paddle actually answered with. The one that matters most is
+ * {@link SCHEDULED_CANCEL}: `status: "active"`, `canceled_at: null`, `next_billed_at: null`. Two of the
+ * three say the subscription is fine and the third says nothing at all, so a route that read the status
+ * would tell somebody who canceled that they will be billed again.
+ */
+describe("the subscription lifecycle routes", () => {
+  const ADA = user("ada");
+  const SUB = PADDLE_SUBSCRIPTION;
+  /** Pro, $6/mo — the plan every fixture holder starts on. */
+  const PRO_PRICE = PADDLE_PRICE;
+  /** Team, $110/mo — the plan a change moves to. */
+  const TEAM_PRICE = "pri_01kzvyz9khsdy36z10wb8bgmq4";
+  /** The instant every recording shares: the end of the period, which a screen prints as "15 Sep". */
+  const PERIOD_END = "2026-09-15T11:42:21.789736Z";
+  const PERIOD_START = "2026-08-15T11:42:21.789736Z";
+
+  /** Two products, because a plan change needs somewhere to go. Both on Paddle, both subscriptions. */
+  const CATALOG_TWO_PLANS: PaymentsConfigInput = {
+    ...PADDLE_CATALOG,
+    // Apple is on so `mobile_only` below can parse. A product declaring a SKU on a rail this project has
+    // turned off is refused by the catalog itself, which is a deploy-time answer rather than a route's.
+    rails: { paddle: true, apple: true },
+    products: {
+      pro_monthly: { type: "subscription", name: "Pro", entitlements: ["pro"], paddle: { priceId: PRO_PRICE } },
+      team_monthly: { type: "subscription", name: "Team", entitlements: ["team"], paddle: { priceId: TEAM_PRICE } },
+      // On the catalog and sold nowhere this subscription lives — the product-in-catalog, not-on-this-rail
+      // case, which is a 404 on the product rather than on the rail.
+      mobile_only: {
+        type: "subscription",
+        name: "Mobile",
+        entitlements: ["pro"],
+        apple: { productId: "com.acme.pro.monthly" },
+      },
+    },
+  };
+
+  /** One priced line, as Paddle states one. */
+  const line = (priceId: string, amount: string) => ({
+    price: {
+      id: priceId,
+      unit_price: { amount, currency_code: "USD" },
+      billing_cycle: { interval: "month", frequency: 1 },
+    },
+    quantity: 1,
+    status: "active",
+  });
+
+  /** A subscription entity carrying one item at one price. Paddle's own casing throughout. */
+  const subscriptionOn = (priceId: string, amount: string, overrides: Record<string, unknown> = {}) => ({
+    id: SUB,
+    status: "active",
+    customer_id: PADDLE_CUSTOMER,
+    currency_code: "USD",
+    items: [line(priceId, amount)],
+    current_billing_period: { starts_at: PERIOD_START, ends_at: PERIOD_END },
+    scheduled_change: null,
+    next_billed_at: PERIOD_END,
+    created_at: PERIOD_START,
+    updated_at: "2026-08-28T11:14:02.663Z",
+    ...overrides,
+  });
+
+  /** The ordinary case: on Pro, renewing on the 15th. */
+  const ON_PRO = subscriptionOn(PRO_PRICE, "600");
+  /** On Team, renewing — what a completed upgrade answers with. */
+  const ON_TEAM = subscriptionOn(TEAM_PRICE, "11000");
+  /**
+   * The recorded post-cancel subscription. The whole reason this read exists: the status still says
+   * `active` and the next billing date is blank, so only `scheduled_change` says the subscription ends.
+   */
+  const SCHEDULED_CANCEL = subscriptionOn(PRO_PRICE, "600", {
+    canceled_at: null,
+    next_billed_at: null,
+    scheduled_change: { action: "cancel", effective_at: PERIOD_END, resume_at: null, items: null },
+  });
+  /** A subscription paused, with a resume date — the schedule `keep` must refuse to clear. */
+  const SCHEDULED_PAUSE = subscriptionOn(PRO_PRICE, "600", {
+    next_billed_at: null,
+    scheduled_change: { action: "pause", effective_at: PERIOD_END, resume_at: "2026-10-15T11:42:21.789736Z" },
+  });
+
+  /** The recorded preview of Pro → Team under `prorated_immediately`. The upgrade: 6582 taken today. */
+  const UPGRADE_PREVIEW = {
+    ...subscriptionOn(PRO_PRICE, "600"),
+    update_summary: {
+      credit: { amount: "-380", currency_code: "USD" },
+      charge: { amount: "6962", currency_code: "USD" },
+      result: { action: "charge", amount: "6582", currency_code: "USD" },
+    },
+    immediate_transaction: {
+      details: { totals: { total: "6582", grand_total: "6582", credit_to_balance: "0", currency_code: "USD" } },
+      billing_period: { starts_at: "2026-08-28T11:13:32.939Z", ends_at: PERIOD_END },
+    },
+    recurring_transaction_details: {
+      totals: { subtotal: "11000", tax: "976", total: "11976", grand_total: "11976", currency_code: "USD" },
+    },
+  };
+
+  /**
+   * The recorded preview of Team → Pro under `prorated_next_billing_period` — the mode a downgrade ships
+   * with. Nothing settles today, 6558 is owed, and it lands on the invoice of 15 September.
+   *
+   * The trap this fixture holds open: `grand_total` on `next_transaction` is `"0"` while the customer is
+   * owed 6558, and `total` there is `"-5905"` — that invoice's own figure with the new rate already netted
+   * off. A quote built from either is a screen saying nothing happened while 65.58 dollars moved.
+   */
+  const DOWNGRADE_PREVIEW = {
+    ...subscriptionOn(TEAM_PRICE, "11000"),
+    immediate_transaction: null,
+    update_summary: {
+      credit: { amount: "-6936" },
+      charge: { amount: "378" },
+      result: { action: "credit", amount: "6558", currency_code: "USD" },
+    },
+    recurring_transaction_details: {
+      totals: { subtotal: "600", tax: "53", total: "653", grand_total: "653", currency_code: "USD" },
+    },
+    next_transaction: {
+      details: { totals: { total: "-5905", grand_total: "0", credit_to_balance: "5905", currency_code: "USD" } },
+      billing_period: { starts_at: PERIOD_END, ends_at: "2026-10-15T11:42:21.789736Z" },
+    },
+  };
+
+  /** The subscription after `cancel({ effective_from: "immediately" })` — over today, nothing scheduled. */
+  const CANCELED_NOW = subscriptionOn(PRO_PRICE, "600", {
+    status: "canceled",
+    canceled_at: "2026-01-15T00:00:00.000Z",
+    next_billed_at: null,
+    scheduled_change: null,
+  });
+
+  /** A subscription carrying two lines — the shape the rail refuses rather than rewrite. */
+  const TWO_ITEMS = subscriptionOn(PRO_PRICE, "600", {
+    items: [line(PRO_PRICE, "600"), line(TEAM_PRICE, "11000")],
+  });
+
+  const PRICES = {
+    [PRO_PRICE]: {
+      id: PRO_PRICE,
+      unit_price: { amount: "600", currency_code: "USD" },
+      billing_cycle: { interval: "month", frequency: 1 },
+    },
+    [TEAM_PRICE]: {
+      id: TEAM_PRICE,
+      unit_price: { amount: "11000", currency_code: "USD" },
+      billing_cycle: { interval: "month", frequency: 1 },
+    },
+  };
+
+  const EARLIER = new Date(NOW.getTime() - 3_600_000);
+  const LATER = new Date(PERIOD_END);
+
+  /**
+   * One purchase row, exactly as the Paddle webhook's state builder would have written it.
+   *
+   * Written straight into the table for `changeableSubscription`'s reason: what is under test is which
+   * row a route resolves and what it does with it, and the projection writer decides none of that.
+   */
+  async function row(
+    fields: {
+      owner?: PaymentsSubject;
+      id?: string;
+      family?: string | null;
+      rail?: PaymentsRail;
+      productId?: string;
+      providerProductId?: string;
+      status?: PurchaseStatus;
+      role?: PurchaseRole;
+      type?: "subscription" | "consumable";
+      expiresAt?: Date | null;
+    } = {},
+  ): Promise<void> {
+    const owner = fields.owner ?? ADA;
+    const id = fields.id ?? SUB;
+    const encoded = PaymentsPurchase.encode({
+      id: `purchase-${owner.subjectType}-${owner.subjectId}-${id}`,
+      subjectType: owner.subjectType,
+      subjectId: owner.subjectId,
+      rail: fields.rail ?? "paddle",
+      providerTransactionId: id,
+      productId: fields.productId ?? "pro_monthly",
+      providerProductId: fields.providerProductId ?? PRO_PRICE,
+      type: fields.type ?? "subscription",
+      status: fields.status ?? "active",
+      role: fields.role ?? "state",
+      environment: "production",
+      purchasedAt: EARLIER,
+      expiresAt: fields.expiresAt === undefined ? LATER : fields.expiresAt,
+      revokedAt: null,
+      resumesAt: null,
+      originalTransactionId: fields.family === undefined ? id : fields.family,
+      amountMinor: 600,
+      currency: "usd",
+      providerEventAt: NOW,
+      payload: {},
+      createdAt: EARLIER,
+      updatedAt: NOW,
+    });
+    await db()
+      .insertInto(PAYMENTS_PURCHASES_TABLE)
+      // biome-ignore lint/suspicious/noExplicitAny: an encoded row; Kysely's insert type derives from z.input.
+      .values(encoded as any)
+      .execute();
+  }
+
+  /** Every call that changed something at Paddle. The no-op cases assert this is empty. */
+  const paddleWrites = () => paddleCalls.filter((call) => (call.init?.method ?? "GET") !== "GET");
+
+  describe("GET /payments/subscription", () => {
+    test("reads the standing live, and reports the cancellation the status hides", async () => {
+      // The sentence this route exists to make writable: "Pro until 15 Sep, then ends". Every field the
+      // status carries says the subscription is fine, so `nextEvent` is the only place the ending is.
+      await row();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: SCHEDULED_CANCEL } });
+      const response = await request(app, "GET", "/payments/subscription", { user: "ada" });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        subscription: {
+          productId: "pro_monthly",
+          status: "active",
+          currency: "usd",
+          currentPeriodEndsAt: "2026-09-15T11:42:21.789Z",
+          nextBilledAt: null,
+          scheduledChange: { action: "cancel", effectiveAt: "2026-09-15T11:42:21.789Z", resumesAt: null },
+          nextEvent: { kind: "ends", at: "2026-09-15T11:42:21.789Z" },
+        },
+      });
+    });
+
+    test("says renews when nothing is scheduled", async () => {
+      await row();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: ON_PRO } });
+      const body = await (await request(app, "GET", "/payments/subscription", { user: "ada" })).json<{
+        subscription: { nextEvent: unknown; nextBilledAt: string | null };
+      }>();
+      expect(body.subscription.nextEvent).toEqual({ kind: "renews", at: "2026-09-15T11:42:21.789Z" });
+      expect(body.subscription.nextBilledAt).toBe("2026-09-15T11:42:21.789Z");
+    });
+
+    test("answers null for somebody who has bought nothing", async () => {
+      // Not a 404. A 404 makes the route an existence oracle and reads, to a screen, exactly like a
+      // Worker that could not be reached.
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: ON_PRO } });
+      const response = await request(app, "GET", "/payments/subscription", { user: "ada" });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ subscription: null });
+      expect(paddleCalls, "nothing to read means nothing to ask a store about").toEqual([]);
+    });
+
+    test("answers null when the store has nothing to say about the row", async () => {
+      // `readStanding` answers `undefined` for a purchase it cannot address. That is a fact about the
+      // purchase, not a failure, and it renders as "no subscription" rather than as an error.
+      await row();
+      const app = makeApp(CATALOG_TWO_PLANS, {});
+      const response = await request(app, "GET", "/payments/subscription", { user: "ada" });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ subscription: null });
+    });
+
+    test("refuses to choose between two subscriptions", async () => {
+      // The one answer this envelope cannot hold. Answering null would say the caller has none, and
+      // picking one would render somebody's other plan — so the route says there are two and stops.
+      await row({ id: SUB });
+      await row({ id: "sub_01bbbbbbbbbbbbbbbbbbbbbbbb" });
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: ON_PRO } });
+      const response = await request(app, "GET", "/payments/subscription", { user: "ada" });
+      expect(response.status).toBe(409);
+      expect(await errorCode(response)).toBe("payments/subscription_change_refused");
+    });
+
+    test("never reads a subscription belonging to somebody else", async () => {
+      await row({ owner: user("grace") });
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: ON_PRO } });
+      expect(await (await request(app, "GET", "/payments/subscription", { user: "ada" })).json()).toEqual({
+        subscription: null,
+      });
+    });
+
+    test("requires a signed-in caller", async () => {
+      const response = await request(makeApp(CATALOG_TWO_PLANS), "GET", "/payments/subscription");
+      expect(response.status).toBe(401);
+    });
+
+    test("says so when the rail cannot manage subscriptions from the server", async () => {
+      // Apple and Google subscriptions are changed inside the store's own UI, on the device. The
+      // narrowing is `isSubscriptionRail`, so a rail is never asked for a verb it does not have.
+      await row({ rail: "apple", id: "2000000000000001", providerProductId: "com.acme.pro.monthly" });
+      const response = await request(makeApp(CATALOG, {}), "GET", "/payments/subscription", { user: "ada" });
+      expect(response.status).toBe(404);
+      expect(await errorCode(response)).toBe("payments/rail_not_configured");
+    });
+
+    test("writes no purchase row and no audit row: it is a read", async () => {
+      await row();
+      const before = await purchases();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: SCHEDULED_CANCEL } });
+      await request(app, "GET", "/payments/subscription", { user: "ada" });
+      expect(await purchases()).toEqual(before);
+      expect(actions()).toEqual([]);
+    });
+  });
+
+  /**
+   * The quote — a read that discloses a price, and the half that makes a change consented to.
+   *
+   * A confirmation screen with no figure on it is a customer agreeing to an amount they were never shown,
+   * and the amount is real: the recorded upgrade takes 6582 today.
+   */
+  describe("POST /payments/subscription/preview", () => {
+    test("quotes an upgrade: charged today, and what it renews at", async () => {
+      await row();
+      const app = makeApp(CATALOG_TWO_PLANS, {
+        paddle: { subscription: ON_PRO, prices: PRICES, preview: UPGRADE_PREVIEW },
+      });
+      const response = await request(app, "POST", "/payments/subscription/preview", {
+        user: "ada",
+        body: { productId: "team_monthly" },
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        quote: {
+          settlesToday: { outcome: "charge", amount: { amountMinor: 6582, currency: "usd" } },
+          nextInvoice: null,
+          recurring: { amount: { amountMinor: 11976, currency: "usd" }, startsAt: "2026-09-15T11:42:21.789Z" },
+        },
+      });
+    });
+
+    test("quotes a downgrade: nothing today, a credit on the next invoice, and the new rate", async () => {
+      // The three-part answer, and the whole reason the quote has three parts. Two of them would make the
+      // sentence "Nothing today. $65.58 credit on 15 Sep. Then $6.53/month." unwritable.
+      await row({ productId: "team_monthly", providerProductId: TEAM_PRICE });
+      const app = makeApp(CATALOG_TWO_PLANS, {
+        paddle: { subscription: subscriptionOn(TEAM_PRICE, "11000"), prices: PRICES, preview: DOWNGRADE_PREVIEW },
+      });
+      const response = await request(app, "POST", "/payments/subscription/preview", {
+        user: "ada",
+        body: { productId: "pro_monthly" },
+      });
+
+      expect(await response.json()).toEqual({
+        quote: {
+          settlesToday: { outcome: "nothing" },
+          nextInvoice: {
+            settlement: { outcome: "credit", amount: { amountMinor: 6558, currency: "usd" } },
+            at: "2026-09-15T11:42:21.789Z",
+          },
+          recurring: { amount: { amountMinor: 653, currency: "usd" }, startsAt: "2026-09-15T11:42:21.789Z" },
+        },
+      });
+    });
+
+    test("resolves the price from the catalog, and ignores every identifier a body smuggles in", async () => {
+      // The security property, asserted on what left the Worker rather than on what came back. A body
+      // naming a price moves a customer onto a plan this project does not sell; a body naming a
+      // subscription moves somebody else's. Zod strips both, and this proves the store never saw them.
+      await row();
+      const app = makeApp(CATALOG_TWO_PLANS, {
+        paddle: { subscription: ON_PRO, prices: PRICES, preview: UPGRADE_PREVIEW },
+      });
+      const response = await request(app, "POST", "/payments/subscription/preview", {
+        user: "ada",
+        body: {
+          productId: "team_monthly",
+          priceId: "pri_01evilevilevilevilevilevil",
+          providerProductId: "pri_01evilevilevilevilevilevil",
+          subscriptionId: "sub_01someoneelsesubscription",
+          rail: "stripe",
+          prorationBillingMode: "do_not_bill",
+        },
+      });
+
+      expect(response.status).toBe(200);
+      const sent = JSON.stringify(paddleCalls);
+      expect(sent, "the smuggled subscription never reached the store").not.toContain("sub_01someoneelsesubscription");
+      expect(sent, "nor the smuggled price").not.toContain("pri_01evilevilevilevilevilevil");
+      expect(sent, "nor the billing enum, which is a free upgrade").not.toContain("do_not_bill");
+      // The subscription the caller's own row names, and the price the catalog resolved.
+      expect(paddleCalls.map((call) => call.url)).toEqual([
+        `https://api.paddle.com/subscriptions/${SUB}`,
+        `https://api.paddle.com/prices/${TEAM_PRICE}`,
+        `https://api.paddle.com/subscriptions/${SUB}/preview`,
+      ]);
+    });
+
+    test("a product this project does not sell is a 404 on the product", async () => {
+      await row();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: ON_PRO, prices: PRICES } });
+      const response = await request(app, "POST", "/payments/subscription/preview", {
+        user: "ada",
+        body: { productId: "enterprise_annual" },
+      });
+      expect(response.status).toBe(404);
+      expect(await errorCode(response)).toBe("payments/product_not_found");
+      expect(paddleCalls, "a catalog miss costs no round trip").toEqual([]);
+    });
+
+    test("a product the subscription's own store does not sell is the same 404", async () => {
+      // In the catalog, sold on Apple, and this subscription lives at Paddle. A 404 on the product rather
+      // than on the rail: the rail is available, this product simply is not one of the things it sells.
+      await row();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: ON_PRO, prices: PRICES } });
+      const response = await request(app, "POST", "/payments/subscription/preview", {
+        user: "ada",
+        body: { productId: "mobile_only" },
+      });
+      expect(response.status).toBe(404);
+      expect(await errorCode(response)).toBe("payments/product_not_found");
+    });
+
+    test("nothing to quote when the caller holds no subscription", async () => {
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: ON_PRO, prices: PRICES } });
+      const response = await request(app, "POST", "/payments/subscription/preview", {
+        user: "ada",
+        body: { productId: "team_monthly" },
+      });
+      expect(response.status).toBe(404);
+      expect(await errorCode(response)).toBe("core/not_found");
+    });
+
+    test("refuses to choose between two subscriptions", async () => {
+      await row({ id: SUB });
+      await row({ id: "sub_01bbbbbbbbbbbbbbbbbbbbbbbb" });
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: ON_PRO, prices: PRICES } });
+      const response = await request(app, "POST", "/payments/subscription/preview", {
+        user: "ada",
+        body: { productId: "team_monthly" },
+      });
+      expect(response.status).toBe(409);
+      expect(await errorCode(response)).toBe("payments/subscription_change_refused");
+    });
+
+    test("passes the store's own refusal through as a 409", async () => {
+      // Two lines, and the rail rewrites the whole items array on a change — so reproducing anything but a
+      // single line would mean guessing which to keep. The preview body *is* the update body, so the
+      // refusal belongs here too: a quote for a change that cannot be made is a figure nobody can act on.
+      await row();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: TWO_ITEMS, prices: PRICES } });
+      const response = await request(app, "POST", "/payments/subscription/preview", {
+        user: "ada",
+        body: { productId: "team_monthly" },
+      });
+      expect(response.status).toBe(409);
+      expect(await errorCode(response)).toBe("payments/subscription_change_refused");
+    });
+
+    test("requires a signed-in caller, and the guard runs before the validator", async () => {
+      // A validator ahead of a guard turns a 401 into a 400 and tells an unauthenticated caller which of
+      // its requests were well-formed.
+      const response = await request(makeApp(CATALOG_TWO_PLANS), "POST", "/payments/subscription/preview", {
+        body: { nothing: "well-formed" },
+      });
+      expect(response.status).toBe(401);
+    });
+
+    test("writes no purchase row and no audit row: a quote is rendered, confirmed, discarded", async () => {
+      await row();
+      const before = await purchases();
+      const app = makeApp(CATALOG_TWO_PLANS, {
+        paddle: { subscription: ON_PRO, prices: PRICES, preview: UPGRADE_PREVIEW },
+      });
+      await request(app, "POST", "/payments/subscription/preview", {
+        user: "ada",
+        body: { productId: "team_monthly" },
+      });
+      expect(await purchases()).toEqual(before);
+      expect(actions(), "a preview takes and gives nothing, so there is nothing to record").toEqual([]);
+    });
+  });
+
+  describe("POST /payments/subscription/change", () => {
+    /** On Pro, moving to Team: the store reads, prices, and answers the updated subscription. */
+    const upgrading = () =>
+      makeApp(CATALOG_TWO_PLANS, {
+        paddle: { subscription: ON_PRO, prices: PRICES, update: ON_TEAM },
+      });
+
+    test("moves the plan and answers the standing the store reported", async () => {
+      await row();
+      const response = await request(upgrading(), "POST", "/payments/subscription/change", {
+        user: "ada",
+        body: { productId: "team_monthly" },
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        subscription: {
+          // The plan the store just confirmed, not the one the purchase row still names. The webhook owns
+          // that row and has not arrived; a response built from it would show the plan just left.
+          productId: "team_monthly",
+          status: "active",
+          currency: "usd",
+          currentPeriodEndsAt: "2026-09-15T11:42:21.789Z",
+          nextBilledAt: "2026-09-15T11:42:21.789Z",
+          scheduledChange: null,
+          nextEvent: { kind: "renews", at: "2026-09-15T11:42:21.789Z" },
+        },
+      });
+      // The write Paddle actually received: one PATCH, carrying the catalog's price and the quantity the
+      // subscription already had. The items array is replaced wholesale, so both halves matter.
+      const writes = paddleWrites();
+      expect(writes).toHaveLength(1);
+      expect(writes[0]?.url).toBe(`https://api.paddle.com/subscriptions/${SUB}`);
+      expect(JSON.parse(writes[0]?.init?.body ?? "{}")).toMatchObject({
+        items: [{ price_id: TEAM_PRICE, quantity: 1 }],
+      });
+    });
+
+    test("records the change in the audit trail, and names both plans", async () => {
+      await row();
+      await request(upgrading(), "POST", "/payments/subscription/change", {
+        user: "ada",
+        body: { productId: "team_monthly" },
+      });
+
+      expect(actions()).toEqual(["payments/subscription_plan_changed:success"]);
+      expect(emitted[0]).toMatchObject({
+        // The person who pressed the button, not the holder they act for — an organization does not press
+        // a button, and a trail naming the company answers "who did this" with nobody to ask.
+        actorType: "user",
+        actorId: "ada",
+        sessionId: "s1",
+        resourceType: "purchase",
+        metadata: {
+          rail: "paddle",
+          subjectType: "user",
+          subjectId: "ada",
+          productId: "team_monthly",
+          fromProductId: "pro_monthly",
+          providerProductId: TEAM_PRICE,
+          fromProviderProductId: PRO_PRICE,
+        },
+      });
+    });
+
+    test("writes no purchase row: the webhook owns that row", async () => {
+      // Invariant 2. A route that also wrote the projection would be a second producer of one row, and the
+      // two disagree the first time a webhook is late.
+      await row();
+      const before = await purchases();
+      await request(upgrading(), "POST", "/payments/subscription/change", {
+        user: "ada",
+        body: { productId: "team_monthly" },
+      });
+      expect(await purchases()).toEqual(before);
+    });
+
+    test("the plan already held is a success, writes nothing at the store, and records nothing", async () => {
+      // The retry answer. These verbs sit behind a network, callers retry, and a second delivery of the
+      // same intent must not become a second proration — nor a second row in the trail asserting a change
+      // that did not happen.
+      await row();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: ON_PRO, prices: PRICES } });
+      const response = await request(app, "POST", "/payments/subscription/change", {
+        user: "ada",
+        body: { productId: "pro_monthly" },
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ subscription: { productId: "pro_monthly", status: "active" } });
+      expect(paddleWrites(), "nothing to change means nothing to write").toEqual([]);
+      expect(actions()).toEqual([]);
+    });
+
+    test("a second identical request adds no second audit row", async () => {
+      // The same request twice, against a store that has already applied the first. The row the trail must
+      // not gain is the one that says the plan changed twice.
+      await row();
+      await request(upgrading(), "POST", "/payments/subscription/change", {
+        user: "ada",
+        body: { productId: "team_monthly" },
+      });
+      expect(actions()).toEqual(["payments/subscription_plan_changed:success"]);
+
+      // The retry, arriving after the webhook moved the row onto Team — the state a real retry finds.
+      await db()
+        .updateTable(PAYMENTS_PURCHASES_TABLE)
+        .set({ productId: "team_monthly", providerProductId: TEAM_PRICE })
+        .where("providerTransactionId", "=", SUB)
+        .execute();
+      const again = await request(
+        makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: ON_TEAM, prices: PRICES } }),
+        "POST",
+        "/payments/subscription/change",
+        { user: "ada", body: { productId: "team_monthly" } },
+      );
+
+      expect(again.status).toBe(200);
+      // One write across both requests — the first one. `paddleCalls` spans the test, so a second PATCH
+      // would show here as a second entry.
+      expect(paddleWrites()).toHaveLength(1);
+      expect(actions(), "one change, one row").toEqual(["payments/subscription_plan_changed:success"]);
+    });
+
+    test("refuses a move on a subscription already scheduled to cancel", async () => {
+      // Honoring the move means discarding the pending action, so the rail refuses rather than choose
+      // between two instructions. Withdraw the schedule first — that is what `keep` is for.
+      await row();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: SCHEDULED_CANCEL, prices: PRICES } });
+      const response = await request(app, "POST", "/payments/subscription/change", {
+        user: "ada",
+        body: { productId: "team_monthly" },
+      });
+
+      expect(response.status).toBe(409);
+      expect(await errorCode(response)).toBe("payments/subscription_change_refused");
+      expect(paddleWrites()).toEqual([]);
+      expect(actions(), "a refused change is not a change").toEqual([]);
+    });
+
+    test("ignores every identifier a body smuggles in", async () => {
+      await row();
+      await request(upgrading(), "POST", "/payments/subscription/change", {
+        user: "ada",
+        body: {
+          productId: "team_monthly",
+          priceId: "pri_01evilevilevilevilevilevil",
+          subscriptionId: "sub_01someoneelsesubscription",
+          rail: "stripe",
+          prorationBillingMode: "do_not_bill",
+        },
+      });
+      const sent = JSON.stringify(paddleCalls);
+      expect(sent).not.toContain("sub_01someoneelsesubscription");
+      expect(sent).not.toContain("pri_01evilevilevilevilevilevil");
+      expect(sent, "the free-upgrade enum is unreachable because there is nowhere to write it").not.toContain(
+        "do_not_bill",
+      );
+      expect(JSON.parse(paddleWrites()[0]?.init?.body ?? "{}")).toMatchObject({
+        proration_billing_mode: "prorated_immediately",
+        on_payment_failure: "prevent_change",
+      });
+    });
+
+    test("never moves a subscription belonging to somebody else", async () => {
+      await row({ owner: user("grace") });
+      const response = await request(upgrading(), "POST", "/payments/subscription/change", {
+        user: "ada",
+        body: { productId: "team_monthly" },
+      });
+      expect(response.status).toBe(404);
+      expect(paddleCalls, "there was nothing to ask a store about").toEqual([]);
+    });
+
+    test("refuses to choose between two subscriptions", async () => {
+      await row({ id: SUB });
+      await row({ id: "sub_01bbbbbbbbbbbbbbbbbbbbbbbb" });
+      const response = await request(upgrading(), "POST", "/payments/subscription/change", {
+        user: "ada",
+        body: { productId: "team_monthly" },
+      });
+      expect(response.status).toBe(409);
+      expect(await errorCode(response)).toBe("payments/subscription_change_refused");
+      expect(paddleWrites()).toEqual([]);
+    });
+
+    test("a product this project does not sell is a 404, and costs no round trip", async () => {
+      await row();
+      const response = await request(upgrading(), "POST", "/payments/subscription/change", {
+        user: "ada",
+        body: { productId: "enterprise_annual" },
+      });
+      expect(response.status).toBe(404);
+      expect(await errorCode(response)).toBe("payments/product_not_found");
+      expect(paddleCalls).toEqual([]);
+    });
+
+    test("says so when the rail cannot manage subscriptions from the server", async () => {
+      await row({ rail: "apple", id: "2000000000000001", providerProductId: "com.acme.pro.monthly" });
+      const response = await request(makeApp(CATALOG, {}), "POST", "/payments/subscription/change", {
+        user: "ada",
+        body: { productId: "pro_monthly" },
+      });
+      expect(response.status).toBe(404);
+      expect(await errorCode(response)).toBe("payments/rail_not_configured");
+    });
+
+    test("requires a signed-in caller, and the guard runs before the validator", async () => {
+      const response = await request(makeApp(CATALOG_TWO_PLANS), "POST", "/payments/subscription/change", {
+        body: { productId: 42 },
+      });
+      expect(response.status).toBe(401);
+    });
+  });
+
+  describe("POST /payments/subscription/cancel", () => {
+    /** Active, and the store answers the scheduled cancellation. */
+    const canceling = () => makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: ON_PRO, cancel: SCHEDULED_CANCEL } });
+
+    test("stops the renewal and lets the paid period run out", async () => {
+      await row();
+      const response = await request(canceling(), "POST", "/payments/subscription/cancel", {
+        user: "ada",
+        body: { timing: "at_period_end" },
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        subscription: {
+          productId: "pro_monthly",
+          // The store still says `active` and blanks the billing date. Only `nextEvent` says what happens.
+          status: "active",
+          currency: "usd",
+          currentPeriodEndsAt: "2026-09-15T11:42:21.789Z",
+          nextBilledAt: null,
+          scheduledChange: { action: "cancel", effectiveAt: "2026-09-15T11:42:21.789Z", resumesAt: null },
+          nextEvent: { kind: "ends", at: "2026-09-15T11:42:21.789Z" },
+        },
+      });
+      const writes = paddleWrites();
+      expect(writes).toHaveLength(1);
+      expect(writes[0]?.url).toBe(`https://api.paddle.com/subscriptions/${SUB}/cancel`);
+      // The customer's word, translated. `at_period_end` does not mean "cancel next month".
+      expect(JSON.parse(writes[0]?.init?.body ?? "{}")).toEqual({ effective_from: "next_billing_period" });
+    });
+
+    test("records the cancellation, with the timing asked for and the day it lands", async () => {
+      // The write whose absence is the incident. When a customer says they never asked to cancel, this row
+      // is the whole answer: which actor asked, for which holder, and when it takes effect.
+      await row();
+      await request(canceling(), "POST", "/payments/subscription/cancel", {
+        user: "ada",
+        body: { timing: "at_period_end" },
+      });
+
+      expect(actions()).toEqual(["payments/subscription_canceled:success"]);
+      expect(emitted[0]).toMatchObject({
+        actorType: "user",
+        actorId: "ada",
+        sessionId: "s1",
+        resourceType: "purchase",
+        metadata: {
+          rail: "paddle",
+          subjectType: "user",
+          subjectId: "ada",
+          productId: "pro_monthly",
+          timing: "at_period_end",
+          effectiveAt: "2026-09-15T11:42:21.789Z",
+        },
+      });
+    });
+
+    test("ends it today when that is what was asked for", async () => {
+      await row();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: ON_PRO, cancel: CANCELED_NOW } });
+      const response = await request(app, "POST", "/payments/subscription/cancel", {
+        user: "ada",
+        body: { timing: "now" },
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        subscription: { status: "canceled", nextBilledAt: null, nextEvent: { kind: "unknown", at: null } },
+      });
+      expect(JSON.parse(paddleWrites()[0]?.init?.body ?? "{}")).toEqual({ effective_from: "immediately" });
+      expect(actions()).toEqual(["payments/subscription_canceled:success"]);
+    });
+
+    test("writes no purchase row: the webhook owns that row", async () => {
+      await row();
+      const before = await purchases();
+      await request(canceling(), "POST", "/payments/subscription/cancel", {
+        user: "ada",
+        body: { timing: "at_period_end" },
+      });
+      expect(await purchases()).toEqual(before);
+    });
+
+    test("a cancellation already scheduled for that timing is a success that writes nothing", async () => {
+      // The state the caller asked for is the state it is in, so there is nothing to refuse and nothing to
+      // record. A 409 here would turn every retried cancel into an incident.
+      await row();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: SCHEDULED_CANCEL } });
+      const response = await request(app, "POST", "/payments/subscription/cancel", {
+        user: "ada",
+        body: { timing: "at_period_end" },
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        subscription: { scheduledChange: { action: "cancel" }, nextEvent: { kind: "ends" } },
+      });
+      expect(paddleWrites()).toEqual([]);
+      expect(actions()).toEqual([]);
+    });
+
+    test("a second identical request adds no second audit row", async () => {
+      await row();
+      await request(canceling(), "POST", "/payments/subscription/cancel", {
+        user: "ada",
+        body: { timing: "at_period_end" },
+      });
+      expect(actions()).toEqual(["payments/subscription_canceled:success"]);
+
+      // The retry, against the store as the first request left it.
+      const again = await request(
+        makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: SCHEDULED_CANCEL } }),
+        "POST",
+        "/payments/subscription/cancel",
+        { user: "ada", body: { timing: "at_period_end" } },
+      );
+      expect(again.status).toBe(200);
+      expect(paddleWrites(), "one cancellation, one call").toHaveLength(1);
+      expect(actions(), "one cancellation, one row").toEqual(["payments/subscription_canceled:success"]);
+    });
+
+    test("an immediate cancel on a subscription scheduled to end is a real request, not a no-op", async () => {
+      // A subscription ending on the 15th is not one that ended today. The no-op is per timing, not per
+      // verb, so this reaches the store.
+      await row();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: SCHEDULED_CANCEL, cancel: CANCELED_NOW } });
+      const response = await request(app, "POST", "/payments/subscription/cancel", {
+        user: "ada",
+        body: { timing: "now" },
+      });
+
+      expect(response.status).toBe(200);
+      expect(JSON.parse(paddleWrites()[0]?.init?.body ?? "{}")).toEqual({ effective_from: "immediately" });
+      expect(actions()).toEqual(["payments/subscription_canceled:success"]);
+    });
+
+    test("passes the store's own refusal through, and records nothing", async () => {
+      // Paddle no longer knows this subscription, so there is nothing on it to cancel.
+      await row();
+      const app = makeApp(CATALOG_TWO_PLANS, {});
+      const response = await request(app, "POST", "/payments/subscription/cancel", {
+        user: "ada",
+        body: { timing: "at_period_end" },
+      });
+      expect(response.status).toBe(409);
+      expect(await errorCode(response)).toBe("payments/subscription_change_refused");
+      expect(actions(), "a refused cancellation is not a cancellation").toEqual([]);
+    });
+
+    test("the timing is required: ending somebody's access is not a choice made by omission", async () => {
+      await row();
+      const response = await request(canceling(), "POST", "/payments/subscription/cancel", {
+        user: "ada",
+        body: {},
+      });
+      expect(response.status).toBe(400);
+      expect(paddleCalls).toEqual([]);
+    });
+
+    test("the store's own spelling does not parse", async () => {
+      await row();
+      const response = await request(canceling(), "POST", "/payments/subscription/cancel", {
+        user: "ada",
+        body: { timing: "next_billing_period" },
+      });
+      expect(response.status).toBe(400);
+    });
+
+    test("never cancels a subscription belonging to somebody else", async () => {
+      await row({ owner: user("grace") });
+      const response = await request(canceling(), "POST", "/payments/subscription/cancel", {
+        user: "ada",
+        body: { timing: "at_period_end" },
+      });
+      expect(response.status).toBe(404);
+      expect(paddleCalls).toEqual([]);
+    });
+
+    test("refuses to choose between two subscriptions", async () => {
+      await row({ id: SUB });
+      await row({ id: "sub_01bbbbbbbbbbbbbbbbbbbbbbbb" });
+      const response = await request(canceling(), "POST", "/payments/subscription/cancel", {
+        user: "ada",
+        body: { timing: "at_period_end" },
+      });
+      expect(response.status).toBe(409);
+      expect(await errorCode(response)).toBe("payments/subscription_change_refused");
+      expect(paddleWrites()).toEqual([]);
+    });
+
+    test("says so when the rail cannot manage subscriptions from the server", async () => {
+      await row({ rail: "apple", id: "2000000000000001", providerProductId: "com.acme.pro.monthly" });
+      const response = await request(makeApp(CATALOG, {}), "POST", "/payments/subscription/cancel", {
+        user: "ada",
+        body: { timing: "at_period_end" },
+      });
+      expect(response.status).toBe(404);
+      expect(await errorCode(response)).toBe("payments/rail_not_configured");
+    });
+
+    test("requires a signed-in caller, and the guard runs before the validator", async () => {
+      const response = await request(makeApp(CATALOG_TWO_PLANS), "POST", "/payments/subscription/cancel", {
+        body: { timing: "not a timing" },
+      });
+      expect(response.status).toBe(401);
+    });
+  });
+
+  describe("POST /payments/subscription/keep", () => {
+    /** Scheduled to end, and the store answers the subscription with the schedule withdrawn. */
+    const keeping = () => makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: SCHEDULED_CANCEL, update: ON_PRO } });
+
+    test("withdraws the scheduled cancellation, so the subscription renews after all", async () => {
+      await row();
+      const response = await request(keeping(), "POST", "/payments/subscription/keep", { user: "ada" });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        subscription: {
+          productId: "pro_monthly",
+          status: "active",
+          currency: "usd",
+          currentPeriodEndsAt: "2026-09-15T11:42:21.789Z",
+          nextBilledAt: "2026-09-15T11:42:21.789Z",
+          scheduledChange: null,
+          nextEvent: { kind: "renews", at: "2026-09-15T11:42:21.789Z" },
+        },
+      });
+      const writes = paddleWrites();
+      expect(writes).toHaveLength(1);
+      expect(writes[0]?.url).toBe(`https://api.paddle.com/subscriptions/${SUB}`);
+      // Paddle offers nothing narrower than clearing the whole field. What makes that safe is the rail's
+      // refusal to send it for anything but a pending cancellation.
+      expect(JSON.parse(writes[0]?.init?.body ?? "{}")).toEqual({ scheduled_change: null });
+    });
+
+    test("records the withdrawal as its own act, not as an outcome on the cancellation", async () => {
+      // Folded together, the trail asserts a cancellation and holds nothing saying it was taken back —
+      // which reads, to whoever audits later, as a subscription that kept billing after it was canceled.
+      await row();
+      await request(keeping(), "POST", "/payments/subscription/keep", { user: "ada" });
+
+      expect(actions()).toEqual(["payments/subscription_cancel_withdrawn:success"]);
+      expect(emitted[0]).toMatchObject({
+        actorType: "user",
+        actorId: "ada",
+        sessionId: "s1",
+        resourceType: "purchase",
+        metadata: { rail: "paddle", subjectType: "user", subjectId: "ada", productId: "pro_monthly" },
+      });
+    });
+
+    test("takes no body at all", async () => {
+      // Which subscription is the server's answer, and there is nothing to say about it but *do not*. So
+      // the route declares no schema, exactly as `POST /payments/portal` does.
+      await row();
+      const response = await request(keeping(), "POST", "/payments/subscription/keep", { user: "ada" });
+      expect(response.status).toBe(200);
+    });
+
+    test("writes no purchase row: the webhook owns that row", async () => {
+      await row();
+      const before = await purchases();
+      await request(keeping(), "POST", "/payments/subscription/keep", { user: "ada" });
+      expect(await purchases()).toEqual(before);
+    });
+
+    test("a subscription with nothing scheduled is a success that writes nothing", async () => {
+      // It already renews, which is what the caller asked for. A retry after a successful withdrawal is
+      // exactly that request arriving twice.
+      await row();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: ON_PRO } });
+      const response = await request(app, "POST", "/payments/subscription/keep", { user: "ada" });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        subscription: { scheduledChange: null, nextEvent: { kind: "renews" } },
+      });
+      expect(paddleWrites()).toEqual([]);
+      expect(actions()).toEqual([]);
+    });
+
+    test("a second identical request adds no second audit row", async () => {
+      await row();
+      await request(keeping(), "POST", "/payments/subscription/keep", { user: "ada" });
+      expect(actions()).toEqual(["payments/subscription_cancel_withdrawn:success"]);
+
+      const again = await request(
+        makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: ON_PRO } }),
+        "POST",
+        "/payments/subscription/keep",
+        { user: "ada" },
+      );
+      expect(again.status).toBe(200);
+      expect(paddleWrites(), "one withdrawal, one call").toHaveLength(1);
+      expect(actions(), "one withdrawal, one row").toEqual(["payments/subscription_cancel_withdrawn:success"]);
+    });
+
+    test("refuses to clear a scheduled pause, and records nothing", async () => {
+      // Paddle clears `scheduled_change` wholesale and that field also holds a pause. Sending the clear
+      // would restart billing on a paused account, on a request that said nothing about pausing.
+      await row();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: { subscription: SCHEDULED_PAUSE, update: ON_PRO } });
+      const response = await request(app, "POST", "/payments/subscription/keep", { user: "ada" });
+
+      expect(response.status).toBe(409);
+      expect(await errorCode(response)).toBe("payments/subscription_change_refused");
+      expect(paddleWrites()).toEqual([]);
+      expect(actions()).toEqual([]);
+    });
+
+    test("never withdraws a cancellation on somebody else's subscription", async () => {
+      await row({ owner: user("grace") });
+      const response = await request(keeping(), "POST", "/payments/subscription/keep", { user: "ada" });
+      expect(response.status).toBe(404);
+      expect(paddleCalls).toEqual([]);
+    });
+
+    test("refuses to choose between two subscriptions", async () => {
+      await row({ id: SUB });
+      await row({ id: "sub_01bbbbbbbbbbbbbbbbbbbbbbbb" });
+      const response = await request(keeping(), "POST", "/payments/subscription/keep", { user: "ada" });
+      expect(response.status).toBe(409);
+      expect(await errorCode(response)).toBe("payments/subscription_change_refused");
+      expect(paddleWrites()).toEqual([]);
+    });
+
+    test("says so when the rail cannot manage subscriptions from the server", async () => {
+      await row({ rail: "apple", id: "2000000000000001", providerProductId: "com.acme.pro.monthly" });
+      const response = await request(makeApp(CATALOG, {}), "POST", "/payments/subscription/keep", { user: "ada" });
+      expect(response.status).toBe(404);
+      expect(await errorCode(response)).toBe("payments/rail_not_configured");
+    });
+
+    test("requires a signed-in caller", async () => {
+      const response = await request(makeApp(CATALOG_TWO_PLANS), "POST", "/payments/subscription/keep");
+      expect(response.status).toBe(401);
+    });
+  });
+
+  /**
+   * The properties that hold across all five, asserted once rather than route by route.
+   *
+   * A per-route assertion proves a route; a sweep proves the surface, and the surface is what a sixth
+   * route joins.
+   */
+  /**
+   * The refund — the verb that asks for money back, and the one whose whole design is about not lying.
+   *
+   * It is a **request**: Paddle holds most live refunds awaiting a person, so nothing here revokes, writes
+   * or claims. And refunds attach to *payments*, so it acts on a set — a customer who upgraded mid-period
+   * has paid twice, and a policy that owes them their money owes both.
+   */
+  describe("POST /payments/subscription/refund", () => {
+    /** The first payment: Pro, 6.00, on the day they joined. */
+    const TXN_JOINED = "txn_01m02kntv7bhw3sxdy5kyj93k1";
+    /** The second: the 65.82 proration Paddle took when they upgraded on day 10. */
+    const TXN_PRORATION = "txn_01m02kntv7bhw3sxdy5kyj93k2";
+    const ADJ_JOINED = "adj_01m02kntv7bhw3sxdy5kyj93a1";
+    const ADJ_PRORATION = "adj_01m02kntv7bhw3sxdy5kyj93a2";
+
+    /** A completed Paddle transaction on this subscription, with whatever adjustments already stand. */
+    const transaction = (id: string, total: string, adjustments: readonly unknown[] = []) => ({
+      id,
+      status: "completed",
+      customer_id: PADDLE_CUSTOMER,
+      subscription_id: SUB,
+      currency_code: "USD",
+      details: { totals: { grand_total: total, currency_code: "USD" } },
+      adjustments,
+      created_at: PERIOD_START,
+    });
+
+    /** An adjustment, as `POST /adjustments` answers one. */
+    const adjustment = (id: string, transactionId: string, overrides: Record<string, unknown> = {}) => ({
+      id,
+      action: "refund",
+      type: "full",
+      status: "pending_approval",
+      transaction_id: transactionId,
+      subscription_id: SUB,
+      customer_id: PADDLE_CUSTOMER,
+      currency_code: "USD",
+      totals: { total: "600", currency_code: "USD" },
+      created_at: "2026-08-28T11:14:02.663Z",
+      ...overrides,
+    });
+
+    /** The subscription, plus the two payments made on it. What the recorded upgrade case looks like. */
+    async function paidTwice(owner?: PaymentsSubject): Promise<void> {
+      await row({ owner });
+      await row({ owner, id: TXN_JOINED, family: SUB, role: "charge" });
+      await row({ owner, id: TXN_PRORATION, family: SUB, role: "charge" });
+    }
+
+    const REFUNDABLE = {
+      subscription: SCHEDULED_CANCEL,
+      transactions: {
+        [TXN_JOINED]: transaction(TXN_JOINED, "600"),
+        [TXN_PRORATION]: transaction(TXN_PRORATION, "6582"),
+      },
+      adjustments: {
+        [TXN_JOINED]: adjustment(ADJ_JOINED, TXN_JOINED),
+        [TXN_PRORATION]: adjustment(ADJ_PRORATION, TXN_PRORATION),
+      },
+    };
+
+    test("refunds every payment on the subscription, not just the latest", async () => {
+      // The case the whole set exists for. A route that refunded one would quietly keep 65.82 of somebody's
+      // money, and no read afterwards would show it had.
+      await paidTwice();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: REFUNDABLE });
+      const response = await request(app, "POST", "/payments/subscription/refund", { user: "ada" });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        refund: {
+          outcomes: [
+            { outcome: "requested", status: "awaiting_review" },
+            { outcome: "requested", status: "awaiting_review" },
+          ],
+        },
+      });
+      expect(paddleWrites()).toHaveLength(2);
+    });
+
+    test("says requested, never refunded — and no wire field claims the money moved", async () => {
+      // Paddle answered `pending_approval`. A screen must be unable to render that as a payout, so the
+      // response carries a request word and a store status and no amount anywhere.
+      await paidTwice();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: REFUNDABLE });
+      const body = await (await request(app, "POST", "/payments/subscription/refund", { user: "ada" })).text();
+
+      expect(body).toContain("requested");
+      expect(body).toContain("awaiting_review");
+      for (const claim of ["refunded", "amountMinor", "amount", "currency"]) {
+        expect(body, `the response says ${claim}`).not.toContain(claim);
+      }
+    });
+
+    test("the entitlement still stands, and no purchase row moved", async () => {
+      // **The invariant this verb is most likely to break.** Revocation belongs to the approved-adjustment
+      // webhook, which the projection already handles. Revoking on the request would take access from a
+      // customer whose refund Paddle then rejects — neither the money nor the product.
+      await paidTwice();
+      // Written by hand for the reason the purchase rows are: what is under test is what this route does
+      // to a standing entitlement, and the projection that normally derives one decides none of that.
+      await db()
+        .insertInto("pithyPaymentsEntitlements")
+        .values({
+          id: "entitlement-ada-pro",
+          subjectType: "user",
+          subjectId: "ada",
+          entitlement: "pro",
+          active: 1,
+          expiresAt: LATER.getTime(),
+          sourcePurchaseId: `purchase-user-ada-${SUB}`,
+          manual: 0,
+          createdAt: EARLIER.getTime(),
+          updatedAt: NOW.getTime(),
+          // biome-ignore lint/suspicious/noExplicitAny: an encoded row; Kysely's insert type derives from z.input.
+        } as any)
+        .execute();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: REFUNDABLE });
+      const grantedBefore = await (await request(app, "GET", "/payments/entitlements", { user: "ada" })).json();
+      const rowsBefore = await purchases();
+      // Anti-vacuous: the comparison below is worth nothing unless something was granted to begin with.
+      expect(JSON.stringify(grantedBefore)).toContain("pro");
+
+      expect((await request(app, "POST", "/payments/subscription/refund", { user: "ada" })).status).toBe(200);
+
+      expect(await purchases(), "the webhook owns these rows; this route wrote one").toEqual(rowsBefore);
+      expect(await entitlements(), "asking for money back is not the store agreeing to give it").toHaveLength(1);
+      expect(
+        await (await request(app, "GET", "/payments/entitlements", { user: "ada" })).json(),
+        "the subscriber keeps what they paid for until the store approves the refund",
+      ).toEqual(grantedBefore);
+    });
+
+    test("no store identifier reaches the browser", async () => {
+      // The module rule for every bearer response, and the sharper form of it here: an adjustment id
+      // published to a browser is a field a request grows next, and that request names a stranger's refund.
+      await paidTwice();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: REFUNDABLE });
+      const body = await (await request(app, "POST", "/payments/subscription/refund", { user: "ada" })).text();
+      for (const identifier of [SUB, TXN_JOINED, TXN_PRORATION, ADJ_JOINED, ADJ_PRORATION, PADDLE_CUSTOMER]) {
+        expect(body, identifier).not.toContain(identifier);
+      }
+    });
+
+    test("audits the request with counts and the store's handles, and no amount", async () => {
+      // Until the store approves one, this row is the *only* record anywhere that somebody asked for money
+      // back. A rejected refund makes that permanent, which is why it is written on the ask.
+      await paidTwice();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: REFUNDABLE });
+      await request(app, "POST", "/payments/subscription/refund", { user: "ada" });
+
+      expect(actions()).toEqual(["payments/subscription_refund_requested:success"]);
+      const event = emitted[0];
+      expect(event?.metadata).toMatchObject({
+        rail: "paddle",
+        subjectType: "user",
+        subjectId: "ada",
+        productId: "pro_monthly",
+        payments: 2,
+        requested: 2,
+        alreadyRequested: 0,
+        failed: 0,
+        adjustmentIds: [ADJ_JOINED, ADJ_PRORATION],
+      });
+      // How much anybody is getting back is the store's later decision. A figure here would assert
+      // something nobody has agreed to, in the one table nothing corrects.
+      expect(JSON.stringify(event?.metadata)).not.toContain("600");
+      expect(JSON.stringify(event?.metadata)).not.toContain("6582");
+    });
+
+    test("sends action refund, type full and no amount — asserted on the wire, not on the answer", async () => {
+      // A partial type or an amount produces a perfectly well-formed response. The only place either is
+      // visible is the request body.
+      await paidTwice();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: REFUNDABLE });
+      await request(app, "POST", "/payments/subscription/refund", { user: "ada" });
+
+      for (const call of paddleWrites()) {
+        const sent = JSON.parse(String(call.init?.body)) as Record<string, unknown>;
+        expect(sent.action).toBe("refund");
+        expect(sent.type).toBe("full");
+        expect(Object.keys(sent)).toEqual(["action", "type", "transaction_id", "reason"]);
+      }
+    });
+
+    test("a repeat raises nothing and leaves no second trail", async () => {
+      // The no-op, per payment, and the same rule cancel and keep follow. A client that lost a response
+      // and sent the instruction again is not in conflict with anything, and a trail claiming two refunds
+      // where one was asked for is worse than one claiming none.
+      await paidTwice();
+      const standing = {
+        subscription: SCHEDULED_CANCEL,
+        transactions: {
+          [TXN_JOINED]: transaction(TXN_JOINED, "600", [adjustment(ADJ_JOINED, TXN_JOINED)]),
+          [TXN_PRORATION]: transaction(TXN_PRORATION, "6582", [adjustment(ADJ_PRORATION, TXN_PRORATION)]),
+        },
+      };
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: standing });
+      const response = await request(app, "POST", "/payments/subscription/refund", { user: "ada" });
+
+      expect(response.status, "the state asked for is the state it is in").toBe(200);
+      expect(await response.json()).toEqual({
+        refund: {
+          outcomes: [
+            { outcome: "already_requested", status: "awaiting_review" },
+            { outcome: "already_requested", status: "awaiting_review" },
+          ],
+        },
+      });
+      expect(paddleWrites(), "a second refund must never reach Paddle").toEqual([]);
+      expect(actions(), "nothing happened, so nothing is recorded as having happened").toEqual([]);
+    });
+
+    test("refuses when there is no payment to refund", async () => {
+      // The subscription is there and the request is well-formed; a payment is what is absent. An empty
+      // report would read as "refunded, nothing to do".
+      await row();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: REFUNDABLE });
+      const response = await request(app, "POST", "/payments/subscription/refund", { user: "ada" });
+
+      expect(response.status).toBe(409);
+      expect(await errorCode(response)).toBe("payments/subscription_change_refused");
+      expect(paddleWrites()).toEqual([]);
+    });
+
+    test("never refunds a payment belonging to somebody else", async () => {
+      // Both halves of the subject, on the query that names the money. Grace paid; Ada asked.
+      await paidTwice(user("grace"));
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: REFUNDABLE });
+      const response = await request(app, "POST", "/payments/subscription/refund", { user: "ada" });
+
+      expect(response.status, "Ada has no subscription at all here").toBe(404);
+      expect(paddleWrites()).toEqual([]);
+    });
+
+    test("refunds only the payments on the subscription it resolved", async () => {
+      // A payment on a different family is a different subscription's money, and it is in the same table
+      // under the same owner. The family key is what separates them.
+      await paidTwice();
+      await row({ id: "txn_01other0000000000000000000", family: "sub_01bbbbbbbbbbbbbbbbbbbbbbbb", role: "charge" });
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: REFUNDABLE });
+      await request(app, "POST", "/payments/subscription/refund", { user: "ada" });
+
+      const refunded = paddleWrites().map(
+        (call) => (JSON.parse(String(call.init?.body)) as { transaction_id: string }).transaction_id,
+      );
+      expect(refunded).toEqual([TXN_JOINED, TXN_PRORATION]);
+    });
+
+    test("never asks a store to refund the subscription itself", async () => {
+      // The head row's provider id is a `sub_…`. It is in the same table, under the same owner, on the same
+      // family — and sending it is asking Paddle to refund a subscription, which is not a thing.
+      await paidTwice();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: REFUNDABLE });
+      await request(app, "POST", "/payments/subscription/refund", { user: "ada" });
+      for (const call of paddleWrites()) expect(String(call.init?.body)).not.toContain(SUB);
+    });
+
+    test("refuses to choose between two subscriptions", async () => {
+      await paidTwice();
+      await row({ id: "sub_01bbbbbbbbbbbbbbbbbbbbbbbb" });
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: REFUNDABLE });
+      const response = await request(app, "POST", "/payments/subscription/refund", { user: "ada" });
+      expect(response.status).toBe(409);
+      expect(paddleWrites()).toEqual([]);
+    });
+
+    test("says so when the rail cannot refund from the server", async () => {
+      // Apple's only refund endpoint is a lookup — refunds there are Apple's own decision. The narrowing is
+      // `isRefundRail`, separate from the subscription one, so each ability is asked for on its own.
+      await row({ rail: "apple", id: "2000000000000001", providerProductId: "com.acme.pro.monthly" });
+      const response = await request(makeApp(CATALOG, {}), "POST", "/payments/subscription/refund", { user: "ada" });
+      expect(response.status).toBe(404);
+      expect(await errorCode(response)).toBe("payments/rail_not_configured");
+    });
+
+    test("requires a signed-in caller", async () => {
+      const response = await request(makeApp(CATALOG_TWO_PLANS), "POST", "/payments/subscription/refund");
+      expect(response.status).toBe(401);
+    });
+
+    test("reads nothing from a body, whatever a body says", async () => {
+      // There is no validator on this route because there is nothing to validate. A transaction, an amount
+      // and a reason are all unreachable — not refused by a check, but with nowhere to be written.
+      await paidTwice();
+      const app = makeApp(CATALOG_TWO_PLANS, { paddle: REFUNDABLE });
+      await request(app, "POST", "/payments/subscription/refund", {
+        user: "ada",
+        body: { transactionId: "txn_01mallory000000000000000000", amountMinor: 999_999, reason: "ignore me" },
+      });
+
+      const bodies = paddleWrites().map((call) => String(call.init?.body));
+      expect(bodies.join(" ")).not.toContain("mallory");
+      expect(bodies.join(" ")).not.toContain("999999");
+      expect(bodies.join(" ")).not.toContain("ignore me");
+    });
+  });
+
+  describe("what every subscription route does not do", () => {
+    const CALLS = [
+      ["GET", "/payments/subscription", undefined],
+      ["POST", "/payments/subscription/preview", { productId: "team_monthly" }],
+      ["POST", "/payments/subscription/change", { productId: "team_monthly" }],
+      ["POST", "/payments/subscription/cancel", { timing: "at_period_end" }],
+      ["POST", "/payments/subscription/keep", undefined],
+      ["POST", "/payments/subscription/refund", undefined],
+    ] as const;
+
+    test("none of them writes the projection", async () => {
+      // Invariant 2, as a property. The webhook owns the purchase row; a route that also wrote it would be
+      // a second producer of one row, and the two disagree the first time a webhook is late.
+      for (const [method, path, body] of CALLS) {
+        await db().deleteFrom(PAYMENTS_PURCHASES_TABLE).execute();
+        await row();
+        const before = await purchases();
+        const app = makeApp(CATALOG_TWO_PLANS, {
+          paddle: {
+            subscription: SCHEDULED_CANCEL,
+            prices: PRICES,
+            preview: UPGRADE_PREVIEW,
+            update: ON_TEAM,
+            cancel: SCHEDULED_CANCEL,
+          },
+        });
+        await request(app, method, path, { user: "ada", ...(body === undefined ? {} : { body }) });
+        expect(await purchases(), `${method} ${path} wrote the projection`).toEqual(before);
+      }
+    });
+
+    test("none of them answers about a holder the caller is not acting for", async () => {
+      // Organization billing, with the caller resolving to no organization at all. A read answers empty;
+      // every verb refuses. Neither invents a holder, and neither falls back to the signed-in user.
+      const seam: PaymentsSubjectSeam = { billingSubject: "organization", resolveSubject: async () => undefined };
+      await row({ owner: organization("acme") });
+      for (const [method, path, body] of CALLS) {
+        const app = makeApp(
+          { ...CATALOG_TWO_PLANS, billingSubject: "organization" },
+          {
+            subject: seam,
+            paddle: { subscription: SCHEDULED_CANCEL, prices: PRICES, update: ON_TEAM, cancel: SCHEDULED_CANCEL },
+          },
+        );
+        const response = await request(app, method, path, { user: "ada", ...(body === undefined ? {} : { body }) });
+        if (method === "GET") {
+          expect(await response.json(), "a read has an honest empty answer").toEqual({ subscription: null });
+        } else {
+          expect(await errorCode(response), `${method} ${path}`).toBe("payments/subject_unresolved");
+        }
+        expect(paddleCalls, `${method} ${path} asked a store about a holder nobody resolved`).toEqual([]);
+      }
+    });
   });
 });

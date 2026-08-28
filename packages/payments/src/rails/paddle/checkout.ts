@@ -54,8 +54,15 @@ import {
  *
  * ## What it deliberately does not do
  *
- * No quantity, no amount, no proration, no plan change. The price *is* the price — that is Paddle's model
- * — and a checkout that could name an amount would be a checkout a client could name an amount on.
+ * No quantity and no amount. The price *is* the price — that is Paddle's model — and a checkout that could
+ * name an amount would be a checkout a client could name an amount on.
+ *
+ * **No plan change either, and that is now a fact about this module rather than about the kit.** #79's
+ * locked decision 2 was amended on 2026-08-28: a rail may invoke a plan change and pass the provider's own
+ * figures through unmodified, and this rail does — `rails/paddle/subscription.ts`, behind
+ * {@link SubscriptionRail}. It is a different verb on a subscription that already exists, so it does not
+ * belong on the call that creates one. Checkout still computes no proration and no tax; nothing here
+ * derives an amount from another amount, and `rails/contract.ts` states the line in full.
  */
 
 /** What creating a checkout needs beyond the input. */

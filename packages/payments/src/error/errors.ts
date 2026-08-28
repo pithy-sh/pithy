@@ -320,3 +320,75 @@ export class PaymentsSubjectUnresolvedError extends PithyError {
     );
   }
 }
+
+/**
+ * A subscription cannot be changed, or refunded, the way it was asked. The item shape is one this rail
+ * will not reproduce, the subscription is already canceled, there is no payment on it to refund, or the
+ * outcome asked for contradicts the state it is in — a plan move on a subscription whose cancellation is
+ * already scheduled, where honoring one instruction means discarding the other (#465).
+ *
+ * **A no-op is not a contradiction, and must not throw.** A change to the plan already held, and a cancel
+ * when that cancellation is already scheduled, name a state the subscription is already in. Both return
+ * success without calling the provider. That is the idempotency answer for a retried write: a client that
+ * loses a response and sends the same instruction again is not in conflict with anything, and answering 409
+ * would turn every duplicate submission into an incident. Only a request that cannot be reconciled with the
+ * present state reaches this code.
+ *
+ * **One code for all of it, and that is the argument, not an economy.** The obvious alternative was four:
+ * `subscription_multi_item`, `subscription_quantity_ambiguous`, `subscription_already_canceled`,
+ * `subscription_state_conflict`. Every one of them is the same 409, hands a caller the same sentence, and
+ * asks them to do the same thing — re-read the subscription and ask for something its present state
+ * allows. A code exists so a client can *branch*, and four codes nothing branches on is four members of
+ * core's closed union, four translation catalog keys, and a `switch` whose arms all render one string.
+ * What actually differs between the four is a fact about somebody's billing — how many items, which
+ * price, what quantity, what date — and that is throw-site context, which is what `detail` is and which
+ * the codec strips. So the distinction is kept where it is useful and off the wire where it is a leak.
+ *
+ * **The refund verb refuses through this code too, and the name is the only reason that needs saying.**
+ * `subscription_change_refused` reads as being about a plan move, so a reader looking for the code a
+ * refund refusal carries would conclude there is none. There is: a set with no payment in it, a payment
+ * the store will not refund because it is not completed, a transaction the store does not know, and a set
+ * too large to issue inside one request are all 409s, all tell the caller the same thing — re-read the
+ * subscription and its payments, then ask for something the present state allows — and nothing branches on
+ * telling them apart. Which of the four it was is a fact about somebody's billing, which is `detail`.
+ * **A refund that is already standing is not here at all**: it is a per-payment `already_requested`
+ * outcome and a 200, because it is the state the caller asked for. See `data/subscription.ts`.
+ *
+ * The one case that could earn its own code is "already canceled", because a screen genuinely wants to
+ * say *ends on the 15th* rather than *cannot be changed*. It does not earn it here: the screen learns
+ * that from the subscription it just read, which carries `scheduled_change.effective_at`. An error code
+ * is for a caller holding nothing else, and this caller is holding the subscription.
+ *
+ * **409, and neither 400 nor 500.** The request is well-formed and names a price this project sells, so
+ * it is not a bad request. Nothing is broken and there is nothing in a log for an operator to fix, so it
+ * is not ours. It is a conflict with the current state of the resource, which is the one thing 409 says,
+ * and it is what tells a client to refetch rather than to re-word.
+ *
+ * **Why refusing beats guessing**, since the refusal is the expensive-looking choice. A plan change
+ * replaces the whole items array: sending one item to a two-item subscription silently deletes the other,
+ * and inventing a quantity over- or under-charges a real card. Both failures are writes to somebody's
+ * billing that no read afterwards can distinguish from an intended change. A 409 is recoverable by a
+ * human in a minute; a dropped add-on is discovered on an invoice.
+ *
+ * `message` is safe to hand a stranger and names nothing about the subscription. `action` is the
+ * operator's half. `detail` carries the subscription id, the item shape, the status, the dates — none of
+ * which cross the boundary. `params` is the exception, and deliberately: it is client-facing, so a date a
+ * screen means to render in the reader's own language goes there and nowhere else.
+ */
+export class PaymentsSubscriptionChangeRefusedError extends PithyError {
+  constructor(args: PaymentsErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "payments/subscription_change_refused",
+        status: 409,
+        message: args.message ?? "That subscription cannot be changed that way.",
+        action:
+          args.action ??
+          "Re-read the subscription's current state — its status, what it holds, and any scheduled change — then ask for a move that state allows.",
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}

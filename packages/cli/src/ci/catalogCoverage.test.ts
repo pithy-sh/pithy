@@ -93,8 +93,21 @@ const CODES = KitErrorPayload.options.map((member) => member.shape.code.value);
  * It earns the duplication for the reason those two state: without it, "every code has a Spanish entry"
  * is a comparison of two sets that would agree perfectly if the union failed to import and the catalog
  * were gutted to `{}`. The population is what makes the agreement mean anything.
+ *
+ * **The four sites, so one red gate names them all.** This number is written by hand in four places on
+ * purpose (see above). Adding or removing a kit error code moves every one of them, and they live in
+ * three packages that do not run each other's tests — so a contributor who fixes only the one that went
+ * red ships the other three red. They are:
+ *
+ *   packages/core/src/error/payload.test.ts            KIT_ERROR_CODE_COUNT
+ *   packages/cli/src/ci/catalogCoverage.test.ts        KIT_ERROR_CODE_COUNT
+ *   packages/i18n/src/catalogs/es/errors.test.ts       KIT_ERROR_CODE_COUNT
+ *   packages/i18n/src/catalogs/es/catalogs.test.ts     the inline toHaveLength
+ *
+ * And the code itself also needs: the Spanish sentence in `packages/i18n/src/catalogs/es/errors.ts`,
+ * and `bun run docs-catalog` to regenerate `docs/catalog.generated.json`.
  */
-const KIT_ERROR_CODE_COUNT = 120;
+const KIT_ERROR_CODE_COUNT = 121;
 
 /**
  * The domain segment a *catalog key* must carry: a capability's `name`, or `app`.

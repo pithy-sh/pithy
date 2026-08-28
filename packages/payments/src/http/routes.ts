@@ -26,6 +26,7 @@ import type { PaymentsEntitlement } from "../data/entitlement";
 import type { PurchaseEnvironment } from "../data/purchase";
 import { PaymentsPurchase } from "../data/purchase";
 import { PAYMENTS_HOSTED_RAILS, type PaymentsRail } from "../data/rail";
+import type { PurchaseStatus } from "../data/status";
 import {
   decodeSubjectReference,
   encodeSubjectReference,
@@ -33,6 +34,12 @@ import {
   type PaymentsSubjectType,
   sameSubject,
 } from "../data/subject";
+import {
+  nextSubscriptionEvent,
+  type RefundRequest,
+  type SubscriptionChangeQuote,
+  type SubscriptionStanding,
+} from "../data/subscription";
 import { PAYMENTS_PURCHASES_TABLE, paymentsDatabase } from "../data/tables";
 import { WEBHOOK_EVENT_ORPHANED } from "../data/webhookEvent";
 import { grantEntitlement, revokeEntitlement } from "../entitlement/manual";
@@ -42,6 +49,7 @@ import {
   PaymentsProductNotFoundError,
   PaymentsRailNotConfiguredError,
   PaymentsReceiptAlreadyOwnedError,
+  PaymentsSubscriptionChangeRefusedError,
 } from "../error/errors";
 import { fulfillPurchase } from "../grants/apply";
 import { repairOrphanedEvents } from "../projection/orphans";
@@ -53,8 +61,12 @@ import {
   isCheckoutRail,
   isDiscountRail,
   isPricingRail,
+  isRefundRail,
+  isSubscriptionRail,
   noteText,
   type PaymentsRailProvider,
+  type RefundRail,
+  type SubscriptionRail,
 } from "../rails/contract";
 import { type RailTrustOptions, resolveRailProvider } from "../rails/providers";
 import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "../secret/registry";
@@ -76,7 +88,14 @@ import type {
   PaymentsPricingResponse,
   PaymentsPurchaseResponse,
   PaymentsQuotedFrom,
+  PaymentsRefundRequest,
+  PaymentsRefundResponse,
   PaymentsRestoreResponse,
+  PaymentsSubscriptionQuote,
+  PaymentsSubscriptionQuoteResponse,
+  PaymentsSubscriptionResponse,
+  PaymentsSubscriptionStandingResponse,
+  PaymentsSubscriptionView,
 } from "./responses";
 import {
   AdminDiscountsQuery,
@@ -96,6 +115,9 @@ import {
   PurchaseSubmission,
   RestoreRequest,
   StripeWebhookNotification,
+  SubscriptionCancelRequest,
+  SubscriptionChangeRequest,
+  SubscriptionPreviewRequest,
 } from "./schemas";
 import {
   PAYMENTS_CATALOG_READ_SCOPE,
@@ -121,16 +143,36 @@ import { completeWebhook, requireSignedWebhook, verifiedWebhook } from "./webhoo
 /**
  * The payments routes, their declared verification strategies, and what each accepts.
  *
- *   POST /payments/purchases            → verify a receipt, project it   (bearer | session)  json: PurchaseSubmission
- *   GET  /payments/entitlements         → the caller's entitlements      (bearer | session)  —
- *   POST /payments/restore              → rebind store history           (bearer | session)  json: RestoreRequest
- *   POST /payments/checkout             → Stripe Checkout Session        (bearer | session)  json: CheckoutRequest
- *   POST /payments/portal               → Stripe Billing Portal          (bearer | session)  —
- *   POST /payments/webhooks/apple       → ASSN V2                        (signed-webhook)    json: AppleWebhookNotification
- *   POST /payments/webhooks/google      → Play RTDN via Pub/Sub push     (signed-webhook)    json: GoogleWebhookNotification
- *   POST /payments/webhooks/stripe      → Stripe events                  (signed-webhook)    json: StripeWebhookNotification
- *   POST /payments/entitlements/grant   → comp or repair an entitlement  (control-plane)     json: EntitlementGrantRequest
- *   POST /payments/entitlements/revoke  → take one back                  (control-plane)     json: EntitlementRevokeRequest
+ * **This list is prose, and it had rotted.** It named sixteen of the twenty-one routes mounted before #465 —
+ * `GET /pricing`, two webhook rails and both discount routes had landed without a line here — which is the
+ * same failure the README's Routes table had before a gate held it, and for the same reason: a list that is
+ * merely *near* the code is a list nothing compares. It was brought level with the registrations as part of
+ * #465 and every mounted route is below, but **nothing holds it there**: the gated inventories are the
+ * README's Routes table and the `mountedRoutes` pin in `routeContract.test.ts`, checked in both directions
+ * against the real registrations. Read those as the record; edit this one by hand and expect it to rot again.
+ *
+ *   POST /payments/purchases              → verify a receipt, project it     (bearer | session)  json: PurchaseSubmission
+ *   GET  /payments/entitlements           → the caller's entitlements        (bearer | session)  —
+ *   POST /payments/restore                → rebind store history             (bearer | session)  json: RestoreRequest
+ *   GET  /payments/pricing                → what the caller's subscription pays, and when that changes
+ *                                                                            (bearer | session)  —
+ *   POST /payments/checkout               → a hosted checkout, on whichever rail sells the product
+ *                                                                            (bearer | session)  json: CheckoutRequest
+ *   POST /payments/portal                 → a billing-portal session         (bearer | session)  —
+ *   GET  /payments/subscription           → where the caller's subscription stands, read live
+ *                                                                            (bearer | session)  —
+ *   POST /payments/subscription/preview   → what a move would cost           (bearer | session)  json: SubscriptionPreviewRequest
+ *   POST /payments/subscription/change    → move it onto a catalog product   (bearer | session)  json: SubscriptionChangeRequest
+ *   POST /payments/subscription/cancel    → stop it renewing                 (bearer | session)  json: SubscriptionCancelRequest
+ *   POST /payments/subscription/keep      → withdraw a scheduled cancel      (bearer | session)  —
+ *   POST /payments/subscription/refund    → ask for its payments back        (bearer | session)  —
+ *   POST /payments/webhooks/apple         → ASSN V2                          (signed-webhook)    json: AppleWebhookNotification
+ *   POST /payments/webhooks/google        → Play RTDN via Pub/Sub push       (signed-webhook)    json: GoogleWebhookNotification
+ *   POST /payments/webhooks/stripe        → Stripe events                    (signed-webhook)    json: StripeWebhookNotification
+ *   POST /payments/webhooks/lemon-squeezy → Lemon Squeezy events             (signed-webhook)    json: LemonSqueezyWebhookNotification
+ *   POST /payments/webhooks/paddle        → Paddle events                    (signed-webhook)    json: PaddleWebhookNotification
+ *   POST /payments/entitlements/grant     → comp or repair an entitlement    (control-plane)     json: EntitlementGrantRequest
+ *   POST /payments/entitlements/revoke    → take one back                    (control-plane)     json: EntitlementRevokeRequest
  *
  *   GET  /payments/admin/catalog                → what this project sells        (control-plane: payments:catalog:read)        —
  *   GET  /payments/admin/purchases              → the purchase log, paged        (control-plane: payments:purchases:read)      query: AdminPurchasesQuery
@@ -138,7 +180,9 @@ import { completeWebhook, requireSignedWebhook, verifiedWebhook } from "./webhoo
  *   GET  /payments/admin/entitlements           → the entitlement model, paged   (control-plane: payments:entitlements:read)   query: AdminEntitlementsQuery
  *   GET  /payments/admin/entitlements/:subjectType/:subjectId
  *                                              → one subject's entitlements     (control-plane: payments:entitlements:read)   param: AdminSubjectParam
- *   GET  /payments/admin/reconcile-runs         → the reconciliation run log     (control-plane: payments:reconcile:read)     query: AdminReconcileRunsQuery
+ *   GET  /payments/admin/reconcile-runs         → the reconciliation run log     (control-plane: payments:reconcile:read)      query: AdminReconcileRunsQuery
+ *   GET  /payments/admin/discounts              → the codes this project issued  (control-plane: payments:discounts:read)      query: AdminDiscountsQuery
+ *   POST /payments/admin/discounts              → mint one at a store            (control-plane: payments:discounts:create)    json: DiscountCreateRequest
  *
  * **The reads exist because the writes did.** Payments shipped `entitlements/grant` and
  * `entitlements/revoke` with no read beside them, so a management client could comp an entitlement and take
@@ -151,8 +195,15 @@ import { completeWebhook, requireSignedWebhook, verifiedWebhook } from "./webhoo
  * whichever Hono matched first, with a route's gate decided by registration order. The extra segment makes
  * the two sets disjoint by construction.
  *
- * **Read-only, with no `POST` among them, and that is not an oversight.** The two writes this capability
- * offers are the ones support needs and each is separately scoped; nothing here widens them.
+ * **One `POST` among them, and it is the exception that states the rule.** Every `admin/` route is a read
+ * except `POST ${base}/admin/discounts`, which mints a code at a store — a write with a cost attached, so it
+ * carries its own scope, `payments:discounts:create`, granted separately from the `payments:discounts:read`
+ * on the listing beside it, and its own audit event. The three writes this capability offers a management
+ * client are grant, revoke and mint; each is separately scoped, and nothing here widens any of them.
+ *
+ * That one path serving two methods is also why `routeContract.test.ts` pins `METHOD /path` rather than the
+ * path: a `POST ${base}/admin/purchases` mounted beside the read would be a write nobody declared, sitting
+ * on a path the pin already contained.
  *
  * **The two control-plane routes are the only way an entitlement appears without money moving**, and that is
  * the whole reason they are gated the way they are. Each wears core's `requireControlPlane()` and nothing
@@ -187,6 +238,23 @@ import { completeWebhook, requireSignedWebhook, verifiedWebhook } from "./webhoo
  * the rail name, so a rail is never asked for something it does not do — and with Stripe off they raise
  * `payments/rail_not_configured`, which reads as "that payment method is not available here" rather than as a
  * broken endpoint.
+ *
+ * **The five subscription routes are one surface with one rule: nothing a caller sends names anything.**
+ * The subscription comes from that caller's own purchase rows, the rail from the row it found, and the
+ * store's price from the catalog by logical product id. A body-named subscription moves somebody else's — a
+ * claim this capability could not check, because it holds no members table by design — and a body-named
+ * price moves a customer onto a plan this project does not sell, at a price it did not set. Neither is
+ * refused by a check; both are unreachable because there is nowhere to write them.
+ *
+ * **The read shipped before the four verbs, deliberately and in its own step.** `GET ${base}/subscription`
+ * is the answer to the #247 paragraph below, applied before the mistake could repeat: a capability that can
+ * cancel a subscription and cannot report the cancellation ships the half that creates the support ticket,
+ * and Paddle leaves `status` at `active` with a blank next billing date when one is scheduled.
+ *
+ * **None of the four writes touches the projection.** The webhook owns the purchase row; a route that wrote
+ * it too would be a second producer of one row, and the two disagree the first time a webhook is late. So
+ * each verb answers the *store's* own report of where the subscription now stands, rather than a prediction
+ * of it — a prediction is how a customer sees a plan they are not on.
  *
  * **Validators sit after the guards on every route line.** A validator ahead of a guard turns a 401 into a 400
  * and tells an unauthenticated caller which of its requests were well-formed. Config-backed resolution stays in
@@ -354,6 +422,421 @@ function product(config: PaymentsConfig, id: string): PaymentsCatalogEntry {
 }
 
 /**
+ * The statuses a subscription can still be *acted on* in — the filter {@link changeableSubscription} applies
+ * before it counts anything.
+ *
+ * The set is "there is something left to do to this", not "this grants access", and the two differ at both
+ * ends. It is stated positively rather than as a list of exclusions so that a status added later is inert
+ * here until somebody decides it belongs, which is the safe direction: an unknown status silently joining an
+ * actionable set is how a dead row starts competing with a live subscription.
+ *
+ * - **`active`** — the ordinary case.
+ * - **`in_grace`** — a renewal that failed inside the retry window. The subscription exists at the store and
+ *   a customer with a bounced card is precisely the customer who wants to downgrade or cancel.
+ * - **`on_hold`** — the same, past the retry window. No rail implementing {@link SubscriptionRail} writes it
+ *   today; it is here because a subscription nobody has ended is still one somebody may want to end.
+ * - **`canceled`** — auto-renew off with the paid period still running. It **grants access**
+ *   ({@link ACCESS_GRANTING_STATUSES}), so a holder in it still has what they paid for, and it is the only
+ *   status `keepSubscription` can start from on the rails that write it while the schedule is pending.
+ * - **`paused`** — suspended, not ended. Canceling a paused subscription is legitimate; a store that will
+ *   not move one answers `payments/subscription_change_refused` with its own reason, which is a better
+ *   sentence than this query pretending the subscription is not there.
+ *
+ * **The four that are absent are endings**, and every one of them is an ending the *store* declared:
+ * `expired` (a period we were paid for, over), `never_paid` (terminated before money moved), `refunded` and
+ * `revoked` (taken back). None of them can be changed, canceled or un-canceled, and counting one is how a
+ * holder with a history of subscriptions becomes ambiguous forever.
+ *
+ * **Refusing on state is not this set's job.** A store that will not move a particular subscription is the
+ * rail's 409, carrying the store's own reason; this filter only decides whether there is a subscription to
+ * ask about at all. Widening the difference between the two is how a customer is told they have no
+ * subscription when what is true is that this one cannot be upgraded today.
+ */
+const SUBSCRIPTION_ACTIONABLE_STATUSES: readonly PurchaseStatus[] = [
+  "active",
+  "in_grace",
+  "on_hold",
+  "canceled",
+  "paused",
+];
+
+/**
+ * Which subscription a change verb may act on — none, exactly one, or more than one.
+ *
+ * **A discriminated answer rather than `PaymentsPurchase | undefined`**, because the three cases are three
+ * different sentences to a caller: nothing to change, here it is, and *this server will not choose for you*.
+ * Collapsing the last into either of the others is the defect this whole helper exists to make impossible —
+ * silently picking one of two live subscriptions moves a plan the customer did not name.
+ */
+export type SubscriptionTarget =
+  | {
+      /** The caller holds no subscription this server can act on. */
+      found: "none";
+    }
+  | {
+      /** Exactly one, and it is theirs. */
+      found: "one";
+      /** The row a {@link SubscriptionRail} is handed. The whole row — see `SubscriptionChangeInput.purchase`. */
+      purchase: PaymentsPurchase;
+    }
+  | {
+      /** More than one, so no verb can proceed without being told which. */
+      found: "many";
+      /** Every candidate, newest event first — so a refusal can say how many and on which rails. */
+      purchases: readonly PaymentsPurchase[];
+    };
+
+/**
+ * The one subscription this subject may change, cancel or keep — resolved from their own rows, never from a
+ * request.
+ *
+ * ## Why neither existing answer was reusable
+ *
+ * `ownSubscriptionIds` returns *every* subscription row a subject holds, at any status, and that is right for
+ * what it feeds: a portal request hands the whole list to Paddle, which sorts out which are live. A write
+ * verb cannot hand a list to anything — it needs one — and expired, refunded and superseded rows are all in
+ * that list.
+ *
+ * `GET {base}/pricing` takes `rows.find(r => r.role === "state") ?? rows[0]` from an unfiltered, time-ordered
+ * read. Two things are wrong with that here. The order is not a filter, so the newest row of a holder who
+ * canceled a year ago is still a year-old cancellation; and `?? rows[0]` can land on a money row, whose
+ * `providerTransactionId` is Paddle's `txn_…` rather than a `sub_…`. Pricing survives it because
+ * `readPricing` answers `undefined` for a row it cannot address. A cancel verb would not: it would ask a
+ * store to end a subscription by a transaction id, and the useful outcome is the one where that fails.
+ *
+ * ## The three rules
+ *
+ * **One: the head row, never a period of it.** A subscription's money rows carry the family in
+ * `originalTransactionId` and their own invoice or transaction id in `providerTransactionId`; the row that
+ * *is* the subscription carries the same value in both — Paddle's and Lemon Squeezy's state builders say so
+ * at the field, and it is what `subscriptionIdOf` relies on when it demands a `sub_` prefix. So the predicate
+ * is `originalTransactionId = providerTransactionId`, compared in SQL, which also excludes a one-off (whose
+ * family is null, and `null = anything` is not true) without a second clause. It is structural rather than a
+ * prefix test, so it needs no edit when a rail is added — and a rail whose rows never satisfy it resolves to
+ * `none`, which is an honest "there is nothing here this server can change" rather than a wrong row handed
+ * to a store.
+ *
+ * `UNIQUE (rail, providerTransactionId)` then does the rest of the work: a family has at most one head row,
+ * so surviving rows are subscriptions one-for-one and there is no de-duplication to get wrong.
+ *
+ * **Two: a cancellation whose period has run out is over.** `canceled` is in the actionable set because the
+ * holder still has what they paid for — but only until `expiresAt`, and the `expired` webhook that would
+ * overwrite the row can be late or dropped. Without this, every resubscriber is permanently ambiguous:
+ * their old, dead cancellation competes with the subscription they are currently paying for, and they are
+ * locked out of managing it. The check is deliberately **only** on `canceled`, because that is the one
+ * status whose `expiresAt` is a final date the store has already committed to. On every other actionable
+ * status the date is a rolling period end that each renewal moves, and dropping a row on it would tell a
+ * paying customer they have no subscription for as long as one renewal webhook is late.
+ *
+ * **Three: both halves of the subject, always.** `user:acme` and `organization:acme` are two holders and
+ * nothing in the kit keeps the id namespaces disjoint, so an id-only filter would let either act on the
+ * other's subscription. The pair arrives resolved from the seam, under whichever mode the project bills in.
+ *
+ * @param d1 The purchases database.
+ * @param subject The holder, as the subject seam resolved them — both halves.
+ * @param now The clock, for rule two. Passed rather than read, so a test can stand either side of an expiry.
+ */
+export async function changeableSubscription(
+  d1: D1Database,
+  subject: PaymentsSubject,
+  now: Date,
+): Promise<SubscriptionTarget> {
+  const rows = await paymentsDatabase(d1)
+    .selectFrom(PAYMENTS_PURCHASES_TABLE)
+    // Every column: a rail is handed the whole row, because what identifies a subscription at its store
+    // differs per rail and some of it survives only in the payload. See `SubscriptionChangeInput.purchase`.
+    .selectAll()
+    .where("subjectType", "=", subject.subjectType)
+    .where("subjectId", "=", subject.subjectId)
+    .where("type", "=", "subscription")
+    .where("status", "in", SUBSCRIPTION_ACTIONABLE_STATUSES)
+    // Rule one, in SQL. A null family is not equal to anything, so one-off purchases fall out here too.
+    .whereRef("originalTransactionId", "=", "providerTransactionId")
+    // Newest first, and `id` to break a tie, so a `many` answer is stable rather than whatever D1 returns.
+    .orderBy("providerEventAt", "desc")
+    .orderBy("id", "desc")
+    .execute();
+
+  // Parsed, not read raw. A D1 row is a boundary like any other, and `expiresAt` is an epoch integer until
+  // the codec makes it a date — comparing the number against a `Date` is the kind of quiet nonsense this
+  // package validates at every edge to prevent.
+  const candidates = rows
+    .map((row) => PaymentsPurchase.parse(row))
+    .filter((purchase) => !cancellationRanOut(purchase, now));
+
+  const [only, ...rest] = candidates;
+  if (only === undefined) return { found: "none" };
+  if (rest.length > 0) return { found: "many", purchases: candidates };
+  return { found: "one", purchase: only };
+}
+
+/**
+ * Every payment made on one subscription, as this holder's own rows record them — what a refund acts on.
+ *
+ * ## Why a refund needs a different query from every other verb
+ *
+ * The other four act on the subscription, and {@link changeableSubscription} resolves *the* row that is one.
+ * A refund cannot: **no store refunds a subscription.** Every refund attaches to a transaction, and a
+ * subscription is a family of them — so this returns the money rows, which is a set, and the caller raises
+ * one refund each.
+ *
+ * The set is ordinary rather than exotic. A customer who joined on Solo at 6.00, upgraded to Team on day 10
+ * for a 65.82 proration and cancels on day 13 has paid twice. An adopter whose policy gives them their money
+ * back owes both, and a query returning one would quietly keep 65.82 of somebody's money.
+ *
+ * ## The three rules
+ *
+ * **One: money rows only, stated twice.** `role = 'charge'` is the discriminator Lemon Squeezy forced into
+ * existence, and the second clause — `providerTransactionId <> originalTransactionId` — is the structural
+ * form of the same statement for the rails that write `charge` for everything: the row that *is* the
+ * subscription carries its family key in both columns. Either alone is right on some rail and wrong on
+ * another, and what they exclude is the head row, whose provider id is a `sub_…`. Sending that to a store is
+ * asking it to refund a subscription, which is not a thing it can do.
+ *
+ * **Two: both halves of the subject, always.** `user:acme` and `organization:acme` are two holders and
+ * nothing keeps the id namespaces disjoint, so an id-only filter would refund one holder's payments on the
+ * other's request. The same rule every query here follows, and here it is the difference between a refund
+ * and a theft.
+ *
+ * **Three: the family, and only this rail.** A holder may have paid on two stores; the rail comes from the
+ * subscription row that was resolved, never from a request.
+ *
+ * ## What is deliberately absent
+ *
+ * **A window, and a status filter.** How long a customer has to ask for their money back is the *adopter's*
+ * policy — the kit must not hard-code fourteen days, or any number — so every payment on the subscription is
+ * returned and the adopter's screen decides which button exists. And nothing here filters on a status of
+ * *ours*: whether a payment can still be refunded is the **store's** answer, read live from the transaction's
+ * own adjustments, and a projected row is a lagging copy of it. Filtering here would drop a payment on a
+ * stale row and call the result a complete refund.
+ *
+ * Ordered oldest first and tie-broken by id, so the report a caller gets back is in the order the money was
+ * taken and is reproducible across two identical requests.
+ */
+export async function refundablePayments(
+  d1: D1Database,
+  subject: PaymentsSubject,
+  subscription: PaymentsPurchase,
+): Promise<readonly PaymentsPurchase[]> {
+  const family = subscription.originalTransactionId ?? subscription.providerTransactionId;
+  const rows = await paymentsDatabase(d1)
+    .selectFrom(PAYMENTS_PURCHASES_TABLE)
+    // Every column, for `SubscriptionChangeInput.purchase`'s reason: a rail is handed the whole row.
+    .selectAll()
+    .where("subjectType", "=", subject.subjectType)
+    .where("subjectId", "=", subject.subjectId)
+    .where("rail", "=", subscription.rail)
+    .where("type", "=", "subscription")
+    .where("originalTransactionId", "=", family)
+    .where("role", "=", "charge")
+    // The head row, structurally. A `sub_…` sent to a refund endpoint is a request no store can honor.
+    .whereRef("providerTransactionId", "!=", "originalTransactionId")
+    .orderBy("providerEventAt", "asc")
+    .orderBy("id", "asc")
+    .execute();
+  // Parsed, not read raw. A D1 row is a boundary like any other.
+  return rows.map((row) => PaymentsPurchase.parse(row));
+}
+
+/** Rule two: a cancellation the paid period has already outrun. See {@link changeableSubscription}. */
+function cancellationRanOut(purchase: PaymentsPurchase, now: Date): boolean {
+  if (purchase.status !== "canceled" || purchase.expiresAt === null) return false;
+  return purchase.expiresAt.getTime() <= now.getTime();
+}
+
+/**
+ * More than one subscription, on every one of the five routes — the read included.
+ *
+ * **A refusal rather than a choice, and it is the same refusal on the read as on the writes.** The read's
+ * envelope holds one subscription or none, so `many` has no honest encoding in it: null says the caller
+ * holds nothing, which is false, and picking one renders somebody's other plan beside a cancel button
+ * that would end a third thing. `changeableSubscription` exists to make that silent pick impossible, and
+ * this is where its third answer becomes a sentence.
+ *
+ * 409 rather than 400: the request is well-formed and the conflict is with the state of the account, which
+ * is what tells a client to re-read rather than to re-word. `detail` counts them and names the rails —
+ * throw-site context, stripped by the codec — and the message names nothing about anybody's billing.
+ */
+function tooManySubscriptions(purchases: readonly PaymentsPurchase[]): PithyError {
+  return new PaymentsSubscriptionChangeRefusedError({
+    message: "There is more than one subscription on this account.",
+    action: "Open the billing portal to manage them there. This route acts on one subscription and will not choose.",
+    detail: `${purchases.length} actionable subscriptions resolved for this holder, on ${[
+      ...new Set(purchases.map((purchase) => purchase.rail)),
+    ].join(", ")}. No verb may pick one.`,
+  });
+}
+
+/**
+ * The one subscription a verb acts on, or the refusal that says why there is not one.
+ *
+ * The `none` case is a 404 rather than a payments-domain refusal, for the reason `POST {base}/portal`
+ * gives for the same shape: the rail is configured and working, and the resource simply does not exist.
+ * `GET {base}/subscription` does **not** call this — a read has an honest empty answer and `null` is it.
+ */
+function requireOneSubscription(target: SubscriptionTarget): PaymentsPurchase {
+  if (target.found === "many") throw tooManySubscriptions(target.purchases);
+  if (target.found === "none") {
+    throw new NotFoundError({
+      message: "No subscription to manage.",
+      action: "Buy a subscription first, then change or cancel it here.",
+      detail: "The caller holds no subscription in a status this server can act on.",
+    });
+  }
+  return target.purchase;
+}
+
+/**
+ * One subscription as its own holder reads it — the standing the store reported, plus the two facts a
+ * screen cannot derive.
+ *
+ * **`productId` is a parameter rather than read off the purchase row, and that is not tidiness.** After a
+ * plan change the row still names the old plan: the webhook owns that row and has not arrived yet
+ * (invariant 2 — no route writes the projection). A view built from the row would answer the change route
+ * with the plan the customer just left, on the screen that renders what it wrote. So the read passes the
+ * row's product and `change` passes the one the store just confirmed.
+ *
+ * **`nextEvent` is derived here rather than by the client**, because the precedence is not obvious and
+ * every client would have to rediscover it: a scheduled change wins over the next billing date, since
+ * Paddle blanks that date the moment a cancellation is scheduled. `nextSubscriptionEvent` is the one
+ * implementation, in `data/subscription.ts`; a client cannot call it, because it takes `Date`s.
+ */
+function subscriptionView(productId: string, standing: SubscriptionStanding): PaymentsSubscriptionView {
+  const event = nextSubscriptionEvent(standing);
+  return {
+    productId,
+    status: standing.status,
+    currency: standing.currency,
+    currentPeriodEndsAt: standing.currentPeriodEndsAt?.toISOString() ?? null,
+    nextBilledAt: standing.nextBilledAt?.toISOString() ?? null,
+    scheduledChange:
+      standing.scheduledChange === null
+        ? null
+        : {
+            action: standing.scheduledChange.action,
+            effectiveAt: standing.scheduledChange.effectiveAt.toISOString(),
+            resumesAt: standing.scheduledChange.resumesAt?.toISOString() ?? null,
+          },
+    nextEvent:
+      event.kind === "unknown" ? { kind: "unknown", at: null } : { kind: event.kind, at: event.at.toISOString() },
+  };
+}
+
+/**
+ * The store's own price for a catalog product, on the rail the subscription actually lives at.
+ *
+ * **This is the whole of "no body-named price".** A caller names the logical product — the key in
+ * `products` — and this resolves it, server-side, on a rail read from the caller's own purchase row. A
+ * `pri_…` in a request body would move a customer onto a plan this project does not sell, at a price it did
+ * not set, and nothing here could refuse it: the catalog is the only statement of what is for sale.
+ *
+ * A 404 on the **product** when the rail has no SKU for it, never on the rail, for `/checkout`'s reason:
+ * the rail is available and this product simply is not one of the things it sells. Naming which of the two
+ * it was would describe the deployment to a stranger.
+ */
+function subscriptionPrice(entry: PaymentsCatalogEntry, rail: PaymentsRail): string {
+  const sku = providerProductId(entry.product, rail);
+  if (sku === undefined) {
+    throw new PaymentsProductNotFoundError({
+      detail: `Product "${entry.id}" declares no ${rail} price, so a subscription at that store cannot be moved onto it.`,
+    });
+  }
+  return sku;
+}
+
+/**
+ * Whether a plan change is a change at all — the route's own reading of the no-op, and the only thing that
+ * decides whether an audit row is written.
+ *
+ * **The rail answers the no-op and reports nothing about it.** `changePlan` returns the current standing
+ * either way, with no flag, because a standing is a subscription's state and "did anything happen" is not
+ * one of its fields. So the route cannot learn it from the answer and has to decide from what it holds.
+ *
+ * What it holds is the purchase row, which names the catalog product the store last told this deployment
+ * the subscription was for. Equal to the product asked for means the caller is asking for the plan their
+ * own subscription is already on, which is exactly the retry the no-op exists to absorb.
+ *
+ * **The gap, stated rather than left to be discovered.** The row lags the store by one webhook. During that
+ * window a caller repeating a change they already made can find the row still naming the old plan, and this
+ * answers `true` for a call the rail then no-ops — one audit row for a change that did not happen on that
+ * request. It cannot go the other way: the row only ever names a plan the store has already reported, so a
+ * genuine move is never recorded as a no-op and the trail never goes silent about a real change. Of the two
+ * directions to be wrong in, a duplicate row that a reader can date against the store's own history is
+ * recoverable, and a missing one is not.
+ */
+function changedPlan(purchase: PaymentsPurchase, productId: string): boolean {
+  return purchase.productId !== productId;
+}
+
+/**
+ * Whether a verb changed anything — the no-op test for `cancel` and `keep`, read off the store's own
+ * before and after rather than off a rule copied out of the rail.
+ *
+ * **The rail reports no such flag, and the fact this needs is not in the purchase row.** A cancellation
+ * scheduled for the end of the period is exactly the thing a projected row cannot carry — Paddle leaves
+ * `status` at `active` and blanks `next_billed_at` — so the route reads the standing before it writes.
+ * That costs one `GET` beside the one the rail makes, and it buys the only thing that keeps the trail
+ * honest: an audit row is written when something actually happened and not when a caller retried.
+ *
+ * **A comparison of outcomes, not a second copy of the rail's rules.** Restating "already scheduled to
+ * cancel" and "already ended" here would be two statements of one policy, and they disagree the day one is
+ * edited. This asks a narrower question the rail cannot get wrong: after the call, does the store describe
+ * the subscription differently than it did before? A no-op is defined by its answer.
+ *
+ * The views are compared rather than the standings, because a view is what a screen renders and both sides
+ * are built by the same function in the same field order. `before === undefined` counts as changed, and is
+ * unreachable in practice: a rail that cannot address the purchase refuses the write rather than returning
+ * from it.
+ */
+function standingMoved(before: SubscriptionStanding | undefined, after: SubscriptionStanding): boolean {
+  if (before === undefined) return true;
+  // The product id is irrelevant to this comparison and identical on both sides — no verb here changes it.
+  return JSON.stringify(subscriptionView("", before)) !== JSON.stringify(subscriptionView("", after));
+}
+
+/**
+ * A quote on the wire: the store's own three figures, with the dates rendered.
+ *
+ * Nothing is computed, summed or netted — `data/subscription.ts` holds the argument, and the short form is
+ * that a second answer to "what will this cost" is a second number for a customer to hold against their
+ * statement. The settlements cross verbatim because they already are what a screen renders: a direction
+ * and a magnitude, with the direction as the discriminant so the amount cannot be reached without it.
+ */
+function quoteView(quote: SubscriptionChangeQuote): PaymentsSubscriptionQuote {
+  return {
+    settlesToday: quote.settlesToday,
+    nextInvoice:
+      quote.nextInvoice === null
+        ? null
+        : { settlement: quote.nextInvoice.settlement, at: quote.nextInvoice.at.toISOString() },
+    recurring:
+      quote.recurring === null
+        ? null
+        : { amount: quote.recurring.amount, startsAt: quote.recurring.startsAt.toISOString() },
+  };
+}
+
+/**
+ * A refund report on the wire: what became of each payment, and nothing that identifies one.
+ *
+ * **Every id is dropped and no amount is added.** The store's adjustment id and our own purchase id both
+ * stay server-side — a store identifier never crosses a bearer response, and an id published here is a field
+ * a request grows next — and the store's refusal sentence is throw-site context that names transactions and
+ * account facts. What a screen renders is how many payments were asked about and where each stands; the ids
+ * and the reasons are in the audit trail, where an operator is the reader.
+ *
+ * The order is the server's resolution order and the length is the input's, so a partial arrives as a
+ * countable list rather than as a success with something missing.
+ */
+function refundView(refund: RefundRequest): PaymentsRefundRequest {
+  return {
+    outcomes: refund.outcomes.map((outcome) =>
+      outcome.outcome === "failed" ? { outcome: "failed" } : { outcome: outcome.outcome, status: outcome.status },
+    ),
+  };
+}
+
+/**
  * Record a management read.
  *
  * **Every read, not only the writes.** A credential quietly paging every account's purchases leaves no
@@ -505,6 +988,58 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
       // that does not can never be asked.
       throw new PaymentsRailNotConfiguredError({
         detail: `The ${provider.rail} rail does not create hosted sessions.`,
+      });
+    }
+    return provider;
+  }
+
+  /**
+   * One rail, narrowed to the interface that manages a subscription from the server.
+   *
+   * {@link checkoutRail}'s shape and {@link checkoutRail}'s reason: structural, never a rail-name check, so
+   * a rail that gains the ability needs no edit here and one that has not can never be asked. The guard
+   * ANDs all five verbs — a rail missing any one of them is simply not a subscription rail, and the answer
+   * is `payments/rail_not_configured` rather than a `TypeError` thrown mid-cancellation on a route that has
+   * already written an audit row.
+   *
+   * **Which rail is never a request field.** It is the rail on the caller's own purchase row: a subscription
+   * that exists lives at exactly one store, and a rail a caller could name could only ever be the wrong
+   * store asked about somebody's subscription. That is why the argument comes from
+   * {@link changeableSubscription} and from nowhere else.
+   *
+   * The refusal is honest on the mobile rails rather than a bug: an Apple or Google subscription is changed
+   * inside the store's own UI, on the device, and there is no server call that does it.
+   */
+  async function subscriptionRail(
+    c: Context<PithyHonoEnv>,
+    rail: PaymentsRail,
+  ): Promise<PaymentsRailProvider & SubscriptionRail> {
+    const provider = resolveRailProvider(rail, config, await credentials(c), trust);
+    if (!isSubscriptionRail(provider)) {
+      throw new PaymentsRailNotConfiguredError({
+        detail: `The ${provider.rail} rail does not manage subscriptions from the server. A subscription on that store is changed inside the store's own UI, on the device.`,
+      });
+    }
+    return provider;
+  }
+
+  /**
+   * One rail, narrowed to the interface that refunds at its store.
+   *
+   * Its own narrowing rather than a sixth verb on {@link subscriptionRail}, because the two abilities are
+   * independent in both directions: Google Play refunds from the server and changes no plan from it, and
+   * Apple's only refund endpoint is a lookup. Asking one guard for both would refuse a rail that can do the
+   * thing being asked for.
+   *
+   * Structural, like the others, and the rail still comes from the caller's own purchase row rather than
+   * from a request — a rail a caller could name could only ever be the wrong store asked about somebody
+   * else's money.
+   */
+  async function refundRail(c: Context<PithyHonoEnv>, rail: PaymentsRail): Promise<PaymentsRailProvider & RefundRail> {
+    const provider = resolveRailProvider(rail, config, await credentials(c), trust);
+    if (!isRefundRail(provider)) {
+      throw new PaymentsRailNotConfiguredError({
+        detail: `The ${provider.rail} rail does not refund from the server. A refund on that store is asked for through the store itself.`,
       });
     }
     return provider;
@@ -1361,6 +1896,396 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         discountCode: pricing.discountCode,
         discountEndsAt: pricing.discountEndsAt === null ? null : pricing.discountEndsAt.toISOString(),
       });
+    });
+
+    /**
+     * AUTHED READ — where the caller's own subscription stands, read live from the store.
+     *
+     * **This route ships before the four verbs beside it, and that ordering is the lesson of #247**, which
+     * the module doc above records verbatim: payments shipped `entitlements/grant` and
+     * `entitlements/revoke` with no read beside them, and a dashboard's panes computed *absent* against a
+     * live manifest and dropped out of the rail entirely. A capability that can cancel a subscription and
+     * cannot report the cancellation ships the half that creates the support ticket.
+     *
+     * **Live, never from the projected row, because the one fact this exists to report is the one a row
+     * does not carry.** With a cancellation scheduled Paddle answers `status: "active"`, `canceled_at:
+     * null` and `next_billed_at: null` (recorded 2026-08-28, #465): two of the three say the subscription
+     * is fine and the third says nothing at all. The end date lives only on `scheduled_change.effective_at`,
+     * and the webhook that would have announced it can be dropped.
+     *
+     * **`null` is a real answer and a common one** — somebody who has never bought anything, and somebody
+     * whose store has nothing to say about the row. Not a 404: that would make this an existence oracle and
+     * would read, to a screen, exactly like a Worker that could not be reached.
+     *
+     * The subject comes from the seam and the subscription from that subject's own rows, so there is no
+     * shape of this request that reads somebody else's. Nobody resolved is the empty answer rather than a
+     * refusal, which is the read half of the seam's rule and what `GET {base}/entitlements` already does.
+     */
+    app.get(`${base}/subscription`, requireAuth(), async (c) => {
+      const subject = await resolvePaymentsSubject(c, seam);
+      if (subject === undefined) return c.json({ subscription: null } satisfies PaymentsSubscriptionResponse, 200);
+
+      const target = await changeableSubscription(database(c), subject, clock());
+      // Two subscriptions have no encoding in an envelope that holds one, and picking is the defect the
+      // whole resolver exists to prevent. The refusal is the same one every verb gives.
+      if (target.found === "many") throw tooManySubscriptions(target.purchases);
+      if (target.found === "none") return c.json({ subscription: null } satisfies PaymentsSubscriptionResponse, 200);
+
+      const provider = await subscriptionRail(c, target.purchase.rail);
+      const standing = await provider.readStanding(target.purchase, { now: clock(), deployment: deploymentName(c) });
+      // A rail that cannot address this purchase, or a store that no longer knows it. A fact about the
+      // purchase rather than a failure — a store that could not be *reached* raises
+      // `payments/provider_unavailable` instead, so a screen distinguishes the two.
+      if (standing === undefined) return c.json({ subscription: null } satisfies PaymentsSubscriptionResponse, 200);
+
+      return c.json(
+        {
+          subscription: subscriptionView(target.purchase.productId, standing),
+        } satisfies PaymentsSubscriptionResponse,
+        200,
+      );
+    });
+
+    /**
+     * AUTHED READ — what moving to one catalog product would cost, as the store previews it.
+     *
+     * **A read that discloses a price, and a `POST` only because it carries a body.** It commits nothing,
+     * stores nothing and writes no audit row: a quote goes stale the moment the billing period moves, and a
+     * persisted one is a price nobody is bound by.
+     *
+     * **The no-op rule does not apply to a preview.** Asking what the plan already held would cost is a
+     * question with an honest answer, and a second preview is free. Borrowing the writes' short-circuit
+     * would mean inventing a recurring figure to fill the quote with, which is the one thing this package
+     * will not do.
+     *
+     * The subscription comes from the caller's own rows and the price from the catalog, exactly as on
+     * `change` — the two routes share {@link SubscriptionPreviewRequest}, which *is*
+     * {@link SubscriptionChangeRequest}, so a preview cannot quote a figure the commit then refuses.
+     *
+     * `requirePaymentsSubject`, not `resolvePaymentsSubject`, even though this is a read. The seam's rule
+     * gives a read two honest answers — empty or denied — and a quote has no empty form: a figure is what
+     * this route exists to produce. With no holder selected there is no subscription to quote, and
+     * `payments/subject_unresolved` says exactly that, where a 404 would claim the caller has no
+     * subscription anywhere.
+     */
+    app.post(
+      `${base}/subscription/preview`,
+      requireAuth(),
+      zValidator("json", SubscriptionPreviewRequest, validationHook),
+      async (c) => {
+        const input = c.req.valid("json");
+        const subject = await requirePaymentsSubject(c, seam);
+        const purchase = requireOneSubscription(await changeableSubscription(database(c), subject, clock()));
+        const entry = product(config, input.productId);
+        const sku = subscriptionPrice(entry, purchase.rail);
+
+        const provider = await subscriptionRail(c, purchase.rail);
+        const quote = await provider.previewChange(
+          // The row, never an id off it: what identifies a subscription at its store differs per rail and
+          // some of it survives only in the payload. See `SubscriptionChangeInput.purchase`.
+          { purchase, providerProductId: sku },
+          { now: clock(), deployment: deploymentName(c) },
+        );
+        return c.json({ quote: quoteView(quote) } satisfies PaymentsSubscriptionQuoteResponse, 200);
+      },
+    );
+
+    /**
+     * AUTHED WRITE — move the caller's own subscription onto one catalog product.
+     *
+     * **Nothing this route needs comes from the request but the product.** The subscription is resolved
+     * from the caller's own purchase rows ({@link changeableSubscription}), the rail from that row, and the
+     * store's price from the catalog. A body-named subscription moves somebody else's; a body-named price
+     * moves a customer onto a plan this project does not sell; a body-named rail is the wrong store asked
+     * about a subscription that does not live there. None of the three is refused by a check — each is
+     * unreachable because there is nowhere to write it.
+     *
+     * **No proration mode and no `on_payment_failure`, for the same reason.** The rail picks the mode from
+     * the *direction* of the change — up charges now, down defers the credit to the next invoice — and
+     * always prevents a change that cannot be paid for. A mode a client could set is a mode a client would
+     * eventually set to Paddle's `do_not_bill`, which is a free upgrade.
+     *
+     * **This route writes no purchase row.** The webhook owns that row; a route that also wrote it would be
+     * a second producer of one row, and the two disagree the first time a webhook is late. So the response
+     * is the store's own answer to where the subscription now stands, and the plan named on it is the one
+     * the store just confirmed rather than the one the stale row still carries.
+     *
+     * **The no-op is a success and leaves no trail.** A change to the plan already held returns the current
+     * standing without calling the provider — the rail's rule, and the route must not turn it into a 409.
+     * The audit row is withheld with it: a retried write must not become a second proration, and it must
+     * not become a second row asserting a change that did not happen either. The route decides that from
+     * its own row rather than from the rail, which reports no such flag, and the residual gap is stated at
+     * {@link changedPlan}.
+     */
+    app.post(
+      `${base}/subscription/change`,
+      requireAuth(),
+      zValidator("json", SubscriptionChangeRequest, validationHook),
+      async (c) => {
+        const input = c.req.valid("json");
+        const subject = await requirePaymentsSubject(c, seam);
+        const purchase = requireOneSubscription(await changeableSubscription(database(c), subject, clock()));
+        const entry = product(config, input.productId);
+        const sku = subscriptionPrice(entry, purchase.rail);
+        // Decided *before* the call, from the row as it stands. See {@link changedPlan}.
+        const changed = changedPlan(purchase, entry.id);
+
+        const provider = await subscriptionRail(c, purchase.rail);
+        const standing = await provider.changePlan(
+          { purchase, providerProductId: sku },
+          { now: clock(), deployment: deploymentName(c) },
+        );
+
+        if (changed) {
+          await c.var.emit({
+            action: PaymentsAuditActions.subscriptionPlanChanged,
+            outcome: "success",
+            // The person who asked, always — the holder they act for rides in the metadata. Under
+            // organization billing the two differ, and collapsing them answers "who did this" with a
+            // company rather than with somebody who can be asked about it.
+            actorType: "user",
+            actorId: c.var.auth?.userId,
+            sessionId: c.var.auth?.sessionId,
+            resourceType: "purchase",
+            resourceId: purchase.id,
+            // Both plans, in both vocabularies, and no money. A quote is not what was charged, and copying
+            // an amount here would make a second, weaker ledger beside the purchases table.
+            metadata: {
+              rail: purchase.rail,
+              subjectType: subject.subjectType,
+              subjectId: subject.subjectId,
+              productId: entry.id,
+              fromProductId: purchase.productId,
+              providerProductId: sku,
+              fromProviderProductId: purchase.providerProductId,
+            },
+          });
+        }
+
+        return c.json(
+          // `entry.id`, not the row's product: the store has applied the move and the row has not caught up.
+          { subscription: subscriptionView(entry.id, standing) } satisfies PaymentsSubscriptionStandingResponse,
+          200,
+        );
+      },
+    );
+
+    /**
+     * AUTHED WRITE — stop the caller's own subscription renewing.
+     *
+     * **`at_period_end` is the settled policy and the timing is still stated, never defaulted.** The two
+     * timings are different things to buy — keep the period already paid for, or lose it today — and a body
+     * that omitted the field would be choosing one of them by silence. `now` exists because support
+     * occasionally has to end a subscription today, and because a policy with no legitimate exit gets
+     * departed from by a direct provider call nothing audits.
+     *
+     * The subscription is the caller's own, resolved from their rows; nothing in the body names one. The
+     * customer's word is what crosses, and the rail translates it — Paddle's `next_billing_period` does not
+     * parse here, so a client that stopped translating fails loudly rather than sending a string Paddle
+     * happens to accept.
+     *
+     * **The no-op is a success and is not audited.** A cancellation already scheduled for the timing asked
+     * for is the state the caller wanted, so there is nothing to refuse; and a retried cancel must not
+     * leave a trail claiming two of them. The standing is read before the write and compared afterwards —
+     * see {@link standingMoved} for why that is the honest test and not a second copy of the rail's rule.
+     *
+     * Writes no purchase row, as every route here does not: the webhook owns it.
+     */
+    app.post(
+      `${base}/subscription/cancel`,
+      requireAuth(),
+      zValidator("json", SubscriptionCancelRequest, validationHook),
+      async (c) => {
+        const input = c.req.valid("json");
+        const subject = await requirePaymentsSubject(c, seam);
+        const purchase = requireOneSubscription(await changeableSubscription(database(c), subject, clock()));
+
+        const provider = await subscriptionRail(c, purchase.rail);
+        const context = { now: clock(), deployment: deploymentName(c) };
+        // Read before written, because a scheduled cancellation is the one fact the purchase row cannot
+        // carry and therefore the one thing that decides whether this request changed anything.
+        const before = await provider.readStanding(purchase, context);
+        const standing = await provider.cancelSubscription({ purchase, timing: input.timing }, context);
+
+        if (standingMoved(before, standing)) {
+          await c.var.emit({
+            action: PaymentsAuditActions.subscriptionCanceled,
+            outcome: "success",
+            actorType: "user",
+            actorId: c.var.auth?.userId,
+            sessionId: c.var.auth?.sessionId,
+            resourceType: "purchase",
+            resourceId: purchase.id,
+            // The timing asked for, and the day it lands. That day is the answer to "when does this person
+            // lose access", and on a scheduled cancellation it exists nowhere else — the status still says
+            // active and the next billing date has gone blank.
+            metadata: {
+              rail: purchase.rail,
+              subjectType: subject.subjectType,
+              subjectId: subject.subjectId,
+              productId: purchase.productId,
+              timing: input.timing,
+              effectiveAt: standing.scheduledChange?.effectiveAt.toISOString() ?? null,
+            },
+          });
+        }
+
+        return c.json(
+          {
+            subscription: subscriptionView(purchase.productId, standing),
+          } satisfies PaymentsSubscriptionStandingResponse,
+          200,
+        );
+      },
+    );
+
+    /**
+     * AUTHED WRITE — withdraw a scheduled cancellation, so the caller's subscription renews after all.
+     *
+     * **No body at all, and no validator, exactly as `POST {base}/portal` has none.** Which subscription is
+     * the server's answer, and there is nothing to say about it but *do not*. A `z.object({})` would read as
+     * a refusal of everything and be neither — Zod strips rather than refuses — while making a POST with no
+     * body a 400 on a route that wants none.
+     *
+     * **It withdraws a cancellation and only a cancellation, and that check is the rail's.** Paddle offers
+     * no narrower verb: the update clears `scheduled_change` wholesale, and that field also holds a
+     * scheduled pause and a scheduled resume — so a rail that simply sent the clear would restart billing
+     * on a paused account, on a request that said nothing about pausing. The rail re-reads and refuses
+     * anything but a pending `cancel`. **The check cannot move here:** this route holds a projected row, and
+     * the pending action lives only at the store.
+     *
+     * **Its own route and its own audit action, not an outcome on the cancellation.** The two are separate
+     * acts by possibly separate actors, and the pair is what a dispute is reconstructed from. Folded
+     * together, the trail asserts a cancellation and holds nothing saying it was taken back.
+     *
+     * A subscription with nothing scheduled is the no-op rather than a refusal — it already renews, which
+     * is what the caller asked for — and it writes no audit row, for {@link standingMoved}'s reason.
+     */
+    app.post(`${base}/subscription/keep`, requireAuth(), async (c) => {
+      const subject = await requirePaymentsSubject(c, seam);
+      const purchase = requireOneSubscription(await changeableSubscription(database(c), subject, clock()));
+
+      const provider = await subscriptionRail(c, purchase.rail);
+      const context = { now: clock(), deployment: deploymentName(c) };
+      const before = await provider.readStanding(purchase, context);
+      const standing = await provider.keepSubscription(purchase, context);
+
+      if (standingMoved(before, standing)) {
+        await c.var.emit({
+          action: PaymentsAuditActions.subscriptionCancelWithdrawn,
+          outcome: "success",
+          actorType: "user",
+          actorId: c.var.auth?.userId,
+          sessionId: c.var.auth?.sessionId,
+          resourceType: "purchase",
+          resourceId: purchase.id,
+          metadata: {
+            rail: purchase.rail,
+            subjectType: subject.subjectType,
+            subjectId: subject.subjectId,
+            productId: purchase.productId,
+          },
+        });
+      }
+
+      return c.json(
+        { subscription: subscriptionView(purchase.productId, standing) } satisfies PaymentsSubscriptionStandingResponse,
+        200,
+      );
+    });
+
+    /**
+     * AUTHED WRITE — ask the store to give this subscription's payments back.
+     *
+     * **A request, and the response never says otherwise.** Paddle holds most live refunds at
+     * `pending_approval` until a person there reviews them, so nothing here revokes an entitlement, writes a
+     * purchase row, or touches a projection. The approval, when it comes, arrives as a webhook, and
+     * `rails/paddle/adjustments.ts` and the projection writer are the only things that act on it. Revoking
+     * on the *request* would take access from a customer whose refund the store then rejects, leaving them
+     * with neither the money nor the product.
+     *
+     * **No body, exactly as `keep` has none.** Which subscription is the server's answer, which payments is
+     * the server's answer, and how much is not a question anyone may ask: every refund raised here is for a
+     * transaction's whole total. A body naming a transaction refunds a stranger's money; a body naming an
+     * amount is a self-service withdrawal; a body naming a reason writes free text into the adopter's own
+     * back office. None of the three is refused by a check — each is unreachable because there is nowhere to
+     * write it.
+     *
+     * **It refunds every payment on the subscription, and applies no window.** How many days a customer has
+     * to ask is the *adopter's* commercial policy, and a kit that hard-coded fourteen would be wrong for the
+     * second adopter. The kit makes the refund possible; the adopter's screen decides which button exists.
+     * See {@link refundablePayments}.
+     *
+     * **A partial cannot be silent.** The rail refuses the whole request before it writes anything and
+     * reports every outcome once it has — {@link RefundRail} holds the argument — and the response carries
+     * one entry per payment, so a caller counting entries and a caller counting their own payments get the
+     * same number.
+     *
+     * **The audit row is the only record that a refund was asked for**, until and unless the store approves
+     * one. It is withheld when nothing was raised, which is the retry: a request repeated against refunds
+     * already standing is the state the caller wanted, and a trail claiming two of them is worse than one
+     * claiming none.
+     */
+    app.post(`${base}/subscription/refund`, requireAuth(), async (c) => {
+      const subject = await requirePaymentsSubject(c, seam);
+      const purchase = requireOneSubscription(await changeableSubscription(database(c), subject, clock()));
+      // The rail is narrowed **before** the payments are resolved, and the order is the answer a caller
+      // gets. "This store does not refund from the server" is true of every payment on the subscription and
+      // is what an Apple or Google subscriber needs to hear; "there is no payment to refund" would be the
+      // same 409 they would get if they had never paid, and it would send them looking for the wrong thing.
+      const provider = await refundRail(c, purchase.rail);
+      const payments = await refundablePayments(database(c), subject, purchase);
+      if (payments.length === 0) {
+        // A 409 rather than an empty report, and rather than a 404. The subscription is there and the
+        // request is well-formed; what is absent is a payment to refund, which is a fact about the account's
+        // present state. An empty report would read as "refunded, nothing to do".
+        throw new PaymentsSubscriptionChangeRefusedError({
+          message: "There is no payment on this subscription to refund.",
+          action: "Check the subscription's payment history. A refund attaches to a payment, not to a plan.",
+          detail: `No charge rows resolved on ${purchase.rail} for the family this subscription heads.`,
+        });
+      }
+
+      const refund = await provider.requestRefunds(
+        {
+          purchases: payments,
+          // Composed here and never read from a body: it is written into the adopter's own store console,
+          // where a person reads it as a statement about their business. The catalog product and nothing
+          // else — no customer text, no identifier a store does not already hold.
+          reason: `Refund requested by the subscriber for "${purchase.productId}".`,
+        },
+        { now: clock(), deployment: deploymentName(c) },
+      );
+
+      const raised = refund.outcomes.filter((outcome) => outcome.outcome === "requested");
+      if (raised.length > 0) {
+        await c.var.emit({
+          action: PaymentsAuditActions.subscriptionRefundRequested,
+          outcome: "success",
+          // The person who asked, always — the holder they act for rides in the metadata.
+          actorType: "user",
+          actorId: c.var.auth?.userId,
+          sessionId: c.var.auth?.sessionId,
+          resourceType: "purchase",
+          resourceId: purchase.id,
+          // Counts and the store's own handles on the money in flight. **No amount**: how much anybody is
+          // getting back is the store's later decision, and a figure here would assert something nobody has
+          // agreed to, in the one table nothing corrects.
+          metadata: {
+            rail: purchase.rail,
+            subjectType: subject.subjectType,
+            subjectId: subject.subjectId,
+            productId: purchase.productId,
+            payments: refund.outcomes.length,
+            requested: raised.length,
+            alreadyRequested: refund.outcomes.filter((outcome) => outcome.outcome === "already_requested").length,
+            failed: refund.outcomes.filter((outcome) => outcome.outcome === "failed").length,
+            adjustmentIds: raised.map((outcome) => outcome.adjustmentId),
+          },
+        });
+      }
+
+      return c.json({ refund: refundView(refund) } satisfies PaymentsRefundResponse, 200);
     });
 
     /**

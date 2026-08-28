@@ -6,6 +6,13 @@ import type { z } from "zod";
 import { PaymentsConfig } from "../config/config";
 import type { PaymentsEntitlement } from "../data/entitlement";
 import {
+  nextSubscriptionEvent,
+  QuotedMoney,
+  ScheduledSubscriptionChange,
+  SubscriptionChangeQuote,
+  SubscriptionStanding,
+} from "../data/subscription";
+import {
   PaymentsAdminCatalogProduct,
   PaymentsAdminCatalogResponse,
   PaymentsAdminEntitlementsResponse,
@@ -15,13 +22,27 @@ import {
   PaymentsAdminSubjectEntitlementsResponse,
   PaymentsAdminSubscriptionsResponse,
   PaymentsCheckoutHandoffResponse,
+  PaymentsDeferredSubscriptionSettlement,
   PaymentsEntitlementResponse,
   PaymentsEntitlementsResponse,
   PaymentsEntitlementView,
   PaymentsPortalHandoffResponse,
   PaymentsPurchaseResponse,
   PaymentsPurchaseView,
+  PaymentsQuotedMoney,
+  PaymentsRefundOutcome,
+  PaymentsRefundRequest,
+  PaymentsRefundRequestStatus,
+  PaymentsRefundResponse,
   PaymentsRestoreResponse,
+  PaymentsSubscriptionNextEvent,
+  PaymentsSubscriptionQuote,
+  PaymentsSubscriptionQuoteResponse,
+  PaymentsSubscriptionResponse,
+  PaymentsSubscriptionScheduledChange,
+  PaymentsSubscriptionSettlement,
+  PaymentsSubscriptionStandingResponse,
+  PaymentsSubscriptionView,
 } from "./responses";
 import { adminCatalogView, adminEntitlementView, adminPurchaseView } from "./view";
 
@@ -276,5 +297,286 @@ describe("the management read schemas", () => {
     // asserted over a real response in `controlPlane.workers.test.ts`. Both, because this one names the
     // shape a client codes against and that one catches a field nobody thought to ban.
     expect(Object.keys(PaymentsAdminCatalogProduct.shape).sort()).toEqual(["entitlements", "id", "name", "type"]);
+  });
+});
+
+/**
+ * The subscription lifecycle responses, held against the shapes in `data/subscription.ts`.
+ *
+ * **Built by encoding a real `SubscriptionStanding` and a real `SubscriptionChangeQuote`, never typed by
+ * hand.** Those live in `data/` and carry `JsonDate` codecs; this file describes JSON on the wire and
+ * declares no codec at all, so the two are separate objects by necessity and would otherwise drift
+ * silently — with the drift landing as a date a browser cannot read. `.encode()` is the bridge, and
+ * comparing key sets beside it is what catches a field one side grew.
+ */
+describe("the subscription lifecycle responses", () => {
+  const PERIOD_END = "2026-09-15T11:42:21.789Z";
+
+  /** "Team, renews 15 Sep". */
+  const RENEWING: SubscriptionStanding = {
+    status: "active",
+    currency: "usd",
+    currentPeriodEndsAt: new Date(PERIOD_END),
+    nextBilledAt: new Date(PERIOD_END),
+    scheduledChange: null,
+  };
+
+  /** "Team until 15 Sep, then ends" — recorded 2026-08-28: the status is still `active`. */
+  const ENDING: SubscriptionStanding = {
+    ...RENEWING,
+    nextBilledAt: null,
+    scheduledChange: { action: "cancel", effectiveAt: new Date(PERIOD_END), resumesAt: null },
+  };
+
+  /** "$65.82 today, then $119.76 monthly from 15 Sep" — the recorded upgrade. */
+  const UPGRADE: SubscriptionChangeQuote = {
+    settlesToday: { outcome: "charge", amount: { amountMinor: 6582, currency: "usd" } },
+    nextInvoice: null,
+    recurring: { amount: { amountMinor: 11976, currency: "usd" }, startsAt: new Date(PERIOD_END) },
+  };
+
+  /** "Nothing today. $65.58 credit on your next invoice, 15 Sep. Then $6.53/month." */
+  const DEFERRED_DOWNGRADE: SubscriptionChangeQuote = {
+    settlesToday: { outcome: "nothing" },
+    nextInvoice: {
+      settlement: { outcome: "credit", amount: { amountMinor: 6558, currency: "usd" } },
+      at: new Date(PERIOD_END),
+    },
+    recurring: { amount: { amountMinor: 653, currency: "usd" }, startsAt: new Date(PERIOD_END) },
+  };
+
+  /** What a route sends: the encoded standing, the product it is for, and the reading of what comes next. */
+  function subscription(standing: SubscriptionStanding, productId: string): unknown {
+    const next = nextSubscriptionEvent(standing);
+    return {
+      ...SubscriptionStanding.encode(standing),
+      productId,
+      nextEvent: { kind: next.kind, at: next.at === null ? null : next.at.toISOString() },
+    };
+  }
+
+  test("the view is the standing, plus exactly the two facts the wire adds", () => {
+    // A field added to `SubscriptionStanding` fails here until somebody decides whether a customer reading
+    // their own subscription should see it. That decision is the point; silence is not.
+    expect(Object.keys(PaymentsSubscriptionView.shape).sort()).toEqual(
+      [...Object.keys(SubscriptionStanding.shape), "productId", "nextEvent"].sort(),
+    );
+  });
+
+  test("the view accepts an encoded standing, renewing and ending alike", () => {
+    accepts(PaymentsSubscriptionView, subscription(RENEWING, "team_monthly"));
+    accepts(PaymentsSubscriptionView, subscription(ENDING, "team_monthly"));
+  });
+
+  test("the two standings differ only in the fields that say so", () => {
+    const renewing = PaymentsSubscriptionView.parse(subscription(RENEWING, "team_monthly"));
+    const ending = PaymentsSubscriptionView.parse(subscription(ENDING, "team_monthly"));
+    // Read the status alone and a customer who canceled is told they will be billed again. Both say
+    // `active`; this is the assertion that the response does not leave a screen with only that.
+    expect(renewing.status).toBe("active");
+    expect(ending.status).toBe("active");
+    expect(renewing.nextEvent).toEqual({ kind: "renews", at: PERIOD_END });
+    expect(ending.nextEvent).toEqual({ kind: "ends", at: PERIOD_END });
+    // And the date the ending one is owed exists nowhere else: `nextBilledAt` is blank on it.
+    expect(ending.nextBilledAt).toBeNull();
+  });
+
+  test("the four sentences are writable from parsed responses, every figure read rather than derived", () => {
+    const renewing = PaymentsSubscriptionView.parse(subscription(RENEWING, "team_monthly"));
+    const ending = PaymentsSubscriptionView.parse(subscription(ENDING, "team_monthly"));
+    // "Team, renews 15 Sep" / "Team until 15 Sep, then ends"
+    expect([renewing.productId, renewing.nextEvent.kind, renewing.nextEvent.at]).toEqual([
+      "team_monthly",
+      "renews",
+      PERIOD_END,
+    ]);
+    expect([ending.productId, ending.nextEvent.kind, ending.nextEvent.at]).toEqual([
+      "team_monthly",
+      "ends",
+      PERIOD_END,
+    ]);
+
+    // "$65.82 today, then $119.76 monthly from 15 Sep"
+    const upgrade = PaymentsSubscriptionQuote.parse(SubscriptionChangeQuote.encode(UPGRADE));
+    expect(upgrade.settlesToday).toEqual({ outcome: "charge", amount: { amountMinor: 6582, currency: "usd" } });
+    expect(upgrade.nextInvoice).toBeNull();
+    expect(upgrade.recurring).toEqual({ amount: { amountMinor: 11976, currency: "usd" }, startsAt: PERIOD_END });
+
+    // "Nothing today. $65.58 credit on your next invoice, 15 Sep. Then $6.53/month."
+    const downgrade = PaymentsSubscriptionQuote.parse(SubscriptionChangeQuote.encode(DEFERRED_DOWNGRADE));
+    expect(downgrade.settlesToday).toEqual({ outcome: "nothing" });
+    expect(downgrade.nextInvoice).toEqual({
+      settlement: { outcome: "credit", amount: { amountMinor: 6558, currency: "usd" } },
+      at: PERIOD_END,
+    });
+    expect(downgrade.recurring).toEqual({ amount: { amountMinor: 653, currency: "usd" }, startsAt: PERIOD_END });
+  });
+
+  test("a next event is never a date without an event, or an event without a date", () => {
+    accepts(PaymentsSubscriptionNextEvent, { kind: "renews", at: PERIOD_END });
+    accepts(PaymentsSubscriptionNextEvent, { kind: "unknown", at: null });
+    // `unknown` is the answer for a subscription with nothing scheduled and nothing due. A date on it is
+    // a day a screen would print, and nobody said anything happens then.
+    expect(PaymentsSubscriptionNextEvent.safeParse({ kind: "unknown", at: PERIOD_END }).success).toBe(false);
+    expect(PaymentsSubscriptionNextEvent.safeParse({ kind: "ends", at: null }).success).toBe(false);
+  });
+
+  test("the read may find no subscription; a write always acted on one", () => {
+    const view = subscription(RENEWING, "team_monthly");
+    accepts(PaymentsSubscriptionResponse, { subscription: null });
+    accepts(PaymentsSubscriptionResponse, { subscription: view });
+    accepts(PaymentsSubscriptionStandingResponse, { subscription: view });
+    // A change, a cancellation and a withdrawal each resolved a subscription before they ran, so null
+    // there is a case every screen would have to branch on and none could ever reach.
+    expect(PaymentsSubscriptionStandingResponse.safeParse({ subscription: null }).success).toBe(false);
+    accepts(PaymentsSubscriptionQuoteResponse, { quote: SubscriptionChangeQuote.encode(UPGRADE) });
+  });
+
+  test("no store identifier and no subject crosses to the customer", () => {
+    // `sub_…`, `ctm_…` and `txn_…` are the store's vocabulary and a browser has no use for any of them;
+    // the subject rule is the same one every client-facing view in this file is held to.
+    const fields = Object.keys(PaymentsSubscriptionView.shape);
+    for (const banned of [
+      "subscriptionId",
+      "providerSubscriptionId",
+      "providerTransactionId",
+      "customerId",
+      "providerAccountId",
+      "priceId",
+      "providerProductId",
+      "subjectId",
+      "subjectType",
+      "userId",
+      "payload",
+    ]) {
+      expect(fields).not.toContain(banned);
+    }
+  });
+
+  test("dates cross as ISO strings, never as a Date or an epoch", () => {
+    const view = subscription(RENEWING, "team_monthly") as Record<string, unknown>;
+    expect(PaymentsSubscriptionView.safeParse({ ...view, nextBilledAt: new Date(PERIOD_END) }).success).toBe(false);
+    expect(PaymentsSubscriptionView.safeParse({ ...view, nextBilledAt: 1789000000000 }).success).toBe(false);
+  });
+
+  test("the quote is the three parts the data module models, and no fourth", () => {
+    expect(Object.keys(PaymentsSubscriptionQuote.shape).sort()).toEqual(
+      Object.keys(SubscriptionChangeQuote.shape).sort(),
+    );
+    expect(Object.keys(PaymentsSubscriptionScheduledChange.shape).sort()).toEqual(
+      Object.keys(ScheduledSubscriptionChange.shape).sort(),
+    );
+    expect(Object.keys(PaymentsQuotedMoney.shape).sort()).toEqual(Object.keys(QuotedMoney.shape).sort());
+  });
+
+  test("an amount cannot be rendered without its direction", () => {
+    accepts(PaymentsSubscriptionSettlement, { outcome: "charge", amount: { amountMinor: 6582, currency: "usd" } });
+    accepts(PaymentsSubscriptionSettlement, { outcome: "nothing" });
+    // `nothing` carries no amount, and one smuggled in does not survive the parse — "nothing to pay
+    // today" and "a charge of zero" are different sentences and only one of them is ever true.
+    expect(
+      PaymentsSubscriptionSettlement.parse({ outcome: "nothing", amount: { amountMinor: 1, currency: "usd" } }),
+    ).toEqual({ outcome: "nothing" });
+    expect(PaymentsSubscriptionSettlement.safeParse({ outcome: "charge" }).success).toBe(false);
+  });
+
+  test("a deferred settlement is never `nothing`", () => {
+    // The block holding it is nullable, and null already says nothing lands later. Two spellings of one
+    // fact is how a screen renders "$— credit on 15 Sep" — a row about no money, dated.
+    expect(PaymentsDeferredSubscriptionSettlement.safeParse({ outcome: "nothing" }).success).toBe(false);
+    expect(
+      PaymentsSubscriptionQuote.safeParse({
+        ...SubscriptionChangeQuote.encode(DEFERRED_DOWNGRADE),
+        nextInvoice: { settlement: { outcome: "nothing" }, at: PERIOD_END },
+      }).success,
+    ).toBe(false);
+  });
+
+  test("money is a signed integer of minor units", () => {
+    // Signed, because Paddle's own credit amounts are — `.nonnegative()` here refuses every real
+    // downgrade. Never a float: 6582 is $65.82, and 65.82 is somebody reading the rendered figure back in.
+    accepts(PaymentsQuotedMoney, { amountMinor: -6961, currency: "usd" });
+    expect(PaymentsQuotedMoney.safeParse({ amountMinor: 65.82, currency: "usd" }).success).toBe(false);
+    expect(PaymentsQuotedMoney.safeParse({ amountMinor: "6582", currency: "usd" }).success).toBe(false);
+  });
+
+  test("a currency the wire did not expect does not take the pane down", () => {
+    // `data/subscription.ts` refuses anything but lowercase, and that is where a rail that stopped
+    // lowering fails. Re-refusing it here would mean a customer's whole subscription pane failing to
+    // parse over a casing difference, which is #450's rule read the wrong way round.
+    accepts(PaymentsQuotedMoney, { amountMinor: 6582, currency: "USD" });
+  });
+});
+
+/**
+ * The refund report on the wire — the response whose whole job is to not say something that is not true.
+ *
+ * A refund is a request. Paddle holds most live ones awaiting a person, so this shape has to be
+ * unrenderable as a payout: no amount, no store status spelled in the store's own words, and a
+ * discriminant a screen cannot reach the state through without reading.
+ */
+describe("the refund report", () => {
+  test("carries no amount and no identifier — nothing a request could grow a field from", () => {
+    // Both halves of the module rule, together: a store identifier never crosses a bearer response, and
+    // an amount here would be read as what the customer is getting back, which nobody has decided yet.
+    const report = PaymentsRefundRequest.parse({
+      outcomes: [
+        { outcome: "requested", status: "awaiting_review" },
+        { outcome: "already_requested", status: "approved" },
+        { outcome: "failed" },
+      ],
+    });
+    const wire = JSON.stringify(report);
+    for (const banned of ["amountMinor", "adjustmentId", "purchaseId", "transactionId", "reason", "currency"]) {
+      expect(wire, `the wire carries ${banned}`).not.toContain(banned);
+    }
+  });
+
+  test("strips a store id, an amount and a reason smuggled into an outcome", () => {
+    // Not a rule read off its own subject: the fields are offered and the parse is what refuses them.
+    const parsed = PaymentsRefundOutcome.parse({
+      outcome: "requested",
+      status: "approved",
+      adjustmentId: "adj_01m02kntv7bhw3sxdy5kyj93a1",
+      amountMinor: 6582,
+    });
+    expect(Object.keys(parsed).sort()).toEqual(["outcome", "status"]);
+
+    const failed = PaymentsRefundOutcome.parse({ outcome: "failed", reason: "Paddle said no, on txn_01…" });
+    expect(Object.keys(failed)).toEqual(["outcome"]);
+  });
+
+  test("no wire value says the customer has been paid", () => {
+    for (const value of PaymentsRefundRequestStatus.options) {
+      expect(value, `${value} reads as money having arrived`).not.toMatch(/refunded|paid|complete|settled/);
+    }
+    // And the store's own spelling does not pass through as itself: the rail translates or it fails.
+    expect(PaymentsRefundRequestStatus.safeParse("pending_approval").success).toBe(false);
+  });
+
+  test("a report holds a mixed set, because that is what a partial looks like", () => {
+    // One raised, one already standing, one refused. A shape that could only hold a uniform answer would
+    // force the route to pick one of the three to report and drop the rest.
+    const report = PaymentsRefundResponse.parse({
+      refund: {
+        outcomes: [
+          { outcome: "requested", status: "awaiting_review" },
+          { outcome: "already_requested", status: "approved" },
+          { outcome: "failed" },
+        ],
+      },
+    });
+    expect(report.refund.outcomes.map((outcome) => outcome.outcome)).toEqual([
+      "requested",
+      "already_requested",
+      "failed",
+    ]);
+  });
+
+  test("a state the rail cannot produce does not parse", () => {
+    // The enum comes from `data/subscription.ts` rather than being respelled here, so the wire cannot
+    // hold a status no rail can answer with.
+    expect(PaymentsRefundOutcome.safeParse({ outcome: "requested", status: "refunded" }).success).toBe(false);
+    expect(PaymentsRefundOutcome.safeParse({ outcome: "cancelled" }).success).toBe(false);
   });
 });

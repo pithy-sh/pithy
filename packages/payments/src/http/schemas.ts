@@ -7,9 +7,10 @@ import { EntitlementKey } from "@pithy-sh/core/src/entitlement/entitlement";
 import { z } from "zod";
 import { DiscountCode, DiscountTerms } from "../data/discount";
 import { PurchaseEnvironment } from "../data/purchase";
-import { PaymentsRail } from "../data/rail";
+import { PaymentsHostedRail, PaymentsRail } from "../data/rail";
 import { PurchaseStatus } from "../data/status";
 import { PaymentsSubject } from "../data/subject";
+import { SubscriptionCancelTiming } from "../data/subscription";
 
 /**
  * Everything a caller may send to a payments route, declared here and parsed on the route line. Reading a
@@ -128,18 +129,107 @@ export const CheckoutRequest = z
       .describe(
         "The logical catalog product to buy — the key in `products`, never a store SKU. Resolved against config, so an unknown one is a 404 rather than a bad request.",
       ),
-    rail: z
-      .enum(["stripe", "lemonSqueezy"])
-      .optional()
-      .describe(
-        "Which hosted-checkout rail to buy through. Omit it when the product sells on one, which is the common case. A client may name this because a rail is not a price and not a purchaser — it decides who takes the money, not how much or on whose behalf — so a paywall offering both can put two buttons on the page.",
-      ),
+    rail: PaymentsHostedRail.optional().describe(
+      "Which hosted-checkout rail to buy through. Omit it when the product sells on one, which is the common case. A client may name this because a rail is not a price and not a purchaser — it decides who takes the money, not how much or on whose behalf — so a paywall offering more than one can put a button on the page for each.",
+    ),
     discountCode: DiscountCode.optional().describe(
       "A discount code to apply, passed to the store unchanged. A client may send this because the store decides what it is worth and whether it is valid — Pithy never computes a discounted amount, so a code here can only ever ask the provider a question it was going to answer anyway.",
     ),
   })
   .describe("A caller asking to start hosted checkout for one catalog product.");
 export type CheckoutRequest = z.infer<typeof CheckoutRequest>;
+
+/**
+ * ## The subscription lifecycle requests
+ *
+ * Four routes, and between them they accept two fields. That is the design rather than an accident of
+ * scope, and each absence below is load-bearing.
+ *
+ * **No subscription.** The route resolves it from the caller's own purchase rows, and there is no field
+ * a caller could send that would widen that set. A `subscriptionId` here would be a value a client
+ * supplies, and a value a client supplies is one they can point at somebody else's subscription — which
+ * this capability could not refuse, because it holds no members table and no ownership graph to check
+ * the claim against. The refusal has to be structural, exactly as `SubscriptionChangeInput` states it
+ * for the rail below.
+ *
+ * **No price.** {@link SubscriptionChangeRequest} names the *logical catalog product*, as
+ * {@link CheckoutRequest} does and for the same reason: a body-named `pri_…` moves a customer onto a
+ * plan this project does not sell, at a price it did not set. The catalog resolves the store's own
+ * identifier, server-side, after the product is known to exist.
+ *
+ * **No rail.** {@link CheckoutRequest} may name one because a rail is not a price and not a purchaser —
+ * it decides who takes the money on a purchase that has not happened yet. A subscription that already
+ * exists lives at exactly one store, and its own row says which. A named rail here could only ever be
+ * the wrong store asked about somebody's subscription.
+ *
+ * **No proration mode, and no `on_payment_failure`.** The rail picks the mode from the direction of the
+ * change and always prevents a change that cannot be paid for; `data/subscription.ts` holds the longer
+ * argument. Modeling either would make it a field, a field is a thing a client can set, and the value a
+ * client would eventually set is Paddle's `do_not_bill` — a free upgrade. It is unreachable because
+ * there is nowhere to write it.
+ *
+ * **No body at all on `keep`.** Withdrawing a scheduled cancellation takes no parameters: which
+ * subscription is the server's answer, and there is nothing to say about it but *do not*. So that route
+ * declares no schema and no `zValidator("json", …)`, exactly as `POST {base}/portal` does. A
+ * `z.object({})` would read as a refusal of everything and be neither — Zod strips rather than refuses —
+ * while making a POST with no body at all a 400 on a route that wants nothing.
+ */
+
+/**
+ * What a caller may move their subscription to: a catalog product id, and nothing else.
+ *
+ * The same one field {@link CheckoutRequest} leads with, bounded the same way, and meaning the same
+ * thing: the key in `products`, never a store SKU and never a price. An unknown one is a 404 on the
+ * product rather than a bad request, because whether this project sells something is a config-backed
+ * lookup and a schema constrains a string.
+ */
+export const SubscriptionChangeRequest = z
+  .object({
+    productId: z
+      .string()
+      .min(1)
+      .max(MAX_PRODUCT_ID_LENGTH)
+      .describe(
+        "The logical catalog product to move to — the key in `products`. The route resolves the store's own price from it, so a caller can only ever ask for a plan this project sells.",
+      ),
+  })
+  .describe("A caller asking to move their own subscription onto one catalog product.");
+export type SubscriptionChangeRequest = z.output<typeof SubscriptionChangeRequest>;
+
+/**
+ * What a caller may ask a quote about — {@link SubscriptionChangeRequest} itself, under the name the
+ * preview route line reads with.
+ *
+ * **The same value, not a copy of it.** A preview is the change with the commit removed: it asks the
+ * provider what moving to this product would cost and takes nothing. Two objects that must stay
+ * identical are two objects that will not — and the shape of that drift is a preview accepting a field
+ * the change refuses, quoting a customer a figure the commit then cannot honor. `schemas.test.ts`
+ * asserts the identity, so this stays an alias rather than becoming a second declaration.
+ */
+export const SubscriptionPreviewRequest = SubscriptionChangeRequest;
+export type SubscriptionPreviewRequest = SubscriptionChangeRequest;
+
+/**
+ * When a cancellation takes effect. One field, and it is the customer's word rather than the store's.
+ *
+ * **Required, with no default.** `at_period_end` is the settled policy, and a default is still the
+ * wrong shape for it: the two timings are different things to buy — keep the period already paid for,
+ * or lose it today — and a body that omits the field would be choosing one of them by silence. A caller
+ * that means `at_period_end` says so, which is also what an audit row then records.
+ *
+ * The values come from `data/subscription.ts` rather than being spelled again here, so a third timing
+ * cannot exist on the wire and not in the rail. Paddle's own `immediately` and `next_billing_period` do
+ * not parse: the rail translates, and a request in the store's vocabulary means something upstream
+ * stopped translating.
+ */
+export const SubscriptionCancelRequest = z
+  .object({
+    timing: SubscriptionCancelTiming.describe(
+      "When the cancellation takes effect — `at_period_end` stops the renewal and lets the paid period run out, `now` ends access today. Stated rather than defaulted: ending somebody's access is not a choice made by omission.",
+    ),
+  })
+  .describe("A caller ending their own subscription, and when they stop.");
+export type SubscriptionCancelRequest = z.output<typeof SubscriptionCancelRequest>;
 
 /**
  * The terms of a discount to mint. The one control-plane write that creates an object costing money.
@@ -151,18 +241,18 @@ export type CheckoutRequest = z.infer<typeof CheckoutRequest>;
  */
 export const AdminDiscountsQuery = z
   .object({
-    rail: z
-      .enum(["stripe", "lemonSqueezy"])
-      .describe("Which store to list from. Required — a discount exists in one store, and the two do not merge."),
+    rail: PaymentsHostedRail.describe(
+      "Which store to list from. Required — a discount exists in one store, and the stores do not merge.",
+    ),
   })
   .describe("A management client listing the discount codes one store holds.");
 export type AdminDiscountsQuery = z.infer<typeof AdminDiscountsQuery>;
 
 export const DiscountCreateRequest = z
   .object({
-    rail: z
-      .enum(["stripe", "lemonSqueezy"])
-      .describe("Which store to mint the discount at. Required — a discount exists in one store's dashboard."),
+    rail: PaymentsHostedRail.describe(
+      "Which store to mint the discount at. Required — a discount exists in one store's dashboard.",
+    ),
     terms: DiscountTerms.describe("The discount's terms, in customer-visible units."),
   })
   .describe("A management client minting one discount code.");

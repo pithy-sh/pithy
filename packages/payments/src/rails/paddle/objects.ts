@@ -234,6 +234,45 @@ export const PaddleTransaction = z
   .describe("A Paddle transaction — one billing period's charge, or a one-off purchase.");
 export type PaddleTransaction = z.infer<typeof PaddleTransaction>;
 
+/**
+ * A change Paddle will apply later, exactly as it sits on a subscription.
+ *
+ * Lifted out of {@link PaddleSubscription}, where it was inline, because two readers now ask it questions
+ * and a second inline copy is how the two field lists drift apart: {@link subscriptionResumesAt} asks when
+ * a paused subscription comes back, and {@link subscriptionPendingChange} asks what is pending at all. One
+ * declaration, one parse, both readers.
+ *
+ * **`items` is declared because Paddle sends it.** It arrived `null` on every change recorded so far —
+ * the pause and resume of 2026-08-15, the cancel of 2026-08-28 — and nothing reads it. Declaring a field
+ * the payload carries costs a line; discovering it later inside a `.loose()` passthrough that nobody wrote
+ * down costs an afternoon.
+ */
+export const PaddleScheduledChange = z
+  .object({
+    action: z.string().optional().describe("`cancel`, `pause`, or `resume`."),
+    effective_at: z
+      .string()
+      .nullish()
+      .describe(
+        "When it takes effect. On a `resume` action against a paused subscription this is the resume date itself — verified live, see `subscriptionResumesAt`. On a `cancel` it is when access ends, and it is the only place that date exists: `next_billed_at` is null on a subscription with a cancellation scheduled, recorded 2026-08-28.",
+      ),
+    resume_at: z
+      .string()
+      .nullish()
+      .describe(
+        "When a paused subscription should resume. Paddle documents it as set only on a `pause` action, and a subscription carrying one is still `active` — so it is read for completeness rather than as the field a paused row is filled from.",
+      ),
+    items: z
+      .array(z.unknown())
+      .nullish()
+      .describe("The items the change applies to. Null on every change recorded so far; carried, not read."),
+  })
+  .loose()
+  .describe(
+    "A change Paddle will apply later — the shape both readers of `scheduled_change` parse through, so neither can drift from the other.",
+  );
+export type PaddleScheduledChange = z.infer<typeof PaddleScheduledChange>;
+
 /** A subscription's fields, as an event and the API both present them. */
 export const PaddleSubscription = z
   .object({
@@ -264,27 +303,9 @@ export const PaddleSubscription = z
       .loose()
       .nullish()
       .describe("The period currently paid for. Null while a subscription is trialing or paused."),
-    scheduled_change: z
-      .object({
-        action: z.string().optional().describe("`cancel`, `pause`, or `resume`."),
-        effective_at: z
-          .string()
-          .nullish()
-          .describe(
-            "When it takes effect. On a `resume` action against a paused subscription this is the resume date itself — verified live, see `subscriptionResumesAt`.",
-          ),
-        resume_at: z
-          .string()
-          .nullish()
-          .describe(
-            "When a paused subscription should resume. Paddle documents it as set only on a `pause` action, and a subscription carrying one is still `active` — so it is read for completeness rather than as the field a paused row is filled from.",
-          ),
-      })
-      .loose()
-      .nullish()
-      .describe(
-        "A change Paddle will apply later. A subscription with a scheduled cancel is still `active` today — the distinction between `canceled` and a scheduled change is the whole difference between access now and access until the period ends.",
-      ),
+    scheduled_change: PaddleScheduledChange.nullish().describe(
+      "A change Paddle will apply later. A subscription with a scheduled cancel is still `active` today — the distinction between `canceled` and a scheduled change is the whole difference between access now and access until the period ends.",
+    ),
     trial_dates: z
       .object({
         starts_at: z.string().nullish().describe("When the trial began."),
@@ -316,6 +337,167 @@ export const PaddleSubscription = z
   .loose()
   .describe("A Paddle subscription — the standing of a recurring purchase, carrying no charge.");
 export type PaddleSubscription = z.infer<typeof PaddleSubscription>;
+
+/**
+ * A money figure Paddle quotes, as it sends one: a **string**, in the currency's lowest denomination, and
+ * **signed**.
+ *
+ * The sign is the part a schema gets wrong, and it gets it wrong in the direction that throws in front of a
+ * customer. Recorded against the sandbox on 2026-08-28: previewing an upgrade returns
+ * `credit: { amount: "-380" }`, and previewing a downgrade returns a whole totals block below zero. A
+ * `.nonnegative()` anywhere on this path would refuse every real plan change while reading, in the source,
+ * like ordinary care. {@link minorAmount} already accepts a leading `-`; nothing else here needs to know.
+ *
+ * `amount` is required where `PaddleTransaction`'s totals are optional, and the difference is deliberate: a
+ * transaction's totals are a block this package reads one figure out of, while a quoted money object with no
+ * amount is not a partial reading — it is a shape change, and it should be loud.
+ */
+const PaddleMoney = z
+  .object({
+    amount: z
+      .string()
+      .describe(
+        "How much, as an integer string in the currency's lowest denomination, signed. `-380` is a credit of $3.80.",
+      ),
+    currency_code: z.string().nullish().describe("The currency, uppercase ISO 4217, as Paddle sends it."),
+  })
+  .loose()
+  .describe("One money figure Paddle quoted. Never recomputed here — Paddle is the authority on every amount.");
+
+/**
+ * One block of Paddle's computed totals, on a preview.
+ *
+ * **`grand_total` is not the headline, and on a downgrade it is actively misleading.** Recorded 2026-08-28:
+ * previewing Team → Solo answers `grand_total: "0"` while the customer is owed 6581, which is sitting in
+ * `credit_to_balance`. A screen wired to the totals says "You will be charged $0.00" — true, and it never
+ * mentions the money. What renders is `update_summary.result`; see {@link PaddleUpdateSummary}.
+ *
+ * Every field is optional because Paddle's blocks differ by mode and by direction, and every one may be
+ * negative because a downgrade's are: `subtotal: "-6045"`, `tax: "-536"`, `total: "-6581"`. `fee` and
+ * `earnings` arrive **null** on a preview — the money has not moved, so there is nothing to have earned —
+ * and they are declared rather than left to `.loose()` so a later reader finds null in the type instead of
+ * inferring absence.
+ *
+ * **Deliberately not shared with {@link PaddleTransaction}'s own `details.totals`.** Unifying them would
+ * widen that shape's public type — `string | undefined` becomes `string | null | undefined` on fields four
+ * modules already read — in the same commit that adds a preview, which is precisely the regression
+ * `objects.test.ts` guards against. The *treatment* is identical and that is what matters here: strings,
+ * unscaled, `.loose()`, no constraint on sign. One type in both places is the job of the step that needs
+ * one type in both places.
+ */
+export const PaddleTotals = z
+  .object({
+    subtotal: z.string().nullish().describe("Before tax. Negative when the change is a credit."),
+    tax: z.string().nullish().describe("The tax on it, which is negative alongside a negative subtotal."),
+    discount: z.string().nullish().describe("What a discount took off, when one applies."),
+    total: z.string().nullish().describe("Subtotal plus tax, still signed."),
+    grand_total: z
+      .string()
+      .nullish()
+      .describe(
+        'What Paddle will actually take today — and `"0"` on a downgrade, where the money owed is in `credit_to_balance` instead. Not the figure a screen quotes.',
+      ),
+    grand_total_tax: z.string().nullish().describe("The tax within the grand total."),
+    credit: z.string().nullish().describe("Credit consumed by this transaction."),
+    credit_to_balance: z
+      .string()
+      .nullish()
+      .describe(
+        "What lands on the customer's balance rather than on a card — where a downgrade's whole refund sits while `grand_total` reads zero.",
+      ),
+    balance: z.string().nullish().describe("What is left outstanding after credit is applied."),
+    fee: z.string().nullish().describe("Paddle's fee. Null on a preview: nothing has been charged to take one from."),
+    earnings: z.string().nullish().describe("The seller's share. Null on a preview, for the same reason."),
+    currency_code: z.string().nullish().describe("The currency every figure in this block is in."),
+    exchange_rate: z
+      .string()
+      .nullish()
+      .describe('The rate Paddle used, `"1"` when the currency is the account\'s own. Recorded, never applied here.'),
+  })
+  .loose()
+  .describe("One block of totals as Paddle computed it. Strings, signed, in the currency's lowest denomination.");
+export type PaddleTotals = z.infer<typeof PaddleTotals>;
+
+/**
+ * What the change comes to, and **the only part of a preview a screen should quote**.
+ *
+ * `credit` is the unused remainder of the old plan and arrives negative; `charge` is what the new plan costs
+ * for the rest of the period; `result` is Paddle's own reconciliation of the two, and it carries the word as
+ * well as the number — `{ action: "charge", amount: "6582" }` on the recorded upgrade,
+ * `{ action: "credit", amount: "6581" }` on the recorded downgrade.
+ *
+ * The alternative — reading `immediate_transaction.details.totals.grand_total` — is right on an upgrade and
+ * silently wrong on a downgrade, where it is `"0"`. That is why `result` is required here while the two
+ * halves it reconciles are not: a summary with no result is a summary nothing can be said from.
+ *
+ * `action` stays a plain string rather than an enum for the reason `status` does: an unknown value is
+ * refused by the reader that has to act on it, with a message naming what arrived, rather than by a parse
+ * failure that discards the rest of a valid response.
+ */
+export const PaddleUpdateSummary = z
+  .object({
+    credit: PaddleMoney.nullish().describe(
+      "What the unused part of the current plan is worth back. Negative — it is money coming off.",
+    ),
+    charge: PaddleMoney.nullish().describe("What the new plan costs for the remainder of the period, before credit."),
+    result: PaddleMoney.extend({
+      action: z.string().describe("What happens on balance — `charge` or `credit`. The verb a screen uses."),
+    }).describe("The reconciliation of credit against charge: what happens, and how much. The renderable headline."),
+  })
+  .loose()
+  .describe("Paddle's own summary of what a plan change costs. The one place a downgrade's credit is stated plainly.");
+export type PaddleUpdateSummary = z.infer<typeof PaddleUpdateSummary>;
+
+/**
+ * A preview of a subscription change — what Paddle answers before anything is committed.
+ *
+ * **`immediate_transaction` is nullable, and the adopter's own downgrade policy is the case that makes it
+ * null.** Under `proration_billing_mode: "prorated_next_billing_period"` nothing settles today, so there is
+ * no transaction to describe and Paddle sends none; the whole answer is `update_summary` plus the recurring
+ * block. A shape requiring it would fail on every downgrade this package is designed to perform.
+ *
+ * **Only the preview's own keys are declared.** The response is a subscription entity *with* these three
+ * fields on it — the recordings are excerpts of exactly those fields, and this shape claims no more than was
+ * measured. `.loose()` carries the rest through, and a caller wanting the entity parses the same body a
+ * second time through {@link PaddleSubscription}, which is the shape that knows what an entity requires.
+ */
+export const PaddleSubscriptionPreview = z
+  .object({
+    update_summary: PaddleUpdateSummary.nullish().describe(
+      "What the change costs, reconciled. The headline, and the only figure a downgrade states honestly.",
+    ),
+    immediate_transaction: z
+      .object({
+        details: z
+          .object({ totals: PaddleTotals.nullish().describe("What today's charge comes to, if there is one.") })
+          .loose()
+          .nullish()
+          .describe("The computed detail of the transaction that would settle now."),
+        billing_period: z
+          .object({
+            starts_at: z.string().nullish().describe("When the prorated period being charged for begins — now."),
+            ends_at: z.string().nullish().describe("When it ends, which is where the existing paid period ends."),
+          })
+          .loose()
+          .nullish()
+          .describe("The period today's charge covers. The remainder of the period already running."),
+      })
+      .loose()
+      .nullish()
+      .describe(
+        "The transaction that would be raised immediately — **null whenever nothing settles today**, which is every change made under `prorated_next_billing_period`.",
+      ),
+    recurring_transaction_details: z
+      .object({ totals: PaddleTotals.nullish().describe("What each subsequent period will come to.") })
+      .loose()
+      .nullish()
+      .describe("What the subscription costs from the next renewal onward — the 'then' half of a quote."),
+  })
+  .loose()
+  .describe(
+    "Paddle's preview of a subscription change: what settles now, what recurs after, and what the change comes to on balance.",
+  );
+export type PaddleSubscriptionPreview = z.infer<typeof PaddleSubscriptionPreview>;
 
 /** A Paddle timestamp, or a refusal. Its API emits RFC-3339 throughout. */
 export function at(value: string, what: string): Date {
@@ -483,6 +665,50 @@ export function subscriptionResumesAt(subscription: PaddleSubscription): string 
   if (change === null || change === undefined) return null;
   if (typeof change.resume_at === "string" && change.resume_at !== "") return change.resume_at;
   return change.action === "resume" ? (change.effective_at ?? null) : null;
+}
+
+/** What Paddle is going to do to a subscription later, normalized — the three actions and their dates. */
+export interface PaddlePendingChange {
+  /** Which of Paddle's three scheduled actions is pending. Narrowed here, so a reader switches exhaustively. */
+  action: "cancel" | "pause" | "resume";
+  /** When it happens, verbatim as Paddle sent it. A string, converted at the site that needs a `Date`. */
+  effectiveAt: string | null;
+  /** When a scheduled pause is due to end, on the one action that carries it. Null everywhere else. */
+  resumeAt: string | null;
+}
+
+/**
+ * What is pending on a subscription, or nothing.
+ *
+ * **The field a screen reaches for first is empty exactly when this one fills.** Recorded against the
+ * sandbox on 2026-08-28: `cancel({ effective_from: "next_billing_period" })` leaves `status: "active"`,
+ * `canceled_at: null` and — the part that surprises — **`next_billed_at: null`**, with the date living only
+ * on `scheduled_change.effective_at`. So "Renews on {next_billed_at}" goes blank on precisely the
+ * subscription whose end date the customer most needs to see, while the row still says `active`.
+ * `update(subscription, { scheduled_change: null })` withdraws the cancellation and puts the date back.
+ *
+ * An action this build does not map refuses rather than being read as one of the three. That is
+ * {@link subscriptionStatus}'s rule and it is the same argument: a new Paddle action quietly normalized into
+ * `cancel` is a wrong date, or a wrong sentence, in front of a paying customer — and a `scheduled_change`
+ * with no action at all is a shape change, not an absence, because Paddle sends the object or sends null.
+ *
+ * **This deliberately does not change what {@link subscriptionResumesAt} answers.** That function reads
+ * `effective_at` only on a `resume`, which is why a scheduled *cancel* is invisible to the projection today.
+ * The two now parse one declared shape — {@link PaddleScheduledChange} — so whichever step decides what the
+ * projection should carry about a pending cancellation reconciles them in one place, with both readings in
+ * front of it.
+ */
+export function subscriptionPendingChange(subscription: PaddleSubscription): PaddlePendingChange | null {
+  const change = subscription.scheduled_change;
+  if (change === null || change === undefined) return null;
+
+  const action = change.action;
+  if (action !== "cancel" && action !== "pause" && action !== "resume") {
+    throw new PaymentsVerificationFailedError({
+      detail: `Paddle: scheduled change action "${action ?? ""}" is not one this build maps.`,
+    });
+  }
+  return { action, effectiveAt: change.effective_at ?? null, resumeAt: change.resume_at ?? null };
 }
 
 /**

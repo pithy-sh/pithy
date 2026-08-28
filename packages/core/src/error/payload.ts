@@ -1169,6 +1169,18 @@ const PaymentsSubjectUnresolvedPublic = z
   })
   .describe("A write path could not resolve which subject the caller acts for (403).");
 
+const PaymentsSubscriptionChangeRefusedPublic = z
+  .object({
+    code: z
+      .literal("payments/subscription_change_refused")
+      .describe(
+        "A subscription write — a plan change, a cancellation, or the withdrawal of a scheduled one — that the subscription's own state forbids, not the request. Three states reach it. A subscription carrying more than one item, or a quantity above one, because a store's update replaces the items array whole: sending back only the item the caller named would silently delete the rest, and inventing a quantity would re-price a line nobody asked about, so a shape the rail cannot reproduce exactly is refused rather than guessed at. A subscription already ended, which has nothing left to change. And a request that contradicts the state it arrived at — moving the plan on a subscription whose cancellation is already scheduled, where honoring one instruction means discarding the other. 409 rather than 400 because the request is well-formed and the same request against the same subscription in another state would be accepted, and rather than 500 because nothing has failed: refusing is the correct answer and the caller's move is to re-read the subscription, not to re-word the call. Which of the three fired is in `detail` and never in the response, because the branch names the store's identifiers, the item count and the price ids on them — the shape of somebody's billing. A request whose outcome already holds is not this code: a change to the plan already held, or a cancellation already scheduled, is a success that calls no provider, which is what makes a retried write safe.",
+      ),
+    status: z.literal(409).describe("Conflict — the subscription's present state forbids the change asked of it."),
+    ...publicFields,
+  })
+  .describe("A subscription's state forbids the change asked of it (409).");
+
 // --- @pithy-sh/core: the `control-plane` verification strategy ---
 //
 // NOT Cloudflare's control plane. Everywhere else in this repo "control plane" means the Cloudflare
@@ -1529,6 +1541,7 @@ export const KitPublicErrorPayload = z
     PaymentsDiscountInvalidPublic,
     PaymentsEntitlementNotInCatalogPublic,
     PaymentsSubjectUnresolvedPublic,
+    PaymentsSubscriptionChangeRefusedPublic,
     ControlPlaneNotConnectedPublic,
     ControlPlaneInvalidCredentialPublic,
     ControlPlaneInsufficientScopePublic,
@@ -1817,6 +1830,9 @@ const PaymentsEntitlementNotInCatalog = PaymentsEntitlementNotInCatalogPublic.ex
 const PaymentsSubjectUnresolved = PaymentsSubjectUnresolvedPublic.extend(internalFields).describe(
   PaymentsSubjectUnresolvedPublic.description ?? "",
 );
+const PaymentsSubscriptionChangeRefused = PaymentsSubscriptionChangeRefusedPublic.extend(internalFields).describe(
+  PaymentsSubscriptionChangeRefusedPublic.description ?? "",
+);
 const ControlPlaneNotConnected = ControlPlaneNotConnectedPublic.extend(internalFields).describe(
   ControlPlaneNotConnectedPublic.description ?? "",
 );
@@ -1986,6 +2002,7 @@ export const KitErrorPayload = z
     PaymentsDiscountInvalid,
     PaymentsEntitlementNotInCatalog,
     PaymentsSubjectUnresolved,
+    PaymentsSubscriptionChangeRefused,
     ControlPlaneNotConnected,
     ControlPlaneInvalidCredential,
     ControlPlaneInsufficientScope,

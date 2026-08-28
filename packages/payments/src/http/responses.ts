@@ -4,9 +4,10 @@
 import { z } from "zod";
 import { PaymentsProductType } from "../config/config";
 import { PurchaseEnvironment } from "../data/purchase";
-import { PaymentsRail } from "../data/rail";
+import { PaymentsHostedRail, PaymentsRail } from "../data/rail";
 import { PurchaseStatus } from "../data/status";
 import { PaymentsSubject } from "../data/subject";
+import { RefundRequestStatus, ScheduledSubscriptionChangeAction } from "../data/subscription";
 
 /**
  * What the payments routes return, as Zod objects a client can validate against.
@@ -251,6 +252,443 @@ export const PaymentsPricingEnvelope = z
 export type PaymentsPricingEnvelope = z.output<typeof PaymentsPricingEnvelope>;
 
 /**
+ * ## The subscription lifecycle responses
+ *
+ * What `GET {base}/subscription` reads and what the three writes beside it answer with. **Bearer
+ * shapes, not management ones**: this is a customer reading and changing their own bill.
+ *
+ * **These are wire mirrors of `data/subscription.ts`, and the duplication is forced.** Those shapes
+ * carry `JsonDate` codecs so the rail hands the rest of the package real `Date`s; this file declares no
+ * codec and no transform anywhere, because these describe the JSON a browser receives — parsing one has
+ * to hand back exactly what went in. Re-exporting the data shapes here would give a client `Date`
+ * objects it cannot have and would make `responses.test.ts`'s equality check unwritable. So `.encode()`
+ * is the bridge, and `responses.test.ts` builds every fixture below by encoding a real
+ * `SubscriptionStanding` and a real `SubscriptionChangeQuote` and comparing key sets — which is what
+ * keeps two objects that must agree from drifting into a date a screen cannot read.
+ *
+ * **No store identifier crosses.** No `sub_…`, no `ctm_…`, no `txn_…`, and no price id. A customer's
+ * screen addresses their subscription by *being that customer*; the route resolves the row. An
+ * identifier published here is a field a request grows next, and the request that grows it is the one
+ * that names somebody else's subscription.
+ *
+ * **Required rather than `.optional()`, unlike a field added to a shape that already shipped.** The
+ * module note above is about widening a response an older Worker already answers; these arrive with the
+ * routes that answer them, so a Worker too old to have the field is a Worker that 404s the route and
+ * never returns a body for a client to validate.
+ */
+
+/**
+ * An amount a provider quoted, on the wire: an integer in the currency's minor unit, and the currency.
+ *
+ * **Signed, because the provider's own figures are.** A credit comes back negative from Paddle and a
+ * downgrade's totals are negative throughout; a `.nonnegative()` here would refuse the recorded response
+ * of every plan change these routes exist to make. **And never a float** — 6582 is $65.82, so a `65.82`
+ * arriving here is somebody reading a rendered figure back in, in a currency whose minor unit may not be
+ * a hundredth.
+ *
+ * `currency` is a plain string, as it is on {@link PaymentsPricingResponse}, and deliberately not the
+ * lowercase-only rule `data/subscription.ts` enforces. That rule is where a rail that stopped lowering
+ * its provider's casing fails — at the boundary that reads the store. Re-refusing it here would take a
+ * customer's whole subscription pane down over a casing difference, which is the failure mode #450
+ * names, arrived at from the other direction.
+ */
+export const PaymentsQuotedMoney = z
+  .object({
+    amountMinor: z
+      .number()
+      .int()
+      .describe(
+        "How much, as an integer in the currency's minor unit. Signed: a credit is negative on the wire. 6582 is $65.82.",
+      ),
+    currency: z.string().describe("The ISO currency the amount is in, as this Worker stores it — lowercase."),
+  })
+  .describe("An amount a store quoted, in minor units and one currency.");
+export type PaymentsQuotedMoney = z.output<typeof PaymentsQuotedMoney>;
+
+/**
+ * The three settlement members, declared once because two unions are built from them — the same sharing
+ * `data/subscription.ts` does, for the same reason. Two hand-written lists differing by one member are
+ * two lists that will differ by two the next time an outcome is added.
+ */
+const SettlesByCharge = z
+  .object({
+    outcome: z.literal("charge").describe("The customer is billed."),
+    amount: PaymentsQuotedMoney.describe("How much is taken, as a positive magnitude. The direction is `outcome`."),
+  })
+  .describe("Money leaves the customer — the upgrade case, prorated immediately.");
+
+const SettlesByCredit = z
+  .object({
+    outcome: z.literal("credit").describe("The customer is owed, and it lands as credit rather than as cash."),
+    amount: PaymentsQuotedMoney.describe(
+      "How much the customer is owed, as a positive magnitude. The same number rendered without `outcome` is a charge.",
+    ),
+  })
+  .describe("The customer is owed. It reaches their balance, not their card.");
+
+const SettlesNothing = z
+  .object({ outcome: z.literal("nothing").describe("Nothing is billed or credited. There is no amount to state.") })
+  .describe("Nothing settles: no transaction at all, with the difference carried to the next invoice.");
+
+/**
+ * What settles at one moment — the thing a confirmation screen states.
+ *
+ * **A discriminated union rather than a signed number**, because the direction must be unreadable
+ * without being read: a 6581 credit and a 6581 charge are the same characters and the opposite meaning,
+ * and nothing in a type system would object to the swap. Here `amount` cannot be reached without
+ * matching `outcome` first.
+ *
+ * **`nothing` is a member, not a zero**, and it carries no amount — one smuggled in does not survive the
+ * parse. "Nothing to pay today" and "a charge of $0.00" are different sentences and only one of them
+ * describes what is happening.
+ */
+export const PaymentsSubscriptionSettlement = z
+  .discriminatedUnion("outcome", [SettlesByCharge, SettlesByCredit, SettlesNothing])
+  .describe("What settles at one moment — a charge, a credit, or nothing, with the direction as the discriminant.");
+export type PaymentsSubscriptionSettlement = z.output<typeof PaymentsSubscriptionSettlement>;
+
+/**
+ * The same settlement minus `nothing` — what lands on an invoice that is not today's.
+ *
+ * The block holding it is nullable, and null already says nothing lands later. Two spellings of one fact
+ * is how a screen checks the block for presence, finds it, and renders "$— credit on 15 Sep": a row
+ * about no money, dated.
+ */
+export const PaymentsDeferredSubscriptionSettlement = z
+  .discriminatedUnion("outcome", [SettlesByCharge, SettlesByCredit])
+  .describe("What lands on a later invoice: a charge or a credit. Never nothing — a null block says that.");
+export type PaymentsDeferredSubscriptionSettlement = z.output<typeof PaymentsDeferredSubscriptionSettlement>;
+
+/**
+ * What a change costs, as the customer sees it before confirming — the store's own preview, normalized.
+ *
+ * **Three facts, because a deferred downgrade has three**: what happens today, what happens on the next
+ * invoice, and what the subscription pays from then on. The recorded downgrade settles *nothing* today
+ * and still owes the customer 6558 — so a shape with two parts is one that either says money moved on a
+ * day it did not, or drops 65.58 dollars out of a quote a customer is being asked to agree to.
+ *
+ * Nothing here is derived from anything else here. The store is the authority on what is owed, and a
+ * second answer is a second number for a customer to hold against their statement.
+ */
+export const PaymentsSubscriptionQuote = z
+  .object({
+    settlesToday: PaymentsSubscriptionSettlement.describe(
+      "What is taken or given **today, and only today** — charged, credited, or nothing at all.",
+    ),
+    nextInvoice: z
+      .object({
+        settlement: PaymentsDeferredSubscriptionSettlement.describe(
+          "What lands on that invoice, direction first — the recorded deferred downgrade is a credit of 6558.",
+        ),
+        at: z.iso.datetime().describe("The day that invoice falls, ISO-8601."),
+      })
+      .nullable()
+      .describe(
+        "The part of the change that settles on the **next** invoice rather than now, and the day it does. Null means nothing from this change lands later, which is every immediate proration. The amount is what *this change* is worth, never that invoice's own total with the new rate already netted off it.",
+      ),
+    recurring: z
+      .object({
+        amount: PaymentsQuotedMoney.describe("What each period costs once the change has taken effect, tax included."),
+        startsAt: z.iso.datetime().describe("When that amount first bills, ISO-8601 — the end of the period prorated."),
+      })
+      .nullable()
+      .describe(
+        "What the subscription pays each period afterwards, and from when. Null means nothing renews after this change — the subscription is ending, which is a sentence a screen writes rather than a figure it invents.",
+      ),
+  })
+  .describe(
+    "A store's preview of a subscription change: what settles today, what settles on the next invoice, and what it pays afterwards. Rendered, confirmed, discarded — never stored.",
+  );
+export type PaymentsSubscriptionQuote = z.output<typeof PaymentsSubscriptionQuote>;
+
+/**
+ * A change the store will apply later — the object that makes an `active` subscription's future
+ * different from its present.
+ *
+ * **This is what distinguishes "renews on the 15th" from "ends on the 15th".** With a cancellation
+ * scheduled, Paddle reports `status: "active"`, no cancellation date, and a blank next billing date: two
+ * of those say the subscription is fine and the third says nothing. Only this object says what is
+ * coming, which is why it crosses to the customer rather than being read into the status server-side.
+ *
+ * The action enum is imported from `data/subscription.ts` rather than respelled — it is a closed set
+ * with no codec in it, so it crosses this seam intact, and a fourth schedulable action cannot then exist
+ * on one side only.
+ */
+export const PaymentsSubscriptionScheduledChange = z
+  .object({
+    action: ScheduledSubscriptionChangeAction.describe("What will happen: the subscription ends, pauses, or resumes."),
+    effectiveAt: z.iso
+      .datetime()
+      .describe(
+        "When it happens, ISO-8601. On a scheduled cancellation this is the date the customer is owed — it is where 'until' comes from once the next billing date has gone blank.",
+      ),
+    resumesAt: z.iso
+      .datetime()
+      .nullable()
+      .describe(
+        "When a paused subscription comes back, ISO-8601, when the store named a day. Null on a pause means indefinitely; null on a cancel or a resume means the field does not apply.",
+      ),
+  })
+  .describe("A change the store will apply at a stated future moment, on a subscription that is fine until then.");
+export type PaymentsSubscriptionScheduledChange = z.output<typeof PaymentsSubscriptionScheduledChange>;
+
+/**
+ * What happens to this subscription next, and when — the reading of the standing, published rather than
+ * left for a screen to derive.
+ *
+ * **The precedence is the whole point, and it is not obvious**: a scheduled change wins over the next
+ * billing date, because Paddle *blanks* that date the moment a cancellation is scheduled. A screen
+ * reading the status says the subscription renews; a screen reading the billing date says nothing at
+ * all; the date the customer is owed exists only on the scheduled change. Every client would have to
+ * rediscover that, and the ones that got it wrong would tell somebody who canceled that they will be
+ * billed again.
+ *
+ * So this is a derived field on purpose, in the register {@link PaymentsAdminEntitlementView}'s
+ * `granted` already sets: the rule lives once, on the server, and the answer crosses. It is the answer
+ * `nextSubscriptionEvent` gives in `data/subscription.ts`, encoded — a client cannot call that function,
+ * because it takes `Date`s and this is JSON.
+ *
+ * **A union of two members, so `at` is null on exactly one kind.** A caller that has narrowed to any
+ * other has a date without checking for one, and `unknown` cannot carry a day a screen would print for
+ * an event nobody said was happening.
+ */
+export const PaymentsSubscriptionNextEvent = z
+  .discriminatedUnion("kind", [
+    z
+      .object({
+        kind: z
+          .enum(["renews", "ends", "pauses", "resumes"])
+          .describe("What happens next — a renewal falling due, or the scheduled change landing."),
+        at: z.iso.datetime().describe("When it happens, ISO-8601."),
+      })
+      .describe("Something is going to happen, and the store said when."),
+    z
+      .object({
+        kind: z
+          .literal("unknown")
+          .describe(
+            "Nothing is scheduled and nothing is due. An expired subscription and one whose store went quiet both land here, and neither of them renews.",
+          ),
+        at: z.null().describe("There is no date, because there is no event."),
+      })
+      .describe("Nothing is known to be coming. A screen says so rather than printing a date it was not given."),
+  ])
+  .describe("The next thing that happens to this subscription, and when — the scheduled change first.");
+export type PaymentsSubscriptionNextEvent = z.output<typeof PaymentsSubscriptionNextEvent>;
+
+/**
+ * One subscription as its own holder reads it: which plan, where it stands, and what happens next.
+ *
+ * The standing's own five fields cross verbatim, and two are added.
+ *
+ * **`productId`, because a screen has to name the plan.** "Team, renews 15 Sep" is unwritable without
+ * it, and it is the one fact here a client cannot already know: the route resolved the subscription from
+ * this caller's own purchase rows, so which plan they are on is the server's answer. The display name is
+ * not copied beside it — that is the catalog's, read once by whatever screen renders a paywall, and a
+ * second copy traveling on every standing is a name that goes stale on the customer's screen the day an
+ * adopter renames a product.
+ *
+ * **`nextEvent`, because the precedence rule must not be client-side.** See
+ * {@link PaymentsSubscriptionNextEvent}.
+ *
+ * **Nothing about money.** What the subscription costs is `GET {base}/pricing`'s answer, which already
+ * states the discount in force and when it lapses; a second price here would be two figures to keep in
+ * step. `currency` crosses so a screen can format that price without a second lookup, which is exactly
+ * why it is on the standing in the first place.
+ */
+export const PaymentsSubscriptionView = z
+  .object({
+    productId: z
+      .string()
+      .describe(
+        "The catalog product this subscription is for — the key in `products`, resolved from the caller's own purchase row. What a screen looks a display name up by.",
+      ),
+    status: PurchaseStatus.describe(
+      "The normalized status, never a store's own. **It does not say whether the subscription is ending** — a scheduled cancellation leaves it `active`. Read `nextEvent`.",
+    ),
+    currency: z
+      .string()
+      .nullable()
+      .describe(
+        "The currency this subscription bills in, or null when the store did not state one. Here to format the price `GET {base}/pricing` carries, not to carry a price.",
+      ),
+    currentPeriodEndsAt: z.iso
+      .datetime()
+      .nullable()
+      .describe(
+        "When the period already paid for runs out, ISO-8601 — the day access lapses if nothing renews it. Null while trialing or paused, which are the states with no billing period.",
+      ),
+    nextBilledAt: z.iso
+      .datetime()
+      .nullable()
+      .describe(
+        "When the next charge falls due, ISO-8601, or null when none is going to. **Null is not canceled and not broken:** the store blanks it the moment a cancellation is scheduled and leaves the status `active`. Render `nextEvent` instead of putting this beside the word 'renews'.",
+      ),
+    scheduledChange: PaymentsSubscriptionScheduledChange.nullable().describe(
+      "The change waiting to land, or null when nothing is. The only field that separates a subscription ending this period from one renewing.",
+    ),
+    nextEvent: PaymentsSubscriptionNextEvent.describe(
+      "What happens next and when, already resolved — the scheduled change ahead of the billing date. The sentence a screen prints.",
+    ),
+  })
+  .describe("One subscription as the person paying for it reads it: which plan, where it stands, and what is next.");
+export type PaymentsSubscriptionView = z.output<typeof PaymentsSubscriptionView>;
+
+/**
+ * `GET {base}/subscription` — the caller's own subscription, or that they have none.
+ *
+ * **The read ships before the writes**, and this is it. A capability that can cancel a subscription and
+ * cannot report the cancellation has shipped the half that creates the support ticket; #247 is the
+ * larger version of the same mistake, where writes went out with no read beside them and a dashboard's
+ * panes dropped out of the rail entirely.
+ *
+ * `null` is a real answer and a common one: somebody who has never bought anything. It is not an error
+ * and not a 404 — a 404 would make this route an existence oracle and would read, to a screen, exactly
+ * like a Worker that could not be reached.
+ */
+export const PaymentsSubscriptionResponse = z
+  .object({
+    subscription: PaymentsSubscriptionView.nullable().describe(
+      "The caller's own subscription, or null when they hold none.",
+    ),
+  })
+  .describe("Where the caller's own subscription stands, or that there is not one.");
+export type PaymentsSubscriptionResponse = z.output<typeof PaymentsSubscriptionResponse>;
+
+/**
+ * What the three writes answer with — `change`, `cancel` and `keep`.
+ *
+ * **The store's own answer to where the subscription now stands, not a prediction of it.** The screen
+ * that just wrote renders what it wrote, from the state the store reported after applying it. A
+ * prediction is how a customer sees a plan they are not on — and it is why nothing in this package
+ * writes a purchase row on these routes: the webhook owns that row, and a second producer of it disagrees
+ * with the first the moment a webhook is late.
+ *
+ * **Never null, which is the one way this differs from {@link PaymentsSubscriptionResponse}.** Each of
+ * the three resolved a subscription before it ran, so a null here is a case every screen would branch on
+ * and none could reach.
+ *
+ * A no-op answers exactly this shape too, and answers 200: a change to the plan already held, or a
+ * cancellation already scheduled for the timing asked for. The subscription is how the caller wanted it,
+ * so there is nothing to refuse — and these verbs sit behind a network, where a retried intent must not
+ * become a second proration.
+ */
+export const PaymentsSubscriptionStandingResponse = z
+  .object({
+    subscription: PaymentsSubscriptionView.describe("Where the subscription stands now, as the store reports it."),
+  })
+  .describe("Where the caller's subscription stands after a change, a cancellation, or a withdrawal of one.");
+export type PaymentsSubscriptionStandingResponse = z.output<typeof PaymentsSubscriptionStandingResponse>;
+
+/**
+ * `POST {base}/subscription/preview` — what the change would cost, before anything is committed.
+ *
+ * The quote alone: it echoes nothing back about what was asked, because the request named the product
+ * and the client therefore already holds it. Contrast {@link PaymentsAdminSubjectEntitlementsResponse},
+ * which echoes the subject precisely because half of what it renders came from the server.
+ */
+export const PaymentsSubscriptionQuoteResponse = z
+  .object({ quote: PaymentsSubscriptionQuote.describe("What the change would cost, as the store previews it.") })
+  .describe("A preview of one subscription change. Nothing has been committed and nothing has been stored.");
+export type PaymentsSubscriptionQuoteResponse = z.output<typeof PaymentsSubscriptionQuoteResponse>;
+
+/**
+ * ## The refund report
+ *
+ * What `POST {base}/subscription/refund` answers with. **Nothing in it says the money moved**, because at
+ * the moment it is produced nobody has decided that: a refund is a request, most live ones sit at the store
+ * awaiting a person, and the settlement arrives later as a webhook.
+ *
+ * **No amount, anywhere.** A figure here would be read as what the customer is getting back, which is the
+ * one thing this response cannot know. What a screen renders is *how many* payments were asked about and
+ * where each stands — and the customer's own payment history, which they already have, is where the sums
+ * are.
+ *
+ * **No identifier either — not the store's, and not ours.** No `txn_…` and no adjustment id: the module note
+ * above bans store identifiers from every bearer response, and an adjustment id published to a browser is a
+ * field a request grows next. The purchase id is withheld on the same principle rather than on a rule, since
+ * a screen that has just asked to refund a whole subscription needs a count and a state, not a join key. The
+ * ids are in the audit trail, where an operator is the reader.
+ */
+
+/** Where one refund request stands. The values come from `data/subscription.ts`, so the wire cannot hold a state the rail cannot produce. */
+export const PaymentsRefundRequestStatus = RefundRequestStatus.describe(
+  "Where a refund request stands at the store. **None of these means the money has arrived** — `approved` is a decision, not a settlement.",
+);
+export type PaymentsRefundRequestStatus = z.output<typeof PaymentsRefundRequestStatus>;
+
+/** A refund this request raised: it exists at the store, and it is waiting. */
+const RefundRaised = z
+  .object({
+    outcome: z.literal("requested").describe("A refund was raised for this payment. It is a request, not a payout."),
+    status: PaymentsRefundRequestStatus.describe("Where it stands at the store."),
+  })
+  .describe("A refund request this call raised.");
+
+/** A refund that was already there, so nothing new was asked for. The per-payment no-op. */
+const RefundAlreadyStanding = z
+  .object({
+    outcome: z
+      .literal("already_requested")
+      .describe("A refund was already standing against this payment, so nothing was sent."),
+    status: PaymentsRefundRequestStatus.describe("Where that standing refund is."),
+  })
+  .describe(
+    "A payment that already had a refund against it. Success, not a refusal: it is the state that was asked for.",
+  );
+
+/**
+ * A payment the store would not refund, in a request where others were.
+ *
+ * **It carries no reason**, and that is the security boundary rather than an omission. The store's own
+ * sentence is throw-site context — it names transactions, statuses and account facts — so it rides in the
+ * audit trail and in a refusal's `detail`, both of which the codec keeps off the wire. A screen is told
+ * which payments did not go through and asks the customer to get in touch, which is the only action
+ * available to them either way.
+ */
+const RefundNotRaised = z
+  .object({
+    outcome: z
+      .literal("failed")
+      .describe("The store would not refund this payment. Others in the same request may have gone through."),
+  })
+  .describe("One payment that was not refunded, reported so a partial cannot pass as a success.");
+
+/** What became of one payment. Three outcomes, and the discriminant is what stops a report reading as a success. */
+export const PaymentsRefundOutcome = z
+  .discriminatedUnion("outcome", [RefundRaised, RefundAlreadyStanding, RefundNotRaised])
+  .describe("What became of one payment: a refund was raised, one was already standing, or the store refused it.");
+export type PaymentsRefundOutcome = z.output<typeof PaymentsRefundOutcome>;
+
+/**
+ * What came of asking for a subscription's payments back.
+ *
+ * **One entry per payment, always** — the report is total over what was asked about, which is what makes a
+ * partial impossible to miss. A caller counting entries and a caller counting their own payments get the
+ * same number, whatever happened in between.
+ *
+ * A refund attaches to a *transaction*, and a subscription is a family of them. A customer who joined on one
+ * plan, upgraded mid-period and canceled has paid twice; a policy that owes them their money owes both, so
+ * this is a list rather than a single outcome even in the common case.
+ */
+export const PaymentsRefundRequest = z
+  .object({
+    outcomes: z
+      .array(PaymentsRefundOutcome)
+      .describe(
+        "One entry per payment asked about, in the order the server resolved them — never a subset. A shorter list is what a silent partial looks like.",
+      ),
+  })
+  .describe("What came of a refund request: one outcome per payment, none of which says the money has arrived.");
+export type PaymentsRefundRequest = z.output<typeof PaymentsRefundRequest>;
+
+/** The envelope `POST {base}/subscription/refund` answers with. */
+export const PaymentsRefundResponse = z
+  .object({ refund: PaymentsRefundRequest.describe("What became of each payment on the subscription.") })
+  .describe("What a refund request produced. Never a claim that anybody has been paid.");
+export type PaymentsRefundResponse = z.output<typeof PaymentsRefundResponse>;
+
+/**
  * The discount codes one store holds.
  *
  * A management shape, never a client one: what an adopter has issued is a commercial fact, and the client
@@ -293,7 +731,7 @@ export const PaymentsDiscountResponse = z
   .object({
     code: z.string().min(1).describe("The code a customer enters, whether supplied or store-generated."),
     providerDiscountId: z.string().min(1).describe("The store's own id, for finding it in the dashboard."),
-    rail: z.enum(["stripe", "lemonSqueezy"]).describe("Which store now holds it."),
+    rail: PaymentsHostedRail.describe("Which store now holds it."),
   })
   .describe("One discount code, as the store minted it.");
 export type PaymentsDiscountResponse = z.output<typeof PaymentsDiscountResponse>;

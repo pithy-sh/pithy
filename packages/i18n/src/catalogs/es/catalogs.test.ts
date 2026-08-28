@@ -83,7 +83,15 @@ describe("the catalogs are the size they are", () => {
     // The email copy is counted by `@pithy-sh/email`'s own suite now, not here: it moved beside that
     // capability's English in #442, so the send Worker is built with it rather than sent it.
     expect(Object.keys(esScreens).length).toBeGreaterThanOrEqual(71);
-    expect(Object.keys(esErrors)).toHaveLength(120);
+    // The fourth hand-written copy of the taxonomy size — the other three are
+    // packages/core/src/error/payload.test.ts, packages/cli/src/ci/catalogCoverage.test.ts and
+    // packages/i18n/src/catalogs/es/errors.test.ts, each named KIT_ERROR_CODE_COUNT. Written by hand
+    // rather than derived, deliberately: a count taken from the union would agree with an empty catalog
+    // if the union failed to import, and the population is what makes the agreement mean anything.
+    expect(
+      Object.keys(esErrors),
+      "the taxonomy size moved: update all four hand-written counts — core/src/error/payload.test.ts, cli/src/ci/catalogCoverage.test.ts, i18n/src/catalogs/es/errors.test.ts and this one — plus the Spanish sentence in i18n/src/catalogs/es/errors.ts, then run `bun run docs-catalog`",
+    ).toHaveLength(121);
     expect(ENTRIES.length).toBeGreaterThanOrEqual(191);
   });
 

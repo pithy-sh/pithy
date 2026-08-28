@@ -39,12 +39,36 @@ export const PAYMENTS_RAILS: readonly PaymentsRail[] = PaymentsRail.options;
  * compares this list against the rails that actually satisfy `isCheckoutRail`, goes red. That is the
  * moment a second name is earned, and it arrives with a failing test rather than a judgment call.
  *
- * **Written out rather than derived**, because the browser reads it. A screen cannot construct a rail
- * provider to discover what it implements, and `PaymentsRail.options` cannot answer it — Apple and
- * Google are rails and are not hosted. So it is a literal with a gate over it, in both programs: this
- * one, and its DOM-safe mirror in `src/client/api.ts`.
+ * **Enumerated rather than computed**, because nothing can compute it. A screen cannot construct a rail
+ * provider to discover what it implements, and `PaymentsRail.options` cannot answer it either — Apple and
+ * Google are rails and are not hosted. So it is a named subset with a gate over it, in both programs: this
+ * one, and its DOM-safe mirror in `src/client/api.ts`, which stays a hand-written union because pulling
+ * Zod into an adopter's browser program is what that file exists to avoid.
  *
  * Ordered, and the order is only used to make a refusal deterministic when a product sells on two rails
  * and the caller named neither. See `checkoutRailFor`.
+ *
+ * **Extracted from {@link PaymentsRail} rather than spelled again.** A member misspelled here is a
+ * compile error rather than a rail that silently never matches, and the extraction is what lets the four
+ * schemas that narrow to this subset share one definition instead of four literals.
+ *
+ * **One subset, not two.** These are also exactly the rails that mint discount codes today, and both
+ * discount schemas narrow to this. A second constant would be a mirror with nothing to mirror. The day a
+ * rail mints and does not sell, or sells and does not mint, `providers.test.ts` disagrees with itself and
+ * the subset splits — with a failing test rather than a judgment call, which is the same bargain
+ * `CheckoutRail` makes for selling and portal-minting.
  */
-export const PAYMENTS_HOSTED_RAILS: readonly PaymentsRail[] = ["stripe", "lemonSqueezy", "paddle"];
+export const PaymentsHostedRail = PaymentsRail.extract(["stripe", "lemonSqueezy", "paddle"]).describe(
+  "Which hosted rail — the three that sell in a browser, mint a portal, and mint a discount code.",
+);
+export type PaymentsHostedRail = z.infer<typeof PaymentsHostedRail>;
+
+/**
+ * The same three as a plain array, for the callers that iterate rather than parse.
+ *
+ * Derived from the schema rather than written beside it. Four request and response schemas wrote this
+ * subset out by hand and Paddle reached none of them (#465), so a rail that sold, minted portals and minted
+ * discount codes was a 400 at every point a caller had to name it. One list, one edit — and
+ * `providers.test.ts` holds it to the rails that satisfy the interfaces at runtime, in both directions.
+ */
+export const PAYMENTS_HOSTED_RAILS: readonly PaymentsRail[] = PaymentsHostedRail.options;

@@ -14,8 +14,15 @@ import { STRIPE_METADATA_ACCOUNT_REFERENCE, STRIPE_METADATA_PRICE } from "./obje
  *
  * Stripe presents the payment page, handles the card, and owns SCA, tax, and every regulatory surface that comes
  * with taking money. Pithy sends a browser there and hears the outcome on a webhook. There is no Payment Element
- * here, no card fields, no plan-change logic and no proration — that is issue #79's locked decision 2, and it is
- * also the difference between a backend kit and a payments processor.
+ * here and no card fields, and nothing computes proration or tax — that half of issue #79's locked decision 2
+ * still stands, and it is the difference between a backend kit and a payments processor.
+ *
+ * **The other half was amended on 2026-08-28: the kit may now *invoke* a plan change**, passing the store's own
+ * figures through unmodified — see {@link SubscriptionRail} in `rails/contract.ts` for the line between asking a
+ * store what a change costs and answering that question ourselves. **Stripe does not implement it.** Paddle is
+ * the only rail that does, so a Stripe subscriber changes plan in the Billing Portal exactly as before, and
+ * `providers.test.ts` is where that stops being a claim. The amendment permits the seam; it does not oblige
+ * every rail to have one.
  *
  * ## What this call puts on the session, and why each of them
  *

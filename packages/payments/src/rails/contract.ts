@@ -5,6 +5,12 @@ import type { CreatedDiscount, DiscountTerms, SubscriptionPricing } from "../dat
 import type { PaymentsPurchase } from "../data/purchase";
 import type { PaymentsRail } from "../data/rail";
 import type { PaymentsSubject } from "../data/subject";
+import type {
+  RefundRequest,
+  SubscriptionCancelTiming,
+  SubscriptionChangeQuote,
+  SubscriptionStanding,
+} from "../data/subscription";
 import type { ProviderEventInput } from "../projection/event";
 
 /**
@@ -35,6 +41,20 @@ import type { ProviderEventInput } from "../projection/event";
  * no meaning for them, and every such method is a lie a future maintainer has to read past — worse, one
  * somebody eventually calls. So {@link CheckoutRail} is its own interface, and a rail that initiates
  * purchases implements both. Nothing needs to widen when a fourth rail arrives on either side.
+ *
+ * ## Why managing a subscription is a third interface, and what changed to allow it
+ *
+ * {@link SubscriptionRail} is the same split for the same reason: a StoreKit or Play subscription is changed
+ * inside the store's own UI, on the customer's device, and a rail that had to declare `changePlan` to satisfy
+ * the shared contract would declare a method that cannot be written.
+ *
+ * It is also **the amendment of 2026-08-28 to #79's locked decision 2**, and the distinction is narrow enough
+ * to be worth stating precisely, because the docs it corrects said the wider thing. The kit may *invoke* a
+ * plan change and pass the provider's own figures through unmodified. It still never *computes* proration,
+ * tax, or SCA: no amount in {@link SubscriptionChangeQuote} is derived from another amount, nothing multiplies
+ * a price by a fraction of a period, and nothing checks the provider's arithmetic. The line is between asking
+ * a store what a change costs and answering that question ourselves — the second is a number a customer holds
+ * against their statement, and the statement is the one they will believe.
  *
  * ## Why a rail cannot name an owner
  *
@@ -402,7 +422,15 @@ export interface PortalSessionInput {
 }
 
 /**
- * How a browser is handed to a store's payment page. Pithy never owns payment UI, SCA, tax, or proration.
+ * How a browser is handed to a store's payment page. Pithy never owns payment UI, SCA, or tax, and never
+ * *computes* proration.
+ *
+ * **"Never computes" is narrower than what this line used to say, and the narrowing is deliberate** (#79's
+ * locked decision 2, amended 2026-08-28). A checkout still names no amount and no quantity: the price is the
+ * price, and a checkout that could carry a figure is a checkout a client could put a figure on. What the kit
+ * may now do is *invoke* a plan change on an existing subscription and pass the provider's own preview through
+ * unmodified — see {@link SubscriptionRail}, which is a separate interface reached by a separate route, and
+ * which produces no figure of its own either.
  *
  * **A union, because one store has no URL to give.** Stripe and Lemon Squeezy both mint a hosted page and
  * answer with its address, and for eleven months that was the whole shape — `{ url }`. Paddle's overlay and
@@ -577,7 +605,317 @@ export function isPricingRail(provider: PaymentsRailProvider): provider is Payme
   return typeof (provider as Partial<PricingRail>).readPricing === "function";
 }
 
-/** Whether a rail can mint discounts. Structural, so a rail gains the ability without an edit here. */
+/**
+ * Whether a rail can mint **and** list discounts. Structural, so a rail gains the ability without an edit here.
+ *
+ * **It ANDs both methods, and until #465 it did not.** {@link DiscountRail} declares two, and a guard probing
+ * `createDiscount` alone narrowed a rail that could mint and not list into a type promising both — so
+ * `GET {base}/admin/discounts` passed its own guard and then called a method that was not there. That is a
+ * `TypeError` inside a handler, which reaches a management pane as a 500, where a rail that plainly cannot
+ * mint gets `rail_not_configured` and a pane that can say so. No rail ever hit it: all three hosted rails
+ * declare both. It was a defect waiting for the fourth, and it is the one every other guard here is written
+ * against by name.
+ */
 export function isDiscountRail(provider: PaymentsRailProvider): provider is PaymentsRailProvider & DiscountRail {
-  return typeof (provider as Partial<DiscountRail>).createDiscount === "function";
+  const rail = provider as Partial<DiscountRail>;
+  return typeof rail.createDiscount === "function" && typeof rail.listDiscounts === "function";
+}
+
+/**
+ * Which subscription is being changed, and what it becomes. One row, one price, and nothing else.
+ *
+ * **There is no field naming a subscription, and that absence is the security boundary.** The subscription
+ * arrives as a {@link PaymentsPurchase} — a decoded row only this deployment's own database produces, already
+ * carrying the subject that owns it — exactly as {@link PaymentsRailProvider.refresh} and
+ * {@link PricingRail.readPricing} take one. A `subscriptionId` here would be a value a caller supplies, and a
+ * value a caller supplies is one they can point at somebody else's subscription. This capability holds no
+ * members table and no ownership graph of its own, so there is nothing it could check that claim against: the
+ * refusal has to be structural. It is the same rule {@link PortalSessionInput.subscriptionIds} states for
+ * reads, applied where the verb writes.
+ *
+ * The route's own job follows from that: resolve the row from the authenticated caller's purchases, never
+ * from a request body.
+ */
+export interface SubscriptionChangeInput {
+  /**
+   * The stored purchase whose subscription is being changed — the projection's own row, already owned.
+   *
+   * The whole row rather than the ids off it, for {@link PaymentsRailProvider.refresh}'s reason: what
+   * identifies a subscription at its store differs per rail and some of it survives only in the payload. A
+   * rail added later never widens this signature.
+   */
+  purchase: PaymentsPurchase;
+  /**
+   * The rail's own price identifier for the plan being moved to — **exactly one, never a list**.
+   *
+   * Paddle's subscription update *replaces* the items array: an item omitted from the request is removed from
+   * the subscription. So a `readonly string[]` here would be a delete verb wearing an update verb's name, and
+   * the shape of the mistake is a caller passing the one price they are moving to and silently dropping every
+   * add-on beside it. **Building the complete item list the provider is sent is the rail's obligation**, from
+   * the subscription it re-read, and it is the rail's because that is where the provider's replace semantics
+   * are known.
+   *
+   * Named as {@link CheckoutSessionInput.providerProductId} is, and meaning what it means there: the store's
+   * own SKU or price id, resolved from the catalog before this is called. One vocabulary, so a reader does not
+   * have to work out whether two spellings are two things.
+   */
+  providerProductId: string;
+}
+
+/** Which subscription is being canceled, and when the customer stops. */
+export interface SubscriptionCancelInput {
+  /** The stored purchase whose subscription is being canceled. See {@link SubscriptionChangeInput.purchase}. */
+  purchase: PaymentsPurchase;
+  /**
+   * When it takes effect, in the customer's terms — `at_period_end` under the settled policy.
+   *
+   * The rail translates into the store's spelling; Paddle's own `next_billing_period` does not parse here, so a
+   * rail that stopped translating fails loudly rather than sending a string Paddle happens to accept. See
+   * `data/subscription.ts` for why the customer's word is the one modeled.
+   */
+  timing: SubscriptionCancelTiming;
+}
+
+/**
+ * A rail whose subscriptions can be *changed* from the server: read, quoted, moved, ended, and un-ended.
+ *
+ * Separate from {@link CheckoutRail} because selling and managing are separate abilities — and separate from
+ * the shared contract for the reason the module doc gives: an Apple or Google subscription is changed inside
+ * the store's own UI, on the device, and no server call exists to do it.
+ *
+ * ## Five methods, and the guard demands all five
+ *
+ * {@link isSubscriptionRail} ANDs every one of them. That is the rule {@link isCheckoutRail} sets and
+ * {@link isDiscountRail} broke: it probed a single method of two and narrowed a half-implemented rail into a
+ * type that promised the other, which is a `TypeError` inside a handler rather than a refusal at its edge.
+ * That guard was fixed with this interface's arrival, and the shape is named here so nothing is written to
+ * match it again. The floor it sets is a rule about what may ship together:
+ *
+ * - **No destructive verb without the read that makes it legible.** A rail that could cancel and not report
+ *   the cancellation ships the half that creates the support ticket: Paddle leaves `status` at `active` and
+ *   blanks `next_billed_at` when a cancellation is scheduled (recorded 2026-08-28, #465), so a customer who
+ *   canceled is told they will be billed again by every screen that reads the status.
+ * - **No change without the quote that makes it consented to.** A confirmation screen with no figure on it is
+ *   a customer agreeing to an amount they were never shown, and the amount is real: the recorded upgrade
+ *   charges 6582 immediately.
+ *
+ * ## What is deliberately absent from every method here
+ *
+ * **A proration mode, and any other billing enum.** The rail picks the mode from the *direction* of the
+ * change — an upgrade prorates immediately and charges now, a downgrade prorates into the next billing period
+ * — and `on_payment_failure` is always `prevent_change`. Neither is a parameter, because a parameter is a
+ * thing a client eventually sets, and the value a client would eventually set is Paddle's `do_not_bill`: a
+ * free upgrade. It is unreachable because there is nowhere to write it.
+ *
+ * ## The no-op is a success, not a refusal
+ *
+ * A change to the plan already held, and a cancellation of a subscription that is already scheduled to
+ * cancel, both answer the current standing **without calling the provider at all**. That is the retry answer:
+ * these verbs sit behind a network, callers retry, and a second delivery of the same intent must not become a
+ * second proration. A 409 for the state the caller asked for is also simply wrong — the subscription is how
+ * they wanted it.
+ */
+export interface SubscriptionRail {
+  /**
+   * Where this subscription stands now — status, dates, and whatever is scheduled to happen to it — or
+   * `undefined` when the store has nothing to say about this purchase.
+   *
+   * `undefined` for {@link PaymentsRailProvider.refresh}'s reason and with its meaning: the rail cannot
+   * address this purchase, or the store no longer knows it. A store that cannot be *reached* throws
+   * `payments/provider_unavailable` instead, so a screen distinguishes "there is nothing to show" from "we
+   * could not look".
+   *
+   * Read live, never from a projected row. The one fact this exists to report — a scheduled cancellation —
+   * is precisely the one a purchase row does not carry, and a webhook announcing it can be dropped.
+   */
+  readStanding(purchase: PaymentsPurchase, context: RailRequestContext): Promise<SubscriptionStanding | undefined>;
+  /**
+   * What moving to this price would cost, as the provider previews it — the figures a customer confirms.
+   *
+   * Every amount comes from the store and none is derived here. See `data/subscription.ts` for what the
+   * recordings established about reading them, and in particular for why the answer has three parts.
+   *
+   * **A read, so the no-op rule does not apply to it.** A preview takes and gives nothing, a second one is
+   * free, and asking the provider what the plan already held would cost is a question with an honest answer.
+   * The no-op exists to stop a retried *write* from prorating twice; borrowing it here would mean inventing a
+   * recurring figure to fill the quote with, which is the one thing this package will not do.
+   *
+   * Throws rather than answering `undefined`. A quote that could be absent is a confirm button rendered
+   * beside nothing, and `payments/provider_unavailable` is what tells a screen to say so.
+   */
+  previewChange(input: SubscriptionChangeInput, context: RailRequestContext): Promise<SubscriptionChangeQuote>;
+  /**
+   * Move the subscription to a different plan, and answer where it now stands.
+   *
+   * **The rail chooses the proration mode from the direction of the change** — up charges immediately, down
+   * defers the credit to the next billing period — and nothing the caller sends influences it.
+   *
+   * Answers the resulting {@link SubscriptionStanding} rather than nothing, so the screen that just wrote can
+   * render what it wrote from the provider's own answer instead of predicting it. A prediction is how a
+   * customer sees a plan they are not on.
+   *
+   * A change to the plan already held is the no-op: the current standing, and no provider call. Anything the
+   * store refuses — a subscription that is paused, canceled, or past due — throws
+   * `payments/subscription_change_refused` (409) with the store's own reason in `detail`.
+   */
+  changePlan(input: SubscriptionChangeInput, context: RailRequestContext): Promise<SubscriptionStanding>;
+  /**
+   * Stop the subscription renewing, and answer where it now stands.
+   *
+   * `at_period_end` is the settled policy and the tier holds until the paid period runs out; `now` exists
+   * because support occasionally has to end one today, and because a policy with no legitimate exit gets
+   * departed from by a direct provider call nothing audits.
+   *
+   * A cancellation on a subscription already scheduled to cancel is the no-op: the current standing, and no
+   * provider call. A subscription the store will not cancel throws `payments/subscription_change_refused`.
+   */
+  cancelSubscription(input: SubscriptionCancelInput, context: RailRequestContext): Promise<SubscriptionStanding>;
+  /**
+   * Withdraw a scheduled cancellation, so the subscription renews after all.
+   *
+   * **It withdraws a cancellation, and only a cancellation.** Paddle offers no verb for that: the update
+   * clears `scheduled_change` *wholesale*, by setting it to null, and the field also holds a scheduled pause
+   * and a scheduled resume. So a rail that simply sent the clear would silently un-pause a paused subscription
+   * — the customer's account restarts billing, on a request that said nothing about pausing. The rail must
+   * **re-read the subscription first and refuse unless the pending action is `cancel`**, with
+   * `payments/subscription_change_refused` (409) naming what was actually scheduled. The check cannot move to
+   * the route: the route holds a projected row, and the pending action lives only at the store.
+   *
+   * A subscription with nothing scheduled is the no-op rather than a refusal: it already renews, which is what
+   * the caller asked for, and a retry after a successful withdrawal is exactly that request arriving twice.
+   *
+   * Its own method rather than `changePlan` to the same price, because the two are separate acts by possibly
+   * separate actors and the audit trail records them separately — a withdrawal folded into a plan change
+   * leaves a trail that asserts a cancellation and holds nothing saying it was taken back.
+   */
+  keepSubscription(purchase: PaymentsPurchase, context: RailRequestContext): Promise<SubscriptionStanding>;
+}
+
+/**
+ * Whether a rail can manage a subscription from the server. Structural, like the others — and **it ANDs all
+ * five methods**, which the others do not all do.
+ *
+ * Every guard in this file ANDs its whole interface now, which was not true when this one was written — see
+ * {@link isDiscountRail} for the shape and what it cost. A guard that probes one method narrows a
+ * partially-implemented rail into a type promising the rest, and the first thing anybody learns about the gap
+ * is a `TypeError` thrown mid-cancellation, on a route that has already written an audit row. Here a rail
+ * missing any one verb is simply not a subscription rail, and the route answers `rail_not_configured` — which
+ * is true, and which is a refusal rather than a half-applied change.
+ */
+export function isSubscriptionRail(
+  provider: PaymentsRailProvider,
+): provider is PaymentsRailProvider & SubscriptionRail {
+  const rail = provider as Partial<SubscriptionRail>;
+  return (
+    typeof rail.readStanding === "function" &&
+    typeof rail.previewChange === "function" &&
+    typeof rail.changePlan === "function" &&
+    typeof rail.cancelSubscription === "function" &&
+    typeof rail.keepSubscription === "function"
+  );
+}
+
+/**
+ * Which payments are being refunded, and why — one set, no amount, and no identifier a caller could have
+ * written.
+ *
+ * **There is no transaction id here, and that absence is the security boundary**, exactly as
+ * {@link SubscriptionChangeInput} states it for a subscription. The payments arrive as
+ * {@link PaymentsPurchase} rows — decoded rows only this deployment's own database produces, each already
+ * carrying the subject that owns it — because a `txn_…` a caller supplies is a `txn_…` they can point at a
+ * stranger's money. This capability holds no ownership graph to check such a claim against, so the refusal
+ * has to be structural: the route resolves the rows from the authenticated caller's own purchases and there
+ * is nowhere in this shape to write anything else.
+ *
+ * **And there is no amount.** Every refund raised through this seam is for a transaction's whole total. A
+ * partial one is a different feature — it needs the store's own line-item ids, which nothing here holds —
+ * and an amount on a bearer route is a self-service withdrawal.
+ */
+export interface RefundRequestInput {
+  /**
+   * The payments to refund — the caller's own purchase rows, one adjustment each.
+   *
+   * A set rather than one, because refunds attach to transactions and a subscription is a family of them:
+   * a customer who upgraded mid-period has paid twice and is owed both. The rail raises one refund per row
+   * and reports one outcome per row.
+   *
+   * **Order is the caller's and the report keeps it**, so a partial report is reproducible rather than
+   * whatever the store answered first.
+   */
+  purchases: readonly PaymentsPurchase[];
+  /**
+   * Why, in the operator's words — composed by the route, and **never read from a request body.**
+   *
+   * Every store requires one and shows it to a human in the merchant's own console. That is the argument
+   * for not taking it from the caller: a bearer request writing free text into an adopter's back office is
+   * a stranger writing into somebody's operational record, and there is nothing a customer could say there
+   * that the audit row and the store's own history do not already hold. An adopter who wants the
+   * customer's own words collects them on their own screen, where they belong to the adopter.
+   */
+  reason: string;
+}
+
+/**
+ * A rail that can ask its store to give a customer's money back.
+ *
+ * ## Its own interface, and not a sixth method on {@link SubscriptionRail}
+ *
+ * **The two abilities are independent in both directions, which is the whole argument.** Google Play has a
+ * server-side refund call and no server-side plan change — a subscription's plan is changed inside the
+ * store, on the device — so that rail could implement this and never implement {@link SubscriptionRail}.
+ * Apple is the other corner: refunds are Apple's own decision and the only server endpoint is a *lookup*,
+ * so a rail may be able to manage a subscription and have nothing to put here. An interface that demanded
+ * both would be one neither of them can satisfy.
+ *
+ * **And widening a guard that ANDs its methods is retroactive.** {@link isSubscriptionRail} requires all
+ * five verbs; a sixth would silently de-narrow every rail that already satisfies the five, and the first
+ * anybody would hear of it is `rail_not_configured` on a cancellation, from a release that changed nothing
+ * about canceling. A new interface costs one guard and breaks nothing that exists.
+ *
+ * **The floors differ too.** `SubscriptionRail`'s floor is *no destructive verb without the read that makes
+ * it legible* — the read being a standing. A refund's legibility read is a different one: the transactions
+ * and whatever adjustments already stand on them. Folding refunds in would make the ability to change a
+ * plan carry the power to move money back, which is a much larger power granted for a much smaller job.
+ *
+ * ## What a rail implementing this must guarantee
+ *
+ * - **It never claims money moved.** The answer is {@link RefundRequest}, whose every outcome is a request
+ *   and whose statuses say so. Most live refunds sit at the store awaiting a human.
+ * - **It revokes nothing.** No entitlement, no purchase row, no projection. An approved refund arrives as a
+ *   webhook and the projection acts on it — revoking on the *request* takes access from a customer whose
+ *   refund the store then rejects, leaving them with neither the money nor the product.
+ * - **It refuses before it writes, and reports after.** Everything knowable in advance refuses the whole
+ *   request with `payments/subscription_change_refused` and sends nothing; once one adjustment exists,
+ *   every remaining failure is an outcome in the report. {@link RefundRequest} holds the long form.
+ * - **It bounds the set.** A set it cannot issue inside one request is refused before the first write, not
+ *   discovered half way through.
+ *
+ * ## What is deliberately absent
+ *
+ * **An amount, a currency, a transaction id, and a window.** The first three are {@link RefundRequestInput}'s
+ * argument. The window is the *adopter's*: how many days a customer has to ask for their money back is a
+ * commercial policy with a company behind it, and a kit that hard-coded fourteen days would be wrong for the
+ * second adopter. The kit makes the refund possible; the adopter's screen decides which button exists.
+ */
+export interface RefundRail {
+  /**
+   * Ask the store to refund these payments in full, and report what became of each.
+   *
+   * Throws `payments/subscription_change_refused` (409) when the request is refused before anything is
+   * sent, and `payments/provider_unavailable` (503) when the store could not be reached or answered in a
+   * shape this build cannot read — both only while nothing has been raised. After the first adjustment
+   * exists it answers, whatever else happened.
+   */
+  requestRefunds(input: RefundRequestInput, context: RailRequestContext): Promise<RefundRequest>;
+}
+
+/**
+ * Whether a rail can refund at its store. Structural, like the others.
+ *
+ * One method, so probing it *is* ANDing all of them — {@link isSubscriptionRail}'s rule, satisfied by
+ * arithmetic rather than by care. Stated because that stops being true the moment a second method is added
+ * here, and a guard left probing one of two is what {@link isDiscountRail} did until #465.
+ */
+export function isRefundRail(provider: PaymentsRailProvider): provider is PaymentsRailProvider & RefundRail {
+  return typeof (provider as Partial<RefundRail>).requestRefunds === "function";
 }

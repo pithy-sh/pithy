@@ -133,10 +133,20 @@ describe("the date is never computed (#369, acceptance 2)", () => {
     // The one shape allowed at a rail: `resumesAt: pauseResumesAt({…})`, whose only date input is the
     // string the provider sent. A clock, an arithmetic expression, or a period end assigned here is what
     // this scan exists to catch — and it is why the fix is one function rather than a rule per rail.
+    //
+    // **`pending.resumeAt` is the third spelling, and it is a different field of the same name** (#465).
+    // `ScheduledSubscriptionChange.resumesAt` in `data/subscription.ts` says when a *scheduled* pause
+    // will end, on a subscription that is still `active` and has therefore not paused yet.
+    // {@link pauseResumesAt} cannot produce it and must not be made to: it answers null for any status
+    // but `paused`, deliberately, because a date beside a live purchase row is a sentence nobody can
+    // write and a check constraint the table refuses. So the only value allowed there is the provider's
+    // own `scheduled_change.resume_at`, carried verbatim by `subscriptionPendingChange` — which is the
+    // rule this gate exists for, unchanged: no clock, no arithmetic, no fallback field. Anything else
+    // still fails, including on that field.
     for (const { path, source } of railSources()) {
       for (const line of source.split("\n")) {
         if (!line.includes("resumesAt:")) continue;
-        expect(line, `${path}: ${line.trim()}`).toMatch(/resumesAt: (pauseResumesAt\(|null)/);
+        expect(line, `${path}: ${line.trim()}`).toMatch(/resumesAt: (pauseResumesAt\(|null|pending\.resumeAt)/);
       }
     }
   });

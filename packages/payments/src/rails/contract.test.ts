@@ -2,13 +2,24 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
+import type { DiscountTerms } from "../data/discount";
+import type { PaymentsPurchase } from "../data/purchase";
 import { decodeSubjectReference, encodeSubjectReference } from "../data/subject";
+import { SubscriptionChangeQuote, SubscriptionStanding } from "../data/subscription";
 import { ProviderEvent } from "../projection/event";
 import {
   type CheckoutRail,
+  type DiscountRail,
   isCheckoutRail,
+  isDiscountRail,
+  isRefundRail,
+  isSubscriptionRail,
   noteText,
   type PaymentsRailProvider,
+  type RefundRail,
+  type SubscriptionCancelInput,
+  type SubscriptionChangeInput,
+  type SubscriptionRail,
   type UnboundProviderEvent,
   type VerifiedNotification,
 } from "./contract";
@@ -152,13 +163,19 @@ describe("UnboundProviderEvent", () => {
   });
 });
 
+/**
+ * A rail that only hears about purchases — the shared contract and nothing else. Shared by every guard's
+ * tests, because "what a rail that declares only the minimum answers" is the same question each time.
+ */
+const LISTENER: PaymentsRailProvider = {
+  rail: "apple",
+  verify: async () => ({ event: MINIMAL, providerAccountId: null }),
+  parseNotification: async () => ({ providerEventId: "e", payload: {}, event: null, providerAccountId: null }),
+  refresh: async () => undefined,
+};
+
 describe("isCheckoutRail", () => {
-  const listener: PaymentsRailProvider = {
-    rail: "apple",
-    verify: async () => ({ event: MINIMAL, providerAccountId: null }),
-    parseNotification: async () => ({ providerEventId: "e", payload: {}, event: null, providerAccountId: null }),
-    refresh: async () => undefined,
-  };
+  const listener = LISTENER;
 
   test("a rail that only hears about purchases is not a checkout rail", () => {
     // The point of the split: Apple never has to declare a session method to satisfy the shared contract.
@@ -181,5 +198,251 @@ describe("isCheckoutRail", () => {
       createCheckoutSession: async () => ({ kind: "redirect" as const, url: "x" }),
     } as PaymentsRailProvider;
     expect(isCheckoutRail(half)).toBe(false);
+  });
+});
+
+/**
+ * The guard that gave the bug its name, and no longer has it.
+ *
+ * `isDiscountRail` probed `createDiscount` alone while {@link DiscountRail} declared two methods, so a rail
+ * that could mint and not list narrowed into a type promising both. `GET {base}/admin/discounts` then passed
+ * its guard and called a method that was not there — a `TypeError` inside a handler, which is a 500 on a
+ * management pane rather than the `rail_not_configured` the same route gives for a rail that plainly cannot.
+ * Nothing reached it: all three hosted rails declare both. It was a defect waiting for the fourth.
+ *
+ * Fixed by ANDing both, which is {@link isCheckoutRail}'s rule — and the two omissions are asserted
+ * separately, because a guard that ANDs one of two passes whichever half it happens to probe.
+ */
+describe("isDiscountRail", () => {
+  /** The smallest terms a rail could have minted from — a percentage, once, so no billing interval is owed. */
+  const TERMS: DiscountTerms = {
+    amount: { kind: "percent", percent: 20 },
+    duration: { kind: "once" },
+  };
+  const minting: DiscountRail = {
+    createDiscount: async () => ({ code: "WELCOME", providerDiscountId: "di_1", terms: TERMS }),
+    listDiscounts: async () => [],
+  };
+
+  test("a rail that neither mints nor lists is not a discount rail", () => {
+    expect(isDiscountRail(LISTENER)).toBe(false);
+  });
+
+  test("a rail that declares both is", () => {
+    expect(isDiscountRail({ ...LISTENER, ...minting })).toBe(true);
+  });
+
+  test("one of two is not — for either one", () => {
+    for (const method of Object.keys(minting)) {
+      const partial: Record<string, unknown> = { ...LISTENER, ...minting };
+      delete partial[method];
+      expect(isDiscountRail(partial as unknown as PaymentsRailProvider), `omitted ${method}`).toBe(false);
+    }
+    // And the loop is only a proof if it ran twice.
+    expect(Object.keys(minting)).toHaveLength(2);
+  });
+
+  test("minting without listing is refused, which is the shape the bug actually let through", () => {
+    // Named separately from the loop above because it is the reachable one: a rail is written to create
+    // first, so `createDiscount` alone is what a half-finished rail looks like on the day it is committed.
+    const mintsOnly: Record<string, unknown> = { ...LISTENER, ...minting };
+    delete mintsOnly.listDiscounts;
+    expect(isDiscountRail(mintsOnly as unknown as PaymentsRailProvider)).toBe(false);
+  });
+});
+
+/**
+ * A stored subscription row, as the projection last wrote it — the only thing in this package that names a
+ * subscription at a store. Every subscription verb takes one of these, and the tests below assert that no
+ * verb offers a second way to say which subscription is meant.
+ */
+const PURCHASE: PaymentsPurchase = {
+  id: "11111111-1111-4111-8111-111111111111",
+  subjectType: "user",
+  subjectId: "ada",
+  rail: "paddle",
+  role: "charge",
+  providerTransactionId: "txn_01kzvyzPithyTestNotAReal",
+  productId: "team_monthly",
+  providerProductId: "pri_01kzvyz9khsdy36z10wb8bgmq4",
+  type: "subscription",
+  status: "active",
+  environment: "sandbox",
+  purchasedAt: new Date("2026-08-15T11:42:21.789Z"),
+  expiresAt: new Date("2026-09-15T11:42:21.789Z"),
+  revokedAt: null,
+  resumesAt: null,
+  originalTransactionId: null,
+  amountMinor: 11000,
+  currency: "usd",
+  providerEventAt: new Date("2026-08-15T11:42:21.789Z"),
+  payload: {},
+  createdAt: new Date("2026-08-15T11:42:21.789Z"),
+  updatedAt: new Date("2026-08-15T11:42:21.789Z"),
+};
+
+/**
+ * The recorded deferred downgrade, normalized — Paddle sandbox, 2026-08-28 (#465). Parsed rather than cast,
+ * so the return type the interface declares is asserted to accept the shape a real preview produces.
+ */
+const QUOTE = SubscriptionChangeQuote.parse({
+  settlesToday: { outcome: "nothing" },
+  nextInvoice: {
+    settlement: { outcome: "credit", amount: { amountMinor: 6558, currency: "usd" } },
+    at: "2026-09-15T11:42:21.789736Z",
+  },
+  recurring: { amount: { amountMinor: 653, currency: "usd" }, startsAt: "2026-09-15T11:42:21.789736Z" },
+});
+
+/**
+ * The recorded standing after `cancel(next_billing_period)` — `active`, `next_billed_at` null, and a cancel
+ * scheduled. The shape that makes "Team until 15 Sep, then ends" writable, and the reason a write verb
+ * answers a standing rather than nothing.
+ */
+const STANDING = SubscriptionStanding.parse({
+  status: "active",
+  currency: "usd",
+  currentPeriodEndsAt: "2026-09-15T11:42:21.789736Z",
+  nextBilledAt: null,
+  scheduledChange: { action: "cancel", effectiveAt: "2026-09-15T11:42:21.789736Z", resumesAt: null },
+});
+
+describe("isSubscriptionRail", () => {
+  const managed: SubscriptionRail = {
+    readStanding: async () => STANDING,
+    previewChange: async () => QUOTE,
+    changePlan: async () => STANDING,
+    cancelSubscription: async () => STANDING,
+    keepSubscription: async () => STANDING,
+  };
+
+  test("a rail that only hears about purchases cannot manage a subscription", () => {
+    // Apple and Google have no equivalent: a StoreKit subscription is changed inside the store's own UI.
+    expect(isSubscriptionRail(LISTENER)).toBe(false);
+  });
+
+  test("a rail that declares all five is one", () => {
+    expect(isSubscriptionRail({ ...LISTENER, ...managed })).toBe(true);
+  });
+
+  test("four of five is not — for every one of the five", () => {
+    // The isDiscountRail bug, refused method by method. A guard probing one verb calls the other four on a
+    // rail that never declared them, and the first thing a caller learns is a TypeError mid-cancellation.
+    // Every omission is asserted rather than one, because a guard that ANDs four of five passes a single case.
+    for (const method of Object.keys(managed)) {
+      const partial: Record<string, unknown> = { ...LISTENER, ...managed };
+      delete partial[method];
+      expect(isSubscriptionRail(partial as unknown as PaymentsRailProvider), `omitted ${method}`).toBe(false);
+    }
+    // And the loop is only a proof if it ran five times.
+    expect(Object.keys(managed)).toHaveLength(5);
+  });
+
+  test("the read is not optional — a rail that can cancel must be able to say what it canceled", () => {
+    // The half that creates the support ticket: a scheduled cancellation leaves `status` at `active` and
+    // blanks `next_billed_at`, so a rail that writes without reading leaves a customer told they will be
+    // billed again. Stated as a guard case rather than as prose, so it fails rather than ages.
+    const writesOnly: Record<string, unknown> = { ...LISTENER, ...managed };
+    delete writesOnly.readStanding;
+    expect(isSubscriptionRail(writesOnly as unknown as PaymentsRailProvider)).toBe(false);
+  });
+
+  test("the quote is not optional — a rail that can charge must be able to say what it will charge", () => {
+    // Consent is the other half. A change verb with no preview is a confirmation screen with no figure on it.
+    const unquoted: Record<string, unknown> = { ...LISTENER, ...managed };
+    delete unquoted.previewChange;
+    expect(isSubscriptionRail(unquoted as unknown as PaymentsRailProvider)).toBe(false);
+  });
+});
+
+describe("the subscription inputs", () => {
+  const change: SubscriptionChangeInput = { purchase: PURCHASE, providerProductId: "pri_01kzvyz9e21z9vbhd7xqq3csyh" };
+  const cancel: SubscriptionCancelInput = { purchase: PURCHASE, timing: "at_period_end" };
+
+  test("no subscription id crosses into a rail — the purchase row is the whole reference", () => {
+    // The vulnerability this closes is the one `PortalSessionInput.subscriptionIds` names: a field naming a
+    // subscription is a field a caller points at somebody else's, and this capability has no members table
+    // to check the claim against. The row comes from this deployment's own database, already owned.
+    for (const input of [change, cancel]) {
+      expect(Object.keys(input)).not.toContain("subscriptionId");
+      expect(Object.keys(input)).not.toContain("providerSubscriptionId");
+      expect(Object.keys(input)).not.toContain("subscriptionIds");
+      expect(Object.keys(input)).toContain("purchase");
+    }
+  });
+
+  test("one price, never a list", () => {
+    // Paddle's update replaces the items array — omit an item and it is removed — so an array here would be
+    // a delete verb wearing an update verb's name. Building the complete list is the rail's obligation.
+    expect(typeof change.providerProductId).toBe("string");
+    expect(Array.isArray(change.providerProductId)).toBe(false);
+    expect(Object.keys(change)).not.toContain("items");
+    expect(Object.keys(change)).not.toContain("providerProductIds");
+    expect(Object.keys(change)).not.toContain("quantity");
+  });
+
+  test("no billing enum anywhere — the rail picks the mode from the direction", () => {
+    // A modeled proration mode is a field, a field is a thing a client can set, and the value a client would
+    // eventually set is Paddle's `do_not_bill`: a free upgrade. It is unreachable because there is nowhere to
+    // write it. `on_payment_failure` is always `prevent_change` for the same reason.
+    for (const input of [change, cancel]) {
+      for (const forbidden of ["prorationBillingMode", "proration", "prorate", "billingMode", "onPaymentFailure"]) {
+        expect(Object.keys(input)).not.toContain(forbidden);
+      }
+    }
+  });
+
+  test("canceling is timed in the customer's terms, never in the store's", () => {
+    // `next_billing_period` reads as "cancel next month" and means "stop renewing, keep what was paid for".
+    // `at_period_end` says that, and Paddle's own spelling does not parse.
+    expect(cancel.timing).toBe("at_period_end");
+  });
+});
+
+describe("isRefundRail", () => {
+  const refunds: RefundRail = { requestRefunds: async () => ({ outcomes: [] }) };
+
+  const managed: SubscriptionRail = {
+    readStanding: async () => STANDING,
+    previewChange: async () => QUOTE,
+    changePlan: async () => STANDING,
+    cancelSubscription: async () => STANDING,
+    keepSubscription: async () => STANDING,
+  };
+
+  test("a rail that only hears about purchases cannot refund at its store", () => {
+    expect(isRefundRail(LISTENER)).toBe(false);
+  });
+
+  test("a rail that declares it is one", () => {
+    expect(isRefundRail({ ...LISTENER, ...refunds })).toBe(true);
+  });
+
+  test("refunding and managing a subscription are independent abilities, in both directions", () => {
+    // The whole argument for a second interface rather than a sixth method. Google Play refunds from the
+    // server and changes no plan from it; Apple's only refund endpoint is a lookup. An interface demanding
+    // both is one neither of them can satisfy, so each is asked separately.
+    expect(isRefundRail({ ...LISTENER, ...managed })).toBe(false);
+    expect(isSubscriptionRail({ ...LISTENER, ...refunds })).toBe(false);
+    expect(isRefundRail({ ...LISTENER, ...managed, ...refunds })).toBe(true);
+    expect(isSubscriptionRail({ ...LISTENER, ...managed, ...refunds })).toBe(true);
+  });
+
+  test("adding the refund verb to SubscriptionRail would have de-narrowed every rail that has the five", () => {
+    // Stated as a case rather than as prose, because it is the cost the separation avoids and it is
+    // invisible once the decision is made. `isSubscriptionRail` ANDs its methods, so a sixth would make a
+    // rail shipping the five stop being a subscription rail — `rail_not_configured` on a cancellation,
+    // from a release that changed nothing about canceling.
+    expect(isSubscriptionRail({ ...LISTENER, ...managed })).toBe(true);
+    expect(Object.keys(managed)).toHaveLength(5);
+  });
+
+  test("the guard probes the one method there is, so it ANDs all of them by arithmetic", () => {
+    // True today and only today. A second method added to RefundRail and not to this guard is the
+    // isDiscountRail bug arriving again, so the count is pinned rather than assumed.
+    const partial: Record<string, unknown> = { ...LISTENER, ...refunds };
+    delete partial.requestRefunds;
+    expect(isRefundRail(partial as unknown as PaymentsRailProvider)).toBe(false);
+    expect(Object.keys(refunds)).toHaveLength(1);
   });
 });

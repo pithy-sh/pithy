@@ -188,7 +188,18 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * all the way down to empty. Both unions are measured against this number and never against each
  * other's length. Changing the taxonomy's size is a deliberate act; changing this line is part of it.
  *
- * Verified 2026-08-18: 120 members in each union, no duplicates, sorted lists identical.
+ * Verified 2026-08-28: 121 members in each union, no duplicates, sorted lists identical.
+ *
+ * `payments/subscription_change_refused` (#465) — a plan change, a cancellation, or the withdrawal of a
+ * scheduled one that the subscription's own state forbids. It needs its own code because every neighbor
+ * it might have borrowed says something untrue about it: `receipt_already_owned` is about a transaction
+ * belonging to another account, `clawback_failed` about a balance, and both are refusals about money that
+ * has already moved. This one is about a subscription whose item shape the rail cannot reproduce without
+ * guessing — a store's update replaces the items array whole, so a guess deletes or re-prices a line the
+ * caller never named. One code and not three: the three refused states are the same 409 and the same
+ * sentence to a caller, and which one fired is throw-site context that the codec strips. The no-op is
+ * deliberately not among them — a change to the plan already held is a success, which is what makes a
+ * retry safe.
  *
  * `payments/subject_unresolved` (#412) — a payments write path that could not learn which subject the
  * caller acts for. It needs its own code because it is the one refusal in the domain the *adopter*
@@ -219,8 +230,21 @@ describe("ExtendedErrorPayload (the adopter seam)", () => {
  * The one before both was `secrets/rotation_unrecorded` (#367), which took it to 116 — a credential
  * rolled at its issuer whose successor the store never took, the one secrets failure a retry cannot
  * repair.
+ *
+ * **The four sites, so one red gate names them all.** This number is written by hand in four places on
+ * purpose (see above). Adding or removing a kit error code moves every one of them, and they live in
+ * three packages that do not run each other's tests — so a contributor who fixes only the one that went
+ * red ships the other three red. They are:
+ *
+ *   packages/core/src/error/payload.test.ts            KIT_ERROR_CODE_COUNT
+ *   packages/cli/src/ci/catalogCoverage.test.ts        KIT_ERROR_CODE_COUNT
+ *   packages/i18n/src/catalogs/es/errors.test.ts       KIT_ERROR_CODE_COUNT
+ *   packages/i18n/src/catalogs/es/catalogs.test.ts     the inline toHaveLength
+ *
+ * And the code itself also needs: the Spanish sentence in `packages/i18n/src/catalogs/es/errors.ts`,
+ * and `bun run docs-catalog` to regenerate `docs/catalog.generated.json`.
  */
-const KIT_ERROR_CODE_COUNT = 120;
+const KIT_ERROR_CODE_COUNT = 121;
 
 /** One member of either kit union — the public projection or its `action`/`detail` twin. */
 type KitUnionMember = (typeof KitErrorPayload | typeof KitPublicErrorPayload)["options"][number];

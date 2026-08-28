@@ -11,7 +11,7 @@ import * as z from "zod";
 import { payments } from "../capability";
 import { PaymentsConfig } from "../config/config";
 import * as responses from "./responses";
-import { PaymentsPricingEnvelope } from "./responses";
+import { PaymentsPricingEnvelope, PaymentsSubscriptionResponse } from "./responses";
 import { registerPaymentsRoutes } from "./routes";
 import * as schemas from "./schemas";
 import {
@@ -102,8 +102,20 @@ describe("payments route contract", () => {
   test("the gate is inspecting the real payments routes, not an empty app", () => {
     const app = makeApp();
     // Every route this build serves — the ten from issue #79, the four management reads from #247, the
-    // catalog read from #300, and Paddle's webhook. The list is what makes adding a twenty-first a
-    // deliberate edit rather than a surprise, and it is the only place a route can be counted.
+    // catalog read from #300, Paddle's webhook, and the six subscription-lifecycle routes from #465. The
+    // list is what makes adding a twenty-eighth a deliberate edit rather than a surprise, and it is the
+    // only place a route can be counted.
+    //
+    // **`refund` is the sixth and it is a bearer route**, not a control-plane one. That is worth pinning:
+    // a verb that moves money back reads as an operator's, and mounting it behind `requireControlPlane`
+    // would put a customer's own refund out of their reach while widening a dashboard credential to reach
+    // every account's money. It is the subscriber's own subscription, resolved from their own rows.
+    //
+    // **The read is first in the lifecycle set and that ordering is load-bearing**, not alphabetical
+    // accident: `GET /payments/subscription` shipped before any of the four verbs beside it, because a
+    // capability that can cancel a subscription and cannot report the cancellation ships the half that
+    // creates the support ticket. #247 is the larger version of the same mistake, and it is recorded at
+    // the top of `routes.ts`.
     //
     // **Method and path, so an extra method on a declared path is caught** — email's phrasing, because
     // it is the same rule. Pinned by path alone, `POST /payments/admin/purchases` mounted beside the
@@ -121,6 +133,7 @@ describe("payments route contract", () => {
       "GET /payments/admin/subscriptions",
       "GET /payments/entitlements",
       "GET /payments/pricing",
+      "GET /payments/subscription",
       "POST /payments/admin/discounts",
       "POST /payments/checkout",
       "POST /payments/entitlements/grant",
@@ -128,6 +141,11 @@ describe("payments route contract", () => {
       "POST /payments/portal",
       "POST /payments/purchases",
       "POST /payments/restore",
+      "POST /payments/subscription/cancel",
+      "POST /payments/subscription/change",
+      "POST /payments/subscription/keep",
+      "POST /payments/subscription/preview",
+      "POST /payments/subscription/refund",
       "POST /payments/webhooks/apple",
       "POST /payments/webhooks/google",
       "POST /payments/webhooks/lemon-squeezy",
@@ -231,6 +249,10 @@ describe("the README's Routes table", () => {
    */
   const DOCUMENTED_RESPONSES: Readonly<Record<string, z.ZodObject>> = {
     "GET /payments/pricing": PaymentsPricingEnvelope,
+    // Added with the route (#465), rather than after somebody built a seam on an undescribed field. It is
+    // squarely on the line this list draws: a browser reads it field by field, and one of those fields —
+    // `nextEvent` — exists precisely because the obvious reading of the others is wrong.
+    "GET /payments/subscription": PaymentsSubscriptionResponse,
   };
 
   /** Every field a response carries, one level into the objects nested directly on it. */
