@@ -49,9 +49,77 @@ describe("startCommand", () => {
       hasWrangler: true,
       dev: { autostart: true, readySignal: "Ready on https?://" },
     };
-    expect(startCommand(worker, 8787, launch, "/p/.wrangler/state", {})).toEqual({
+    expect(startCommand(worker, 8787, "http://localhost:8787", launch, "/p/.wrangler/state", {})).toEqual({
       command: "bun",
-      args: ["x", "wrangler", "dev", "--port", "8787", "--inspector-port", "0", "--persist-to", "/p/.wrangler/state"],
+      args: [
+        "x",
+        "wrangler",
+        "dev",
+        "--port",
+        "8787",
+        "--inspector-port",
+        "0",
+        "--persist-to",
+        "/p/.wrangler/state",
+        "--var",
+        "BASE_URL:http://localhost:8787",
+      ],
+    });
+  });
+
+  describe("telling a Worker its own origin", () => {
+    const api: WorkerTarget = { name: "api", dir: "/p/apps/api", hasWrangler: true };
+
+    test("hands the Worker the origin this checkout was allocated, as BASE_URL", () => {
+      // The value a Worker cannot work out for itself. `Host` is caller-controlled, so a Worker that
+      // derived its own origin from a request would take it from whoever called; and a port is
+      // allocated per checkout, so it cannot be written down either. `pithy dev` is the only party
+      // that knows, and this is where it says so (#462).
+      const { args } = startCommand(api, 8807, "http://localhost:8807", launch, "/p/state", {});
+      expect(args.slice(-2)).toEqual(["--var", "BASE_URL:http://localhost:8807"]);
+    });
+
+    test("two checkouts are told two different origins", () => {
+      // The property the defect did not have. `apps/board/wrangler.jsonc` stated one dev origin, so
+      // every checkout on a machine claimed to answer at the first one's port — and a test that named
+      // 8787 agreed with that literal and passed. Two allocations, asserted to differ, cannot.
+      const first = startCommand(api, 8787, "http://localhost:8787", launch, "/p/state", {});
+      const second = startCommand(api, 8807, "http://localhost:8807", launch, "/p/state", {});
+
+      expect(first.args).toContain("BASE_URL:http://localhost:8787");
+      expect(second.args).toContain("BASE_URL:http://localhost:8807");
+      expect(first.args).not.toEqual(second.args);
+    });
+
+    test("the origin travels verbatim, never rebuilt from the port", () => {
+      // `.dev.config.json` pins the origin beside the port, and the two are not the same fact: an
+      // origin recomposed as `http://localhost:${port}` would be a second producer of a value the
+      // config already holds, and would quietly disagree the day one of them is not localhost.
+      const { args } = startCommand(api, 8787, "https://api.localhost.test:8787", launch, "/p/state", {});
+      expect(args).toContain("BASE_URL:https://api.localhost.test:8787");
+    });
+
+    test("a capability host is handed none — its BASE_URL is the app's, and is already written", () => {
+      // A host holds no public route: a verification link it mails has to arrive back at the app, so
+      // `materializeHostConfigs` writes the *app's* origin into the host's generated config. A `--var`
+      // here would override that with the host's own address and point every callback at the mailer.
+      const email: WorkerTarget = { name: "email", dir: "/p/.wrangler/pithy/hosts/email", hasWrangler: true };
+      const { args } = startCommand(email, 8797, null, launch, "/p/state", {});
+      expect(args.filter((arg) => arg.startsWith("BASE_URL:"))).toEqual([]);
+      expect(args).not.toContain("--var");
+    });
+
+    test("a custom dev command is untouched — it inherits the real environment already", () => {
+      const web: WorkerTarget = {
+        name: "web",
+        dir: "/p/apps/web",
+        hasWrangler: false,
+        dev: { autostart: true, readySignal: "ready", command: ["vite", "--host"] },
+      };
+      expect(startCommand(web, 5173, "http://localhost:5173", launch, "/p/state", {})).toEqual({
+        command: "vite",
+        args: ["--host"],
+      });
     });
   });
 
@@ -61,22 +129,30 @@ describe("startCommand", () => {
     test("a wrangler worker gets CI as a var, because the host env does not cross into workerd", () => {
       // `process.env` inside a Worker is that script's own vars and nothing else, so a capability that
       // refuses to register under CI cannot otherwise see the `CI=true` the runner set out here.
-      const { args } = startCommand(api, 8787, launch, "/p/state", { CI: "true" });
+      const { args } = startCommand(api, 8787, "http://localhost:8787", launch, "/p/state", { CI: "true" });
       expect(args.slice(-2)).toEqual(["--var", "CI:true"]);
     });
 
     test("the value travels verbatim — any non-blank one is CI at both ends", () => {
-      expect(startCommand(api, 8787, launch, "/p/state", { CI: "1" }).args.slice(-2)).toEqual(["--var", "CI:1"]);
-      expect(startCommand(api, 8787, launch, "/p/state", { CI: "buildkite" }).args.slice(-2)).toEqual([
+      expect(startCommand(api, 8787, "http://localhost:8787", launch, "/p/state", { CI: "1" }).args.slice(-2)).toEqual([
         "--var",
-        "CI:buildkite",
+        "CI:1",
       ]);
+      expect(
+        startCommand(api, 8787, "http://localhost:8787", launch, "/p/state", { CI: "buildkite" }).args.slice(-2),
+      ).toEqual(["--var", "CI:buildkite"]);
     });
 
     test("off CI nothing is forwarded — an ordinary run's Worker env is unchanged", () => {
-      expect(startCommand(api, 8787, launch, "/p/state", {}).args).not.toContain("--var");
-      expect(startCommand(api, 8787, launch, "/p/state", { CI: "" }).args).not.toContain("--var");
-      expect(startCommand(api, 8787, launch, "/p/state", { CI: "  " }).args).not.toContain("--var");
+      // Asserted as "no CI var" rather than "no --var at all": every wrangler worker now carries its
+      // own `BASE_URL` (#462), so the absence of the whole flag stopped being the question.
+      const ciVars = (env: NodeJS.ProcessEnv) =>
+        startCommand(api, 8787, "http://localhost:8787", launch, "/p/state", env).args.filter((arg) =>
+          arg.startsWith("CI:"),
+        );
+      expect(ciVars({})).toEqual([]);
+      expect(ciVars({ CI: "" })).toEqual([]);
+      expect(ciVars({ CI: "  " })).toEqual([]);
     });
 
     test("a dev.command worker gets no --var — it inherits the real environment already", () => {
@@ -86,7 +162,7 @@ describe("startCommand", () => {
         hasWrangler: false,
         dev: { autostart: true, readySignal: "ready", command: ["vite", "--host"] },
       };
-      expect(startCommand(web, 5173, launch, "/p/state", { CI: "true" })).toEqual({
+      expect(startCommand(web, 5173, "http://localhost:5173", launch, "/p/state", { CI: "true" })).toEqual({
         command: "vite",
         args: ["--host"],
       });
@@ -103,17 +179,22 @@ describe("startCommand", () => {
      * dispatch to — would find nothing. One `--var` per host is what carries it across.
      */
     test("a wrangler worker gets each host's origin and port as vars", () => {
-      const { args } = startCommand(api, 8787, launch, "/p/state", {}, { email: 8797 });
+      const { args } = startCommand(api, 8787, "http://localhost:8787", launch, "/p/state", {}, { email: 8797 });
       expect(args.slice(-4)).toEqual(["--var", "EMAIL_ORIGIN:http://localhost:8797", "--var", "EMAIL_PORT:8797"]);
     });
 
     test("a project with no capability host forwards nothing", () => {
-      expect(startCommand(api, 8787, launch, "/p/state", {}, {}).args).not.toContain("--var");
+      // A host var, specifically. The worker's own `BASE_URL` is not one — see #462.
+      const args = startCommand(api, 8787, "http://localhost:8787", launch, "/p/state", {}, {}).args;
+      expect(args.filter((arg) => arg.includes("_ORIGIN:") || arg.includes("_PORT:"))).toEqual([]);
     });
 
     test("a host does not forward its own address to itself", () => {
+      // `EMAIL_ORIGIN` names a dispatch target, and a host posting to itself answers itself forever.
+      // Its own `BASE_URL` is the opposite fact and is present — the two are held apart in #462.
       const email: WorkerTarget = { name: "email", dir: "/p/.wrangler/pithy/hosts/email", hasWrangler: true };
-      expect(startCommand(email, 8797, launch, "/p/state", {}, { email: 8797 }).args).not.toContain("--var");
+      const args = startCommand(email, 8797, null, launch, "/p/state", {}, { email: 8797 }).args;
+      expect(args.filter((arg) => arg.startsWith("EMAIL_"))).toEqual([]);
     });
 
     test("a dev.command worker gets none — it already inherits the real environment", () => {
@@ -123,7 +204,9 @@ describe("startCommand", () => {
         hasWrangler: false,
         dev: { autostart: true, readySignal: "ready", command: ["vite", "--host"] },
       };
-      expect(startCommand(web, 5173, launch, "/p/state", {}, { email: 8797 }).args).toEqual(["--host"]);
+      expect(startCommand(web, 5173, "http://localhost:5173", launch, "/p/state", {}, { email: 8797 }).args).toEqual([
+        "--host",
+      ]);
     });
   });
 
@@ -135,8 +218,11 @@ describe("startCommand", () => {
     const store = "/p/.wrangler/state";
 
     const persistArgs = (worker: WorkerTarget, port: number) => {
-      const { args } = startCommand(worker, port, launch, store, {});
-      return args.slice(args.indexOf("--persist-to"));
+      const { args } = startCommand(worker, port, `http://localhost:${port}`, launch, store, {});
+      // The flag and its value, not the tail: the worker's own `BASE_URL` follows it now (#462), and
+      // reading to the end would make this case about that instead of about the store.
+      const at = args.indexOf("--persist-to");
+      return args.slice(at, at + 2);
     };
 
     expect(persistArgs(api, 8787)).toEqual(["--persist-to", store]);
@@ -150,7 +236,10 @@ describe("startCommand", () => {
       hasWrangler: false,
       dev: { autostart: true, readySignal: "ready in", command: ["vite", "--host"] },
     };
-    expect(startCommand(worker, 5173, launch, "/p/.wrangler/state", {})).toEqual({ command: "vite", args: ["--host"] });
+    expect(startCommand(worker, 5173, "http://localhost:5173", launch, "/p/.wrangler/state", {})).toEqual({
+      command: "vite",
+      args: ["--host"],
+    });
   });
 
   test("{port} in a dev.command is replaced with the pinned port", () => {
@@ -166,7 +255,7 @@ describe("startCommand", () => {
         command: ["bun", "x", "vite", "dev", "--strictPort", "--port", "{port}"],
       },
     };
-    expect(startCommand(worker, 8790, launch, "/p/.wrangler/state", {})).toEqual({
+    expect(startCommand(worker, 8790, "http://localhost:8790", launch, "/p/.wrangler/state", {})).toEqual({
       command: "bun",
       args: ["x", "vite", "dev", "--strictPort", "--port", "8790"],
     });
@@ -183,7 +272,7 @@ describe("startCommand", () => {
         command: ["serve", "--port={port}", "--origin=http://localhost:{port}/{port}"],
       },
     };
-    expect(startCommand(worker, 5200, launch, "/p/.wrangler/state", {})).toEqual({
+    expect(startCommand(worker, 5200, "http://localhost:5200", launch, "/p/.wrangler/state", {})).toEqual({
       command: "serve",
       args: ["--port=5200", "--origin=http://localhost:5200/5200"],
     });
@@ -191,7 +280,7 @@ describe("startCommand", () => {
 
   test("the wrangler branch is untouched by the token — it never appears in a wrangler argv", () => {
     const worker: WorkerTarget = { name: "api", dir: "/p/apps/api", hasWrangler: true };
-    const { args } = startCommand(worker, 8787, launch, "/p/.wrangler/state", {});
+    const { args } = startCommand(worker, 8787, "http://localhost:8787", launch, "/p/.wrangler/state", {});
     expect(args).not.toContain("{port}");
     expect(args).toEqual([
       "x",
@@ -203,6 +292,8 @@ describe("startCommand", () => {
       "0",
       "--persist-to",
       "/p/.wrangler/state",
+      "--var",
+      "BASE_URL:http://localhost:8787",
     ]);
   });
 });

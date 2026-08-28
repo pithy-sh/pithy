@@ -482,9 +482,35 @@ describe("startDev — spawn commands and env", () => {
         // binding share the data locally too.
         "--persist-to",
         join("/proj", ".wrangler", "state"),
+        // The Worker's own address, from this checkout's allocation. It cannot derive it (`Host` is
+        // caller-controlled) and it cannot write it down (a port is allocated per checkout), so this
+        // is the only place it can come from — #462.
+        "--var",
+        "BASE_URL:http://localhost:8787",
       ],
     });
     expect(web).toMatchObject({ command: "vite", args: ["--host"] });
+  });
+
+  test("a second checkout's workers are told that checkout's origin, not the first one's", async () => {
+    // The whole defect, at the layer that spawns. Two checkouts get two port blocks, so a `BASE_URL`
+    // written down in `wrangler.jsonc` is right in one of them and wrong in the other — and the Worker
+    // that believed it signed control-plane tokens as somebody else (`pithy-sh/dashboard#95`).
+    const h = harness({
+      loadDevConfig: async () => ({
+        ...config,
+        ports: { index: 1, base: 8807, size: 10 },
+        workers: {
+          api: { port: 8807, origin: "http://localhost:8807" },
+          web: { port: 8808, origin: "http://localhost:8808" },
+        },
+      }),
+    });
+    await startDev(h.options);
+
+    const api = h.spawned.find((s) => s.opts.cwd === "/proj/apps/api");
+    expect(api?.args).toContain("BASE_URL:http://localhost:8807");
+    expect(api?.args).not.toContain("BASE_URL:http://localhost:8787");
   });
 
   test("every child env carries each worker's *_PORT and *_ORIGIN", async () => {

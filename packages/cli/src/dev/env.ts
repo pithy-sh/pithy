@@ -57,6 +57,7 @@ export interface StartCommand {
 export function startCommand(
   worker: WorkerTarget,
   port: number,
+  origin: string | null,
   launchWrangler: WranglerLauncher,
   persistTo: string,
   baseEnv: NodeJS.ProcessEnv = process.env,
@@ -79,9 +80,47 @@ export function startCommand(
     "0",
     "--persist-to",
     persistTo,
+    ...ownOriginVarArgs(origin),
     ...ciVarArgs(baseEnv),
     ...hostVarArgs(worker.name, hostPorts),
   ]);
+}
+
+/**
+ * Tell the Worker where it itself answers, as `BASE_URL`.
+ *
+ * **The one address a Worker cannot work out and cannot be made to write down.** It cannot derive it
+ * from a request: `Host` is caller-controlled, so a Worker that did would take its own identity from
+ * whoever called it. And it cannot state it in `wrangler.jsonc`, because a dev port is *allocated* —
+ * every checkout reserves its own block, so a literal there is right in the first checkout on a machine
+ * and wrong in every other one. `pithy dev` is the only party that knows, and this is where it says so.
+ *
+ * `--var` beats a `vars` entry in the config, so a project that already wrote a dev `BASE_URL` down is
+ * corrected rather than asked to edit anything. Deployed environments never reach here: `applyDomains`
+ * generates theirs from the `domains` declaration, and this runs only under `pithy dev`.
+ *
+ * **Note what this is not.** {@link hostVarArgs} deliberately withholds a host's own `<STEM>_ORIGIN`,
+ * because that var names a *dispatch target* and a Worker posting to itself is a request that answers
+ * itself forever. `BASE_URL` is the opposite kind of fact — it is an identity, the `iss` a
+ * control-plane token carries and the origin a callback link is built against — and withholding it is
+ * what made `pithy-sh/dashboard#95`: a second checkout signed tokens as the first one and its own seam
+ * denied every call. The two vars look alike and mean opposite things.
+ *
+ * The origin travels **verbatim** from `.dev.config.json` rather than being rebuilt as
+ * `http://localhost:${port}`. The config pins both, and recomposing one from the other is a second
+ * producer of a value that is already written down — the same rule `SeedPrepareContext.origin` states.
+ *
+ * **`null` means somebody else owns this Worker's `BASE_URL`, and today that is a capability host.**
+ * A host's is the *app's* origin, not its own: it holds no public route, and a callback link it mails
+ * has to arrive back at the app. `materializeHostConfigs` writes that value into the host's generated
+ * `wrangler.jsonc`, from the same allocation, so a `--var` here could only be a second producer of one
+ * value — and the one it would produce is the wrong one. Overriding it would point every verification
+ * link at the email host.
+ */
+function ownOriginVarArgs(origin: string | null): string[] {
+  if (origin === null) return [];
+  // wrangler splits a `--var` at its first colon, so the `http://` in the value survives intact.
+  return ["--var", `BASE_URL:${origin}`];
 }
 
 /**
@@ -99,6 +138,12 @@ export function startCommand(
  *
  * A host is never handed its own address: it *is* the thing at that origin, and a self-dispatch
  * loop is a request that answers itself forever.
+ *
+ * **That is a rule about dispatch targets, not about self-knowledge.** A Worker does learn where it
+ * itself answers — see {@link ownOriginVarArgs}, which hands it exactly that as `BASE_URL`. The two
+ * vars are adjacent, look alike, and mean opposite things: `<STEM>_ORIGIN` is somewhere to send a
+ * request, `BASE_URL` is who you are. Reading the paragraph above as "a Worker never learns its own
+ * origin" is what left every checkout but the first signing tokens as another one (#462).
  */
 function hostVarArgs(workerName: string, hostPorts: Readonly<Record<string, number>>): string[] {
   const args: string[] = [];
