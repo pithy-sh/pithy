@@ -22,6 +22,12 @@ _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes
 | `GET /payments/pricing` | What the caller's own subscription pays, and when that changes | bearer · session |
 | `POST /payments/checkout` | Create a checkout, on Stripe, Lemon Squeezy or Paddle | bearer · session |
 | `POST /payments/portal` | Create a billing-portal session for the caller's own account | bearer · session |
+| `GET /payments/subscription` | Where the caller's own subscription stands, read live from the store | bearer · session |
+| `POST /payments/subscription/preview` | What moving to one catalog product would cost, before anything is committed | bearer · session |
+| `POST /payments/subscription/change` | Move the caller's own subscription onto one catalog product | bearer · session |
+| `POST /payments/subscription/cancel` | Stop it renewing — today, or at the end of the paid period | bearer · session |
+| `POST /payments/subscription/keep` | Withdraw a scheduled cancellation | bearer · session |
+| `POST /payments/subscription/refund` | Ask the store to refund the payments made on it | bearer · session |
 | `POST /payments/webhooks/apple` | App Store Server Notifications V2 | signed-webhook |
 | `POST /payments/webhooks/google` | Play Real-time Developer Notifications, via Pub/Sub push | signed-webhook |
 | `POST /payments/webhooks/stripe` | Stripe events | signed-webhook |
@@ -94,6 +100,56 @@ A browser reads three states off it, and they are not the same answer:
 **`currentAmountMinor` and `listAmountMinor` are not divisible by 100.** They are the store's own integers in the currency's smallest unit, and how many decimal places that unit has is a property of the currency rather than a constant: `500` is $5.00 in USD and ¥500 in JPY, and Korean won and Chilean pesos are the same story. **Read them beside `currency` or not at all.** Where the store hands you a rendered total — `PricePreview`'s `formattedTotals` and `formattedUnitTotals` — pass it through byte for byte; it already carries the currency's decimals, symbol and separators. Where you must work from the integers, take the scale from the currency (`Intl.NumberFormat(locale, { style: "currency", currency }).resolvedOptions().minimumFractionDigits`) and never from a literal. A `/ 100` in a consumer is wrong in every zero-decimal market it reaches, and wrong silently.
 
 **This section stays here.** `src/http/routeContract.test.ts` parses that table and compares it against the real registrations in both directions, holds every control-plane scope the guards demand to it, and holds `GET /payments/pricing`'s response envelope to the field table above — field by field. It is specification, not a summary, and a copy of it on the site would be the second list that drifts.
+
+### What `GET /payments/subscription` answers
+
+The read that ships before the four verbs beside it. A capability that can cancel a subscription and cannot report the cancellation has shipped the half that creates the support ticket, which is #247 in miniature.
+
+```json
+{
+  "subscription": {
+    "productId": "team_monthly",
+    "status": "active",
+    "currency": "usd",
+    "currentPeriodEndsAt": "2026-09-15T11:42:21.789Z",
+    "nextBilledAt": null,
+    "scheduledChange": { "action": "cancel", "effectiveAt": "2026-09-15T11:42:21.789Z", "resumesAt": null },
+    "nextEvent": { "kind": "ends", "at": "2026-09-15T11:42:21.789Z" }
+  }
+}
+```
+
+`subscription` is null when the caller holds none, and when the store has nothing to say about the row it holds. That is a fact rather than a failure, and it is deliberately not a 404: a 404 would make this route an existence oracle and would read, to a screen, exactly like a Worker that could not be reached.
+
+**A holder with more than one live subscription gets `payments/subscription_change_refused` (409), on all five routes.** Null would say they hold none and picking one would render a plan beside a button that ends a different one, so the server says there are two and stops. Send them to the billing portal.
+
+| Field | What it is |
+| --- | --- |
+| `productId` | The catalog product this subscription is for — the key in `products`. Look the display name up from it; a name copied onto every response goes stale the day it is changed |
+| `status` | The normalized status, never a store's own. **It does not say whether the subscription is ending** |
+| `currency` | What it bills in, lowercase, or null when the store did not state one. Here to format the price `GET /payments/pricing` carries, not to carry a price |
+| `currentPeriodEndsAt` | When the period already paid for runs out, ISO-8601. Null while trialing or paused, which are the states with no billing period |
+| `nextBilledAt` | When the next charge falls due, or null when none is going to. **Null is neither canceled nor broken** |
+| `scheduledChange` | The change waiting to land, or null. `action` is `cancel`, `pause` or `resume`; `effectiveAt` is when it happens; `resumesAt` is when a paused subscription comes back, or null |
+| `nextEvent` | What happens next and when, already resolved — `{ "kind": "renews" \| "ends" \| "pauses" \| "resumes", "at": "…" }`, or `{ "kind": "unknown", "at": null }` |
+
+**Render `nextEvent`, not `status`.** The subscription above is one somebody canceled. Paddle reports it as `active`, with no cancellation date and a blank next billing date (recorded against the sandbox, 2026-08-28): two of the three say the subscription is fine and the third says nothing at all. The day it ends exists only on `scheduledChange.effectiveAt`. A screen that reads the status tells a customer who canceled that they will be billed again, and `nextEvent` is that precedence resolved on the server so no client has to rediscover it.
+
+**The three writes answer `{ "subscription": … }` with the same object, never null** — each resolved a subscription before it ran — and `POST /payments/subscription/preview` answers `{ "quote": … }` instead: what settles today, what settles on the next invoice, and what the subscription pays afterwards. Three separate facts, because a deferred downgrade has three: the recorded one settles *nothing* today and still owes the customer 65.58, on an invoice a month out. A quote is rendered, confirmed and discarded — never stored.
+
+### What `POST /payments/subscription/refund` does, and does not
+
+It **asks**. It does not refund. Paddle holds most live refunds at `pending_approval` until a person there reviews them, so the route answers `{ "refund": { "outcomes": [ … ] } }` — one entry per payment, each `requested`, `already_requested` or `failed`, with a `status` on the first two that is `awaiting_review`, `approved`, `rejected`, `reversed` or `unknown`. **None of those means the money has arrived**, `approved` included: that is a decision, not a settlement, and the settlement reaches you as a webhook.
+
+Nothing is revoked here. Not the entitlement, not the purchase row, not a projection — the subscriber keeps what they paid for until the store approves the refund and the webhook says so, because a refund the store then rejects would otherwise have left them with neither the money nor the product.
+
+**Refunds attach to a payment, not to a plan**, so this acts on a set. A customer who joined on one plan, upgraded mid-period and canceled has paid twice, and a policy that owes them their money owes both. The report is total over that set: one entry per payment, always, so a caller counting entries and a caller counting their own payments get the same number. Everything knowable in advance refuses the whole request and raises nothing; once one refund exists, every remaining failure is an entry rather than an error, because an error over a state where money is already moving is a partial told backwards.
+
+**The 14-day window is not here, and no window is.** How long a customer has to ask is your commercial policy, with your company behind it. The kit makes the refund possible and hard-codes no number; your screen decides which button exists and when.
+
+The body is empty and there is no amount anywhere: every refund raised is for a payment's whole total. A partial refund needs the store's own line-item ids, which this capability does not hold, and an amount on a bearer route is a self-service withdrawal.
+
+**None of the six accepts a subscription, a price, or a rail.** `change` and `preview` take one field, `productId`, and the route resolves the store's own price from the catalog; `cancel` takes `timing`, which is `now` or `at_period_end` in the customer's own terms rather than the store's; `keep` and `refund` take no body at all. A body naming a price would move a customer onto a plan the project does not sell, and a body naming a subscription would move somebody else's — so neither is refused by a check, and both are unreachable because there is nowhere to write them.
 
 ## License
 

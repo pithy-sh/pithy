@@ -57,6 +57,18 @@ import { minorUnitDigits } from "../data/money";
  * exponent table, the one the purchase projection already uses, and it imports nothing — so the browser
  * bundle gains a set of currency codes and no graph. A second copy of that table here would be this
  * issue's own defect, one layer down.
+ *
+ * **#465 corrected `./paddle.ts` about `Intl` and did not touch this module's reasoning — checked, 2026-08-28.**
+ * That correction is that `Intl` does know the currency exponents, so a server with only minor units may
+ * render a figure. Neither half of the argument here rested on it. This module never needed the exponent
+ * from `Intl` — it has ISO 4217, which is what a *store* denominates in, and that turned out to be the
+ * stronger choice: CLDR renders `HUF` and `COP` with no fraction at all, while Paddle bills both with two,
+ * so a `places` taken from `Intl` would answer 0 for a currency whose minor unit is the hundredth. And the
+ * separator claim above is untouched, because it is not a claim about what `Intl` knows: it is that
+ * `Intl.NumberFormat(undefined, …)` answers for the **visitor's** locale while the string in hand was
+ * rendered in **Paddle's**, and the two differing is exactly the case that matters. Trimming a string
+ * Paddle rendered stays right here; rendering one from scratch stays wrong here, and is right only where
+ * Paddle rendered nothing — `../data/renderMoney.ts`, on the server, from the negotiated locale.
  */
 
 /** A decimal digit in any script. `Nd`, so Arabic-Indic and Devanagari count as much as ASCII. */

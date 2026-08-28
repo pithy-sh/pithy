@@ -21,11 +21,29 @@ import { withoutZeroFraction } from "./wholeUnits";
  * VAT while a visitor in Chicago will be charged $5.75. Only a script running in that browser, talking to
  * Paddle from that IP, knows — so the whole of localized pricing lives here or it does not exist.
  *
- * **Never format a price yourself, and never write one down.** Paddle returns `formattedTotals` already
- * rendered for the visitor: the right symbol, the right separators, and whole units for the zero-decimal
- * currencies (¥725 is `725`, not `72500`). A kit that took the raw minor units and reached for
- * `Intl.NumberFormat` would have to carry a table of which currencies have two decimals, and would get
- * one wrong. The raw amounts are exposed too, but they are for **comparing**, never for showing.
+ * **Never format a price yourself here, and never write one down.** Paddle returns `formattedTotals`
+ * already rendered for the visitor: the right symbol, the right separators, and whole units for the
+ * zero-decimal currencies (¥725 is `725`, not `72500`). The raw amounts are exposed too, but they are for
+ * **comparing**, never for showing.
+ *
+ * **The reason this line used to give was false, and it was measured false (#465, 2026-08-28).** It said a
+ * kit reaching for `Intl.NumberFormat` "would have to carry a table of which currencies have two decimals,
+ * and would get one wrong". `Intl` carries that table, from CLDR:
+ * `new Intl.NumberFormat(locale, { style: "currency", currency }).resolvedOptions().maximumFractionDigits`
+ * answers 2 for `USD` and `GBP` and 0 for `JPY`, `KRW` and `CLP`, and renders `$65.82`, `¥6,582` and
+ * `₩6,582` from the same 6582. Paddle's own documentation instructs adopters to do exactly this — "use a
+ * currency library to format monetary values to the correct number of decimals… symbols and decimal
+ * separators are placed correctly" (api-reference/about/data-types).
+ *
+ * **What the kit still refuses is deriving an AMOUNT, and that is the rule this paragraph is load-bearing
+ * for.** The figure is Paddle's; a renderer places a point and attaches a symbol and decides nothing about
+ * how much money there is. Where Paddle already rendered the string — here, on the pricing surfaces, where
+ * `formattedTotals` exists — that string is what ships, because a second rendering of one price is a second
+ * spelling of it and the visitor's browser locale is not the one Paddle used. Where Paddle renders nothing
+ * — `subscriptions.preview` and `transactions.preview` return no formatted field at any depth, verified
+ * against the recordings — the alternative to rendering is a confirmation screen with no figure on it. That
+ * case is `data/renderMoney.ts`, on the server, from the negotiated locale, and it carries the measurement
+ * that the exponent must come from ISO 4217 rather than from CLDR's display digits.
  *
  * **Amended: removing a zero fraction from Paddle's string is not composing one (Jim, 2026-08-21).** The
  * rule above was read as forbidding any touch of a formatted total, and two adopter surfaces each wrote

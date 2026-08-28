@@ -58,8 +58,10 @@ describe("createStripePortalSession", () => {
 
   test("sends nothing but the customer and the return URL", async () => {
     // The portal's contents — what a subscriber may cancel, switch, or download — are configured in Stripe's
-    // dashboard, not here. Pithy never owns plan changes or proration, and a parameter that decided them would be
-    // exactly that.
+    // dashboard, not here. This capability never computes proration or tax, and a parameter that decided them
+    // would be exactly that. It may now *invoke* a plan change (#79's locked decision 2, amended 2026-08-28) —
+    // on Paddle, which implements `SubscriptionRail`. Stripe does not, so this page is still its whole
+    // plan-management surface and this request is still two fields.
     const { sent } = await create();
     expect(
       sent

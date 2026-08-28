@@ -157,6 +157,7 @@ export const esErrors: MessageCatalog = {
   "payments/rail_not_configured": "Ese método de pago no está disponible.",
   "payments/product_not_found": "Ese producto no está en el catálogo.",
   "payments/environment_mismatch": "Esa compra pertenece a otro entorno de la tienda.",
+  "payments/subscription_change_refused": "El estado de esa suscripción no permite el cambio solicitado.",
   "payments/receipt_already_owned": "Esa compra ya pertenece a otra cuenta.",
   "payments/provider_unavailable": "No se ha podido contactar con la tienda. Inténtalo más tarde.",
   "payments/entitlement_required": "Necesitas una compra activa para esto.",

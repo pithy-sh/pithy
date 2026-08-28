@@ -3,6 +3,7 @@
 
 import type { CreatedDiscount, DiscountTerms, SubscriptionPricing } from "../../data/discount";
 import type { PaymentsPurchase } from "../../data/purchase";
+import type { RefundRequest, SubscriptionChangeQuote, SubscriptionStanding } from "../../data/subscription";
 import type { PaymentsPaddleCredentials } from "../../secret/registry";
 import type {
   CheckoutHandoff,
@@ -15,6 +16,11 @@ import type {
   PortalSessionInput,
   PricingRail,
   RailRequestContext,
+  RefundRail,
+  RefundRequestInput,
+  SubscriptionCancelInput,
+  SubscriptionChangeInput,
+  SubscriptionRail,
   UnboundProviderEvent,
   VerifiedNotification,
   VerifiedPurchase,
@@ -27,6 +33,14 @@ import { PaddleEvent } from "./objects";
 import { createPaddlePortalSession } from "./portal";
 import { PADDLE_ADJUSTMENTS_INCLUDE, readTransaction } from "./read";
 import { readPaddlePricing, refreshPaddlePurchase } from "./refresh";
+import { requestPaddleRefunds } from "./refund";
+import {
+  cancelPaddleSubscription,
+  changePaddlePlan,
+  keepPaddleSubscription,
+  previewPaddleChange,
+  readPaddleStanding,
+} from "./subscription";
 import { verifyPaddleTransaction } from "./verify";
 import { parsePaddleNotification, readPaddleEvent } from "./webhook";
 
@@ -37,6 +51,18 @@ import { parsePaddleNotification, readPaddleEvent } from "./webhook";
  * Unlike Lemon Squeezy it also implements `verify`, and that is not a nicety: `dev` is not publicly
  * routable, so a dev checkout's webhooks land at `staging`, and a submitted `txn_…` checked against a
  * proven ownership stamp is what makes local development work at all. See `verify.ts`.
+ *
+ * It is also the first rail to implement {@link SubscriptionRail} — read a subscription's standing, quote a
+ * plan change, make one, cancel, and withdraw a cancellation. That is a third interface rather than three
+ * more methods on the shared contract for {@link CheckoutRail}'s reason: an Apple or Google subscription is
+ * changed inside the store's own UI, on the device, and a rail forced to declare `changePlan` would declare a
+ * method that cannot be written. `subscription.ts` holds the five, and every rule they enforce came out of
+ * sandbox recordings rather than the documentation (#465).
+ *
+ * It implements {@link RefundRail} too, and that is a *sixth* interface rather than a sixth subscription verb.
+ * The two abilities are independent in both directions — Play refunds from the server and changes no plan from
+ * it, Apple's only refund endpoint is a lookup — and `isSubscriptionRail` ANDs its methods, so widening it
+ * would have de-narrowed every rail already shipping the five. `refund.ts` holds it.
  *
  * Built per request from credentials the caller resolved through the secrets store, rather than reading
  * them itself. That keeps the rail a pure function of its inputs and keeps the secret read at the point of
@@ -73,7 +99,7 @@ export interface PaddleRailOptions {
 export function paddleRail(
   credentials: PaymentsPaddleCredentials,
   options: PaddleRailOptions,
-): PaymentsRailProvider & CheckoutRail & DiscountRail & PricingRail {
+): PaymentsRailProvider & CheckoutRail & DiscountRail & PricingRail & SubscriptionRail & RefundRail {
   const transport = options.transport ?? paddleHttpFetch;
   const base = { credentials, environment: options.environment, transport };
 
@@ -162,6 +188,32 @@ export function paddleRail(
         storeCurrency: options.storeCurrency,
         transport,
       });
+    },
+
+    async readStanding(purchase: PaymentsPurchase): Promise<SubscriptionStanding | undefined> {
+      return await readPaddleStanding(purchase, base);
+    },
+
+    async previewChange(input: SubscriptionChangeInput, context: RailRequestContext): Promise<SubscriptionChangeQuote> {
+      // The one method here that reads the context's locale: its answer is the only one carrying money a
+      // person reads. See `RailRequestContext.locale`.
+      return await previewPaddleChange(input, base, context.locale);
+    },
+
+    async changePlan(input: SubscriptionChangeInput): Promise<SubscriptionStanding> {
+      return await changePaddlePlan(input, base);
+    },
+
+    async cancelSubscription(input: SubscriptionCancelInput): Promise<SubscriptionStanding> {
+      return await cancelPaddleSubscription(input, base);
+    },
+
+    async keepSubscription(purchase: PaymentsPurchase): Promise<SubscriptionStanding> {
+      return await keepPaddleSubscription(purchase, base);
+    },
+
+    async requestRefunds(input: RefundRequestInput): Promise<RefundRequest> {
+      return await requestPaddleRefunds(input, base);
     },
   };
 }

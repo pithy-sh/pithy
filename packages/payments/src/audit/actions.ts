@@ -69,11 +69,6 @@ export const PaymentsAuditActions = {
    * queryable.
    */
   clawbackFailed: "payments/clawback_failed",
-  /**
-   * An entitlement was granted by hand through the control plane — a comp, or the repair of a purchase that
-   * never projected. Audited because it is one of exactly two ways an entitlement appears without money
-   * moving, and because the actor is support tooling rather than the user who benefits.
-   */
   /** A discount code was minted at a store. An administrative act with a cost attached, so it is recorded. */
   discountCreated: "payments/discount_created",
   /**
@@ -84,6 +79,11 @@ export const PaymentsAuditActions = {
    * less — and `payments:discounts:read` is granted precisely to connections that cannot mint anything.
    */
   discountsRead: "payments/discounts_read",
+  /**
+   * An entitlement was granted by hand through the control plane — a comp, or the repair of a purchase that
+   * never projected. Audited because it is one of exactly two ways an entitlement appears without money
+   * moving, and because the actor is support tooling rather than the user who benefits.
+   */
   entitlementGranted: "payments/entitlement_granted",
   /** An entitlement was revoked by hand through the control plane. The other of the two, for the same reason. */
   entitlementRevoked: "payments/entitlement_revoked",
@@ -101,6 +101,77 @@ export const PaymentsAuditActions = {
    * first.
    */
   purchasesRead: "payments/purchases_read",
+  /**
+   * A subscription's plan was changed — a move up or down the ladder.
+   *
+   * **By the subscriber, on a bearer route** — not through the control plane, unlike the two grant
+   * actions above. That distinction is the reason the row matters: an operator acting through the
+   * control plane is already accountable to it, while a customer changing their own bill leaves this
+   * row and the store's own record and nothing else.
+   *
+   * Audited even though a purchase row may follow it, and the exception to the rule at the top of this
+   * file is the direction of the move. An upgrade settles immediately and does leave a transaction; a
+   * downgrade is booked against the next billing period and writes **no** transaction at all (#465), so
+   * the purchases table holds nothing until the renewal, and the act that made next month's invoice
+   * smaller has no record anywhere else. Auditing only one of the two directions would make the trail
+   * agree with the ledger precisely where the ledger is already sufficient, and go silent where it is not.
+   *
+   * The proration mode is chosen by the rail from the direction of the change and is never a caller's to
+   * set. It would belong in the event for exactly that reason — a decision this package made on a
+   * customer's behalf — but **the route cannot record it**: the rail returns a `SubscriptionStanding`
+   * and no flag saying which mode it picked, so the row carries both plans and both price ids and lets
+   * the direction imply the mode. Stated rather than left as a silent omission, because a reader who
+   * expects the mode here would otherwise conclude the trail had lost it.
+   *
+   * Price ids and the direction. Never a quote's totals — a preview is not what was charged, and copying
+   * money into the trail would make a second, weaker ledger.
+   */
+  subscriptionPlanChanged: "payments/subscription_plan_changed",
+  /**
+   * A subscription was canceled by its subscriber on a bearer route, effective at the end of the
+   * period already paid for.
+   *
+   * The write whose *absence* is the incident. A scheduled cancellation leaves `status` at `active` and
+   * blanks `next_billed_at` (recorded against the sandbox, #465), so a subscription that has quietly
+   * stopped renewing is indistinguishable, in any projection built from status, from one that has not.
+   * When a customer says they never asked to cancel, this row is the whole answer: which actor asked,
+   * for which subject, and when.
+   */
+  subscriptionCanceled: "payments/subscription_canceled",
+  /**
+   * A scheduled cancellation was withdrawn, and the subscription will renew after all.
+   *
+   * Its own action rather than an outcome on the cancellation event, because the two are separate acts by
+   * possibly separate actors, and the pair is what a dispute is reconstructed from. Folded together, the
+   * trail asserts a cancellation and holds nothing that says it was taken back — which reads, to whoever
+   * audits later, as a subscription that kept billing after it was canceled.
+   */
+  subscriptionCancelWithdrawn: "payments/subscription_cancel_withdrawn",
+  /**
+   * A subscriber asked for a subscription's payments back, on a bearer route.
+   *
+   * **The one write in this capability that leaves no other record at all.** A refund is a *request*:
+   * Paddle holds most live ones awaiting a human, no transaction is created, the purchase rows are
+   * untouched, and the entitlement stands. Nothing enters `pithy_payments_purchases` until — and unless —
+   * the store approves it weeks later and the webhook arrives. Between the ask and that webhook there is
+   * one place recording that somebody asked for money back, for which subject, and which actor asked. This
+   * is it, and a rejected refund means that gap is permanent.
+   *
+   * Its own action rather than an outcome on the cancellation, for the reason the withdrawal has its own:
+   * canceling and asking for a refund are separate acts, often minutes apart and sometimes by different
+   * actors, and the pair is what a dispute is reconstructed from.
+   *
+   * **Counts and adjustment ids. Never an amount.** How much a customer is getting back is not decided at
+   * this moment by anybody — that is the store's later decision — so a figure here would be a number
+   * asserting something nobody has agreed to, in the one table nothing corrects. The adjustment ids are
+   * carried because they are the only handle an operator has on money in flight, and they are neither a
+   * credential nor a bearer artifact.
+   *
+   * Emitted **only when an adjustment was actually raised.** A repeat of a request already standing is the
+   * no-op, the same as a retried cancel, and a trail claiming two refunds where one was asked for is worse
+   * than one claiming none.
+   */
+  subscriptionRefundRequested: "payments/subscription_refund_requested",
   /** A management client read the subscriptions. The narrower half of the purchase log, recorded separately. */
   subscriptionsRead: "payments/subscriptions_read",
   /**

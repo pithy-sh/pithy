@@ -41,8 +41,21 @@ const ENGLISH = new Map<string, string>(
  * because without it every assertion below is a comparison of two sets that could both be empty: a
  * catalog gutted to `{}` and a union that failed to import would agree with each other perfectly. The
  * population is what makes the agreement mean something.
+ *
+ * **The four sites, so one red gate names them all.** This number is written by hand in four places on
+ * purpose (see above). Adding or removing a kit error code moves every one of them, and they live in
+ * three packages that do not run each other's tests — so a contributor who fixes only the one that went
+ * red ships the other three red. They are:
+ *
+ *   packages/core/src/error/payload.test.ts            KIT_ERROR_CODE_COUNT
+ *   packages/cli/src/ci/catalogCoverage.test.ts        KIT_ERROR_CODE_COUNT
+ *   packages/i18n/src/catalogs/es/errors.test.ts       KIT_ERROR_CODE_COUNT
+ *   packages/i18n/src/catalogs/es/catalogs.test.ts     the inline toHaveLength
+ *
+ * And the code itself also needs: the Spanish sentence in `packages/i18n/src/catalogs/es/errors.ts`,
+ * and `bun run docs-catalog` to regenerate `docs/catalog.generated.json`.
  */
-const KIT_ERROR_CODE_COUNT = 120;
+const KIT_ERROR_CODE_COUNT = 121;
 
 /**
  * The code that forced the grammar wide enough to spell the taxonomy.

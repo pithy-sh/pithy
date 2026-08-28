@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
+import type * as z from "zod";
 import { PaymentsConfig } from "../config/config";
 import { PAYMENTS_HOSTED_RAILS, PAYMENTS_RAILS, type PaymentsRail } from "../data/rail";
 import { PaymentsRailNotConfiguredError } from "../error/errors";
+import { PaymentsDiscountResponse } from "../http/responses";
+import { AdminDiscountsQuery, CheckoutRequest, DiscountCreateRequest } from "../http/schemas";
 import { PaymentsProviderCredentials } from "../secret/registry";
-import { isCheckoutRail } from "./contract";
+import { isCheckoutRail, isDiscountRail, isSubscriptionRail } from "./contract";
 import { implementedRails, resolveRailProvider } from "./providers";
 
 const CREDENTIALS = PaymentsProviderCredentials.parse({
@@ -104,6 +107,26 @@ describe("resolveRailProvider", () => {
     expect(PAYMENTS_RAILS.length).toBe(5);
     expect(initiating.length).toBeGreaterThan(0);
     expect(initiating.length).toBeLessThan(PAYMENTS_RAILS.length);
+  });
+
+  /**
+   * The gate on the wiring, and there is no hand-written list on the other side of it.
+   *
+   * `PAYMENTS_HOSTED_RAILS` exists because a browser screen reads it and cannot construct a rail provider to
+   * find out what it implements. Nothing reads "which rails manage subscriptions" yet, so a second literal
+   * would be a mirror with nothing to mirror — a line to keep in step for no reader. What is needed is this:
+   * every rail is built from real credentials and asked at runtime, so a `paddleRail` that declared four of
+   * the five methods, or a fifth rail that quietly grew them, fails here.
+   *
+   * Stated as an equality rather than a truth about Paddle alone, so the guard is proven able to answer no.
+   */
+  test("paddle is the only rail that can manage a subscription from the server", () => {
+    const managing = PAYMENTS_RAILS.filter((rail) =>
+      isSubscriptionRail(resolveRailProvider(rail, config({ [rail]: true }), CREDENTIALS)),
+    );
+    expect(managing).toEqual(["paddle"]);
+    // A floor, so a `PAYMENTS_RAILS` that stopped enumerating cannot make this pass by asking nobody.
+    expect(PAYMENTS_RAILS.length).toBe(5);
   });
 
   test("the store rails hear about purchases and do not make them", () => {
@@ -207,5 +230,82 @@ describe("the lemonSqueezy factory hands the rail what only config knows", () =>
       products: { pro: { type: "subscription", name: "Pro", entitlements: ["pro"], lemonSqueezy: { variantId: "1" } } },
     });
     expect(config.lemonSqueezy?.storeCurrency).toBe("usd");
+  });
+});
+
+/**
+ * Every schema that names a rail, held against the rails that can actually serve it.
+ *
+ * **The failure this exists for.** Four schemas wrote their rail out by hand — `CheckoutRequest`,
+ * `AdminDiscountsQuery`, `DiscountCreateRequest`, `PaymentsDiscountResponse` — and Paddle shipped a
+ * checkout module, a portal, `createDiscount` and `listDiscounts` without reaching any of them. The rail
+ * worked everywhere except the four places a caller has to name it, so `POST /payments/checkout` with
+ * `rail: "paddle"` was a 400 on a rail that sells, and a discount could not be minted at the one store
+ * that is a merchant of record for it. Nothing was red: a literal has no other side.
+ *
+ * **So the other side is the provider itself.** Every rail in the enum is *built* here, from real
+ * credentials and a real config, and asked at runtime which interfaces it carries — the shape
+ * `PAYMENTS_HOSTED_RAILS` is already held to two tests above. A sixth rail with a checkout module and no
+ * line in `CheckoutRequest` fails here, and so does a rail named in a schema that cannot serve the route
+ * behind it.
+ *
+ * **Discounts are asked separately from checkout, and today the two answers match.** They are one enum
+ * because a second literal would be a mirror with nothing to mirror. The day a rail mints codes and sells
+ * nothing — or sells and mints nothing — these two expectations disagree, the enum splits, and that is the
+ * moment a second name is earned rather than a judgment call.
+ */
+describe("the schemas that name a rail", () => {
+  /** Which rails a schema's rail field parses. Asked one literal at a time, so an optional field answers too. */
+  function accepted(field: z.ZodType): PaymentsRail[] {
+    return PAYMENTS_RAILS.filter((rail) => field.safeParse(rail).success);
+  }
+
+  /** Every rail, built for real, filtered by what it structurally implements. */
+  function implementing(guard: (provider: ReturnType<typeof resolveRailProvider>) => boolean): PaymentsRail[] {
+    return PAYMENTS_RAILS.filter((rail) => guard(resolveRailProvider(rail, config({ [rail]: true }), CREDENTIALS)));
+  }
+
+  test("the gate is asking real providers and real schemas, not empty lists", () => {
+    // Anti-vacuous, both halves. A `safeParse` that never succeeded and a guard that never matched would
+    // make every assertion below compare two empty arrays.
+    expect(PAYMENTS_RAILS.length).toBe(5);
+    expect(implementing(isCheckoutRail).length).toBeGreaterThan(0);
+    expect(implementing(isDiscountRail).length).toBeGreaterThan(0);
+    expect(accepted(CheckoutRequest.shape.rail).length).toBeGreaterThan(0);
+    // And each is a strict subset: a list that had quietly become "all five" would agree with anything.
+    expect(implementing(isCheckoutRail).length).toBeLessThan(PAYMENTS_RAILS.length);
+    expect(implementing(isDiscountRail).length).toBeLessThan(PAYMENTS_RAILS.length);
+  });
+
+  test("`POST /checkout` accepts exactly the rails that can create a checkout", () => {
+    expect(accepted(CheckoutRequest.shape.rail)).toEqual(implementing(isCheckoutRail));
+  });
+
+  test("both discount routes accept exactly the rails that can mint a discount", () => {
+    // `isDiscountRail` and not `isCheckoutRail`: the route resolves a provider and narrows on the first,
+    // so a schema built from the second would be an accepted rail refused one line later.
+    expect(accepted(AdminDiscountsQuery.shape.rail)).toEqual(implementing(isDiscountRail));
+    expect(accepted(DiscountCreateRequest.shape.rail)).toEqual(implementing(isDiscountRail));
+  });
+
+  test("the minted-discount response names exactly the rails that could have minted it", () => {
+    // The response is the mirror of the request, and it drifted with it: a rail a caller may name and the
+    // reply cannot spell is a 500 on a successful mint.
+    expect(accepted(PaymentsDiscountResponse.shape.rail)).toEqual(implementing(isDiscountRail));
+  });
+
+  test("no schema names a store rail — a purchase inside Apple or Google is not one this server starts", () => {
+    // The floor under the equalities above, stated as an attack rather than derived from them. Apple and
+    // Google reach every one of these routes as a 400, which is the refusal, and it is what an equality
+    // between two lists that both grew wrong would not catch.
+    for (const field of [
+      CheckoutRequest.shape.rail,
+      AdminDiscountsQuery.shape.rail,
+      DiscountCreateRequest.shape.rail,
+      PaymentsDiscountResponse.shape.rail,
+    ]) {
+      expect(field.safeParse("apple").success).toBe(false);
+      expect(field.safeParse("google").success).toBe(false);
+    }
   });
 });

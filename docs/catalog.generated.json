@@ -1146,6 +1146,10 @@
       "status": 403
     },
     {
+      "code": "payments/subscription_change_refused",
+      "status": 409
+    },
+    {
       "code": "payments/verification_failed",
       "status": 400
     },

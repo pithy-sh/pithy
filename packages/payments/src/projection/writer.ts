@@ -32,11 +32,20 @@ import { ProviderEvent, type ProviderEventInput } from "./event";
 /**
  * The projection writer — the one place a purchase is ever written, and the heart of the package.
  *
- * Three triggers converge here: the buyer's app submitting its receipt, the provider's webhook, and
- * the reconciliation Workflow re-verifying what the webhook missed. All three produce the identical row,
- * which is what makes a dropped client call cost nothing and a replayed webhook change nothing — and it is
- * why refunds, renewals, and revocations need no handler of their own. They are states, and this projects
- * a state.
+ * Five triggers converge here, across four modules — `http/routes.ts` twice, and one each from
+ * `workflows/reconcile.ts`, `workflows/paddleSweep.ts` and `projection/orphans.ts`:
+ *
+ * - the buyer's app submitting its receipt to `POST {base}/purchases`;
+ * - the provider's webhook, on the route that verified its signature;
+ * - the reconciliation Workflow re-verifying what the webhook missed, through each rail's `refresh`;
+ * - the Paddle events sweep, which finds a purchase that has **no row** at all, so `refresh` never sees it;
+ * - the orphan repair that runs when an account links, projecting the notifications that arrived before
+ *   anyone could say whose they were (#341).
+ *
+ * All five produce the identical row, which is what makes a dropped client call cost nothing and a replayed
+ * webhook change nothing — and it is why refunds, renewals, and revocations need no handler of their own.
+ * They are states, and this projects a state. The count is prose and nothing holds it: the honest check is
+ * `grep -rn projectPurchase src/`.
  *
  * Four properties hold, and each is enforced by the database rather than by careful code:
  *
