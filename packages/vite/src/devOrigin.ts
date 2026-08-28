@@ -12,8 +12,19 @@ import { WORKER_ORIGIN_VAR } from "@pithy-sh/core/src/worker/identity";
  */
 export interface WorkerVars {
   /** The Worker's plain environment variables, as `wrangler.jsonc` declared them. */
-  vars?: Record<string, unknown>;
+  vars?: Record<string, WorkerVarValue>;
 }
+
+/**
+ * What a wrangler `vars` entry may hold — wrangler's own `Json`, restated.
+ *
+ * Restated rather than imported for the reason {@link WorkerVars} is structural, and it has to be this
+ * exact shape rather than `unknown`: the customizer's return type is checked against
+ * `Partial<WorkerConfig>` at the call site, and `Record<string, unknown>` is not assignable to
+ * `Record<string, Json>` — an index signature is invariant. A looser type here compiles in this package
+ * and fails in every adopter's, which is the worst place to find out.
+ */
+export type WorkerVarValue = string | number | boolean | null | WorkerVarValue[] | { [key: string]: WorkerVarValue };
 
 /**
  * Give the Worker the origin `pithy dev` allocated this checkout, as `BASE_URL`.
