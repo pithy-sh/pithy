@@ -199,6 +199,15 @@ export const PaymentsAuditActions = {
    * queryable table, and copying them into the trail would make a second one.
    */
   reconcileRunsRead: "payments/reconcile_runs_read",
+  /**
+   * A management client started a reconciliation pass.
+   *
+   * **A write, and audited as one** — this is the trail entry that says a human, on a date, caused every repair
+   * the run then made. The repairs carry the run's id, so the trail joins: this row names who pressed, and the
+   * grant and revoke rows behind it name what moved. Without it a pass triggered from a browser is
+   * indistinguishable from the 04:00 cron, which is exactly the question somebody reading the trail is asking.
+   */
+  reconcileRunStarted: "payments/reconcile_run_started",
 } as const;
 
 /** One of the payments audit action codes. */

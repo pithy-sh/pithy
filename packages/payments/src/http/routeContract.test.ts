@@ -24,6 +24,7 @@ import {
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
   PAYMENTS_PURCHASES_READ_SCOPE,
   PAYMENTS_RECONCILE_READ_SCOPE,
+  PAYMENTS_RECONCILE_RUN_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
 } from "./scopes";
 
@@ -135,6 +136,7 @@ describe("payments route contract", () => {
       "GET /payments/pricing",
       "GET /payments/subscription",
       "POST /payments/admin/discounts",
+      "POST /payments/admin/reconcile-runs",
       "POST /payments/checkout",
       "POST /payments/entitlements/grant",
       "POST /payments/entitlements/revoke",
@@ -332,7 +334,7 @@ describe("the admin surface payments advertises", () => {
     // each needs. A declaration that drifted from `routes.ts` would have the client calling a path
     // nothing serves — and blaming the adopter's Worker for it.
     const { capability, app } = composed();
-    expect(capability.adminRoutes).toHaveLength(10);
+    expect(capability.adminRoutes).toHaveLength(11);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
   });
 
@@ -348,6 +350,7 @@ describe("the admin surface payments advertises", () => {
       "/billing/admin/entitlements/:subjectType/:subjectId",
       "/billing/admin/discounts",
       "/billing/admin/discounts",
+      "/billing/admin/reconcile-runs",
       "/billing/admin/reconcile-runs",
       "/billing/entitlements/grant",
       "/billing/entitlements/revoke",
@@ -368,6 +371,7 @@ describe("the admin surface payments advertises", () => {
       PAYMENTS_DISCOUNT_READ_SCOPE,
       PAYMENTS_DISCOUNT_CREATE_SCOPE,
       PAYMENTS_RECONCILE_READ_SCOPE,
+      PAYMENTS_RECONCILE_RUN_SCOPE,
       PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
       PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
     ]);

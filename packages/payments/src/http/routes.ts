@@ -9,6 +9,7 @@ import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/contex
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import { InternalError, NotFoundError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { resolveWorkflowBinding } from "@pithy-sh/core/src/workflow/dispatch";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { sharedSecretsStore } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import type { Context, Hono } from "hono";
@@ -49,6 +50,7 @@ import {
   PaymentsProductNotFoundError,
   PaymentsRailNotConfiguredError,
   PaymentsReceiptAlreadyOwnedError,
+  PaymentsReconcileNotProvisionedError,
   PaymentsSubscriptionChangeRefusedError,
 } from "../error/errors";
 import { fulfillPurchase } from "../grants/apply";
@@ -70,12 +72,14 @@ import {
 } from "../rails/contract";
 import { type RailTrustOptions, resolveRailProvider } from "../rails/providers";
 import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "../secret/registry";
+import { PAYMENTS_CAPABILITY, paymentsWorkflows } from "../workflows/specs";
 import { requireAuth } from "./guards";
 import type {
   PaymentsAdminCatalogResponse,
   PaymentsAdminDiscountsResponse,
   PaymentsAdminEntitlementsResponse,
   PaymentsAdminPurchasesResponse,
+  PaymentsAdminReconcileRunStarted,
   PaymentsAdminReconcileRunsResponse,
   PaymentsAdminSubjectEntitlementsResponse,
   PaymentsAdminSubscriptionsResponse,
@@ -128,6 +132,7 @@ import {
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
   PAYMENTS_PURCHASES_READ_SCOPE,
   PAYMENTS_RECONCILE_READ_SCOPE,
+  PAYMENTS_RECONCILE_RUN_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
 } from "./scopes";
 import {
@@ -1486,6 +1491,69 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
         );
       },
     );
+
+    /**
+     * CONTROL PLANE WRITE. Start a reconciliation pass now.
+     *
+     * **The counterpart to the read above, and a different power.** Reading the log says whether the nightly
+     * repair has been firing; this one calls the store, walks the catalog and writes entitlements — granting
+     * what a dropped webhook never granted, revoking what a missed cancellation left standing. Its own scope,
+     * so the health monitor that alarms on a stopped cron cannot move anybody's access.
+     *
+     * **It answers a start, never an outcome.** The pass is a Workflow — durable, retried, outliving this
+     * request by minutes — so there is nothing true to say here about what it repaired. The tally lands in the
+     * run log, joined to this instance by its id.
+     *
+     * **A missing binding refuses rather than degrading.** `triggerWorkflow` skips an `optional` job with a
+     * warning, which is right for a background dispatch on a request path that works without it: media
+     * finalizes an upload and merely skips enrichment. It is wrong here. Somebody pressed a button to make a
+     * pass happen, and answering 202 while nothing started is the failure this codebase spends its comments
+     * avoiding — so the binding is resolved directly and its absence is a refusal naming what to deploy.
+     *
+     * Idempotent, like the pass itself. A second press while one is in flight starts nothing and says
+     * `started: false`, which is a true sentence rather than a 409 that reads as a fault.
+     */
+    app.post(`${base}/admin/reconcile-runs`, requireControlPlane(PAYMENTS_RECONCILE_RUN_SCOPE), async (c) => {
+      const spec = paymentsWorkflows.reconcile;
+      const binding = resolveWorkflowBinding(c.env as Record<string, unknown>, {
+        binding: spec.binding,
+        capability: PAYMENTS_CAPABILITY,
+        log: c.var.log,
+      });
+      if (!binding) {
+        // Named as a provisioning fact rather than a fault of the request: the caller's scope was right, the
+        // route exists, and the job's host is not deployed here. `action` is what a person does about it.
+        throw new PaymentsReconcileNotProvisionedError({
+          detail: `Dispatching a reconciliation pass needs a Workflow binding named ${spec.binding} on this Worker.`,
+        });
+      }
+
+      // `create` answers `unknown` — the binding is structural, matched by having the method at all, and a
+      // loopback stand-in under `pithy dev` answers a different shape from the Workflows runtime. Narrowed
+      // here rather than cast: an instance with no readable id is a pass that started and cannot be named,
+      // which is `runId: null` and a true sentence, not a reason to fail the press.
+      const instance: unknown = await binding.create({ params: {} });
+      const runId =
+        typeof instance === "object" && instance !== null && "id" in instance && typeof instance.id === "string"
+          ? instance.id
+          : null;
+
+      const who = controlPlaneCaller(c);
+      await c.var.emit({
+        action: PaymentsAuditActions.reconcileRunStarted,
+        outcome: "success",
+        // The token's `sub`, so the trail names the person at the console rather than the console. One
+        // connection is normally shared by everybody using it, and this row is the join to every repair the
+        // pass then made.
+        actorType: "control-plane",
+        actorId: who.subject,
+        resourceType: "reconcile_run",
+        resourceId: runId,
+        metadata: { deployment: deploymentName(c) },
+      });
+
+      return c.json({ started: true, runId } satisfies PaymentsAdminReconcileRunStarted, 202);
+    });
 
     /**
      * AUTHED WRITE. The purchaser's own app submitting what the store SDK gave it, so the buyer sees their

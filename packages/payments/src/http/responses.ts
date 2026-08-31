@@ -1062,6 +1062,36 @@ export const PaymentsAdminReconcileRunsResponse = z
   .describe("A page of the reconciliation run log.");
 export type PaymentsAdminReconcileRunsResponse = z.output<typeof PaymentsAdminReconcileRunsResponse>;
 
+/**
+ * `POST {base}/admin/reconcile-runs` — a pass was started, and nothing about how it went.
+ *
+ * **It reports a start, never an outcome.** The pass is a Workflow: it is durable, it retries, and it outlives
+ * the request that began it by minutes. A response claiming what was repaired would have to either block on a
+ * job designed not to be blocked on, or invent the answer — and the answer is the one thing an operator pressed
+ * the button to find out. So this says *started, here is its id*, and the run log is where the tally lands.
+ *
+ * **`started: false` is a real answer rather than an error.** The pass is idempotent and the trigger is too: a
+ * second press while a run is in flight starts nothing and says so, which is a true sentence about somebody's
+ * catalog. Turning that into a 409 would make a nervous operator's second click look like a fault.
+ *
+ * No count, no duration, no "queued position". Every one of those is a number a screen would print and nobody
+ * could stand behind.
+ */
+export const PaymentsAdminReconcileRunStarted = z
+  .object({
+    started: z
+      .boolean()
+      .describe("Whether this request began a pass. False when one was already running, which is not a failure."),
+    runId: z
+      .string()
+      .nullable()
+      .describe(
+        "The Workflow instance that was started, so a caller can find this pass in the run log once it finishes. Null when `started` is false — there is no instance of *this* request to name, and naming the one already running would attribute somebody else's pass to this press.",
+      ),
+  })
+  .describe("What a press on the reconciliation trigger produced: whether a pass began, and which one.");
+export type PaymentsAdminReconcileRunStarted = z.output<typeof PaymentsAdminReconcileRunStarted>;
+
 /** `GET {base}/admin/purchases`. */
 export const PaymentsAdminPurchasesResponse = z
   .object({

@@ -43,6 +43,7 @@ _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes
 | `GET /payments/admin/entitlements` | The entitlement model, paged | control-plane: `payments:entitlements:read` |
 | `GET /payments/admin/entitlements/:subjectType/:subjectId` | One subject's entitlements | control-plane: `payments:entitlements:read` |
 | `GET /payments/admin/reconcile-runs` | The reconciliation passes this deployment has run | control-plane: `payments:reconcile:read` |
+| `POST /payments/admin/reconcile-runs` | Start a pass now, rather than waiting for the nightly one | control-plane: `payments:reconcile:run` |
 
 **Every route this capability registers is in that table, and a test holds it there.** The management reads shipped without rows for long enough that the next person to add one withheld theirs too — a table missing four peers reads as complete, so one more row would have read as a lie. `routeContract.test.ts` now parses this table and compares it against the real registrations in both directions, which makes the omission a failing build rather than a judgment call.
 

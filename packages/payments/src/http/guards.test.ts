@@ -28,6 +28,7 @@ import {
   PAYMENTS_ENTITLEMENTS_READ_SCOPE,
   PAYMENTS_PURCHASES_READ_SCOPE,
   PAYMENTS_RECONCILE_READ_SCOPE,
+  PAYMENTS_RECONCILE_RUN_SCOPE,
   PAYMENTS_SUBSCRIPTIONS_READ_SCOPE,
 } from "./scopes";
 
@@ -122,7 +123,7 @@ describe("the payments control-plane scopes", () => {
     for (const scope of PAYMENTS_CONTROL_PLANE_SCOPES) expect(ControlPlaneScope.parse(scope)).toBe(scope);
   });
 
-  test("the aggregate is exactly the nine operations, reads first, in a stable order", () => {
+  test("the aggregate is exactly the ten operations, reads first, in a stable order", () => {
     // What `pithy dashboard connect` offers for payments. A scope that exists and is offered nowhere is a
     // scope an adopter cannot grant, so the list and the route lines are asserted against each other.
     // Reads lead because they are the grant most connections want and the smallest one that makes a
@@ -138,6 +139,10 @@ describe("the payments control-plane scopes", () => {
       PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
       PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
       PAYMENTS_DISCOUNT_CREATE_SCOPE,
+      // Last, and a write: starting a pass grants and revokes entitlements in bulk. It sits apart from
+      // `:read` deliberately — a health monitor alarming on a stopped cron must not be able to move
+      // anybody's access, and `scopeCovers` matches exactly, so holding the read confers nothing here.
+      PAYMENTS_RECONCILE_RUN_SCOPE,
     ]);
   });
 

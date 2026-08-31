@@ -1061,6 +1061,18 @@ const PaymentsRailNotConfiguredPublic = z
   })
   .describe("A named rail is not enabled (404).");
 
+const PaymentsReconcileNotProvisionedPublic = z
+  .object({
+    code: z
+      .literal("payments/reconcile_not_provisioned")
+      .describe(
+        "A reconciliation pass was asked for on a deployment whose Workflow host is not deployed or not bound. The route exists and the caller's scope was right, so this is a provisioning fact rather than a bad request — and the fix is a deploy the adopter performs.",
+      ),
+    status: z.literal(501).describe("Not Implemented — this deployment cannot start a pass yet."),
+    ...publicFields,
+  })
+  .describe("Reconciliation has no Workflow host here (501).");
+
 const PaymentsProductNotFoundPublic = z
   .object({
     code: z
@@ -1532,6 +1544,7 @@ export const KitPublicErrorPayload = z
     PaymentsVerificationFailedPublic,
     PaymentsWebhookUnverifiedPublic,
     PaymentsRailNotConfiguredPublic,
+    PaymentsReconcileNotProvisionedPublic,
     PaymentsProductNotFoundPublic,
     PaymentsEnvironmentMismatchPublic,
     PaymentsReceiptAlreadyOwnedPublic,
@@ -1802,6 +1815,9 @@ const PaymentsWebhookUnverified = PaymentsWebhookUnverifiedPublic.extend(interna
 const PaymentsRailNotConfigured = PaymentsRailNotConfiguredPublic.extend(internalFields).describe(
   PaymentsRailNotConfiguredPublic.description ?? "",
 );
+const PaymentsReconcileNotProvisioned = PaymentsReconcileNotProvisionedPublic.extend(internalFields).describe(
+  PaymentsReconcileNotProvisionedPublic.description ?? "",
+);
 const PaymentsProductNotFound = PaymentsProductNotFoundPublic.extend(internalFields).describe(
   PaymentsProductNotFoundPublic.description ?? "",
 );
@@ -1993,6 +2009,7 @@ export const KitErrorPayload = z
     PaymentsVerificationFailed,
     PaymentsWebhookUnverified,
     PaymentsRailNotConfigured,
+    PaymentsReconcileNotProvisioned,
     PaymentsProductNotFound,
     PaymentsEnvironmentMismatch,
     PaymentsReceiptAlreadyOwned,

@@ -125,6 +125,25 @@ export const PAYMENTS_CATALOG_READ_SCOPE: ControlPlaneScope = "payments:catalog:
 export const PAYMENTS_RECONCILE_READ_SCOPE: ControlPlaneScope = "payments:reconcile:read";
 
 /**
+ * Start a reconciliation pass now.
+ *
+ * **Separate from the read, and it is the sharpest split in this list.** Reading the run log says whether the
+ * nightly repair has been firing; starting one calls the store, walks the catalog, and *writes entitlements* —
+ * granting what a dropped webhook never granted and revoking what a missed cancellation left standing. The
+ * health monitor that holds `:read` to alarm on a stopped cron must not be able to move somebody's access, and
+ * `scopeCovers` matches exactly, so it cannot.
+ *
+ * **A trigger exists because the cron is not enough.** `pithy payments reconcile` runs the same pass, and it
+ * needs a laptop, a checkout, and a Cloudflare API token for the project — so the answer to "my subscription
+ * isn't showing up" at 4pm on a Saturday is either this route or nothing until 04:00 UTC. Adopted from
+ * `pithy-sh/dashboard#96`, where the operator with the run log open had no way to act on it.
+ *
+ * Idempotent by construction, so the scope carries no warning about pressing twice: `reconcilePayments` finds
+ * a reconciled catalog already matching and writes nothing.
+ */
+export const PAYMENTS_RECONCILE_RUN_SCOPE: ControlPlaneScope = "payments:reconcile:run";
+
+/**
  * Every control-plane scope payments defines — what `pithy dashboard connect` offers for this capability, and
  * the list a manifest or a doc quotes rather than re-typing. Core's `SEAM_SCOPES` is the same idea for the
  * seam's own routes.
@@ -142,6 +161,7 @@ export const PAYMENTS_CONTROL_PLANE_SCOPES: readonly ControlPlaneScope[] = [
   PAYMENTS_ENTITLEMENT_GRANT_SCOPE,
   PAYMENTS_ENTITLEMENT_REVOKE_SCOPE,
   PAYMENTS_DISCOUNT_CREATE_SCOPE,
+  PAYMENTS_RECONCILE_RUN_SCOPE,
 ];
 
 /**
@@ -216,6 +236,13 @@ export function paymentsAdminRoutes(basePath: string): AdminRoute[] {
       scope: PAYMENTS_RECONCILE_READ_SCOPE,
       summary:
         "The reconciliation passes this deployment has run — when each ran, what it compared, and what it had to repair. The answer to whether the nightly repair is still firing.",
+    },
+    {
+      method: "POST",
+      path: `${basePath}/admin/reconcile-runs`,
+      scope: PAYMENTS_RECONCILE_RUN_SCOPE,
+      summary:
+        "Start a reconciliation pass now, rather than waiting for the nightly one. The repair path for a purchase a dropped webhook never projected.",
     },
     {
       method: "POST",

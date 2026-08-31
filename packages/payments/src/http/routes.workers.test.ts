@@ -5186,11 +5186,27 @@ describe("the subscription lifecycle routes", () => {
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({
         quote: {
-          settlesToday: { outcome: "charge", amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" } },
+          settlesToday: {
+            outcome: "charge",
+            amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" },
+            // End to end, #96: the two halves the net reconciles reach the browser with it. A screen
+            // holding only 6582 states a figure neither of the two prices beside it can account for.
+            madeUpOf: {
+              charge: { amountMinor: 6962, currency: "usd", rendered: "$69.62" },
+              credit: { amountMinor: -380, currency: "usd", rendered: "-$3.80" },
+            },
+          },
           nextInvoice: null,
           recurring: {
             amount: { amountMinor: 11976, currency: "usd", rendered: "$119.76" },
             startsAt: "2026-09-15T11:42:21.789Z",
+            // #96, and this assertion is what would have caught `quoteView` rebuilding the block by hand
+            // and dropping the pair on the way out. $110.00 and $9.76 — the two figures the plans table
+            // and the confirmation each show one of.
+            madeUpOf: {
+              beforeTax: { amountMinor: 11000, currency: "usd", rendered: "$110.00" },
+              tax: { amountMinor: 976, currency: "usd", rendered: "$9.76" },
+            },
           },
         },
       });
@@ -5240,12 +5256,22 @@ describe("the subscription lifecycle routes", () => {
         quote: {
           settlesToday: { outcome: "nothing" },
           nextInvoice: {
-            settlement: { outcome: "credit", amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" } },
+            settlement: {
+              outcome: "credit",
+              amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" },
+              // Null over the wire, not absent: this recording's halves carry amounts and no currency,
+              // and `null` is how the response says the store stated only the net.
+              madeUpOf: null,
+            },
             at: "2026-09-15T11:42:21.789Z",
           },
           recurring: {
             amount: { amountMinor: 653, currency: "usd", rendered: "$6.53" },
             startsAt: "2026-09-15T11:42:21.789Z",
+            madeUpOf: {
+              beforeTax: { amountMinor: 600, currency: "usd", rendered: "$6.00" },
+              tax: { amountMinor: 53, currency: "usd", rendered: "$0.53" },
+            },
           },
         },
       });

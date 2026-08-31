@@ -165,6 +165,7 @@ export const esErrors: MessageCatalog = {
   "payments/discount_invalid": "Ese código de descuento no es válido.",
   "payments/entitlement_not_in_catalog": "Ese derecho de acceso no está en el catálogo.",
   "payments/subject_unresolved": "No se ha podido determinar en nombre de quién actúas.",
+  "payments/reconcile_not_provisioned": "La conciliación no está configurada en este despliegue.",
 
   // Control plane. The caller here is a management client, never an end user — the words stay caller-facing
   // all the same, because `clientError` strips `action` on this path exactly as it does on every other.

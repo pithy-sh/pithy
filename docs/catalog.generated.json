@@ -1142,6 +1142,10 @@
       "status": 409
     },
     {
+      "code": "payments/reconcile_not_provisioned",
+      "status": 501
+    },
+    {
       "code": "payments/subject_unresolved",
       "status": 403
     },

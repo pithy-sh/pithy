@@ -103,6 +103,33 @@ export class PaymentsRailNotConfiguredError extends PithyError {
   }
 }
 
+/**
+ * Reconciliation cannot be started here: the pass's Workflow host is not deployed or not bound.
+ *
+ * **501 rather than 404 or 500.** The route exists and the caller's scope was right, so 404 would send them
+ * looking for a typo; nothing failed, so 500 would send them looking at logs. What is true is that this
+ * deployment does not implement the operation yet, and the fix is a deploy the adopter performs. `action` says
+ * which one.
+ *
+ * The read is unaffected and stays useful: a project with no Workflow host has an empty run log, which is the
+ * loudest thing that read says.
+ */
+export class PaymentsReconcileNotProvisionedError extends PithyError {
+  constructor(args: PaymentsErrorArgs = {}, options?: { cause?: unknown }) {
+    super(
+      {
+        code: "payments/reconcile_not_provisioned",
+        status: 501,
+        message: args.message ?? "Reconciliation is not set up for this deployment.",
+        action: args.action ?? "Deploy the payments workflow host, then bind PAYMENTS_RECONCILE in wrangler.jsonc.",
+        detail: args.detail,
+        params: args.params,
+      },
+      options,
+    );
+  }
+}
+
 /** No catalog product maps the rail's SKU. The catalog is config, so a new SKU needs a deploy. */
 export class PaymentsProductNotFoundError extends PithyError {
   constructor(args: PaymentsErrorArgs = {}, options?: { cause?: unknown }) {

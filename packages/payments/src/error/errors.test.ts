@@ -16,6 +16,7 @@ import {
   PaymentsProviderUnavailableError,
   PaymentsRailNotConfiguredError,
   PaymentsReceiptAlreadyOwnedError,
+  PaymentsReconcileNotProvisionedError,
   PaymentsSubjectUnresolvedError,
   PaymentsSubscriptionChangeRefusedError,
   PaymentsVerificationFailedError,
@@ -29,6 +30,13 @@ const FAMILY = [
   { error: () => new PaymentsWebhookUnverifiedError(), code: "payments/webhook_unverified", status: 401 },
   { error: () => new PaymentsRailNotConfiguredError(), code: "payments/rail_not_configured", status: 404 },
   { error: () => new PaymentsProductNotFoundError(), code: "payments/product_not_found", status: 404 },
+  // 501, and the only one in this family: the route exists and the caller was in the right, and what is
+  // missing is a Workflow host the adopter deploys. 404 would send them hunting a typo, 500 a log line.
+  {
+    error: () => new PaymentsReconcileNotProvisionedError(),
+    code: "payments/reconcile_not_provisioned",
+    status: 501,
+  },
   { error: () => new PaymentsEnvironmentMismatchError(), code: "payments/environment_mismatch", status: 400 },
   { error: () => new PaymentsReceiptAlreadyOwnedError(), code: "payments/receipt_already_owned", status: 409 },
   { error: () => new PaymentsProviderUnavailableError(), code: "payments/provider_unavailable", status: 503 },
