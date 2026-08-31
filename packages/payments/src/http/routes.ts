@@ -840,7 +840,11 @@ function quoteView(quote: SubscriptionChangeQuote): PaymentsSubscriptionQuote {
     recurring:
       quote.recurring === null
         ? null
-        : { amount: quote.recurring.amount, startsAt: quote.recurring.startsAt.toISOString() },
+        : {
+            amount: quote.recurring.amount,
+            startsAt: quote.recurring.startsAt.toISOString(),
+            madeUpOf: quote.recurring.madeUpOf,
+          },
   };
 }
 

@@ -149,6 +149,22 @@ function quoted(wire: string, currencyCode: string): unknown {
   return { amountMinor, currency, rendered: renderMoney(amountMinor ?? 0, currency, "en") };
 }
 
+/**
+ * The halves of a reconciliation, built from a recording's own `update_summary` the way the rail builds them.
+ *
+ * Takes the whole summary rather than two amounts, because the halves and the net they reconcile have to come
+ * from one response. A fixture that assembled 6962 from one recording and -380 from another would pass every
+ * assertion below and describe a change nobody previewed.
+ */
+function partsOf(summary: { charge: { amount: string }; credit: { amount: string } }, currencyCode: string): unknown {
+  return { charge: quoted(summary.charge.amount, currencyCode), credit: quoted(summary.credit.amount, currencyCode) };
+}
+
+/** The base and the tax a renewal is the sum of, from a recording's own totals block. */
+function recurringParts(totals: { subtotal: string; tax: string; currency_code: string }): unknown {
+  return { beforeTax: quoted(totals.subtotal, totals.currency_code), tax: quoted(totals.tax, totals.currency_code) };
+}
+
 describe("QuotedMoney", () => {
   test("a negative amount round-trips — the sign is data, not an error", () => {
     // `update_summary.credit.amount` is "-380" on an upgrade and "-6961" on a downgrade, and a
@@ -253,14 +269,20 @@ describe("DeferredSubscriptionSettlement", () => {
       DeferredSubscriptionSettlement.parse({
         outcome: "credit",
         amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" },
+        madeUpOf: null,
       }),
-    ).toEqual({ outcome: "credit", amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" } });
+    ).toEqual({
+      outcome: "credit",
+      amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" },
+      madeUpOf: null,
+    });
     expect(
       DeferredSubscriptionSettlement.parse({
         outcome: "charge",
         amount: { amountMinor: 1, currency: "usd", rendered: "$0.01" },
+        madeUpOf: null,
       }),
-    ).toEqual({ outcome: "charge", amount: { amountMinor: 1, currency: "usd", rendered: "$0.01" } });
+    ).toEqual({ outcome: "charge", amount: { amountMinor: 1, currency: "usd", rendered: "$0.01" }, madeUpOf: null });
     expect(() => DeferredSubscriptionSettlement.parse({ outcome: "nothing" })).toThrow();
   });
 
@@ -279,6 +301,7 @@ describe("SubscriptionChangeQuote", () => {
       settlesToday: {
         outcome: summary.action,
         amount: quoted(summary.amount, summary.currency_code),
+        madeUpOf: partsOf(RECORDED.upgrade.update_summary, summary.currency_code),
       },
       // An upgrade settles in full today. Nothing from the change lands on the next invoice, and null
       // is how the quote says so — the recurring block below is the whole of what comes after.
@@ -286,12 +309,19 @@ describe("SubscriptionChangeQuote", () => {
       recurring: {
         amount: quoted(RECORDED.upgrade.recurring_totals.grand_total, RECORDED.upgrade.recurring_totals.currency_code),
         startsAt: RECORDED.upgrade.immediate_billing_period.ends_at,
+        madeUpOf: recurringParts(RECORDED.upgrade.recurring_totals),
       },
     });
 
     expect(quote.settlesToday).toEqual({
       outcome: "charge",
       amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" },
+      // The two halves 6582 is the reconciliation of. Both from this same recording, both as sent —
+      // the credit negative, because that is the direction Paddle stated and the direction it is.
+      madeUpOf: {
+        charge: { amountMinor: 6962, currency: "usd", rendered: "$69.62" },
+        credit: { amountMinor: -380, currency: "usd", rendered: "-$3.80" },
+      },
     });
     expect(quote.nextInvoice).toBeNull();
     expect(quote.recurring?.amount).toEqual({ amountMinor: 11976, currency: "usd", rendered: "$119.76" });
@@ -311,6 +341,7 @@ describe("SubscriptionChangeQuote", () => {
       settlesToday: {
         outcome: summary.action,
         amount: quoted(summary.amount, summary.currency_code),
+        madeUpOf: partsOf(RECORDED.downgrade.update_summary, summary.currency_code),
       },
       // `prorated_immediately`: the credit lands on the balance today, so there is nothing deferred.
       nextInvoice: null,
@@ -320,6 +351,7 @@ describe("SubscriptionChangeQuote", () => {
           RECORDED.downgrade.recurring_totals.currency_code,
         ),
         startsAt: PERIOD_END,
+        madeUpOf: recurringParts(RECORDED.downgrade.recurring_totals),
       },
     });
 
@@ -327,6 +359,12 @@ describe("SubscriptionChangeQuote", () => {
     expect(quote.settlesToday).toEqual({
       outcome: "credit",
       amount: { amountMinor: 6581, currency: "usd", rendered: "$65.81" },
+      // A downgrade reconciles the same two halves the other way round: 3.80 of Solo owed for the rest
+      // of the period, against 69.61 of Team given back for it.
+      madeUpOf: {
+        charge: { amountMinor: 380, currency: "usd", rendered: "$3.80" },
+        credit: { amountMinor: -6961, currency: "usd", rendered: "-$69.61" },
+      },
     });
     // The direction lives in `outcome`, so the amount is never rendered without it. Reading the amount
     // alone is a type error, not a mis-rendered credit.
@@ -350,12 +388,16 @@ describe("SubscriptionChangeQuote", () => {
         settlement: {
           outcome: summary.action,
           amount: quoted(summary.amount, summary.currency_code),
+          // Null, and from the recording rather than from convenience: B′'s `update_summary.credit` is
+          // `{ amount: "-6936" }` with no `currency_code`, and the net's currency is not lent to it.
+          madeUpOf: null,
         },
         at: recorded.next_transaction_billing_period.starts_at,
       },
       recurring: {
         amount: quoted(recorded.recurring_totals.grand_total, recorded.recurring_totals.currency_code),
         startsAt: recorded.next_billed_at,
+        madeUpOf: recurringParts(recorded.recurring_totals),
       },
     });
   };
@@ -369,6 +411,7 @@ describe("SubscriptionChangeQuote", () => {
     expect(quote.nextInvoice?.settlement).toEqual({
       outcome: "credit",
       amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" },
+      madeUpOf: null,
     });
     expect(quote.nextInvoice?.at.toISOString()).toBe("2026-09-15T11:42:21.789Z");
     expect(quote.recurring?.amount).toEqual({ amountMinor: 653, currency: "usd", rendered: "$6.53" });
@@ -419,7 +462,13 @@ describe("SubscriptionChangeQuote", () => {
     const quote = SubscriptionChangeQuote.parse({
       settlesToday: { outcome: "nothing" },
       nextInvoice: null,
-      recurring: { amount: { amountMinor: 653, currency: "usd", rendered: "$6.53" }, startsAt: PERIOD_END },
+      // A renewal the provider stated as one figure. Null halves, not zeroed ones: "the tax is nothing"
+      // and "no tax was stated" are different sentences and this shape can tell them apart.
+      recurring: {
+        amount: { amountMinor: 653, currency: "usd", rendered: "$6.53" },
+        startsAt: PERIOD_END,
+        madeUpOf: null,
+      },
     });
 
     expect(quote.settlesToday).toEqual({ outcome: "nothing" });
@@ -455,7 +504,11 @@ describe("SubscriptionChangeQuote", () => {
     // "You will be credited $65.58" with no day on it is the sentence this refuses. The date is not
     // borrowed from `recurring.startsAt` either: that block is nullable, so a screen reaching into it
     // for this date prints a credit with no date the first time a change ends the subscription.
-    const settlement = { outcome: "credit", amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" } };
+    const settlement = {
+      outcome: "credit",
+      amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" },
+      madeUpOf: null,
+    };
     expect(() =>
       SubscriptionChangeQuote.parse({
         settlesToday: { outcome: "nothing" },
@@ -486,7 +539,11 @@ describe("SubscriptionChangeQuote", () => {
     expect(() => SubscriptionChangeQuote.parse({ nextInvoice: null, recurring: null })).toThrow();
     expect(() =>
       SubscriptionChangeQuote.parse({
-        settlesToday: { outcome: "charge", amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" } },
+        settlesToday: {
+          outcome: "charge",
+          amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" },
+          madeUpOf: null,
+        },
         nextInvoice: null,
       }),
     ).toThrow();
@@ -495,18 +552,37 @@ describe("SubscriptionChangeQuote", () => {
     expect(() =>
       SubscriptionChangeQuote.parse({
         settlesToday: { outcome: "nothing" },
-        recurring: { amount: { amountMinor: 653, currency: "usd", rendered: "$6.53" }, startsAt: PERIOD_END },
+        recurring: {
+          amount: { amountMinor: 653, currency: "usd", rendered: "$6.53" },
+          startsAt: PERIOD_END,
+          madeUpOf: null,
+        },
       }),
     ).toThrow();
   });
 
   test("a parsed quote encodes back to the wire it came from, deferred part and all", () => {
     const wire = {
-      settlesToday: { outcome: "charge" as const, amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" } },
+      settlesToday: {
+        outcome: "charge" as const,
+        amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" },
+        // Encoded and back with the halves attached: the breakdown is part of the wire, not a thing a
+        // screen recomposes on arrival.
+        madeUpOf: {
+          charge: { amountMinor: 6962, currency: "usd", rendered: "$69.62" },
+          credit: { amountMinor: -380, currency: "usd", rendered: "-$3.80" },
+        },
+      },
       nextInvoice: null,
       recurring: {
         amount: { amountMinor: 11976, currency: "usd", rendered: "$119.76" },
         startsAt: "2026-09-15T11:42:21.789Z",
+        // $110.00 and $9.76: the two figures 119.76 is the sum of, and the pair that explains why the
+        // plans table says 110 while the quote beside it says 119.76.
+        madeUpOf: {
+          beforeTax: { amountMinor: 11000, currency: "usd", rendered: "$110.00" },
+          tax: { amountMinor: 976, currency: "usd", rendered: "$9.76" },
+        },
       },
     };
     expect(z.encode(SubscriptionChangeQuote, SubscriptionChangeQuote.parse(wire))).toEqual(wire);
@@ -514,12 +590,17 @@ describe("SubscriptionChangeQuote", () => {
     const deferred = {
       settlesToday: { outcome: "nothing" as const },
       nextInvoice: {
-        settlement: { outcome: "credit" as const, amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" } },
+        settlement: {
+          outcome: "credit" as const,
+          amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" },
+          madeUpOf: null,
+        },
         at: "2026-09-15T11:42:21.789Z",
       },
       recurring: {
         amount: { amountMinor: 653, currency: "usd", rendered: "$6.53" },
         startsAt: "2026-09-15T11:42:21.789Z",
+        madeUpOf: null,
       },
     };
     expect(z.encode(SubscriptionChangeQuote, SubscriptionChangeQuote.parse(deferred))).toEqual(deferred);

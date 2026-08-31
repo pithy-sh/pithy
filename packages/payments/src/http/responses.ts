@@ -326,10 +326,42 @@ export type PaymentsQuotedMoney = z.output<typeof PaymentsQuotedMoney>;
  * `data/subscription.ts` does, for the same reason. Two hand-written lists differing by one member are
  * two lists that will differ by two the next time an outcome is added.
  */
+/**
+ * The two halves a settled amount reconciles: what the plan being moved to costs for the rest of the period,
+ * and what the plan being left gives back over the same unused time.
+ *
+ * **This exists because the net alone is a figure the customer cannot check.** Recorded 2026-08-31 (#96),
+ * previewing Solo → Team mid-period: `charge` 5116, `credit` -233, net 4883. The screen said "$48.83 to pay"
+ * beside two prices of $18 and $110, and the only honest reading available to somebody looking at it was
+ * that the store had got it wrong.
+ *
+ * **The credit is negative, and stays negative on the wire.** Flipping the sign here would put the direction
+ * in the field name for one half and in the number for the other. It is money coming off; it reads that way.
+ *
+ * Nothing is derived: `charge + credit` is the store's arithmetic, and the net is stated separately because
+ * it is separately stated. A screen that summed these to check would have a second answer to what a change
+ * costs, and the one the customer believes is on their statement.
+ */
+const SettlementParts = z
+  .object({
+    charge: PaymentsQuotedMoney.describe(
+      "What the plan being moved to costs for the remainder of the period already paid for, before the credit comes off.",
+    ),
+    credit: PaymentsQuotedMoney.describe(
+      "What the plan being left is worth back over that same unused time. **Negative** — it is money coming off.",
+    ),
+  })
+  .describe("The charge and the credit a settlement reconciles, both as the store stated them.");
+
+/** Why it is nullable, said once for both members that carry it. */
+const MADE_UP_OF =
+  "The charge and the credit this amount reconciles, or null when the store did not state both in full. A screen shows the breakdown when there is one; the amount stands on its own when there is not.";
+
 const SettlesByCharge = z
   .object({
     outcome: z.literal("charge").describe("The customer is billed."),
     amount: PaymentsQuotedMoney.describe("How much is taken, as a positive magnitude. The direction is `outcome`."),
+    madeUpOf: SettlementParts.nullable().describe(MADE_UP_OF),
   })
   .describe("Money leaves the customer — the upgrade case, prorated immediately.");
 
@@ -339,6 +371,7 @@ const SettlesByCredit = z
     amount: PaymentsQuotedMoney.describe(
       "How much the customer is owed, as a positive magnitude. The same number rendered without `outcome` is a charge.",
     ),
+    madeUpOf: SettlementParts.nullable().describe(MADE_UP_OF),
   })
   .describe("The customer is owed. It reaches their balance, not their card.");
 
@@ -386,6 +419,25 @@ export type PaymentsDeferredSubscriptionSettlement = z.output<typeof PaymentsDef
  * Nothing here is derived from anything else here. The store is the authority on what is owed, and a
  * second answer is a second number for a customer to hold against their statement.
  */
+/**
+ * What a recurring price is made of: the plan's own rate, and the tax on it.
+ *
+ * **The plans table said $110 and the quote beside it said $119.76** — both that plan's price, one before
+ * tax and one after, with nothing on the page saying so. The store states the split whole (`subtotal`,
+ * `tax`), so it crosses to the browser rather than being reconstructed there.
+ *
+ * The tax *rate* is deliberately absent. A percentage beside two amounts invites a reader to check
+ * arithmetic, and one rounding decision separates a rate that reproduces the figure from one that does not.
+ */
+const RecurringParts = z
+  .object({
+    beforeTax: PaymentsQuotedMoney.describe(
+      "What the plan itself costs each period, before tax and after any discount.",
+    ),
+    tax: PaymentsQuotedMoney.describe("The tax on that base, as the store assessed it for this customer."),
+  })
+  .describe("The two figures a recurring price is the sum of, both as the store stated them.");
+
 export const PaymentsSubscriptionQuote = z
   .object({
     settlesToday: PaymentsSubscriptionSettlement.describe(
@@ -406,6 +458,9 @@ export const PaymentsSubscriptionQuote = z
       .object({
         amount: PaymentsQuotedMoney.describe("What each period costs once the change has taken effect, tax included."),
         startsAt: z.iso.datetime().describe("When that amount first bills, ISO-8601 — the end of the period prorated."),
+        madeUpOf: RecurringParts.nullable().describe(
+          "The base and the tax `amount` is the sum of, or null when the store did not state both in full. The same name a settlement uses for the same idea, so a screen has one word for what a figure is made of.",
+        ),
       })
       .nullable()
       .describe(

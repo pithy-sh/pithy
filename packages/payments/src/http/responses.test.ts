@@ -330,19 +330,47 @@ describe("the subscription lifecycle responses", () => {
 
   /** "$65.82 today, then $119.76 monthly from 15 Sep" — the recorded upgrade. */
   const UPGRADE: SubscriptionChangeQuote = {
-    settlesToday: { outcome: "charge", amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" } },
+    settlesToday: {
+      outcome: "charge",
+      amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" },
+      // The recorded halves: $69.62 of Team over the unused period, less $3.80 of Solo already paid for it.
+      madeUpOf: {
+        charge: { amountMinor: 6962, currency: "usd", rendered: "$69.62" },
+        credit: { amountMinor: -380, currency: "usd", rendered: "-$3.80" },
+      },
+    },
     nextInvoice: null,
-    recurring: { amount: { amountMinor: 11976, currency: "usd", rendered: "$119.76" }, startsAt: new Date(PERIOD_END) },
+    recurring: {
+      amount: { amountMinor: 11976, currency: "usd", rendered: "$119.76" },
+      startsAt: new Date(PERIOD_END),
+      madeUpOf: {
+        beforeTax: { amountMinor: 11000, currency: "usd", rendered: "$110.00" },
+        tax: { amountMinor: 976, currency: "usd", rendered: "$9.76" },
+      },
+    },
   };
 
   /** "Nothing today. $65.58 credit on your next invoice, 15 Sep. Then $6.53/month." */
   const DEFERRED_DOWNGRADE: SubscriptionChangeQuote = {
     settlesToday: { outcome: "nothing" },
     nextInvoice: {
-      settlement: { outcome: "credit", amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" } },
+      // `madeUpOf` is null on this one because the recording is: Paddle stated `credit: { amount: "-6936" }`
+      // with no currency, and a half with no currency is not rendered from the net's.
+      settlement: {
+        outcome: "credit",
+        amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" },
+        madeUpOf: null,
+      },
       at: new Date(PERIOD_END),
     },
-    recurring: { amount: { amountMinor: 653, currency: "usd", rendered: "$6.53" }, startsAt: new Date(PERIOD_END) },
+    recurring: {
+      amount: { amountMinor: 653, currency: "usd", rendered: "$6.53" },
+      startsAt: new Date(PERIOD_END),
+      madeUpOf: {
+        beforeTax: { amountMinor: 600, currency: "usd", rendered: "$6.00" },
+        tax: { amountMinor: 53, currency: "usd", rendered: "$0.53" },
+      },
+    },
   };
 
   /** What a route sends: the encoded standing, the product it is for, and the reading of what comes next. */
@@ -401,23 +429,43 @@ describe("the subscription lifecycle responses", () => {
     expect(upgrade.settlesToday).toEqual({
       outcome: "charge",
       amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" },
+      // And the sentence beneath it: "$69.62 for the rest of this period, less $3.80 already paid."
+      // Both halves survive the crossing to the wire, or the browser has the net and no way to explain it.
+      madeUpOf: {
+        charge: { amountMinor: 6962, currency: "usd", rendered: "$69.62" },
+        credit: { amountMinor: -380, currency: "usd", rendered: "-$3.80" },
+      },
     });
     expect(upgrade.nextInvoice).toBeNull();
     expect(upgrade.recurring).toEqual({
       amount: { amountMinor: 11976, currency: "usd", rendered: "$119.76" },
       startsAt: PERIOD_END,
+      // "$110.00 a month, plus $9.76 tax." The fifth sentence, and the one that reconciles the price on
+      // the plans table with the figure on the confirmation beside it.
+      madeUpOf: {
+        beforeTax: { amountMinor: 11000, currency: "usd", rendered: "$110.00" },
+        tax: { amountMinor: 976, currency: "usd", rendered: "$9.76" },
+      },
     });
 
     // "Nothing today. $65.58 credit on your next invoice, 15 Sep. Then $6.53/month."
     const downgrade = PaymentsSubscriptionQuote.parse(SubscriptionChangeQuote.encode(DEFERRED_DOWNGRADE));
     expect(downgrade.settlesToday).toEqual({ outcome: "nothing" });
     expect(downgrade.nextInvoice).toEqual({
-      settlement: { outcome: "credit", amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" } },
+      settlement: {
+        outcome: "credit",
+        amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" },
+        madeUpOf: null,
+      },
       at: PERIOD_END,
     });
     expect(downgrade.recurring).toEqual({
       amount: { amountMinor: 653, currency: "usd", rendered: "$6.53" },
       startsAt: PERIOD_END,
+      madeUpOf: {
+        beforeTax: { amountMinor: 600, currency: "usd", rendered: "$6.00" },
+        tax: { amountMinor: 53, currency: "usd", rendered: "$0.53" },
+      },
     });
   });
 
@@ -482,6 +530,17 @@ describe("the subscription lifecycle responses", () => {
     accepts(PaymentsSubscriptionSettlement, {
       outcome: "charge",
       amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" },
+      madeUpOf: {
+        charge: { amountMinor: 6962, currency: "usd", rendered: "$69.62" },
+        credit: { amountMinor: -380, currency: "usd", rendered: "-$3.80" },
+      },
+    });
+    // Null is a whole answer, not a missing field: a store that stated the net and not its halves has
+    // said everything the customer is being asked to agree to.
+    accepts(PaymentsSubscriptionSettlement, {
+      outcome: "charge",
+      amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" },
+      madeUpOf: null,
     });
     accepts(PaymentsSubscriptionSettlement, { outcome: "nothing" });
     // `nothing` carries no amount, and one smuggled in does not survive the parse — "nothing to pay

@@ -132,10 +132,53 @@ export type QuotedMoney = z.output<typeof QuotedMoney>;
  * differ by one member are two lists that will differ by two the next time somebody adds an outcome —
  * with the newer one reachable today and unreachable on a customer's next invoice.
  */
+/**
+ * The two halves a settled amount is the reconciliation of — what the new plan costs for the rest of the
+ * period, and what the old one gives back for that same unused time.
+ *
+ * **Added 2026-08-31 (#96) against a recording, because the net alone is a figure nobody can check.**
+ * Previewing Solo → Team mid-period answered `charge: "5116"`, `credit: "-233"`, `result: 4883`. A screen
+ * showing only 4883 states a number a customer cannot arrive at from the two prices on the same page, and
+ * the reasonable conclusion is that the store is wrong. The halves are what make the net legible.
+ *
+ * **`credit` is negative and stays negative.** `update_summary.credit.amount` came back `"-380"` on the
+ * recorded upgrade and `"-6961"` on the downgrade; flipping it here would put the sign in one place and the
+ * word "credit" in another, and a reader who trusted either would be right half the time. It reads as money
+ * coming off, which is what it is.
+ *
+ * **Nothing here is derived, and nothing is checked.** `charge + credit` is Paddle's arithmetic, not this
+ * package's: the two figures and the net are three things Paddle stated, reported as stated. Summing them to
+ * verify the net would produce a second answer to what a change costs, and the module header says why there
+ * is only ever one.
+ */
+const SettlementParts = z
+  .object({
+    charge: QuotedMoney.describe(
+      "What the plan being moved to costs for the remainder of the period already paid for, before the credit comes off. `update_summary.charge` — recorded 5116 on the upgrade of 2026-08-31.",
+    ),
+    credit: QuotedMoney.describe(
+      "What the plan being left is worth back over that same unused time. `update_summary.credit`, **negative on the wire** and left that way — recorded -233 beside that 5116.",
+    ),
+  })
+  .describe(
+    "The charge and the credit a settlement reconciles. Both as Paddle stated them; the net is stated separately and is not computed from these.",
+  );
+export type SubscriptionSettlementParts = z.output<typeof SettlementParts>;
+
+/**
+ * Why the breakdown is nullable, in one sentence a later reader can check: **a half Paddle did not state in
+ * full is not a half this package invents.** `update_summary.credit` arrived as `{ amount: "-6936" }` with no
+ * `currency_code` on one recording, and the only two ways to render that are to borrow the net's currency —
+ * a guess, printed as a price — or to say nothing. This says nothing, and the net still renders.
+ */
+const MADE_UP_OF =
+  "The charge and the credit this amount reconciles, or null when Paddle did not state both in full. Present, it is what lets a reader arrive at the amount; absent, the amount still stands on its own — a screen shows the breakdown when there is one and never waits for it.";
+
 const SettlesByCharge = z
   .object({
     outcome: z.literal("charge").describe("The customer is billed."),
     amount: QuotedMoney.describe("How much is taken, as a positive magnitude. The direction is `outcome`."),
+    madeUpOf: SettlementParts.nullable().describe(MADE_UP_OF),
   })
   .describe("Money leaves the customer — the upgrade case, prorated immediately.");
 
@@ -145,6 +188,7 @@ const SettlesByCredit = z
     amount: QuotedMoney.describe(
       "How much the customer is owed, as a positive magnitude. Read with `outcome` — the same number rendered without it is a charge.",
     ),
+    madeUpOf: SettlementParts.nullable().describe(MADE_UP_OF),
   })
   .describe(
     'The customer is owed. Recorded as `result.action: "credit"` with the amount in `credit_to_balance`, while `grand_total` says 0.',
@@ -238,6 +282,37 @@ export type DeferredSubscriptionSettlement = z.output<typeof DeferredSubscriptio
  * A quote is never stored. It is a provider's answer to "if I did this now", it goes stale the moment
  * the billing period moves, and a persisted one is a price nobody is bound by.
  */
+/**
+ * What a recurring price is made of: the plan's own rate, and the tax on it.
+ *
+ * **Added 2026-08-31 (#96) against the same recording as {@link SettlementParts}, and for a defect the
+ * screen was already showing.** The plans table states Team at $110 a month; the quote beside it states
+ * $119.76. Both are that plan's price — one before tax and one after — and nothing on the page said so.
+ * The recording carries the split whole: `subtotal: "11000"`, `tax: "976"`, `grand_total: "11976"`, at a
+ * `tax_rate` of `0.08875`.
+ *
+ * **`subtotal`, not `total` minus `tax`.** Paddle states the base directly, and it is the figure after
+ * any discount rather than before it — so a screen deriving it from the other two would be right today
+ * and wrong the first time a coupon exists. Nothing here is computed, for the reason the module header
+ * gives: the provider is the authority on every amount, and a second answer is a second number for a
+ * customer to hold against their statement.
+ *
+ * **The rate itself is deliberately absent.** `0.08875` renders as *8.875%*, which is one rounding
+ * decision away from a figure that does not reproduce the tax beside it, and a customer reading a
+ * percentage against two amounts is being invited to check arithmetic this package does not do.
+ */
+const RecurringParts = z
+  .object({
+    beforeTax: QuotedMoney.describe(
+      "What the plan itself costs each period, before tax and after any discount. `recurring_transaction_details.totals.subtotal` — recorded 11000 beside a grand total of 11976.",
+    ),
+    tax: QuotedMoney.describe(
+      "The tax on that base, as the provider assessed it for this customer's address. `…totals.tax` — recorded 976.",
+    ),
+  })
+  .describe("The two figures a recurring price is the sum of, both as the provider stated them.");
+export type SubscriptionRecurringParts = z.output<typeof RecurringParts>;
+
 export const SubscriptionChangeQuote = z
   .object({
     settlesToday: SubscriptionSettlement.describe(
@@ -261,6 +336,9 @@ export const SubscriptionChangeQuote = z
         amount: QuotedMoney.describe("What each period costs once the change has taken effect, tax included."),
         startsAt: JsonDate.describe(
           "When that amount first bills — the end of the period being prorated. Required alongside the amount: a new price with no date is a bill arriving on a day nobody was told about.",
+        ),
+        madeUpOf: RecurringParts.nullable().describe(
+          "The base and the tax `amount` is the sum of, or null when the provider did not state both in full. The same name {@link SubscriptionSettlement} uses for the same idea — what a figure is made of — because one word for one idea is how a screen stops growing a second vocabulary for the second one.",
         ),
       })
       .nullable()

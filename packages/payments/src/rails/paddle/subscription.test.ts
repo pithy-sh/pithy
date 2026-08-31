@@ -365,11 +365,26 @@ describe("previewPaddleChange", () => {
     const quote = await previewPaddleChange({ purchase: purchase(), providerProductId: TEAM }, options(transport));
 
     expect(quote).toEqual({
-      settlesToday: { outcome: "charge", amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" } },
+      settlesToday: {
+        outcome: "charge",
+        amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" },
+        // The halves 6582 reconciles, read from the same `update_summary` (#96). Without them the screen
+        // states a figure that is neither of the two prices beside it and cannot be arrived at from them.
+        madeUpOf: {
+          charge: { amountMinor: 6962, currency: "usd", rendered: "$69.62" },
+          credit: { amountMinor: -380, currency: "usd", rendered: "-$3.80" },
+        },
+      },
       nextInvoice: null,
       recurring: {
         amount: { amountMinor: 11976, currency: "usd", rendered: "$119.76" },
         startsAt: new Date(PERIOD_END),
+        // $110.00 plus $9.76 of tax — #96. The plans table quotes 110 and the confirmation quotes
+        // 119.76; they are the same price, and until this pair crossed the wire nothing said so.
+        madeUpOf: {
+          beforeTax: { amountMinor: 11000, currency: "usd", rendered: "$110.00" },
+          tax: { amountMinor: 976, currency: "usd", rendered: "$9.76" },
+        },
       },
     });
   });
@@ -406,10 +421,24 @@ describe("previewPaddleChange", () => {
     expect(quote).toEqual({
       settlesToday: { outcome: "nothing" },
       nextInvoice: {
-        settlement: { outcome: "credit", amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" } },
+        settlement: {
+          outcome: "credit",
+          amount: { amountMinor: 6558, currency: "usd", rendered: "$65.58" },
+          // Null, and not for want of trying: this recording's `credit` is `{ amount: "-6936" }` and its
+          // `charge` `{ amount: "378" }`, neither with a `currency_code`. The net's currency is not lent
+          // to them — that would render a guess as a price — so the breakdown is reported as absent.
+          madeUpOf: null,
+        },
         at: new Date(PERIOD_END),
       },
-      recurring: { amount: { amountMinor: 653, currency: "usd", rendered: "$6.53" }, startsAt: new Date(PERIOD_END) },
+      recurring: {
+        amount: { amountMinor: 653, currency: "usd", rendered: "$6.53" },
+        startsAt: new Date(PERIOD_END),
+        madeUpOf: {
+          beforeTax: { amountMinor: 600, currency: "usd", rendered: "$6.00" },
+          tax: { amountMinor: 53, currency: "usd", rendered: "$0.53" },
+        },
+      },
     });
   });
 
@@ -451,6 +480,12 @@ describe("previewPaddleChange", () => {
     expect(quote.settlesToday).toEqual({
       outcome: "charge",
       amount: { amountMinor: 6582, currency: "usd", rendered: renderMoney(6582, "usd", "es") },
+      // The halves are the reader's money too. Rendering the headline in Spanish and its breakdown in
+      // English would put two spellings of one currency in one paragraph.
+      madeUpOf: {
+        charge: { amountMinor: 6962, currency: "usd", rendered: renderMoney(6962, "usd", "es") },
+        credit: { amountMinor: -380, currency: "usd", rendered: renderMoney(-380, "usd", "es") },
+      },
     });
     // Not merely "some string": a Spanish reader's money must not be spelled in English.
     expect(quote.settlesToday.outcome === "charge" && quote.settlesToday.amount.rendered).not.toBe("$65.82");
@@ -467,6 +502,10 @@ describe("previewPaddleChange", () => {
     expect(quote.settlesToday).toEqual({
       outcome: "charge",
       amount: { amountMinor: 6582, currency: "usd", rendered: renderMoney(6582, "usd", RENDER_FALLBACK_LOCALE) },
+      madeUpOf: {
+        charge: { amountMinor: 6962, currency: "usd", rendered: renderMoney(6962, "usd", RENDER_FALLBACK_LOCALE) },
+        credit: { amountMinor: -380, currency: "usd", rendered: renderMoney(-380, "usd", RENDER_FALLBACK_LOCALE) },
+      },
     });
   });
 
@@ -499,8 +538,39 @@ describe("previewPaddleChange", () => {
     expect(quote.settlesToday).toEqual({
       outcome: "charge",
       amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" },
+      // The halves go through the same translation. They are read by a second call, so "USD" reaching
+      // one of them while the headline says "usd" is a live way for this to regress.
+      madeUpOf: {
+        charge: { amountMinor: 6962, currency: "usd", rendered: "$69.62" },
+        credit: { amountMinor: -380, currency: "usd", rendered: "-$3.80" },
+      },
     });
     expect(quote.recurring?.amount.currency).toBe("usd");
+  });
+
+  test("an unspellable currency on one half drops the breakdown and keeps the quote", async () => {
+    // The one path no recording reaches, and the one where this file's own rule cuts the other way.
+    // Everywhere else an amount naming a currency `Intl` cannot spell is refused as a shape change —
+    // `currencyOf` passes "dollars" through and `renderMoney` answers null for it. Here refusing would
+    // take a working confirmation screen away from a customer over an explanation they never asked for.
+    // The net is what they are agreeing to; the halves are why it is what it is.
+    const halfMute = {
+      ...UPGRADE_PREVIEW,
+      update_summary: {
+        ...UPGRADE_PREVIEW.update_summary,
+        charge: { amount: "6962", currency_code: "dollars" },
+      },
+    };
+    const transport = paddle({ subscription: subscriptionOn(SOLO, "600"), prices: PRICES, preview: halfMute });
+    const quote = await previewPaddleChange({ purchase: purchase(), providerProductId: TEAM }, options(transport));
+
+    expect(quote.settlesToday).toEqual({
+      outcome: "charge",
+      amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" },
+      // Both halves go, not just the unreadable one. Showing "less $3.80" under a total with no charge
+      // line above it is an explanation that explains nothing and invites the wrong arithmetic.
+      madeUpOf: null,
+    });
   });
 
   test("a preview of the plan already held still asks Paddle — a read has no no-op", async () => {
@@ -586,6 +656,10 @@ describe("previewPaddleChange", () => {
     expect(quote.settlesToday).toEqual({
       outcome: "charge",
       amount: { amountMinor: 6582, currency: "usd", rendered: "$65.82" },
+      madeUpOf: {
+        charge: { amountMinor: 6962, currency: "usd", rendered: "$69.62" },
+        credit: { amountMinor: -380, currency: "usd", rendered: "-$3.80" },
+      },
     });
   });
 

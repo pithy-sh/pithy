@@ -9,6 +9,8 @@ import {
   type SubscriptionChangeQuote as Quote,
   type QuotedMoney,
   SubscriptionChangeQuote,
+  type SubscriptionRecurringParts,
+  type SubscriptionSettlementParts,
   SubscriptionStanding,
 } from "../../data/subscription";
 import { PaymentsProviderUnavailableError, PaymentsSubscriptionChangeRefusedError } from "../../error/errors";
@@ -20,6 +22,8 @@ import {
   minorAmount,
   PaddleSubscription,
   PaddleSubscriptionPreview,
+  type PaddleTotals,
+  type PaddleUpdateSummary,
   subscriptionPendingChange,
   subscriptionStatus,
 } from "./objects";
@@ -401,15 +405,15 @@ function standingOf(subscription: PaddleSubscription): SubscriptionStanding {
  * Paddle summarized is always a charge or a credit; `nothing` is a statement about *today* that this function
  * has no standing to make, and typing it wider let a `nothing` compile into `nextInvoice.settlement`, which
  * is a row about no money, dated. The narrower union is what refused it, at build time (#465).
+ *
+ * **The whole summary rather than its `result`, since #96.** The reconciliation Paddle performed is three
+ * figures and the net is one of them; a function handed only the net cannot report the two it reconciles, and
+ * the screen that showed it had a customer asking why $48.83 was neither of the prices in front of them. The
+ * halves are read here, beside the net, from the same object — never carried in separately, which is how they
+ * would come to describe a different change than the amount they sit under.
  */
-function settlementOf(
-  result: {
-    action: string;
-    amount: string;
-    currency_code?: string | null;
-  },
-  locale: string | undefined,
-): DeferredSubscriptionSettlement {
+function settlementOf(summary: PaddleUpdateSummary, locale: string | undefined): DeferredSubscriptionSettlement {
+  const result = summary.result;
   if (result.action !== "charge" && result.action !== "credit") {
     unreadable(
       `Paddle summarized a subscription change as "${result.action}", which is not an outcome this build maps.`,
@@ -422,7 +426,50 @@ function settlementOf(
       `Paddle summarized a subscription change as ${result.action} of ${JSON.stringify(result.amount)} ${JSON.stringify(result.currency_code)}, which is not an amount this build can state.`,
     );
   }
-  return { outcome: result.action, amount: quotedMoney(amountMinor, currency, locale, result.action) };
+  return {
+    outcome: result.action,
+    amount: quotedMoney(amountMinor, currency, locale, result.action),
+    madeUpOf: partsOf(summary, locale),
+  };
+}
+
+/**
+ * The charge and the credit the net reconciles, or null when Paddle did not state both in full.
+ *
+ * **Null is the whole of the failure handling here, and that is deliberate.** Everywhere else in this file an
+ * unreadable figure throws, because everywhere else the figure *is* the answer. This one is an explanation of
+ * an answer that already parsed: refusing the quote because a supporting number lacked a currency would take a
+ * working confirmation screen away over a detail the customer never asked for. `update_summary.credit` arrived
+ * as `{ amount: "-6936" }` with no `currency_code` on a real recording, so this is a shape Paddle sends.
+ *
+ * **No currency is borrowed from the net.** It is the one shortcut available and it renders a guess as a
+ * price. A missing half is reported as missing.
+ */
+function partsOf(summary: PaddleUpdateSummary, locale: string | undefined): SubscriptionSettlementParts | null {
+  const charge = quotedOrNull(summary.charge?.amount, summary.charge?.currency_code, locale);
+  const credit = quotedOrNull(summary.credit?.amount, summary.credit?.currency_code, locale);
+  return charge === null || credit === null ? null : { charge, credit };
+}
+
+/**
+ * One supporting figure, or null when it is not a stateable amount. **Never throws** — see {@link partsOf}.
+ *
+ * The amount and the currency arrive separately because the two blocks this reads carry them that way:
+ * `update_summary` puts a `currency_code` on each half, and a totals block states one for the whole block.
+ * Taking a money object would have made the second call site build one, which is a shape invented to fit a
+ * signature rather than to describe anything.
+ */
+function quotedOrNull(
+  amount: string | null | undefined,
+  currencyCode: string | null | undefined,
+  locale: string | undefined,
+): QuotedMoney | null {
+  if (amount === null || amount === undefined) return null;
+  const amountMinor = minorAmount(amount);
+  const currency = currencyOf(currencyCode);
+  if (amountMinor === null || currency === null) return null;
+  const rendered = renderMoney(amountMinor, currency, locale);
+  return rendered === null ? null : { amountMinor, currency, rendered };
 }
 
 /**
@@ -462,14 +509,13 @@ function quoteOf(data: unknown, priceId: string, locale: string | undefined): Su
   const preview = PaddleChangePreview.safeParse(data);
   if (!preview.success) unreadable(`Paddle previewed a move to ${priceId} in a shape this build cannot read.`);
   const answer = preview.data;
-
   const summary = answer.update_summary;
   if (summary === null || summary === undefined) {
     unreadable(
       `Paddle previewed a move to ${priceId} with no \`update_summary\`, so what the change costs is unstated. A quote cannot be built from its absence.`,
     );
   }
-  const settlement = settlementOf(summary.result, locale);
+  const settlement = settlementOf(summary, locale);
   const settlesToday = answer.immediate_transaction !== null && answer.immediate_transaction !== undefined;
   const nextBilledAt = orNull(answer.next_billed_at);
 
@@ -517,7 +563,31 @@ function recurringOf(
       `Paddle previewed a move to ${priceId} renewing on ${nextBilledAt} without saying what it pays then. A rail with no recurring answer has a shape change to report, not a null to invent.`,
     );
   }
-  return { amount: quotedMoney(amountMinor, currency, locale, "renewal"), startsAt: new Date(nextBilledAt) };
+  return {
+    amount: quotedMoney(amountMinor, currency, locale, "renewal"),
+    startsAt: new Date(nextBilledAt),
+    madeUpOf: recurringPartsOf(totals, locale),
+  };
+}
+
+/**
+ * The base and the tax the renewal figure is the sum of, or null when Paddle did not state both in full.
+ *
+ * **Null rather than a throw, for {@link partsOf}'s reason exactly**: the renewal amount has already been
+ * read and refused if unreadable, and this explains that amount rather than being it. A preview whose
+ * totals block omits `tax` is a screen with one figure instead of three, not a plan change a customer
+ * cannot make.
+ *
+ * **`subtotal` and not `total - tax`.** Paddle states the base, after any discount; deriving it would be
+ * this package computing money, and it would be right only for as long as `discount` stays `"0"`.
+ */
+function recurringPartsOf(
+  totals: z.output<typeof PaddleTotals> | null | undefined,
+  locale: string | undefined,
+): SubscriptionRecurringParts | null {
+  const beforeTax = quotedOrNull(totals?.subtotal, totals?.currency_code, locale);
+  const tax = quotedOrNull(totals?.tax, totals?.currency_code, locale);
+  return beforeTax === null || tax === null ? null : { beforeTax, tax };
 }
 
 /**
