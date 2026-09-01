@@ -34,6 +34,47 @@ const MAX_WINDOW_SECONDS = 300;
 /** An hour. The ceiling on replay memory — beyond it the set costs more than the risk it retires. */
 const MAX_JTI_TTL_SECONDS = 3600;
 
+/** Two hours. Chrome's own ceiling on a cached preflight; asking for more is asking for nothing. */
+const MAX_CORS_MAX_AGE_SECONDS = 7200;
+
+/**
+ * Exactly an origin — what a browser puts in `Origin`, and nothing else.
+ *
+ * `z.url()` is not this check: it accepts `https://ops.example.com/`, a path, a wildcard, and `ftp://`.
+ * Every one of those would sit in the config file looking correct and then match no browser `Origin`,
+ * which fails as a bare refusal with nothing to read. The trailing-slash form is the one to expect,
+ * because it is what an address bar shows the person copying the value.
+ */
+/** A DNS hostname, or a bracketed IP literal — `[::1]`, the address a Vite dev server binds by default. */
+const ORIGIN_HOSTNAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
+const IP_LITERAL = /^\[[0-9a-fA-F:.]+\]$/;
+
+/**
+ * Exactly an origin: a scheme a browser sends, a real host, and nothing after it.
+ *
+ * **It refuses a misunderstanding and forgives a spelling.** A path, a query, a fragment or a
+ * credential means the writer thinks this value scopes something it does not — `https://ops.example.com/admin`
+ * does not restrict anything to `/admin` — so those are refused at deploy, where the message can say so.
+ * A trailing slash and an explicit `:443` are the same origin written a different way, and they are what
+ * an address bar hands the person copying the value, so they are accepted and normalized by
+ * `allowedOriginSet` rather than turned into a puzzle.
+ *
+ * `z.url()` is not this check: it accepts `https://*.example.com` — a wildcard is a legal hostname to
+ * the URL parser and means nothing to a browser — and `ftp://x.com`, which has an origin too.
+ */
+const ORIGIN_ONLY = (value: string): boolean => {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+  if (url.username !== "" || url.password !== "") return false;
+  if (url.pathname !== "/" || url.search !== "" || url.hash !== "") return false;
+  return ORIGIN_HOSTNAME.test(url.hostname) || IP_LITERAL.test(url.hostname);
+};
+
 export const ControlPlaneConfig = z
   .object({
     basePath: z
@@ -50,7 +91,30 @@ export const ControlPlaneConfig = z
       .url()
       .default("https://app.pithy.sh")
       .describe(
-        "The management-client origin a NEW connection is registered against — trust-critical, and effectively permanent. Every registered Worker verifies the `iss` on every call, so changing this is a migration across every connection, not a config edit. Verification reads the issuer stored on the connection; this only supplies the default written at connect time.",
+        "The management-client origin a NEW connection is registered against — trust-critical, and effectively permanent. Every registered Worker verifies the `iss` on every call, so changing this is a migration across every connection, not a config edit. Verification reads the issuer stored on the connection; this only supplies the default written at connect time. It also seeds the browser origins this Worker answers a CORS preflight for (see `allowedOrigins`), which is the one thing about this value the Worker itself reads at runtime.",
+      ),
+    allowedOrigins: z
+      .array(
+        z
+          .url()
+          .refine(
+            ORIGIN_ONLY,
+            "An allowed origin is a scheme and a host — `https://ops.example.com`, `http://localhost:5173`, `http://[::1]:5173`. A path, a query or a credential is refused, because it looks like it scopes the entry and does not.",
+          )
+          .describe("One exact browser origin, spelled the way a browser sends it in `Origin`."),
+      )
+      .default([])
+      .describe(
+        "Browser origins allowed to call this Worker's control-plane surface cross-origin, **in addition to** `issuer`. Additive by construction: an entry here never removes `issuer`, so adding your own console cannot lock out the dashboard that was already working. Read from this config alone and never from a connection row — a preflight carries no credential, so answering one must cost no database read and must reveal nothing about which origins are registered. A management client you host yourself belongs here, or in `issuer` if it is the only one.",
+      ),
+    corsMaxAgeSeconds: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_CORS_MAX_AGE_SECONDS)
+      .default(600)
+      .describe(
+        "How long a browser may cache a preflight for this Worker's admin surface, in seconds. The allow-list it caches is a compile-time constant, so ten minutes costs nothing and saves the dashboard a second round trip on every call. **Set it to 0 while you are working out an allow-list**: a browser that cached a refusal keeps refusing for the full window after you have fixed `allowedOrigins`, which reads exactly like a change that did not take. Browsers cap this themselves, so a larger number here is a request, not a guarantee.",
       ),
     clockSkewSeconds: z
       .number()

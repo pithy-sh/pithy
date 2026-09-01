@@ -3,7 +3,7 @@
 
 import { readFileSync } from "node:fs";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
-import { missingAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
+import { missingAdminRoutes, undeclaredAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
@@ -336,6 +336,9 @@ describe("the admin surface payments advertises", () => {
     const { capability, app } = composed();
     expect(capability.adminRoutes).toHaveLength(11);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
+    // And the other direction. Since #468 the CORS surface derives from `adminRoutes`, so a guarded
+    // route nobody declared gets no preflight and no browser can reach it — while this suite stays green.
+    expect(undeclaredAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
   });
 
   test("a moved base path moves the advertised routes too", () => {

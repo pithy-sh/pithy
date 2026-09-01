@@ -3,7 +3,7 @@
 
 import { noopEmit } from "@pithy-sh/core/src/audit/recorder";
 import type { Capability, PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
-import { missingAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
+import { missingAdminRoutes, undeclaredAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
@@ -218,6 +218,18 @@ describe("the advertised admin surface", () => {
     expect(
       drift,
       "The control-plane manifest advertises routes that no router mounts. A management client composes its calls from that manifest, so a drifted entry is a 404 nobody can diagnose.",
+    ).toEqual([]);
+  });
+
+  test("every mounted control-plane route is advertised", () => {
+    // The other direction, and since #468 the one with teeth: the CORS surface derives from
+    // `adminRoutes`, so a guarded route nobody declared gets no preflight and no browser reaches it.
+    const app = new Hono<PithyHonoEnv>();
+    capability.routes?.(app);
+    const undeclared = undeclaredAdminRoutes(app as unknown as Hono<never>, [capability]);
+    expect(
+      undeclared,
+      "These routes run a control-plane guard but no capability declares them. They get no CORS entry, so a browser client cannot call them at all.",
     ).toEqual([]);
   });
 

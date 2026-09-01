@@ -1,7 +1,17 @@
 {
   "name": "controlplane",
   "package": "@pithy-sh/core",
-  "requiredBindings": [{ "type": "d1", "name": "DB" }, { "type": "kv", "name": "CONTROL_PLANE", "optional": true }],
+  "requiredBindings": [
+    {
+      "type": "d1",
+      "name": "DB"
+    },
+    {
+      "type": "kv",
+      "name": "CONTROL_PLANE",
+      "optional": true
+    }
+  ],
   "peerCapabilities": [],
   "optionalCapabilities": ["audit"],
   "migrationNamespace": "controlplane",
@@ -23,7 +33,17 @@
     {
       "key": "issuer",
       "default": "https://app.pithy.sh",
-      "describe": "The management-client origin a new connection is registered against, and the `iss` every one of its tokens must carry. Trust-critical and effectively permanent: each connection stores the issuer it was created with, and verification checks that stored value, so changing this only affects connections made afterwards. Point it at your own origin if you run your own client."
+      "describe": "The management-client origin a new connection is registered against, and the `iss` every one of its tokens must carry. Trust-critical and effectively permanent: each connection stores the issuer it was created with, and verification checks that stored value, so changing this only affects connections made afterwards. Point it at your own origin if you run your own client. It also seeds the browser origins this Worker answers a CORS preflight for; add any others with `allowedOrigins`."
+    },
+    {
+      "key": "allowedOrigins",
+      "default": [],
+      "describe": "Browser origins allowed to call this Worker's control-plane surface cross-origin, in addition to `issuer`. Additive: an entry here never removes `issuer`, so adding your own console cannot lock out the dashboard that was already working. Read from config alone and never from a connection row — a preflight carries no credential, so answering one costs no database read and says nothing about which origins are registered. List a management client you host yourself here."
+    },
+    {
+      "key": "corsMaxAgeSeconds",
+      "default": 600,
+      "describe": "How long a browser may cache a preflight for this Worker's admin surface, in seconds. The allow-list it caches is a compile-time constant, so ten minutes costs nothing and saves a round trip on every call. Set it to 0 while you are working out an allow-list: a browser that cached a refusal keeps refusing for the full window after you have fixed it, which reads like a change that did not take."
     },
     {
       "key": "maxTokenLifetimeSeconds",

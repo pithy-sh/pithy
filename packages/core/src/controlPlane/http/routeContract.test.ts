@@ -6,7 +6,7 @@ import { describe, expect, test } from "vitest";
 import type { PithyHonoEnv } from "../../capability/capability";
 import { pathParams, uncoveredParamRoutes } from "../../http/routeContract";
 import { type ControlPlaneOptions, controlplane } from "../capability";
-import { missingAdminRoutes } from "../discovery/drift";
+import { missingAdminRoutes, undeclaredAdminRoutes } from "../discovery/drift";
 
 /**
  * The control-plane seam's half of gate 2 of the route request contract. A handler can reach a path
@@ -94,6 +94,9 @@ describe("control-plane route contract", () => {
 
     expect(capability.adminRoutes).toHaveLength(5);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
+    // And the other direction. Since #468 the CORS surface derives from `adminRoutes`, so a guarded
+    // route nobody declared gets no preflight and no browser reaches it, with this suite still green.
+    expect(undeclaredAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
   });
 
   test("a moved base path moves the advertised routes too", () => {
