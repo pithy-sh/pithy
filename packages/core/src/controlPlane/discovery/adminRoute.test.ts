@@ -142,6 +142,10 @@ describe("and the four states survive this", () => {
     scope: "secrets:status:read",
     cost: "indexed",
     summary: "Secrets past their rotation window.",
+    // Spelled out for the reason the round-trip test below states: a current Worker sends every
+    // defaulted field, and an entry omitting one asserts that *absence* round-trips — a different
+    // claim. `nominal` is #471's, and null is a key that grades nothing rather than one with no key.
+    nominal: null,
   };
 
   test("nothing declared, withheld, zero and unavailable are four different answers", () => {

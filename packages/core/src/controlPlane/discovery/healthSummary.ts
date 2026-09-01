@@ -123,6 +123,86 @@ export type ScalarOnly<T> = [Extract<T, NonScalar>] extends [never] ? true : nev
 export const HEALTH_SUMMARY_IS_SCALAR_ONLY: ScalarOnly<HealthSummaryValue> = true;
 
 /**
+ * What a count must be for its key to be nominal — a bound, in either direction or both.
+ *
+ * **Both are optional and at least one is required**, which is the whole of the shape. `atMost: 0` is
+ * `secretsDueForRotation`, where zero is the good answer; `atLeast: 1` is a count of things that must
+ * exist, where zero is the fault. A declaration carrying neither is a claim with no content, and one
+ * carrying an inverted pair is a claim nothing can satisfy — both would make every value on that key
+ * want attention forever, which is worse than declaring nothing.
+ *
+ * Inclusive at the edge. A cadence saying *no more than zero overdue* means zero is fine.
+ */
+export const HealthCountNominal = z
+  .object({
+    atMost: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe("The largest nominal value, inclusive. Above it the value wants attention."),
+    atLeast: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe("The smallest nominal value, inclusive. Below it the value wants attention."),
+  })
+  .describe(
+    "A count's nominal range: at least one bound, inclusive at its edge. Neither is a claim with no content; an inverted pair is one nothing can satisfy.",
+  );
+export type HealthCountNominal = z.output<typeof HealthCountNominal>;
+
+/**
+ * What a key claims a nominal value is, or null where it makes no claim at all.
+ *
+ * **Null is the default and stays supported forever.** Some measures genuinely have no good or bad
+ * value — a count of things that simply exist — and a vocabulary that forced a claim would collect
+ * invented ones. What must never happen is a client reading null as *fine*; {@link standingOf} answers
+ * `unknowable` for it, and that is the point of this whole field.
+ */
+/*
+  **These two are the shape; `HealthSummaryKey` is the gate.** Standalone, this accepts `{}` and `[]` —
+  the rules that refuse them depend on `kind`, which lives on the key rather than here, so they are
+  enforced in that object's refine. A consumer validating a nominal on its own gets the loose shape and
+  should parse the whole key instead.
+*/
+export const HealthNominal = z
+  .union([HealthCountNominal, z.array(z.string().min(1))])
+  .nullable()
+  .describe(
+    "What this key's nominal value is: a bound for a `count`, the nominal members for a `state`, or null where the capability makes no claim. Which shape applies is decided by `kind`.",
+  );
+export type HealthNominal = z.output<typeof HealthNominal>;
+
+/**
+ * Whether a declared nominal fits the kind it was declared on.
+ *
+ * A free function rather than an inline predicate because the refine needs it before the object exists
+ * and because `states` is read from the same key — a `state` key's nominal must name members that key
+ * actually declares, or the claim is unverifiable: a producer can never send a value that matches it.
+ *
+ * Null is always suitable. That is the default, and a key that grades nothing is the common case.
+ */
+function nominalSuitsKind(kind: HealthValueKind, nominal: HealthNominal, states: readonly string[] | null): boolean {
+  if (nominal === null) return true;
+  if (kind === "count") {
+    if (Array.isArray(nominal)) return false;
+    const { atMost, atLeast } = nominal;
+    // A bound with no side is a claim with no content; an inverted one is a claim nothing satisfies.
+    if (atMost === undefined && atLeast === undefined) return false;
+    return atMost === undefined || atLeast === undefined || atLeast <= atMost;
+  }
+  if (!Array.isArray(nominal) || nominal.length === 0) return false;
+  // Every nominal member has to be one the key declares, or the claim is one no producer could satisfy.
+  //
+  // `states` is null only on a declaration the refine above this one has already refused — a `state`
+  // key must declare a non-empty list. Answering `true` there reports the one real fault rather than
+  // two, and this is never the only thing standing between a bad declaration and the wire.
+  return states === null ? true : nominal.every((member) => states.includes(member));
+}
+
+/**
  * One key a capability may report, declared alongside its routes.
  *
  * `scope` is **not nullable**, unlike an admin route's. A route may need only a verified caller — the
@@ -150,10 +230,36 @@ export const HealthSummaryKey = z
       .string()
       .min(1)
       .describe("One line saying what the number means, for a client to render beside it without knowing the key."),
+    /*
+      **#471. `summary` says what the value means; this says what it should be.**
+
+      Without it a client holds a number, a scope, a cost and an English sentence, and cannot tell a
+      good value from a bad one: `secretsDueForRotation: 0` is the good answer and a `verifiedSenders: 0`
+      would be a fault, from declarations identical in every other field. A management client that
+      rendered either as a finding was claiming a verdict the manifest never carried.
+
+      `.default(null)` rather than required, and permanently: it is what makes every manifest built
+      before this field parse unchanged, and it is the honest answer for a measure nobody grades.
+    */
+    nominal: HealthNominal.default(null).describe(
+      "What a nominal value is for this key — a bound for a `count`, the nominal members for a `state`, or null where the capability makes no claim. A client reads null as `unknowable`, never as healthy.",
+    ),
   })
   .refine((key) => (key.kind === "state" ? key.states !== null && key.states.length > 0 : key.states === null), {
     message: "A `state` key declares a non-empty closed list; a `count` key declares none.",
     path: ["states"],
+  })
+  /*
+    The shape of `nominal` is decided by `kind`, exactly as `states` is one refine above.
+
+    **Asserted both ways in the suite**, because a refine written for one direction admits the other —
+    the lesson the `states` refine already records, and the reason this is a predicate over both rather
+    than a check that a count's nominal is an object.
+  */
+  .refine((key) => nominalSuitsKind(key.kind, key.nominal, key.states), {
+    message:
+      "A `count` key's nominal is a bound with at least one satisfiable side; a `state` key's is a non-empty list of members it declares.",
+    path: ["nominal"],
   })
   .describe(
     "One bounded scalar a capability contributes to its manifest entry: what it is called, what it may be, what it costs, and which scope it is behind.",
@@ -296,4 +402,85 @@ export function namedHealthValues(descriptor: {
     if (value !== undefined) named.push({ key, value });
   }
   return named;
+}
+
+/**
+ * Where one value stands against its own declaration — #471.
+ *
+ * Three answers, and the third is the reason this exists.
+ *
+ * - `nominal` — the value is what the capability said it should be.
+ * - `attention` — it is not.
+ * - `unknowable` — **nobody said what it should be**, so nothing can be concluded.
+ *
+ * **`unknowable` is never `nominal`, and a client must not collapse them.** A key that declares no
+ * bound is a key nobody can grade; answering `nominal` for it would let a management client read
+ * healthy because nothing told it otherwise, which is the defect this whole field was filed to remove
+ * rather than relocate. #350 made the four report states a discriminated union for the same reason —
+ * so a consumer that forgets the sick case gets a type error instead of a screen that lies — and this
+ * is the same choice one level down.
+ *
+ * It is also the answer for a value whose **type** contradicts its `kind` — a string where a count was
+ * declared. `checked()` refuses that on the producing side, but a client parses manifests from Workers
+ * it does not control, and grading a value that is not the kind of thing being graded is inventing an
+ * answer about it.
+ *
+ * **A `state` value outside its own `states` is a different case and is `attention`, deliberately.** It
+ * is a string, so it is the kind of thing being graded; it is simply not one the capability said it
+ * would send. Answering `unknowable` there would file a Worker reporting `storeState: "exploded"` under
+ * *nothing can be concluded*, when what can be concluded is that something is wrong.
+ */
+export type HealthStanding = "nominal" | "attention" | "unknowable";
+
+/** Where {@link HealthSummaryValue} stands against the key that declared it. See {@link HealthStanding}. */
+export function standingOf(key: HealthSummaryKey, value: HealthSummaryValue): HealthStanding {
+  const nominal = key.nominal;
+  /*
+    **`== null`, which is `undefined` as well, and the asymmetry is what made it a defect.**
+
+    A key that reaches here without the field is one somebody built by hand and asserted into the type
+    rather than parsed — `.default(null)` fills it on every parsed path. With `=== null` the `state`
+    branch below still answered `unknowable`, because `!Array.isArray(undefined)` catches it, while this
+    one fell through to `nominal.atMost` and threw. One malformed input, two behaviors, and the noisier
+    of the two on the branch a client is likelier to hit.
+
+    This function is exported, and this module's own doctrine is that a client parses manifests from
+    Workers it does not control. Answering the question is what it is for; throwing is not an answer.
+  */
+  if (nominal == null) return "unknowable";
+  if (key.kind === "count") {
+    if (Array.isArray(nominal) || typeof value !== "number" || !Number.isInteger(value)) return "unknowable";
+    // Inclusive at both edges — a cadence saying *no more than zero overdue* means zero is fine.
+    if (nominal.atMost !== undefined && value > nominal.atMost) return "attention";
+    if (nominal.atLeast !== undefined && value < nominal.atLeast) return "attention";
+    return "nominal";
+  }
+  if (!Array.isArray(nominal) || typeof value !== "string") return "unknowable";
+  return nominal.includes(value) ? "nominal" : "attention";
+}
+
+/**
+ * Every value this capability reported that wants somebody's attention, in declaration order.
+ *
+ * `namedHealthValues` one filter later, and here rather than in every client so the filter is written
+ * once. The three stateless reports answer empty: `undeclared`, `withheld` and `unavailable` are states
+ * of the *report* rather than of any value, and folding one of them into a list of graded measures is
+ * exactly the collapse #350 and #471 each exist to prevent — a withheld number is not a bad number, and
+ * a failed read is not a finding about the thing that failed to be read.
+ *
+ * A value standing at `unknowable` is not here either. The list is what wants attention, and a measure
+ * nobody grades cannot want it.
+ *
+ * **So an empty list is not a clean bill of health, and a client that renders it as one has rebuilt
+ * #471 one layer up.** Five situations answer `[]`: nothing declared, withheld, unavailable, everything
+ * nominal, and everything ungradeable. Three of those are *could not look* rather than *nothing is
+ * wrong*. A surface that wants to tell them apart has what it needs — the report's own state separates
+ * the first three, and mapping {@link namedHealthValues} through {@link standingOf} separates the last
+ * two — but it has to ask, and this function deliberately does not answer it.
+ */
+export function healthAttention(descriptor: {
+  healthKeys: readonly HealthSummaryKey[];
+  health: CapabilityHealthReport;
+}): NamedHealthValue[] {
+  return namedHealthValues(descriptor).filter((named) => standingOf(named.key, named.value) === "attention");
 }
