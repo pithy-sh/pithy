@@ -7,9 +7,12 @@ import {
   type CapabilityHealthReport,
   HEALTH_SUMMARY_IS_SCALAR_ONLY,
   HealthSummaryKey,
+  type HealthSummaryKey as HealthSummaryKeyOut,
+  healthAttention,
   healthReport,
   healthWire,
   namedHealthValues,
+  standingOf,
 } from "./healthSummary";
 
 /**
@@ -132,5 +135,192 @@ describe("a client renders an unknown key as nothing", () => {
     expect(namedHealthValues({ healthKeys: declared, health: { state: "withheld" } })).toEqual([]);
     expect(namedHealthValues({ healthKeys: declared, health: { state: "unavailable" } })).toEqual([]);
     expect(namedHealthValues({ healthKeys: declared, health: { state: "undeclared" } })).toEqual([]);
+  });
+});
+
+/**
+ * **A declaration says what a value means; `nominal` says what it should be — #471.**
+ *
+ * Without it no client can tell a good number from a bad one. `secretsDueForRotation: 0` is the good
+ * answer and a `verifiedSenders: 0` would be a fault, from declarations that are otherwise identical —
+ * so a management client rendering either as a finding is claiming a verdict the manifest never carried.
+ * `pithy-sh/dashboard` shipped exactly that, under a heading reading `Health`, before this landed.
+ *
+ * The field is optional forever. Some measures genuinely have no good value, and forcing a claim would
+ * produce invented ones.
+ */
+describe("a key may declare what a nominal value is, and most do not", () => {
+  test("every declaration that predates the field still parses, and claims nothing", () => {
+    // The compatibility half, stated over the two fixtures this file already had. `.default(null)` is
+    // what makes a manifest built before #471 parse unchanged rather than fail on a missing field.
+    expect(HealthSummaryKey.parse(dueForRotation).nominal).toBeNull();
+    expect(HealthSummaryKey.parse(storeState).nominal).toBeNull();
+  });
+
+  test("a count declares a bound, and a state declares which members are nominal", () => {
+    expect(HealthSummaryKey.parse({ ...dueForRotation, nominal: { atMost: 0 } }).nominal).toEqual({ atMost: 0 });
+    expect(HealthSummaryKey.parse({ ...storeState, nominal: ["ready"] }).nominal).toEqual(["ready"]);
+  });
+
+  test("**the shape is decided by `kind`, and the refine is asserted both ways**", () => {
+    // A refine written for one admits the other — the lesson the `states` refine above this file
+    // already records, applied to the field that arrived after it.
+    expect(() => HealthSummaryKey.parse({ ...dueForRotation, nominal: ["ready"] })).toThrow();
+    expect(() => HealthSummaryKey.parse({ ...storeState, nominal: { atMost: 0 } })).toThrow();
+  });
+
+  test("a count's bound has to bound something, and has to be satisfiable", () => {
+    // `{}` is a claim with no content, and an inverted pair is a claim nothing can satisfy. Both are
+    // declarations that would make `standingOf` answer `attention` for every value forever.
+    expect(() => HealthSummaryKey.parse({ ...dueForRotation, nominal: {} })).toThrow();
+    expect(() => HealthSummaryKey.parse({ ...dueForRotation, nominal: { atLeast: 5, atMost: 2 } })).toThrow();
+    // And the satisfiable pair is accepted, so the rule above is a bound rather than a ban.
+    expect(HealthSummaryKey.parse({ ...dueForRotation, nominal: { atLeast: 1, atMost: 5 } }).nominal).toEqual({
+      atLeast: 1,
+      atMost: 5,
+    });
+  });
+
+  test("**a state's nominal members must be members it declares**", () => {
+    // Otherwise the claim is unverifiable: a nominal naming `ok` on a key whose states are
+    // `ready`/`degraded` can never match a value the producer is allowed to send.
+    expect(() => HealthSummaryKey.parse({ ...storeState, nominal: ["ok"] })).toThrow();
+    expect(() => HealthSummaryKey.parse({ ...storeState, nominal: [] })).toThrow();
+  });
+});
+
+/**
+ * **Where a value stands against its own declaration, and the third answer that is the whole point.**
+ *
+ * `unknowable` is not a tidy-up. A key that declares no nominal is a key nobody can grade, and
+ * answering `nominal` for it would rebuild #471's defect one layer up — a client reading healthy
+ * because nothing told it otherwise. #350 made the four states a discriminated union for the same
+ * reason: so a consumer that forgets the sick case gets a type error rather than a screen that lies.
+ */
+describe("a value stands somewhere, and `unknowable` is never `nominal`", () => {
+  /** A count whose good answer is zero — the real `@pithy-sh/secrets` declaration. */
+  const overdue = HealthSummaryKey.parse({ ...dueForRotation, nominal: { atMost: 0 } });
+  /** A count whose good answer is *not* zero. The pair is the issue's entire premise. */
+  const senders = HealthSummaryKey.parse({
+    key: "verifiedSenders",
+    kind: "count",
+    states: null,
+    scope: "secrets:status:read",
+    cost: "indexed",
+    summary: "Sender addresses that have completed domain verification.",
+    nominal: { atLeast: 1 },
+  });
+  const store = HealthSummaryKey.parse({ ...storeState, nominal: ["ready"] });
+
+  test("**a key that claims nothing is unknowable, for a count and for a state alike**", () => {
+    // Asserted on its own rather than folded into a broader case, because this is the single answer
+    // most likely to be got wrong and the one whose failure is invisible on screen.
+    expect(standingOf(HealthSummaryKey.parse(dueForRotation), 0)).toBe("unknowable");
+    expect(standingOf(HealthSummaryKey.parse(dueForRotation), 99)).toBe("unknowable");
+    expect(standingOf(HealthSummaryKey.parse(storeState), "ready")).toBe("unknowable");
+    expect(standingOf(HealthSummaryKey.parse(storeState), "degraded")).toBe("unknowable");
+  });
+
+  test("**an `atMost` bound and an `atLeast` bound, because one implemented backwards passes the other**", () => {
+    // The plant: with only the `atMost: 0` fixture, a comparison written the wrong way round still
+    // answers correctly for 0. The `atLeast` pair is what refuses it.
+    expect(standingOf(overdue, 0)).toBe("nominal");
+    expect(standingOf(overdue, 3)).toBe("attention");
+    expect(standingOf(senders, 0)).toBe("attention");
+    expect(standingOf(senders, 1)).toBe("nominal");
+  });
+
+  test("a bound is inclusive at its edge, in both directions", () => {
+    const between = HealthSummaryKey.parse({ ...dueForRotation, nominal: { atLeast: 1, atMost: 5 } });
+    expect([standingOf(between, 1), standingOf(between, 5)]).toEqual(["nominal", "nominal"]);
+    expect([standingOf(between, 0), standingOf(between, 6)]).toEqual(["attention", "attention"]);
+  });
+
+  test("a state stands by membership of the nominal list, not of the declared one", () => {
+    expect(standingOf(store, "ready")).toBe("nominal");
+    expect(standingOf(store, "degraded")).toBe("attention");
+  });
+
+  test("**a value contradicting its own kind is unknowable, never graded**", () => {
+    // A client parses a manifest from a Worker it does not control, and `checked()` runs on the
+    // producing side. Grading a string as a count would be inventing an answer about a malformed one.
+    expect(standingOf(overdue, "three")).toBe("unknowable");
+    expect(standingOf(store, 1)).toBe("unknowable");
+  });
+});
+
+/**
+ * The values worth somebody's attention, over a whole capability.
+ *
+ * Written here so every client does not rebuild it, and shaped like `namedHealthValues` because it
+ * answers the same question one filter later.
+ */
+describe("what a capability reports that wants attention", () => {
+  const overdue = HealthSummaryKey.parse({ ...dueForRotation, nominal: { atMost: 0 } });
+  const store = HealthSummaryKey.parse({ ...storeState, nominal: ["ready"] });
+  /** Declared, reported, and graded by nothing — it must never reach the list. */
+  const ungraded = HealthSummaryKey.parse({ ...dueForRotation, key: "secretsTracked" });
+  const keys = [overdue, store, ungraded];
+
+  test("**each of the three stateless reports answers empty, asserted one at a time**", () => {
+    // They are states of the *report* rather than of any value. Conflating one with a graded measure
+    // is the collapse this whole seam exists to prevent, so none of them is allowed to be a row.
+    for (const health of [
+      { state: "undeclared" },
+      { state: "withheld" },
+      { state: "unavailable" },
+    ] satisfies CapabilityHealthReport[]) {
+      expect(healthAttention({ healthKeys: keys, health })).toEqual([]);
+    }
+  });
+
+  test("only the values standing at attention, in declaration order", () => {
+    const health: CapabilityHealthReport = {
+      state: "reported",
+      values: { secretsDueForRotation: 3, storeState: "degraded", secretsTracked: 41 },
+    };
+    expect(healthAttention({ healthKeys: keys, health }).map((named) => named.key.key)).toEqual([
+      "secretsDueForRotation",
+      "storeState",
+    ]);
+  });
+
+  test("**a capability with nothing wrong is empty, and an ungraded value is not `nominal` either**", () => {
+    // Both exclusions in one case, because they are one rule: the list is what stands at `attention`,
+    // and neither a good value nor an ungradeable one does.
+    const health: CapabilityHealthReport = {
+      state: "reported",
+      values: { secretsDueForRotation: 0, storeState: "ready", secretsTracked: 41 },
+    };
+    expect(healthAttention({ healthKeys: keys, health })).toEqual([]);
+  });
+});
+
+/**
+ * **A key nobody parsed still gets an answer rather than a stack trace — #471 review, F1.**
+ *
+ * `standingOf` is exported, and this module's doctrine is that a client parses manifests from Workers
+ * it does not control. A key built by hand and asserted into the type — a fixture, a fake, a client
+ * that trusted a cast — reaches it with `nominal` absent rather than null.
+ *
+ * It threw, on the `count` branch only: `!Array.isArray(undefined)` happened to catch the same input on
+ * the `state` branch and answer `unknowable`. One malformed input, two behaviors, and the crash on the
+ * commoner kind. Both answer now, and both are asserted, because a fix on one branch of an asymmetry is
+ * how the asymmetry comes back.
+ */
+describe("a key that never went through a parse still gets an answer", () => {
+  const unparsed = {
+    key: "k",
+    kind: "count",
+    states: null,
+    scope: "secrets:status:read",
+    cost: "indexed",
+    summary: "s",
+  };
+
+  test("**absent is unknowable, on the count branch and on the state branch alike**", () => {
+    expect(standingOf(unparsed as unknown as HealthSummaryKeyOut, 0)).toBe("unknowable");
+    const asState = { ...unparsed, kind: "state", states: ["ready"] };
+    expect(standingOf(asState as unknown as HealthSummaryKeyOut, "ready")).toBe("unknowable");
   });
 });

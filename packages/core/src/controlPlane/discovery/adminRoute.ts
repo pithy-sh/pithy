@@ -167,7 +167,19 @@ export const CapabilityDescriptor = z
       ...declaration,
       // Every defaulted field is optional on the way back out, and empty is the meaning absence already
       // had: a capability that declares no summary, and one that states no configured fact.
-      healthKeys: healthKeys ?? [],
+      //
+      // **The `map` is load-bearing for the compiler and inert at run time, and both halves are the
+      // point (#471).** `HealthSummaryKey.nominal` is `.default(null)`, so the key's input type has it
+      // optional and its output type has it present — and this encode sits exactly on that seam, so
+      // spreading the keys through unchanged does not compile.
+      //
+      // At run time the `?? null` never fires: the read side validates before this transform, and it
+      // demands `nominal`, so no value carrying a key without one ever reaches here. It is written as a
+      // `??` rather than a cast because the two branches genuinely mean the same thing — absence and
+      // null are both *this capability makes no claim* — so the widening is stated rather than asserted,
+      // and the day the read side stops validating first this keeps being correct instead of becoming
+      // a lie the type system was told to ignore.
+      healthKeys: (healthKeys ?? []).map((key) => ({ ...key, nominal: key.nominal ?? null })),
       configKeys: configKeys ?? [],
       config: config ?? {},
       ...healthWire(health),

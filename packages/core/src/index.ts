@@ -79,15 +79,20 @@ export {
 export {
   CapabilityHealthReport,
   type CapabilityHealthWire,
+  HealthCountNominal,
+  HealthNominal,
+  type HealthStanding,
   HealthSummary,
   HealthSummaryKey,
   HealthSummaryValue,
   HealthValueCost,
   HealthValueKind,
+  healthAttention,
   healthReport,
   healthWire,
   type NamedHealthValue,
   namedHealthValues,
+  standingOf,
 } from "./controlPlane/discovery/healthSummary";
 export { requireControlPlane } from "./controlPlane/http/guard";
 export {
