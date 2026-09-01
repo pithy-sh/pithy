@@ -3,6 +3,7 @@
 
 import { readdirSync } from "node:fs";
 import { join, relative } from "node:path";
+import { CapabilityDescriptor } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import { IanaTimezone, JsonDate, SQLiteBoolean, SQLiteDate, sqliteJson } from "@pithy-sh/core/src/data/codecs";
 import { HttpError } from "@pithy-sh/core/src/error/http";
 import { describe, expect, test } from "vitest";
@@ -45,10 +46,26 @@ import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
 const PACKAGES = join(import.meta.dirname, "..", "..", "..", "..", "packages");
 
 /**
- * The needle, assembled rather than written out, so this file does not match its own scan. Naming it
- * literally would be the smallest possible version of a check derived from its own subject.
+ * The needle — **a shape, not a spelling.**
+ *
+ * It was the literal `z.` + `codec(`, matched one line at a time, and that described a formatting
+ * convention rather than the thing being gated. `adminRoute.ts` writes `export const CapabilityDescriptor
+ * = z` and then `.codec(` on the next line — Biome's own wrapping, over a long generic — so the one
+ * codec on the control-plane wire was invisible to a walk whose whole job is finding every codec. The
+ * gate was green over a population it did not cover, which is the failure this file's own header
+ * describes and then had.
+ *
+ * So the pattern spans whitespace, newline included, and the walk runs over the source rather than over
+ * its lines. Note what the fix is *not*: enrolling that one file, or forbidding the line break. Either
+ * would leave the next long codec declaration exactly as invisible — the reach of the gate has to match
+ * the rule it states, which is *every codec*, however somebody's formatter breaks the line.
+ *
+ * **It still does not match itself.** The pattern needs `codec` immediately after the dot; every
+ * occurrence in this file has a backslash or a brace between, so the scan reads no `z.codec(` here. That
+ * is the same property the assembled literal had, kept for the same reason: deriving a gate's population
+ * from its own subject is shape 2 of the taxonomy in `sweepPopulation.test.ts`.
  */
-const CODEC = `z.${"codec("}`;
+const CODEC = /\bz\s*\.\s*codec\s*\(/g;
 
 /** `export const X =`, `export function X`, or either without the `export`. The nearest one above a site names it. */
 const DECLARATION = /^\s*(?:export\s+)?(?:const|function)\s+([A-Za-z_$][\w$]*)/;
@@ -62,19 +79,24 @@ function siteName(lines: readonly string[], index: number): string {
   return `<anonymous:${index + 1}>`;
 }
 
-/** Every `z.codec(` under `packages/*​/src`, keyed the way {@link DRIVERS} is. */
+/** Every codec under `packages/*​/src`, keyed the way {@link DRIVERS} is. */
 function codecSites(): string[] {
   const found: string[] = [];
   for (const pkg of readdirSync(PACKAGES, { withFileTypes: true })) {
     if (!pkg.isDirectory()) continue;
     for (const path of sourcePaths(join(PACKAGES, pkg.name, "src"), { keep: isShippedSource })) {
       const source = readSource(path);
-      if (source === null || !source.includes(CODEC)) continue;
+      if (source === null) continue;
       const lines = source.split("\n");
       const file = relative(PACKAGES, path).split("\\").join("/");
-      lines.forEach((line, index) => {
-        if (line.includes(CODEC)) found.push(`${file}#${siteName(lines, index)}`);
-      });
+      // Over the source rather than over its lines, because the match may straddle a line break. The
+      // line it *starts* on is what names it: `siteName` walks up from there to the declaration, and a
+      // wrapped `= z\n.codec(` starts on the `z`, which is the line the declaration is on.
+      CODEC.lastIndex = 0;
+      for (let hit = CODEC.exec(source); hit !== null; hit = CODEC.exec(source)) {
+        const line = source.slice(0, hit.index).split("\n").length - 1;
+        found.push(`${file}#${siteName(lines, line)}`);
+      }
     }
   }
   return found.sort();
@@ -88,6 +110,10 @@ function codecSites(): string[] {
  * stopped being driven would otherwise leave a green gate over nothing.
  */
 const CODEC_SITES = [
+  // **The one the walk could not see.** `adminRoute.ts` wraps its declaration, so `.codec(` sits on a
+  // line of its own and a line-at-a-time scan for `z.codec(` missed it — the codec on the control-plane
+  // wire, unenrolled, while this gate reported green over six of seven. See {@link CODEC}.
+  "core/src/controlPlane/discovery/adminRoute.ts#CapabilityDescriptor",
   "core/src/data/codecs.ts#IanaTimezone",
   "core/src/data/codecs.ts#JsonDate",
   "core/src/data/codecs.ts#SQLiteBoolean",
@@ -96,8 +122,8 @@ const CODEC_SITES = [
   "core/src/error/http.ts#HttpError",
 ];
 
-/** Six, as this is written. Frozen on purpose: a walk that returns two makes the partition trivial. */
-const EXPECTED_SITES = 6;
+/** Seven, as this is written. Frozen on purpose: a walk that returns two makes the partition trivial. */
+const EXPECTED_SITES = 7;
 
 /** How the gate drives one codec: the thing itself, and values it must refuse in each direction. */
 interface Driver {
@@ -126,6 +152,26 @@ const BEYOND_DATE_RANGE = 8.64e15 + 1;
  * written with garbage-that-looks-invalid would have driven it and proved nothing.
  */
 const DRIVERS: Record<string, Driver> = {
+  /*
+    The control-plane manifest's own entry, and the one codec here whose sides are whole objects rather
+    than scalars.
+
+    **The encode side is the half worth having.** `CapabilityDescriptor` is what a Worker's seam answers
+    with, so a throw out of `safeEncode` is a 500 on the discovery route every management client calls
+    first — the same shape as the date defect this gate was built for, one layer up. The values below are
+    refused on the way out for three different reasons: nothing at all, a health report whose `state` is
+    not one of the four, and an entry whose `healthKeys` is not a list of keys.
+  */
+  "core/src/controlPlane/discovery/adminRoute.ts#CapabilityDescriptor": {
+    codec: CapabilityDescriptor,
+    rejectsOnParse: [null, 42, {}, { name: "secrets" }, { name: "secrets", version: "1.0.0", adminRoutes: 7 }],
+    rejectsOnEncode: [
+      null,
+      {},
+      { name: "secrets", version: "1.0.0", adminRoutes: [], health: { state: "exploded" } },
+      { name: "secrets", version: "1.0.0", adminRoutes: [], healthKeys: [42], health: { state: "undeclared" } },
+    ],
+  },
   "core/src/data/codecs.ts#IanaTimezone": {
     codec: IanaTimezone,
     rejectsOnParse: [42, {}, []],
@@ -160,11 +206,11 @@ const DRIVERS: Record<string, Driver> = {
   },
 };
 
-/** Every check the drive performs: twenty-two inputs on the way in, seventeen values on the way out. */
-const EXPECTED_CHECKS = 39;
+/** Every check the drive performs: twenty-seven inputs on the way in, twenty-one values on the way out. */
+const EXPECTED_CHECKS = 48;
 
-/** The `parse` half of that — the twenty-two decode-side inputs, which must still throw. */
-const EXPECTED_PARSE_CHECKS = 22;
+/** The `parse` half of that — the twenty-seven decode-side inputs, which must still throw. */
+const EXPECTED_PARSE_CHECKS = 27;
 
 describe("no codec in this kit throws out of safeParse", () => {
   test("the walk finds every codec, so this gate is not vacuous", () => {
