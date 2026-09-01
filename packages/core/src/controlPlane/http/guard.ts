@@ -100,8 +100,23 @@ export function workerVersionHeaders(env: unknown): Record<string, string> {
  * 400 and tells an unauthenticated caller which requests were well-formed — on this seam that is a
  * live oracle, letting someone with no credential at all probe the shape of key registration.
  */
+/**
+ * The brand every {@link requireControlPlane} gate carries, so a mounted router can be read back.
+ *
+ * A middleware is an opaque function to Hono, so "which routes are control-plane routes" is knowable
+ * only if the gate says so about itself. `undeclaredAdminRoutes` needs exactly that: it walks the
+ * router looking for guarded routes nobody declared, and without a mark it would have to guess from
+ * path shape. `Symbol.for` so the check still works across duplicated copies of this module.
+ */
+export const CONTROL_PLANE_GUARD = Symbol.for("pithy.controlPlaneGuard");
+
+/** Whether a mounted handler is a control-plane gate. */
+export function isControlPlaneGuard(handler: unknown): boolean {
+  return typeof handler === "function" && (handler as unknown as Record<symbol, unknown>)[CONTROL_PLANE_GUARD] === true;
+}
+
 export function requireControlPlane(requirement: ControlPlaneRequirement): MiddlewareHandler<PithyHonoEnv> {
-  return async (c, next) => {
+  const guard: MiddlewareHandler<PithyHonoEnv> = async (c, next) => {
     // Every control-plane response carries the build that produced it, allowed or denied.
     //
     // **On the guard, not on the seam's own routes**, because the guard is the one thing every
@@ -164,6 +179,8 @@ export function requireControlPlane(requirement: ControlPlaneRequirement): Middl
     );
     await next();
   };
+  (guard as unknown as Record<symbol, unknown>)[CONTROL_PLANE_GUARD] = true;
+  return guard;
 }
 
 /**

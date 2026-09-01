@@ -9,6 +9,8 @@ describe("ControlPlaneConfig", () => {
     expect(ControlPlaneConfig.parse({})).toEqual({
       basePath: "/control-plane",
       issuer: "https://app.pithy.sh",
+      allowedOrigins: [],
+      corsMaxAgeSeconds: 600,
       replayBackend: "d1",
       clockSkewSeconds: 60,
       maxTokenLifetimeSeconds: 60,
@@ -114,6 +116,56 @@ describe("ControlPlaneConfig", () => {
 
     test("rejects a value that is not a URL", () => {
       expect(ControlPlaneConfig.safeParse({ issuer: "app.pithy.sh" }).success).toBe(false);
+    });
+  });
+
+  describe("corsMaxAgeSeconds", () => {
+    test("accepts zero, which is what you set while working an allow-list out", () => {
+      // A browser that cached a refusal keeps refusing for the whole window after the config is fixed,
+      // which reads exactly like a change that did not take.
+      expect(ControlPlaneConfig.parse({ corsMaxAgeSeconds: 0 }).corsMaxAgeSeconds).toBe(0);
+    });
+
+    test.each([[7201], [-1], [1.5]])("rejects %j", (corsMaxAgeSeconds) => {
+      expect(ControlPlaneConfig.safeParse({ corsMaxAgeSeconds }).success).toBe(false);
+    });
+  });
+
+  describe("allowedOrigins", () => {
+    // A spelling, not a misunderstanding: each of these is the same origin written another way, and
+    // `allowedOriginSet` normalizes it. `[::1]` is what a Vite dev server binds by default, and
+    // refusing it while the loopback rule names it was a contradiction between the config and the docs.
+    test.each([
+      ["http://localhost:5173"],
+      ["http://[::1]:5173"],
+      ["https://ops.example.com/"],
+      ["https://ops.example.com:443"],
+    ])("accepts %j", (origin) => {
+      expect(ControlPlaneConfig.safeParse({ allowedOrigins: [origin] }).success).toBe(true);
+    });
+
+    test("accepts an adopter's own console beside the issuer", () => {
+      expect(ControlPlaneConfig.parse({ allowedOrigins: ["https://ops.example.com"] }).allowedOrigins).toEqual([
+        "https://ops.example.com",
+      ]);
+    });
+
+    // The misconfiguration each rule exists for. A browser sends an `Origin` that is exactly
+    // `scheme://host[:port]`, so every one of these would be configured, look right in the file, and
+    // then match nothing at runtime — a silent refusal with no error to read.
+    // Each of these says the writer believes the value does something it does not, so it fails at
+    // deploy where the message can say so — rather than matching nothing on the first admin call.
+    test.each([
+      ["app.example.com"], // no scheme: not a URL at all
+      ["https://ops.example.com/dash"], // looks like it scopes the entry to a path. It does not.
+      ["https://ops.example.com?tenant=acme"], // same, with a query
+      ["https://a@evil.example"], // credentials in an origin are never meaningful and often a trick
+      ["ftp://x.com"], // has an origin; is not a scheme a browser sends
+      ["https://*.example.com"], // wildcards parse as URLs and mean nothing to a browser
+      ["*"], // the one value this list exists to make unnecessary
+      [""],
+    ])("rejects %j", (origin) => {
+      expect(ControlPlaneConfig.safeParse({ allowedOrigins: [origin] }).success).toBe(false);
     });
   });
 });

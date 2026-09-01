@@ -5,8 +5,9 @@ import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import type { Capability, PithyHonoEnv } from "../../capability/capability";
 import { defineCapability } from "../../capability/capability";
+import { requireControlPlane } from "../http/guard";
 import type { AdminRoute } from "./adminRoute";
-import { missingAdminRoutes } from "./drift";
+import { missingAdminRoutes, undeclaredAdminRoutes } from "./drift";
 
 /** A capability that declares `adminRoutes` and registers whatever `mounts` says. */
 function capability(name: string, declared: AdminRoute[], mounts: AdminRoute[]): Capability {
@@ -88,5 +89,46 @@ describe("missingAdminRoutes", () => {
     // surface that is not advertised.
     const caps = [capability("payments", [], [route("POST", "/payments/entitlements/grant")])];
     expect(missingAdminRoutes(compose(caps) as unknown as Hono<never>, caps)).toEqual([]);
+  });
+});
+
+describe("undeclaredAdminRoutes", () => {
+  /** A capability that guards what it mounts, and declares only what `declared` says. */
+  function guarded(name: string, declared: AdminRoute[], mounts: AdminRoute[]): Capability {
+    return defineCapability({
+      name,
+      requiredBindings: [],
+      adminRoutes: declared,
+      routes: (app: Hono<PithyHonoEnv>) => {
+        for (const mount of mounts) {
+          const handler = (c: { text: (body: string) => Response }) => c.text("ok");
+          if (mount.method === "GET") app.get(mount.path, requireControlPlane("admin:do"), handler);
+          else app.post(mount.path, requireControlPlane("admin:do"), handler);
+        }
+      },
+    }) as Capability;
+  }
+
+  test("a capability that declares everything it guards reports nothing", () => {
+    const routes = [route("GET", "/vault/admin/secrets"), route("POST", "/vault/admin/rotate")];
+    const caps = [guarded("vault", routes, routes)];
+    expect(undeclaredAdminRoutes(compose(caps) as unknown as Hono<never>, caps)).toEqual([]);
+  });
+
+  test("it bites — a guarded route nobody declared is named", () => {
+    // The failure it exists for: since #468, an undeclared admin route also gets no CORS registration,
+    // so its preflight 404s and no browser can reach it — while the capability's own suite stays green.
+    const declared = [route("GET", "/vault/admin/secrets")];
+    const mounted = [...declared, route("POST", "/vault/admin/rotate")];
+    const caps = [guarded("vault", declared, mounted)];
+    expect(undeclaredAdminRoutes(compose(caps) as unknown as Hono<never>, caps)).toEqual([
+      { method: "POST", path: "/vault/admin/rotate" },
+    ]);
+  });
+
+  test("an unguarded route is not an admin route, and is left alone", () => {
+    // The adopter's own API is mounted on the same router. Only the gate marks a route as this seam's.
+    const app = compose([capability("app", [], [route("GET", "/api/things")])]);
+    expect(undeclaredAdminRoutes(app as unknown as Hono<never>, [])).toEqual([]);
   });
 });

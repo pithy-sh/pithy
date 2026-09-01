@@ -197,9 +197,12 @@ describe("controlplane pithy.manifest.json", () => {
       expect(Object.keys(defaults), `configOptions lists ${option.key}, which is not a config field`).toContain(
         option.key,
       );
-      expect(defaults[option.key], `configOptions says ${option.key} defaults to ${option.default}`).toBe(
-        option.default,
-      );
+      // `toStrictEqual`, not `toBe`: `allowedOrigins` defaults to an array, and two structurally
+      // identical empty arrays are not the same object. Still exact for every primitive default.
+      expect(
+        defaults[option.key],
+        `configOptions says ${option.key} defaults to ${JSON.stringify(option.default)}`,
+      ).toStrictEqual(option.default);
     }
   });
 });

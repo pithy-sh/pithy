@@ -3,7 +3,7 @@
 
 import { noopEmit } from "@pithy-sh/core/src/audit/recorder";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
-import { missingAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
+import { missingAdminRoutes, undeclaredAdminRoutes } from "@pithy-sh/core/src/controlPlane/discovery/drift";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { pathParams, uncoveredParamRoutes } from "@pithy-sh/core/src/http/routeContract";
 import { noopLogger } from "@pithy-sh/core/src/logger/logger";
@@ -148,6 +148,9 @@ describe("support route contract", () => {
     capability.routes?.(app);
     expect(capability.adminRoutes?.length).toBeGreaterThan(0);
     expect(missingAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
+    // And the other way, since #468: the CORS surface derives from `adminRoutes`. A guarded route
+    // nobody declared gets no preflight, so no browser can reach it while this suite stays green.
+    expect(undeclaredAdminRoutes(app as unknown as Hono<never>, [capability])).toEqual([]);
   });
 
   test("and nothing support mounts behind the control-plane gate is left undeclared", () => {

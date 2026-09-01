@@ -56,6 +56,30 @@ Your Worker does not distinguish a browser call from a machine call, and deliber
 
 Some calls do transit our infrastructure — anything the dashboard aggregates or acts on server-side. For those, the commitment is a **zero-logging policy on your data**: we do not log, cache, or persist response bodies fetched from your Worker. We do not want your data, and the architecture is arranged so that wanting it would not help. What we store is our own: users, subscriptions, connection metadata, and our own private keys. Never your users, your purchases, your audit events, or your support mail.
 
+### It answers a preflight, so a browser can actually reach it
+
+A control-plane token rides the `pithy-control-plane` header, which is not one a browser will send cross-origin without asking first. So every admin route answers `OPTIONS` — the seam's own, and every capability's, derived from the same route table the manifest is built from.
+
+Your Worker answers for `issuer` out of the box. Nothing to configure: the hosted dashboard reaches a stock Worker on the day you connect it.
+
+Add your own console with `allowedOrigins`, which is **additive** — an entry there never removes `issuer`, so putting your own UI on top cannot lock out the dashboard that was already working:
+
+```ts
+controlplane({ allowedOrigins: ["https://ops.example.com"] })
+```
+
+Each entry is a scheme and a host: `https://ops.example.com`, `http://localhost:5173`, `http://[::1]:5173`. A trailing slash or an explicit `:443` is the same origin spelled differently and is accepted. A path, a query, or a credential is refused when the config is parsed, at deploy — those look like they scope the entry, and they do not.
+
+In local dev you configure nothing. When `ENVIRONMENT` is `dev`, your Worker answers for any address on your own machine — `localhost`, `127.0.0.1`, `[::1]`, on any port. The dev port allocator picks a console's port per feature, so there is no value you could write into `allowedOrigins` that would stay true across checkouts, and this is the rule that does not need one.
+
+It is dev and loopback or it is nothing: in staging and production the allow-list is the config above and nothing else. And it grants no access. Every admin route still demands a verified control-plane token, so what this permits a local page to do is read a reply it could already provoke.
+
+A browser caches a preflight for `corsMaxAgeSeconds`, ten minutes by default. Set it to `0` while you are working an allow-list out: a browser that has cached a refusal keeps refusing for the whole window after you fix the config, which reads exactly like a change that did not take.
+
+Two properties worth knowing, because both are deliberate. The list is read from config and **never** from a connection row: a preflight is the one request here that is answered before any credential is read, so consulting the database would turn it into a way for anyone to ask which origins you have registered. And an origin that is not on the list gets the same `204` and the same empty body as one that is, minus the header that permits the read — the browser blocks it, and the answer says nothing about what the list contains. Your browser console will name it as a CORS failure; your Worker will not tell you more than that, on purpose.
+
+Cookies are never in play. The token is a header, so `Access-Control-Allow-Credentials` is never sent.
+
 ---
 
 ## 5. Registration
@@ -96,6 +120,8 @@ Sibling Workers are not separately addressable, and that is deliberate: the data
 The seam is MIT and is not gated by anything. `--public-key <file>` registers a key you generated yourself, with no dashboard involved, so you can write your own management client and use every route on this page.
 
 Rotating without one is your own call to make, literally: `POST /control-plane/keys` signed with the key you are replacing, exactly as §6 describes. `connect --public-key` registers a *first* key and refuses a successor while one is live, naming that call — it has no private half to sign with, and doing it for you would take the registration out of your own audit trail.
+
+If your client runs in a browser, put its origin in `allowedOrigins` — or in `issuer`, if it is the only one you use. Registering a connection with `--origin` writes the issuer into that connection's row and does not widen what your Worker answers a preflight for; those are two different questions, and only the config answers the second.
 
 The contract that client is held to is a module you can import: `@pithy-sh/cli/src/dashboard/contract` carries the six calls, the six response shapes, and the hosted origin. It reaches for no timer, no `fetch`, and nothing from node, so it compiles in a Worker as readily as in a build script — implement `DashboardClient` against it and let the compiler tell you what you owe, rather than copying the field sets into a test that can drift.
 
