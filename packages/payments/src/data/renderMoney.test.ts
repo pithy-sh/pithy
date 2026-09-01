@@ -85,17 +85,24 @@ describe("renderMoney", () => {
   });
 
   test("the fraction digits are the store's, not the display convention's", () => {
-    // Measured 2026-08-28. CLDR renders HUF and COP with **no** fraction — `Intl` at its own defaults
-    // answers "66 Ft" for 6582 minor units — while Paddle's own supported-currency table gives both 2
-    // decimals, so 6582 is 65.82 forint. Letting `Intl` choose would round a figure a customer confirms.
-    for (const { locale, currency } of [
-      { locale: "hu", currency: "huf" },
-      { locale: "en", currency: "cop" },
+    // #465 justified this with a divergence that is not there, and the file's own rule above is what
+    // catches it: an expectation naming a number ICU owns is a test that breaks on a runtime upgrade
+    // for no defect. It broke. CLDR carries **two** fraction tables — standard digits, and `cashDigits`
+    // for physical rounding — and `HUF` and `COP` are 0 only in the second. `Intl.NumberFormat` reads
+    // the first, so it answers 2 for both and renders `65,82 Ft`, never the `66 Ft` this test asserted.
+    //
+    // Re-measured on ICU 75.1, across every code this package can be paid in: CLDR's
+    // `maximumFractionDigits` and ISO 4217 agree on all of them. So the pinning is not load-bearing
+    // today, and it stays, with the honest reason — the two tables are maintained by different people
+    // for different purposes, and a renderer must follow the one the money arrived in. What is asserted
+    // is the part this package controls: the exponent is ISO's, whatever `Intl` would have picked.
+    for (const { locale, currency, wholeUnits } of [
+      { locale: "hu", currency: "huf", wholeUnits: 65.82 },
+      { locale: "en", currency: "cop", wholeUnits: 65.82 },
+      { locale: "en", currency: "jpy", wholeUnits: 6582 },
+      { locale: "en", currency: "tnd", wholeUnits: 6.582 },
     ]) {
-      const loose = new Intl.NumberFormat(locale, { style: "currency", currency: currency.toUpperCase() });
-      expect(loose.resolvedOptions().maximumFractionDigits, currency).toBe(0);
-      expect(renderMoney(6582, currency, locale), currency).toBe(expected(locale, currency, 65.82));
-      expect(renderMoney(6582, currency, locale), currency).not.toBe(loose.format(65.82));
+      expect(renderMoney(6582, currency, locale), currency).toBe(expected(locale, currency, wholeUnits));
       expect(digitsOf(renderMoney(6582, currency, locale) ?? ""), currency).toBe("6582");
     }
   });

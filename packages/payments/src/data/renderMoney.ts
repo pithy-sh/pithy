@@ -28,12 +28,20 @@ import { minorUnitDigits } from "./money";
  *
  * ## The exponent is the store's, and `Intl`'s own is not it
  *
- * This is the part the correction above would get wrong if it stopped one sentence early, and it is
- * measured too. **CLDR's fraction digits are a display convention, not the denomination the money arrived
- * in.** Seventeen codes differ from ISO 4217 in the current ICU, and two of them — `HUF` and `COP` — are
- * currencies Paddle sells in and denominates with **two** decimals on its own supported-currencies table.
- * `Intl` at its defaults renders 6582 forint minor units as `66 Ft`: a rounded figure, on the screen where
- * a customer agrees to a number.
+ * This is the part the correction above would get wrong if it stopped one sentence early. **CLDR's
+ * fraction digits are a display convention, not the denomination the money arrived in**, and they are
+ * maintained by different people for a different purpose.
+ *
+ * The example this originally carried was wrong and is worth keeping as the correction. It claimed
+ * `Intl` renders 6582 forint as `66 Ft`, from CLDR giving `HUF` no fraction. CLDR carries **two**
+ * fraction tables — standard digits, and `cashDigits` for rounding physical currency — and `HUF` and
+ * `COP` are zero only in the second. `Intl.NumberFormat` reads the first, answers 2 for both, and
+ * renders `65,82 Ft`. Re-measured on ICU 75.1: across every code this package can be paid in, CLDR and
+ * ISO 4217 agree on all of them, so there is no live divergence to point at.
+ *
+ * The pinning stays anyway, and agreement today is the reason it is cheap rather than the reason to
+ * drop it: `Intl` is asked for a symbol and separators, and a renderer that let it choose the exponent
+ * would be taking the denomination from a table that can move under a runtime upgrade.
  *
  * So the digits come from {@link minorUnitDigits} — ISO 4217, the table this package already converts
  * every rail's amounts through and the one `client/wholeUnits.ts` already trusts against Paddle's own
