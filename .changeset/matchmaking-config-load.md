@@ -10,4 +10,4 @@ The factory and the Durable Objects are two things with two runtimes, and they a
 
 The presence header and event types are no longer re-exported from the presence Durable Object either. They live in the pure `presence/protocol` and are imported from there by everyone, DO included — a value import out of a `cloudflare:workers` module is precisely how #172 reached multiplayer's config path.
 
-The invariant is a gate, not a fixed bug: the package's entry point is imported in its own Node process and required to resolve. It names no forbidden module — it performs the import. `configEntrypoints.test.ts` states the same invariant across the catalog, and this one stands until matchmaking is catalogued and comes under it.
+The invariant is a gate, not a fixed bug: the package's entry point is imported in its own Node process and required to resolve. It names no forbidden module — it performs the import. `configEntrypoints.test.ts` states the same invariant across the catalog, and this one stands until matchmaking is cataloged and comes under it.

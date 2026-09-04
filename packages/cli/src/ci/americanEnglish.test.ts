@@ -82,12 +82,17 @@ import { readSource, sourcePaths } from "./sourceFiles";
  *
  * ## What is outside its reach, said out loud
  *
- * {@link ROOTS} is #434's scope: each package's `src/`, `docs/` and `README.md`, plus `templates`, `docs`
- * and `tooling`. `packages/*​/templates`,
- * `apps/`, `scripts/`, `.changeset/` and the repository's root guides are prose this project writes too, and
- * they are not read here — roughly two hundred further occurrences sit in them. That is a boundary, not a
- * judgment, and it is written down rather than left for the next reader to discover from a green run: widening
- * {@link ROOTS} is one edit, and it should follow the sweep that empties them.
+ * {@link ROOTS} is each package's `src/`, `docs/` and `README.md`, plus `templates`, `docs`, `tooling`,
+ * `scripts`, `.changeset` and `.github`.
+ *
+ * **The last three were added by #92, and the sweep the old boundary was waiting for came with them.**
+ * #434 left them out and estimated roughly two hundred occurrences sitting in them; the real number was
+ * 118, in 85 files, and they are gone. The reason for widening was not tidiness: `.changeset/*.md` is
+ * **published prose** — `changeset version` folds every one of those files into a `CHANGELOG.md` that
+ * ships inside the npm tarball — so 112 of the 118 were en-GB spellings queued to reach adopters on the
+ * first release. A release pipeline is exactly when that boundary stops being affordable.
+ *
+ * `apps/` is still out, and holds nothing today.
  *
  * `.svg` artwork and `tooling/license-headers/licenses/*.txt` are excluded by {@link PROSE}. The license texts
  * are the clearest case in the tree of somebody else's words: quoted in full, byte-for-byte, with no comment
@@ -103,7 +108,7 @@ const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
  * `packages` is narrowed to each package's `src/` below rather than here, because the walk is by directory and
  * the narrowing is by path.
  */
-const ROOTS = ["packages", "templates", "docs", "tooling"] as const;
+const ROOTS = ["packages", "templates", "docs", "tooling", "scripts", ".changeset", ".github"] as const;
 
 /**
  * File kinds that hold prose, by extension.
@@ -460,7 +465,10 @@ function isPackageProse(path: string): boolean {
 function corpus(): string[] {
   const found: string[] = [];
   for (const root of ROOTS) {
-    for (const path of sourcePaths(join(REPO_ROOT, root), { keep: isProse })) {
+    // `dotted` only for the roots that are themselves dotted. Turned on for all of them, the walk
+    // descends into `packages/*/.turbo`, `.smoke-*` and `.worktrees/` — the scaffolds other suites
+    // create and delete, which is the flake `sourceFiles.ts` skips dotted directories to avoid.
+    for (const path of sourcePaths(join(REPO_ROOT, root), { keep: isProse, dotted: root.startsWith(".") })) {
       if (root === "packages" && !isPackageProse(path)) continue;
       found.push(path);
     }

@@ -6,7 +6,7 @@
 A reconciliation pass can be started through the control plane, instead of waiting for the cron.
 
 Reconciliation is the repair path for a dropped `subscription.updated` webhook: until a pass runs, a
-customer who paid holds no entitlement and a customer who cancelled still does. There was a read of the
+customer who paid holds no entitlement and a customer who canceled still does. There was a read of the
 run log and no way to start one, so the answer to *"my subscription isn't showing up"* was
 `pithy payments reconcile` — a laptop, a checkout and a Cloudflare API token — or nothing until 04:00.
 

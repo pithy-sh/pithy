@@ -10,7 +10,7 @@ The docstring justified following a symlink at all with three worked examples. T
 
 A correct rule arguing from cases a reader cannot find is how a correct rule comes to look unjustified, and gets weakened by someone tidying up. So the citations are replaced, not the rule.
 
-What replaces them is stronger than the examples were. Because the kit makes no links at all, every link the walk can meet is the adopter's own — beside a planted one that is indistinguishable from it by destination. There is no arrangement of ours left to recognise by shape. And location cannot classify either: the writes that land in `<config>/<project>/` are outside every checkout by design (#156), so there is no project root available to contain to, and one that existed would refuse the adopter's link along with the planted one.
+What replaces them is stronger than the examples were. Because the kit makes no links at all, every link the walk can meet is the adopter's own — beside a planted one that is indistinguishable from it by destination. There is no arrangement of ours left to recognize by shape. And location cannot classify either: the writes that land in `<config>/<project>/` are outside every checkout by design (#156), so there is no project root available to contain to, and one that existed would refuse the adopter's link along with the planted one.
 
 #146 stays, as what it is — the failure a rename over a link produces, which is why the choice is follow or refuse and never replace. A citation of a fixed defect does not rot the way a citation of a live arrangement does. `resolveWritePath`'s `apps/` reference (#147) is the same kind, and stays for the same reason.
 
@@ -20,4 +20,4 @@ The same two citations had five producers, not one, so all five are fixed rather
 
 The storage README carried a second error the first one hid, and it named the wrong package. Its live suites take credentials from `loadIntegrationCreds` in `@pithy-sh/cloudflare`, and that reads the `.dev.vars` beside *itself* — so a file in `packages/storage/` is read by nothing, whatever put it there. Anyone who followed the old step and wrote one got no error saying so, just a suite that skipped for want of credentials it was standing next to. The section now names `packages/cloudflare/.dev.vars`, and the harness says the same thing at the line that computes the path.
 
-No behaviour change. The ownership rule, its two accepted limits, and every test assertion are untouched; `docs/ACCEPTED-LIMITS.md` remains where the limits are argued.
+No behavior change. The ownership rule, its two accepted limits, and every test assertion are untouched; `docs/ACCEPTED-LIMITS.md` remains where the limits are argued.

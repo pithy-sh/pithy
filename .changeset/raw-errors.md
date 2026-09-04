@@ -16,7 +16,7 @@ stays as `cause`; no byte of either file reaches the message, because an rc file
 keeps `export GITHUB_TOKEN=…` and a media sidecar sits beside credentials of its own.
 
 They were like this deliberately. #197 routed six hand-written `ENOENT` branches under a strict
-no-behaviour-change constraint, and `readOptionalFile`'s callback returns a `PithyError` by construction —
+no-behavior-change constraint, and `readOptionalFile`'s callback returns a `PithyError` by construction —
 so it could not express "rethrow node's error", and these two went through `readFileOutcome` instead. That
 was correct for that change and is the follow-up it implied. `readFileOutcome` now has one caller,
 `capabilities/manifests.ts`, which needs it for the reason it exists: a read that must answer for fifteen

@@ -4,7 +4,7 @@
 
 Give a capability's health summary a fourth state, so one sick store stops blanking the manifest.
 
-#317 got three states right — nothing declared, withheld for want of a scope, and zero — and left the fourth to a reviewer, on purpose. A producer that throws is none of those, and returning `null` for it would have made a broken store indistinguishable from a number a caller may not see. That reasoning was right. The behaviour was that the throw propagated, `GET /control-plane/manifest` failed whole, and one capability's bad afternoon took every other capability's number with it, with nothing on screen saying which one.
+#317 got three states right — nothing declared, withheld for want of a scope, and zero — and left the fourth to a reviewer, on purpose. A producer that throws is none of those, and returning `null` for it would have made a broken store indistinguishable from a number a caller may not see. That reasoning was right. The behavior was that the throw propagated, `GET /control-plane/manifest` failed whole, and one capability's bad afternoon took every other capability's number with it, with nothing on screen saying which one.
 
 A manifest entry's `health` is now a four-state value: `undeclared`, `withheld`, `reported` with its scalars, and `unavailable`. The state rides **on** the value rather than beside it, so a scalar is unreachable without narrowing on `state` and a consumer that forgets the sick case gets a type error rather than a screen reading zero. A flag next to the numbers would have been the same information and the opposite property.
 

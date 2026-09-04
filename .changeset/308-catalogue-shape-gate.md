@@ -2,7 +2,7 @@
 "@pithy-sh/payments": patch
 ---
 
-The catalogue shape gate was blind to two JSON types, and read its own subject.
+The catalog shape gate was blind to two JSON types, and read its own subject.
 
 `GET {base}/admin/catalog` is policed by an invariant rather than a list of banned field names: *nothing but the published facts can cross it, whatever a field is called.* The assertion did not hold that, in two independent ways.
 
@@ -12,4 +12,4 @@ The catalogue shape gate was blind to two JSON types, and read its own subject.
 
 Both halves are needed and neither is redundant: `true`, `false` and `null` are in every JSON document's vocabulary, so the value half can never police a boolean on its own, and the key half is what does.
 
-**Two docs stated the opposite of the behaviour.** `EntitlementGrantRequest.entitlement` still told an integrator a key outside the catalogue was fine; it has been a 400 since the check landed. And `entitlement/manual.ts` named the route in the same sentence as the two shapes that "both work" — still true of `grantEntitlement`, which takes any key it is handed, and no longer true of `POST {base}/entitlements/grant`, which does not. The distinction is now the doc: the function is the mechanism, the route is the gate, and `manualEntitlements` is how an adopter declares the keys they comp but do not sell.
+**Two docs stated the opposite of the behavior.** `EntitlementGrantRequest.entitlement` still told an integrator a key outside the catalog was fine; it has been a 400 since the check landed. And `entitlement/manual.ts` named the route in the same sentence as the two shapes that "both work" — still true of `grantEntitlement`, which takes any key it is handed, and no longer true of `POST {base}/entitlements/grant`, which does not. The distinction is now the doc: the function is the mechanism, the route is the gate, and `manualEntitlements` is how an adopter declares the keys they comp but do not sell.

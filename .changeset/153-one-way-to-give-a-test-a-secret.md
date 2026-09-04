@@ -22,4 +22,4 @@ Both take the capability's own registry, and both hold a value to it: a `json` f
 
 `turnstile`'s middleware doc no longer says the widget secret resolves from `.dev.vars` in local dev. It resolves from the row, everywhere.
 
-Nothing about any capability's behaviour changes here. Everything about how its tests say "this secret has this value" does.
+Nothing about any capability's behavior changes here. Everything about how its tests say "this secret has this value" does.

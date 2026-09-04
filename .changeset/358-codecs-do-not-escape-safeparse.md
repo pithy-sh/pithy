@@ -10,7 +10,7 @@ Make every codec report instead of throw, so `safeParse` keeps its promise.
 
 Both now push a Zod issue and return `z.NEVER`: `Not a date.`, client-safe, with the offending value on the issue's `input` where `fromZodError` drops it. The check moved onto the decoded result rather than the string branch, so `8.64e15 + 1` is refused too — it was silently falling through to `z.date()`.
 
-The sweep found two more. `sqliteJson`'s `JSON.parse` throws a `SyntaxError` on a column holding text that is not a document, and its `JSON.stringify` throws a `TypeError` on a `BigInt` or a cycle the inner schema admits; both are issues now. `HttpError`'s encode ends in a `parse` inside `clientError`, which is defence in depth rather than a live bug, and is reported rather than raised for the same reason.
+The sweep found two more. `sqliteJson`'s `JSON.parse` throws a `SyntaxError` on a column holding text that is not a document, and its `JSON.stringify` throws a `TypeError` on a `BigInt` or a cycle the inner schema admits; both are issues now. `HttpError`'s encode ends in a `parse` inside `clientError`, which is defense in depth rather than a live bug, and is reported rather than raised for the same reason.
 
 `parse` still throws, as `parse` should — a `ZodError`, which `fromZodError` maps to `validation/invalid_input` like every other failed parse. A malformed timestamp from a customer is now a rejected field rather than an outage.
 

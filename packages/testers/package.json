@@ -2,6 +2,17 @@
   "name": "@pithy-sh/testers",
   "version": "0.0.0",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pithy-sh/pithy.git",
+    "directory": "packages/testers"
+  },
+  "files": [
+    "src",
+    "pithy.manifest.json",
+    "docs",
+    "!src/**/*.test.*"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22"

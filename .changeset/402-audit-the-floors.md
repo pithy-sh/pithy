@@ -27,6 +27,6 @@ At the corrected floors the same check reports **5**: the `undici` set reached t
 which no floor of ours can move and which is in no deployed Worker.
 
 **No version we install moved.** Every one of the four was already resolving above its own floor, so
-this is a declaration change with no behaviour change — which is exactly why a lockfile audit could
+this is a declaration change with no behavior change — which is exactly why a lockfile audit could
 not see it. A floor is a security decision, so it states the lowest version that is *safe*, not the
 lowest that *works*. `docs/STACK.md` §17 carries the check to re-run.

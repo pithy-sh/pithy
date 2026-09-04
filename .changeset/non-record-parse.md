@@ -6,7 +6,7 @@ A credential file that parsed to something other than a document is refused, not
 
 `readMintedTokens` answered `{}` for a `tokens.json` that parsed to `null`, a string, a number, a boolean or an array, and `writeMintedToken` used that same reader as its merge base. `readDevJson` did the same for `dev.json`, and `writeBootstrapVars` and `removeBootstrapVars` wrote over it. In both cases one malformed top-level value turned the next write into a replacement: `tokens.json` is keyed by environment, so every *other* environment's minted Cloudflare credential went with it, and `dev.json` has other tenants — the dev-login preference beside the bootstrap set. The run reported a clean write.
 
-Neither existing defence could see it. `readOptionalFile` (#190) distinguishes absent from unreadable, which closes "the file would not open"; this read succeeded. The `ENOENT` gate names no errno here and discards no failure, so it sees nothing either. The loss happens one step later, when a writer treats an unexpected shape as an empty one.
+Neither existing defense could see it. `readOptionalFile` (#190) distinguishes absent from unreadable, which closes "the file would not open"; this read succeeded. The `ENOENT` gate names no errno here and discards no failure, so it sees nothing either. The loss happens one step later, when a writer treats an unexpected shape as an empty one.
 
 Absent is still `{}`, and so is a file that will not **parse** — nothing can be made of it either way, and a half-typed `dev.json` must not stop `pithy dev`. A value that *parsed* is a claim about what is in the file, and it is now a refusal naming the path and the shape, with nothing written.
 

@@ -10,6 +10,6 @@
 
 The `__Secure-` assumption stops being a comment. We run no TLS locally, so a dev composition's scheme is a constant; the seed names its cookie from that constant and the instance names its cookie from the base URL resolved off it. The host and port cannot reach the name, which is what lets a seed name a cookie for a port not yet assigned.
 
-The relaxation is one condition on the environment alone, read in one function. Staging and production resolve `baseURL` verbatim, and the origin set the CSRF gate builds there is unchanged — the origin it adds is the one the configured base URL already contributed. Dev is not a wildcard either: a request whose `Origin` is a neighbouring worker in the same `pithy dev` run is refused like any other.
+The relaxation is one condition on the environment alone, read in one function. Staging and production resolve `baseURL` verbatim, and the origin set the CSRF gate builds there is unchanged — the origin it adds is the one the configured base URL already contributed. Dev is not a wildcard either: a request whose `Origin` is a neighboring worker in the same `pithy dev` run is refused like any other.
 
 Measured against a real `wrangler dev` on a project scaffolded by `pithy init` and `pithy add auth`, at two ports, before and after.

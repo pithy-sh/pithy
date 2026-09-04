@@ -19,11 +19,11 @@
  * templates: a script writes a committed `*.generated.ts` with an SPDX header read from the package's own
  * `license` field. This is that pattern, for a version.
  *
- * ## Why the licence is read rather than hard-coded
+ * ## Why the license is read rather than hard-coded
  *
  * The same reason `scripts/precompile.ts` gives. `scripts/license-headers.ts --check` runs over the whole
  * repo in CI and reconciles each file's header against its package's `license` field. Hard-coding `MIT`
- * here would work until a package's licence changed — then the gate would report a wrong header, `--fix`
+ * here would work until a package's license changed — then the gate would report a wrong header, `--fix`
  * would correct it, and the next stamp would put it back. Packages here are not all MIT: `@pithy-sh/audit`
  * is FSL-1.1-MIT.
  *
@@ -167,7 +167,7 @@ for (const target of targets()) {
 if (check && stale.length > 0) {
   // A stamped version that has drifted from the package.json it came from is worse than reporting
   // nothing, because a customer would act on it — deciding not to upgrade against a version that is a
-  // lie. This is the whole defence, and it is the same failure mode as the binding that went missing:
+  // lie. This is the whole defense, and it is the same failure mode as the binding that went missing:
   // correct code, never regenerated, nothing complaining.
   process.stderr.write(`Stamped versions are stale. Run \`bun run stamp-versions\`.\n  ${stale.join("\n  ")}\n`);
   process.exit(1);

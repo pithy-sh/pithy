@@ -56,6 +56,10 @@ The shape of the fix. Not an implementation plan — the intended behavior.
 
 One user-facing sentence in brand voice, for the changelog. `N/A` if this ships no note (chores, internal refactors, docs). This sentence becomes the changeset summary when the work ships — write it the way it should read in the release.
 
+## Security
+
+`N/A`, or one sentence naming **what the exposure was** — what was wrong before this ships. Different from the release note, which says what changed. This becomes the `Security:` line in the changeset body, and it is what a customer decides on when asking whether to upgrade urgently.
+
 ## Change type
 
 `major` · `minor` · `patch` · `none` — the semver bump. Aligns with the Conventional Commit type (`feat` → minor, `fix` → patch, breaking → major, chore/docs → none).
@@ -96,7 +100,9 @@ One user-facing sentence in brand voice, for the changelog. `N/A` if this ships 
    gh issue edit <N> --repo pithy-sh/pithy --body-file <tmpfile>
    ```
    Always edit the **whole** body from the template — don't append fragments.
-4. Before `Ready`, draft the **Release note** (one brand-voiced sentence, or `N/A`) and set the **Change type** with the user. When acceptance criteria, release note, and change type are agreed, confirm and move Status to `Ready`. Don't promote to `Ready` unilaterally.
+4. Before `Ready`, draft the **Release note** (one brand-voiced sentence, or `N/A`), settle **Security**, and set the **Change type** with the user. When acceptance criteria, release note, security, and change type are agreed, confirm and move Status to `Ready`. Don't promote to `Ready` unilaterally.
+
+   **Ask about Security explicitly — never infer it.** "Does this close something that was exposed?" If yes, the answer is one sentence about the *exposure*, not the fix. The judgment is cheap now and unreliable to reconstruct at release time, which is the whole reason it is captured here. `N/A` is the common and correct answer; a security fix that ships unmarked is the failure this field exists to prevent.
 
 ### 3. Iterate
 

@@ -52,7 +52,35 @@ gh auth refresh -s project
 
 **Generated migrations are outside the rule.** `@pithy-sh/auth`'s `pluginTables.ts` and `@pithy-sh/media`'s `extend.ts` synthesise a migration per adopter, from the plugins or extension schema *that adopter* composes. They are not this repository's schema, no author edits them, and they have no numbered file.
 
-## Licence headers
+## Releases
+
+[`docs/RELEASING.md`](docs/RELEASING.md) is the whole process — npm setup, the release loop, and the record the dashboard reads. Two things belong here, because they are things you do while writing a change rather than while cutting a release.
+
+**Every change that ships carries a changeset.** `/ship` writes it from the issue's **Release note**, verbatim. The first paragraph is that note, and it is what an adopter reads in the changelog — write it the way it should appear there.
+
+**What your package publishes is declared, not inherited.** Every published package carries a `files` field naming `src`, negating `!src/**/*.test.ts`, and listing its `pithy.manifest.json` and `docs/` where it has them. `bun run verify-published` packs all of them and fails on a test file, a build leftover, or a missing manifest — `files` does not fail on a missing path, so the check sits on the artifact. A new package with no `files` field ships its whole test suite to every adopter.
+
+**A security-relevant change says so, in the changeset body.**
+
+```markdown
+---
+"@pithy-sh/auth": patch
+---
+
+Refresh-token reuse now revokes the whole family.
+
+Security: a revoked refresh token stayed valid until its natural expiry.
+```
+
+The first paragraph says what changed. The `Security:` line says what was **wrong before** — the exposure — and it is a different sentence from the note. A customer deciding whether to upgrade urgently is reading the second one.
+
+**In the body, never the frontmatter.** `@changesets/parse` treats every frontmatter key as a package name, so a `security: true` key declares a package called `security` and breaks `changeset version` outright.
+
+It is visible on purpose. The line flows into `CHANGELOG.md`, which is what makes git the durable record once the changeset files are consumed — and what lets `bun scripts/releaseRecords.ts replay` rebuild a release record months later.
+
+Mark it while you are writing it. Reconstructing that judgment across two years of releases, under pressure, when a customer asks whether they are exposed, is miserable and unreliable.
+
+## License headers
 
 Every `.ts` and `.tsx` under `packages/*/src` and `tooling/*/src` carries two lines:
 

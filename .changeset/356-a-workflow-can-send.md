@@ -5,7 +5,7 @@
 
 A Workflow can send mail. `enqueueFromEnv(this.env, input)` reaches the composed email capability from inside a durable step, with the from-identity and theme `pithy.config.ts` resolved and nothing restated.
 
-A `compose` hook hands every composed capability to every other one, so a route can hold `@pithy-sh/email`'s bound `enqueue` and call it — `@pithy-sh/auth` does exactly that for magic links. A Workflow class cannot: the runtime constructs it with the worker `env` and nothing else, and a composed seam is a closure rather than a binding. The two ways past it were both the adopter's to take and both wrong — rebuild the seam from `env` plus a restated sending identity, free to drift from the config that owns it, or pass the closure through Workflow params, which are serialised.
+A `compose` hook hands every composed capability to every other one, so a route can hold `@pithy-sh/email`'s bound `enqueue` and call it — `@pithy-sh/auth` does exactly that for magic links. A Workflow class cannot: the runtime constructs it with the worker `env` and nothing else, and a composed seam is a closure rather than a binding. The two ways past it were both the adopter's to take and both wrong — rebuild the seam from `env` plus a restated sending identity, free to drift from the config that owns it, or pass the closure through Workflow params, which are serialized.
 
 So a durable job could not send mail, and `pithy-sh/dashboard`'s key-rotation notice was written, tested, and reachable by nothing: a monthly unattended pass over credentials into other people's production systems, whose most valuable notification was the one that could not be delivered.
 

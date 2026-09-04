@@ -18,5 +18,5 @@ HTTP codec strips.
 array. Nothing read it, which is why it was worth removing rather than keeping: a field waiting to be
 surfaced is how a disclosure arrives in one reasonable-looking commit.
 
-`admin/status.ts` still refuses to publish the column. That refusal is defence in depth and was never the
+`admin/status.ts` still refuses to publish the column. That refusal is defense in depth and was never the
 invariant.

@@ -11,6 +11,7 @@
         "@commitlint/cli": "^21.2.2",
         "@commitlint/config-conventional": "^21.2.2",
         "@pithy-sh/license-headers": "workspace:*",
+        "@pithy-sh/release": "workspace:*",
         "husky": "^9.1.7",
         "lint-staged": "^17.3.0",
         "turbo": "^2.10.10",
@@ -650,6 +651,20 @@
         "vitest": "^4.1.0",
       },
     },
+    "tooling/release": {
+      "name": "@pithy-sh/release",
+      "version": "0.0.0",
+      "dependencies": {
+        "zod": "^4.0.0",
+      },
+      "devDependencies": {
+        "@pithy-sh/tsconfig": "workspace:*",
+        "@types/node": "^22.15.0",
+        "@vitest/coverage-v8": "^4.1.0",
+        "typescript": "^7.0.2",
+        "vitest": "^4.1.0",
+      },
+    },
     "tooling/tsconfig": {
       "name": "@pithy-sh/tsconfig",
       "version": "0.0.0",
@@ -1032,6 +1047,8 @@
     "@pithy-sh/payments": ["@pithy-sh/payments@workspace:packages/payments"],
 
     "@pithy-sh/rating": ["@pithy-sh/rating@workspace:packages/rating"],
+
+    "@pithy-sh/release": ["@pithy-sh/release@workspace:tooling/release"],
 
     "@pithy-sh/secrets": ["@pithy-sh/secrets@workspace:packages/secrets"],
 

@@ -4,7 +4,7 @@ name: CI
 # EVERY changed file matches, so a mixed code+docs change still runs.
 #
 # `LICENSE` used to be on this list and no longer is: the `verify` job now reconciles every LICENSE
-# file against the licence its package declares, so a licence-only change is precisely the one that
+# file against the license its package declares, so a license-only change is precisely the one that
 # must run CI rather than skip it.
 #
 # If `CI` is ever made a required
@@ -253,16 +253,6 @@ jobs:
         working-directory: packages/cli
         run: bunx vitest run src/migrations/orders.test.ts
 
-      # `files` does not fail on a missing path. Pack the CLI with lifecycle scripts disabled and the
-      # starter template is simply absent from the tarball — silently, exit 0 — which is the defect
-      # `prepack` was added to close, reappearing through the one door `prepack` cannot watch. No script
-      # our manifest declares can run during a pack that refuses to run scripts, so the post-condition
-      # has to sit on the artefact instead. This is it: pack, then hold the tarball to the git index.
-      # Whatever publishes runs the same check on the file it is about to push.
-      - name: Pack the CLI
-        working-directory: packages/cli
-        run: bun run pack:verify
-
       - name: Typecheck
         run: bun run typecheck
 
@@ -270,6 +260,29 @@ jobs:
       # purely about proving tsc emit and dts generation still work for publishing.
       - name: Build
         run: bun run build
+
+      # `files` does not fail on a missing path. Pack the CLI with lifecycle scripts disabled and the
+      # starter template is simply absent from the tarball — silently, exit 0 — which is the defect
+      # `prepack` was added to close, reappearing through the one door `prepack` cannot watch. No script
+      # our manifest declares can run during a pack that refuses to run scripts, so the post-condition
+      # has to sit on the artifact instead. This is it: pack, then hold the tarball to the git index.
+      # Whatever publishes runs the same check on the file it is about to push.
+      #
+      # **After `Build`, not before it.** `@pithy-sh/payments` declares `dist/paddle-prices.iife.js` in
+      # its `files`, and that browser build is git-ignored and does not exist until `build` has run — so
+      # a pack ordered first inspects a tarball missing a file the manifest names, which is precisely
+      # the miss these two steps exist to catch.
+      - name: Pack the CLI
+        working-directory: packages/cli
+        run: bun run pack:verify
+
+      # The same post-condition as the step above, for the other twenty-one packages. Whole-repo, and
+      # for the reason the step above gives: `files` does not fail on a missing path, so a field naming
+      # `pithy.manifest.json` passes every static check whether the file is there or not, and only the
+      # tarball knows. Measured: half of `@pithy-sh/core`'s first tarball was test files, and
+      # `@pithy-sh/payments` shipped 93 while declaring a `files` field that forgot the negation.
+      - name: Pack every package
+        run: bun run verify-published
 
   # The test suites, both projects, sharded across runners.
   #

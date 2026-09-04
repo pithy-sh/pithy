@@ -38,7 +38,7 @@ sentence and never were. `@pithy-sh/vite` still depends on `@pithy-sh/core` alon
 
 Nothing an adopter can read changed shape at the boundary #207 drew: `message` is still exactly
 `Could not load <path>.`, and `action` still carries no newline, no ANSI escape, no stack frame and no
-absolute path — asserted per cause, wrapper included, because a build diagnostic is a multi-line coloured
+absolute path — asserted per cause, wrapper included, because a build diagnostic is a multi-line colored
 box quoting the file.
 
 #207 survived its own Bun testing because the repro used one deliberate typo. The suite now spawns Bun,

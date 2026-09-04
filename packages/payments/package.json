@@ -2,6 +2,11 @@
   "name": "@pithy-sh/payments",
   "version": "0.0.0",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pithy-sh/pithy.git",
+    "directory": "packages/payments"
+  },
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -14,7 +19,8 @@
     "src",
     "docs",
     "dist/paddle-prices.iife.js",
-    "pithy.manifest.json"
+    "pithy.manifest.json",
+    "!src/**/*.test.*"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit false --outDir dist && bun scripts/buildPaddlePrices.ts",

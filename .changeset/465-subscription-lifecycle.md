@@ -15,7 +15,7 @@ themselves, against the one API the capability exists to keep them away from.
 settles refunds is not necessarily one that manages subscriptions, and folding them into one
 interface would make every implementer claim both. Paddle implements both. Six routes are mounted
 under the capability's own base path: read the standing, preview a change, commit one, cancel, keep
-a cancelled plan, and refund.
+a canceled plan, and refund.
 
 **A quote is three parts, because a deferred downgrade has three**: what settles today, what lands
 on the next invoice and when, and what the subscription pays after that. `SubscriptionSettlement` is

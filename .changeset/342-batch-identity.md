@@ -14,4 +14,4 @@ The claim is written **before** the `create` in both, which is what makes a lost
 
 `send/batchIdentity.ts` states the invariant the three dispatchers keep and mints the ids they use. `batch_id` names *the instance coming for this row*, and never a record of which batch touched it last.
 
-The vacuity check was written first and is paired with every case: a batch that genuinely died must still have its jobs recovered. Both halves are driven against a Workflows fake with the platform's own behaviour — including `get` rejecting for an id nothing was created under — through `runSendBatch` and a real scheduler tick, so a live batch is one that is actually backed off rather than one a stub says is alive.
+The vacuity check was written first and is paired with every case: a batch that genuinely died must still have its jobs recovered. Both halves are driven against a Workflows fake with the platform's own behavior — including `get` rejecting for an id nothing was created under — through `runSendBatch` and a real scheduler tick, so a live batch is one that is actually backed off rather than one a stub says is alive.

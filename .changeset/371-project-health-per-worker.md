@@ -10,7 +10,7 @@ A Worker that could not be checked stops erasing every other Worker's health.
 
 `WorkerHealth` is a two-state value now. The five checks live behind `checked`, and `unavailable` carries nothing but the Worker's name — no `ok`, no empty drift lists, no `0 pending` to mistake for a clean bill. The state rides on the value, so an unchecked Worker cannot be rendered as a checked one.
 
-It still fails the exit, on the standard #184 set: a check that did not run established nothing, and calling a project healthy around a hole is the under-report both exist to prevent. That is also what the behaviour already was — the throw reached `pithy doctor`'s catch and drove a non-zero exit — so the CI gate does not weaken, it only stops taking the rest of the report with it.
+It still fails the exit, on the standard #184 set: a check that did not run established nothing, and calling a project healthy around a hole is the under-report both exist to prevent. That is also what the behavior already was — the throw reached `pithy doctor`'s catch and drove a non-zero exit — so the CI gate does not weaken, it only stops taking the rest of the report with it.
 
 The manifest scan is deliberately not guarded here. It is read once at the project and every plan is built from it, so it is the loop's input rather than one of its contributors.
 

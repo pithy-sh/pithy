@@ -103,8 +103,12 @@ Present the `/code-review` and `/security-review` results (and any remediation).
   ---
 
   <the issue's Release note, verbatim, brand voice>
+
+  Security: <the issue's Security sentence — omit this line entirely when it is N/A>
   ```
-  If Change type is `none`, skip — no changeset. (Changesets tooling may not be installed yet; the file is still the correct artifact and is consumed once it lands.)
+  If Change type is `none`, skip — no changeset.
+
+  **The `Security:` line is the issue's Security field, verbatim, and it goes in the body — never the frontmatter.** `@changesets/parse` reads every frontmatter key as a package name, so a `security:` key there breaks `changeset version`. Omit the line when the field is `N/A`; never invent one, and never drop one the issue states. It is what the release pipeline reads to mark the release security-relevant (`CONTRIBUTING.md` §Releases, `docs/RELEASING.md`).
 - **Commit.** Conventional Commits, scoped, brand voice, with the issue number:
   ```
   feat(core): add SQLite codecs

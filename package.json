@@ -31,7 +31,9 @@
     "prepare": "husky",
     "changeset": "changeset",
     "version": "changeset version && bun scripts/stampVersions.ts",
-    "release": "echo 'Release automation lands later. Not wired yet.' && exit 1"
+    "release": "changeset publish",
+    "release:local": "bun scripts/localRelease.ts",
+    "verify-published": "bun scripts/verifyPublished.ts"
   },
   "//": [
     "@cloudflare/workers-types is pinned below 5.20260807.2, which added `declare const Buffer: any`.",
@@ -51,6 +53,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",
     "@pithy-sh/license-headers": "workspace:*",
+    "@pithy-sh/release": "workspace:*",
     "@changesets/changelog-github": "^1.0.0",
     "@changesets/cli": "^3.0.0",
     "@commitlint/cli": "^21.2.2",

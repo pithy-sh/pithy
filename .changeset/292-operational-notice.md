@@ -8,7 +8,7 @@ An app composing `email` could send a magic link, an OTP and a warning about a s
 
 `operationalNotice` is that shape: what happened, what it happened to, when, how serious, and one place to act on it. Facts are label/value rows, so a rotation, a release, an unreachable connection and a stuck job all fit one template — they differ in their words, and the words are payload.
 
-**Severity is expressed, not flattened.** Each level owns a word — `Notice:`, `Action needed:`, `Critical:` — and that word leads the subject line, so the urgency is readable in an inbox list before anything is opened. It is repeated in the body and in the text part, and only then reinforced by colour. A design whose only difference between "a release is out" and "sign-in is broken" is a hex value teaches people to ignore both. There is no default severity: a caller who forgot the field would otherwise send an outage at the volume of a release note.
+**Severity is expressed, not flattened.** Each level owns a word — `Notice:`, `Action needed:`, `Critical:` — and that word leads the subject line, so the urgency is readable in an inbox list before anything is opened. It is repeated in the body and in the text part, and only then reinforced by color. A design whose only difference between "a release is out" and "sign-in is broken" is a hex value teaches people to ignore both. There is no default severity: a caller who forgot the field would otherwise send an outage at the volume of a release note.
 
 It renders with no link-signing key, because it is transactional and mints no token. An operational notice that cannot render is the notice you needed most.
 

@@ -1,0 +1,27 @@
+{
+  "name": "@pithy-sh/release",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./src/*": "./src/*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:node": "vitest run",
+    "clean": "rm -rf .turbo",
+    "reset": "bun run clean && rm -rf node_modules"
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@pithy-sh/tsconfig": "workspace:*",
+    "@types/node": "^22.15.0",
+    "@vitest/coverage-v8": "^4.1.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.0"
+  }
+}

@@ -2,6 +2,17 @@
   "name": "@pithy-sh/multiplayer",
   "version": "0.0.0",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pithy-sh/pithy.git",
+    "directory": "packages/multiplayer"
+  },
+  "files": [
+    "src",
+    "pithy.manifest.json",
+    "docs",
+    "!src/**/*.test.*"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22"

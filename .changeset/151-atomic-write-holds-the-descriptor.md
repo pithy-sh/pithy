@@ -2,7 +2,7 @@
 "@pithy-sh/cli": patch
 ---
 
-An atomic write holds the descriptor it opened, and stops normalising a path it is about to hand to a
+An atomic write holds the descriptor it opened, and stops normalizing a path it is about to hand to a
 syscall.
 
 The uid-ownership rule closed the escape. Three holes sat around it.
@@ -16,7 +16,7 @@ redirect. The `rename` stays path-based because Node offers no descriptor-relati
 at the name is checked against the inode the bytes went into first — a narrower race, not no race.
 
 **The walk collapsed `..` past a component that does not exist.** The early return handed the remainder to
-`join`, which normalises lexically: `missing/../apps/.dev.vars` came back as `apps/.dev.vars`, a path the
+`join`, which normalizes lexically: `missing/../apps/.dev.vars` came back as `apps/.dev.vars`, a path the
 kernel would have refused, rewritten into one it walks — and the surviving components were then traversed
 by the open with the ownership gate never asked about any of them. Reproduced against the real CLI: a live
 `CLOUDFLARE_API_TOKEN` landed outside the project through an `apps` link nothing had checked. Past the

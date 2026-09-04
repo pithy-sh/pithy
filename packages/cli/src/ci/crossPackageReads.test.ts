@@ -101,10 +101,16 @@ describe("the cross-package reads CI plans from", () => {
     // not what makes the read correct. The fixture pins one copy of Vite per major in the published peer
     // range and compiles `pithy()`'s return against each (#414); the day someone moves that range into a
     // file the edge does not carry, this is the line that keeps the read planned.
+    //
+    // `@pithy-sh/release` is the sixth, and it reads more of the tree than any of them: every
+    // `.changeset/*.md`, every published `package.json`, and every `CHANGELOG.md`. Its gates are only
+    // true as a set — a package landing without a `repository` field publishes with no provenance at
+    // all, silently — so a change anywhere in `packages/` has to re-run them.
     expect([...new Set((await reads()).map((read) => read.package))].sort()).toEqual([
       "@pithy-sh/browser-scopes",
       "@pithy-sh/cli",
       "@pithy-sh/cloudflare",
+      "@pithy-sh/release",
       "@pithy-sh/ui-react",
       "@pithy-sh/vite-adopter",
     ]);

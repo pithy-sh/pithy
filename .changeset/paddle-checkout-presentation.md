@@ -10,4 +10,4 @@ Let a screen say how its Paddle checkout looks.
 
 **Omitted stays omitted.** A setting nobody passed is an absent key, never a key holding `undefined` — these sit over the account settings configured in the Paddle dashboard, and a caller who said nothing must not overrule a seller who did.
 
-Colours and fonts remain where Paddle keeps them: its own dashboard, under Checkout → Branded inline checkout. That is Paddle's product decision rather than a missing endpoint. `docs/paddle.md` now says so, with the reason.
+Colors and fonts remain where Paddle keeps them: its own dashboard, under Checkout → Branded inline checkout. That is Paddle's product decision rather than a missing endpoint. `docs/paddle.md` now says so, with the reason.

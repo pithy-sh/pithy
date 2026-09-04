@@ -20,6 +20,6 @@ A seeded file ships with the gate that notices when it breaks, and adding one wi
 
 `packages/ui-react/src/seededGates.test.ts` carries the ledger: every seeded file, and one of three answers — the gate seeded beside it, the gate the kit kept and why it could not travel, or no gate and why none is owed. A path added to `TEMPLATE_GROUPS` is red until that line exists. It is a forcing function, not a detector, and it says so: nothing static can tell whether a file *has* an invariant. What it can do is refuse to let the answer rot, and check the one property that mechanises.
 
-**`--danger` was a real half-set, shipped.** `pithy-screens.css` read it, `docs/UI.md` and both stylesheets' docblocks named it one of the seven, and `styles.css` declared it nowhere — so Pithy's error red sat on the adopter's background. Fixed, in both colour schemes, and `palette.test.ts` now derives both sides from the files rather than listing either.
+**`--danger` was a real half-set, shipped.** `pithy-screens.css` read it, `docs/UI.md` and both stylesheets' docblocks named it one of the seven, and `styles.css` declared it nowhere — so Pithy's error red sat on the adopter's background. Fixed, in both color schemes, and `palette.test.ts` now derives both sides from the files rather than listing either.
 
 `CHECKOUT_FRAME` is one statement in `src/payments.tsx` rather than a copy in each screen that sells. `.pithy-checkout` is an adopter hook with no rule anywhere on purpose, and that is now written down rather than merely true.

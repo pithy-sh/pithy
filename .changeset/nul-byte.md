@@ -17,7 +17,7 @@ is unchanged — `--json` is byte-identical against a payload saved before the e
 eight targets — and `git diff` renders it as `1 1`.
 
 **It was not the only one, and it was not special to `.github/`.** The gate found two more on its first
-run, both written the same way — a control character typed as a raw byte where its neighbours on the
+run, both written the same way — a control character typed as a raw byte where its neighbors on the
 same line are escapes:
 
 - `packages/support/src/mime/sanitize.workers.test.ts` feeds `"java\0script:alert(1)"` to `isSafeHref`

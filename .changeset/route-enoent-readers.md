@@ -18,7 +18,7 @@ What it buys is the gate. It was *a module that writes must not read a file and 
 scoped that way because the rule everyone wants has 32 producers in this tree, and its stated cost was
 that a reader which writes nothing is invisible to it, which is the axis the third defect came in on.
 The new rule alongside it is **only `readOptionalFile.ts` may name `ENOENT` where a file's contents were
-read**: no allowlist, no judgement about which modules write, and no evading it by aliasing an import. A
+read**: no allowlist, no judgment about which modules write, and no evading it by aliasing an import. A
 probe's errno and a write's errno are untouched — `scaffold.ts` and `atomic.ts` are the rule applied,
 not exempted from it.
 

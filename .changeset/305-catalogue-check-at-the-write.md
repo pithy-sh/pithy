@@ -2,7 +2,7 @@
 "@pithy-sh/payments": patch
 ---
 
-The catalogue check now guards the write, not the route.
+The catalog check now guards the write, not the route.
 
 `POST {base}/entitlements/grant` refused a key this project does not define. `grantEntitlement` — the function that writes the row, exported from the package's public surface — refused nothing. So an adopter's own handler, a later route in this package, or the reconciliation workflow could write a comp for `pr`, the exact typo the check exists to catch, and nothing would say no.
 
@@ -12,8 +12,8 @@ The catalogue check now guards the write, not the route.
 
 **The escape hatch travels.** The check reads `grantableEntitlements`, so `manualEntitlements` — the keys an adopter comps but does not sell — still grants. A project that declares nothing and sells nothing refuses every grant, which is correct: there is no vocabulary to grant in.
 
-**Revoke stays unchecked, and its signature says so.** `revokeEntitlement` takes no config and must never grow one, or dropping a product from the catalogue would be irreversible for every account still holding its key.
+**Revoke stays unchecked, and its signature says so.** `revokeEntitlement` takes no config and must never grow one, or dropping a product from the catalog would be irreversible for every account still holding its key.
 
-**The gate.** Two invariants, both derived from the tree rather than from a roster of today's callers: every module that writes `pithy_payments_entitlements` either consults the grantable set or writes the hold off, and the manual module exports nothing that sets the hold without a catalogue. A new producer fails the build without anybody remembering this change.
+**The gate.** Two invariants, both derived from the tree rather than from a roster of today's callers: every module that writes `pithy_payments_entitlements` either consults the grantable set or writes the hold off, and the manual module exports nothing that sets the hold without a catalog. A new producer fails the build without anybody remembering this change.
 
 Callers of `grantEntitlement` pass the config as the second argument. `revokeEntitlement` is unchanged.

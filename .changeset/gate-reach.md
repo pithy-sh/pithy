@@ -6,7 +6,7 @@ The ENOENT gate's two known gaps are closed, and its remaining limit is a number
 
 **A read the scan could not see.** `project/envInventory.ts` spelled out an `ENOENT` branch for a read it
 performs through `readWranglerConfig`. The branch was correct — it rethrew — and invisible to the gate,
-which recognises the leaf calls that hand bytes back and knows nothing about who wraps them.
+which recognizes the leaf calls that hand bytes back and knows nothing about who wraps them.
 `readWranglerConfig` reads through `readOptionalFile` now, which puts the wrapper inside the rule instead
 of outside it, and `envInventory` asks for the answer rather than deriving it from an errno. Nineteen
 modules read a `wrangler.jsonc` through that wrapper; all nineteen get a `PithyError` naming the file

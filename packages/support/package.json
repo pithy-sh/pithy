@@ -2,6 +2,16 @@
   "name": "@pithy-sh/support",
   "version": "0.0.0",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pithy-sh/pithy.git",
+    "directory": "packages/support"
+  },
+  "files": [
+    "src",
+    "pithy.manifest.json",
+    "!src/**/*.test.*"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22"

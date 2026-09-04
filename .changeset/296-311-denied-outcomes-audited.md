@@ -4,7 +4,7 @@
 
 A webhook that fails its authenticity check, and a grant refused for an unknown key, each leave an audit row.
 
-Both were declared auditable and audited by nothing. `PaymentsAuditActions.webhookUnverified` existed with no producer, so the audited outcome of a webhook was *received* or nothing at all; and `POST /payments/entitlements/grant` refused a key outside the catalogue and recorded silence.
+Both were declared auditable and audited by nothing. `PaymentsAuditActions.webhookUnverified` existed with no producer, so the audited outcome of a webhook was *received* or nothing at all; and `POST /payments/entitlements/grant` refused a key outside the catalog and recorded silence.
 
 **Both are asymmetric in the wrong direction.** The successful webhook is recorded twice over — `webhook_received`, then the projection events — and the rejected one, which is the single payments event that is about an attacker rather than about a customer, was recorded zero times. The successful grant is recorded, and the refusal, which is the one that describes a caller behaving oddly, was not. One rejection is noise. A run of them against one endpoint is somebody probing a payment rail, or a credential scoped only to grant enumerating the entitlement vocabulary one key at a time — and that pattern is exactly what a trail is read for.
 

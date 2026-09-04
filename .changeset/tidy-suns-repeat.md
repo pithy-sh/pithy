@@ -11,7 +11,7 @@ the other offline. Both boot the real auth Worker on a real port — Miniflare s
 
 Nothing completes a Google round trip. The suite asserts what only real Google can answer: the
 `redirect_uri` the app hands the browser, composed from the port this run got and the base path it
-pinned, and whether Google recognises the credential at all. Then the trust boundary — a forged `state`,
+pinned, and whether Google recognizes the credential at all. Then the trust boundary — a forged `state`,
 a spent one, a `code` that is not one, a provider answering garbage — and that social sign-in is never
 behind the humanity gate, in an app whose gate demonstrably bites.
 

@@ -1,12 +1,12 @@
 ---
-"@pithy-sh/payments": major
+"@pithy-sh/payments": minor
 "@pithy-sh/core": minor
 "@pithy-sh/support": patch
 ---
 
 An entitlement is held by a subject, and a subject is not always a user.
 
-`pithy_payments_entitlements` was `UNIQUE (userId, entitlement)`, and every read of it asked who a person is. That is right for a consumer app and wrong for every business that sells to companies: the organization signs, the organization is invoiced, and everybody in it holds what it bought. Modelling that on a user-keyed table meant granting to every member — a fan-out that drifts the moment somebody joins — or granting to the owner, which makes the plan theirs and shows an invited colleague `Free` while their employer pays for Team.
+`pithy_payments_entitlements` was `UNIQUE (userId, entitlement)`, and every read of it asked who a person is. That is right for a consumer app and wrong for every business that sells to companies: the organization signs, the organization is invoiced, and everybody in it holds what it bought. Modeling that on a user-keyed table meant granting to every member — a fan-out that drifts the moment somebody joins — or granting to the owner, which makes the plan theirs and shows an invited colleague `Free` while their employer pays for Team.
 
 So the holder is a pair. `subjectType` is a closed enum, `user` or `organization`; `subjectId` is its id. Both halves travel together in every row, every comparison and every provider reference, because nothing in the kit keeps an organization id from equalling some user's id — a check that read one half would let one hold the other's subscription. `pithy_payments_purchases` and `pithy_payments_provider_accounts` move with the entitlements table, so a webhook resolving to an organization writes an organization everywhere and never half of one.
 

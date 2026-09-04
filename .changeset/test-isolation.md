@@ -14,6 +14,6 @@ A repo-root `vitest.setup.ts` gives every test file its own throwaway `PITHY_CON
 
 The gate is `packages/cli/src/ci/testIsolation.test.ts`. It **loads** each config and inspects the object vitest is handed rather than reading the source, because #198's first guard was a second `env:` key on one object literal, which JavaScript discards without a word — the file said covered and the run was not, for a fortnight. A guard that is present but inert now fails exactly like a missing one, as does one stated at the wrong nesting level: a root `env` reaches an inline project and a root `setupFiles` does not, so where a guard goes is measured rather than assumed.
 
-Workers projects are exempt, structurally rather than by judgement: workerd does not inherit the host environment, so there is no ambient credential to blank and no real home directory to resolve.
+Workers projects are exempt, structurally rather than by judgment: workerd does not inherit the host environment, so there is no ambient credential to blank and no real home directory to resolve.
 
-Verified with a credential pair exported and no ambient `PITHY_CONFIG_DIR`: 2,384 CLI tests, plus the `cloudflare`, `secrets`, `core` and `audit` suites, and `~/.config/pithy` byte-identical before and after. Every socket the run opened went to `127.0.0.1`. Cleaning up a machine polluted by the old behaviour is documented in `CONTRIBUTING.md`.
+Verified with a credential pair exported and no ambient `PITHY_CONFIG_DIR`: 2,384 CLI tests, plus the `cloudflare`, `secrets`, `core` and `audit` suites, and `~/.config/pithy` byte-identical before and after. Every socket the run opened went to `127.0.0.1`. Cleaning up a machine polluted by the old behavior is documented in `CONTRIBUTING.md`.

@@ -2,6 +2,11 @@
   "name": "@pithy-sh/cli",
   "version": "0.0.0",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pithy-sh/pithy.git",
+    "directory": "packages/cli"
+  },
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -16,7 +21,7 @@
     "src",
     "scripts",
     "templates",
-    "!src/**/*.test.ts"
+    "!src/**/*.test.*"
   ],
   "scripts": {
     "prepack": "bun scripts/vendorTemplate.ts",

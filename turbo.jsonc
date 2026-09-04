@@ -350,6 +350,173 @@
     // `test` and `test:node` are one command here — `vitest run`; the package has no workers project —
     // and the guard runs in it. The two lists are identical, and the guard asserts that too: a `test`
     // keyed more narrowly than the `test:node` CI runs would replay a green guard over a stale key.
+    // `@pithy-sh/release` reads the whole tree and asserts about it: `.changeset/*.md`, every published
+    // `package.json`, and every `CHANGELOG.md`. So it takes the whole-tree key too — a changeset added
+    // without re-running this gate is a release record that silently loses a note.
+    //
+    // The list below is the one on `@pithy-sh/cli#test`, and the comments explaining every line are
+    // there. Turbo hashes a task against its own definition only, so these keys are copies by necessity.
+    "@pithy-sh/release#test": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/**",
+        // Turbo does not apply `.gitignore` to an explicit glob, so everything git ignores is named
+        // here or it is hashed. `.git` is spelled twice because in the main checkout it is a directory
+        // that changes on every commit, fetch and index write, and in a worktree it is a file — a key
+        // that can never hit twice, either way.
+        //
+        // **What a line matches today is not what it is for.** Measured on this tree: dropping
+        // `**/node_modules/**` adds 29,032 files, `.husky/_/**` adds 19, and `**/dist/**` adds one.
+        // Dropping `**/.turbo/**` and `**/*.log` together adds 49, every one of them a `turbo-*.log`
+        // **the hashed task writes itself**. Every other line matches nothing right now, because the
+        // artifact it names appears the moment somebody runs the thing that writes it — and
+        // `**/.turbo/**` reads dead by that measure and is not: with `**/*.log` left in place, one
+        // non-log file dropped in `packages/cli/.turbo` takes the key from 2,606 files to 2,607. Turbo
+        // does not exclude its own cache directory.
+        //
+        // Checked rather than remembered, and not against the working tree either. `turboInputs.test.ts`
+        // reads every ignore file git consults — the root's, `packages/cli`'s, and the one husky
+        // generates for itself — turns each rule into a path only that rule decides, plants it, and fails
+        // on any this key still holds. Nothing here is exercised by a hand-picked path any more: a
+        // measured negation is what `.husky/_/**` used to be, and a measurement is a fact about one
+        // machine on one day. It also asks git for every tracked file and fails on any the key has
+        // dropped. So a negation that reaches too far is as red as one that reaches too little, on a
+        // clean checkout and on a crashed one alike.
+        "!$TURBO_ROOT$/.git",
+        "!$TURBO_ROOT$/.git/**",
+        "!$TURBO_ROOT$/.husky/_/**",
+        "!$TURBO_ROOT$/.local/**",
+        // `.release/` states no slash of its own, so git matches it at any depth and this glob has to
+        // as well — the same lesson `.worktrees/` above records. `releaseRecords.ts` writes it at the
+        // repo root, and a worktree cutting a release writes its own.
+        "!$TURBO_ROOT$/**/.release/**",
+        // `.worktrees/` states no slash of its own, so git matches it at any depth and this glob has to
+        // as well. Root-anchored, it left `packages/core/.worktrees/` hashed — #432, Jim, 2026-08-21.
+        "!$TURBO_ROOT$/**/.worktrees/**",
+        // The vendored starter, ignored by `packages/cli/.gitignore` — the ignore file the guard could
+        // not see until it stopped reading the root's alone. `prepack` copies `templates/starter` here
+        // and `postpack` removes it; a pack that fails in between leaves the copy for good, git-ignored
+        // and silent. Left in the key, that developer's hash can never agree with CI's again.
+        "!$TURBO_ROOT$/packages/cli/templates/**",
+        "!$TURBO_ROOT$/**/node_modules/**",
+        "!$TURBO_ROOT$/**/dist/**",
+        "!$TURBO_ROOT$/**/coverage/**",
+        "!$TURBO_ROOT$/**/.turbo/**",
+        "!$TURBO_ROOT$/**/.wrangler/**",
+        // The CLI's own test scaffolds. Removed after each run, so they are only ever in a tree where
+        // something crashed — and a key that changes after a crash is a cache nobody can reason about.
+        "!$TURBO_ROOT$/**/.smoke-*/**",
+        "!$TURBO_ROOT$/**/.e2e-*/**",
+        "!$TURBO_ROOT$/**/.boot-*/**",
+        "!$TURBO_ROOT$/**/.migrate-*/**",
+        "!$TURBO_ROOT$/**/.deploy-it-*/**",
+        // `.dev.vars.*` is the rule, less the one tracked file it would take with it.
+        // `templates/starter/.dev.vars.example` is committed, and **turbo cannot put back what a negation
+        // removed** — measured: re-including that path after the negation leaves the key at 2,609 files,
+        // one short. So the class is spelled "anything not starting with `e`", which is the rule bar the
+        // example.
+        //
+        // It was the three environments, and three environments are a probe rather than a rule.
+        // `.dev.vars.local` is wrangler's own filename, git ignores it, and all four whole-tree keys
+        // hashed it — #432, Jim, 2026-08-21.
+        "!$TURBO_ROOT$/**/.dev.vars",
+        "!$TURBO_ROOT$/**/.dev.vars.[!e]*",
+        "!$TURBO_ROOT$/**/.dev-ports.json",
+        "!$TURBO_ROOT$/**/.dev.config.json",
+        "!$TURBO_ROOT$/**/.dev-state.json",
+        "!$TURBO_ROOT$/**/.pithy-feature.json",
+        // `.env.*` is broad here and carved above, and the asymmetry is the tree's: nothing tracked
+        // matches this one. The day a `.env.example` lands, the guard names it as a tracked file the key
+        // dropped, and this line gets the `[!e]` treatment its sibling has.
+        "!$TURBO_ROOT$/**/.env",
+        "!$TURBO_ROOT$/**/.env.*",
+        "!$TURBO_ROOT$/**/.DS_Store",
+        "!$TURBO_ROOT$/**/*.log",
+        "!$TURBO_ROOT$/**/*.tmp",
+        "!$TURBO_ROOT$/**/*.tsbuildinfo"
+      ]
+    },
+    // The same key, for the task CI runs. See the block above.
+    "@pithy-sh/release#test:node": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/**",
+        // Turbo does not apply `.gitignore` to an explicit glob, so everything git ignores is named
+        // here or it is hashed. `.git` is spelled twice because in the main checkout it is a directory
+        // that changes on every commit, fetch and index write, and in a worktree it is a file — a key
+        // that can never hit twice, either way.
+        //
+        // **What a line matches today is not what it is for.** Measured on this tree: dropping
+        // `**/node_modules/**` adds 29,032 files, `.husky/_/**` adds 19, and `**/dist/**` adds one.
+        // Dropping `**/.turbo/**` and `**/*.log` together adds 49, every one of them a `turbo-*.log`
+        // **the hashed task writes itself**. Every other line matches nothing right now, because the
+        // artifact it names appears the moment somebody runs the thing that writes it — and
+        // `**/.turbo/**` reads dead by that measure and is not: with `**/*.log` left in place, one
+        // non-log file dropped in `packages/cli/.turbo` takes the key from 2,606 files to 2,607. Turbo
+        // does not exclude its own cache directory.
+        //
+        // Checked rather than remembered, and not against the working tree either. `turboInputs.test.ts`
+        // reads every ignore file git consults — the root's, `packages/cli`'s, and the one husky
+        // generates for itself — turns each rule into a path only that rule decides, plants it, and fails
+        // on any this key still holds. Nothing here is exercised by a hand-picked path any more: a
+        // measured negation is what `.husky/_/**` used to be, and a measurement is a fact about one
+        // machine on one day. It also asks git for every tracked file and fails on any the key has
+        // dropped. So a negation that reaches too far is as red as one that reaches too little, on a
+        // clean checkout and on a crashed one alike.
+        "!$TURBO_ROOT$/.git",
+        "!$TURBO_ROOT$/.git/**",
+        "!$TURBO_ROOT$/.husky/_/**",
+        "!$TURBO_ROOT$/.local/**",
+        // `.release/` states no slash of its own, so git matches it at any depth and this glob has to
+        // as well — the same lesson `.worktrees/` above records. `releaseRecords.ts` writes it at the
+        // repo root, and a worktree cutting a release writes its own.
+        "!$TURBO_ROOT$/**/.release/**",
+        // `.worktrees/` states no slash of its own, so git matches it at any depth and this glob has to
+        // as well. Root-anchored, it left `packages/core/.worktrees/` hashed — #432, Jim, 2026-08-21.
+        "!$TURBO_ROOT$/**/.worktrees/**",
+        // The vendored starter, ignored by `packages/cli/.gitignore` — the ignore file the guard could
+        // not see until it stopped reading the root's alone. `prepack` copies `templates/starter` here
+        // and `postpack` removes it; a pack that fails in between leaves the copy for good, git-ignored
+        // and silent. Left in the key, that developer's hash can never agree with CI's again.
+        "!$TURBO_ROOT$/packages/cli/templates/**",
+        "!$TURBO_ROOT$/**/node_modules/**",
+        "!$TURBO_ROOT$/**/dist/**",
+        "!$TURBO_ROOT$/**/coverage/**",
+        "!$TURBO_ROOT$/**/.turbo/**",
+        "!$TURBO_ROOT$/**/.wrangler/**",
+        // The CLI's own test scaffolds. Removed after each run, so they are only ever in a tree where
+        // something crashed — and a key that changes after a crash is a cache nobody can reason about.
+        "!$TURBO_ROOT$/**/.smoke-*/**",
+        "!$TURBO_ROOT$/**/.e2e-*/**",
+        "!$TURBO_ROOT$/**/.boot-*/**",
+        "!$TURBO_ROOT$/**/.migrate-*/**",
+        "!$TURBO_ROOT$/**/.deploy-it-*/**",
+        // `.dev.vars.*` is the rule, less the one tracked file it would take with it.
+        // `templates/starter/.dev.vars.example` is committed, and **turbo cannot put back what a negation
+        // removed** — measured: re-including that path after the negation leaves the key at 2,609 files,
+        // one short. So the class is spelled "anything not starting with `e`", which is the rule bar the
+        // example.
+        //
+        // It was the three environments, and three environments are a probe rather than a rule.
+        // `.dev.vars.local` is wrangler's own filename, git ignores it, and all four whole-tree keys
+        // hashed it — #432, Jim, 2026-08-21.
+        "!$TURBO_ROOT$/**/.dev.vars",
+        "!$TURBO_ROOT$/**/.dev.vars.[!e]*",
+        "!$TURBO_ROOT$/**/.dev-ports.json",
+        "!$TURBO_ROOT$/**/.dev.config.json",
+        "!$TURBO_ROOT$/**/.dev-state.json",
+        "!$TURBO_ROOT$/**/.pithy-feature.json",
+        // `.env.*` is broad here and carved above, and the asymmetry is the tree's: nothing tracked
+        // matches this one. The day a `.env.example` lands, the guard names it as a tracked file the key
+        // dropped, and this line gets the `[!e]` treatment its sibling has.
+        "!$TURBO_ROOT$/**/.env",
+        "!$TURBO_ROOT$/**/.env.*",
+        "!$TURBO_ROOT$/**/.DS_Store",
+        "!$TURBO_ROOT$/**/*.log",
+        "!$TURBO_ROOT$/**/*.tmp",
+        "!$TURBO_ROOT$/**/*.tsbuildinfo"
+      ]
+    },
     "@pithy-sh/cli#test": {
       "inputs": [
         "$TURBO_DEFAULT$",
@@ -380,6 +547,10 @@
         "!$TURBO_ROOT$/.git/**",
         "!$TURBO_ROOT$/.husky/_/**",
         "!$TURBO_ROOT$/.local/**",
+        // `.release/` states no slash of its own, so git matches it at any depth and this glob has to
+        // as well — the same lesson `.worktrees/` above records. `releaseRecords.ts` writes it at the
+        // repo root, and a worktree cutting a release writes its own.
+        "!$TURBO_ROOT$/**/.release/**",
         // `.worktrees/` states no slash of its own, so git matches it at any depth and this glob has to
         // as well. Root-anchored, it left `packages/core/.worktrees/` hashed — #432, Jim, 2026-08-21.
         "!$TURBO_ROOT$/**/.worktrees/**",
@@ -438,6 +609,10 @@
         "!$TURBO_ROOT$/.git/**",
         "!$TURBO_ROOT$/.husky/_/**",
         "!$TURBO_ROOT$/.local/**",
+        // `.release/` states no slash of its own, so git matches it at any depth and this glob has to
+        // as well — the same lesson `.worktrees/` above records. `releaseRecords.ts` writes it at the
+        // repo root, and a worktree cutting a release writes its own.
+        "!$TURBO_ROOT$/**/.release/**",
         "!$TURBO_ROOT$/**/.worktrees/**",
         "!$TURBO_ROOT$/packages/cli/templates/**",
         "!$TURBO_ROOT$/**/node_modules/**",
@@ -485,6 +660,10 @@
         "!$TURBO_ROOT$/.git/**",
         "!$TURBO_ROOT$/.husky/_/**",
         "!$TURBO_ROOT$/.local/**",
+        // `.release/` states no slash of its own, so git matches it at any depth and this glob has to
+        // as well — the same lesson `.worktrees/` above records. `releaseRecords.ts` writes it at the
+        // repo root, and a worktree cutting a release writes its own.
+        "!$TURBO_ROOT$/**/.release/**",
         "!$TURBO_ROOT$/**/.worktrees/**",
         "!$TURBO_ROOT$/packages/cli/templates/**",
         "!$TURBO_ROOT$/**/node_modules/**",
@@ -523,6 +702,10 @@
         "!$TURBO_ROOT$/.git/**",
         "!$TURBO_ROOT$/.husky/_/**",
         "!$TURBO_ROOT$/.local/**",
+        // `.release/` states no slash of its own, so git matches it at any depth and this glob has to
+        // as well — the same lesson `.worktrees/` above records. `releaseRecords.ts` writes it at the
+        // repo root, and a worktree cutting a release writes its own.
+        "!$TURBO_ROOT$/**/.release/**",
         "!$TURBO_ROOT$/**/.worktrees/**",
         "!$TURBO_ROOT$/packages/cli/templates/**",
         "!$TURBO_ROOT$/**/node_modules/**",

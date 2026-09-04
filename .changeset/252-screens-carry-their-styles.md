@@ -22,7 +22,7 @@ Two properties keep it safe to live beside a design someone else owns. Everythin
 cascade layer, and unlayered CSS beats layered CSS regardless of order or specificity — so any rule an
 adopter writes wins with no `!important` and no regard for import order. And the palette is six tokens read
 with fallbacks (`--bg`, `--surface`, `--fg`, `--fg-muted`, `--border`, `--accent`): declare them and the
-screens adopt your colours, declare none and they stand up on their own, following `prefers-color-scheme`.
+screens adopt your colors, declare none and they stand up on their own, following `prefers-color-scheme`.
 
 Two gates keep it true, because the drift that produced this runs in both directions. A test extracts every
 `className` the screens render and every selector the stylesheets define and requires the first to be a

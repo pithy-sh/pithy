@@ -9,7 +9,7 @@ Put the client boundary above the transports, and take `action` off the socket.
 
 **`clientError` is now the one place an error becomes bytes for a client**, whatever the transport. `HttpError.encode` calls it. The multiplayer session's frames are built from a `PithyError` through it, and the frame builder takes nothing else — there is no hand-written shape left to disagree with the schema. What it strips is not a list this function maintains: both fields are removed by name and the result is parsed by `PublicErrorPayload`, which has neither key, so an adopter's own code is held to the same boundary as the kit's.
 
-The census of every other transport that could serialise an error toward a browser, because the point of a fix at the thing is that the next one arrives already correct:
+The census of every other transport that could serialize an error toward a browser, because the point of a fix at the thing is that the next one arrives already correct:
 
 - **`@pithy-sh/matchmaking` presence socket** — sends presence frames and `pong`, and never an error payload; an upgrade it refuses answers with a fixed string and a status. Safe as written.
 - **The DO ↔ Worker RPC envelopes** (multiplayer's `guard`, matchmaking's `guardRpc`) — carry the whole payload, `action` and `detail` included, deliberately: both ends are ours, and the route revives a real `PithyError` that then leaves through `clientError`. A malformed envelope propagates as a bare `Error` and lands in `detail`, which is stripped. Safe.

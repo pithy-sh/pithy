@@ -2,6 +2,16 @@
   "name": "@pithy-sh/ui-react",
   "version": "0.0.0",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pithy-sh/pithy.git",
+    "directory": "packages/ui-react"
+  },
+  "files": [
+    "src",
+    "templates",
+    "!src/**/*.test.*"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22"

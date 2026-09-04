@@ -1,0 +1,262 @@
+name: Release
+
+# Cut a release: version the packages, publish them to npm, tag them, and record what shipped.
+#
+# **Started by hand, never by a push.** A release is a deliberate act, and this repository has no `push`
+# trigger on `main` for CI either (see `ci.yml` for why). Run it with `dry_run: true` first to see the
+# plan; the dry run versions, builds the records, and prints them without publishing, tagging, or
+# pushing anything.
+#
+#   gh workflow run release.yml -f dry_run=true    # see what would ship
+#   gh workflow run release.yml                    # ship it
+#
+# ## The ordering is the whole design
+#
+# `changeset version` **consumes and deletes** the changeset files, and the release notes and the
+# `Security:` markers live nowhere else until it has written the CHANGELOGs. The versions do not exist
+# until it has run. So the records are collected *around* it, never after:
+#
+#   snapshot -> changeset version -> build -> publish -> post
+#
+# Parsing the CHANGELOG diff instead would avoid that dance and be fragile. `releaseRecords.ts replay`
+# is that path, and it exists for one job: recovering a dashboard write that failed.
+#
+# ## Two jobs, because one of them holds the keys
+#
+# `verify` runs the gates — install, biome, typecheck, vitest, build, the pack checks. By the time
+# vitest, tsdown and biome are running that is a great deal of third-party code, and it holds
+# `contents: read` and no OIDC, so a compromised dev dependency executing there can neither mint an npm
+# token nor push to `main`.
+#
+# `release` holds `id-token: write` and `contents: write` and runs nothing but the release. That split
+# is the point: one job with both would put the publish credential for all 22 packages inside the same
+# process as the test suite.
+#
+# ## Authentication
+#
+# **npm trusted publishing (OIDC).** No `NPM_TOKEN`, no secret in this repository at all. `id-token:
+# write` on the release job lets it mint a short-lived OIDC token that npm exchanges for publish rights,
+# and npm generates provenance from it.
+#
+# An npm trusted publisher matches on repository and workflow **filename** and has no branch field, so
+# the `npm-publish` environment is what pins the ref — see the comment on the job. `docs/RELEASING.md`
+# has the one-time setup, including why the very first publish of a brand-new package cannot use OIDC.
+#
+# `GITHUB_TOKEN` is needed at **version** time, not publish time: `@changesets/changelog-github` calls
+# the GitHub API to attribute every changeset, and `changeset version` exits 1 without it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Version and build the records, but publish nothing"
+        type: boolean
+        default: false
+
+# Never two releases at once, and never cancel one half-way — a canceled publish leaves some packages
+# on npm and some not, which no re-run can tidy up.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+# Least privilege by default. The `release` job raises it for itself, and nothing else does.
+permissions:
+  contents: read
+
+jobs:
+  # Everything that runs third-party code, with nothing worth stealing in the environment.
+  verify:
+    name: Gates
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # No credential left in `.git/config` for anything later in this job to read.
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install
+        run: bun install
+
+      # The same gates `ci.yml` runs, whole-repo rather than narrowed. A pull request narrows against
+      # `main`; a release has no baseline to narrow against and is the one run where a skipped package
+      # would ship anyway.
+      - name: Lint + format (Biome)
+        run: bunx biome ci .
+
+      - name: License headers
+        run: bun scripts/license-headers.ts --check
+
+      - name: Stamped package versions
+        run: bun scripts/stampVersions.ts --check
+
+      - name: Docs catalog
+        run: bun packages/cli/src/docs/writeCatalog.ts --check
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun run test
+
+      # Before both pack checks, because `@pithy-sh/payments` declares a browser build that only exists
+      # after it — and a pack that ran first would inspect a tarball missing a file the manifest names.
+      - name: Build
+        run: bun run build
+
+      - name: Pack the CLI
+        working-directory: packages/cli
+        run: bun run pack:verify
+
+      - name: Pack every package
+        run: bun run verify-published
+
+  # The only job that can publish or push, and it runs nothing but the release itself.
+  release:
+    name: Release
+    needs: verify
+    runs-on: ubuntu-24.04
+    # **The environment is what pins the ref.** An npm trusted publisher matches on repository and
+    # workflow *filename*; it has no branch field. `workflow_dispatch` runs the workflow definition
+    # from whichever ref the dispatcher names, so without this, anyone able to push a branch could run
+    # a rewritten `release.yml` from it and publish all 22 packages — with genuine provenance, which
+    # makes the result look more trustworthy rather than less.
+    #
+    # The environment's deployment-branch rule restricts that to `main`, and npm actually verifies the
+    # claim because every trusted publisher is registered with `--env npm-publish`. docs/RELEASING.md §4-5.
+    environment: npm-publish
+    permissions:
+      contents: write # push the version commit and the tags
+      id-token: write # npm trusted publishing (OIDC) and provenance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # Changesets reads the history to attribute changesets to their commits, and the tags it
+          # writes have to be pushed against a full ref.
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      # `changeset publish` shells out to `npm publish` — bun workspaces fall through to the npm path
+      # in @changesets/cli. Trusted publishing needs npm 11.5.1+ and Node 22.14+, so both are pinned
+      # here rather than left to whatever the runner image happens to ship.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Setup npm
+        run: |
+          npm install -g npm@latest
+          npm --version
+
+      - name: Install
+        run: bun install
+
+      # **Before the publish, not with the commit.** `changeset publish` tags each released package with
+      # `git tag <name> -m <name>` — an *annotated* tag, which git refuses to write without a committer
+      # identity, and a runner has none. `createGitTags` ignores the failure and still prints "Created
+      # git tags", so the packages would publish, no tag would exist, `--follow-tags` would push
+      # nothing, and `releaseRecords.ts replay` — which dates every record from those tags — could never
+      # recover a missed dashboard write. Silently, on the first release.
+      - name: Identify the committer
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      # `@pithy-sh/payments` declares a browser build that does not exist until this runs, and
+      # `changeset publish` is about to pack it.
+      - name: Build
+        run: bun run build
+
+      # ---- the release proper ----
+
+      # Step 1. Read the changesets before Changesets deletes them. Everything after this reads the file
+      # this writes.
+      - name: Snapshot the changesets
+        run: bun scripts/releaseRecords.ts snapshot
+
+      # Step 2. Bump the manifests, write the CHANGELOGs, and stamp `version.generated.ts` — the root
+      # `version` script chains the stamper for exactly this moment.
+      #
+      # `GITHUB_TOKEN` is required: `@changesets/changelog-github` attributes each changeset through the
+      # GitHub API and `changeset version` exits 1 without it. So does a release with no changesets to
+      # apply, under @changesets/cli 3.0.0 — a quiet release fails loudly rather than passing silently.
+      - name: Version the packages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bun run version
+
+      # Step 3. Join the snapshot to the versions Changesets just wrote.
+      - name: Build the release records
+        run: bun scripts/releaseRecords.ts build
+
+      # The records are an artifact on every run, published or not, and the first thing to read when a
+      # release looks wrong. On a dry run they are the whole output.
+      - name: Upload the release records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-records
+          path: .release/
+          if-no-files-found: warn
+
+      - name: What would ship
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "Dry run. Nothing published, nothing tagged, nothing pushed."
+          echo
+          bun -e '
+            const records = require("./.release/records.json");
+            for (const r of records) {
+              console.log(`${r.package}  ${r.version}  (${r.bump})${r.security ? "  [security]" : ""}`);
+            }
+            console.log(`\n${records.length} packages, ${records.filter((r) => r.security).length} security-relevant.`);
+          '
+
+      # Step 4. Publish. `changeset publish` skips anything already on the registry, so a re-run after a
+      # partial failure publishes only what is missing.
+      #
+      # `NPM_CONFIG_PROVENANCE` rather than a `publishConfig.provenance` in 22 manifests: changesets
+      # passes its own flags to `npm publish` and has no seam for another, and provenance is a property
+      # of *where the build ran*, not of the package. Set here, it is on in CI and off on a laptop —
+      # which is what the one-time bootstrap in `docs/RELEASING.md` needs.
+      - name: Publish to npm
+        if: ${{ !inputs.dry_run }}
+        env:
+          NPM_CONFIG_PROVENANCE: "true"
+        run: bun run release
+
+      # Step 5. Commit the version bump, the CHANGELOGs and the stamps, and push them with the tags
+      # `changeset publish` just wrote. After the publish on purpose: npm is the source of truth for
+      # what exists, and a commit pushed before a failed publish would claim a release that never
+      # happened.
+      - name: Commit and push
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git add -A
+          git commit -m "chore(release): version packages" || echo "Nothing to commit."
+          git push --follow-tags origin HEAD:main
+
+      # Step 6. Tell the dashboard what shipped.
+      #
+      # **Off until the dashboard exists**, and off because nothing is configured rather than because a
+      # second switch says so. With neither variable set this prints one line and succeeds. A failure
+      # here never fails a release either: the records are on the artifact above and in the CHANGELOGs,
+      # and `releaseRecords.ts replay` recovers them.
+      - name: Report the release
+        if: ${{ !inputs.dry_run }}
+        env:
+          PITHY_RELEASE_RECORDS_URL: ${{ vars.RELEASE_RECORDS_URL }}
+          PITHY_RELEASE_RECORDS_TOKEN: ${{ secrets.RELEASE_RECORDS_TOKEN }}
+        run: bun scripts/releaseRecords.ts post

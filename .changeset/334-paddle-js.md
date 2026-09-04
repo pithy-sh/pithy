@@ -13,7 +13,7 @@ The Paddle rail shipped a complete server and a client that could only redirect.
 
 Measured against the live sandbox on a $5.00/month price, because "localized" is a claim that has to be checked rather than repeated:
 
-- **Currency is not localized without `unit_price_overrides`.** A preview from a British or German address on a USD price comes back in dollars. Currency is catalogue data. What localizes without it is tax and formatting, which is real, and is not the same claim.
+- **Currency is not localized without `unit_price_overrides`.** A preview from a British or German address on a USD price comes back in dollars. Currency is catalog data. What localizes without it is tax and formatting, which is real, and is not the same claim.
 - **The tax convention differs by country and it is not formatting.** New York pays $5.44 on a $5.00 subtotal; the UK pays $5.00 on a $4.17 subtotal; Germany $5.00 on $4.20. One string cannot mean "before tax" in Denver and "including VAT" in Berlin, so `priceSummary` returns the figure to show and the sentence that makes it true, derived from the numbers Paddle returned rather than from a country table.
 - **United States tax resolves at the postal code.** 15% in Chicago, 8.875% in New York, 0% in Oregon — and 0% for the country with no code at all, which quotes $5.00 to a buyer whose card is charged $5.44. A quote with no postal code is marked `estimated` and says tax is settled at checkout rather than implying there is none.
 - **Zero-decimal currencies are whole units.** ¥725 is `725`. Nothing here formats a raw amount; `formattedTotals` is Paddle's own rendering and already right.
