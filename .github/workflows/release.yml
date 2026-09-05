@@ -101,9 +101,6 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
-      - name: Test
-        run: bun run test
-
       # Before both pack checks, because `@pithy-sh/payments` declares a browser build that only exists
       # after it — and a pack that ran first would inspect a tarball missing a file the manifest names.
       - name: Build
@@ -116,10 +113,81 @@ jobs:
       - name: Pack every package
         run: bun run verify-published
 
+  # The shard plan, from the same script `ci.yml` plans with. A release always tests everything, so
+  # there is no affected calculation here — just the full set, packed longest-first by test-file count.
+  #
+  # No install step, deliberately: `planShards.ts` imports builtins and one relative path for exactly
+  # this reason, and `ci.yml`'s planner runs the same way.
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    outputs:
+      any: ${{ steps.plan.outputs.any }}
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Plan the test matrix
+        id: plan
+        run: |
+          set -euo pipefail
+          turbo_version="$(jq -r '.devDependencies.turbo' package.json | tr -d '^~')"
+          echo "Full run (release): every package."
+          plan="$(bunx "turbo@${turbo_version}" run test:node test:workers --dry=json | bun .github/scripts/planShards.ts)"
+          echo "$plan" | jq
+          {
+            echo "any=$(jq -r '.any' <<< "$plan")"
+            echo "shards=$(jq -c '.shards' <<< "$plan")"
+          } >> "$GITHUB_OUTPUT"
+          echo "### $(jq -r '.count' <<< "$plan") package(s) across $(jq -r '.shards | length' <<< "$plan") shard(s)" >> "$GITHUB_STEP_SUMMARY"
+
+  # The suites, sharded exactly as `ci.yml` shards them.
+  #
+  # **Serial on one runner, this was 20 of the gate job's 30 minutes.** A 2-core runner cannot go wider
+  # than the package — `ci.yml` records the measurement — so more runners is the only lever, and
+  # `--concurrency=2` is right here and wrong without the sharding around it.
+  test:
+    name: Tests (${{ matrix.label }})
+    needs: plan
+    if: needs.plan.outputs.any == 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install
+        run: bun install
+
+      - name: Test
+        env:
+          FILTERS: ${{ matrix.filters }}
+        run: |
+          set -euo pipefail
+          bunx turbo run test:node test:workers --concurrency=2 --continue=always $FILTERS
+
   # The only job that can publish or push, and it runs nothing but the release itself.
   release:
     name: Release
-    needs: verify
+    needs: [verify, test]
     runs-on: ubuntu-24.04
     # **The environment is what pins the ref.** An npm trusted publisher matches on repository and
     # workflow *filename*; it has no branch field. `workflow_dispatch` runs the workflow definition

@@ -56,6 +56,10 @@ It refuses to start on a checkout that is not ready, and reports every reason at
 
 **That first release publishes without provenance.** Provenance is generated from a CI build's OIDC identity, so a laptop cannot produce one. `0.1.0` will carry no attestation and every release after it will. That is the whole cost of the bootstrap.
 
+**The repository must be public before a release with provenance.** npm refuses to verify a sigstore bundle from a private source repository — `E422 … Unsupported GitHub Actions source repository visibility: "private"` — and the workflow sets `NPM_CONFIG_PROVENANCE=true`, so the publish fails outright rather than quietly skipping the attestation. It fails cleanly: nothing publishes, nothing is pushed, and the version bump is never committed.
+
+The claim is captured when the **run is created**, not when the publish step executes, so flipping the repository to public mid-run does not rescue that run. Flip first, then trigger.
+
 `GITHUB_TOKEN` is needed for `changeset version`, not for publishing: `@changesets/changelog-github` calls the GitHub API to attribute each changeset, and the command exits 1 without it.
 
 ### 4. Protect the release environment
