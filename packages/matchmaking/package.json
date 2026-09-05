@@ -1,6 +1,6 @@
 {
   "name": "@pithy-sh/matchmaking",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -32,14 +32,14 @@
   "dependencies": {
     "@cloudflare/workers-types": "^5.20260729.1",
     "@hono/zod-validator": "^0.9.0",
-    "@pithy-sh/core": "^0.1.1",
+    "@pithy-sh/core": "^0.1.2",
     "hono": "^4.13.2",
     "kysely": "^0.29.0",
     "zod": "^4.0.0"
   },
   "peerDependencies": {
-    "@pithy-sh/auth": "^0.1.1",
-    "@pithy-sh/rating": "^0.1.1"
+    "@pithy-sh/auth": "^0.1.2",
+    "@pithy-sh/rating": "^0.1.2"
   },
   "peerDependenciesMeta": {
     "@pithy-sh/auth": {

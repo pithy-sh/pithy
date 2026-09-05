@@ -1,6 +1,6 @@
 {
   "name": "@pithy-sh/turnstile",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -29,8 +29,8 @@
     "reset": "bun run clean && rm -rf node_modules"
   },
   "dependencies": {
-    "@pithy-sh/core": "^0.1.1",
-    "@pithy-sh/secrets": "^0.1.1",
+    "@pithy-sh/core": "^0.1.2",
+    "@pithy-sh/secrets": "^0.1.2",
     "hono": "^4.13.2",
     "zod": "^4.0.0"
   },

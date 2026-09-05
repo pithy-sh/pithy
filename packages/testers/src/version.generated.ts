@@ -13,4 +13,4 @@
 export const PACKAGE_NAME = "@pithy-sh/testers";
 
 /** This package's version, stamped from its own package.json at generation time. */
-export const PACKAGE_VERSION = "0.1.1";
+export const PACKAGE_VERSION = "0.1.2";
