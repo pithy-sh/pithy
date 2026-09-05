@@ -1,15 +1,20 @@
 name: CI
 
-# Skip CI for changes that can't affect build/typecheck/test/lint. `paths-ignore` skips a run only when
-# EVERY changed file matches, so a mixed code+docs change still runs.
+# **Every pull request runs this, including a docs-only one.** It used to skip them with `paths-ignore`,
+# and that is precisely the filter a required status check cannot survive: GitHub leaves the check
+# *pending* when a workflow is filtered out, so a docs-only pull request would be blocked from merging
+# for ever, waiting on a run that will never start. A job skipped by an `if:` reports success; a
+# workflow skipped by a path filter reports nothing at all. The two are not interchangeable.
 #
-# `LICENSE` used to be on this list and no longer is: the `verify` job now reconciles every LICENSE
-# file against the license its package declares, so a license-only change is precisely the one that
-# must run CI rather than skip it.
+# So the filtering moved down a level, to where it already was. `plan` resolves what a change affected
+# and the test jobs carry `if: needs.plan.outputs.any == 'true'`, so a docs-only run costs `verify` —
+# with turbo restoring typecheck and build from cache — and skips every suite, reporting success rather
+# than silence. One mechanism instead of two, and the cheap case stays cheap.
 #
-# If `CI` is ever made a required
-# status check (needs branch protection — a public/Pro feature), a docs-only PR would skip the job and
-# report no status; add an always-pass guard job then. Not a concern while the repo is unprotected.
+# `LICENSE` was on the old ignore list and had already been taken off it: the `verify` job reconciles
+# every LICENSE file against the license its package declares, so a license-only change is exactly the
+# one that must run rather than skip. That was the first sign the filter was answering the wrong
+# question.
 #
 # **No `push` trigger on `main`.** A merge re-ran the identical tree the pull request had already
 # proved, for eight jobs' worth of billable minutes — and billing counts the sum of job durations, so
@@ -25,13 +30,6 @@ on:
     - cron: "17 4 * * *"
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - ".claude/**"
-      - ".vscode/**"
-      - ".husky/**"
-      - ".gitignore"
-      - ".editorconfig"
   # Manual full run, ignoring the affected calculation — the escape hatch for "test everything now".
   workflow_dispatch:
 
