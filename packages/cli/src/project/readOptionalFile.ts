@@ -317,9 +317,25 @@ function emptyDocument<Schema extends z.ZodType<Record<string, unknown>>>(
   });
 }
 
-/** Where a document broke, by key path and never by value: `dev.CF_TOKEN, staging`. */
+/**
+ * Where a document broke, by key path and never by value: `dev.CF_TOKEN, staging`.
+ *
+ * **Every segment is stringified one at a time, because a path segment can be a symbol** (#475).
+ * `Array.prototype.join` throws `Cannot convert a Symbol value to a string` on one, so the reporter
+ * threw while reporting: an adopter running `pithy ui add` on a perfectly good manifest got a
+ * `TypeError` from this file rather than a word about theirs, and the refusal it was in the middle of
+ * naming never arrived.
+ *
+ * It reached here from `z.record`'s key check, which enumerates symbol keys on zod below 4.4.0 — and
+ * comment-json hangs a document's comments off exactly those. That floor is raised now, so nothing in
+ * this repository produces such a path today. This stays anyway: a function whose job is to name where
+ * something broke must not be able to break, and it is the reporter's business to survive whatever a
+ * schema hands it rather than to assume what a schema can hold.
+ */
 function whereItBroke(error: z.ZodError): string {
-  const paths = new Set(error.issues.map((issue) => issue.path.join(".") || "the top level"));
+  const paths = new Set(
+    error.issues.map((issue) => issue.path.map((segment) => String(segment)).join(".") || "the top level"),
+  );
   return [...paths].slice(0, 5).join(", ");
 }
 

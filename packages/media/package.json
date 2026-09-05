@@ -37,7 +37,7 @@
     "@pithy-sh/storage": "^0.1.2",
     "hono": "^4.13.2",
     "kysely": "^0.29.0",
-    "zod": "^4.0.0"
+    "zod": "^4.4.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.0.0",
