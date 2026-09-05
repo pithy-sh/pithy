@@ -1,5 +1,18 @@
 # @pithy-sh/turnstile
 
+## 0.1.1
+
+### Patch Changes
+
+- [`dfda7b2`](https://github.com/pithy-sh/pithy/commit/dfda7b25c897f3fe30ad7d498dde1216a25edc09) Thanks [@kingmesal](https://github.com/kingmesal)! - Released from CI, with provenance.
+  
+  Every package's first release was cut from a laptop, and a laptop has no OIDC identity to attest with — so `0.1.0` carries no provenance. This one is built and published by the release workflow over npm trusted publishing, so `npm audit signatures` can verify each tarball came from this repository, from `main`, from the workflow that claims it.
+  
+  No code changed. The difference is what an adopter can prove about what they installed.
+- Updated dependencies [[`dfda7b2`](https://github.com/pithy-sh/pithy/commit/dfda7b25c897f3fe30ad7d498dde1216a25edc09)]:
+  - @pithy-sh/core@0.1.1
+  - @pithy-sh/secrets@0.1.1
+
 ## 0.1.0
 
 ### Minor Changes

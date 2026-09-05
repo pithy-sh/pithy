@@ -13,4 +13,4 @@
 export const PACKAGE_NAME = "@pithy-sh/rating";
 
 /** This package's version, stamped from its own package.json at generation time. */
-export const PACKAGE_VERSION = "0.1.0";
+export const PACKAGE_VERSION = "0.1.1";
