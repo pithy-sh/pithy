@@ -49,6 +49,18 @@ export interface PackedPackage {
    * `files` field naming a file that is not there, silently.
    */
   declared?: string[];
+  /**
+   * The manifest as it appears **inside the tarball**, for the fields a consumer installs from.
+   *
+   * Read from the packed artifact rather than from the source tree, because the two can differ — that
+   * is the whole premise of a pack-time rewrite, and the absence of one is what shipped `workspace:*`
+   * to the registry twice.
+   */
+  manifest?: {
+    dependencies?: Record<string, string>;
+    peerDependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
 }
 
 /**
@@ -66,6 +78,19 @@ const VENDORED = "templates/";
  * TSX — and eleven of them shipped under a gate reporting every package clean.
  */
 const TEST_FILE = /\.test\.[cm]?[jt]sx?$/;
+
+/**
+ * The workspace protocol — a Bun, pnpm and yarn convention that **npm does not implement**.
+ *
+ * Measured, not assumed: `npm pack` leaves `workspace:*` verbatim from the package directory *and*
+ * from the repository root with `-w`. Changesets publishes through `npm publish`, so 20 of the 22
+ * packages in `0.1.0` and `0.1.1` shipped a dependency range no registry can resolve, and every one of
+ * them was uninstallable. Only `core` and `ui-react`, which depend on no sibling, survived.
+ *
+ * Nothing inside this repository could have caught it. Every test here runs in the workspace, where
+ * `workspace:*` resolves perfectly — the range is only wrong once it leaves.
+ */
+const WORKSPACE_PROTOCOL = /^workspace:/;
 
 /** Build and tooling files a `files` field excludes. Present, they mean the field is missing or wrong. */
 const LEFTOVER = /^(tsconfig[^/]*\.json|vitest[^/]*\.(ts|js)|biome\.jsonc|[^/]*\.tsbuildinfo)$/;
@@ -109,6 +134,18 @@ export function packFaults(packed: PackedPackage): string[] {
   const unreached = (packed.declared ?? []).filter(
     (entry) => !entry.startsWith("!") && !packed.entries.some((path) => path === entry || path.startsWith(`${entry}/`)),
   );
+  // A consumer installs `dependencies` and `peerDependencies`. A devDependency is never installed by
+  // one, and several here name private packages that have no published range to point at.
+  const unresolvable = [
+    ...Object.entries(packed.manifest?.dependencies ?? {}),
+    ...Object.entries(packed.manifest?.peerDependencies ?? {}),
+  ].filter(([, range]) => WORKSPACE_PROTOCOL.test(range));
+  if (unresolvable.length > 0) {
+    faults.push(
+      `${packed.name} ships ${unresolvable.length} dependencies on the workspace protocol, which npm does not resolve: ${list(unresolvable.map(([name, range]) => `${name}@${range}`))}. Give them a concrete range.`,
+    );
+  }
+
   if (unreached.length > 0) {
     faults.push(
       `${packed.name} declares files that reached the tarball empty: ${list(unreached)}. Either the path is wrong or it is built after this check runs.`,

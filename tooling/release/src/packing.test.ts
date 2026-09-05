@@ -118,6 +118,63 @@ describe("packFaults", () => {
     ).toEqual([]);
   });
 
+  // **The bug that shipped in 0.1.0 and 0.1.1.** `workspace:*` is a Bun/pnpm/yarn convention; npm does
+  // not implement it and passes it through verbatim, so 20 of 22 packages published a dependency range
+  // no registry can resolve. Every test in this repository runs inside the workspace, where
+  // `workspace:*` resolves perfectly — which is precisely why nothing caught it.
+  it("reports a workspace protocol range that reached the tarball", () => {
+    const faults = packFaults(
+      packed({
+        entries: ["src/index.ts"],
+        expectsManifest: false,
+        manifest: { dependencies: { "@pithy-sh/core": "workspace:*", zod: "^4.0.0" } },
+      }),
+    );
+
+    expect(faults).toHaveLength(1);
+    expect(faults[0]).toContain("@pithy-sh/core");
+    expect(faults[0]).toMatch(/workspace:/);
+  });
+
+  it("reports one in peerDependencies too", () => {
+    const faults = packFaults(
+      packed({
+        entries: ["src/index.ts"],
+        expectsManifest: false,
+        manifest: { peerDependencies: { "@pithy-sh/vite": "workspace:^" } },
+      }),
+    );
+
+    expect(faults).toHaveLength(1);
+    expect(faults[0]).toContain("@pithy-sh/vite");
+  });
+
+  // A devDependency is never installed by a consumer, and several point at private packages that have
+  // no published range to name. `workspace:*` is correct there and must not be reported.
+  it("ignores a workspace range in devDependencies", () => {
+    expect(
+      packFaults(
+        packed({
+          entries: ["src/index.ts"],
+          expectsManifest: false,
+          manifest: { devDependencies: { "@pithy-sh/tsconfig": "workspace:*" } },
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("accepts concrete ranges", () => {
+    expect(
+      packFaults(
+        packed({
+          entries: ["src/index.ts"],
+          expectsManifest: false,
+          manifest: { dependencies: { "@pithy-sh/core": "^0.1.2" } },
+        }),
+      ),
+    ).toEqual([]);
+  });
+
   it("names the package in every fault it reports", () => {
     const faults = packFaults(packed({ name: "@pithy-sh/core", entries: ["src/a.test.ts"], expectsManifest: false }));
 
