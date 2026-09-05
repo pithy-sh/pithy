@@ -105,6 +105,13 @@ function versionOf(pkg: string): string | null {
 /** Never released, so no migration of its has run anywhere a chain would have to be replayed against. */
 const isUnpublished = (pkg: PackageMigrations): boolean => pkg.version === "0.0.0";
 
+/**
+ * **The condition flipped on 2026-09-05.** All 22 packages were released at `0.1.0`, so every chain
+ * here is now history and append-only, and the expectation that asserted "nothing is published yet" has
+ * been deleted as it instructed. The rest stays, and it is not vacuous: every test below filters on
+ * {@link isUnpublished}, so the rule goes dormant for what has shipped and wakes for the next capability
+ * that lands at `0.0.0` — which is exactly the window it was written for.
+ */
 describe("one migration per capability per database, while unpublished", () => {
   const scanned = scan();
 
@@ -148,16 +155,5 @@ describe("one migration per capability per database, while unpublished", () => {
     const email = scanned.find((pkg) => pkg.name === "email");
     expect(email?.files.map((file) => basename(file.path)).sort()).toEqual(["0001_init.ts", "0001_suppressions.ts"]);
     expect(email?.databases).toBe(2);
-  });
-
-  test("every package this gate covers is still unpublished", () => {
-    // The condition, made visible rather than assumed. When this fails, a version has been cut: the
-    // released packages named here now have append-only chains, and the rule above no longer applies to
-    // them. That is the moment to read CONTRIBUTING.md §Migrations rather than to loosen this file.
-    const released = scanned.filter((pkg) => !isUnpublished(pkg)).map((pkg) => `${pkg.name}@${pkg.version}`);
-    expect(
-      released,
-      "A package has been released. Its migrations may have run somewhere real, so its chain is now history and is append-only. This gate already skips it; delete this test's expectation and leave the rest.",
-    ).toEqual([]);
   });
 });
