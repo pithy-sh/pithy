@@ -208,7 +208,15 @@ describe("wire", () => {
 
     // react was already pinned ahead of the stub's version; it keeps the adopter's pin.
     expect(pkg.dependencies.react).toBe("^19.9.9");
-    expect(change.dependencies).toEqual(["react-dom"]);
+
+    // **The rule, not today's answer.** The stub declares `@pithy-sh/i18n` at `kitRange(PACKAGE_VERSION)`,
+    // which is `null` while nothing under the scope is published and a real range once something is — so
+    // the package joins this list on the day of the first release and never leaves it. Written as the
+    // literal `["react-dom"]`, this test passed for as long as the kit was unpublished and then failed
+    // the release that made `kitRange` do the thing it was written to do (`0.1.0`, 2026-09-05).
+    const kit = kitRange(PACKAGE_VERSION) === null ? [] : ["@pithy-sh/i18n"];
+    expect(change.dependencies).toEqual(["react-dom", ...kit]);
+    expect(pkg.dependencies["@pithy-sh/i18n"]).toBe(kitRange(PACKAGE_VERSION) ?? undefined);
     expect(pkg.dependencies["react-dom"]).toBe("^19.2.8");
     expect(pkg.devDependencies.vite).toBe("^8.2.1");
     // Every existing key survives.
