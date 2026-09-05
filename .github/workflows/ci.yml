@@ -417,3 +417,34 @@ jobs:
             printf '::error::Failed under Node %s: %s\n' "${{ matrix.node }}" "${failed[*]}"
             exit 1
           fi
+
+  # The one check branch protection requires, and the only one whose name is stable.
+  #
+  # Every other job here is named from the shard it drew — `Tests (payments, email, …)`,
+  # `Node 22 (cli)` — and those names change the day a package is added or the LPT packing shifts a
+  # boundary. A required check names a job; a required check naming a job that no longer exists is a
+  # protection that silently stops protecting. So protection requires this, and this requires the rest.
+  #
+  # `if: always()` so it reports even when something upstream failed — without it the job would be
+  # skipped on failure and the check would go green by absence, which is the failure mode it exists to
+  # close. `result` is `success` only when a job actually succeeded: a *skipped* job is a pass here,
+  # because that is how `plan` narrows a docs-only pull request, and a cancelled one is not.
+  ci:
+    name: CI
+    needs: [verify, test, test-node]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Every gate reported
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$RESULTS"
+          failed="$(jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key): \(.value.result)"' <<< "$RESULTS")"
+          if [ -n "$failed" ]; then
+            echo "::error::Gates did not pass:"
+            echo "$failed"
+            exit 1
+          fi
+          echo "All gates passed or were skipped."
