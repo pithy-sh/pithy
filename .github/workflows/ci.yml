@@ -290,8 +290,11 @@ jobs:
   # gets four — the previous fixed 4-way matrix made every PR pay four runners' worth of checkout
   # and install to run a couple of packages.
   #
-  # Sharding is the only parallelism lever that works here. GitHub-hosted runners for a private
-  # repo are 2-core, and the workers suites run their test FILES serially inside one Miniflare per
+  # Sharding is the parallelism lever that works here. When this was written the repository was
+  # private, so runners were 2-core and sharding was the *only* lever; public repositories get 4-core
+  # standard runners free, which doubled every job on its own (the release gate went 29m36s to 10m54s
+  # on that alone). Sharding still matters for the same structural reason: the workers suites run their
+  # test FILES serially inside one Miniflare per
   # package (measured: 6 files, 21.0s cumulative, 22.1s wall) — so a package is the smallest unit
   # that can be parallelized at all, and more runners is the only way to go wider.
   test:
@@ -353,14 +356,19 @@ jobs:
   # vitest has no bearing on what they exercise, so running them here proved nothing about Node
   # compatibility while costing this job the majority of its wall clock.
   test-node:
-    name: Node ${{ matrix.node }}
+    name: Node ${{ matrix.node }} (${{ matrix.shard.label }})
     needs: plan
     if: needs.plan.outputs.any == 'true'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
+      # Two dimensions, so this crosses: every Node version against every shard. It walked the whole
+      # `dirs` list serially on one runner per version and was the critical path at ~13 minutes — longer
+      # than the sharded `test` job it runs beside. Free on a public repository's standard runners,
+      # which is what made the cost side of this go away.
       matrix:
         node: ${{ fromJSON(needs.plan.outputs.nodeVersions) }}
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -390,7 +398,7 @@ jobs:
       # Every package runs; the summary names every one that failed.
       - name: Test under Node ${{ matrix.node }}
         env:
-          DIRS: ${{ needs.plan.outputs.dirs }}
+          DIRS: ${{ matrix.shard.dirs }}
         run: |
           set -euo pipefail
           ran=0

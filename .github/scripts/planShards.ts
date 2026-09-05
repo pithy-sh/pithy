@@ -57,6 +57,14 @@ type Shard = {
   label: string;
   /** `--filter=` arguments to pass straight to `turbo run`. */
   filters: string;
+  /**
+   * This shard's package directories, space-separated.
+   *
+   * The Node-runtime job walks directories rather than filtering with turbo — it runs `node --run
+   * test:node` in each, which is the point of that job: the published packages have to work on the Node
+   * an adopter actually has. Sharding it needs the directories *for this shard*, not the whole set.
+   */
+  dirs: string;
 };
 
 /** The marker `turbo` uses for a task whose package does not define the script. */
@@ -88,9 +96,10 @@ export function testFileCount(packageDir: string): number {
  * never contains a runner with nothing to do.
  */
 export function packShards(weighted: readonly Runnable[], count: number): Shard[] {
-  const bins: { total: number; names: string[] }[] = Array.from({ length: Math.max(1, count) }, () => ({
+  const bins: { total: number; names: string[]; dirs: string[] }[] = Array.from({ length: Math.max(1, count) }, () => ({
     total: 0,
     names: [],
+    dirs: [],
   }));
   // Tie-break on name so the plan is deterministic for a given affected set.
   const order = [...weighted].sort((a, b) => b.weight - a.weight || a.name.localeCompare(b.name));
@@ -98,6 +107,7 @@ export function packShards(weighted: readonly Runnable[], count: number): Shard[
     const target = bins.reduce((lightest, bin) => (bin.total < lightest.total ? bin : lightest));
     target.total += pkg.weight;
     target.names.push(pkg.name);
+    target.dirs.push(pkg.directory);
   }
   return bins
     .filter((bin) => bin.names.length > 0)
@@ -105,6 +115,7 @@ export function packShards(weighted: readonly Runnable[], count: number): Shard[
       id: index + 1,
       label: bin.names.map((name) => name.replace("@pithy-sh/", "")).join(", "),
       filters: bin.names.map((name) => `--filter=${name}`).join(" "),
+      dirs: bin.dirs.join(" "),
     }));
 }
 
