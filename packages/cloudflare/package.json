@@ -1,6 +1,6 @@
 {
   "name": "@pithy-sh/cloudflare",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -31,11 +31,11 @@
     "@aws-sdk/client-s3": "^3.1111.0",
     "@aws-sdk/s3-request-presigner": "^3.1111.0",
     "@cloudflare/workers-types": "^5.20260729.1",
-    "@pithy-sh/core": "workspace:*",
+    "@pithy-sh/core": "^0.1.2",
     "cloudflare": "^7.0.0",
     "js-base64": "^3.9.2",
     "kysely": "^0.29.0",
-    "zod": "^4.0.0"
+    "zod": "^4.4.0"
   },
   "devDependencies": {
     "@pithy-sh/tsconfig": "workspace:*",

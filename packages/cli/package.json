@@ -1,6 +1,6 @@
 {
   "name": "@pithy-sh/cli",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -38,12 +38,12 @@
   "dependencies": {
     "@clack/prompts": "^1.7.0",
     "@cloudflare/workers-types": "^5.20260729.1",
-    "@pithy-sh/cloudflare": "workspace:*",
-    "@pithy-sh/core": "workspace:*",
-    "@pithy-sh/email": "workspace:*",
-    "@pithy-sh/secrets": "workspace:*",
-    "@pithy-sh/turnstile": "workspace:*",
-    "@pithy-sh/ui-react": "workspace:*",
+    "@pithy-sh/cloudflare": "^0.1.2",
+    "@pithy-sh/core": "^0.1.2",
+    "@pithy-sh/email": "^0.1.2",
+    "@pithy-sh/secrets": "^0.1.2",
+    "@pithy-sh/turnstile": "^0.1.2",
+    "@pithy-sh/ui-react": "^0.1.2",
     "citty": "^0.2.2",
     "comment-json": "^5.0.0",
     "kysely": "^0.29.0",
@@ -67,6 +67,6 @@
     "typescript": "^7.0.2",
     "vitest": "^4.1.0",
     "wrangler": "^4.115.0",
-    "zod": "^4.0.0"
+    "zod": "^4.4.0"
   }
 }

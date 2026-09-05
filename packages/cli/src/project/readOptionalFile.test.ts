@@ -5,7 +5,7 @@ import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ConflictError, PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, messageOf, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -200,6 +200,30 @@ describe("requireRecord", () => {
  * every writer takes one.
  */
 describe("readMergeBase", () => {
+  // #475. A schema can produce an issue whose path holds a **symbol** — `z.record`'s key check does it
+  // for comment-json's comment metadata on any zod below 4.4.0. `Array.prototype.join` throws on a
+  // symbol, so the reporter threw while reporting and the adopter got a `TypeError` from an unrelated
+  // file instead of a diagnosis. The reporter must survive whatever the schema hands it: it names where
+  // a document broke, and a namer that can crash is worse than one that prints an awkward name.
+  test("a symbol in an issue path is reported, not thrown on", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pithy-symbol-path-"));
+    const path = join(dir, "doc.json");
+    await writeFile(path, JSON.stringify({ dev: {} }));
+
+    // A schema that reports a symbol-keyed path, which is exactly the shape zod < 4.4.0 produced.
+    const marker = Symbol("before:dev");
+    const Symbolic = z.custom<Record<string, unknown>>().check((ctx) => {
+      ctx.issues.push({ code: "custom", path: ["dev", marker], message: "nope", input: ctx.value });
+    });
+
+    const thrown = (await readMergeBase(path, Symbolic).catch((error: unknown) => error)) as PithyError;
+    // A refusal, not a TypeError — and one that still names the path it broke at, symbol and all.
+    expect(thrown).toBeInstanceOf(PithyError);
+    expect(thrown.payload.detail).toContain("dev.Symbol(before:dev)");
+
+    await rm(dir, { recursive: true, force: true });
+  });
+
   /** A document with one required tenant, so "fails its schema" is a thing this fixture can be. */
   const Doc = z
     .record(

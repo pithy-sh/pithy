@@ -25,6 +25,9 @@ interface Manifest {
   engines?: Record<string, string>;
   repository?: { type?: string; url?: string; directory?: string };
   files?: string[];
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
 }
 
 /** Every published package, with the directory it lives in. */
@@ -72,6 +75,27 @@ describe("published manifests", () => {
   it("none carries packageManager, which belongs to the private root alone", () => {
     for (const { dir, manifest } of manifests) {
       expect(manifest.packageManager, `${dir} packageManager`).toBeUndefined();
+    }
+  });
+
+  // #475. `z.record`'s key check enumerated symbol keys below zod 4.4.0, and comment-json hangs a
+  // document's comments off exactly those — so `pithy ui add` crashed on the `pithy.worker.jsonc` that
+  // `pithy init` had just written, for any adopter whose resolver landed low in the range. Bisected:
+  // 4.0.0 through 4.3.6 fail, 4.4.0 onward pass.
+  //
+  // The defect was the range, not the code. `^4.0.0` promised versions the code cannot run on, and a
+  // range is a promise about every version in it — which is why this is a floor and not a pin, and why
+  // it is asserted here rather than left to whoever edits a manifest next.
+  it("each declares a zod floor that supports what the code assumes of it", () => {
+    for (const { dir, manifest } of manifests) {
+      const range = manifest.dependencies?.zod ?? manifest.devDependencies?.zod ?? manifest.peerDependencies?.zod;
+      if (range === undefined) continue;
+      const [major, minor] = range
+        .replace(/^[^0-9]*/, "")
+        .split(".")
+        .map(Number);
+      expect(major, `${dir} zod major`).toBe(4);
+      expect(minor, `${dir} zod minor floor — see #475`).toBeGreaterThanOrEqual(4);
     }
   });
 

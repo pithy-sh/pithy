@@ -428,7 +428,7 @@ jobs:
   # `if: always()` so it reports even when something upstream failed — without it the job would be
   # skipped on failure and the check would go green by absence, which is the failure mode it exists to
   # close. `result` is `success` only when a job actually succeeded: a *skipped* job is a pass here,
-  # because that is how `plan` narrows a docs-only pull request, and a cancelled one is not.
+  # because that is how `plan` narrows a docs-only pull request, and a canceled one is not.
   ci:
     name: CI
     needs: [verify, test, test-node]

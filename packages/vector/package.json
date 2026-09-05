@@ -1,6 +1,6 @@
 {
   "name": "@pithy-sh/vector",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -32,12 +32,12 @@
   "dependencies": {
     "@cloudflare/workers-types": "^5.20260729.1",
     "@hono/zod-validator": "^0.9.0",
-    "@pithy-sh/cloudflare": "workspace:*",
-    "@pithy-sh/core": "workspace:*",
-    "@pithy-sh/secrets": "workspace:*",
+    "@pithy-sh/cloudflare": "^0.1.2",
+    "@pithy-sh/core": "^0.1.2",
+    "@pithy-sh/secrets": "^0.1.2",
     "hono": "^4.13.2",
     "kysely": "^0.29.0",
-    "zod": "^4.0.0"
+    "zod": "^4.4.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.0.0",
