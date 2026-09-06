@@ -246,18 +246,33 @@ function reindent(text: string, indent: string): string {
 /**
  * Move a block from the column it was written at to the one it is emitted at.
  *
- * The alias text arrives at whatever depth its source file put it — a union's arms at two spaces, its
- * members at six. Inside a `declare module` block those want four and eight. So the block is dedented
- * by its own first line's indent and then pushed out uniformly, which keeps every relative depth,
- * including the ` *` continuation of a doc comment.
+ * The alias text arrives at whatever depth its file put it — `tsc` prints a union's arms at zero and
+ * their members at four — and inside a `declare module` block those want four and eight. So the block
+ * is dedented to column zero and then pushed out uniformly, which keeps every relative depth, including
+ * the ` *` continuation of a doc comment.
+ *
+ * **The first line is trimmed rather than measured, and the rest are dedented by their common indent.**
+ * A type alias's body begins on the `=` line, so its first line arrives as `{` behind a single space
+ * that says nothing about the block's depth. Taking that space as the base — which is what this did
+ * until #476 changed the input from source to emitted declaration — shifted every following line one
+ * column left of where it belonged, and the misalignment was invisible in the old input only because a
+ * hand-written union happened to start on a line of its own.
  */
 function shift(text: string, indent: string): string {
   const lines = text.split("\n");
   while (lines.length > 0 && (lines[0] ?? "").trim() === "") lines.shift();
   while (lines.length > 0 && (lines.at(-1) ?? "").trim() === "") lines.pop();
-  const base = /^[ ]*/.exec(lines[0] ?? "")?.[0] ?? "";
+
+  const rest = lines.slice(1).filter((line) => line.trim() !== "");
+  const base = rest.reduce((width, line) => Math.min(width, (/^[ ]*/.exec(line)?.[0] ?? "").length), Infinity);
+  const dedent = Number.isFinite(base) ? (base as number) : 0;
+
   return lines
-    .map((line) => (line.startsWith(base) ? `${indent}${line.slice(base.length)}` : `${indent}${line.trimStart()}`))
+    .map((line, position) => {
+      if (line.trim() === "") return "";
+      const body = position === 0 ? line.trim() : line.slice(dedent);
+      return `${indent}${body}`;
+    })
     .join("\n");
 }
 
@@ -298,12 +313,34 @@ export function renderClientEnv(
   return `${PREAMBLE}\n${blocks.join("\n")}`;
 }
 
-/** Read the four projection sources through their own packages' exports maps. */
+/**
+ * Read the four projections' sources through their own packages' exports maps.
+ *
+ * **Resolved, then mirrored back to `src` — Jim, #476.** Until every package shipped a build,
+ * `@pithy-sh/auth/src/client/projection` resolved to the TypeScript itself. It resolves to
+ * `dist/client/projection.js` now, where the types are stripped and `AuthClientProjection` does not
+ * exist, so the resolved path is walked back to the module it was emitted from.
+ *
+ * The declaration beside it, `dist/client/projection.d.ts`, is the other candidate and was tried first.
+ * It is arguably the more truthful input — it is the type an adopter can actually see — but it makes
+ * this generator's build wait on five capability packages' builds, and `@pithy-sh/vite` depends on none
+ * of them. That is five cross-package `dependsOn` edges in `turbo.jsonc` that a sixth capability's
+ * projection would silently need and silently not have: the generator would read a stale declaration,
+ * emit a stale template, and say nothing. Source has no such ordering, `turbo.jsonc` already names
+ * every `packages/<name>/src/client/projection.ts` as this build's input, and the authored text is
+ * what the file's own header promises an adopter is emitted verbatim.
+ *
+ * `dist/x.js` → `src/x.ts` is not a guess about the layout: `tsdown` and `tsc -p tsconfig.build.json`
+ * both mirror `src/` into `dist/`, so the two are the same path under a different root, and
+ * `packaging.test.ts` fails on any published module missing either half.
+ */
 export async function readProjectionSources(): Promise<Map<string, string>> {
   const sources = new Map<string, string>();
   for (const declared of DECLARED_MODULES) {
-    const path = fileURLToPath(import.meta.resolve(declared.specifier));
-    sources.set(declared.module, await readFile(path, "utf8"));
+    const built = fileURLToPath(import.meta.resolve(declared.specifier));
+    const source = built.replace(/([\\/])dist\1(.+)\.js$/, "$1src$1$2.ts");
+    if (source === built) throw new Error(`${declared.specifier} did not resolve into a build: ${built}`);
+    sources.set(declared.module, await readFile(source, "utf8"));
   }
   return sources;
 }

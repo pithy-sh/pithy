@@ -85,16 +85,26 @@
     // was forced.
     //
     // **The files named are the ones the program actually reads, and that is checked rather than
-    // remembered.** `tsc --listFiles` on this fixture reports 54 files: its own four, four under
-    // `packages/vite/src`, and 46 under `packages/core/src` that the plugin reaches through
-    // `resolveClientProjection`. `packages/vite/package.json` is the peer range `resolution.test.ts`
-    // reads, and it is a manifest field rather than source — the edit that ships a fourth major
-    // unproven touches nothing else. `bun.lock` is which copies are on disk: a `bun update` that moved
-    // the kit's own Vite would change what all three pins are being compared against without a byte of
-    // either manifest moving. `turboInputs.test.ts` in the fixture re-derives every one of those from
-    // the compile and from the cross-package-read register, and holds it against what
-    // `turbo run --dry=json` says is hashed. A hand-written `inputs` list is the same defect one level
-    // up; that test is what keeps this one honest.
+    // remembered.** `tsc --listFiles` on this fixture reports six files: its own four, and
+    // `packages/vite/dist/plugin.d.ts` and `dist/testPlugin.d.ts`. It used to report 54, reaching four
+    // files under `packages/vite/src` and 46 under `packages/core/src` — #476 gave every package a
+    // published `dist`, and an adopter's checker now reads the declarations rather than walking the
+    // kit. **The two globs below did not change, and the reason they are still right is one step
+    // longer than it was.** A `.d.ts` under `dist` is an output; the inputs that decide its bytes are
+    // the source it is emitted from and the source of every kit package that source imports —
+    // `packages/vite/src` and, through `@pithy-sh/vite`'s dependency on `@pithy-sh/core`,
+    // `packages/core/src`. Same two globs, reached by build closure rather than by compile.
+    // `packages/vite/package.json` is the peer range `resolution.test.ts` reads, and it is a manifest
+    // field rather than source — the edit that ships a fourth major unproven touches nothing else, and
+    // nothing builds a manifest, so it is covered by being hashed and in no other way. `bun.lock` is
+    // which copies are on disk: a `bun update` that moved the kit's own Vite would change what all
+    // three pins are being compared against without a byte of either manifest moving.
+    // `turboInputs.test.ts` in the fixture re-derives every one of those — the closure included — from
+    // the compile, the workspace manifests and the cross-package-read register, and holds it against
+    // what `turbo run --dry=json` says is hashed. A hand-written `inputs` list is the same defect one
+    // level up; that test is what keeps this one honest. Measured after the rewrite: dropping
+    // `packages/core/src/**` from `#test` alone reddens it with 258 uncovered files, and restoring it
+    // is green.
     //
     // **This file is in the key too, and it has to be.** A task's hash covers its own definition and no
     // other — measured on 2.10.10: adding a glob to `#typecheck` above left `#test`'s hash at
@@ -746,9 +756,17 @@
     "@pithy-sh/cloudflare#test:node": {
       "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/turbo.jsonc", "$TURBO_ROOT$/docs/FIXTURES.md"]
     },
-    "test": { "dependsOn": ["^build"] },
-    "test:node": { "dependsOn": ["^build"] },
-    "test:workers": { "dependsOn": ["^build"] },
+    // `build` as well as `^build`, and the second one is not tidiness. Some tests reach their own
+    // package the way an adopter does — through `node_modules` and the `exports` map, which since #476
+    // lands in `dist`. `packages/vite/src/testPlugin.test.ts` is the one that made this visible: it
+    // symlinks `packages/vite` into a throwaway project and spawns a real child `vitest` whose config
+    // names the bare specifier, so with only `^build` it ran against whatever `dist` was left over —
+    // green on a stale build of a file the same commit had just changed, which is the exact failure
+    // mode a cache is supposed to prevent. A package's own build is cheap and cached; being unsure
+    // which suite crosses its own package boundary is not.
+    "test": { "dependsOn": ["^build", "build"] },
+    "test:node": { "dependsOn": ["^build", "build"] },
+    "test:workers": { "dependsOn": ["^build", "build"] },
     "test:integration": {
       // Live Cloudflare — never cached; only packages that define the script run it.
       "cache": false

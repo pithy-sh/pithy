@@ -25,7 +25,7 @@
   },
   "scripts": {
     "generate": "bun scripts/generateClientEnv.ts",
-    "build": "tsdown && tsc -p tsconfig.build.json",
+    "build": "bun run generate && tsdown && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:node": "vitest run --project=node",

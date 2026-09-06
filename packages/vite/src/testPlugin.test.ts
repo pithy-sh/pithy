@@ -25,6 +25,14 @@ const run = promisify(execFile);
  *
  * So the checks here are child processes rather than hook calls. **The subject is a real `vitest` run
  * with its real config loader**; nothing smaller can be wrong in the way this was wrong.
+ *
+ * **Both plugins are driven, and that is the change #476 made.** This file used to assert that the
+ * build plugin *could not* be loaded from a vitest config — that was the fact `pithyTest` existed to
+ * route around, and asserting it was the only way to know the redirect was still earning its keep. The
+ * kit publishes JavaScript now, so node loads `dist/plugin.js` and the wall is gone. The assertion is
+ * inverted rather than deleted: the property that matters is still about a real config loader, and it
+ * is now that **either** spelling works. If the build plugin ever stops loading from a config, that is
+ * a packaging regression this repository has no other way to see.
  */
 
 const dirs: string[] = [];
@@ -183,19 +191,23 @@ describe("a module reading the projection is testable, and reads the real one", 
     expect(output).toContain("1 passed");
   });
 
-  test("the build plugin still cannot be loaded from a vitest config — which is why this one exists", {
+  test("the build plugin loads from a vitest config too, straight off the bare specifier", {
     timeout: 120_000,
   }, async () => {
     const dir = await adopterProject();
-    const { code, output } = await childVitest(dir, ["--config", "vitest.build.config.ts"], "{}");
-    // Named rather than merely non-zero: a fixture typo also exits non-zero, and would read as this.
-    expect(output).toContain("failed to load config");
-    expect(code).not.toBe(0);
-    // When this test fails because the child now passes, vitest has changed how it loads a config and
-    // `pithyTest` has become a redirect nobody needs. Delete it then, and not before.
+    const expected = await builtProjection(dir, "payments");
+    expect(expected).toContain('"pri_366"');
+
+    // Same project, same test file, `pithy()` in place of `pithyTest()`. Through 0.1.2 this exited
+    // non-zero with `failed to load config`: node was handed raw TypeScript under `node_modules` and
+    // would not strip it. It is the packaged JavaScript now, so the config loads and the run is the
+    // same green as the one above.
+    const { code, output } = await childVitest(dir, ["--config", "vitest.build.config.ts"], expected);
+    expect({ code, output }).toEqual({ code: 0, output });
+    expect(output).toContain("1 passed");
   });
 
-  test("it resolves to the build plugin itself, not to a second one", async () => {
+  test("`pithyTest` resolves to the build plugin itself, not to a second one", async () => {
     const plugin: PithyPlugin = await pithyTest();
     expect(plugin.name).toBe("pithy");
     // Every hook the build plugin declares, and no hook it does not. A stub answering the same module

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { execFile } from "node:child_process";
-import { readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -75,13 +75,21 @@ function inside(dir: string, path: string): boolean {
 
 /**
  * Every file inside the repository, outside this package and outside `node_modules`, that the fixture's
- * TypeScript program compiles — the kit source an adopter's checker walks when it reads `pithy()`.
+ * TypeScript program opens — what an adopter's checker walks when it reads `pithy()`.
  *
  * `tsc --listFiles` rather than a hand-rolled import walk: the question is which files the compiler
  * opens, and the compiler is the only thing that knows. A failing compile still lists them, and the
  * verdict belongs to `typecheck` — reporting it here too would name the same defect twice.
+ *
+ * **Since #476 these are declarations, not source.** `@pithy-sh/vite` publishes `dist/*.d.ts` and the
+ * fixture resolves them, so the list is two files rather than the fifty-four it used to be — the kit's
+ * whole reach through `@pithy-sh/core` is summarised into `pithy(): PithyPlugin` and never opened. That
+ * is the adopter's real surface and the fixture is more honest for compiling it, but it moves the
+ * coverage question: a `.d.ts` under `dist` is an **output**, so it cannot be an input of anything, and
+ * requiring it to be hashed would be requiring turbo to hash a build artifact. {@link behind} answers
+ * the question this list can no longer answer on its own.
  */
-async function compiled(): Promise<string[]> {
+async function opened(): Promise<string[]> {
   let stdout: string;
   try {
     ({ stdout } = await run(TSC, ["-p", "tsconfig.json", "--noEmit", "--listFiles"], {
@@ -99,6 +107,74 @@ async function compiled(): Promise<string[]> {
     .filter((path) => inside(REPO_ROOT, path) && !inside(PACKAGE_DIR, path))
     .map(fromRoot);
   return [...new Set(files)].sort();
+}
+
+/** Where the workspace's packages live, by the name their manifest declares. */
+function packageDirs(): Map<string, string> {
+  const dirs = new Map<string, string>();
+  for (const group of ["packages", "tooling"]) {
+    const root = join(REPO_ROOT, group);
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const manifest = join(root, entry.name, "package.json");
+      if (!existsSync(manifest)) continue;
+      const { name } = JSON.parse(readFileSync(manifest, "utf8")) as { name?: string };
+      if (name !== undefined) dirs.set(name, fromRoot(join(root, entry.name)));
+    }
+  }
+  return dirs;
+}
+
+/**
+ * The source a set of opened files is built from — the inputs that decide their bytes.
+ *
+ * A file the fixture opens outside `dist` stands for itself: nothing produces a `package.json`, so the
+ * only way to cover a manifest is to hash it. A file **under** `packages/<name>/dist` is the output of
+ * that package's build, so what has to be hashed is everything the build reads: the package's own
+ * source, and then the same question asked of every kit package it depends on. `@pithy-sh/vite`'s
+ * declarations are a function of `packages/vite/src` and, through its dependency on `@pithy-sh/core`,
+ * of `packages/core/src` — which is exactly what `turbo.jsonc` names for this fixture, derived here
+ * rather than copied from there.
+ *
+ * The closure is over **whole source trees**, not the subset a compile happens to reach. That
+ * over-approximates, and deliberately in the safe direction: a coverage gate that demands too much
+ * fails on an input somebody forgot, while one that demands the compiled subset would go quiet the day
+ * a new module joined the graph. It is also the shape a glob can express, and the declaration being
+ * checked is written in globs.
+ *
+ * Directories rather than manifest name arithmetic: `@pithy-sh/vite` lives in `packages/vite` because
+ * its manifest says so, not because the name can be sliced. `@pithy-sh/release` does not, and a rule
+ * that guesses is a rule that is wrong once.
+ */
+function behind(files: readonly string[]): string[] {
+  const dirs = packageDirs();
+  const byDir = new Map([...dirs].map(([name, dir]) => [dir, name]));
+
+  const pending: string[] = [];
+  const required = new Set<string>();
+  for (const file of files) {
+    const owner = [...byDir.keys()].find((dir) => file.startsWith(`${dir}/`));
+    if (owner !== undefined && file.startsWith(`${owner}/dist/`)) pending.push(byDir.get(owner) as string);
+    else required.add(file);
+  }
+
+  const seen = new Set<string>();
+  while (pending.length > 0) {
+    const name = pending.pop() as string;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const dir = dirs.get(name);
+    if (dir === undefined) throw new Error(`no workspace directory for ${name}`);
+    for (const source of expand(`${dir}/src`)) required.add(source);
+    const manifest = JSON.parse(readFileSync(join(REPO_ROOT, dir, "package.json"), "utf8")) as {
+      dependencies?: Record<string, string>;
+    };
+    for (const dependency of Object.keys(manifest.dependencies ?? {})) {
+      if (dirs.has(dependency)) pending.push(dependency);
+    }
+  }
+
+  return [...required].sort();
 }
 
 /** One task, as turbo plans it. */
@@ -152,20 +228,30 @@ function expand(target: string): string[] {
 }
 
 describe("this fixture's cache key covers what this fixture reads", () => {
-  test("every kit file the compile opens is hashed, by all three tasks", async () => {
-    const files = await compiled();
+  test("everything behind what the compile opens is hashed, by all three tasks", async () => {
+    const files = await opened();
 
-    // The vacuity floor, and it is the assertion that matters most: an empty derivation satisfies
-    // every containment below without touching anything. These two files are the subject — `pithy()`
-    // and `pithyTest()` live in them — and the count is the transitive reach through `@pithy-sh/core`.
-    expect(files).toContain("packages/vite/src/plugin.ts");
-    expect(files).toContain("packages/vite/src/testPlugin.ts");
-    expect(files.length).toBeGreaterThan(10);
+    // The vacuity floor for the compile itself: an empty list satisfies every containment below
+    // without touching anything. These two declarations are the subject — `pithy()` and `pithyTest()`
+    // are declared in them — and they are the whole of what an adopter's checker reads.
+    expect(files).toContain("packages/vite/dist/plugin.d.ts");
+    expect(files).toContain("packages/vite/dist/testPlugin.d.ts");
+
+    const required = behind(files);
+
+    // The floor again, one level down, and this is the assertion that matters most. `behind` resolving
+    // to nothing would pass every containment below, so it is pinned to the two things it must reach:
+    // the source those declarations are emitted from, and the source of the package that source
+    // imports. The count is the reach through `@pithy-sh/core`, which the declarations summarise away
+    // and the build still walks.
+    expect(required).toContain("packages/vite/src/plugin.ts");
+    expect(required).toContain("packages/core/src/capability/client.ts");
+    expect(required.length).toBeGreaterThan(10);
 
     for (const task of TASKS) {
       const key = await hashed(task);
       expect(
-        files.filter((file) => !key.has(file)),
+        required.filter((file) => !key.has(file)),
         `not in the key for ${task}`,
       ).toEqual([]);
     }
