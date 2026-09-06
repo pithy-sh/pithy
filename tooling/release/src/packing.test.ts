@@ -250,6 +250,49 @@ describe("packFaults", () => {
     ).toEqual([]);
   });
 
+  // **The bug that shipped in every release through 0.1.2.** `@pithy-sh/cli` linked `./src/bin.ts` —
+  // raw TypeScript behind `#!/usr/bin/env bun` — so `pithy` installed for everyone and started for
+  // nobody without Bun. Invisible from inside a workspace, where a linked checkout resolves by realpath
+  // outside `node_modules` and the shebang never runs at all.
+  it("reports a bin that is TypeScript rather than a built file", () => {
+    const faults = packFaults(
+      packed({ entries: ["package.json", "src/bin.ts"], expectsManifest: false, manifest: { bin: "./src/bin.ts" } }),
+    );
+
+    expect(faults).toHaveLength(1);
+    expect(faults[0]).toContain("src/bin.ts");
+    expect(faults[0]).toMatch(/TypeScript/);
+  });
+
+  it("reports a bin the tarball does not carry, which links a shim to nothing", () => {
+    const faults = packFaults({
+      name: "@pithy-sh/cli",
+      entries: ["package.json", "src/main.ts", "dist/main.js", "dist/main.d.ts"],
+      expectsManifest: false,
+      manifest: { bin: { pithy: "./dist/bin.js" } },
+    });
+
+    expect(faults).toHaveLength(1);
+    expect(faults[0]).toContain("dist/bin.js");
+  });
+
+  it("accepts a built bin that is in the tarball, named either way", () => {
+    for (const bin of ["./dist/bin.js", { pithy: "./dist/bin.js" }]) {
+      expect(
+        packFaults({
+          name: "@pithy-sh/cli",
+          entries: ["package.json", "src/bin.ts", "dist/bin.js", "dist/bin.d.ts"],
+          expectsManifest: false,
+          manifest: { bin },
+        }),
+      ).toEqual([]);
+    }
+  });
+
+  it("asks nothing of a package that declares no bin, which is twenty-one of them", () => {
+    expect(packFaults(packed({ expectsManifest: true }))).toEqual([]);
+  });
+
   it("names the package in every fault it reports", () => {
     const faults = packFaults(packed({ name: "@pithy-sh/core", entries: ["src/a.test.ts"], expectsManifest: false }));
 

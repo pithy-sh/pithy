@@ -12,7 +12,7 @@
     "node": ">=22"
   },
   "bin": {
-    "pithy": "./src/bin.ts"
+    "pithy": "./dist/bin.js"
   },
   "exports": {
     "./src/*": {

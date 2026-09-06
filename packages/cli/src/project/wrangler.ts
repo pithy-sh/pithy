@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
 import { writeJsonc } from "./jsonc";
+import { detectPackageManager, execArgs } from "./packageManager";
 import { readOptionalFile } from "./readOptionalFile";
 
 /** The slice of `wrangler.jsonc` the per-environment var helpers read and write. */
@@ -97,8 +98,8 @@ export interface WranglerOptions {
   cwd?: string;
   /**
    * Override the executable to spawn (with `args` passed straight through). Tests set this to a
-   * stand-in. When omitted, wrangler runs via `bun x wrangler` so the workspace devDependency
-   * resolves — `pithy` does not assume a globally-installed wrangler.
+   * stand-in. When omitted, wrangler runs through the **project's own** package manager, so the
+   * workspace devDependency resolves — `pithy` does not assume a globally-installed wrangler.
    */
   bin?: string;
   /**
@@ -119,15 +120,30 @@ export interface WranglerOptions {
  * where nothing is captured — so callers that need wrangler's output (e.g. `deploy` scraping the
  * version id and url) can read it without giving up the quiet-on-success default.
  *
- * Wrangler is a workspace devDependency, not a global, so it runs through `bun x wrangler` — bun
- * resolves the local install from the `cwd`. Tests override `bin` to spawn a stand-in directly.
+ * Wrangler is a workspace devDependency, not a global, so it runs through the project's own package
+ * manager, which resolves the local install from the `cwd`: `bun x`, `pnpm exec`, `yarn`, or `npx`.
+ * Tests override `bin` to spawn a stand-in directly.
+ *
+ * **It was `bun x wrangler`, unconditionally — #474.** That made every command which touches
+ * Cloudflare require Bun on an adopter's PATH, in a CLI whose whole premise is that adoption is not
+ * gated behind a Bun install, and it failed with `Could not run wrangler. Is wrangler installed and on
+ * PATH?` — an action naming the wrong missing program. `detectPackageManager` reads the lockfile beside
+ * the project and `execArgs` knows each manager's spelling for "run a workspace-local binary"; both
+ * already existed here for `pithy add`, and this was the one spawn that went around them.
+ *
+ * Detection keys on `cwd` rather than on the CLI's own location, because the question is which manager
+ * installed *the adopter's* wrangler. `cwd` defaults to the process's, which is the project a command
+ * is being run against.
  */
 export async function runWrangler(
   args: string[],
   options: WranglerOptions = {},
 ): Promise<{ stdout: string; stderr: string }> {
-  const command = options.bin ?? "bun";
-  const commandArgs = options.bin ? args : ["x", "wrangler", ...args];
+  const runner = options.bin
+    ? { command: options.bin, args }
+    : execArgs(await detectPackageManager(options.cwd ?? process.cwd()), "wrangler", args);
+  const command = runner.command;
+  const commandArgs = runner.args;
   const label = options.bin ?? "wrangler";
   return new Promise((resolve, reject) => {
     const child = spawn(command, commandArgs, {
@@ -146,11 +162,18 @@ export async function runWrangler(
     });
 
     child.on("error", (cause) => {
+      // **The action names the program that is actually missing, which is not always wrangler.** A
+      // spawn error here is `ENOENT` on `command` — the package manager's runner — and wrangler may be
+      // installed perfectly well. It said "Is wrangler installed and on PATH?" while `bun` was what was
+      // absent (#474), which sends an adopter to reinstall the one thing they already had.
       reject(
         new InternalError({
           message: `Could not run ${label}.`,
-          action: `Is ${label} installed and on PATH?`,
-          detail: cause.message,
+          action:
+            command === label
+              ? `Is ${label} installed and on PATH?`
+              : `\`${command}\` is not on PATH. It is how your project runs a local binary — install it, or pass a wrangler on PATH.`,
+          detail: `${cause.message} (spawning ${command})`,
         }),
       );
     });

@@ -137,12 +137,114 @@ describe("runWrangler", () => {
     expect(error.payload.detail).toContain("exit 1");
   });
 
+  /**
+   * **Which program `pithy` spawns to reach wrangler, and why it is a question at all — #474.**
+   *
+   * It was `bun x wrangler`, unconditionally, so every command that touches Cloudflare required Bun on
+   * an adopter's PATH — in a CLI whose stated premise is that adoption is never gated behind a Bun
+   * install. The failure named the wrong program too: `Could not run wrangler. Is wrangler installed
+   * and on PATH?`, when wrangler was installed and `bun` was what was missing.
+   *
+   * Driven end to end rather than by asserting about an argv the code hands back. A fake manager on
+   * `PATH` writes what it was called with, so what is checked is what a child process actually
+   * received — the thing an adopter's shell sees. `PATH` is narrowed to the fixture alone, so a real
+   * `bun` or `npx` on the machine running this cannot answer for it either way.
+   */
+  describe("routes through the project's own package manager", () => {
+    let project: string;
+    let fakeBin: string;
+
+    beforeEach(async () => {
+      project = await mkdtemp(join(tmpdir(), "pithy-wrangler-pm-"));
+      fakeBin = join(project, "fake-bin");
+      await mkdir(fakeBin, { recursive: true });
+    });
+
+    afterEach(async () => {
+      await rm(project, { recursive: true, force: true });
+    });
+
+    /** A stand-in for `<name>` that prints the arguments it was handed, one per line. */
+    async function plant(name: string): Promise<void> {
+      const path = join(fakeBin, name);
+      await writeFile(path, '#!/bin/sh\nfor a in "$@"; do echo "$a"; done\n', { mode: 0o755 });
+    }
+
+    /**
+     * What the spawned program reports it was called with, for a project carrying `lockfile`.
+     *
+     * `runner` is the program, not the manager: npm's way to run a workspace-local binary is `npx`,
+     * which is a different executable from `npm`.
+     */
+    async function calledWith(lockfile: string, runner: string): Promise<string[]> {
+      await writeFile(join(project, lockfile), "");
+      await plant(runner);
+      const { stdout } = await runWrangler(["deploy"], { cwd: project, env: { PATH: fakeBin } });
+      return stdout.split("\n").filter(Boolean);
+    }
+
+    test("a bun project gets `bun x wrangler`", async () => {
+      expect(await calledWith("bun.lock", "bun")).toEqual(["x", "wrangler", "deploy"]);
+    });
+
+    test("a pnpm project gets `pnpm exec wrangler`", async () => {
+      expect(await calledWith("pnpm-lock.yaml", "pnpm")).toEqual(["exec", "wrangler", "deploy"]);
+    });
+
+    test("a yarn project gets `yarn wrangler`", async () => {
+      expect(await calledWith("yarn.lock", "yarn")).toEqual(["wrangler", "deploy"]);
+    });
+
+    test("an npm project gets `npx wrangler`", async () => {
+      expect(await calledWith("package-lock.json", "npx")).toEqual(["wrangler", "deploy"]);
+    });
+
+    // No lockfile is npm, which is the fallback `detectPackageManager` documents: npm is present on
+    // every Node install, and a project with no lockfile has not told us anything else.
+    test("a project with no lockfile falls back to npx, not to bun", async () => {
+      await plant("npx");
+      const { stdout } = await runWrangler(["deploy"], { cwd: project, env: { PATH: fakeBin } });
+      expect(stdout.split("\n").filter(Boolean)).toEqual(["wrangler", "deploy"]);
+    });
+
+    // Detection reads the lockfile beside `cwd`, not beside the CLI. This repository is a bun
+    // workspace, so a test that let `cwd` default would pass on the wrong evidence.
+    test("detection reads the project's lockfile, not this repository's", async () => {
+      await writeFile(join(project, "package-lock.json"), "");
+      await plant("npx");
+      await plant("bun");
+      const { stdout } = await runWrangler(["whoami"], { cwd: project, env: { PATH: fakeBin } });
+      expect(stdout).not.toContain("x\n");
+      expect(stdout.split("\n").filter(Boolean)).toEqual(["wrangler", "whoami"]);
+    });
+  });
+
   test("rejects with a clear error when the binary is missing", async () => {
     const error = (await runWrangler(["--version"], { bin: "pithy-no-such-binary-xyz" }).catch(
       (e: unknown) => e,
     )) as PithyError;
     expect(error).toBeInstanceOf(InternalError);
     expect(error.payload.action).toContain("installed");
+  });
+
+  // The other half of #474's misdirection: when the runner is missing, wrangler is not what to install.
+  test("names the runner, not wrangler, when the runner is what is missing", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pithy-wrangler-missing-"));
+    try {
+      await writeFile(join(project, "bun.lock"), "");
+      const error = (await runWrangler(["--version"], {
+        cwd: project,
+        // An empty PATH, so the runner cannot be found however the machine is set up.
+        env: { PATH: join(project, "nothing-here") },
+      }).catch((e: unknown) => e)) as PithyError;
+
+      expect(error).toBeInstanceOf(InternalError);
+      expect(error.payload.action).toContain("bun");
+      expect(error.payload.action).not.toContain("Is wrangler installed");
+      expect(error.payload.detail).toContain("spawning bun");
+    } finally {
+      await rm(project, { recursive: true, force: true });
+    }
   });
 
   test("passthrough mode resolves on success (nothing captured — output already streamed)", async () => {

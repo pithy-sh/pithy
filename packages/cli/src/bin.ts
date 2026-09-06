@@ -1,6 +1,23 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
+
+// **`node`, and the manifest's `bin` points at the built `dist/bin.js` rather than at this file (#474).**
+// It was `bun`, and `bin` was `./src/bin.ts` — so `pithy` installed for everyone and started for
+// nobody without Bun: `/usr/bin/env: 'bun': No such file or directory`. That contradicts the rule this
+// repository states for itself, and it is the CLI, which is the one package an adopter runs.
+//
+// Bun was never a runtime this code needs — nothing under `src` uses a `Bun.*` API or imports from
+// `bun:`; it was doing one job, loading TypeScript. #476 gave every package a build, so that job is
+// gone and the shebang is the only thing that was still asking for it.
+//
+// `node` rather than a `bun`-else-`node` dispatcher: a dispatcher needs a Node-runnable build for its
+// fallback anyway, a `#!/bin/sh` shim breaks on Windows where npm generates `.cmd` and `.ps1` wrappers
+// from this file, and a branch that can be wrong is worse than an artifact that cannot be. Bun runs
+// plain JavaScript, so one shebang serves everyone.
+//
+// The line stays here, in the source, because that is where tsdown reads it from and copies it to the
+// emitted entry.
 
 import { readFileSync } from "node:fs";
 // Type-only, so it is erased and does not reach citty at runtime — the import discipline below the
