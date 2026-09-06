@@ -1,7 +1,15 @@
 {
   "extends": "@pithy-sh/tsconfig/base.json",
   "compilerOptions": {
-    "rootDir": "src",
+    // **No `rootDir`, because this program is deliberately not rooted here (#476).** `rootDir` is a
+    // constraint on emit, and every one of these programs is `noEmit` — but TypeScript still enforces
+    // it, and with `paths` sending kit specifiers to `packages/` the whole subject of the program sits
+    // outside `src`. Declaring one is `TS6059` on every kit file compiled. `src/program.ts` sets a
+    // `rootDir` on the scratch projects it generates for the opposite reason: those name a kit module
+    // as their own root, so they need one that contains it.
+    // Same `paths` line as `tsconfig.client.json`, and for the same reason: kit specifiers resolve to
+    // kit source, because the subject is the module graph a bundler walks (#476).
+    "paths": { "@pithy-sh/*": ["../../packages/*"] },
     // Same two lines as `tsconfig.client.json`, and for the same reason: the DOM's `BufferSource` is
     // the strict one, and `types: []` is what stops TypeScript borrowing the Workers types a sibling
     // package installed. See `src/probe.ts` for why this is a second program rather than one more

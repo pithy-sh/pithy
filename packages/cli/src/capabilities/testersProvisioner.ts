@@ -3,7 +3,6 @@
 
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
@@ -11,6 +10,7 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { kitSource } from "../project/kitSource";
 import { runWrangler } from "../project/wrangler";
 import { capabilityLoadError } from "./loadFailure";
 
@@ -67,7 +67,7 @@ export async function loadTestersProvisioning(): Promise<TestersProvisionSurface
  */
 async function testersWorkerDir(): Promise<string> {
   try {
-    return dirname(fileURLToPath(import.meta.resolve("@pithy-sh/testers/src/workflows/worker")));
+    return dirname(kitSource("@pithy-sh/testers/src/workflows/worker"));
   } catch (error) {
     throw capabilityLoadError("testers", "@pithy-sh/testers/src/workflows/worker", error);
   }

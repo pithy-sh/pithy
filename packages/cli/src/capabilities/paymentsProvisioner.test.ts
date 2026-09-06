@@ -3,7 +3,6 @@
 
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
@@ -12,6 +11,7 @@ import { paymentsWorkerName, resolvePaymentsConfig } from "@pithy-sh/payments/sr
 import { parse } from "comment-json";
 import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
+import { kitSource } from "../project/kitSource";
 import { CloudflarePaymentsProvisioner, loadPayments } from "./paymentsProvisioner";
 
 /** The project every provisioned name leads with — `requireProjectName`'s answer, never a guess. */
@@ -114,7 +114,7 @@ describe("loadPayments", () => {
 describe("the committed reconcile-worker template", () => {
   /** The template as the provisioner parses it off disk — not a fixture, deliberately. */
   async function template(): Promise<WorkflowHostTemplate> {
-    const dir = dirname(fileURLToPath(import.meta.resolve("@pithy-sh/payments/src/workflows/worker")));
+    const dir = dirname(kitSource("@pithy-sh/payments/src/workflows/worker"));
     return parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
   }
 
@@ -187,7 +187,7 @@ describe("the committed reconcile-worker template", () => {
   test("the template's entry point is the module the class is exported from", async () => {
     // A `main` that does not resolve is a deploy that fails after every id has been looked up.
     const parsed = await template();
-    const dir = dirname(fileURLToPath(import.meta.resolve("@pithy-sh/payments/src/workflows/worker")));
+    const dir = dirname(kitSource("@pithy-sh/payments/src/workflows/worker"));
     await expect(readFile(join(dir, parsed.main.replace("./", "")), "utf8")).resolves.toContain(
       "export class PaymentsReconcileWorkflow",
     );

@@ -1,42 +1,34 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { fileURLToPath } from "node:url";
-import { runnerImport } from "vite";
-import type { PithyPlugin, PithyPluginOptions } from "./plugin";
-
-/**
- * `./plugin.ts`, as an absolute path.
- *
- * From `import.meta.url` rather than from a bare specifier: this file's own realpath is the one place
- * the build plugin is certainly beside, whatever an adopter's `node_modules` looks like — a symlinked
- * checkout, a hoisted install, a worktree.
- */
-const BUILD_PLUGIN = fileURLToPath(new URL("./plugin.ts", import.meta.url));
+import { type PithyPlugin, type PithyPluginOptions, pithy } from "./plugin";
 
 /**
  * The Pithy plugin, for a test runner's config.
  *
- * **It is not a second plugin.** It resolves to the object {@link pithy} returns, built from
- * `./plugin.ts` itself, so a test imports the module a build inlines — same config, same
- * `resolveClientProjection`, same `renderVirtualModule`, same bytes. There is no fixture here, and
- * therefore nothing that can drift from the projection. `testPlugin.test.ts` holds that: it renders a
- * module through the build plugin's own `load` hook and makes a real child `vitest` run compare what it
- * imports against it.
+ * **It is not a second plugin.** It calls {@link pithy} and hands back what that returns — same config,
+ * same `resolveClientProjection`, same `renderVirtualModule`, same bytes. There is no fixture here, and
+ * therefore nothing that can drift from the projection.
  *
- * ## Why the indirection exists at all
+ * ## It is now a one-line redirect, and it was not always — Jim, #476
  *
- * Vitest loads its config by bundling it and leaving every **bare** specifier to node. So
- * `import { pithy } from "@pithy-sh/vite/src/plugin"` in a `vitest.config.ts` is handed to node, which
- * loads `plugin.ts` — and stops at its `@pithy-sh/core/src/capability/client` import, whose own
- * `../error/pithyError` has no extension for node to resolve. The config never loads and no test runs.
- * `vitest.shared.ts` in this repository documents the same wall from the other side, for the same reason.
+ * Vitest loads its config by bundling it and leaving every **bare** specifier to node. Until this
+ * package shipped a build, `import { pithy } from "@pithy-sh/vite/src/plugin"` in a `vitest.config.ts`
+ * therefore handed node `plugin.ts` — TypeScript, under `node_modules`, where node refuses to strip
+ * types — and its `@pithy-sh/core/src/capability/client` import had no extension for node to resolve
+ * either. The config never loaded and no test ran, transitively taking every screen that read a
+ * projection with it. Three lanes in `pithy-sh/dashboard` hit it independently, and this module was the
+ * way round: its whole static graph was `vite` and `node:url`, and the plugin was reached through
+ * vite's own loader rather than node's.
  *
- * This module's whole static graph is `vite` and `node:url` — both things node loads — and the kit
- * source is reached through {@link runnerImport}, which is vite's own loader and resolves extensionless
- * TypeScript the way every other Pithy import site does. That constraint is load-bearing: **any
- * `@pithy-sh/*` import added to this file breaks every adopter's test run at config load.** The child
- * run in `testPlugin.test.ts` is what says so out loud.
+ * `dist/plugin.js` is JavaScript with real extensions on its imports, so node loads it, and
+ * `vitestConfig.test.ts` makes a real child `vitest` run say so — it drives the **build** plugin from a
+ * bare specifier in an adopter-shaped project. The wall is gone and the loader hop with it.
+ *
+ * **What stays is the name.** `pithyTest` is exported from 0.1.0 and `pithy-sh/dashboard` names it in
+ * its own configs, so removing it would break a working install to save a line. It is kept as the
+ * documented spelling for a test config, and can be dropped whenever nothing imports it — there is no
+ * behavior behind it left to maintain.
  *
  * ## What an adopter writes
  *
@@ -55,14 +47,13 @@ const BUILD_PLUGIN = fileURLToPath(new URL("./plugin.ts", import.meta.url));
  * rather than the Worker's directory — so a monorepo names the Worker, and a single-Worker project takes
  * the default.
  *
- * A promise, because vite awaits a plugin. That is a documented `PluginOption`, and it is what lets the
- * real plugin be built by vite's loader instead of restated for node's.
- *
- * `Promise<PithyPlugin>` rather than `Promise<Plugin>` for the reason {@link PithyPlugin} gives (#414):
- * a Vite type in this signature is *this package's* Vite type, and an adopter's `vitest.config.ts`
- * cannot be typechecked against it unless their install happened to deduplicate onto the same copy.
- * The test config is the same surface as the build config and takes the same rule.
+ * Still a promise, and still `Promise<PithyPlugin>` rather than `Promise<Plugin>`. The promise is part
+ * of the published signature and a documented `PluginOption`, so awaiting nothing is cheaper than
+ * changing what an adopter's config is typed against; the return type is for the reason
+ * {@link PithyPlugin} gives (#414) — a Vite type in this signature is *this package's* Vite type, and an
+ * adopter's `vitest.config.ts` cannot be checked against it unless their install happened to
+ * deduplicate onto the same copy.
  */
 export function pithyTest(options: PithyPluginOptions = {}): Promise<PithyPlugin> {
-  return runnerImport<typeof import("./plugin")>(BUILD_PLUGIN).then(({ module }) => module.pithy(options));
+  return Promise.resolve(pithy(options));
 }

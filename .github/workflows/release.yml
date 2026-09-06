@@ -95,16 +95,18 @@ jobs:
       - name: Stamped package versions
         run: bun scripts/stampVersions.ts --check
 
+      # Before everything that runs kit code, which since #476 is most of what follows: `exports`
+      # resolves `./src/*` onto `./dist/*.js`, so `dist` is a precondition rather than an artifact
+      # checked at the end. It is also still what writes `@pithy-sh/payments`' browser build, without
+      # which the two pack checks inspect a tarball missing a file its manifest names.
+      - name: Build
+        run: bun run build
+
       - name: Docs catalog
         run: bun packages/cli/src/docs/writeCatalog.ts --check
 
       - name: Typecheck
         run: bun run typecheck
-
-      # Before both pack checks, because `@pithy-sh/payments` declares a browser build that only exists
-      # after it — and a pack that ran first would inspect a tarball missing a file the manifest names.
-      - name: Build
-        run: bun run build
 
       - name: Pack the CLI
         working-directory: packages/cli
@@ -250,11 +252,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      # `@pithy-sh/payments` declares a browser build that does not exist until this runs, and
-      # `changeset publish` is about to pack it.
-      - name: Build
-        run: bun run build
-
       # ---- the release proper ----
 
       # Step 1. Read the changesets before Changesets deletes them. Everything after this reads the file
@@ -273,7 +270,26 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bun run version
 
-      # Step 3. Join the snapshot to the versions Changesets just wrote.
+      # Step 3. Build, **after** the bump and never before it — #476.
+      #
+      # This step used to sit above `Snapshot the changesets`, and moving it is the whole of what that
+      # issue changed here. `bun run version` does two things: Changesets rewrites every `package.json`,
+      # and the root `version` script chains `stampVersions.ts`, which rewrites each package's
+      # `src/version.generated.ts` from the manifest beside it. Both are inputs to the build.
+      #
+      # Built first, `dist/version.generated.js` carried the version this release is *replacing*, and
+      # `GET /control-plane/manifest` would report it to every customer on the new release. `CLAUDE.md`
+      # is explicit that a stamped version which has drifted is worse than reporting none, because a
+      # customer acts on it — deciding not to upgrade against a version that is a lie. Before every
+      # package published a build nothing read the emitted constant and the order did not matter; it
+      # does now, and it fails silently, which is why it is written down rather than left to the reader.
+      #
+      # `@pithy-sh/payments`' browser build is the other thing this produces, and `changeset publish`
+      # below is about to pack it.
+      - name: Build
+        run: bun run build
+
+      # Step 4. Join the snapshot to the versions Changesets just wrote.
       - name: Build the release records
         run: bun scripts/releaseRecords.ts build
 
@@ -300,7 +316,7 @@ jobs:
             console.log(`\n${records.length} packages, ${records.filter((r) => r.security).length} security-relevant.`);
           '
 
-      # Step 4. Publish. `changeset publish` skips anything already on the registry, so a re-run after a
+      # Step 5. Publish. `changeset publish` skips anything already on the registry, so a re-run after a
       # partial failure publishes only what is missing.
       #
       # `NPM_CONFIG_PROVENANCE` rather than a `publishConfig.provenance` in 22 manifests: changesets
@@ -313,7 +329,7 @@ jobs:
           NPM_CONFIG_PROVENANCE: "true"
         run: bun run release
 
-      # Step 5. Commit the version bump, the CHANGELOGs and the stamps, and push them with the tags
+      # Step 6. Commit the version bump, the CHANGELOGs and the stamps, and push them with the tags
       # `changeset publish` just wrote. After the publish on purpose: npm is the source of truth for
       # what exists, and a commit pushed before a failed publish would claim a release that never
       # happened.
@@ -324,7 +340,7 @@ jobs:
           git commit -m "chore(release): version packages" || echo "Nothing to commit."
           git push --follow-tags origin HEAD:main
 
-      # Step 6. Tell the dashboard what shipped.
+      # Step 7. Tell the dashboard what shipped.
       #
       # **Off until the dashboard exists**, and off because nothing is configured rather than because a
       # second switch says so. With neither variable set this prints one line and succeeds. A failure

@@ -144,24 +144,35 @@ describe("published manifests", () => {
     }
   });
 
-  // `files` does not fail on a missing path, so a field can name something that is not there and pass
-  // every check but this one. `packing.ts` is the same question asked of the artifact.
-  //
-  // **Two entries are absent at rest and correct**, and neither is committed to git.
-  //
-  // `packages/cli/templates` is the vendored starter: `prepack` copies it in and `postpack` removes it,
-  // so it exists only inside a pack. `packages/payments/dist/paddle-prices.iife.js` is the browser
-  // build, written by that package's `build` and git-ignored, so it exists only after one has run.
-  //
-  // Both are why the artifact check exists rather than only this one. `packing.ts` asserts every
-  // declared entry actually reached the tarball, which is the question this test cannot ask — and the
-  // release workflow packs *after* it builds, so the answer there is about the real artifact.
-  const BUILT_NOT_COMMITTED = new Set(["packages/cli:templates", "packages/payments:dist/paddle-prices.iife.js"]);
+  /**
+   * Whether an entry is one that is absent at rest and correct — a build output, or the vendored
+   * starter, neither of which is committed to git.
+   *
+   * `dist` is every package's since #476: `exports` resolves `./src/*` onto `./dist/*.js`, so all 22
+   * name it, and none of them has one until `bun run build` has run. That used to be a two-name list
+   * with `@pithy-sh/payments`' browser build on it, and growing it to 22 hand-written entries would
+   * have made this an inventory of the workspace rather than a rule. It is a rule: anything under
+   * `dist` is a build output.
+   *
+   * `packages/cli/templates` is the vendored starter — `prepack` copies it in and `postpack` removes
+   * it, so it exists only inside a pack.
+   *
+   * **Exempting them here is safe because the artifact check is not exempt.** `packing.ts` asserts
+   * every declared entry actually reached the tarball, and refuses a tarball carrying no `dist` at
+   * all — which is the question this test cannot ask, and which the release workflow answers after it
+   * builds. A `files` field naming a path that will never exist still fails, just one step later and
+   * against the real thing.
+   */
+  function builtNotCommitted(dir: string, entry: string): boolean {
+    return entry === "dist" || entry.startsWith("dist/") || `${dir}:${entry}` === "packages/cli:templates";
+  }
 
+  // `files` does not fail on a missing path, so a field can name something that is not there and pass
+  // every check but this one.
   it("names nothing it does not have", () => {
     for (const { dir, manifest } of manifests) {
       for (const entry of manifest.files ?? []) {
-        if (entry.startsWith("!") || BUILT_NOT_COMMITTED.has(`${dir}:${entry}`)) continue;
+        if (entry.startsWith("!") || builtNotCommitted(dir, entry)) continue;
         expect(existsSync(join(ROOT, dir, entry)), `${dir} files names ${entry}, which is not there`).toBe(true);
       }
     }

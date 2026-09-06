@@ -3,7 +3,6 @@
 
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -14,6 +13,7 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { kitSource } from "../project/kitSource";
 import { runWrangler } from "../project/wrangler";
 import { capabilityLoadError } from "./loadFailure";
 import { deleteR2BucketWithContents } from "./r2Bucket";
@@ -351,7 +351,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
 /** The directory of the prebuilt media worker inside the installed `@pithy-sh/media` package (holds wrangler.jsonc). */
 async function mediaWorkerDir(): Promise<string> {
   try {
-    return dirname(fileURLToPath(import.meta.resolve("@pithy-sh/media/src/workflows/worker")));
+    return dirname(kitSource("@pithy-sh/media/src/workflows/worker"));
   } catch (error) {
     throw capabilityLoadError("media", "@pithy-sh/media/src/workflows/worker", error);
   }

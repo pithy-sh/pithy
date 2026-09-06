@@ -82,6 +82,16 @@ try {
     fail("installing @pithy-sh/cli into an empty directory", cause);
   }
 
+  // Then the rest, because the CLI is not what an adopter composes. Its dependencies are the tooling
+  // ones; `@pithy-sh/vite`, `@pithy-sh/auth` and the capabilities arrive in an adopter's project
+  // because they chose them, and they are the packages the node probe below has to be able to reach.
+  const rest = [...packed].filter(([name]) => name !== "@pithy-sh/cli").map(([, tarball]) => tarball);
+  try {
+    run("bun", ["add", ...rest], project);
+  } catch (cause) {
+    fail("installing the rest of the kit beside it", cause);
+  }
+
   // What actually landed. A gate that cannot show its own inputs cannot be trusted to have tested
   // them — and `--floors` is exactly the mode where "it passed" and "it pinned nothing" look alike.
   const installed = (name: string): string => {
@@ -113,6 +123,40 @@ try {
     } catch (cause) {
       fail(what, cause);
     }
+  }
+
+  // 4. Node imports the kit. **The defect #476 closed, and the one nothing inside this repository can
+  //    see**: every consumer here has a bundler — wrangler, Vite, vitest transforming a test — and node
+  //    is the one that does not. It refuses to strip types under `node_modules` and cannot be argued
+  //    out of it, so an adopter's `vitest.config.ts` importing `@pithy-sh/vite` died on the raw
+  //    TypeScript `exports` used to name. `node`, deliberately, and never `bun`, which strips happily
+  //    and would pass on the broken tree.
+  //
+  //    A declaration beside each, because a module that loads with no types beside it is half published
+  //    and the half that is missing is the half a compiler reads.
+  const probes = [
+    "@pithy-sh/core/src/error/pithyError",
+    "@pithy-sh/core/src/data/codecs",
+    "@pithy-sh/vite/src/plugin",
+    "@pithy-sh/vite/src/testPlugin",
+    "@pithy-sh/auth/src/capability",
+    "@pithy-sh/payments/src/capability",
+    "@pithy-sh/i18n/src/capability",
+  ];
+  process.stdout.write("  node imports the kit\n");
+  for (const specifier of probes) {
+    try {
+      run("node", ["-e", `await import(${JSON.stringify(specifier)})`], project);
+    } catch (cause) {
+      fail(`node importing ${specifier}`, cause);
+    }
+    const resolved = run(
+      "node",
+      ["-e", `process.stdout.write(import.meta.resolve(${JSON.stringify(specifier)}))`],
+      project,
+    );
+    const types = fileURLToPath(resolved).replace(/\.js$/, ".d.ts");
+    if (!existsSync(types)) fail(`locating types for ${specifier}`, `${types} does not exist`);
   }
 
   process.stdout.write(`\nClean room passed${atFloors ? " at declared floors" : ""}.\n`);

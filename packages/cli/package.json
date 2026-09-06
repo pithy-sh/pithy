@@ -15,19 +15,24 @@
     "pithy": "./src/bin.ts"
   },
   "exports": {
-    "./src/*": "./src/*.ts"
+    "./src/*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    }
   },
   "files": [
+    "dist",
     "src",
     "scripts",
     "templates",
-    "!src/**/*.test.*"
+    "!src/**/*.test.*",
+    "!dist/**/*.test.*"
   ],
   "scripts": {
     "prepack": "bun scripts/vendorTemplate.ts",
     "postpack": "bun scripts/vendorTemplate.ts --clean",
     "pack:verify": "bun scripts/verifyPack.ts",
-    "build": "tsc -p tsconfig.json --noEmit false --outDir dist",
+    "build": "tsdown && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.contract.json && tsc -p scripts/tsconfig.json && tsc -p tsconfig.ciScripts.json",
     "test": "vitest run",
     "test:node": "vitest run",
@@ -54,16 +59,23 @@
     "@pithy-sh/audit": "workspace:*",
     "@pithy-sh/auth": "workspace:*",
     "@pithy-sh/i18n": "workspace:*",
+    "@pithy-sh/leaderboard": "workspace:*",
+    "@pithy-sh/ledger": "workspace:*",
+    "@pithy-sh/matchmaking": "workspace:*",
     "@pithy-sh/media": "workspace:*",
+    "@pithy-sh/multiplayer": "workspace:*",
     "@pithy-sh/payments": "workspace:*",
+    "@pithy-sh/rating": "workspace:*",
     "@pithy-sh/storage": "workspace:*",
     "@pithy-sh/support": "workspace:*",
     "@pithy-sh/testers": "workspace:*",
     "@pithy-sh/tsconfig": "workspace:*",
     "@pithy-sh/vector": "workspace:*",
+    "@pithy-sh/vite": "workspace:*",
     "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "^4.1.0",
     "rolldown": "^1.2.4",
+    "tsdown": "^0.23.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.0",
     "wrangler": "^4.115.0",

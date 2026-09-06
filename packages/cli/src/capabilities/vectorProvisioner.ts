@@ -3,13 +3,13 @@
 
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { parse } from "comment-json";
+import { kitSource } from "../project/kitSource";
 import { runWrangler } from "../project/wrangler";
 import { capabilityLoadError } from "./loadFailure";
 
@@ -75,7 +75,7 @@ export async function loadVector(): Promise<VectorModule> {
 /** The directory of the prebuilt vector worker inside the installed package (holds `wrangler.jsonc`). */
 async function vectorWorkerDir(): Promise<string> {
   try {
-    return dirname(fileURLToPath(import.meta.resolve("@pithy-sh/vector/src/workflows/worker")));
+    return dirname(kitSource("@pithy-sh/vector/src/workflows/worker"));
   } catch (error) {
     throw capabilityLoadError("vector", "@pithy-sh/vector/src/workflows/worker", error);
   }

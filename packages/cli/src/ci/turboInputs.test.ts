@@ -128,6 +128,14 @@ async function registered(): Promise<Map<string, string[]>> {
  * key nothing will ever be compared against. Dropped here rather than at each call site: a phantom
  * `test:workers` for a package with no workers suite once made the equality check below claim
  * `@pithy-sh/browser-scopes` keyed its tasks differently, which was true of a task that does not exist.
+ *
+ * **And a plan holds the tasks the named one depends on, which is why the task is matched and not only
+ * the package (#476).** `test` gained `dependsOn: ["^build", "build"]` when every package started
+ * publishing a build, so `turbo run test:workers --dry=json` now reports `@pithy-sh/cli#build` beside
+ * `@pithy-sh/cli#test:workers`. Both carry the same package name, and keying on the name alone let the
+ * build task's 478-file key stand in for a test task's whole-tree one — every assertion below then
+ * measured the wrong task and failed with 2,016 files it was never going to find. The bug reads as the
+ * gate working, which is the dangerous direction for it to fail in.
  */
 async function planned(task: string): Promise<Map<string, Set<string>>> {
   const { stdout } = await run(TURBO, ["run", task, "--dry=json"], { cwd: REPO_ROOT, maxBuffer: 64 * 1024 * 1024 });
@@ -135,6 +143,7 @@ async function planned(task: string): Promise<Map<string, Set<string>>> {
   const keys = new Map<string, Set<string>>();
   for (const entry of plan.tasks) {
     if (entry.command === NO_SCRIPT) continue;
+    if (!entry.taskId.endsWith(`#${task}`)) continue;
     const dir = resolve(REPO_ROOT, entry.directory);
     const name = entry.taskId.slice(0, entry.taskId.lastIndexOf("#"));
     keys.set(name, new Set(Object.keys(entry.inputs).map((key) => fromRoot(resolve(dir, key)))));
@@ -435,6 +444,81 @@ const UNTRACKED_TARGETS: Record<string, string> = {
   "node_modules/.bin/biome":
     "Installed, never committed, and the whole-tree keys negate `**/node_modules/**` deliberately — 29,032 files, none of them anybody's source. What moves when biome moves is `bun.lock`, which every one of these keys hashes.",
 };
+
+describe("a task named for one package still depends on the builds it reads", () => {
+  // **A package-specific entry in `turbo.jsonc` REPLACES the base task; it does not merge with it.**
+  // So `"test": { "dependsOn": ["^build", "build"] }` reaches every package except the ones this file
+  // names individually — which are exactly the packages whose gates read across the workspace, and
+  // exactly the ones that most need a sibling's `dist` to exist.
+  //
+  // Measured on 2.10.10 (#476): with `dependsOn` absent from `@pithy-sh/cloudflare#test`,
+  // `turbo run test --filter=@pithy-sh/cloudflare --dry=json` planned one task and no build, where
+  // `@pithy-sh/auth` — which has no override — planned five. Since `exports` resolves `./src/*` onto
+  // `./dist/*.js`, that suite's every kit import failed to resolve. It passed locally, because a
+  // developer's tree has a `dist` in it from the last time anything built; it failed in CI, on a clean
+  // checkout, which is the worst way round for a defect to present.
+  //
+  // Asked of turbo rather than parsed out of the file, for the same reason as everything else here: the
+  // plan is the only answer that reflects what turbo actually merged.
+  // The same defect from the other side, and the one an override cannot fix. `dependsOn: ["^build"]`
+  // builds a package's *dependencies*, so a gate that reads a package the CLI does not name is a gate
+  // reading a `dist` nothing built. `@pithy-sh/leaderboard`, `matchmaking`, `multiplayer` and `rating`
+  // all landed after the ten capabilities the CLI already named, and none of them was added — which
+  // cost nothing while `exports` resolved to source, and made `configEntrypoints.test.ts` fail in CI
+  // with `Cannot find module '@pithy-sh/leaderboard/src/index'` the moment it did not.
+  //
+  // A devDependency rather than a dependency, deliberately: the CLI must not hard-depend on an optional
+  // capability — it reaches them through guarded dynamic imports and through the adopter's own
+  // `node_modules` — and a devDependency is never installed by a consumer while still being a workspace
+  // edge turbo builds along.
+  test("the CLI names every package in the workspace, because its gates read all of them", () => {
+    const manifest = JSON.parse(readFileSync(join(REPO_ROOT, "packages", "cli", "package.json"), "utf8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    const named = new Set([
+      ...Object.keys(manifest.dependencies ?? {}),
+      ...Object.keys(manifest.devDependencies ?? {}),
+    ]);
+
+    const workspace = readdirSync(join(REPO_ROOT, "packages"), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => JSON.parse(readFileSync(join(REPO_ROOT, "packages", entry.name, "package.json"), "utf8")))
+      .map((one: { name: string }) => one.name)
+      .filter((name) => name !== "@pithy-sh/cli");
+
+    expect(workspace.length).toBeGreaterThan(15);
+    expect(workspace.filter((name) => !named.has(name))).toEqual([]);
+  });
+
+  test("every task this repository names for a single package plans a build first", async () => {
+    const config = readFileSync(join(REPO_ROOT, "turbo.jsonc"), "utf8");
+    const overridden = [...config.matchAll(/^ {4}"(@[^"#]+)#([^"]+)":/gm)].map(
+      (match) => [match[1] as string, match[2] as string] as const,
+    );
+
+    // The vacuity floor: an empty list satisfies the loop below without asking turbo anything.
+    expect(overridden.length).toBeGreaterThan(5);
+
+    const faults: string[] = [];
+    for (const [name, task] of overridden) {
+      if (task === "build") continue;
+      const { stdout } = await run(TURBO, ["run", task, `--filter=${name}`, "--dry=json"], {
+        cwd: REPO_ROOT,
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      const plan = JSON.parse(stdout) as Plan;
+      const planned = plan.tasks.filter((entry) => entry.taskId === `${name}#${task}`);
+      // A task the package does not define is not a task; `@pithy-sh/cli` has no `test:workers`.
+      if (planned.length === 0 || planned[0]?.command === NO_SCRIPT) continue;
+      if (!plan.tasks.some((entry) => entry.taskId.endsWith("#build"))) {
+        faults.push(`${name}#${task} plans no build. Restate dependsOn on its entry in turbo.jsonc.`);
+      }
+    }
+
+    expect(faults).toEqual([]);
+  });
+});
 
 describe("a gate is keyed on what it reads", () => {
   test("every cross-package read the register finds is hashed by that package's test tasks", async () => {

@@ -3,7 +3,6 @@
 
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { TokenPermission } from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
 import type { PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
@@ -32,6 +31,7 @@ import { parse } from "comment-json";
 import type { MigrationProvider } from "kysely/migration";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { kitSource } from "../project/kitSource";
 import { runWrangler } from "../project/wrangler";
 
 /** The secrets migration set, as provisioning runs it against each environment's D1. */
@@ -212,7 +212,7 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
 function managerDir(): string {
   // Resolve through the package so it works installed (node_modules) or in the workspace; the
   // `./src/*` export maps `worker` → `src/manager/worker.ts`, whose directory holds wrangler.jsonc.
-  return dirname(fileURLToPath(import.meta.resolve("@pithy-sh/secrets/src/manager/worker")));
+  return dirname(kitSource("@pithy-sh/secrets/src/manager/worker"));
 }
 
 /**

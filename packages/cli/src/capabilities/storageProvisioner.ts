@@ -3,7 +3,6 @@
 
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -14,6 +13,7 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { kitSource } from "../project/kitSource";
 import { runWrangler } from "../project/wrangler";
 import { capabilityLoadError } from "./loadFailure";
 import { deleteR2BucketWithContents } from "./r2Bucket";
@@ -312,7 +312,7 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
 /** The directory of the prebuilt sweep worker inside the installed `@pithy-sh/storage` package. */
 async function storageWorkerDir(): Promise<string> {
   try {
-    return dirname(fileURLToPath(import.meta.resolve("@pithy-sh/storage/src/workflows/worker")));
+    return dirname(kitSource("@pithy-sh/storage/src/workflows/worker"));
   } catch (error) {
     throw capabilityLoadError("storage", "@pithy-sh/storage/src/workflows/worker", error);
   }

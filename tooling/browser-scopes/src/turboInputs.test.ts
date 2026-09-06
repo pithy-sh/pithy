@@ -148,8 +148,33 @@ async function compiled(): Promise<string[]> {
     .filter((line) => isAbsolute(line) && existsSync(line))
     .filter((path) => !path.split(sep).includes("node_modules"))
     .filter((path) => inside(REPO_ROOT, path) && !inside(PACKAGE_DIR, path))
-    .map(fromRoot);
+    .map(fromRoot)
+    .map(sourceOf);
   return [...new Set(files)].sort();
+}
+
+/**
+ * A compiled file as the file that decides its content.
+ *
+ * The four browser programs resolve kit specifiers straight to kit source, so almost everything here is
+ * already the answer. `tsconfig.json` — the Node-typed half, which typechecks this package's own suites
+ * — does not: it goes through the exports map like any consumer, so `@pithy-sh/cli/src/ci/sourceFiles`
+ * arrives as `packages/cli/dist/ci/sourceFiles.d.ts`. That file is an **output**, and turbo hashes no
+ * build output, so demanding it be in the key would be demanding something that must never be true.
+ *
+ * The source behind it is not a guess about the layout. `tsdown` and `tsc -p tsconfig.build.json` both
+ * mirror `src/` into `dist/`, one emitting `.js` and the other `.d.ts` at the identical path, so the
+ * mapping is exact by construction — and `packaging.test.ts` fails on any published module missing
+ * either half. The mirrored source is covered by the `packages/**` glob like every other source file,
+ * which is why this stays a rewrite here rather than a new entry in `turbo.jsonc`.
+ *
+ * The Node half is deliberately left resolving through the exports map, unlike the four beside it: what
+ * it checks is this package's own TypeScript against the surface the CLI publishes, and the published
+ * surface is the right subject for that. Only the browser programs need the authored graph.
+ */
+function sourceOf(path: string): string {
+  const match = /^(packages\/[^/]+)\/dist\/(.+)\.d\.ts$/.exec(path);
+  return match === null ? path : `${match[1]}/src/${match[2]}.ts`;
 }
 
 /** One task, as turbo plans it. */

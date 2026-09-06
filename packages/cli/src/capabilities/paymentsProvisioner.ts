@@ -3,7 +3,6 @@
 
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -12,6 +11,7 @@ import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import { kitSource } from "../project/kitSource";
 import { runWrangler } from "../project/wrangler";
 import { capabilityLoadError } from "./loadFailure";
 
@@ -71,7 +71,7 @@ export async function loadPayments(): Promise<PaymentsModule> {
 /** The directory of the prebuilt reconcile worker inside the installed package (holds `wrangler.jsonc`). */
 async function paymentsWorkerDir(): Promise<string> {
   try {
-    return dirname(fileURLToPath(import.meta.resolve("@pithy-sh/payments/src/workflows/worker")));
+    return dirname(kitSource("@pithy-sh/payments/src/workflows/worker"));
   } catch (error) {
     throw capabilityLoadError("payments", "@pithy-sh/payments/src/workflows/worker", error);
   }

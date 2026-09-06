@@ -4,12 +4,33 @@
 import { describe, expect, it } from "vitest";
 import { type PackedPackage, packFaults } from "./packing";
 
+/** A published source module: under `src`, TypeScript, not a declaration, not a test. */
+const PUBLISHED = /^src\/(?!.*\.d\.ts$)(?!.*\.test\.).*\.tsx?$/;
+
+/**
+ * The two built halves `exports` promises for each source module a set of entries carries.
+ *
+ * Added with the build (#476), so that every fixture below describes a package that is *otherwise*
+ * fit to publish and each test still isolates the one fault it names. Derived rather than written out,
+ * because a fixture that lists its own `dist` is a fixture that can disagree with the rule it feeds —
+ * and the two tests that need a tarball with a missing half say so by building one on purpose.
+ */
+function built(entries: readonly string[]): string[] {
+  return entries
+    .filter((path) => PUBLISHED.test(path))
+    .flatMap((path) => {
+      const stem = path.replace(/^src\//, "").replace(/\.tsx?$/, "");
+      return [`dist/${stem}.js`, `dist/${stem}.d.ts`];
+    });
+}
+
 function packed(over: Partial<PackedPackage> = {}): PackedPackage {
+  const entries = over.entries ?? ["package.json", "README.md", "src/capability.ts", "pithy.manifest.json"];
   return {
     name: "@pithy-sh/auth",
-    entries: ["package.json", "README.md", "src/capability.ts", "pithy.manifest.json"],
     expectsManifest: true,
     ...over,
+    entries: [...entries, ...built(entries)],
   };
 }
 
@@ -72,10 +93,64 @@ describe("packFaults", () => {
     expect(packFaults(packed({ entries: ["src/index.ts"], expectsManifest: false }))).toEqual([]);
   });
 
-  it("reports a tarball with no source at all", () => {
+  it("reports a tarball with no source at all, and no build either", () => {
     const faults = packFaults(packed({ entries: ["package.json", "README.md"], expectsManifest: false }));
 
-    expect(faults).toEqual([expect.stringMatching(/no src/i)]);
+    // Both, because both are true and they are different failures: `dist` is what `exports` resolves
+    // onto, and `src` is where the maps beside it point back to.
+    expect(faults).toEqual([expect.stringMatching(/no src/i), expect.stringMatching(/no dist/i)]);
+  });
+
+  // **What `exports` became with #476.** Every package's map resolves `./src/*` onto `./dist/*.js`, and
+  // `dist` is gitignored — so `npm pack`, which falls back to `.gitignore`, drops the whole build from
+  // any package whose `files` field forgets to name it, and says nothing. The tarball installs and
+  // every import of it fails.
+  it("reports a tarball whose build never made it in", () => {
+    const faults = packFaults({
+      name: "@pithy-sh/auth",
+      entries: ["package.json", "src/capability.ts"],
+      expectsManifest: false,
+    });
+
+    expect(faults).toEqual([expect.stringMatching(/no dist/i), expect.stringMatching(/missing a half/)]);
+  });
+
+  it("reports a published module with only one of its two halves", () => {
+    const faults = packFaults({
+      name: "@pithy-sh/auth",
+      entries: [
+        "package.json",
+        "src/capability.ts",
+        "src/http/routes.ts",
+        "dist/capability.js",
+        "dist/capability.d.ts",
+        "dist/http/routes.js",
+      ],
+      expectsManifest: false,
+    });
+
+    // The declaration is the missing half here, which is the quieter direction: the module imports and
+    // runs, and the adopter's editor types it `any`.
+    expect(faults).toHaveLength(1);
+    expect(faults[0]).toContain("dist/http/routes.d.ts");
+    expect(faults[0]).toContain("a published module");
+  });
+
+  it("asks for no build from a test, a declaration, or a vendored template", () => {
+    expect(
+      packFaults({
+        name: "@pithy-sh/cli",
+        entries: [
+          "package.json",
+          "src/main.ts",
+          "dist/main.js",
+          "dist/main.d.ts",
+          "src/cloudflare-test.d.ts",
+          "templates/starter/apps/api/src/worker.ts",
+        ],
+        expectsManifest: false,
+      }),
+    ).toEqual([]);
   });
 
   // Build leftovers a `files` field would have excluded. Harmless to an adopter and a signal that the

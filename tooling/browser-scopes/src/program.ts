@@ -206,9 +206,29 @@ function listFiles(base: string, roots: readonly string[], rootDir: string): str
       // `extends` so the options are the ones under gate rather than a second copy of them. `include`
       // is emptied because the base names its own file, and `rootDir` is moved because the roots are
       // outside the base's package.
+      //
+      // **`paths` sends every kit specifier to kit source, and without it this gate stopped measuring
+      // what it is for — Jim, #476.** A browser build asks a bundler to walk a module graph, and the
+      // only reason a `tsc` program answers that question is that a TypeScript module's imports and its
+      // bundle's imports are the same edges. Once each package published a build, `@pithy-sh/core/src/
+      // data/codecs` resolved through the exports map to `core/dist/data/codecs.d.ts` — and a
+      // declaration carries only the imports its *types* need. `support/src/link/sender.ts` stopped
+      // reaching `kysely-d1` here while a browser bundling it still would, because `dist/codecs.js`
+      // imports it at runtime and no declaration has to mention it. The gate went quiet by one entry
+      // and would have gone quiet by more.
+      //
+      // Source is the honest input and not a workaround: `tsdown` mirrors `src/` into `dist/` and
+      // leaves every sibling package external, so the emitted graph is the authored graph with
+      // extensions on it. `@pithy-sh/<name>` living at `<packages>/<name>` is the workspace's own
+      // layout, which is why one wildcard covers the kit.
+      //
+      // The substitution is absolute, with no `baseUrl`. TypeScript 7 ignores `baseUrl`, so a relative
+      // one resolves against the generated project's own directory — a scratch temp dir, where nothing
+      // matches — and the miss falls back to node resolution and the exports map without a word. Which
+      // is to say it produces exactly the `dist/*.d.ts` program this option exists to avoid, silently.
       JSON.stringify({
         extends: base,
-        compilerOptions: { rootDir },
+        compilerOptions: { rootDir, paths: { "@pithy-sh/*": [join(rootDir, "*")] } },
         include: [],
         files: [...roots],
       }),
