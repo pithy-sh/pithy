@@ -226,6 +226,19 @@ jobs:
       - name: Stamped package versions
         run: bun scripts/stampVersions.ts --check
 
+      # **Before every step below it, which is what #476 changed.** This used to sit near the end, under a
+      # comment saying nothing in the run consumed `dist/` because packages imported each other's source.
+      # They import each other's build now — `exports` resolves `./src/*` onto `./dist/*.js` — so `dist`
+      # is a precondition for anything that runs kit code rather than a publishing artifact checked at the
+      # end. `Docs catalog` composes the whole command tree and was the step that said so, failing with
+      # `Cannot find module '@pithy-sh/core/src/error/payload'` on a tree that had simply not been built.
+      #
+      # The test jobs get this from turbo, which is why they were unaffected: `test` declares
+      # `dependsOn: ["^build", "build"]`. The steps here are direct `bun` and `vitest` invocations that go
+      # around turbo, so the ordering is theirs to state.
+      - name: Build
+        run: bun run build
+
       # Whole-repo, beside the step above and for its reason. `docs/catalog.generated.json` is read by a script in
       # ANOTHER repository — the docs site's check, which asks whether every `pithy add <name>`, CLI flag
       # and error code its 360 pages cite is real. A stale export does not fail there; it reports `ok`
@@ -253,11 +266,6 @@ jobs:
 
       - name: Typecheck
         run: bun run typecheck
-
-      # Nothing in the test run consumes `dist/` (packages import each other's source), so this is
-      # purely about proving tsc emit and dts generation still work for publishing.
-      - name: Build
-        run: bun run build
 
       # `files` does not fail on a missing path. Pack the CLI with lifecycle scripts disabled and the
       # starter template is simply absent from the tarball — silently, exit 0 — which is the defect
@@ -448,8 +456,9 @@ jobs:
       - name: Install
         run: bun install
 
-      # `@pithy-sh/payments` declares a browser build that does not exist until this runs, and the pack
-      # below ships it.
+      # The whole kit, because the clean room packs all 22 and every one of them now publishes a `dist`
+      # its `exports` map resolves onto. `@pithy-sh/payments`' browser build is the piece that has always
+      # needed this step; since #476 it is the smaller half of the reason.
       - name: Build
         run: bun run build
 
