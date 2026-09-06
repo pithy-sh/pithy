@@ -67,6 +67,26 @@ export function libraryBuild(options: LibraryBuildOptions = {}): UserConfig {
       "!src/**/*.test.tsx",
       ...(options.exclude ?? []).map((pattern) => `!${pattern}`),
     ],
+    // **One output file per input file, and this is load-bearing rather than tidy — #474.**
+    //
+    // Left bundling, rolldown hoists code shared between entries into chunks at the output root:
+    // `src/project/scaffold.ts` became `dist/scaffold-enfrKPxR.js`, two directories shallower than the
+    // module it was written as, with `dist/project/scaffold.js` left as a re-export. Every path a module
+    // computes from `import.meta.url` therefore moves silently — `pithy init` resolved its vendored
+    // starter through `["..", "..", "templates", "starter"]` and, from the chunk, looked for it one
+    // level above the package. It failed in the clean room with `This pithy install is missing its
+    // starter template`, on an install where the template was present and correct.
+    //
+    // Unbundled, `dist/` mirrors `src/` exactly, which is also what makes three separate rules true
+    // rather than approximately true: `tsc --emitDeclarationOnly` lays declarations out this way, so
+    // `dist/x.js` and `dist/x.d.ts` are siblings; `kitSource` walks a resolved path back to the module
+    // it came from; and `packing.ts` asks for both halves of every published module. Each of those
+    // assumes the mirror. Only this line makes it a fact.
+    //
+    // The cost is per-file overhead instead of shared chunks, which for a deep-import surface is close
+    // to nothing: `exports` is `./src/*`, so a consumer imports the modules it names either way, and
+    // the sharing rolldown was doing had already been paid for by the entries that pull it in.
+    unbundle: true,
     format: "esm",
     platform: "neutral",
     target: "node22",

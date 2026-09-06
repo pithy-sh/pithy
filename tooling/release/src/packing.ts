@@ -60,6 +60,8 @@ export interface PackedPackage {
     dependencies?: Record<string, string>;
     peerDependencies?: Record<string, string>;
     devDependencies?: Record<string, string>;
+    /** The executables this package links into `node_modules/.bin`, if any. */
+    bin?: string | Record<string, string>;
   };
 }
 
@@ -168,6 +170,28 @@ export function packFaults(packed: PackedPackage): string[] {
   if (halfBuilt.length > 0) {
     faults.push(
       `${packed.name} ships ${halfBuilt.length === 1 ? "a published module" : `${halfBuilt.length} published modules`} missing a half: ${list(halfBuilt)}. A module needs its .js and its .d.ts, or it must be kept out of the tarball too.`,
+    );
+  }
+
+  // **A `bin` an adopter runs must be built JavaScript that is actually in the tarball — #474.**
+  // `@pithy-sh/cli` linked `./src/bin.ts`: raw TypeScript behind `#!/usr/bin/env bun`, so `pithy`
+  // installed for everyone and started for nobody without Bun. Two separate faults, and both are
+  // invisible from inside a workspace — a linked checkout resolves by realpath, outside `node_modules`,
+  // where the shebang never runs. The shebang itself is the clean room's to check, because it is a
+  // property of the file's first line and of the machine's PATH; this is the part a tarball can answer.
+  const bins = Object.values(
+    typeof packed.manifest?.bin === "string" ? { default: packed.manifest.bin } : (packed.manifest?.bin ?? {}),
+  ).map((target) => target.replace(/^\.\//, ""));
+  const rawEntry = bins.filter((target) => /\.[cm]?tsx?$/.test(target));
+  if (rawEntry.length > 0) {
+    faults.push(
+      `${packed.name} links ${list(rawEntry)} as a bin, which is TypeScript. Node cannot run it under node_modules — point bin at the built file.`,
+    );
+  }
+  const missingBin = bins.filter((target) => !packed.entries.includes(target));
+  if (missingBin.length > 0) {
+    faults.push(
+      `${packed.name} links ${list(missingBin)} as a bin and the tarball does not carry it. The install links a shim to nothing.`,
     );
   }
 
