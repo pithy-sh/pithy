@@ -3,7 +3,6 @@
 
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { SupportConfig, type SupportConfigInput } from "@pithy-sh/support/src/config/config";
@@ -12,6 +11,7 @@ import { resolveSupportConfig } from "@pithy-sh/support/src/provision/resolveSup
 import { parse } from "comment-json";
 import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
+import { kitSource } from "../project/kitSource";
 import { CloudflareSupportDeprovisioner, CloudflareSupportProvisioner, supportBucketName } from "./supportProvisioner";
 
 /**
@@ -28,7 +28,7 @@ const PROJECT = "acme";
 
 /** The committed template as `deployWorker` parses it off disk — not a fixture, deliberately. */
 async function committedTemplate(): Promise<WorkflowHostTemplate> {
-  const dir = dirname(fileURLToPath(import.meta.resolve("@pithy-sh/support/src/workflows/worker")));
+  const dir = dirname(kitSource("@pithy-sh/support/src/workflows/worker"));
   return parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
 }
 

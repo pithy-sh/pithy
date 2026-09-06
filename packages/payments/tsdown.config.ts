@@ -4,4 +4,6 @@
 import { defineConfig } from "tsdown";
 import { libraryBuild } from "../../tooling/build/src/tsdown.ts";
 
-export default defineConfig(libraryBuild());
+// `src/client/paddlePrices.iife.ts` is the entry of the browser bundle `scripts/buildPaddlePrices.ts`
+// writes, not a module anyone imports — and `tsconfig.build.json` excludes it for the same reason.
+export default defineConfig(libraryBuild({ exclude: ["src/client/paddlePrices.iife.ts"] }));

@@ -3,7 +3,6 @@
 
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -13,6 +12,7 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { kitSource } from "../project/kitSource";
 import { runWrangler } from "../project/wrangler";
 import { capabilityLoadError } from "./loadFailure";
 import { deleteR2BucketWithContents } from "./r2Bucket";
@@ -378,7 +378,7 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
 /** The directory of the prebuilt support worker inside the installed `@pithy-sh/support` package (holds wrangler.jsonc). */
 function supportWorkerDir(): string {
   try {
-    return dirname(fileURLToPath(import.meta.resolve("@pithy-sh/support/src/workflows/worker")));
+    return dirname(kitSource("@pithy-sh/support/src/workflows/worker"));
   } catch (error) {
     throw capabilityLoadError("support", "@pithy-sh/support/src/workflows/worker", error);
   }

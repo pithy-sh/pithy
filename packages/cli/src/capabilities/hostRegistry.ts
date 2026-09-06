@@ -3,11 +3,11 @@
 
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { parse } from "comment-json";
+import { kitSource } from "../project/kitSource";
 import { capabilityLoadError } from "./loadFailure";
 
 /**
@@ -106,7 +106,7 @@ export interface HostWorkerSpec {
 
 /** The absolute path of the `wrangler.jsonc` committed beside a host's worker entry. */
 export function hostTemplatePath(entry: string): string {
-  return join(dirname(fileURLToPath(import.meta.resolve(entry))), "wrangler.jsonc");
+  return join(dirname(kitSource(entry)), "wrangler.jsonc");
 }
 
 /**

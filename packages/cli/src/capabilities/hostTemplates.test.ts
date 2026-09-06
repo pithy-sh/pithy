@@ -3,7 +3,6 @@
 
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import type { EmailWorkerWranglerTemplate } from "@pithy-sh/email/src/provision/resolveEmailConfig";
@@ -27,6 +26,7 @@ import { VectorConfig } from "@pithy-sh/vector/src/config/config";
 import { resolveVectorConfig } from "@pithy-sh/vector/src/provision/resolveVectorConfig";
 import { parse } from "comment-json";
 import { describe, expect, test } from "vitest";
+import { kitSource } from "../project/kitSource";
 
 /**
  * Every capability that owns Workflows ships a committed `wrangler.jsonc` **template** beside its worker
@@ -83,7 +83,7 @@ async function readTemplate<T extends WorkflowHostTemplate>(entry: string): Prom
 
 /** The absolute path of the `wrangler.jsonc` beside a worker entry. */
 function templatePath(entry: string): string {
-  return join(dirname(fileURLToPath(import.meta.resolve(entry))), "wrangler.jsonc");
+  return join(dirname(kitSource(entry)), "wrangler.jsonc");
 }
 
 /** One capability's coverage: where its template lives, and how provisioning fills it. */

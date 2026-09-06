@@ -92,6 +92,19 @@ const TEST_FILE = /\.test\.[cm]?[jt]sx?$/;
  */
 const WORKSPACE_PROTOCOL = /^workspace:/;
 
+/**
+ * A source module a consumer can deep-import: under `src`, TypeScript, not a declaration, not a test.
+ *
+ * `.d.ts` is excluded because it is not a module — `cloudflare-test.d.ts` is an ambient declaration
+ * nothing imports, and building it as an entry emits an empty `cloudflare-test.d.js`.
+ *
+ * A test is excluded even though the fault above already refuses it from the tarball, because the fault
+ * *reports* a test rather than removing it: without this, one package shipping its tests reported a
+ * second fault demanding those tests be built, which is the opposite of what the first one asked for.
+ * Two faults disagreeing about the same file is worse than either alone.
+ */
+const SOURCE_MODULE = /^src\/(?!.*\.d\.ts$)(?!.*\.test\.).*\.tsx?$/;
+
 /** Build and tooling files a `files` field excludes. Present, they mean the field is missing or wrong. */
 const LEFTOVER = /^(tsconfig[^/]*\.json|vitest[^/]*\.(ts|js)|biome\.jsonc|[^/]*\.tsbuildinfo)$/;
 
@@ -126,7 +139,36 @@ export function packFaults(packed: PackedPackage): string[] {
   }
 
   if (!packed.entries.some((path) => path.startsWith("src/"))) {
-    faults.push(`${packed.name} ships no src. Its exports map resolves ./src/*, so nothing in it can be imported.`);
+    faults.push(
+      `${packed.name} ships no src. Its declaration and source maps point back into it, so an adopter stepping into this package lands nowhere.`,
+    );
+  }
+
+  // **The one that makes `exports` true — #476.** Every package's map resolves `./src/*` onto
+  // `./dist/*.js` and `./dist/*.d.ts`, so a tarball with no build is 22 packages' worth of deep imports
+  // resolving to nothing, discovered by whoever installed it. `dist` is gitignored, which is exactly
+  // how it goes missing: `npm pack` falls back to `.gitignore` for any package that forgets to name
+  // `dist` in `files`, and says nothing about it.
+  if (!packed.entries.some((path) => path.startsWith("dist/"))) {
+    faults.push(
+      `${packed.name} ships no dist. Its exports map resolves ./src/* onto ./dist/*.js, so every import of it fails at install time. Add "dist" to its files field — it is gitignored, so npm drops it otherwise.`,
+    );
+  }
+
+  // Both halves, per module. A published module with JavaScript and no declaration is an `any` in the
+  // adopter's editor; with a declaration and no JavaScript it is a type that cannot be imported. The
+  // source is what the map is keyed on, so it is the side asked from.
+  const built = new Set(packed.entries.filter((path) => path.startsWith("dist/")));
+  const halfBuilt = packed.entries
+    .filter((path) => SOURCE_MODULE.test(path))
+    .flatMap((path) => {
+      const stem = path.replace(/^src\//, "").replace(/\.tsx?$/, "");
+      return [`dist/${stem}.js`, `dist/${stem}.d.ts`].filter((half) => !built.has(half));
+    });
+  if (halfBuilt.length > 0) {
+    faults.push(
+      `${packed.name} ships ${halfBuilt.length === 1 ? "a published module" : `${halfBuilt.length} published modules`} missing a half: ${list(halfBuilt)}. A module needs its .js and its .d.ts, or it must be kept out of the tarball too.`,
+    );
   }
 
   // A declared entry is a path or a directory prefix; either way something under it must have landed.

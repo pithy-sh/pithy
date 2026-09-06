@@ -22,13 +22,13 @@
     "dist",
     "src",
     "docs",
-    "dist/paddle-prices.iife.js",
     "pithy.manifest.json",
     "!src/**/*.test.*",
-    "!dist/**/*.test.*"
+    "!dist/**/*.test.*",
+    "!src/client/paddlePrices.iife.ts"
   ],
   "scripts": {
-    "build": "tsdown && tsc -p tsconfig.build.json",
+    "build": "tsdown && tsc -p tsconfig.build.json && bun scripts/buildPaddlePrices.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.client.json",
     "test": "vitest run",
     "test:node": "vitest run --project=node",

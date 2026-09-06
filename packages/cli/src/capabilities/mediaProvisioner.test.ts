@@ -3,7 +3,6 @@
 
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
@@ -13,6 +12,7 @@ import { resolveMediaConfig } from "@pithy-sh/media/src/provision/resolveMediaCo
 import { parse } from "comment-json";
 import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
+import { kitSource } from "../project/kitSource";
 import { CloudflareMediaDeprovisioner, CloudflareMediaProvisioner } from "./mediaProvisioner";
 
 /** The project every provisioned name leads with — `requireProjectName`'s answer, never a guess. */
@@ -284,7 +284,7 @@ describe("CloudflareMediaDeprovisioner", () => {
 describe("the committed media worker template", () => {
   /** The real file `deployWorker` reads — parsed exactly as the provisioner parses it. */
   async function committedTemplate(): Promise<WorkflowHostTemplate> {
-    const dir = dirname(fileURLToPath(import.meta.resolve("@pithy-sh/media/src/workflows/worker")));
+    const dir = dirname(kitSource("@pithy-sh/media/src/workflows/worker"));
     return parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
   }
 

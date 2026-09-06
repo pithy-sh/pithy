@@ -28,7 +28,7 @@ import { type PithyPlugin, type PithyPluginOptions, pithy } from "./plugin";
  * **What stays is the name.** `pithyTest` is exported from 0.1.0 and `pithy-sh/dashboard` names it in
  * its own configs, so removing it would break a working install to save a line. It is kept as the
  * documented spelling for a test config, and can be dropped whenever nothing imports it — there is no
- * behaviour behind it left to maintain.
+ * behavior behind it left to maintain.
  *
  * ## What an adopter writes
  *

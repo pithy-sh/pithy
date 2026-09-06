@@ -3,7 +3,6 @@
 
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
@@ -24,6 +23,7 @@ import { parse } from "comment-json";
 import type { MigrationProvider } from "kysely/migration";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { kitSource } from "../project/kitSource";
 import { runWrangler } from "../project/wrangler";
 
 /** The suppression migration set, as provisioning runs it against the shared suppression D1. */
@@ -267,7 +267,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
  * this resolution in the test would be a copy free to drift from the path it is meant to guard.
  */
 export function emailWorkerDir(): string {
-  return dirname(fileURLToPath(import.meta.resolve("@pithy-sh/email/src/workflows/worker")));
+  return dirname(kitSource("@pithy-sh/email/src/workflows/worker"));
 }
 
 export interface CloudflareEmailDeprovisionerOptions {

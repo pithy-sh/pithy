@@ -128,6 +128,14 @@ async function registered(): Promise<Map<string, string[]>> {
  * key nothing will ever be compared against. Dropped here rather than at each call site: a phantom
  * `test:workers` for a package with no workers suite once made the equality check below claim
  * `@pithy-sh/browser-scopes` keyed its tasks differently, which was true of a task that does not exist.
+ *
+ * **And a plan holds the tasks the named one depends on, which is why the task is matched and not only
+ * the package (#476).** `test` gained `dependsOn: ["^build", "build"]` when every package started
+ * publishing a build, so `turbo run test:workers --dry=json` now reports `@pithy-sh/cli#build` beside
+ * `@pithy-sh/cli#test:workers`. Both carry the same package name, and keying on the name alone let the
+ * build task's 478-file key stand in for a test task's whole-tree one — every assertion below then
+ * measured the wrong task and failed with 2,016 files it was never going to find. The bug reads as the
+ * gate working, which is the dangerous direction for it to fail in.
  */
 async function planned(task: string): Promise<Map<string, Set<string>>> {
   const { stdout } = await run(TURBO, ["run", task, "--dry=json"], { cwd: REPO_ROOT, maxBuffer: 64 * 1024 * 1024 });
@@ -135,6 +143,7 @@ async function planned(task: string): Promise<Map<string, Set<string>>> {
   const keys = new Map<string, Set<string>>();
   for (const entry of plan.tasks) {
     if (entry.command === NO_SCRIPT) continue;
+    if (!entry.taskId.endsWith(`#${task}`)) continue;
     const dir = resolve(REPO_ROOT, entry.directory);
     const name = entry.taskId.slice(0, entry.taskId.lastIndexOf("#"));
     keys.set(name, new Set(Object.keys(entry.inputs).map((key) => fromRoot(resolve(dir, key)))));

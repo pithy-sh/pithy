@@ -83,7 +83,7 @@ function inside(dir: string, path: string): boolean {
  *
  * **Since #476 these are declarations, not source.** `@pithy-sh/vite` publishes `dist/*.d.ts` and the
  * fixture resolves them, so the list is two files rather than the fifty-four it used to be — the kit's
- * whole reach through `@pithy-sh/core` is summarised into `pithy(): PithyPlugin` and never opened. That
+ * whole reach through `@pithy-sh/core` is summarized into `pithy(): PithyPlugin` and never opened. That
  * is the adopter's real surface and the fixture is more honest for compiling it, but it moves the
  * coverage question: a `.d.ts` under `dist` is an **output**, so it cannot be an input of anything, and
  * requiring it to be hashed would be requiring turbo to hash a build artifact. {@link behind} answers
@@ -242,7 +242,7 @@ describe("this fixture's cache key covers what this fixture reads", () => {
     // The floor again, one level down, and this is the assertion that matters most. `behind` resolving
     // to nothing would pass every containment below, so it is pinned to the two things it must reach:
     // the source those declarations are emitted from, and the source of the package that source
-    // imports. The count is the reach through `@pithy-sh/core`, which the declarations summarise away
+    // imports. The count is the reach through `@pithy-sh/core`, which the declarations summarize away
     // and the build still walks.
     expect(required).toContain("packages/vite/src/plugin.ts");
     expect(required).toContain("packages/core/src/capability/client.ts");
