@@ -60,6 +60,16 @@
     // cached `typecheck` and report a pass on source it never compiled. Naming the files closes it.
     // `$TURBO_DEFAULT$` keeps the package's own inputs; `$TURBO_ROOT$` reaches outside it.
     "@pithy-sh/cli#typecheck": {
+      // **`dependsOn` is restated here, and on every other task this file names for one package.**
+      // A package-specific entry REPLACES the base task rather than merging with it, so the
+      // `dependsOn` on `typecheck` and `test` above reaches every package except the ones with an
+      // entry of their own — which are exactly the packages whose gates read across the workspace.
+      // Measured, #476: without it `turbo run test --filter=@pithy-sh/cloudflare --dry=json` planned
+      // one task and no build at all, where a package with no override planned five. Since `exports`
+      // resolves into `dist`, that is a suite whose every kit import fails to resolve. It is silent
+      // in a warm tree and red in CI, which is the worst way round. `turboInputs.test.ts` fails on an
+      // override that leaves it out.
+      "dependsOn": ["^build"],
       "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/.github/scripts/**/*.ts"]
     },
     // The same seam, one package over, and it swallowed the gate built to close #414 — Jim, 2026-08-21.
@@ -136,6 +146,9 @@
     // test task were keyed more narrowly than the compile it checks, that edit would replay a green
     // guard over a stale list. One list, checked to be one list.
     "@pithy-sh/vite-adopter#typecheck": {
+      // `dependsOn` restated — see the note on `@pithy-sh/cli#typecheck`. An override replaces the
+      // base task, so a task named here for one package inherits nothing.
+      "dependsOn": ["^build"],
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/turbo.jsonc",
@@ -146,6 +159,9 @@
       ]
     },
     "@pithy-sh/vite-adopter#test": {
+      // `dependsOn` restated — see the note on `@pithy-sh/cli#typecheck`. An override replaces the
+      // base task, so a task named here for one package inherits nothing.
+      "dependsOn": ["^build", "build"],
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/turbo.jsonc",
@@ -156,6 +172,9 @@
       ]
     },
     "@pithy-sh/vite-adopter#test:node": {
+      // `dependsOn` restated — see the note on `@pithy-sh/cli#typecheck`. An override replaces the
+      // base task, so a task named here for one package inherits nothing.
+      "dependsOn": ["^build", "build"],
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/turbo.jsonc",
@@ -224,6 +243,9 @@
     // the `#414` block above says why, and the reason is JSON's rather than anybody's. The three copies
     // stay, checked.
     "@pithy-sh/browser-scopes#typecheck": {
+      // `dependsOn` restated — see the note on `@pithy-sh/cli#typecheck`. An override replaces the
+      // base task, so a task named here for one package inherits nothing.
+      "dependsOn": ["^build"],
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/turbo.jsonc",
@@ -257,6 +279,9 @@
       ]
     },
     "@pithy-sh/browser-scopes#test": {
+      // `dependsOn` restated — see the note on `@pithy-sh/cli#typecheck`. An override replaces the
+      // base task, so a task named here for one package inherits nothing.
+      "dependsOn": ["^build", "build"],
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/turbo.jsonc",
@@ -274,6 +299,9 @@
       ]
     },
     "@pithy-sh/browser-scopes#test:node": {
+      // `dependsOn` restated — see the note on `@pithy-sh/cli#typecheck`. An override replaces the
+      // base task, so a task named here for one package inherits nothing.
+      "dependsOn": ["^build", "build"],
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/turbo.jsonc",
@@ -369,6 +397,9 @@
     // The list below is the one on `@pithy-sh/cli#test`, and the comments explaining every line are
     // there. Turbo hashes a task against its own definition only, so these keys are copies by necessity.
     "@pithy-sh/release#test": {
+      // `dependsOn` restated — see the note on `@pithy-sh/cli#typecheck`. An override replaces the
+      // base task, so a task named here for one package inherits nothing.
+      "dependsOn": ["^build", "build"],
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/**",
@@ -450,6 +481,9 @@
     },
     // The same key, for the task CI runs. See the block above.
     "@pithy-sh/release#test:node": {
+      // `dependsOn` restated — see the note on `@pithy-sh/cli#typecheck`. An override replaces the
+      // base task, so a task named here for one package inherits nothing.
+      "dependsOn": ["^build", "build"],
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/**",
@@ -530,6 +564,9 @@
       ]
     },
     "@pithy-sh/cli#test": {
+      // `dependsOn` restated — see the note on `@pithy-sh/cli#typecheck`. An override replaces the
+      // base task, so a task named here for one package inherits nothing.
+      "dependsOn": ["^build", "build"],
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/**",
@@ -611,6 +648,9 @@
     },
     // The same key, for the task CI runs. See the block above.
     "@pithy-sh/cli#test:node": {
+      // `dependsOn` restated — see the note on `@pithy-sh/cli#typecheck`. An override replaces the
+      // base task, so a task named here for one package inherits nothing.
+      "dependsOn": ["^build", "build"],
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/**",
@@ -662,6 +702,9 @@
     // derivation means keeping a second list, which is the defect. Over-approximating costs cache hits;
     // under-approximating costs the gate, silently.
     "@pithy-sh/ui-react#test": {
+      // `dependsOn` restated — see the note on `@pithy-sh/cli#typecheck`. An override replaces the
+      // base task, so a task named here for one package inherits nothing.
+      "dependsOn": ["^build", "build"],
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/**",
@@ -704,6 +747,9 @@
     },
     // The same key, for the task CI runs. See the block above.
     "@pithy-sh/ui-react#test:node": {
+      // `dependsOn` restated — see the note on `@pithy-sh/cli#typecheck`. An override replaces the
+      // base task, so a task named here for one package inherits nothing.
+      "dependsOn": ["^build", "build"],
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/**",
@@ -750,10 +796,16 @@
     // the same seam as the block above, one document wide. The register records the read; the guard in
     // `packages/cli/src/ci/turboInputs.test.ts` fails if this line goes missing.
     "@pithy-sh/cloudflare#test": {
+      // `dependsOn` restated — see the note on `@pithy-sh/cli#typecheck`. An override replaces the
+      // base task, so a task named here for one package inherits nothing.
+      "dependsOn": ["^build", "build"],
       "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/turbo.jsonc", "$TURBO_ROOT$/docs/FIXTURES.md"]
     },
     // The same key, for the task CI runs. See the block above.
     "@pithy-sh/cloudflare#test:node": {
+      // `dependsOn` restated — see the note on `@pithy-sh/cli#typecheck`. An override replaces the
+      // base task, so a task named here for one package inherits nothing.
+      "dependsOn": ["^build", "build"],
       "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/turbo.jsonc", "$TURBO_ROOT$/docs/FIXTURES.md"]
     },
     // `build` as well as `^build`, and the second one is not tidiness. Some tests reach their own

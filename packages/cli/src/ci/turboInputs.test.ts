@@ -445,6 +445,50 @@ const UNTRACKED_TARGETS: Record<string, string> = {
     "Installed, never committed, and the whole-tree keys negate `**/node_modules/**` deliberately — 29,032 files, none of them anybody's source. What moves when biome moves is `bun.lock`, which every one of these keys hashes.",
 };
 
+describe("a task named for one package still depends on the builds it reads", () => {
+  // **A package-specific entry in `turbo.jsonc` REPLACES the base task; it does not merge with it.**
+  // So `"test": { "dependsOn": ["^build", "build"] }` reaches every package except the ones this file
+  // names individually — which are exactly the packages whose gates read across the workspace, and
+  // exactly the ones that most need a sibling's `dist` to exist.
+  //
+  // Measured on 2.10.10 (#476): with `dependsOn` absent from `@pithy-sh/cloudflare#test`,
+  // `turbo run test --filter=@pithy-sh/cloudflare --dry=json` planned one task and no build, where
+  // `@pithy-sh/auth` — which has no override — planned five. Since `exports` resolves `./src/*` onto
+  // `./dist/*.js`, that suite's every kit import failed to resolve. It passed locally, because a
+  // developer's tree has a `dist` in it from the last time anything built; it failed in CI, on a clean
+  // checkout, which is the worst way round for a defect to present.
+  //
+  // Asked of turbo rather than parsed out of the file, for the same reason as everything else here: the
+  // plan is the only answer that reflects what turbo actually merged.
+  test("every task this repository names for a single package plans a build first", async () => {
+    const config = readFileSync(join(REPO_ROOT, "turbo.jsonc"), "utf8");
+    const overridden = [...config.matchAll(/^ {4}"(@[^"#]+)#([^"]+)":/gm)].map(
+      (match) => [match[1] as string, match[2] as string] as const,
+    );
+
+    // The vacuity floor: an empty list satisfies the loop below without asking turbo anything.
+    expect(overridden.length).toBeGreaterThan(5);
+
+    const faults: string[] = [];
+    for (const [name, task] of overridden) {
+      if (task === "build") continue;
+      const { stdout } = await run(TURBO, ["run", task, `--filter=${name}`, "--dry=json"], {
+        cwd: REPO_ROOT,
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      const plan = JSON.parse(stdout) as Plan;
+      const planned = plan.tasks.filter((entry) => entry.taskId === `${name}#${task}`);
+      // A task the package does not define is not a task; `@pithy-sh/cli` has no `test:workers`.
+      if (planned.length === 0 || planned[0]?.command === NO_SCRIPT) continue;
+      if (!plan.tasks.some((entry) => entry.taskId.endsWith("#build"))) {
+        faults.push(`${name}#${task} plans no build. Restate dependsOn on its entry in turbo.jsonc.`);
+      }
+    }
+
+    expect(faults).toEqual([]);
+  });
+});
+
 describe("a gate is keyed on what it reads", () => {
   test("every cross-package read the register finds is hashed by that package's test tasks", async () => {
     const targets = await registered();
