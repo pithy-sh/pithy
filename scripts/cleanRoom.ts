@@ -20,7 +20,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type CleanRoomManifest, kitOverrides, thirdPartyFloors } from "@pithy-sh/release/src/cleanRoom";
 import { publishedPackages } from "@pithy-sh/release/src/workspace";
@@ -195,6 +195,34 @@ try {
   process.stdout.write("  the same, with bun off PATH\n");
   drive("pithy --version (no bun)", ["--version"], project, withoutBun);
   drive("pithy init (no bun)", ["init", "--name", "nobun", "--worker", "api"], noBunApp, withoutBun);
+
+  // **Exactly one copy of each shared runtime, which is the property #477 is about.**
+  //
+  // `zod`, `kysely` and `hono` are `peerDependencies` of every package that imports them, so an
+  // installer puts one at the top where the adopter's own import finds it too. Two copies of a package
+  // whose classes carry private members are two different types, and the diagnostic never says so:
+  // `Type 'Kysely<any>' is not assignable to type 'Kysely<any>'` with both paths reading identically.
+  // `pithy-sh/dashboard` lost a day to it moving off a linked checkout onto published 0.1.2.
+  //
+  // Counted in the installed tree rather than argued from the manifests, because the manifests are what
+  // `sharedRuntimeDeps.test.ts` already checks and a resolver is free to disagree with them. Nesting is
+  // what a duplicate looks like on disk: a second copy appears under some package's own `node_modules`.
+  process.stdout.write("  one copy of each shared runtime\n");
+  for (const name of ["zod", "kysely", "hono"]) {
+    const copies = run("find", [join(project, "node_modules"), "-type", "d", "-name", name], root)
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.endsWith(`node_modules/${name}`) && existsSync(join(line, "package.json")))
+      .map((line) => relative(project, line));
+
+    if (copies.length !== 1) {
+      fail(
+        `resolving ${name} to one copy`,
+        `${copies.length} copies installed:\n  ${copies.join("\n  ")}\n\n` +
+          `Two copies are two types. Check that every package importing ${name} declares it in peerDependencies at one range.`,
+      );
+    }
+  }
 
   // 4. Node imports the kit. **The defect #476 closed, and the one nothing inside this repository can
   //    see**: every consumer here has a bundler — wrangler, Vite, vitest transforming a test — and node

@@ -46,6 +46,7 @@ import {
   type SettingsFindingEntry,
 } from "../doctor/settings";
 import { doctorSettingsCheck } from "../doctor/settingsSources";
+import { checkSharedRuntimes, describeSharedRuntimes, type SharedRuntimesCheck } from "../doctor/sharedRuntimes";
 import { checkWorkerNames, describeWorkerName, type WorkerNameCheck } from "../doctor/workerName";
 import { describeUndeclared, undeclaredRemedy } from "../migrations/ledger";
 import { type FetchLike, fetchLatestVersion } from "../notifier/check";
@@ -309,6 +310,12 @@ export interface DoctorReport {
    * The verdict is {@link deliveryPreflight}'s own, so this and `pithy dev` cannot disagree.
    */
   localDelivery: LocalDeliveryCheck | null;
+  /**
+   * Whether one `zod`, one `kysely` and one `hono` are resolved, or several (#477).
+   *
+   * `null` outside a readable project, on the same footing as the checks above.
+   */
+  sharedRuntimes: SharedRuntimesCheck | null;
   /**
    * What is in a `.dev.vars.local` that nothing else in the project knows about — a key that exists only
    * in dev, and a key that shadows a registry secret. `null` when there is nothing to say, which is every
@@ -593,6 +600,8 @@ export interface DoctorReportOptions {
    * settings probe it takes the composition rather than a directory, so nothing here re-enumerates
    * `apps/` and `--worker <name>` narrows it the same way.
    */
+  /** Shared-runtime seam; defaults to {@link checkSharedRuntimes} over the project directory. */
+  checkSharedRuntimes?: (projectDir: string) => SharedRuntimesCheck;
   checkLocalDelivery?: (options: {
     projectDir: string;
     workers: readonly ResolvedWorker[];
@@ -942,6 +951,19 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
         )
       : null;
 
+  // One copy of each shared runtime, or several. Cheap — it resolves rather than reading a directory —
+  // and it answers a question whose natural symptom is a TypeScript error naming neither the package
+  // nor the duplication, which is the kind of thing this command exists to say out loud.
+  const sharedRuntimes = inProject
+    ? await probed<SharedRuntimesCheck | null>(
+        async () =>
+          (options.checkSharedRuntimes ?? ((dir: string) => checkSharedRuntimes({ projectDir: dir })))(
+            options.projectDir,
+          ),
+        null,
+      )
+    : null;
+
   return {
     cli,
     shell,
@@ -965,6 +987,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     secretBindings,
     settings,
     localDelivery,
+    sharedRuntimes,
     devSecretsFile,
     devVarsLocal,
     devVars,
@@ -1498,6 +1521,27 @@ function localDeliveryBlock(check: LocalDeliveryCheck): string {
   return ["Local delivery:", ...check.lines.map((line) => `  ${line}`)].join("\n");
 }
 
+/**
+ * The shared-runtime block, printed only when there is something wrong (#477).
+ *
+ * Unlike `Local delivery:` beside it, silence here is the right default: "one copy of zod" is the
+ * uninteresting answer in every healthy project, and a report that prints a line per thing that is fine
+ * is a report nobody reads to the end. `--json` carries it either way, because a script wants the
+ * healthy answer as much as the unhealthy one.
+ *
+ * It does not fail the exit. A duplicate is nearly always a fault, but "nearly" is doing real work: a
+ * project may have pinned a second copy deliberately, and this command is not in a position to know.
+ * It says what it found and names the fix.
+ */
+function sharedRuntimesBlock(check: SharedRuntimesCheck): string {
+  const lines = ["Shared runtimes:", `  ${describeSharedRuntimes(check)}`];
+  for (const one of check.duplicated) {
+    for (const copy of one.copies) lines.push(`    ${one.name}: ${copy}`);
+  }
+  lines.push("  Declare each one in your own package.json, at one range, and reinstall.");
+  return lines.join("\n");
+}
+
 /** One finding's problem line: what is wrong, where, and why — the action follows it. */
 function settingsProblem(finding: SettingsFindingEntry): string {
   const where = finding.environment === null ? "" : ` (${finding.environment})`;
@@ -1842,6 +1886,9 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // And whether anything this project sends would leave this machine at all — the question `Settings:`
   // does not ask, because it is about the machine rather than about a value.
   if (report.localDelivery) blocks.push(localDeliveryBlock(report.localDelivery));
+  if (report.sharedRuntimes && report.sharedRuntimes.duplicated.length > 0) {
+    blocks.push(sharedRuntimesBlock(report.sharedRuntimes));
+  }
 
   // OS / runtime. Named explicitly, because under Bun `report.node` is an emulated compatibility level
   // rather than the interpreter — reporting it alone would name a runtime that is not running.
@@ -1996,6 +2043,13 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
       : null,
     // Not a verdict a script gates on — the simulator is a choice — so `live` is the field and the
     // `detail` is the run's own sentence about why.
+    sharedRuntimes: report.sharedRuntimes
+      ? {
+          duplicated: report.sharedRuntimes.duplicated.map((one) => one.name),
+          copies: Object.fromEntries(report.sharedRuntimes.resolutions.map((one) => [one.name, one.copies])),
+          detail: describeSharedRuntimes(report.sharedRuntimes),
+        }
+      : null,
     localDelivery: report.localDelivery
       ? {
           live: report.localDelivery.live,

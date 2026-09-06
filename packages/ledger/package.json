@@ -36,20 +36,25 @@
   "dependencies": {
     "@cloudflare/workers-types": "^5.20260729.1",
     "@hono/zod-validator": "^0.9.0",
-    "@pithy-sh/core": "^0.1.2",
-    "hono": "^4.13.2",
-    "kysely": "^0.29.0",
-    "zod": "^4.4.0"
+    "@pithy-sh/core": "^0.1.2"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.0.0",
     "@pithy-sh/tsconfig": "workspace:*",
     "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "^4.1.0",
+    "hono": "^4.13.2",
+    "kysely": "^0.29.0",
     "kysely-d1": "^0.4.0",
     "tsdown": "^0.23.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.0",
-    "wrangler": "^4.115.0"
+    "wrangler": "^4.115.0",
+    "zod": "^4.4.0"
+  },
+  "peerDependencies": {
+    "hono": "^4.13.2",
+    "kysely": "^0.29.0",
+    "zod": "^4.4.0"
   }
 }

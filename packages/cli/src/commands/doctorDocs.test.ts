@@ -242,7 +242,10 @@ describe("docs/commands/doctor.md", () => {
   test("pastes exactly the blocks pinned below, and nothing else", () => {
     // An unclassified block, a fourth transcript, or a second sample would be an unpinned example. The
     // page total counts the synopsis too, so a worked example added anywhere lands in one of these.
-    expect(WHAT_BLOCKS).toHaveLength(13);
+    //
+    // Fourteen since #477 added `Shared runtimes:`, which is the thirteenth block the renderer can
+    // print and the fourteenth fence on the page.
+    expect(WHAT_BLOCKS).toHaveLength(14);
     expect(EXAMPLE_BLOCKS).toHaveLength(2);
     expect(JSON_SAMPLES).toHaveLength(1);
     expect(fencedBlocks(PAGE)).toHaveLength(WHAT_BLOCKS.length + EXAMPLE_BLOCKS.length + JSON_SAMPLES.length + 1);

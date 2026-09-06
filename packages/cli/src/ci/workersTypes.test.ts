@@ -29,10 +29,16 @@ import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
  * The shape of the real rule is broader: **every bare specifier a shipped source imports is a declared
  * dependency of the package that ships it.** `packages/core/src/worker-safety.test.ts` already asserts it
  * for core, against a frozen `ALLOWED_SPECIFIERS`. It is not asserted repository-wide yet, because the
- * same sweep that measures this issue also finds `zod` imported from twenty-five shipped `packages/cli`
- * modules, and `vitest` and `miniflare` reached from `src/test-utils/*.ts` files that ship because nobody
- * excluded them. Promoting a test framework to a runtime dependency of the CLI would be the wrong fix; the
- * right one is probably to stop publishing those files, and that is a decision with its own blast radius.
+ * same sweep that measures this issue also finds `vitest` and `miniflare` reached from `src/test-utils/*.ts`
+ * files that ship because nobody excluded them. Promoting a test framework to a runtime dependency of the
+ * CLI would be the wrong fix; the right one is probably to stop publishing those files, and that is a
+ * decision with its own blast radius.
+ *
+ * The other half of that sighting is closed. `zod`, imported from twenty-five shipped `packages/cli`
+ * modules and declared nowhere but `devDependencies`, was an undeclared runtime dependency satisfied only
+ * because `@pithy-sh/core` carried `zod` transitively. #477 made `zod`, `kysely` and `hono`
+ * `peerDependencies` of every package that imports them — which removed that cover — and
+ * `sharedRuntimeDeps.test.ts` is the gate for those three, in both directions.
  * A gate carrying an exception list of decisions nobody has made is the rot `turboInputs.test.ts` refuses.
  * So this file claims exactly what it checks, and the name says the same.
  *
