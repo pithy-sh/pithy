@@ -30,16 +30,18 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]
     },
-    // No `^build` on typecheck or test. Every package exports `./src/*` → `./src/*.ts`, so packages
-    // consume each other's TypeScript source and nothing ever reads `dist/`. Depending on `^build`
-    // would rebuild every upstream package to produce output no test or typecheck consumes.
-    // `build` stays a separate CI step — it proves tsc emit and dts generation still work for publishing.
+    // **`^build` on typecheck and test, because `dist/` is what a package now resolves to.** It used to
+    // say the opposite, and the reason it gave was true at the time: every package exported
+    // `./src/*` → `./src/*.ts`, so packages consumed each other's TypeScript source and nothing ever
+    // read `dist/`. #476 ended that. `exports` points at built JavaScript with declarations beside it,
+    // because node refuses to strip types under `node_modules` and an adopter's `vitest.config.ts`
+    // importing the kit died there. A sibling's types now exist only once it has been built.
     //
-    // That `^build` was also, by accident, throttling the test run: test tasks started staggered
-    // behind their dependencies' builds. Without it every package's vitest launches at once, and the
-    // `@cloudflare/vitest-plugin` suites each spawn workerd — enough oversubscription to time
-    // out `beforeAll` hooks on an 8-core machine. The root `test` script replaces the accidental
-    // throttle with an explicit `--concurrency=50%`; keep it there if you touch these deps.
+    // The throttle that comment worried about cuts the other way, and is worth keeping straight:
+    // `^build` was *accidentally helping*, staggering test tasks behind their dependencies' builds.
+    // Removing it launched every package's vitest at once — each `@cloudflare/vitest-plugin` suite
+    // spawning workerd — and timed out `beforeAll` hooks on an 8-core machine. The root `test` script
+    // answers that explicitly with `--concurrency=50%`; keep it there if you touch these deps.
     // `@pithy-sh/vite#build` writes one file outside its own package: `templates/client-env.d.ts` in
     // `@pithy-sh/ui-react`, generated from the four declared client projections (#398). Both halves are
     // named here or the cache lies about it — an output turbo does not know it produced is not restored
@@ -49,7 +51,7 @@
       "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/packages/*/src/client/projection.ts"],
       "outputs": ["dist/**", "$TURBO_ROOT$/packages/ui-react/templates/client-env.d.ts"]
     },
-    "typecheck": {},
+    "typecheck": { "dependsOn": ["^build"] },
     // `.github/scripts/` belongs to no workspace, so `turbo run typecheck` never reached either of the
     // two scripts CI's `plan` job runs (#214). They are a fourth program in `packages/cli` now —
     // `tsconfig.ciScripts.json` — because that is where `typescript` and `@types/node` are installed and
@@ -744,9 +746,9 @@
     "@pithy-sh/cloudflare#test:node": {
       "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/turbo.jsonc", "$TURBO_ROOT$/docs/FIXTURES.md"]
     },
-    "test": {},
-    "test:node": {},
-    "test:workers": {},
+    "test": { "dependsOn": ["^build"] },
+    "test:node": { "dependsOn": ["^build"] },
+    "test:workers": { "dependsOn": ["^build"] },
     "test:integration": {
       // Live Cloudflare — never cached; only packages that define the script run it.
       "cache": false

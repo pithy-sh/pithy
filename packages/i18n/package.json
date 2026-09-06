@@ -8,20 +8,25 @@
     "directory": "packages/i18n"
   },
   "files": [
+    "dist",
     "src",
     "pithy.manifest.json",
-    "!src/**/*.test.*"
+    "!src/**/*.test.*",
+    "!dist/**/*.test.*"
   ],
   "type": "module",
   "engines": {
     "node": ">=22"
   },
   "exports": {
-    "./src/react/translator": "./src/react/translator.tsx",
-    "./src/*": "./src/*.ts"
+    "./src/*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./src/react/translator": "./src/react/translator.tsx"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json --noEmit false --outDir dist",
+    "build": "tsdown && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.browser.json",
     "test": "vitest run",
     "test:node": "vitest run --project=node --project=dom",
@@ -54,6 +59,7 @@
     "happy-dom": "^20.11.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "tsdown": "^0.23.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.0",
     "wrangler": "^4.115.0"

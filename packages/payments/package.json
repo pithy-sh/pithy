@@ -12,18 +12,23 @@
     "node": ">=22"
   },
   "exports": {
-    "./src/*": "./src/*.ts",
+    "./src/*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
     "./paddle-prices.iife.js": "./dist/paddle-prices.iife.js"
   },
   "files": [
+    "dist",
     "src",
     "docs",
     "dist/paddle-prices.iife.js",
     "pithy.manifest.json",
-    "!src/**/*.test.*"
+    "!src/**/*.test.*",
+    "!dist/**/*.test.*"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json --noEmit false --outDir dist && bun scripts/buildPaddlePrices.ts",
+    "build": "tsdown && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.client.json",
     "test": "vitest run",
     "test:node": "vitest run --project=node",
@@ -66,6 +71,7 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "rolldown": "^1.2.4",
+    "tsdown": "^0.23.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.0",
     "wrangler": "^4.115.0"

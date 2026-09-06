@@ -1,0 +1,28 @@
+{
+  // Declarations for the published surface, and nothing else.
+  //
+  // The package tsconfig covers everything a developer typechecks — tests, `scripts/`, fixtures. A
+  // published `.d.ts` tree must mirror `src/` exactly, because `exports` is `./src/*` and the types
+  // have to sit beside the JavaScript tsdown emits. Compiling the wider set either fails on `rootDir`
+  // or buries the output a level deep under `dist/src/`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "outDir": "dist",
+    // `src/browser/` is reachable from the published surface — excluding it does nothing, because
+    // `tsc` follows imports past `exclude`. It needs `DOM`, exactly as `tsconfig.browser.json` gives
+    // it, so the declaration build provides the same lib rather than pretending the module is absent.
+    // The published surface reaches both the browser modules and the React translator, so the
+    // declaration build carries what `tsconfig.browser.json` carries: the DOM lib, React's types and
+    // the JSX transform. Excluding either does nothing — `tsc` follows imports past `exclude`.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["react"],
+    "jsx": "react-jsx"
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  // `src/browser/` is compiled by `tsconfig.browser.json` with the DOM lib. It needs `window`, which
+  // this configuration deliberately does not provide — the same split as `@pithy-sh/payments`.
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
+}

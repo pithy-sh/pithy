@@ -1,0 +1,13 @@
+{
+  "name": "@pithy-sh/build",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./src/*": "./src/*.ts"
+  },
+  "devDependencies": {
+    "tsdown": "^0.23.0"
+  }
+}

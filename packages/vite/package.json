@@ -8,19 +8,24 @@
     "directory": "packages/vite"
   },
   "files": [
+    "dist",
     "src",
-    "!src/**/*.test.*"
+    "!src/**/*.test.*",
+    "!dist/**/*.test.*"
   ],
   "type": "module",
   "engines": {
     "node": ">=22"
   },
   "exports": {
-    "./src/*": "./src/*.ts"
+    "./src/*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    }
   },
   "scripts": {
     "generate": "bun scripts/generateClientEnv.ts",
-    "build": "bun run generate && tsc -p tsconfig.json --noEmit false --outDir dist",
+    "build": "tsdown && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:node": "vitest run --project=node",
@@ -43,6 +48,7 @@
     "@pithy-sh/ui-react": "workspace:*",
     "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "^4.1.0",
+    "tsdown": "^0.23.0",
     "typescript": "^7.0.2",
     "vite": "^8.0.16",
     "vitest": "^4.1.0",
