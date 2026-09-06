@@ -113,6 +113,14 @@ jobs:
       - name: Pack every package
         run: bun run verify-published
 
+      # The artifact, driven from outside the workspace — see the `clean-room` job in `ci.yml` for why
+      # every gate above it is blind to a whole class of defect.
+      - name: Clean room
+        run: bun run clean-room
+
+      - name: Clean room, at every declared floor
+        run: bun run clean-room -- --floors
+
   # The shard plan, from the same script `ci.yml` plans with. A release always tests everything, so
   # there is no affected calculation here — just the full set, packed longest-first by test-file count.
   #

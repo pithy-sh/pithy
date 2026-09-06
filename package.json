@@ -33,7 +33,8 @@
     "version": "changeset version && bun scripts/stampVersions.ts",
     "release": "changeset publish",
     "release:local": "bun scripts/localRelease.ts",
-    "verify-published": "bun scripts/verifyPublished.ts"
+    "verify-published": "bun scripts/verifyPublished.ts",
+    "clean-room": "bun scripts/cleanRoom.ts"
   },
   "//": [
     "@cloudflare/workers-types is pinned below 5.20260807.2, which added `declare const Buffer: any`.",
