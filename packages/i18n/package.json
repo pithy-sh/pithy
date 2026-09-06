@@ -35,12 +35,12 @@
     "reset": "bun run clean && rm -rf node_modules"
   },
   "dependencies": {
-    "@pithy-sh/core": "^0.1.2",
-    "hono": "^4.13.2",
-    "zod": "^4.4.0"
+    "@pithy-sh/core": "^0.1.2"
   },
   "peerDependencies": {
-    "react": "^19.0.0"
+    "hono": "^4.13.2",
+    "react": "^19.0.0",
+    "zod": "^4.4.0"
   },
   "peerDependenciesMeta": {
     "react": {
@@ -57,11 +57,13 @@
     "@types/react-dom": "^19.2.3",
     "@vitest/coverage-v8": "^4.1.0",
     "happy-dom": "^20.11.1",
+    "hono": "^4.13.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "tsdown": "^0.23.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.0",
-    "wrangler": "^4.115.0"
+    "wrangler": "^4.115.0",
+    "zod": "^4.4.0"
   }
 }

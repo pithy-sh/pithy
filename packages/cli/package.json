@@ -51,7 +51,6 @@
     "@pithy-sh/ui-react": "^0.1.2",
     "citty": "^0.2.2",
     "comment-json": "^5.0.0",
-    "kysely": "^0.29.0",
     "miniflare": "^4.20260722.1",
     "picocolors": "^1.1.1"
   },
@@ -74,11 +73,16 @@
     "@pithy-sh/vite": "workspace:*",
     "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "^4.1.0",
+    "kysely": "^0.29.0",
     "rolldown": "^1.2.4",
     "tsdown": "^0.23.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.0",
     "wrangler": "^4.115.0",
+    "zod": "^4.4.0"
+  },
+  "peerDependencies": {
+    "kysely": "^0.29.0",
     "zod": "^4.4.0"
   }
 }
