@@ -460,6 +460,37 @@ describe("a task named for one package still depends on the builds it reads", ()
   //
   // Asked of turbo rather than parsed out of the file, for the same reason as everything else here: the
   // plan is the only answer that reflects what turbo actually merged.
+  // The same defect from the other side, and the one an override cannot fix. `dependsOn: ["^build"]`
+  // builds a package's *dependencies*, so a gate that reads a package the CLI does not name is a gate
+  // reading a `dist` nothing built. `@pithy-sh/leaderboard`, `matchmaking`, `multiplayer` and `rating`
+  // all landed after the ten capabilities the CLI already named, and none of them was added — which
+  // cost nothing while `exports` resolved to source, and made `configEntrypoints.test.ts` fail in CI
+  // with `Cannot find module '@pithy-sh/leaderboard/src/index'` the moment it did not.
+  //
+  // A devDependency rather than a dependency, deliberately: the CLI must not hard-depend on an optional
+  // capability — it reaches them through guarded dynamic imports and through the adopter's own
+  // `node_modules` — and a devDependency is never installed by a consumer while still being a workspace
+  // edge turbo builds along.
+  test("the CLI names every package in the workspace, because its gates read all of them", () => {
+    const manifest = JSON.parse(readFileSync(join(REPO_ROOT, "packages", "cli", "package.json"), "utf8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    const named = new Set([
+      ...Object.keys(manifest.dependencies ?? {}),
+      ...Object.keys(manifest.devDependencies ?? {}),
+    ]);
+
+    const workspace = readdirSync(join(REPO_ROOT, "packages"), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => JSON.parse(readFileSync(join(REPO_ROOT, "packages", entry.name, "package.json"), "utf8")))
+      .map((one: { name: string }) => one.name)
+      .filter((name) => name !== "@pithy-sh/cli");
+
+    expect(workspace.length).toBeGreaterThan(15);
+    expect(workspace.filter((name) => !named.has(name))).toEqual([]);
+  });
+
   test("every task this repository names for a single package plans a build first", async () => {
     const config = readFileSync(join(REPO_ROOT, "turbo.jsonc"), "utf8");
     const overridden = [...config.matchAll(/^ {4}"(@[^"#]+)#([^"]+)":/gm)].map(
