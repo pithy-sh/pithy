@@ -266,21 +266,67 @@ export async function promoteDependencies(
  * alone here too, for the same reason: the only range available names a version no registry has.
  *
  * Merge, never replace: a range the adopter already chose survives untouched.
+ *
+ * ## The capability's required peers come with it
+ *
+ * `zod`, `kysely` and `hono` are `peerDependencies` of every capability, because a second copy of any
+ * of them is a second *type* and the compiler will not say so (#477). A peer is a requirement on the
+ * consumer, though, and something has to satisfy it — **npm installs a peer at the top; bun, for a
+ * workspace member, does not.** 0.1.3 shipped with that half missing: a scaffolded Worker declared its
+ * capabilities and nothing declared their peers, so `zod` and `kysely` were linked nowhere and
+ * `@pithy-sh/core` could not load inside the project at all.
+ *
+ * Measured, on published 0.1.3, from `apps/board`:
+ * `ERR_MODULE_NOT_FOUND: Cannot find package '@pithy-sh/core'`.
+ *
+ * So whoever declares a kit package on a Worker also declares what that package requires the Worker to
+ * provide. **Read from the installed package rather than listed here**, because a list is a second copy
+ * of a fact the manifest already states and would be one release behind the first capability to need
+ * something new.
+ *
+ * Two kinds are skipped, and each for its own reason:
+ *
+ * - **An optional peer.** `@pithy-sh/payments` and `@pithy-sh/i18n` declare `react`, used only by their
+ *   `client/` and `react/` modules — an adopter reaches those by importing them, and a server
+ *   composition never does. `peerDependenciesMeta` says so, and installing React into a Worker to
+ *   satisfy a module it will never load is a worse answer than the resolution failure it prevents.
+ * - **A kit sibling.** `@pithy-sh/support` peers `@pithy-sh/auth`, which is a *prerequisite*: the CLI
+ *   refuses a composition missing one and names the command that fixes it, and once composed it is
+ *   declared by its own `pithy add`. Declaring it here as well would write a range for a package this
+ *   Worker may compose later, on its own terms.
  */
-export async function declareOnWorker(projectDir: string, workerDir: string, pkg: string): Promise<string | null> {
+export async function declareOnWorker(projectDir: string, workerDir: string, pkg: string): Promise<string[]> {
   const rootRaw = await readOptionalFile(join(projectDir, "package.json"));
-  if (rootRaw === null) return null;
+  if (rootRaw === null) return [];
   const root = JSON.parse(rootRaw) as { dependencies?: Record<string, string> };
   const range = root.dependencies?.[pkg];
-  if (range === undefined) return null;
+  if (range === undefined) return [];
 
   const path = join(workerDir, "package.json");
   const workerRaw = await readOptionalFile(path);
-  if (workerRaw === null) return null;
+  if (workerRaw === null) return [];
   const worker = JSON.parse(workerRaw) as { dependencies?: Record<string, string> };
-  if (worker.dependencies?.[pkg] !== undefined) return null;
 
-  worker.dependencies = { ...(worker.dependencies ?? {}), [pkg]: range };
+  const wanted: Record<string, string> = { [pkg]: range, ...(await requiredPeers(projectDir, pkg)) };
+  const added = Object.entries(wanted).filter(([name]) => worker.dependencies?.[name] === undefined);
+  if (added.length === 0) return [];
+
+  worker.dependencies = { ...(worker.dependencies ?? {}), ...Object.fromEntries(added) };
   await writeFileAtomic(path, `${JSON.stringify(worker, null, 2)}\n`);
-  return range;
+  return added.map(([name]) => name);
+}
+
+/** What `pkg`, as installed, requires its consumer to provide — optional and kit peers excluded. */
+async function requiredPeers(projectDir: string, pkg: string): Promise<Record<string, string>> {
+  const raw = await readOptionalFile(join(projectDir, "node_modules", ...pkg.split("/"), "package.json"));
+  if (raw === null) return {};
+  const manifest = JSON.parse(raw) as {
+    peerDependencies?: Record<string, string>;
+    peerDependenciesMeta?: Record<string, { optional?: boolean }>;
+  };
+  return Object.fromEntries(
+    Object.entries(manifest.peerDependencies ?? {}).filter(
+      ([name]) => !name.startsWith(PITHY_SCOPE) && manifest.peerDependenciesMeta?.[name]?.optional !== true,
+    ),
+  );
 }

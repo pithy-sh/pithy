@@ -424,6 +424,35 @@ try {
     }
   }
 
+  // **The scaffolded project can load the kit it composes — the blind spot that shipped 0.1.3.**
+  //
+  // Everything above installs the kit into `project` and drives `pithy` from there. That is the
+  // *toolchain*, and it is not what an adopter builds: `pithy dev`, `wrangler deploy` and `vite build`
+  // all resolve from `apps/<worker>`, where the capabilities were declared and where their dependencies
+  // have to be satisfiable. Nothing checked that, so the peer-dependency change in #477 shipped with
+  // half of itself missing — `zod` and `kysely` were peers of every capability, npm installs a peer at
+  // the top and bun, for a workspace member, does not, and a scaffolded Worker could not load
+  // `@pithy-sh/core` at all. Measured on published 0.1.3, from `apps/board`:
+  // `ERR_MODULE_NOT_FOUND: Cannot find package '@pithy-sh/core'`.
+  //
+  // Asked of the Worker directory rather than the project root, because that is the only place the
+  // answer differs — and it is `node`, for the reason the probe below is: a bundler would resolve this
+  // for itself and never notice.
+  process.stdout.write("  the scaffolded Worker loads what it composes\n");
+  const workerDir = join(app, "apps", "api");
+  for (const specifier of ["@pithy-sh/core/src/error/pithyError", "@pithy-sh/auth/src/capability", "zod", "kysely"]) {
+    try {
+      run("node", ["-e", `await import(${JSON.stringify(specifier)})`], workerDir);
+    } catch (cause) {
+      fail(
+        `loading ${specifier} from the scaffolded Worker`,
+        `${cause instanceof Error ? cause.message : String(cause)}\n\n` +
+          "apps/api composes this capability. Whatever it declares must be resolvable from there — a peer\n" +
+          "the Worker does not declare is installed by npm and not by bun.",
+      );
+    }
+  }
+
   // 4. Node imports the kit. **The defect #476 closed, and the one nothing inside this repository can
   //    see**: every consumer here has a bundler — wrangler, Vite, vitest transforming a test — and node
   //    is the one that does not. It refuses to strip types under `node_modules` and cannot be argued

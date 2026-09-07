@@ -283,14 +283,26 @@ describe("alreadyProvided", () => {
  * manifest-discovery site looks; only the declaration moves.
  */
 describe("declareOnWorker", () => {
-  /** A root that declares `pkg` at `range`, and a Worker under `apps/api` that declares `deps`. */
-  async function project(root: Record<string, string>, worker: Record<string, string>): Promise<string> {
+  /**
+   * A root declaring `pkg`, a Worker under `apps/api`, and an installed copy of `pkg` whose manifest
+   * states `peers` — which is where the peer requirement is read from, never from a list in the CLI.
+   */
+  async function project(
+    root: Record<string, string>,
+    worker: Record<string, string>,
+    installed: Record<string, unknown> = {},
+  ): Promise<string> {
     await writeFile(join(dir, "package.json"), JSON.stringify({ name: "root", dependencies: root }));
     await mkdir(join(dir, "apps", "api"), { recursive: true });
     await writeFile(
       join(dir, "apps", "api", "package.json"),
       JSON.stringify({ name: "api", dependencies: worker }, null, 2),
     );
+    for (const [pkg, manifest] of Object.entries(installed)) {
+      const at = join(dir, "node_modules", ...pkg.split("/"));
+      await mkdir(at, { recursive: true });
+      await writeFile(join(at, "package.json"), JSON.stringify({ name: pkg, ...(manifest as object) }));
+    }
     return join(dir, "apps", "api");
   }
 
@@ -301,31 +313,90 @@ describe("declareOnWorker", () => {
   }
 
   test("copies the range the root resolved, rather than inventing one", async () => {
-    const workerDir = await project({ "@pithy-sh/auth": "^0.1.3" }, { "@pithy-sh/core": "^0.1.3" });
+    const workerDir = await project({ "@pithy-sh/auth": "^0.1.4" }, { "@pithy-sh/core": "^0.1.4" });
 
-    expect(await declareOnWorker(dir, workerDir, "@pithy-sh/auth")).toBe("^0.1.3");
-    expect(await workerDeps()).toEqual({ "@pithy-sh/core": "^0.1.3", "@pithy-sh/auth": "^0.1.3" });
+    expect(await declareOnWorker(dir, workerDir, "@pithy-sh/auth")).toEqual(["@pithy-sh/auth"]);
+    expect(await workerDeps()).toEqual({ "@pithy-sh/core": "^0.1.4", "@pithy-sh/auth": "^0.1.4" });
+  });
+
+  /**
+   * **The half 0.1.3 shipped without.** A peer is a requirement on the consumer, and npm satisfies one
+   * at the top while bun, for a workspace member, does not — so a Worker that declared its capabilities
+   * and not their peers could not resolve `zod` at all, and `@pithy-sh/core` failed to load inside the
+   * project with `ERR_MODULE_NOT_FOUND`.
+   */
+  test("declares the capability's required peers with it", async () => {
+    const workerDir = await project(
+      { "@pithy-sh/auth": "^0.1.4" },
+      { "@pithy-sh/core": "^0.1.4" },
+      { "@pithy-sh/auth": { peerDependencies: { zod: "^4.4.0", kysely: "^0.29.0" } } },
+    );
+
+    expect((await declareOnWorker(dir, workerDir, "@pithy-sh/auth")).sort()).toEqual([
+      "@pithy-sh/auth",
+      "kysely",
+      "zod",
+    ]);
+    expect(await workerDeps()).toMatchObject({ zod: "^4.4.0", kysely: "^0.29.0" });
+  });
+
+  // React is used only by `client/` and `react/` modules an adopter reaches by importing them. A server
+  // composition never does, and installing it to satisfy a module that will not load is a worse answer
+  // than the resolution failure it prevents.
+  test("skips an optional peer", async () => {
+    const workerDir = await project(
+      { "@pithy-sh/payments": "^0.1.4" },
+      {},
+      {
+        "@pithy-sh/payments": {
+          peerDependencies: { zod: "^4.4.0", react: "^19.0.0" },
+          peerDependenciesMeta: { react: { optional: true } },
+        },
+      },
+    );
+
+    await declareOnWorker(dir, workerDir, "@pithy-sh/payments");
+    expect(await workerDeps()).toMatchObject({ zod: "^4.4.0" });
+    expect(await workerDeps()).not.toHaveProperty("react");
+  });
+
+  // A kit sibling peer is a *prerequisite*: the CLI refuses a composition missing one and names the
+  // command that fixes it, and once composed it is declared by its own `pithy add`.
+  test("skips a kit sibling, which the prerequisite check owns", async () => {
+    const workerDir = await project(
+      { "@pithy-sh/support": "^0.1.4" },
+      {},
+      { "@pithy-sh/support": { peerDependencies: { "@pithy-sh/auth": "^0.1.4", zod: "^4.4.0" } } },
+    );
+
+    await declareOnWorker(dir, workerDir, "@pithy-sh/support");
+    expect(await workerDeps()).not.toHaveProperty("@pithy-sh/auth");
+    expect(await workerDeps()).toMatchObject({ zod: "^4.4.0" });
   });
 
   // Merge, never replace — the same rule `pithy ui add` follows. An adopter who pinned a version keeps it.
   test("leaves a range the Worker already declares alone", async () => {
-    const workerDir = await project({ "@pithy-sh/auth": "^0.1.3" }, { "@pithy-sh/auth": "0.1.2" });
+    const workerDir = await project(
+      { "@pithy-sh/auth": "^0.1.4" },
+      { "@pithy-sh/auth": "0.1.3", zod: "4.4.0" },
+      { "@pithy-sh/auth": { peerDependencies: { zod: "^4.4.0" } } },
+    );
 
-    expect(await declareOnWorker(dir, workerDir, "@pithy-sh/auth")).toBeNull();
-    expect(await workerDeps()).toEqual({ "@pithy-sh/auth": "0.1.2" });
+    expect(await declareOnWorker(dir, workerDir, "@pithy-sh/auth")).toEqual([]);
+    expect(await workerDeps()).toEqual({ "@pithy-sh/auth": "0.1.3", zod: "4.4.0" });
   });
 
   // The linked-checkout case `installPackage` documents: nothing is declared anywhere, because the only
-  // range available names a version no registry has. Writing one here would break the next install.
+  // range available names a version no registry has.
   test("writes nothing when the root declares nothing", async () => {
-    const workerDir = await project({}, { "@pithy-sh/core": "^0.1.3" });
+    const workerDir = await project({}, { "@pithy-sh/core": "^0.1.4" });
 
-    expect(await declareOnWorker(dir, workerDir, "@pithy-sh/auth")).toBeNull();
-    expect(await workerDeps()).toEqual({ "@pithy-sh/core": "^0.1.3" });
+    expect(await declareOnWorker(dir, workerDir, "@pithy-sh/auth")).toEqual([]);
+    expect(await workerDeps()).toEqual({ "@pithy-sh/core": "^0.1.4" });
   });
 
-  test("answers null rather than throwing when the Worker has no manifest", async () => {
-    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { "@pithy-sh/auth": "^0.1.3" } }));
-    expect(await declareOnWorker(dir, join(dir, "apps", "gone"), "@pithy-sh/auth")).toBeNull();
+  test("answers empty rather than throwing when the Worker has no manifest", async () => {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { "@pithy-sh/auth": "^0.1.4" } }));
+    expect(await declareOnWorker(dir, join(dir, "apps", "gone"), "@pithy-sh/auth")).toEqual([]);
   });
 });
