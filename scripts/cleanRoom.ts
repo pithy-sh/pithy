@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type CleanRoomManifest, kitOverrides, thirdPartyFloors } from "@pithy-sh/release/src/cleanRoom";
+import { composedResult } from "@pithy-sh/release/src/composed";
 import { publishedPackages } from "@pithy-sh/release/src/workspace";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -198,6 +199,31 @@ try {
   }
   process.stdout.write(`  capabilities declared on the Worker: ${onWorker.length}\n`);
 
+  /**
+   * What a scaffolded Worker is composed of, as a set — capabilities plus `<env>:<binding>`.
+   *
+   * **Refuses an empty answer rather than returning one.** `pithy-sh/dashboard` ran this comparison
+   * with an argv slip that made both extractions empty; two empty lists compared equal and the suite
+   * reported that the property held. A probe that silently reads nothing is a permanently green gate,
+   * and that is the failure mode which hides exactly the class of bug this file is for. The floor is
+   * here, on the probe, rather than only on the comparison below.
+   */
+  const composedOf = (project: string, label: string): string[] => {
+    const worker = join(project, "apps", "api");
+    const result = composedResult(
+      readFileSync(join(worker, "pithy.config.ts"), "utf8"),
+      readFileSync(join(worker, "wrangler.jsonc"), "utf8"),
+    );
+    if (result.length === 0)
+      fail(
+        `reading what ${label} composes`,
+        `${worker} composes nothing — the probe read no capabilities and no bindings.`,
+      );
+    return result;
+  };
+
+  const composedInOrder = composedOf(app, "the first project");
+
   // **A choice that cannot compose is refused, not written — #483.** `--set billingSubject=organization`
   // used to succeed and leave a config the kit refuses to load, so every later command in the project
   // failed on the config `add` had just written. The assertion is in two halves and both matter: the
@@ -247,6 +273,16 @@ try {
     );
 
   const before = wiring();
+  // The floor, for the reason `composedOf` carries one: two identical readings of nothing compare equal
+  // and report that idempotency holds. Every one of these files has content and names the Worker's own
+  // capabilities, so an empty or truncated read is a broken probe rather than a passing gate.
+  for (const [file, text] of Object.entries(before)) {
+    if (text.trim() === "") fail("reading the Worker's wiring", `apps/api/${file} read as empty.`);
+  }
+  if (!before["pithy.config.ts"]?.includes("@pithy-sh/secrets")) {
+    fail("reading the Worker's wiring", "apps/api/pithy.config.ts names no capability that was just added.");
+  }
+
   process.stdout.write("  every add again, changing nothing\n");
   for (const capability of [...CAPABILITIES, "turnstile", "payments"]) {
     drive(`  re-add ${capability}`, ["add", capability, "--worker", "api"], app);
@@ -259,6 +295,54 @@ try {
       `a second run rewrote ${moved.join(", ")}. \`pithy add\` is idempotent by contract — CI re-runs it.`,
     );
   }
+
+  // **The same capabilities in the opposite order compose the same result — #486.**
+  //
+  // "Additive" promises that the *result* is the same, not that the file is: every writer in the CLI's
+  // `capabilities/add.ts` appends, so two orderings legitimately produce the same set in a different
+  // textual order. A byte diff was the first version of this check and it was refused, because a gate
+  // that fails on correct behavior gets switched off and takes the real assertions with it.
+  //
+  // Appending is *why* it holds today, which is the argument for not asserting it — and the argument
+  // against that is that whether every writer appends is the thing under test rather than a premise of
+  // it. `add.ts` has several writers, a capability added later can interact with another, and this is
+  // the one promise in the capability contract that has never been observed to hold.
+  //
+  // The bindings carry their environment, so a binding landing in `staging` and not `prod` is a
+  // difference even when the overall set of names matches.
+  const reordered = emptyProject("app-reordered");
+  drive("pithy init (reordered)", ["init", "--name", "reordered", "--worker", "api"], reordered);
+  const reorderedManifest = JSON.parse(readFileSync(join(reordered, "package.json"), "utf8")) as Record<
+    string,
+    unknown
+  >;
+  writeFileSync(join(reordered, "package.json"), `${JSON.stringify({ ...reorderedManifest, overrides }, null, 2)}\n`);
+  try {
+    run("bun", ["install"], reordered);
+  } catch (cause) {
+    fail("installing the reordered project", cause);
+  }
+  // `--with-prerequisites`, because the reverse order is not otherwise reachable and that is correct
+  // behavior rather than a defect: `email` requires `secrets`, so adding it first is refused naming the
+  // command that fixes it. The first version of this check took that refusal for a failure. Resolving
+  // prerequisites is itself deterministic, so the comparison still asks one question — whichever route
+  // a project takes to composing these four, it ends up composed of the same things.
+  for (const capability of [...CAPABILITIES].reverse()) {
+    drive(`  add ${capability} (reordered)`, ["add", capability, "--worker", "api", "--with-prerequisites"], reordered);
+  }
+
+  const composedReversed = composedOf(reordered, "the reordered project");
+  if (composedInOrder.join("\n") !== composedReversed.join("\n")) {
+    const onlyFirst = composedInOrder.filter((one) => !composedReversed.includes(one));
+    const onlySecond = composedReversed.filter((one) => !composedInOrder.includes(one));
+    fail(
+      "composing the same result whichever order the adds arrived in",
+      `the two projects differ.\n` +
+        `  only in the first order:  ${onlyFirst.join(" ") || "(nothing)"}\n` +
+        `  only in the reverse:      ${onlySecond.join(" ") || "(nothing)"}`,
+    );
+  }
+  process.stdout.write(`  the same ${composedInOrder.length} composed either way\n`);
 
   // **The same commands again with Bun removed from PATH — #474.** `bin` was `./src/bin.ts` behind
   // `#!/usr/bin/env bun`, so `pithy` installed for everyone and started for nobody without Bun:
