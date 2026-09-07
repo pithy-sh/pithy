@@ -42,7 +42,7 @@ There is no `--worker`. Every subcommand reads the **project's** registry: each 
 
 ## What it does
 
-The registry is the definition. `pithy secrets` never invents a name — a secret must be declared by a Worker's secrets capability, and an undeclared one is refused before anything is sent.
+The registry is the definition. `pithy secrets` never invents a name — a secret must be declared by a capability the Worker composes, and an undeclared one is refused before anything is sent. Every capability's declarations count, not just the secrets capability's own: `auth`'s session secret and OAuth credentials, `email`'s link signing key and `payments`' provider credentials are all declared by the capability that reads them, and all of them are yours to create here.
 
 **A value never comes from a flag.** `create` and `update` read the value from stdin when it is piped, and from a masked prompt otherwise. A flag would leave a live credential in shell history and in every process list on the machine. Nothing here prints a value back, on any subcommand, in either output mode.
 
