@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { NotFoundError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "@pithy-sh/payments/src/secret/registry";
@@ -326,6 +327,35 @@ describe("resolveSecretRegistry", () => {
 
   test("throws when the worker doesn't enable the secrets capability", () => {
     expect(() => resolveSecretRegistry({ capabilities: [] })).toThrow(NotFoundError);
+  });
+
+  /**
+   * **The property `pithy secrets` is for, and the one nothing asserted — #501.**
+   *
+   * A capability's secrets live on *its* capability, not on `secrets({ registry })`. This resolved the
+   * secrets capability's own slice, so `pithy secrets create auth-session-secret` — the command `pithy
+   * add auth` tells an adopter to run — answered "not declared in the registry", and every externally
+   * issued credential in the product had no path to a deployed environment. It surfaced at a first
+   * deploy rather than at the add, because the capabilities mint dev values themselves.
+   *
+   * Asserted over a real capability registry rather than a fixture: the bug was that a *contributed*
+   * slice went unread, so a hand-written stand-in would have proved the wrong thing.
+   */
+  test("carries the secrets every other capability declares, not only the secrets capability's own", () => {
+    const payments = defineCapability({
+      name: "payments",
+      requiredBindings: [],
+      secretRegistry: paymentsSecretsRegistry,
+    });
+    const config: WorkerConfig = { capabilities: [secrets({ registry }), payments] };
+
+    const resolved = resolveSecretRegistry(config);
+
+    expect(resolved).toHaveProperty(PAYMENTS_PROVIDER_SECRET);
+    expect(resolved[PAYMENTS_PROVIDER_SECRET]).toEqual(paymentsSecretsRegistry[PAYMENTS_PROVIDER_SECRET]);
+    // The union, not a replacement: the secrets capability's own slice and the master key survive it.
+    expect(resolved).toMatchObject(registry);
+    expect(resolved).toHaveProperty("SECRETS_ENCRYPTION_KEYS");
   });
 });
 

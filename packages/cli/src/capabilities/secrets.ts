@@ -14,6 +14,7 @@ import { validateSecretValue } from "@pithy-sh/secrets/src/cli/validate";
 import { parseKeyedSecretName } from "@pithy-sh/secrets/src/keyspace";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
+import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { allCapabilities, type WorkerConfig } from "../project/config";
 
@@ -25,21 +26,40 @@ const SECRET_WRITE_ACTION: Record<SecretWriteCommand["mode"], string> = {
 };
 
 /**
- * Discover a Worker's secret registry by finding the secrets capability in its loaded
- * `apps/<name>/pithy.config.ts` (#25's config model). The capability carries its own registry, so there
- * is no separate loading convention — the CLI reads what the Worker reads. Capabilities are per-Worker,
- * so the registry is too: a caller spanning several Workers resolves each and merges by secret name
- * (the name is the join key).
+ * Discover a Worker's secret registry from its loaded `apps/<name>/pithy.config.ts` (#25's config
+ * model) — **every capability's slice, not the secrets capability's own** (#501).
+ *
+ * `secrets({ registry })` carries one slice: the master key plus whatever the adopter declared beside
+ * it. What `auth`, `email`, `payments` and `turnstile` declare lives on *their* capabilities, and a
+ * Worker only ever reads the union — `secrets`' `compose` hook aggregates the same slices at startup
+ * and backs the shared accessor from the result. So `pithy secrets` reading one slice was reading a
+ * different registry from the Worker it configures, and every secret a capability owns was missing.
+ *
+ * **Missing with no error, which is what made it survive.** `pithy add auth` ends by naming `pithy
+ * secrets create auth-session-secret`, and that command answered "not declared in the registry" — an
+ * action line pointing at a command that could not be followed, for `auth-session-secret`,
+ * `auth-google-credentials`, `auth-github-credentials`, `email-link-signing-key` and
+ * `payments-provider-credentials`. Nothing surfaced until a deployed environment needed one, because
+ * the capabilities mint their own dev values and `doctor` reads the union already.
+ *
+ * **Aggregated, not composed.** Running the `compose` hook would not have fixed it: the hook keeps the
+ * combined registry in a closure the status surface reads and never writes it back to
+ * `secretRegistry`. So this calls the same aggregator the hook calls — one function, one merge rule,
+ * and a contradictory redeclaration of one name is refused there rather than resolved differently in
+ * two places.
+ *
+ * The secrets capability is still required, and that refusal is unchanged: it owns the store every
+ * write goes to, so a Worker without it has nowhere to put a secret whoever declared it.
  */
 export function resolveSecretRegistry(config: WorkerConfig): SecretRegistry {
-  const capability = allCapabilities(config).find(isSecretsCapability);
-  if (!capability) {
+  const capabilities = allCapabilities(config);
+  if (!capabilities.some(isSecretsCapability)) {
     throw new NotFoundError({
       message: "The secrets capability isn't enabled in this worker.",
       action: "Add secrets({ registry }) to the worker's pithy.config.ts capabilities, or pass --worker.",
     });
   }
-  return capability.secretRegistry;
+  return aggregateSecretRegistries(capabilities);
 }
 
 /**
