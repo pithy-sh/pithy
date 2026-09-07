@@ -206,3 +206,62 @@ export function unresolvedSpecifier(cause: unknown): string | undefined {
   const match = /Cannot find (?:package|module) ['"]([^'"]+)['"]/.exec(causeMessage(cause) ?? "");
   return match?.[1];
 }
+
+/** A package name as npm allows one: an optional `@scope/`, and never a store's dot-directory. */
+const PACKAGE_NAME = /^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i;
+
+/**
+ * The file the failing import was written in, as the runtime named it. **Module-private on purpose**: it
+ * is an absolute path, and {@link importingPackage} exists to make sure only its package half leaves here.
+ */
+function importerPath(cause: unknown): string | undefined {
+  const field = prop(cause, "referrer");
+  if (typeof field === "string" && field.length > 0) return field;
+  const message = causeMessage(cause) ?? "";
+  // Node ends its sentence with the path, so it is taken to the end of the line — a directory may
+  // contain a space. Bun quotes it when it states one in prose, and always carries the field as well.
+  return (/ imported from (.+)$/.exec(message) ?? /\bfrom ['"]([^'"]+)['"]/.exec(message))?.[1];
+}
+
+/**
+ * The package whose own source contained the import that did not resolve — **never a path**.
+ *
+ * {@link unresolvedSpecifier} answers *what* did not resolve. This answers *where the import lives*, and
+ * the two are different facts whenever the failing import is not the adopter's own. #480 is that case
+ * verbatim: `pithy add email` on a fresh project refused with
+ *
+ * > Nothing resolves "@pithy-sh/core/src/capability/capability".
+ *
+ * while `@pithy-sh/core` resolved from the Worker at every step of the run, before and after. The
+ * specifier was honest — the runtime really could not resolve it — but the import belonged to
+ * `@pithy-sh/email`, which had just been installed and was the package genuinely not linked. So the
+ * refusal named the one dependency that was definitely fine, and an adopter following it ran `bun
+ * install` against a tree that already had core in it. The importer is the half that would have pointed
+ * at `email`, and both runtimes hand it over: **Bun's `ResolveMessage` carries `referrer` as a field**
+ * (measured on 1.3.14) and Node states it in prose as `imported from <path>`.
+ *
+ * **A package name, or nothing.** The referrer is an absolute path — our frame, and the reason
+ * {@link unresolvedSpecifier} drops the prose around the specifier — so what travels is the one part of
+ * it that is not a path: the package directory it sits under. A referrer outside `node_modules` is the
+ * adopter's own file, and there is nothing to say about it that the refusal does not already say by
+ * naming the config, so it answers `undefined` rather than a path. The path itself is never returned
+ * from this module, which is what makes leaking it impossible rather than merely discouraged.
+ *
+ * The **last** `node_modules` in the path, because every store layout nests: pnpm's
+ * `node_modules/.pnpm/<id>/node_modules/<pkg>` and Bun's isolated linker's
+ * `node_modules/.bun/<pkg>@<version>/node_modules/<pkg>` (both measured) put the real owner last, and so
+ * does an ordinary nested install. The name is then checked against what npm allows, so a store's own
+ * bookkeeping directory (`.bun`, `.pnpm`, `hono@4.6.3`) can only ever answer nothing.
+ *
+ * Whether a surface names it, and what it advises when it does, is that surface's policy and stays there.
+ */
+export function importingPackage(cause: unknown): string | undefined {
+  const referrer = importerPath(cause);
+  if (referrer === undefined) return undefined;
+  const segments = referrer.split(/[\\/]/);
+  const at = segments.lastIndexOf("node_modules");
+  const head = at === -1 ? undefined : segments[at + 1];
+  if (head === undefined) return undefined;
+  const name = head.startsWith("@") ? `${head}/${segments[at + 2] ?? ""}` : head;
+  return PACKAGE_NAME.test(name) ? name : undefined;
+}

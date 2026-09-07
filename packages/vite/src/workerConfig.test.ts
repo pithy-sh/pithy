@@ -129,6 +129,31 @@ describe("classifyWorkerConfigFailure", () => {
     expect(action).not.toContain("/home/a");
   });
 
+  /**
+   * **The importer, when the failing import is not the config's own (#480, #489).**
+   *
+   * The fixture above is the ordinary case: the config's own import, so the referrer is the config and
+   * there is nothing to add. This is the other one — `@pithy-sh/email` resolved, and *its* import of core
+   * did not — where the specifier alone sends the reader to a package that was fine all along. The dev
+   * server loads the same file the CLI does, so it says the same thing.
+   */
+  test("a dependency's failing import names the dependency, and still never a path", () => {
+    const cause = {
+      name: "ResolveMessage",
+      message:
+        "Cannot find module '@pithy-sh/core/src/capability/capability' from '/home/a/node_modules/@pithy-sh/email/src/index.ts'",
+      code: "ERR_MODULE_NOT_FOUND",
+      specifier: "@pithy-sh/core/src/capability/capability",
+      referrer: "/home/a/node_modules/@pithy-sh/email/src/index.ts",
+    };
+    const { kind, action } = classifyWorkerConfigFailure(cause);
+    expect(kind).toBe("unresolved-import");
+    expect(action).toContain("@pithy-sh/email");
+    expect(action).toContain("not the config");
+    expect(action).not.toContain("/home/a");
+    expect(action).not.toMatch(/is not installed|is missing/i);
+  });
+
   test("Bun's BuildMessage is not an Error: the parser's reason reaches the adopter, install does not", () => {
     const cause = {
       name: "BuildMessage",
