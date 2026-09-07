@@ -29,7 +29,18 @@ export async function buildPaddlePricesBundle(outDir: string): Promise<string> {
   const file = join(outDir, PADDLE_PRICES_BUNDLE);
   await build({
     input: ENTRY,
-    output: { format: "iife", file, minify: true, sourcemap: false },
+    // The banner survives minification, and it is the reason it is written `/*! */` rather than `//`:
+    // a legal comment is the one thing a minifier is required to keep. Every other file this repository
+    // distributes carries the notice — tsdown's `banner` for the modules, `stampDeclarations.ts` for the
+    // types — and this bundle is the one an adopter loads straight into a browser from a script tag,
+    // which makes it the copy most likely to be read without the package around it.
+    output: {
+      format: "iife",
+      file,
+      minify: true,
+      sourcemap: false,
+      banner: "/*! SPDX-FileCopyrightText: 2026 Pithy | SPDX-License-Identifier: MIT */",
+    },
     write: true,
   });
   return file;

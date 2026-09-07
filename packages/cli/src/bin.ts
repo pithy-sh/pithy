@@ -23,8 +23,17 @@ import { readFileSync } from "node:fs";
 // Type-only, so it is erased and does not reach citty at runtime — the import discipline below the
 // `NO_COLOR` line is about evaluation order, and an erased import has none.
 import type { ArgsDef, CommandDef } from "citty";
+import { unsupportedNodeMessage } from "./nodeFloor";
 import { wantsVersion } from "./rootFlags";
 import { colorEnabled } from "./terminal/style";
+
+// Before anything is imported or read, so the refusal costs nothing and cannot itself fail on an old
+// runtime. The rule lives in `nodeFloor.ts` because this file cannot be tested — see `rootFlags.ts`.
+const unsupported = unsupportedNodeMessage(process.versions.node);
+if (unsupported !== null) {
+  process.stderr.write(unsupported);
+  process.exit(1);
+}
 
 const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
   version: string;

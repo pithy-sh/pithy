@@ -28,7 +28,7 @@
     "!src/client/paddlePrices.iife.ts"
   ],
   "scripts": {
-    "build": "tsdown && tsc -p tsconfig.build.json && bun scripts/buildPaddlePrices.ts",
+    "build": "tsdown && tsc -p tsconfig.build.json && bun ../../tooling/build/src/stampDeclarations.ts && bun scripts/buildPaddlePrices.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.client.json",
     "test": "vitest run",
     "test:node": "vitest run --project=node",

@@ -33,6 +33,13 @@
 
 /** A packed package, as `npm pack --dry-run --json` describes it. */
 export interface PackedPackage {
+  /**
+   * The first bytes of each distributed file, by path — enough to see a notice, and no more.
+   *
+   * Supplied by the caller because reading is the caller's job: this module decides, it does not open
+   * anything. Absent means the check is skipped, which keeps every existing unit fixture valid.
+   */
+  heads?: Record<string, string>;
   /** The npm package name, for the fault line. */
   name: string;
   /** Every path in the tarball, relative to the package root. */
@@ -72,6 +79,16 @@ export interface PackedPackage {
  * downloads and never runs.
  */
 const VENDORED = "templates/";
+
+/**
+ * A file whose first bytes must carry the notice: what the build emits, not what it copies.
+ *
+ * `src` is excluded because `scripts/license-headers.ts` already owns it, and a second rule for the
+ * same files is a second thing to keep in step. A vendored template is excluded because it becomes the
+ * adopter's code the moment it lands, and stamping somebody else's repository with our copyright is not
+ * ours to do.
+ */
+const DISTRIBUTED = /^dist\/.*\.(js|d\.ts)$/;
 
 /**
  * A test file, in any extension this repo writes them in.
@@ -192,6 +209,25 @@ export function packFaults(packed: PackedPackage): string[] {
   if (missingBin.length > 0) {
     faults.push(
       `${packed.name} links ${list(missingBin)} as a bin and the tarball does not carry it. The install links a shim to nothing.`,
+    );
+  }
+
+  // **Every distributed file carries its notice.** `scripts/license-headers.ts` has always stamped
+  // `src`, and nothing stamped what is built from it: tsdown drops a file's leading comment on emit and
+  // `tsc --emitDeclarationOnly` drops one that is not attached to a declaration, so 130 of core's 130
+  // shipped modules had no header while every one of its sources did. The tarball carries `LICENSE` and
+  // the manifest declares `MIT`, so nothing was ever unlicensed — what was missing is the notice on the
+  // artifact somebody actually opens, which is what REUSE asks for.
+  //
+  // Checked on the tarball rather than on `dist`, because that is the copy that leaves: a build path
+  // that skips the stamp is invisible to a check that reads the same tree the stamper wrote.
+  const unstamped = Object.entries(packed.heads ?? {})
+    .filter(([path]) => DISTRIBUTED.test(path))
+    .filter(([, head]) => !head.includes("SPDX-License-Identifier"))
+    .map(([path]) => path);
+  if (unstamped.length > 0) {
+    faults.push(
+      `${packed.name} ships ${list(unstamped)} without an SPDX notice. Every distributed file carries one — tsdown's banner for modules, stampDeclarations for types.`,
     );
   }
 
