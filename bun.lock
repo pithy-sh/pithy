@@ -773,6 +773,7 @@
       "name": "@pithy-sh/release",
       "version": "0.0.0",
       "dependencies": {
+        "@pithy-sh/core": "workspace:*",
         "zod": "^4.4.0",
       },
       "devDependencies": {
