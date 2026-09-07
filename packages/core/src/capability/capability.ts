@@ -410,6 +410,24 @@ export interface Capability<
    * every {@link Capability.secretRegistry} slice here into one combined registry.
    */
   compose?: (context: CapabilityComposeContext) => void;
+  /**
+   * Optional **entrypoint** hook, called once by {@link createEntrypoint} with every composed
+   * capability, after {@link Capability.compose} has run for all of them.
+   *
+   * **The distinction from `compose` is the audience, and it is load-bearing.** `createBackend` assembles
+   * a backend for anything that wants to look at one, and the CLI is a caller: `pithy ui` builds the app
+   * to read its route tree, and `composeCapabilities` runs every `compose` hook to read what a capability
+   * reports. `createEntrypoint` is the other thing — it is only ever called by a Worker's own
+   * `src/index.ts`, so a throw from here is a Worker that does not serve, and nothing else.
+   *
+   * So this is where a capability refuses a composition that must never take a request but must still
+   * *load*, because the adopter's own toolchain has to keep working on the project while they fix it.
+   * `@pithy-sh/payments` is the case it exists for: `pithy add` scaffolds an unimplemented
+   * `resolveSubject`, every CLI command keeps loading that config, and the Worker refuses to boot until
+   * the adopter has written it (#500). A check that can be made at composition still belongs at
+   * composition — earlier is better, and a refusal the CLI can raise is a refusal an adopter sees sooner.
+   */
+  boot?: (context: CapabilityComposeContext) => void;
   /** Mounts a Hono sub-router. */
   routes?: (app: Hono<PithyHonoEnv>) => void;
   /** Composable middleware (e.g. turnstile(), requireAuth()). */

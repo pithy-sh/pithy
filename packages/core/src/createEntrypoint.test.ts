@@ -4,6 +4,7 @@
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { defineCapability } from "./capability/capability";
+import { createBackend } from "./createBackend";
 import { createEntrypoint } from "./createEntrypoint";
 import { PithyError } from "./error/pithyError";
 
@@ -207,5 +208,69 @@ describe("createEntrypoint scheduled", () => {
 
     await expect(entry.scheduled?.(null, { EMAIL_SCHEDULER: healthy }, ctx)).resolves.toBeUndefined();
     expect(healthy.started).toEqual([{}]);
+  });
+});
+
+/**
+ * **The seam a capability refuses a deployment at — and the reason it is not `compose` (#500).**
+ *
+ * `createBackend` is assembled by tooling as well as by Workers: `pithy ui` builds the app to read its
+ * route tree, and the CLI runs every `compose` hook to read what a capability reports. `createEntrypoint`
+ * is only ever called by a Worker's own `src/index.ts`. So a capability that must **load** for the
+ * adopter's toolchain and must never **serve** — `@pithy-sh/payments` with a scaffolded, unimplemented
+ * `resolveSubject` — refuses here, and every `pithy` command in that project keeps working.
+ */
+describe("createEntrypoint boot hooks", () => {
+  test("runs every capability's boot hook, with the composed set", () => {
+    const seen: string[][] = [];
+    const make = (name: string) =>
+      defineCapability({
+        name,
+        requiredBindings: [],
+        boot: ({ capabilities }) => seen.push(capabilities.map((cap) => cap.name)),
+      });
+
+    createEntrypoint({ capabilities: [make("a"), make("b")] });
+
+    expect(seen).toEqual([
+      ["a", "b"],
+      ["a", "b"],
+    ]);
+  });
+
+  test("a refusal from a boot hook is the Worker failing to start", () => {
+    const cap = defineCapability({
+      name: "refuser",
+      requiredBindings: [],
+      boot: () => {
+        throw new PithyError({ code: "core/internal", status: 500, message: "not ready." });
+      },
+    });
+
+    expect(() => createEntrypoint({ capabilities: [cap] })).toThrow(PithyError);
+  });
+
+  test("createBackend does not run it — that is the whole point of the split", async () => {
+    let booted = false;
+    const cap = defineCapability({ name: "quiet", requiredBindings: [], boot: () => (booted = true) });
+
+    const app = createBackend({ capabilities: [cap] });
+    await app.fetch(new Request("http://x/health"), {}, ctx);
+
+    expect(booted).toBe(false);
+  });
+
+  test("boot runs after compose, so a hook sees what composition wired", () => {
+    const order: string[] = [];
+    const cap = defineCapability({
+      name: "ordered",
+      requiredBindings: [],
+      compose: () => order.push("compose"),
+      boot: () => order.push("boot"),
+    });
+
+    createEntrypoint({ capabilities: [cap] });
+
+    expect(order).toEqual(["compose", "boot"]);
   });
 });

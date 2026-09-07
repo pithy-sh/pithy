@@ -105,6 +105,14 @@ export {
   requirePaymentsSubject,
   resolvePaymentsSubject,
 } from "./entitlement/subjectSeam";
+// The scaffolded placeholder, here beside the resolver type for the same reason that type is: the module
+// `pithy add` writes into `apps/<worker>/src/billing/subject.ts` imports both, and a file the adopter is
+// meant to edit should not reach past the package's documented entrypoint to do it.
+export {
+  isUnimplementedSubject,
+  requireImplementedSubject,
+  unimplementedSubject,
+} from "./entitlement/unimplementedSubject";
 export {
   type AppliedGrant,
   applyGrants,

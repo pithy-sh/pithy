@@ -17,6 +17,7 @@ import { PaymentsConfig, type PaymentsConfigInput } from "./config/config";
 import { paymentsTables } from "./data/tables";
 import { installEntitlementResolver } from "./entitlement/resolver";
 import type { PaymentsSubjectResolver, PaymentsSubjectSeam } from "./entitlement/subjectSeam";
+import { requireImplementedSubject } from "./entitlement/unimplementedSubject";
 import { paymentsManifestConfig } from "./http/manifestConfig";
 import { registerPaymentsRoutes } from "./http/routes";
 import { paymentsAdminRoutes } from "./http/scopes";
@@ -155,6 +156,16 @@ function checkLedgerGrants({ capabilities }: CapabilityComposeContext, config: P
  * raises `payments/subject_unresolved`, and both look exactly like a customer who has not paid. There is no
  * request that ever works, so there is nothing to lose by refusing to boot, and a Worker that boots into
  * that state is one whose first symptom is a support ticket from a paying company.
+ */
+/**
+ * **An unimplemented resolver is not an absent one, and this check is deliberately blind to the
+ * difference.** `pithy add payments --set billingSubject=organization` scaffolds
+ * `src/billing/subject.ts` exporting a placeholder branded unimplemented, and passes it here. It is a
+ * resolver, so this returns — which it must, because `payments()` runs every time a Worker's
+ * `pithy.config.ts` is evaluated and the CLI evaluates it on nearly every command. Refusing the
+ * placeholder here would leave the adopter with no `pithy` at all in the project the scaffold just landed
+ * in. `requireImplementedSubject`, on the capability's `boot` hook, is where the placeholder is refused —
+ * `createEntrypoint` runs it and nothing else does, so the Worker still will not serve (#500).
  */
 function requireResolvableSubject(config: PaymentsConfig, resolveSubject: PaymentsSubjectResolver | undefined): void {
   if (config.billingSubject !== "organization" || resolveSubject !== undefined) return;
@@ -338,6 +349,11 @@ export function payments(options: PaymentsOptions): PaymentsCapability {
     // The one thing this capability cannot check on its own: whether the ledger it credits agrees the
     // currency exists. See `checkLedgerGrants` for why the failure is otherwise invisible.
     compose: (context) => checkLedgerGrants(context, resolved),
+    // The other half of {@link requireResolvableSubject}, and it is at the entrypoint rather than at
+    // composition on purpose: `pithy add` scaffolds an unimplemented `resolveSubject`, and every `pithy`
+    // command evaluates this config to learn what the Worker composes. Refusing here refuses the Worker
+    // and leaves the toolchain that fixes it working. See `entitlement/unimplementedSubject.ts`.
+    boot: () => requireImplementedSubject(resolveSubject),
     // What a browser may know. See `clientProjection` for why the list is what it is.
     client: ({ environment }): PaymentsClientProjection => clientProjection(resolved, environment),
     requiredBindings,

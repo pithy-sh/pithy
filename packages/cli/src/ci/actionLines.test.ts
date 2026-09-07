@@ -223,33 +223,51 @@ describe("every action line names something that exists", () => {
   });
 });
 
-describe("no guidance offers a value the next call refuses", () => {
-  // The floor for this one is the manifest side: with nothing declared unwritable there is nothing to
-  // offer wrongly, and the containment below would hold over an empty rule.
-  test("some choice is declared unwritable, or this checks nothing", () => {
-    expect(UNWRITABLE.size).toBeGreaterThan(0);
-    expect(UNWRITABLE.get("billingSubject")).toContain("organization");
-  });
+/** Every `--set key=value` this repository offers, against one map of what `pithy add` refuses. */
+function offersRefusedValues(unwritable: Map<string, Set<string>>): { faults: string[]; offers: number } {
+  const faults: string[] = [];
+  let offers = 0;
+  for (const { where, text } of [...ACTIONS, ...commandDocs()]) {
+    for (const match of text.matchAll(SET_OFFER)) {
+      offers += 1;
+      const [, key, value] = match as unknown as [string, string, string];
+      if (unwritable.get(key)?.has(value)) {
+        faults.push(`${where}: offers --set ${key}=${value}, which pithy add refuses`);
+      }
+    }
+  }
+  return { faults, offers };
+}
 
+describe("no guidance offers a value the next call refuses", () => {
   /**
    * Source **and** the command pages, because the documentation was the third producer: `docs/commands/
    * add.md` pasted the `--json` action verbatim, so correcting the CLI alone would have left the page
    * telling a reader to run a command the CLI rejects.
    */
   test("nothing offers a --set the manifest says cannot be written", () => {
-    const faults: string[] = [];
-    let offers = 0;
-    for (const { where, text } of [...ACTIONS, ...commandDocs()]) {
-      for (const match of text.matchAll(SET_OFFER)) {
-        offers += 1;
-        const [, key, value] = match as unknown as [string, string, string];
-        if (UNWRITABLE.get(key)?.has(value)) {
-          faults.push(`${where}: offers --set ${key}=${value}, which pithy add refuses`);
-        }
-      }
-    }
+    const { faults, offers } = offersRefusedValues(UNWRITABLE);
 
     expect(offers, "no --set offer was scanned").toBeGreaterThan(0);
     expect(faults).toEqual([]);
+  });
+
+  /**
+   * **The floor, and it is no longer a shipped manifest.**
+   *
+   * `choicesNeedingCode` had exactly one entry — `payments`' `billingSubject: "organization"` — and #500
+   * took it out: that choice is scaffolded now rather than refused, so the CLI writes it and the Worker
+   * refuses to boot until the seam is written. With the map empty the containment above holds over
+   * nothing, which is the one way a rule stops being a rule without anybody noticing.
+   *
+   * So the mechanism is exercised against a map that declares a value this repository really does offer.
+   * The rule stays live with no capability using it, and the day one does, the check above is already
+   * known to fire.
+   */
+  test("and the check would fire if one did", () => {
+    const { faults } = offersRefusedValues(new Map([["billingSubject", new Set(["user"])]]));
+
+    expect(faults.length, "no guidance offers --set billingSubject=user, so this proves nothing").toBeGreaterThan(0);
+    expect(faults.every((fault) => fault.includes("--set billingSubject=user"))).toBe(true);
   });
 });

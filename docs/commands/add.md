@@ -198,20 +198,26 @@ Edit registry in the worker's pithy.config.ts — pithy add scaffolds it empty.
 
 ```
 $ pithy add payments --json
-{"error":{"code":"validation/invalid_input","status":400,"issues":[],"message":"payments needs a value for billingSubject, and nothing in this run names one.","action":"Pass --set billingSubject=user."}}
+{"error":{"code":"validation/invalid_input","status":400,"issues":[],"message":"payments needs a value for billingSubject, and nothing in this run names one.","action":"Pass --set billingSubject=user or --set billingSubject=organization."}}
 ```
 
-**A `--set` on a choice the CLI cannot write.** Some values compose only alongside code `pithy add` has no way to produce — it renders JSON into `pithy.config.ts`, not functions — so it refuses at the flag rather than writing a config the kit will then refuse to load.
+**A choice whose other half is code.** Some values compose only alongside a function — `pithy add` renders JSON into `pithy.config.ts`, not behavior. Where the kit knows what that function's file looks like, it writes one: the choice is taken, a seam module is scaffolded beside it, and the Worker refuses to boot until you have finished the module.
 
 ```
-$ pithy add payments --set billingSubject=organization
-payments cannot be added with "billingSubject" set to "organization".
-It needs a `resolveSubject` seam saying which organization a caller is acting for, and `pithy add`
-writes JSON, not functions. Add payments with --set billingSubject=user, then in this Worker's
-pithy.config.ts change it to "organization" and pass `resolveSubject`.
+$ pithy add payments --worker api --set billingSubject=organization
+Wired payments into api.
+app: 1 applied.
+apps/api/src/billing/subject.ts is scaffolded, not written. This Worker refuses to boot until resolveSubject answers which organization a caller is acting for.
+Done.
 ```
 
-The rule underneath it: **a scaffolded stub is right when the missing value is data, and a refusal is right when it is behavior.** `pithy add secrets` writes an empty registry with a comment, because an empty registry is a valid empty state you fill in. There is no equivalent for `resolveSubject` — a resolver returning nothing loads and then silently denies every entitlement gate, which is the state the capability refuses to boot into. So the option is refused rather than stubbed, and such a choice is never offered: it is absent from the `--set` action line above, and the interactive prompt omits it while saying what it would take.
+`pithy.config.ts` gets `billingSubject: "organization"`, an import of `resolveSubject`, and that name passed to `payments(...)`. `apps/api/src/billing/subject.ts` exports a resolver marked unimplemented.
+
+The rule underneath it: **the scaffold is a marked absence, never a working stub.** A `resolveSubject` returning nothing would compose cleanly and then deny every entitlement gate — indistinguishable from a customer who has not paid, with a support ticket from a paying company as the first symptom. So the scaffolded resolver answers nothing at all and says so, and `@pithy-sh/payments` refuses the Worker's entrypoint while it is still in place. Your `pithy.config.ts` keeps loading, so every other `pithy` command in the project keeps working while you write it.
+
+**Re-running is safe.** `pithy add payments --set billingSubject=organization` a second time writes nothing: the registration is already there, and a file at the seam's path is yours whatever it contains.
+
+**A `--set` on a choice the CLI can neither write nor scaffold** is refused at the flag, naming what to do instead, rather than writing a config the kit will then refuse to load. No capability ships one today.
 
 **A `--set` outside an option's choices.**
 

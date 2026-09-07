@@ -7,7 +7,11 @@ import { describe, expect, test } from "vitest";
 import { coerceConfigValue } from "./flow";
 import { requiredOptionRefusal } from "./requiredOptions";
 
-/** `payments`' real option, in the shape its manifest states it. */
+/**
+ * The shape `payments`' option had while `organization` was refused. Kept as a fixture rather than read
+ * from the manifest, because the manifest moved on (#500) and the rule did not: a choice a capability
+ * declares unwritable is still refused, and there is no shipped one left to check it against.
+ */
 const BILLING_SUBJECT: ConfigOption = {
   key: "billingSubject",
   choices: ["user", "organization"],
@@ -66,6 +70,35 @@ describe("a choice that needs code the CLI cannot write", () => {
   test("an option declaring none of them is unaffected", () => {
     const plain: ConfigOption = { key: "mode", choices: ["a", "b"], describe: "Pick one." };
     expect(coerceConfigValue(plain, "b", "cap")).toBe("b");
+  });
+});
+
+/**
+ * **The other half of the same distinction — #500.**
+ *
+ * A choice whose missing half the kit can *write* is not a choice to refuse. `payments`' real option
+ * declares `organization` under `choicesNeedingSeam` now, not `choicesNeedingCode`, so `--set
+ * billingSubject=organization` is taken and `pithy add` scaffolds the resolver beside it. Nothing untrue
+ * has to be typed to reach organization billing, and the Worker still refuses to boot on the scaffold.
+ *
+ * The two maps are mutually exclusive by schema, so the branch above cannot fire on a scaffolded choice.
+ */
+describe("a choice whose missing half pithy add can scaffold", () => {
+  const WITH_SEAM: ConfigOption = {
+    key: "billingSubject",
+    choices: ["user", "organization"],
+    choicesNeedingSeam: { organization: "paymentsSubject" },
+    describe: "Who holds a subscription in this project.",
+  };
+
+  test("is coerced like any other choice, not refused", () => {
+    expect(coerceConfigValue(WITH_SEAM, "organization", "payments")).toBe("organization");
+    expect(coerceConfigValue(WITH_SEAM, "user", "payments")).toBe("user");
+  });
+
+  test("and the refusal for an unanswered option offers it", () => {
+    const thrown = requiredOptionRefusal({ capability: "payments", missing: [WITH_SEAM] });
+    expect(thrown.payload.action).toBe("Pass --set billingSubject=user or --set billingSubject=organization.");
   });
 });
 
