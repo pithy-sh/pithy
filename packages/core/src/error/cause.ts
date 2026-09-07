@@ -191,6 +191,63 @@ export function failurePosition(cause: unknown): FailurePosition | undefined {
   return { line: Number(match[1]), column: Number(match[2]) };
 }
 
+/** What kind of thing failed to resolve. Three causes that wore one sentence until #489. */
+export type UnresolvedKind =
+  /** A bare specifier for a package that is not installed. Installing dependencies is the remedy. */
+  | "package"
+  /** An installed package asked for a subpath it does not provide. Installing again changes nothing. */
+  | "package-subpath"
+  /** A relative import of a file in the project's own tree. Installing again changes nothing. */
+  | "local-file";
+
+/** Whether a path sits inside an installed package. */
+function insideNodeModules(path: string): boolean {
+  return path.split(/[\\/]/).includes("node_modules");
+}
+
+/**
+ * Which of the three unresolved-import causes this was, or `undefined` when it cannot be told.
+ *
+ * **The discriminator was already in the message and was being thrown away.** `unresolvedSpecifier`
+ * matches `Cannot find (?:package|module)` — and `package` versus `module` is exactly the fact that
+ * separates a missing dependency from the other two. It sat in a non-capturing group, so every cause
+ * arrived wearing one sentence, and for two of the three that sentence advised an install which is
+ * *guaranteed* to change nothing. That is #489's class exactly: guidance a caller cannot follow, worst
+ * for the caller it is written for, which has no human to shrug and try something else.
+ *
+ * Measured across Node 24.13.0 and Bun 1.3.14, because the two runtimes hand back different halves and
+ * each hands back exactly one usable one:
+ *
+ * | cause | Node says | Bun's `specifier` |
+ * |---|---|---|
+ * | package absent | `Cannot find package 'pkg'`, no `url` | `pkg` |
+ * | subpath missing | `Cannot find module '/abs/node_modules/pkg/src/nope.js'`, `url` under node_modules | `pkg/src/nope` |
+ * | adopter's file | `Cannot find module '/abs/apps/board/src/x'`, `url` outside node_modules | `./src/x` |
+ *
+ * Bun gives the **specifier as written**, so a leading `.` settles it. Node gives the **already-resolved
+ * path**, where being under `node_modules` settles it. Neither read works on both runtimes; the pair
+ * does, and it is the same predicate — *is this inside node_modules* — applied to whichever fact the
+ * runtime supplied.
+ */
+export function unresolvedKind(cause: unknown): UnresolvedKind | undefined {
+  if (/Cannot find package /.test(causeMessage(cause) ?? "")) return "package";
+
+  const specifier = unresolvedSpecifier(cause);
+  if (specifier === undefined) return undefined;
+
+  // Bun's field is the specifier as written: relative means the adopter's own file.
+  if (/^(?:\.|\/|[A-Za-z]:[\\/])/.test(specifier)) {
+    return insideNodeModules(specifier) ? "package-subpath" : "local-file";
+  }
+
+  // Node states an already-resolved absolute path; a bare specifier reaching here is a package subpath.
+  const url = prop(cause, "url");
+  if (typeof url === "string" && url.length > 0) {
+    return insideNodeModules(url) ? "package-subpath" : "local-file";
+  }
+  return "package-subpath";
+}
+
 /**
  * The specifier that did not resolve.
  *
