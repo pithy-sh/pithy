@@ -166,7 +166,17 @@ try {
   // then succeeds on a second attempt because the failed run left the package on disk. A bug that
   // survives one attempt and not two is invisible to a suite that retries, and it is the shape an
   // adopter meets on their first day and a maintainer never reproduces.
-  const CAPABILITIES = ["secrets", "email", "audit", "i18n"];
+  //
+  // **The set is the one `pithy-sh/dashboard` actually composes**, not a sample. Its first-run suite
+  // reported `email audit auth payments support turnstile` failing against 0.1.2, and a gate that drove
+  // four of those six would have been answering a narrower question than the one being asked of it.
+  // `auth` and `support` cost a few seconds each and close that gap.
+  //
+  // In prerequisite order, and that order is itself a finding: `email` requires `secrets` and `auth`
+  // requires `email`, so the chain is real and the CLI refuses to compose one out of turn — naming the
+  // command that fixes it. The reordered pass below carries `--with-prerequisites` precisely because
+  // this order cannot simply be reversed.
+  const CAPABILITIES = ["secrets", "email", "auth", "audit", "support", "i18n"];
   for (const capability of CAPABILITIES) {
     drive(`pithy add ${capability}`, ["add", capability, "--worker", "api"], app);
   }
