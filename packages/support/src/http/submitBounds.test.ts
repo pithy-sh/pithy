@@ -73,7 +73,7 @@ describe("the configured submission bounds", () => {
   });
 
   test("the count bound is checked before a single payload is decoded", async () => {
-    // The ordering is the fix: `atob` materialises its whole result, so decoding four files to find
+    // The ordering is the fix: `atob` materializes its whole result, so decoding four files to find
     // out that three were allowed has already paid for the request it was refusing. A payload that
     // would throw on decode proves nothing was decoded — the count refusal must come first.
     const undecodable = { filename: "a.png", contentType: "image/png", data: "!!!!not base64!!!!" };

@@ -45,7 +45,7 @@ export const secretsTokenProfile = {
  * **It was a bare `requiredBindings` entry with no backend, scope, rotatable or valueType** — so nothing
  * could route it, and local dev had to keep it in a file of its own with a special case at every reader.
  * Production has always stored it in the account's Secrets Store, under the entry `masterKeySecretName`
- * composes; this records that, and dev then materialises it from `secrets.jsonc` like every other secret
+ * composes; this records that, and dev then materializes it from `secrets.jsonc` like every other secret
  * of that backend.
  *
  * **`json`, against `EncryptionConfig`, because that is what the value is.** A hand-edit that drops

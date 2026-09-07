@@ -19,7 +19,7 @@ const BASE64_EXPANSION = 4 / 3;
 /**
  * The largest base64 string worth decoding, derived from a decoded-byte bound.
  *
- * Checked **before** decoding, not after. `atob` materialises the whole result, so a client that sends
+ * Checked **before** decoding, not after. `atob` materializes the whole result, so a client that sends
  * fifty megabytes of base64 has already been allocated fifty megabytes of Worker memory by the time a
  * post-hoc size check could refuse it — and the request that does that is the one an attacker sends.
  * A little slack for padding and any whitespace a client's encoder inserted.

@@ -135,7 +135,7 @@ export interface WriteDevVarsOptions {
   values: Record<string, string>;
   /** The Worker directories to generate into. Defaults to every discovered Worker with a `wrangler.jsonc`. */
   workerDirs?: string[];
-  /** The Workers whose registries decide which secrets are materialised. Defaults to every one composing `secrets`. */
+  /** The Workers whose registries decide which secrets are materialized. Defaults to every one composing `secrets`. */
   targets?: DevSecretsTarget[];
   /** Where the Pithy config directory is. Defaults to the real one; a seam so a test writes its own. */
   paths?: StatePathOptions;

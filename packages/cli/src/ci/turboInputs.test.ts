@@ -275,7 +275,7 @@ const PROBE = "turbo-key-probe";
  */
 const REACHED = `${PROBE}/reached.md`;
 
-/** What a `*` becomes when a rule is materialised, and the name of the file inside a directory rule. */
+/** What a `*` becomes when a rule is materialized, and the name of the file inside a directory rule. */
 const ANY = "probe";
 
 /**
@@ -287,12 +287,12 @@ const ANY = "probe";
  * detail: `.worktrees/` has no slash of its own, and a key that negates it at the root alone still hashes
  * `packages/core/.worktrees/`.
  *
- * Materialising the pattern rather than picking a path by hand is what makes the coverage claim exact.
+ * Materializing the pattern rather than picking a path by hand is what makes the coverage claim exact.
  * A hand-picked `.dev.vars.dev` satisfies `.dev.vars.*` while `.dev.vars.local` — wrangler's own filename
  * — goes on being hashed. `.dev.vars.probe` cannot be satisfied by anything narrower than the rule.
  *
  * Every shape this tree does not state is refused rather than guessed at. A `?`, a character class or a
- * `**` arriving in an ignore file is a rule this function would materialise wrongly and quietly, so it
+ * `**` arriving in an ignore file is a rule this function would materialize wrongly and quietly, so it
  * fails here instead, naming the line.
  */
 function probeFor(rule: Rule): string {
@@ -593,7 +593,7 @@ describe("a gate is keyed on what it reads", () => {
     const stated = statedRules();
     expect(stated.length, "no ignore rule was found at all").toBeGreaterThan(20);
     const probes = new Map(stated.map((rule) => [probeFor(rule), rule.source]));
-    expect(probes.size, "two rules materialise to one path, so one of them is unexercised").toBe(stated.length);
+    expect(probes.size, "two rules materialize to one path, so one of them is unexercised").toBe(stated.length);
 
     const artifacts = [...probes.keys(), ...PACKAGE_ARTIFACTS];
     const remove = plant([...artifacts, REACHED]);

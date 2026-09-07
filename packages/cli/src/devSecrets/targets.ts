@@ -16,7 +16,7 @@ import { ownProperties } from "./records";
  *
  * **Its own module, because both ends of the run need it and one of them is upstream of the other.**
  * `pithy seed` needs the targets to know where a `d1` value goes; the generator needs them to know which
- * `cf-secrets-store` secrets to materialise into each Worker's `.dev.vars` (#179). With this in the
+ * `cf-secrets-store` secrets to materialize into each Worker's `.dev.vars` (#179). With this in the
  * seeder, the generator importing it closed a cycle — generator → seeder → writer → generator — and the
  * answer to "which Workers, with which registry" is neither of their business to own privately.
  */
@@ -50,7 +50,7 @@ export interface UnresolvableWorker {
  * for a project that plainly has workers. A lossy wrapper here caught that throw into `[]` — and
  * `[]` is also what a project that never composed `secrets` returns. So every consumer read a config
  * that would not load as a Worker that declares nothing. Since #179 that is not a cosmetic conflation:
- * a `cf-secrets-store` secret is materialised only from the registry, so an empty registry means the
+ * a `cf-secrets-store` secret is materialized only from the registry, so an empty registry means the
  * generated `.dev.vars` is written down to its header and the Worker starts with **no bindings at all**.
  * `pithy dev` did exactly that and printed `Starting replay-board.` and nothing else.
  *

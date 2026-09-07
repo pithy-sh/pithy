@@ -110,14 +110,14 @@ interface SecretRegistryEntryBase {
    * asymmetry that **already exists in production and predates this axis**: `ensureMasterKey` has always
    * written the master key into the Secrets Store as a bare `EncryptionConfig`, and
    * `resolveEncryptionConfig` has always parsed its binding directly. Nothing was changed to make that
-   * true; this only writes it down where the code that materialises a value can see it.
+   * true; this only writes it down where the code that materializes a value can see it.
    *
    * **Why it cannot be otherwise.** Every other secret is stored — in the Secrets Store, in a D1 row, and
    * in a `.dev.vars` line — as an encoded `{ currentVersion, versions }` envelope, and read back through
    * {@link decodeVersionedValue}. The master key is what that decoder's *decryption* needs in order to
    * exist: it is resolved first, before any secret can be read at all, so it cannot arrive in a form
    * whose reading depends on it. Its binding therefore carries the value, and a `bootstrap` secret's
-   * materialised value is its **current version's value** rather than the envelope.
+   * materialized value is its **current version's value** rather than the envelope.
    *
    * **What deleting it would cost.** Making the master key uniform means changing what
    * `resolveEncryptionConfig` accepts and rewriting the stored value in every already-provisioned

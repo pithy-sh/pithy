@@ -50,7 +50,7 @@ import { checkAccountRate, checkAttachment } from "./guard";
  * The mail path's rule, applied to a different shape: **refuse on the cheapest true reason first.**
  * The two shape bounds a client controls the cost of — how many files, and how large each encoded one
  * is — are applied at the transport boundary in `http/handlers.ts` *before* anything is decoded,
- * because `atob` materialises its whole result and a size check after it has already been handed the
+ * because `atob` materializes its whole result and a size check after it has already been handed the
  * allocation it meant to refuse. What is left arrives here as bytes:
  *
  * 0. **The declared category**, which needs no I/O at all — it is a comparison against a taxonomy this

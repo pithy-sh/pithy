@@ -28,7 +28,7 @@ const AT = new Date("2026-08-13T09:00:00Z").getTime();
 describe("webhookEventState", () => {
   test("a bare row is pending", () => {
     expect(webhookEventState({ processedAt: null, abandonedAt: null, error: null })).toBe("pending");
-    // A row read back before defaults materialise, or one written by a path that selects fewer columns.
+    // A row read back before defaults materialize, or one written by a path that selects fewer columns.
     expect(webhookEventState({})).toBe("pending");
   });
 

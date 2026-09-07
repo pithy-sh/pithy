@@ -122,7 +122,7 @@ export async function openDevSecretsStore(options: OpenDevSecretsStoreOptions): 
   }
 
   // The dev secrets file, which is what the Worker's generated `.dev.vars` is built from (#179) —
-  // materialised through the same function the generator uses, so the key this store opens with and the
+  // materialized through the same function the generator uses, so the key this store opens with and the
   // key the running Worker receives cannot be two different strings.
   //
   // **Both older homes are still read, in the order they were used.** `dev.json` is where #154 put it and
@@ -209,7 +209,7 @@ export async function openDevSecretsStore(options: OpenDevSecretsStoreOptions): 
  * project with no name has no file and has made no claim.
  */
 interface StatedMasterKey {
-  /** The key, materialised exactly as a Worker's binding receives it. Absent when the file has none. */
+  /** The key, materialized exactly as a Worker's binding receives it. Absent when the file has none. */
   readonly value?: string;
   /**
    * Why the file — which is there — could not answer: the thrown error's own sentence.

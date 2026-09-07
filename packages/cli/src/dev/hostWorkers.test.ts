@@ -163,7 +163,7 @@ describe("materializeHostConfigs", () => {
 /**
  * **The local host has to speak the languages the deployed one does.**
  *
- * `pithy dev` materialises the same host `pithy email provision` deploys, from the same committed
+ * `pithy dev` materializes the same host `pithy email provision` deploys, from the same committed
  * template through the same resolver — so the same thing has to reach it. The catalogs come off the
  * composed email capability's `hostCatalogs()`, and that value answers `{}` until every capability's
  * `compose` hook has run. Discovery built its capability set and read that value without running them,

@@ -89,7 +89,7 @@ describe("checkSecretBindings", () => {
 
   /**
    * `dev` is not among the environments a project declares, and that is the point: local dev
-   * materialises every `cf-secrets-store` secret into the generated `.dev.vars` (#179), so a stanza
+   * materializes every `cf-secrets-store` secret into the generated `.dev.vars` (#179), so a stanza
    * there would name entries a local run never reads.
    */
   test("only the environments the project declares, which never include dev", async () => {

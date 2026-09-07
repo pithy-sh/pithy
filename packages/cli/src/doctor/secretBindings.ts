@@ -25,7 +25,7 @@ import { boundSecretNames } from "../provision/secretBindings";
  * registry and names the command that reconciles both.
  *
  * **`dev` never appears, and not by being filtered.** The environments walked are the ones the project
- * declares, and `dev` is not among them. Local dev materialises every `cf-secrets-store` secret into the
+ * declares, and `dev` is not among them. Local dev materializes every `cf-secrets-store` secret into the
  * generated `.dev.vars` (#179), so a stanza there would name store entries a local run never reads.
  *
  * **Which secrets need a binding is not decided here.** {@link boundSecretNames} is the one predicate,

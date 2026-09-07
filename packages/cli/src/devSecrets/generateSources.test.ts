@@ -23,7 +23,7 @@ import { devSecretsFile } from "./location";
  * its plaintext in `dev.json` forever, still rendered into every generated `.dev.vars`.
  *
  * These cases are written against a **real composition**, because the registry is what decides which
- * names are materialised at all — a fixture with a fake registry would prove nothing about the file a
+ * names are materialized at all — a fixture with a fake registry would prove nothing about the file a
  * Worker actually receives. That means scaffolding inside the package, where `pithy.config.ts`'s
  * `@pithy-sh/*` imports resolve against the workspace node_modules and vitest will transform the config;
  * the same reason `targets.test.ts` does it.

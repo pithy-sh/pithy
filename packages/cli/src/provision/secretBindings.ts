@@ -21,7 +21,7 @@ import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsSt
  * certainly exists. The entry **name** comes from the scope, so a feature binds its own master key and
  * `staging` binds staging's — the join key is the binding, and the binding never changes.
  *
- * **`dev` never gets a stanza, and that is deliberate rather than an omission.** Local dev materialises
+ * **`dev` never gets a stanza, and that is deliberate rather than an omission.** Local dev materializes
  * every `cf-secrets-store` secret into the generated `.dev.vars` (#179), so a stanza there would name
  * store entries a local run never reads. Provisioning only ever writes `scope.stanza`, which is a
  * deployed or feature environment and never `dev`.
