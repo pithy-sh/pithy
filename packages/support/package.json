@@ -1,6 +1,6 @@
 {
   "name": "@pithy-sh/support",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -36,16 +36,16 @@
   "dependencies": {
     "@cloudflare/workers-types": "^5.20260729.1",
     "@hono/zod-validator": "^0.9.0",
-    "@pithy-sh/core": "^0.1.5",
-    "@pithy-sh/email": "^0.1.4",
-    "@pithy-sh/secrets": "^0.1.4",
-    "@pithy-sh/storage": "^0.1.4",
+    "@pithy-sh/core": "^0.2.0",
+    "@pithy-sh/email": "^0.1.5",
+    "@pithy-sh/secrets": "^0.1.5",
+    "@pithy-sh/storage": "^0.1.5",
     "postal-mime": "^3.0.0",
     "tldts": "^7.4.10"
   },
   "peerDependencies": {
-    "@pithy-sh/auth": "^0.1.4",
-    "@pithy-sh/payments": "^0.1.5",
+    "@pithy-sh/auth": "^0.1.5",
+    "@pithy-sh/payments": "^0.2.0",
     "hono": "^4.13.2",
     "kysely": "^0.29.0",
     "zod": "^4.4.0"

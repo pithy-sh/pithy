@@ -1,5 +1,61 @@
 # @pithy-sh/cli
 
+## 0.2.0
+
+### Minor Changes
+
+- [#505](https://github.com/pithy-sh/pithy/pull/505) [`ac4db92`](https://github.com/pithy-sh/pithy/commit/ac4db92f6549c57c88b68d68eccaa552480ec437) Thanks [@kingmesal](https://github.com/kingmesal)! - **Organization billing without first declaring user billing.** `payments`' `billingSubject` is required, offers two values, and refused one of them — so the only route to a B2B project's own billing model was `pithy add payments --set billingSubject=user`, a value that is wrong for the project, followed by a hand-edit. The end state was right and both refusals that produced it were right. The path was the bug: an adopter's git history recorded a command naming the mode they did not want, and a regeneration audit had to explain why.
+  
+  `pithy add payments --set billingSubject=organization` is now taken. It writes the choice, scaffolds `apps/<worker>/src/billing/subject.ts` exporting a `resolveSubject`, imports it, and passes it to `payments(...)`. One line of output says the rest: that file is scaffolded, not written, and this Worker refuses to boot until it answers which organization a caller is acting for.
+  
+  **The scaffold is a marked absence, never a working stub.** A resolver returning nothing would compose cleanly and then deny every entitlement gate — indistinguishable from a customer who has not paid, with a support ticket from a paying company as the first symptom. So the scaffolded resolver answers nothing and is branded unimplemented, and `@pithy-sh/payments` refuses the Worker's entrypoint while the brand is on it. Composition still accepts it, which is what keeps `pithy migrate`, `deploy`, `doctor` and `upgrade` working in the project the scaffold just landed in — every one of them evaluates that config to learn what the Worker composes. Composing `organization` with **no** resolver at all is refused at composition exactly as before.
+  
+  `Capability` gains an optional `boot` hook for that distinction. `createBackend` is assembled by tooling as well as by Workers; `createEntrypoint` is only ever called by a Worker's own entry, so `boot` is where a capability refuses a composition that must load and must never serve.
+  
+  **Re-running writes nothing.** The registration is already there, the import is already bound, and a file at the seam's path is the adopter's whatever it contains — three independent guards, because losing a resolver somebody wrote is worse than the bug this fixes.
+  
+  A manifest declares this with `choicesNeedingSeam`, naming a seam from `CONFIG_SEAMS` — a closed set in `@pithy-sh/core`, so the identifier, the path and the import specifier that reach the adopter's TypeScript are the kit's and never a package's free text. `choicesNeedingCode` stays for a choice the kit cannot scaffold; a choice states one or the other, never both.
+
+### Patch Changes
+
+- [#506](https://github.com/pithy-sh/pithy/pull/506) [`e3d03cb`](https://github.com/pithy-sh/pithy/commit/e3d03cb1f39c47e5e26382b8a97dffbef4814e85) Thanks [@kingmesal](https://github.com/kingmesal)! - Two things a new project met on its first run, and one gate each.
+  
+  **A scaffolded `biome.jsonc` no longer reports a schema mismatch.** The starter declared `@biomejs/biome` at `^2.5.8` beside a `$schema` naming `2.5.8`. The caret floats and a URL cannot, so the first `biome check` an adopter ever ran resolved a newer patch against an older schema and said so. Nothing failed — it is `info` severity — which is the reason to fix it rather than the reason not to: the first diagnostic a project shows its owner should not be one they are taught to skip. Biome is now pinned exactly, in the starter and in this repository, which is what a linter wants anyway.
+  
+  **`docs/commands/payments.md` named a command that does not exist.** It said `pithy secrets set payments-provider-credentials`, twice, and the spelling is `create`. That line is the documented path for every externally issued credential in the product — Apple's `.p8`, Google's service-account key, Stripe's pair, Lemon Squeezy's and Paddle's keys — so a reader following it exactly failed on the one step nothing can do for them.
+  
+  Both are now checked. A Biome config's `$schema` must name the version the manifest beside it pins, and every `pithy <command> <subcommand>` written in a code span anywhere in `docs/` must be a command the CLI actually has.
+
+- [#506](https://github.com/pithy-sh/pithy/pull/506) [`e3d03cb`](https://github.com/pithy-sh/pithy/commit/e3d03cb1f39c47e5e26382b8a97dffbef4814e85) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy doctor` reports a generated binding value the kit has since changed its mind about.
+  
+  A rate limiter's `namespace_id` is derived from its binding name, so two limiters can never share one budget. The docstring said that stability was also "the same across `pithy upgrade` retrofitting an older project", and that retrofit does not exist: the entry is written once at `pithy add` and never revisited, so a project scaffolded before the derivation keeps the id the old positional counter gave it — `1001` where the kit now writes `3093`. The claim is corrected, and the divergence is no longer invisible.
+  
+  Nothing rewrites the value. A `namespace_id` is a live budget's identity, so changing it re-partitions traffic that is already flowing, and a value an adopter tuned is indistinguishable from one that merely predates a change. So doctor states both numbers, names the environments carrying it, and leaves the decision alone — it never fails the exit, and offers no command, because there is none.
+  
+  `pinnedBindings: { AUTH_RATE_LIMITER: "reason" }` on a Worker's `pithy.config.ts` settles the line, the way `declinedBindings` settles a deliberate absence. The reason is required for the same reason it is there: a pinned value still prints, with the adopter's sentence where the instruction was, so the next person reads a decision rather than a difference. A pin whose value already matches, or which names nothing this Worker composes, is reported as stale and stays green.
+  
+  The comparison is scoped to values the kit owns. A limiter's `limit` and `period` are the adopter's to tune, a D1 `database_name` is a proposal, and a `workflows` entry already has its own line — none of them is reported here.
+
+- [#504](https://github.com/pithy-sh/pithy/pull/504) [`fb8e246`](https://github.com/pithy-sh/pithy/commit/fb8e246d9cd1a74b05a1ee4fb080b5068be00b42) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy secrets` sees every capability's secrets, not just the secrets capability's own.
+  
+  A capability declares the secrets it reads: `auth` its session secret and both OAuth credential pairs, `email` its link signing key, `payments` its provider credentials. `resolveSecretRegistry` read `secrets({ registry })`'s own slice and nothing else, so from the CLI those secrets did not exist. `pithy add auth` ends by naming `pithy secrets create auth-session-secret`, and that command answered `Secret 'auth-session-secret' is not declared in the registry.`
+  
+  It survived because nothing surfaced until a deployed environment was needed. The capabilities mint their own dev values, and `doctor` already reads the union — so local work was fine and the first deploy was not, with no path at all for five secrets including every externally issued credential in the product.
+  
+  It now aggregates the same slices the Worker does, through the same function the `secrets` capability's `compose` hook calls, so one merge rule governs both and a contradictory redeclaration of one name is refused in one place. Composing would not have been enough: the hook keeps its combined registry in a closure and never writes it back.
+
+- [#502](https://github.com/pithy-sh/pithy/pull/502) [`b9ed2ff`](https://github.com/pithy-sh/pithy/commit/b9ed2ffa95338b49ce1aabe8efb94a870844a05e) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy alias` leads with the advice that works.
+  
+  The command said `Reload your shell or run: source ~/.bashrc`, and sourcing is the half that can silently do nothing. An init above the block — atuin, fnm, mise, conda — commonly ends with a top-level `return` once it has already run, and inside `eval` that returns from the rc file itself, so every line below it is skipped. The alias is written correctly, the command exits 0, and the shell that asked for it never gets it. We append at the end of the file, which puts our block below every such init.
+  
+  Opening a new terminal has none of that: the guard does not fire on a first load. So it goes first, and `source` stays as the faster option for anyone whose rc file runs to the end.
+- Updated dependencies [[`ac4db92`](https://github.com/pithy-sh/pithy/commit/ac4db92f6549c57c88b68d68eccaa552480ec437)]:
+  - @pithy-sh/core@0.2.0
+  - @pithy-sh/cloudflare@0.1.5
+  - @pithy-sh/email@0.1.5
+  - @pithy-sh/secrets@0.1.5
+  - @pithy-sh/turnstile@0.1.5
+
 ## 0.1.5
 
 ### Patch Changes
