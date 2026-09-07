@@ -80,6 +80,11 @@ export function createEntrypoint<
   const all: Capability[] = options.app ? [...options.capabilities, options.app] : [...options.capabilities];
   const handlers: CapabilityEmailHandler[] = all.flatMap((cap) => (cap.email ? [cap.email] : []));
 
+  // The last gate before this Worker can take a request, and the first one the CLI never reaches: only a
+  // Worker's own entry calls `createEntrypoint`, while `createBackend` is assembled by tooling too. A
+  // capability that must load for the adopter's toolchain and must not serve refuses here (#500).
+  for (const cap of all) cap.boot?.({ capabilities: all });
+
   const registry = composeWorkflows(all);
   const scheduled = scheduledWorkflows(registry);
 

@@ -7,9 +7,11 @@ import {
   CapabilityManifest,
   CONFIG_LINE_WIDTH,
   CONFIG_OPTION_INDENT,
+  CONFIG_SEAMS,
   renderCapabilityImport,
   renderCapabilityRegistration,
   renderConfigOptionLine,
+  renderConfigSeamLine,
   renderConfigValue,
 } from "./manifest";
 
@@ -536,6 +538,73 @@ describe("renderConfigOptionLine", () => {
   test("the scaffold's indent is the marker's four columns plus two", () => {
     expect(CONFIG_OPTION_INDENT).toBe("      ");
     expect(CONFIG_LINE_WIDTH).toBe(120);
+  });
+});
+
+/**
+ * **The seam line — an option whose value is behavior, and the closed set that keeps it safe (#500).**
+ *
+ * A manifest states which seam by a key this package enumerates, and every character that reaches the
+ * adopter's TypeScript comes from `CONFIG_SEAMS`. That is the same argument `CONFIG_CONSTANTS` makes, and
+ * it has to be made again for a seam because a seam is not just an identifier: it is an identifier, an
+ * import statement, and a file written into somebody's repository.
+ */
+describe("renderConfigSeamLine", () => {
+  test("renders the binding as shorthand, at the caller's indent", () => {
+    expect(renderConfigSeamLine("paymentsSubject", CONFIG_OPTION_INDENT)).toBe("      resolveSubject,");
+    expect(renderConfigSeamLine("paymentsSubject", " ")).toBe(" resolveSubject,");
+  });
+
+  test("the seam's four strings are this package's, not a manifest's", () => {
+    // Read as a whole rather than field by field: the point is that a manifest supplies none of them.
+    expect(CONFIG_SEAMS.paymentsSubject).toMatchObject({
+      binding: "resolveSubject",
+      module: "src/billing/subject.ts",
+      specifier: "./src/billing/subject",
+    });
+  });
+});
+
+/**
+ * A choice needing a seam is held to the same self-consistency `choicesNeedingCode` is, plus one rule of
+ * its own: **refused or scaffolded, never both.** `pithy add` reads one map to decide whether to stop and
+ * the other to decide what to write, so a choice in both would be refused by the first reader while the
+ * second never ran — a scaffold declared and silently never written.
+ */
+describe("choicesNeedingSeam", () => {
+  function withOption(option: unknown): unknown {
+    return { name: "payments", package: "@pithy-sh/payments", requiredBindings: [], configOptions: [option] };
+  }
+  const base = { key: "billingSubject", choices: ["user", "organization"], describe: "Who holds a subscription." };
+
+  test("accepts a seam keyed on a choice the option offers", () => {
+    expect(() =>
+      CapabilityManifest.parse(withOption({ ...base, choicesNeedingSeam: { organization: "paymentsSubject" } })),
+    ).not.toThrow();
+  });
+
+  test("refuses a seam keyed on a value nothing offers — it would never fire", () => {
+    expect(() =>
+      CapabilityManifest.parse(withOption({ ...base, choicesNeedingSeam: { team: "paymentsSubject" } })),
+    ).toThrow(/must be one this option offers/);
+  });
+
+  test("refuses a seam the kit does not enumerate", () => {
+    expect(() =>
+      CapabilityManifest.parse(withOption({ ...base, choicesNeedingSeam: { organization: "./src/mine" } })),
+    ).toThrow();
+  });
+
+  test("refuses a choice that is both refused and scaffolded", () => {
+    expect(() =>
+      CapabilityManifest.parse(
+        withOption({
+          ...base,
+          choicesNeedingCode: { organization: "Write it by hand." },
+          choicesNeedingSeam: { organization: "paymentsSubject" },
+        }),
+      ),
+    ).toThrow(/refused or scaffolded, never both/);
   });
 });
 

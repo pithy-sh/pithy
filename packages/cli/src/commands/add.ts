@@ -3,6 +3,7 @@
 
 import { join, relative } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { CONFIG_SEAMS } from "@pithy-sh/core/src/capability/manifest";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, type CreateCliAuditOptions, createRemoteCliAudit } from "../audit/cliAudit";
@@ -206,9 +207,18 @@ const promptConfigValues: ConfigPrompt = async (manifest, provided) => {
     const needsCode = option.choicesNeedingCode ?? {};
     const offered = option.choices?.filter((choice) => needsCode[choice] === undefined);
     const withheld = Object.entries(needsCode).filter(([choice]) => option.choices?.includes(choice));
+    // **A choice whose missing half `pithy add` can scaffold *is* offered, and says what it will write
+    // (#500).** The two lists read alike and mean opposite things: one names a value this command refuses,
+    // the other names one it takes on the understanding that the Worker will not boot until the adopter
+    // finishes the file it leaves them. Saying so at the prompt is the difference between choosing
+    // `organization` and discovering it.
+    const scaffolded = Object.entries(option.choicesNeedingSeam ?? {}).filter(([choice]) =>
+      option.choices?.includes(choice),
+    );
     const message = [
       `${option.key} — ${option.describe}`,
       ...withheld.map(([choice, why]) => `  ${choice}: not offered here. ${why}`),
+      ...scaffolded.map(([choice, seam]) => `  ${choice}: ${CONFIG_SEAMS[seam].describe}`),
     ].join("\n");
     const required = option.default === undefined;
     const answer = offered

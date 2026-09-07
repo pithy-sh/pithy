@@ -508,7 +508,7 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
     );
     if (unsettled.length > 0) throw requiredOptionRefusal({ capability: manifest.name, missing: unsettled });
 
-    const { kvNamespaces } = await addCapability({
+    const { kvNamespaces, notes: wired } = await addCapability({
       workerDir,
       manifest,
       configValues,
@@ -539,7 +539,7 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
 
     // Last, after every step that can fail: a dev key is minted only into a project the add finished
     // on. It is absent-only anyway, so an earlier failure costs a re-run rather than a stranded value.
-    const notes = await bootstrapAdd({ projectDir, manifest, account: options.account });
+    const bootstrapped = await bootstrapAdd({ projectDir, manifest, account: options.account });
 
     await audit({
       action: "capability/added",
@@ -567,7 +567,9 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
       // are the ones an adopter most needs to see and least expects to be given — the dev master key
       // `add secrets` mints is a line printed once, and swallowing it costs them the key.
       kvNamespaces: [...prerequisites.kvNamespaces, ...kvNamespaces],
-      notes: [...prerequisites.notes, ...notes],
+      // The wiring's notes ahead of the bootstrap's, in the order the steps ran. A scaffolded seam is the
+      // one line here that says the Worker will not boot, and it is not a line to bury.
+      notes: [...prerequisites.notes, ...wired, ...bootstrapped],
       prerequisites: prerequisites.names,
       eject,
     };

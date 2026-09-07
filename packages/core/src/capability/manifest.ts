@@ -282,6 +282,25 @@ export function renderConfigOptionComment(describe: string, indent: string): str
 }
 
 /**
+ * The line a writer puts in `pithy.config.ts` for a **seam** — the option a capability takes that is a
+ * function, so no renderer can ever state its value.
+ *
+ * Shorthand (`resolveSubject,`) rather than `key: value`, because the two are the same identifier: the
+ * scaffolded module exports the name the factory takes, and a config that spelled it twice would invite
+ * an adopter to rename one half of it.
+ *
+ * **It takes the seam's key and nothing else.** That is the same closed-set argument
+ * {@link CONFIG_CONSTANTS} makes one function up, and it has to be made again here for a stronger
+ * reason: a constant is one identifier in an expression position, and a seam is an identifier *plus* an
+ * import statement plus a file written into the adopter's repository. A manifest states which seam, by a
+ * key this package enumerates; every character that reaches the adopter's TypeScript comes from
+ * {@link CONFIG_SEAMS}.
+ */
+export function renderConfigSeamLine(seam: ConfigSeam, indent: string): string {
+  return `${indent}${CONFIG_SEAMS[seam].binding},`;
+}
+
+/**
  * A capability's own name, as generated source carries it.
  *
  * The same shape a config option's key is held to, and for the same reason: it is written **bare**, and
@@ -439,6 +458,53 @@ export const ConfigConstant = z
   .describe("A constant the scaffolded pithy.config.ts defines, named from a closed set rather than spelled out.");
 export type ConfigConstant = z.infer<typeof ConfigConstant>;
 
+/** One seam a capability takes: what `pithy add` writes for it, and what the config then references. */
+export interface ConfigSeamSpec {
+  /** The identifier the scaffolded module exports, and the key the capability's factory takes for it. */
+  readonly binding: string;
+  /** The module `pithy add` writes, relative to the Worker's own directory. */
+  readonly module: string;
+  /** How that module is imported from the Worker's `pithy.config.ts`. */
+  readonly specifier: string;
+  /** The comment written above the seam's line, saying what the adopter still owes it. */
+  readonly describe: string;
+}
+
+/**
+ * The seams `pithy add` knows how to scaffold — a capability option whose value is **behavior**, named
+ * from a closed set exactly as {@link CONFIG_CONSTANTS} names an identifier.
+ *
+ * A missing *value* has always been scaffoldable: `pithy add secrets` writes an empty registry and the
+ * project still loads, because an empty registry is a valid empty state. A missing *behavior* was not,
+ * so `payments`' `billingSubject: "organization"` was refused outright — and its remedy routed through
+ * `--set billingSubject=user`, a value that is untrue for every project that wanted the other one (#500).
+ *
+ * What makes the behavior scaffoldable is that the scaffold is **not a stub that answers**. A resolver
+ * returning nothing composes cleanly and then denies every gate, which is indistinguishable from a
+ * customer who has not paid. The module written here is branded as unimplemented by the capability that
+ * owns it, and that capability refuses the Worker's entrypoint while the brand is still on it — so the
+ * adopter says what they mean, gets the file and the signature, and the project still refuses to boot
+ * until they have written the one thing only they can write.
+ *
+ * One entry today. Every string in it is this package's, because all four of them reach the adopter's
+ * repository unquoted: an identifier, a path, an import specifier, a comment.
+ */
+export const CONFIG_SEAMS = {
+  paymentsSubject: {
+    binding: "resolveSubject",
+    module: "src/billing/subject.ts",
+    specifier: "./src/billing/subject",
+    describe:
+      "Which organization this caller is acting for. Scaffolded unimplemented — this Worker refuses to boot until src/billing/subject.ts answers it.",
+  },
+} as const satisfies Record<string, ConfigSeamSpec>;
+
+/** Which scaffolded seam a choice needs, by key. */
+export const ConfigSeam = z
+  .enum(Object.keys(CONFIG_SEAMS) as [keyof typeof CONFIG_SEAMS])
+  .describe("A seam pithy add knows how to scaffold, named from a closed set rather than described.");
+export type ConfigSeam = z.infer<typeof ConfigSeam>;
+
 export const ConfigOption = z
   .object({
     key: z
@@ -466,6 +532,11 @@ export const ConfigOption = z
       .optional()
       .describe(
         "Choices `pithy add` must refuse, each mapped to the sentence telling the adopter what to do instead — a value whose composition needs a seam only they can write. `pithy add` renders JSON into `pithy.config.ts`; it cannot render a function, so a choice whose validity depends on one is a choice it can write and the kit will then refuse to load. `payments`' `billingSubject: \"organization\"` is the one: it requires a `resolveSubject` saying which organization a caller acts for, deliberately has no default because a capability that guessed would key a company's plan to whoever signed in first, and so a config carrying the choice without the seam is refused at assembly — bricking every later command in the project, since they all begin by loading the config (#483). Refusing the choice up front costs the adopter one hand-edit; writing it costs them the project.",
+      ),
+    choicesNeedingSeam: manifestRecord(z.record(PrintableString, ConfigSeam))
+      .optional()
+      .describe(
+        "Choices `pithy add` writes **together with the code they need** — the other half of `choicesNeedingCode`, for a choice whose missing half the kit can scaffold. Each names a seam from `CONFIG_SEAMS`; `pithy add` writes that module into the Worker, imports it, and passes it to the capability's factory beside the choice. `payments`' `billingSubject: \"organization\"` is the one: reaching it used to mean passing `--set billingSubject=user`, a value that is wrong for the project, and then hand-editing both halves (#500). The scaffolded module is deliberately **not** a working stub — it is branded unimplemented, and the capability refuses the Worker's entrypoint while the brand is on it, because a resolver that answers nothing denies every gate and reads exactly like a customer who has not paid. A choice states this or `choicesNeedingCode`, never both: one is a refusal and the other is a scaffold.",
       ),
     constant: ConfigConstant.optional().describe(
       "A constant the scaffolded pithy.config.ts defines, rendered *unquoted* in place of `default` when the target config declares it. The one that exists is `publicOrigin` — `PUBLIC_ORIGIN`, this Worker's address for the environment it composes in. An option whose value is an origin must name it rather than state a URL, because a URL written down is production's URL written into staging: it is what mailed staging's testers magic links into production and unsubscribed them there (#256). `default` is still required *for such an option* and is what a config with no such constant gets, so an older project is never handed an identifier it does not define — the one place the absent-default rule does not reach, and it is checked rather than trusted.",
@@ -503,6 +574,29 @@ export const ConfigOption = z
           input: choice,
           path: ["choicesNeedingCode", choice],
           message: `A choice needing code must be one this option offers, and ${JSON.stringify(choice)} is not — ${option.key} offers ${JSON.stringify(option.choices ?? [])}.`,
+        });
+      }
+    }
+    // The same rule the line above holds `choicesNeedingCode` to, for the same reason: a seam keyed on a
+    // value this option does not offer never fires, and the choice is written with no seam beside it.
+    for (const choice of Object.keys(option.choicesNeedingSeam ?? {})) {
+      if (!option.choices?.includes(choice)) {
+        ctx.issues.push({
+          code: "custom",
+          input: choice,
+          path: ["choicesNeedingSeam", choice],
+          message: `A choice needing a seam must be one this option offers, and ${JSON.stringify(choice)} is not — ${option.key} offers ${JSON.stringify(option.choices ?? [])}.`,
+        });
+      }
+      // Refused *and* scaffolded is not a state with an answer. `pithy add` reads one map to decide
+      // whether to stop and the other to decide what to write, so a choice in both would be refused by
+      // the first reader and the second would never run — a scaffold declared and silently never written.
+      if (option.choicesNeedingCode?.[choice] !== undefined) {
+        ctx.issues.push({
+          code: "custom",
+          input: choice,
+          path: ["choicesNeedingSeam", choice],
+          message: `A choice is refused or scaffolded, never both, and ${option.key} states ${JSON.stringify(choice)} in choicesNeedingCode and choicesNeedingSeam alike.`,
         });
       }
     }

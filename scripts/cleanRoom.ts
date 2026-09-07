@@ -18,7 +18,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -234,39 +234,42 @@ try {
 
   const composedInOrder = composedOf(app, "the first project");
 
-  // **A choice that cannot compose is refused, not written — #483.** `--set billingSubject=organization`
-  // used to succeed and leave a config the kit refuses to load, so every later command in the project
-  // failed on the config `add` had just written. The assertion is in two halves and both matter: the
-  // add is refused, *and* the project still works afterwards. Checking only the refusal would pass on a
-  // CLI that refused and had already written half the wiring.
-  process.stdout.write("  pithy add payments --set billingSubject=organization is refused\n");
-  let refused = false;
-  try {
-    run(pithy, ["add", "payments", "--worker", "api", "--set", "billingSubject=organization"], app);
-  } catch (cause) {
-    refused = true;
-    const said = cause instanceof Error ? cause.message : String(cause);
-    if (!said.includes("resolveSubject")) {
-      fail("refusing billingSubject=organization", `refused without naming resolveSubject:\n${said}`);
-    }
-  }
-  if (!refused) {
-    fail(
-      "refusing billingSubject=organization",
-      "the add succeeded. It writes a config the kit refuses to load, which fails every later command.",
-    );
-  }
-
-  // The project is still usable — the half that says the refusal left nothing behind.
-  drive("pithy add turnstile (after the refusal)", ["add", "turnstile", "--worker", "api"], app);
-
-  // And the choice that does compose still composes, so the refusal is about one value rather than the
-  // option. Without this the gate above would pass on a CLI that had broken `billingSubject` entirely.
+  // **A choice that needs code is written with its seam, not refused — #500, over #483's property.**
+  //
+  // `--set billingSubject=organization` used to be refused, because `pithy add` renders JSON and cannot
+  // render a function, and writing the value without the function left a config the kit refuses to load
+  // — which failed every later command in the project (#483). The refusal was correct and the path out
+  // of it was not: the only way to organization billing ran through declaring `user`, a value wrong for
+  // the project, and editing it afterwards.
+  //
+  // It is now accepted, and the seam is scaffolded beside it. Three things matter and each is asserted
+  // separately, because any one of them can hold while another breaks: the add **succeeds**, the project
+  // is **still loadable** afterwards (#483's half, now proved positively rather than by refusing), and a
+  // re-run **never overwrites a seam the adopter has implemented**.
   drive(
-    "pithy add payments --set billingSubject=user",
-    ["add", "payments", "--worker", "api", "--set", "billingSubject=user"],
+    "pithy add payments --set billingSubject=organization",
+    ["add", "payments", "--worker", "api", "--set", "billingSubject=organization"],
     app,
   );
+
+  const seam = join(app, "apps", "api", "src", "billing", "subject.ts");
+  if (!existsSync(seam)) {
+    fail("scaffolding the billing subject seam", "apps/api/src/billing/subject.ts was not written.");
+  }
+  const wired = readFileSync(join(app, "apps", "api", "pithy.config.ts"), "utf8");
+  for (const [what, needle] of [
+    ["the seam import", "./src/billing/subject"],
+    ["the resolveSubject binding", "resolveSubject"],
+    ["the value the adopter asked for", '"organization"'],
+  ] as const) {
+    if (!wired.includes(needle)) {
+      fail("wiring the billing subject seam", `apps/api/pithy.config.ts carries no ${what} (${needle}).`);
+    }
+  }
+
+  // The project is still usable, which is the half #483 is about: a config the kit cannot load fails
+  // every later command, so the next add is what proves this one left a loadable project behind.
+  drive("pithy add turnstile (after the seam)", ["add", "turnstile", "--worker", "api"], app);
 
   // **Idempotency, which `addCapability` states as a contract and nothing checked.** "A second run
   // changes nothing" is what lets CI re-run a manifest and a script re-apply one; it is also what makes
@@ -353,6 +356,37 @@ try {
     );
   }
   process.stdout.write(`  the same ${composedInOrder.length} composed either way\n`);
+
+  // **A seam already on disk is the adopter's, and a scaffold never writes over it.**
+  //
+  // The file `pithy add` writes is the file the adopter is asked to replace, so an add that rewrote it
+  // would silently destroy real work — a worse failure than the detour #500 removed, and the one thing
+  // that would have made keeping that detour the better trade.
+  //
+  // **Shaped as a fresh registration over an existing file, because that is the only shape that can
+  // fail.** Re-running the add in a project that already composes payments is protected several times
+  // over — the run carries no seam, and the registration is already there — so removing the writer's own
+  // existence check leaves such a check passing. Measured: with both of those removed, the re-run
+  // version of this assertion still passed, which made it worth nothing. Here the registration is new,
+  // so the seam is genuinely requested and the writer's check is the only thing standing between the
+  // adopter's resolver and the placeholder.
+  const adopterSeam = join(reordered, "apps", "api", "src", "billing", "subject.ts");
+  const implemented = '// the adopter\'s own resolver.\nexport const resolveSubject = async () => "org_1";\n';
+  mkdirSync(dirname(adopterSeam), { recursive: true });
+  writeFileSync(adopterSeam, implemented);
+
+  drive(
+    "pithy add payments --set billingSubject=organization (over an implemented seam)",
+    ["add", "payments", "--worker", "api", "--set", "billingSubject=organization"],
+    reordered,
+  );
+
+  if (readFileSync(adopterSeam, "utf8") !== implemented) {
+    fail(
+      "adding payments over an implemented seam",
+      "apps/api/src/billing/subject.ts was overwritten. That silently destroys the adopter's own code.",
+    );
+  }
 
   // **The same commands again with Bun removed from PATH — #474.** `bin` was `./src/bin.ts` behind
   // `#!/usr/bin/env bun`, so `pithy` installed for everyone and started for nobody without Bun:

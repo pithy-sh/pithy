@@ -6,10 +6,12 @@ import { join } from "node:path";
 import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
 import {
   type CapabilityManifest,
+  CONFIG_SEAMS,
   renderCapabilityImport,
   renderCapabilityRegistration,
   renderConfigOptionComment,
   renderConfigOptionLine,
+  renderConfigSeamLine,
 } from "@pithy-sh/core/src/capability/manifest";
 import { ConflictError, InternalError } from "@pithy-sh/core/src/error/pithyError";
 import {
@@ -24,6 +26,7 @@ import { readOptionalFile } from "../project/readOptionalFile";
 import { readWranglerConfig, workerEntryPath, writeWranglerConfig } from "../project/wrangler";
 import { optionValue } from "./configConstants";
 import { capabilityImportSpecifier, findNamedImport, importOrigin } from "./configImports";
+import { type ResolvedSeam, seamNote, seamsFor, writeSeamModule } from "./configSeams";
 import { ejectImportPath } from "./eject";
 import { durableObjectExports, withDurableObjectExports } from "./entryExports";
 import { requiredOptionRefusal } from "./requiredOptions";
@@ -73,6 +76,18 @@ export interface AddCapabilityResult {
    * exactly as the adopter has it.
    */
   kvNamespaces: ProposedName[];
+  /**
+   * What this run scaffolded and left unfinished — one line per seam module written.
+   *
+   * A seam is the one thing `pithy add` writes that is deliberately **not** working code: it is branded
+   * unimplemented, and the capability that owns it refuses the Worker's entrypoint until the adopter has
+   * replaced it. That is a fact the run has to say out loud, because the config it wrote loads perfectly
+   * well and the Worker will not start.
+   *
+   * Empty when the capability declares no seam, when this run's choices needed none, and on a re-run —
+   * which writes nothing at all.
+   */
+  notes: string[];
 }
 
 /** The managed-region marker each Worker's `pithy.config.ts` plants inside `capabilities: [...]`. */
@@ -85,10 +100,20 @@ const MARKER = "// pithy:capabilities";
  * second run changes nothing. A sibling Worker is never touched.
  */
 export async function addCapability(options: AddCapabilityOptions): Promise<AddCapabilityResult> {
-  await updateConfig(options);
+  const seams = await updateConfig(options);
+  // After the config, and only for the seams that config actually took: a module written beside a
+  // registration nothing references is a file the adopter has to delete by hand.
+  const notes: string[] = [];
+  for (const { seam } of seams) {
+    // The note is the *scaffold's* note, so it goes with the write and not with the wiring. A module
+    // already on disk is the adopter's, and telling them it is unimplemented would be a guess about code
+    // this command deliberately did not read.
+    const { written } = await writeSeamModule(options.workerDir, seam);
+    if (written) notes.push(seamNote(seam, options.workerDir));
+  }
   const kvNamespaces = await updateWrangler(options);
   await updateEntry(options);
-  return { kvNamespaces };
+  return { kvNamespaces, notes };
 }
 
 /**
@@ -170,6 +195,7 @@ function renderRegistration(
   configValues: Record<string, ConfigValue>,
   indent: string,
   source: string,
+  seams: readonly ResolvedSeam[],
 ): string {
   const inner = `${indent}  `;
   const optionLines: string[] = [];
@@ -189,10 +215,49 @@ function renderRegistration(
     optionLines.push(renderConfigOptionComment(option.describe, inner));
     optionLines.push(renderConfigOptionLine(option.key, value, inner));
   }
+  // The seams the chosen values asked for, last — the callable half of the same call, after every value.
+  // Both lines come from core's closed table: nothing a manifest states is written here unquoted, which is
+  // the rule an identifier in generated source has followed since #183.
+  for (const { seam } of seams) {
+    optionLines.push(renderConfigOptionComment(CONFIG_SEAMS[seam].describe, inner));
+    optionLines.push(renderConfigSeamLine(seam, inner));
+  }
   return renderCapabilityRegistration({ name: manifest.name, indent, optionLines });
 }
 
-async function updateConfig({ workerDir, manifest, configValues }: AddCapabilityOptions): Promise<void> {
+/**
+ * The import statement one seam needs, or nothing when the config already binds that name.
+ *
+ * Keyed on the binding and checked against the specifier — the same two-step `findNamedImport` exists for
+ * one line up, and for the same reason. A `resolveSubject` already imported from the seam module is this
+ * command's own previous run, or the adopter's file moved and re-pointed, and either way it is wiring that
+ * is already done. A `resolveSubject` bound to **something else** is refused rather than shadowed: writing
+ * a second binding of one name gives a config that never loads, and quietly composing theirs would hand a
+ * capability a resolver nobody meant it to have.
+ */
+function seamImport(source: string, seam: ResolvedSeam, capability: string, path: string): string | undefined {
+  const { binding, specifier, module } = CONFIG_SEAMS[seam.seam];
+  const existing = findNamedImport(source, binding);
+  if (existing === undefined) return renderCapabilityImport(binding, specifier);
+  if (existing.specifier === specifier) return undefined;
+  throw new ConflictError({
+    message: `${path} already imports ${binding} from "${existing.specifier}".`,
+    action: `Rename that import, then run pithy add ${capability} again.`,
+    detail: `${capability} takes ${binding} as its ${seam.option} seam and pithy add writes it to ${module}; wiring it would have composed ${existing.specifier} instead.`,
+  });
+}
+
+/**
+ * Wire one capability into the Worker's `pithy.config.ts`, and report the seams that wiring took.
+ *
+ * The seams ride with the **registration**, not with the run: they are written when the registration is,
+ * and on a re-run — where the registration is already there and is left exactly as the adopter has it —
+ * nothing is written and nothing is reported. That is what makes a second `pithy add payments --set
+ * billingSubject=organization` cost nothing. The alternative, wiring the seam whenever the run names one,
+ * would add an import to a config that already composes payments some other way, and would report a
+ * scaffold beside a resolver somebody had finished.
+ */
+async function updateConfig({ workerDir, manifest, configValues }: AddCapabilityOptions): Promise<ResolvedSeam[]> {
   const path = join(workerDir, "pithy.config.ts");
   let source = await readFile(path, "utf8");
 
@@ -204,7 +269,22 @@ async function updateConfig({ workerDir, manifest, configValues }: AddCapability
     });
   }
 
-  const lines = source.split("\n");
+  // Idempotency anchors on the registration *call*, not an exact line: a block form spans several lines,
+  // and `auth(` must not match an existing `myauth(`. Read before anything is prepended, because
+  // everything below it is conditional on the answer.
+  const registered = new RegExp(`^${escapeRegExp(manifest.name)}\\(`);
+  const alreadyRegistered = source.split("\n").some((line) => registered.test(line.trim()));
+
+  // The seams this run's chosen values ask for — none on a re-run, which writes nothing at all. See this
+  // function's header for why they ride with the registration rather than with the run.
+  const seams = alreadyRegistered ? [] : seamsFor(manifest.configOptions, configValues ?? {});
+  // Ahead of the capability's own import so the two land in the order a reader expects, and ahead of the
+  // write so a seam whose binding is taken leaves the file untouched rather than half-wired.
+  for (const seam of seams) {
+    const statement = seamImport(source, seam, manifest.name, path);
+    if (statement !== undefined) source = `${statement}\n${source}`;
+  }
+
   // Idempotency on the import is keyed on the *binding*, then checked against where it comes from.
   // Keyed on the whole line, an adopter who corrected a specifier by hand — which `pithy add secrets`
   // required, for as long as `@pithy-sh/secrets` shipped no `src/index` — got the original line back
@@ -236,17 +316,15 @@ async function updateConfig({ workerDir, manifest, configValues }: AddCapability
     });
   }
 
-  // Idempotency anchors on the registration *call*, not an exact line: a block
-  // form spans several lines, and `auth(` must not match an existing `myauth(`.
-  const registered = new RegExp(`^${escapeRegExp(manifest.name)}\\(`);
-  if (!lines.some((line) => registered.test(line.trim()))) {
+  if (!alreadyRegistered) {
     const indent = markerLine.slice(0, markerLine.length - markerLine.trimStart().length);
-    const registration = renderRegistration(manifest, configValues ?? {}, indent, source);
+    const registration = renderRegistration(manifest, configValues ?? {}, indent, source, seams);
     // A replacement function keeps `$` in the registration literal.
     source = source.replace(markerLine, () => `${registration}\n${markerLine}`);
   }
 
   await writeFile(path, source);
+  return seams;
 }
 
 /**

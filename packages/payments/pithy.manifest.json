@@ -56,8 +56,8 @@
       "key": "billingSubject",
       "choices": ["user", "organization"],
       "describe": "Who holds a subscription in this project. user \u2014 one person buys, one person is entitled. organization \u2014 a company buys, and everybody in it is entitled. It keys the entitlement column and its UNIQUE index, so changing it once anybody has subscribed is a migration, not an edit.",
-      "choicesNeedingCode": {
-        "organization": "It needs a `resolveSubject` seam saying which organization a caller is acting for, and `pithy add` writes JSON, not functions. Add payments with --set billingSubject=user, then in this Worker's pithy.config.ts change it to \"organization\" and pass `resolveSubject` \u2014 see @pithy-sh/payments' README."
+      "choicesNeedingSeam": {
+        "organization": "paymentsSubject"
       }
     },
     {
