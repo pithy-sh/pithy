@@ -4,7 +4,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { Logger } from "@pithy-sh/core/src/logger/logger";
@@ -19,6 +19,7 @@ import { classifyCapabilityLoadFailure } from "../capabilities/loadFailure";
 import { loadTesters } from "../capabilities/testersLoader";
 import { CloudflareTestersProvisioner, loadTestersProvisioning } from "../capabilities/testersProvisioner";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { cloudflareClients } from "../cloudflare/clients";
 import { cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
@@ -381,7 +382,7 @@ async function buildProvisioner(projectDir: string) {
       }
     : undefined;
 
-  const cf = new CloudflareClients({ accountId, apiToken });
+  const cf = await cloudflareClients({ accountId, apiToken });
   return {
     email,
     project,

@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS, type DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
@@ -38,6 +37,7 @@ import {
   CloudflareSecretsProvisioner,
 } from "../capabilities/secretsProvisioner";
 import type { ConfirmedAccount } from "../cloudflare/accountAnswer";
+import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { editDevSecrets } from "../devSecrets/edit";
 import { resolveDevSecretsFile } from "../devSecrets/location";
@@ -485,7 +485,7 @@ const provision = defineCommand({
       // this, and deprovision has to recompute them exactly. A guessed name would name resources
       // teardown can never find again.
       const project = requireProjectName(await loadProject(projectDir));
-      const cf = new CloudflareClients({ accountId, apiToken });
+      const cf = await cloudflareClients({ accountId, apiToken });
       // Provisioning spans every managed environment, not one — "dev" is the fallback the audit
       // database resolves against when a command has no single target env (mirrors `pithy feature`).
       const provisioner = new CloudflareSecretsProvisioner({
@@ -626,7 +626,7 @@ const deprovision = defineCommand({
           requireStore: true,
         },
       );
-      const cf = new CloudflareClients({ accountId, apiToken });
+      const cf = await cloudflareClients({ accountId, apiToken });
       const deprovisioner = new CloudflareSecretsDeprovisioner({
         account,
         cf,

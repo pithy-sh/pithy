@@ -3,8 +3,7 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
+import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
@@ -17,6 +16,7 @@ import {
   type PaymentsEnvResources,
 } from "../capabilities/paymentsProvisioner";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
@@ -179,7 +179,7 @@ async function buildProvisioner(projectDir: string) {
   const environments = loadProjectEnvironments(config);
   const { account, accountId, apiToken, storeId } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
   const paymentsConfig = await loadPaymentsConfig(projectDir);
-  const cf = new CloudflareClients({ accountId, apiToken });
+  const cf = await cloudflareClients({ accountId, apiToken });
   return {
     project,
     environments,
@@ -192,7 +192,7 @@ async function buildProvisioner(projectDir: string) {
       storeId,
       paymentsConfig,
       resolveEnv: buildResolveEnv(projectDir, cf, project, account),
-      workflows: new CloudflareWorkflowsClient({ accountId, apiToken }),
+      workflows: await cloudflareWorkflows({ accountId, apiToken }),
       audit: await buildAudit(projectDir, accountId, apiToken),
     }),
   };

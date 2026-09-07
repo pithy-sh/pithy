@@ -3,10 +3,10 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { ZoneInfo } from "@pithy-sh/cloudflare/src/zones/zonesManager";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
+import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { applyDomains } from "./applyDomains";
 import { writeFileAtomic } from "./atomic";
@@ -55,7 +55,7 @@ async function lookupZones(account: CloudflareAccountSelection | null): Promise<
   }
 
   try {
-    const zones = await new CloudflareClients({ accountId, apiToken }).zones().listZones();
+    const zones = await (await cloudflareClients({ accountId, apiToken })).zones().listZones();
     if (zones.length === 0) {
       return { zones: [], note: "This account has no zones yet. Type the domain anyway — add the zone before deploy." };
     }

@@ -4,7 +4,6 @@
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { composeDatabases } from "@pithy-sh/core/src/data/databases";
 import { InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -22,8 +21,8 @@ import {
 import { partialWriteReport } from "@pithy-sh/secrets/src/cli/partialWrite";
 import { parse } from "comment-json";
 import type { Migration, MigrationProvider, MigrationResult } from "kysely/migration";
-import { Miniflare } from "miniflare";
 import { z } from "zod";
+import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { resolveWorkers } from "../project/workerScope";
 import { wranglerConfigPath } from "../provision/featureConfig";
@@ -435,6 +434,10 @@ async function localDriver(persistRoot: string, groups: DatabaseGroup[]): Promis
     bindings[`d1_${index}`] = group.id;
   });
 
+  // Loaded here rather than at module scope: `miniflare` costs ~290 ms to import under Node, and
+  // every command module that could reach this one paid it before citty had parsed a flag (#482).
+  // `ci/lazyHeavyImports.test.ts` holds the property.
+  const { Miniflare } = await import("miniflare");
   const miniflare = new Miniflare({
     modules: true,
     script: "export default {};",
@@ -462,7 +465,7 @@ function databaseOf(cache: Map<string, D1Database>, group: DatabaseGroup): D1Dat
  * `@pithy-sh/cloudflare` D1 client (a shared client memoizes managers by database id). Only ever called
  * for the real REST path; an injected `override` replaces it wholesale.
  */
-function defaultRemoteD1(env: string, account: CloudflareAccountSelection | null): RemoteD1Factory {
+async function defaultRemoteD1(env: string, account: CloudflareAccountSelection | null): Promise<RemoteD1Factory> {
   const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   // The active CF token: the bootstrap token locally, or the least-privilege `ci-system` token in CI
@@ -474,7 +477,7 @@ function defaultRemoteD1(env: string, account: CloudflareAccountSelection | null
       action: `Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to migrate --env ${env}.`,
     });
   }
-  const clients = new CloudflareClients({ accountId, apiToken });
+  const clients = await cloudflareClients({ accountId, apiToken });
   return ({ databaseId }) => clients.d1(databaseId) as unknown as D1Database;
 }
 
@@ -486,14 +489,14 @@ function defaultRemoteD1(env: string, account: CloudflareAccountSelection | null
  * client wholesale, so credentials are demanded only for the real path (mirrors the seed driver, which
  * is likewise credential-lazy): substituting the network client must never require ambient CF creds.
  */
-function remoteDriver(
+async function remoteDriver(
   env: string,
   groups: DatabaseGroup[],
   account: CloudflareAccountSelection | null,
   override?: RemoteD1Factory,
-): MigrationDriver {
+): Promise<MigrationDriver> {
   // Build the REST-backed D1 per binding; the default reaches for creds, an override bypasses them.
-  const resolveD1: RemoteD1Factory = override ?? defaultRemoteD1(env, account);
+  const resolveD1: RemoteD1Factory = override ?? (await defaultRemoteD1(env, account));
 
   const cache = new Map<string, D1Database>();
   for (const group of groups) {
@@ -538,7 +541,7 @@ interface RunContext {
 function driverFor(context: RunContext, groups: DatabaseGroup[]): Promise<MigrationDriver> {
   return context.env === "dev"
     ? localDriver(context.persistRoot, groups)
-    : Promise.resolve(remoteDriver(context.env, groups, context.account, context.remoteD1));
+    : remoteDriver(context.env, groups, context.account, context.remoteD1);
 }
 
 /**

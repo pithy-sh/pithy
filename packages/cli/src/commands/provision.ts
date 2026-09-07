@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
 import { storeSecretMinter } from "../capabilities/mintSecrets";
+import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { branchIdentity } from "../feature/identity";
 import { provisionFeature } from "../feature/provision";
@@ -62,7 +62,7 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
  */
 
 /** Build the CF control-plane provisioners from the environment's credentials, or null when they are absent. */
-function buildProvisioners(account: CloudflareAccountSelection | null): ResourceProvisioners | null {
+async function buildProvisioners(account: CloudflareAccountSelection | null): Promise<ResourceProvisioners | null> {
   const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
@@ -70,7 +70,7 @@ function buildProvisioners(account: CloudflareAccountSelection | null): Resource
   // What vouches for that id travels with it (#378). `find` is find-or-create's first half, and an empty
   // listing from an account nothing claims is not the absence the second half reads it as.
   const confirmation = cloudflareAccountConfirmation({ account });
-  return cloudflareProvisioners(new CloudflareClients({ accountId, apiToken }), { accountId, confirmation });
+  return cloudflareProvisioners(await cloudflareClients({ accountId, apiToken }), { accountId, confirmation });
 }
 
 /**
@@ -80,13 +80,13 @@ function buildProvisioners(account: CloudflareAccountSelection | null): Resource
  * needs no store, and one that does gets its `secrets_store_secrets` stanza — the binding `pithy add`
  * deliberately could not write, and nothing came back for (#238).
  */
-function buildStore(account: CloudflareAccountSelection | null): SecretsStore | null {
+async function buildStore(account: CloudflareAccountSelection | null): Promise<SecretsStore | null> {
   const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const storeId = vars.SECRETS_STORE_ID ?? "";
   if (!accountId || !apiToken || !storeId) return null;
-  return cloudflareSecretsStore(new CloudflareClients({ accountId, apiToken }), storeId);
+  return cloudflareSecretsStore(await cloudflareClients({ accountId, apiToken }), storeId);
 }
 
 /**
@@ -111,7 +111,7 @@ async function buildAudit(
     // would blame `dev` for a change to production — the regression `auditDestination.test.ts` pins.
     env: AUDIT_DESTINATION_ENV,
     capabilities,
-    clients: new CloudflareClients({ accountId, apiToken }),
+    clients: await cloudflareClients({ accountId, apiToken }),
     apiToken,
   });
 }
@@ -128,8 +128,11 @@ function confirmPrompt(env: string): () => Promise<string> {
 }
 
 /** Refuse a run with no credentials, naming the environment it was for. */
-function requireProvisioners(account: CloudflareAccountSelection | null, target: string): ResourceProvisioners {
-  const provisioners = buildProvisioners(account);
+async function requireProvisioners(
+  account: CloudflareAccountSelection | null,
+  target: string,
+): Promise<ResourceProvisioners> {
+  const provisioners = await buildProvisioners(account);
   if (provisioners) return provisioners;
   throw new ValidationError({
     message: "Cloudflare credentials are missing.",
@@ -261,11 +264,11 @@ async function provisionDeclared(
   });
 
   const account = loadProjectCloudflare(config) ?? null;
-  const provisioners = requireProvisioners(account, environment);
+  const provisioners = await requireProvisioners(account, environment);
   const capabilities = projectCapabilities(await resolveWorkers({ projectDir }));
   // The scope carries both the names and the stanza. There is no second argument to disagree with.
   const scope = environmentScope(requireProjectName(config), environment);
-  const store = buildStore(account);
+  const store = await buildStore(account);
   const audit = await buildAudit(projectDir, capabilities, account);
   const report = await provisionEnvironment({
     projectDir,
@@ -310,8 +313,8 @@ async function provisionBranch(
 ): Promise<void> {
   const { identity, capabilities } = await branchIdentity(projectDir);
   const account = await projectCloudflareAccount(projectDir);
-  const provisioners = requireProvisioners(account, "a feature environment");
-  const store = buildStore(account);
+  const provisioners = await requireProvisioners(account, "a feature environment");
+  const store = await buildStore(account);
   const report = await provisionFeature({
     projectDir,
     capabilities,

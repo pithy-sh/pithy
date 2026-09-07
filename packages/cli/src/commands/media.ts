@@ -3,7 +3,7 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -19,6 +19,7 @@ import {
 import { resolveR2Credentials } from "../capabilities/r2Bucket";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
@@ -206,7 +207,7 @@ const provision = defineCommand({
       );
       const mediaConfig = await loadMediaConfig(projectDir);
       const r2Credentials = resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw);
-      const cf = new CloudflareClients({ accountId, apiToken });
+      const cf = await cloudflareClients({ accountId, apiToken });
       const provisioner = new CloudflareMediaProvisioner({
         cf,
         project,
@@ -218,7 +219,7 @@ const provision = defineCommand({
         r2Credentials,
         r2ApiToken: args["r2-api-token"] ?? apiToken,
         mediaConfig,
-        dispatcher: buildSecretDispatcher(accountId, apiToken, project),
+        dispatcher: await buildSecretDispatcher(accountId, apiToken, project),
         resolveEnv: buildResolveEnv(projectDir, cf, project, account),
         audit: await buildAudit(projectDir, accountId, apiToken),
       });
@@ -275,7 +276,7 @@ const deprovision = defineCommand({
       const r2Credentials = args.storage
         ? resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw)
         : undefined;
-      const cf = new CloudflareClients({ accountId, apiToken });
+      const cf = await cloudflareClients({ accountId, apiToken });
       const deprovisioner = new CloudflareMediaDeprovisioner({
         account,
         cf,

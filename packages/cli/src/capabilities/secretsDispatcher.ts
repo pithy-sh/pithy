@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import type { SecretDispatcher, SecretProbe, SecretRotationRecorder } from "@pithy-sh/secrets/src/cli/dispatch";
 import { WorkflowSecretDispatcher } from "@pithy-sh/secrets/src/manager/dispatcher";
+import { cloudflareWorkflows } from "../cloudflare/clients";
 
 /**
  * Build the live secrets dispatcher every value-touching command writes through — the manager
@@ -20,10 +20,10 @@ import { WorkflowSecretDispatcher } from "@pithy-sh/secrets/src/manager/dispatch
  * (`#379`). All three contracts land on the same Workflow, so the same one object answers them, and a
  * caller cannot end up probing or recording against one project's manager while writing to another's.
  */
-export function buildSecretDispatcher(
+export async function buildSecretDispatcher(
   accountId: string,
   apiToken: string,
   project: string,
-): SecretDispatcher & SecretProbe & SecretRotationRecorder {
-  return new WorkflowSecretDispatcher(new CloudflareWorkflowsClient({ accountId, apiToken }), project);
+): Promise<SecretDispatcher & SecretProbe & SecretRotationRecorder> {
+  return new WorkflowSecretDispatcher(await cloudflareWorkflows({ accountId, apiToken }), project);
 }

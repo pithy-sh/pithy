@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { MAX_ISSUE_DIGITS } from "@pithy-sh/core/src/naming/limits";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
+import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { createFeature } from "../feature/create";
 import { type DestroyReport, destroyedBeforeFailure, destroyFeature } from "../feature/destroy";
@@ -32,7 +32,7 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
 const DEFAULT_FEATURE_ENV = FEATURE_ENVIRONMENT;
 
 /** Build the CF control-plane provisioners from the environment's credentials, or null when they are absent. */
-function buildProvisioners(account: CloudflareAccountSelection | null): ResourceProvisioners | null {
+async function buildProvisioners(account: CloudflareAccountSelection | null): Promise<ResourceProvisioners | null> {
   const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
@@ -40,7 +40,7 @@ function buildProvisioners(account: CloudflareAccountSelection | null): Resource
   // What vouches for that id travels with it (#378). `find` is find-or-create's first half, and an empty
   // listing from an account nothing claims is not the absence the second half reads it as.
   const confirmation = cloudflareAccountConfirmation({ account });
-  return cloudflareProvisioners(new CloudflareClients({ accountId, apiToken }), { accountId, confirmation });
+  return cloudflareProvisioners(await cloudflareClients({ accountId, apiToken }), { accountId, confirmation });
 }
 
 /**
@@ -51,13 +51,13 @@ function buildProvisioners(account: CloudflareAccountSelection | null): Resource
  * `secrets_store_secrets` bindings. Either way the rest of the feature stands up, and the report says
  * which happened.
  */
-function buildStore(account: CloudflareAccountSelection | null): SecretsStore | null {
+async function buildStore(account: CloudflareAccountSelection | null): Promise<SecretsStore | null> {
   const vars = cloudflareEnv({ account });
   const accountId = vars.CLOUDFLARE_ACCOUNT_ID ?? "";
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   const storeId = vars.SECRETS_STORE_ID ?? "";
   if (!accountId || !apiToken || !storeId) return null;
-  return cloudflareSecretsStore(new CloudflareClients({ accountId, apiToken }), storeId);
+  return cloudflareSecretsStore(await cloudflareClients({ accountId, apiToken }), storeId);
 }
 
 /**
@@ -82,7 +82,7 @@ async function buildAudit(
     projectDir,
     env: AUDIT_DESTINATION_ENV,
     capabilities,
-    clients: new CloudflareClients({ accountId, apiToken }),
+    clients: await cloudflareClients({ accountId, apiToken }),
     apiToken,
   });
 }
@@ -284,7 +284,7 @@ const destroy = defineCommand({
         });
       }
       const account = await projectCloudflareAccount(projectDir);
-      const provisioners = buildProvisioners(account);
+      const provisioners = await buildProvisioners(account);
 
       // Without credentials the remote half cannot run. Skipping it silently is the worst outcome: every
       // D1/KV/R2 leaks while the run reports success, and teardown then deletes the branch the resource
@@ -299,7 +299,7 @@ const destroy = defineCommand({
         });
       }
 
-      const store = buildStore(account);
+      const store = await buildStore(account);
       let report: DestroyReport;
       try {
         report = await destroyFeature({

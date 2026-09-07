@@ -3,7 +3,7 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -19,6 +19,7 @@ import {
   type StorageEnvResources,
 } from "../capabilities/storageProvisioner";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
@@ -201,7 +202,7 @@ const provision = defineCommand({
       );
       const storageConfig = await loadStorageConfig(projectDir);
       const r2Credentials = resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw);
-      const cf = new CloudflareClients({ accountId, apiToken });
+      const cf = await cloudflareClients({ accountId, apiToken });
       const provisioner = new CloudflareStorageProvisioner({
         cf,
         project,
@@ -212,7 +213,7 @@ const provision = defineCommand({
         storageApiToken: args["api-token"] ?? apiToken,
         r2Credentials,
         storageConfig,
-        dispatcher: buildSecretDispatcher(accountId, apiToken, project),
+        dispatcher: await buildSecretDispatcher(accountId, apiToken, project),
         resolveEnv: buildResolveEnv(projectDir, cf, project, account),
         audit: await buildAudit(projectDir, accountId, apiToken),
       });
@@ -283,7 +284,7 @@ const deprovision = defineCommand({
       const r2Credentials = args.storage
         ? resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw)
         : undefined;
-      const cf = new CloudflareClients({ accountId, apiToken });
+      const cf = await cloudflareClients({ accountId, apiToken });
       const deprovisioner = new CloudflareStorageDeprovisioner({
         account,
         cf,

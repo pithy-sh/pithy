@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { join, relative } from "node:path";
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
@@ -19,6 +18,7 @@ import {
 } from "../capabilities/flow";
 import { availableManifests } from "../capabilities/manifests";
 import { requiredOptionRefusal } from "../capabilities/requiredOptions";
+import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import type { DatabaseRun } from "../migrations/run";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
@@ -70,7 +70,7 @@ export async function buildAudit(options: BuildAuditOptions): Promise<CliAuditEm
     worker,
     env,
     capabilities,
-    clients: new CloudflareClients({ accountId, apiToken }),
+    clients: await cloudflareClients({ accountId, apiToken }),
     apiToken,
   });
 }

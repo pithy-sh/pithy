@@ -5,8 +5,8 @@ import { execFile } from "node:child_process";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ConflictError, InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { generateDevVars } from "../devSecrets/generate";
 import { devConfigPath, readDevConfig } from "../feature/devConfig";
@@ -356,7 +356,7 @@ export const probeDeployedScripts: DeployedScriptProbe = async (scripts, account
   if (!accountId || !apiToken) return { live: [], checked: false };
   try {
     // One listing, not one call per name: the account is asked once and the answer filtered locally.
-    const live = await new CloudflareClients({ accountId, apiToken }).workers().listWorkers();
+    const live = await (await cloudflareClients({ accountId, apiToken })).workers().listWorkers();
     const deployed = new Set(live.map((script) => script.id));
     return { live: scripts.filter((script) => deployed.has(script)), checked: true };
   } catch {

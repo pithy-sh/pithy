@@ -4,8 +4,9 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { parse } from "comment-json";
+import { cloudflareClients } from "../cloudflare/clients";
 import { loadProject, requireProjectName } from "../project/config";
 import { type CapabilitySet, isUnknown, projectCapabilitySet, type UnknownSet } from "../project/workerScope";
 import { discoverWorkers } from "../project/workers";
@@ -400,7 +401,7 @@ export async function createProjectCliAudit(options: ProjectCliAuditOptions): Pr
     ...(options.actedOn !== undefined ? { actedOn: options.actedOn } : {}),
     capabilities: await projectCapabilitySet(options.projectDir),
     ...(options.worker !== undefined ? { worker: options.worker } : {}),
-    clients: new CloudflareClients({ accountId, apiToken }),
+    clients: await cloudflareClients({ accountId, apiToken }),
     apiToken,
   });
 }

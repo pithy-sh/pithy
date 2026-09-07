@@ -66,7 +66,7 @@ interface Credentials {
 }
 
 /** That seam's own type, so a recorder below is checked against it rather than cast past it. */
-type Connect = (credentials: Credentials) => CloudflareClients;
+type Connect = (credentials: Credentials) => Promise<CloudflareClients>;
 
 function candidate(name: string, kind: "d1" | "r2"): MisnamedCandidate {
   return { name, project: "old", kind, worker: "api", env: "dev", binding: kind === "d1" ? "DB" : "MEDIA" };
@@ -99,7 +99,7 @@ describe("probeAccountEvidence", () => {
   test("reads a real owner stamp off a live database — the only path to proof", async () => {
     const { db, dispose } = await database("old-name");
     disposers.push(dispose);
-    const evidence = await probeAccountEvidence([candidate("old-name-dev-db", "d1")], null, () =>
+    const evidence = await probeAccountEvidence([candidate("old-name-dev-db", "d1")], null, async () =>
       account({ databases: [{ name: "old-name-dev-db", uuid: "uuid-1" }], d1: db }),
     );
     expect(evidence.get("old-name-dev-db")).toEqual({ exists: true, owner: "old-name" });
@@ -110,14 +110,14 @@ describe("probeAccountEvidence", () => {
     // This is the case that must NOT escalate — an adopter's own database, named their own way.
     const { db, dispose } = await database();
     disposers.push(dispose);
-    const evidence = await probeAccountEvidence([candidate("acme-dev-db", "d1")], null, () =>
+    const evidence = await probeAccountEvidence([candidate("acme-dev-db", "d1")], null, async () =>
       account({ databases: [{ name: "acme-dev-db", uuid: "uuid-1" }], d1: db }),
     );
     expect(evidence.get("acme-dev-db")).toEqual({ exists: true, owner: null });
   });
 
   test("a database the account does not hold is absent, and no stamp is read for it", async () => {
-    const evidence = await probeAccountEvidence([candidate("gone-dev-db", "d1")], null, () =>
+    const evidence = await probeAccountEvidence([candidate("gone-dev-db", "d1")], null, async () =>
       // `d1` is undefined on purpose: reaching for it would throw, so this also proves the id guard holds.
       account({ databases: [{ name: "other-dev-db", uuid: "uuid-2" }] }),
     );
@@ -127,7 +127,7 @@ describe("probeAccountEvidence", () => {
   test("a listing the token may not read leaves the name unknown, not absent", async () => {
     // The distinction the tri-state exists for. Reporting `exists: false` here would let a permissions
     // gap read as "that resource is gone".
-    const evidence = await probeAccountEvidence([candidate("acme-dev-db", "d1")], null, () =>
+    const evidence = await probeAccountEvidence([candidate("acme-dev-db", "d1")], null, async () =>
       account({ listThrows: true }),
     );
     expect(evidence.has("acme-dev-db")).toBe(false);
@@ -137,7 +137,7 @@ describe("probeAccountEvidence", () => {
     const evidence = await probeAccountEvidence(
       [candidate("old-dev-media", "r2"), candidate("gone-dev-media", "r2")],
       null,
-      () => account({ buckets: [{ name: "old-dev-media" }] }),
+      async () => account({ buckets: [{ name: "old-dev-media" }] }),
     );
     expect(evidence.get("old-dev-media")).toEqual({ exists: true, owner: null });
     expect(evidence.get("gone-dev-media")).toEqual({ exists: false, owner: null });
@@ -208,7 +208,7 @@ describe("probeAccountEvidence resolves the account the project names, not the d
     const seen: Credentials[] = [];
     return {
       seen,
-      connect: (credentialPair) => {
+      connect: async (credentialPair) => {
         seen.push(credentialPair);
         return account({ databases: [] });
       },

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { isPermissionKey, PERMISSION_GROUPS, type PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
 import {
   resolveTokenProfiles,
@@ -14,6 +14,7 @@ import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { defineCommand } from "citty";
 import { createCliAudit } from "../audit/cliAudit";
 import { resolveSecretRegistry } from "../capabilities/secrets";
+import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { loadProject, loadProjectCloudflare, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
@@ -215,7 +216,7 @@ async function buildEngine(projectDir: string, env: string): Promise<TokenEngine
   // Read *before* the credentials, because it is also what says which account they come from.
   const config = await loadProject(projectDir);
   const { accountId, apiToken, storeId } = loadCreds(loadProjectCloudflare(config) ?? null);
-  const cf = new CloudflareClients({ accountId, apiToken });
+  const cf = await cloudflareClients({ accountId, apiToken });
   // Never best-effort. See {@link tokenProfiles}: an emptied capability set is a silently narrowed credential.
   const workerSet = await resolveWorkerSet({ projectDir });
   const workers = isUnknown(workerSet) ? [] : workerSet;

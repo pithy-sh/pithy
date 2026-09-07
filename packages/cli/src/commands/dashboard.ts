@@ -3,7 +3,6 @@
 
 import { readFile } from "node:fs/promises";
 import type { D1Database } from "@cloudflare/workers-types";
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { ControlPlaneConnection } from "@pithy-sh/core/src/controlPlane/data/connection";
 import { Ed25519PublicJwk } from "@pithy-sh/core/src/controlPlane/data/connection";
@@ -12,6 +11,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { z } from "zod";
 import { createCliAudit } from "../audit/cliAudit";
+import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, resolveCloudflare } from "../cloudflare/config";
 import { httpDashboardClient } from "../dashboard/api";
 import {
@@ -264,7 +264,7 @@ async function openAudit(projectDir: string, env: string, account: CloudflareAcc
   const accountId = resolved.mismatch ? "" : (resolved.vars.CLOUDFLARE_ACCOUNT_ID ?? "");
   const apiToken = resolved.mismatch ? "" : (resolved.vars.CLOUDFLARE_API_TOKEN ?? "");
   const named = accountId !== "" && apiToken !== "";
-  return (database: D1Database) =>
+  return async (database: D1Database) =>
     createCliAudit({
       projectDir,
       env,
@@ -273,7 +273,7 @@ async function openAudit(projectDir: string, env: string, account: CloudflareAcc
       actedOn: env,
       capabilities,
       database,
-      ...(named ? { clients: new CloudflareClients({ accountId, apiToken }), apiToken } : {}),
+      ...(named ? { clients: await cloudflareClients({ accountId, apiToken }), apiToken } : {}),
     });
 }
 

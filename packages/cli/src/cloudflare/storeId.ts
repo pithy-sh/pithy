@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { CfSecretsStore } from "@pithy-sh/cloudflare/src/secrets/secretsStores";
+import { cloudflareClients } from "../cloudflare/clients";
 import {
   type CloudflareConfigOptions,
   cloudflareConfigPath,
@@ -124,6 +124,6 @@ async function listStoresOrNull(
   options: EnsureSecretsStoreIdOptions,
   credentials: { accountId: string; apiToken: string },
 ): Promise<CfSecretsStore[] | null> {
-  const list = options.listStores ?? ((creds) => new CloudflareClients(creds).secretsStores().listStores());
+  const list = options.listStores ?? (async (creds) => (await cloudflareClients(creds)).secretsStores().listStores());
   return list(credentials).catch(() => null);
 }
