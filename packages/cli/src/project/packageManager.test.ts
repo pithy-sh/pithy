@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   alreadyProvided,
+  declareOnWorker,
   detectPackageManager,
   execArgs,
   installArgs,
@@ -271,5 +272,60 @@ describe("alreadyProvided", () => {
     // react is on the registry. A range for it is correct and must keep being written.
     await link(dir, "react");
     expect(await alreadyProvided(dir, "react")).toBe(false);
+  });
+});
+
+/**
+ * The Worker's manifest is what says what the Worker is made of — #480.
+ *
+ * `pithy add <cap> --worker <w>` writes its import into `apps/<w>/pithy.config.ts`, so `apps/<w>` is
+ * what depends on the capability. The install stays at the root, where the lockfile is and where every
+ * manifest-discovery site looks; only the declaration moves.
+ */
+describe("declareOnWorker", () => {
+  /** A root that declares `pkg` at `range`, and a Worker under `apps/api` that declares `deps`. */
+  async function project(root: Record<string, string>, worker: Record<string, string>): Promise<string> {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ name: "root", dependencies: root }));
+    await mkdir(join(dir, "apps", "api"), { recursive: true });
+    await writeFile(
+      join(dir, "apps", "api", "package.json"),
+      JSON.stringify({ name: "api", dependencies: worker }, null, 2),
+    );
+    return join(dir, "apps", "api");
+  }
+
+  /** What the Worker's manifest declares now. */
+  async function workerDeps(): Promise<Record<string, string>> {
+    const raw = await readFile(join(dir, "apps", "api", "package.json"), "utf8");
+    return (JSON.parse(raw) as { dependencies: Record<string, string> }).dependencies;
+  }
+
+  test("copies the range the root resolved, rather than inventing one", async () => {
+    const workerDir = await project({ "@pithy-sh/auth": "^0.1.3" }, { "@pithy-sh/core": "^0.1.3" });
+
+    expect(await declareOnWorker(dir, workerDir, "@pithy-sh/auth")).toBe("^0.1.3");
+    expect(await workerDeps()).toEqual({ "@pithy-sh/core": "^0.1.3", "@pithy-sh/auth": "^0.1.3" });
+  });
+
+  // Merge, never replace — the same rule `pithy ui add` follows. An adopter who pinned a version keeps it.
+  test("leaves a range the Worker already declares alone", async () => {
+    const workerDir = await project({ "@pithy-sh/auth": "^0.1.3" }, { "@pithy-sh/auth": "0.1.2" });
+
+    expect(await declareOnWorker(dir, workerDir, "@pithy-sh/auth")).toBeNull();
+    expect(await workerDeps()).toEqual({ "@pithy-sh/auth": "0.1.2" });
+  });
+
+  // The linked-checkout case `installPackage` documents: nothing is declared anywhere, because the only
+  // range available names a version no registry has. Writing one here would break the next install.
+  test("writes nothing when the root declares nothing", async () => {
+    const workerDir = await project({}, { "@pithy-sh/core": "^0.1.3" });
+
+    expect(await declareOnWorker(dir, workerDir, "@pithy-sh/auth")).toBeNull();
+    expect(await workerDeps()).toEqual({ "@pithy-sh/core": "^0.1.3" });
+  });
+
+  test("answers null rather than throwing when the Worker has no manifest", async () => {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { "@pithy-sh/auth": "^0.1.3" } }));
+    expect(await declareOnWorker(dir, join(dir, "apps", "gone"), "@pithy-sh/auth")).toBeNull();
   });
 });

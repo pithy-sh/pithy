@@ -9,7 +9,7 @@ import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { type DatabaseRun, migrateProject } from "../migrations/run";
 import type { ProposedName } from "../project/bindingEntries";
 import { allCapabilities, loadWorkerConfig } from "../project/config";
-import { installPackage } from "../project/packageManager";
+import { declareOnWorker, installPackage } from "../project/packageManager";
 import { readFileOutcome } from "../project/readOptionalFile";
 import { type WorkerIdentity, workerIdentity } from "../project/workerIdentity";
 import { addCapability, type ConfigValue } from "./add";
@@ -52,6 +52,20 @@ export function coerceConfigValue(option: ConfigOption, raw: string, capability:
   // It applies to an option that has a default too — a manifest offering three values does not stop
   // meaning it because it also picked one.
   if (option.choices) {
+    // **A choice the CLI must not write, refused here rather than later — #483.** `pithy add` renders
+    // JSON into `pithy.config.ts` and cannot render a function, so a choice whose validity depends on a
+    // seam is one it can write and the kit will then refuse to load. `payments`' `organization` did
+    // exactly that: the add succeeded, and every later command in the project failed on the config it
+    // had just written, because they all begin by loading it. The refusal costs one hand-edit; writing
+    // it cost the project.
+    const needsCode = option.choicesNeedingCode?.[raw];
+    if (needsCode !== undefined) {
+      throw new ValidationError({
+        message: `${capability} cannot be added with "${option.key}" set to "${raw}".`,
+        action: needsCode,
+        detail: `${option.key}="${raw}" composes only alongside code pithy add cannot write, so writing it would leave a config this project cannot load.`,
+      });
+    }
     if (option.choices.includes(raw)) return raw;
     throw new ValidationError({
       message: `${capability} option "${option.key}" does not take "${raw}".`,
@@ -160,6 +174,16 @@ export type PrerequisitePrompt = (question: PrerequisiteQuestion) => Promise<boo
 /** Install the package with the project's package manager. Injectable for tests. */
 export type InstallStep = (input: { projectDir: string; pkg: string }) => Promise<{ packageManager: string }>;
 
+/**
+ * Declare the capability on the Worker whose config imports it, at the range the root resolved (#480).
+ *
+ * A separate step from the install rather than a flag on it, because the two answer to different
+ * directories on purpose: the install belongs at the root, where the lockfile is and where every
+ * manifest-discovery site looks, and the declaration belongs beside the `pithy.config.ts` that names
+ * the capability. Injectable for tests.
+ */
+export type DeclareStep = (input: { projectDir: string; workerDir: string; pkg: string }) => Promise<string | null>;
+
 /** What the migrate step is told: the persistence root, the one Worker just wired, and who owns the data. */
 export interface MigrateTarget {
   /** The project root — the owner of the `.wrangler/state` store every Worker's local D1 lives in. */
@@ -185,6 +209,8 @@ export type MigrateStep = (target: MigrateTarget) => Promise<DatabaseRun[]>;
 export type EjectStep = (options: EjectCapabilityOptions) => Promise<EjectResult>;
 
 const defaultInstall: InstallStep = (input) => installPackage(input);
+
+const defaultDeclare: DeclareStep = ({ projectDir, workerDir, pkg }) => declareOnWorker(projectDir, workerDir, pkg);
 
 /**
  * Migrate the Worker just wired, and only it: its own `pithy.config.ts` names the capabilities and its
@@ -243,6 +269,8 @@ export interface RunAddOptions {
   prompt?: ConfigPrompt;
   /** Override the install step (tests inject a stub). */
   install?: InstallStep;
+  /** Declare the capability on the target Worker (default: {@link defaultDeclare}). */
+  declare?: DeclareStep;
   /** Override the migrate step (tests inject a stub). */
   migrate?: MigrateStep;
   /** Copy the capability's source into the repo and repoint the wiring at it (`--eject`). */
@@ -434,6 +462,7 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
   const { projectDir, workerDir, capability } = options;
   const worker = options.worker ?? basename(workerDir);
   const install = options.install ?? defaultInstall;
+  const declare = options.declare ?? defaultDeclare;
   const migrate = options.migrate ?? defaultMigrate;
   const audit = options.audit ?? (async () => {});
 
@@ -441,7 +470,13 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
     // Resolved through the catalog, never interpolated from the name: `controlplane` ships inside
     // `@pithy-sh/core`, so `@pithy-sh/controlplane` is a package that has never existed and the install
     // would fail before the manifest was ever read.
-    const { packageManager } = await install({ projectDir, pkg: capabilityPackageName(capability) });
+    const pkg = capabilityPackageName(capability);
+    const { packageManager } = await install({ projectDir, pkg });
+
+    // The Worker composing it is what depends on it. Immediately after the install, because the range
+    // to mirror is the one the install just wrote — and before any refusal below, so a run that stops
+    // at a missing option still leaves the manifest agreeing with what is on disk.
+    await declare({ projectDir, workerDir, pkg });
 
     const manifest = await loadManifest(capability, projectDir);
 

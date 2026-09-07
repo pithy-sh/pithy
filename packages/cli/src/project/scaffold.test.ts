@@ -1024,7 +1024,9 @@ describe("ensureEmptyTarget", () => {
  * **Why a test and not a Biome grit plugin.** The rule that holds with no exemptions is a conditional —
  * a follower is wrong in a module that *writes*, and unremarkable in one that only reads. `config.ts`,
  * `workerScope.ts` and `packageManager.ts` probe for a file they are
- * only going to read; following a link there decides nothing and leaks nothing. That conjunction is a fact
+ * only going to read; following a link there decides nothing and leaks nothing. `packageManager.ts` was
+ * one of those until #480 gave it a write, and it is in the table below now — the rule working rather
+ * than an exception to it: the conjunction changed, so the module changed sides and had to say why. That conjunction is a fact
  * about a whole module, and Biome's grit plugins match expressions — the three this repo already ships
  * (`no-console`, `no-process-io`, `no-raw-request-input`) are all "never, anywhere in this scope" rules,
  * which this one is not. Scoping a plugin by `includes` would have meant hand-listing the writing modules
@@ -1110,6 +1112,10 @@ describe("the gate on the gate", () => {
     "cli/src/project/config.ts": {
       probes: "access",
       why: "Asks whether a pithy.config.ts is there, and then only imports it — following is right, since a config reached through a linked checkout is still that project's config. It writes to one other path: a `.pithy.reload.<uuid>.ts` copy beside it, carrying a name nothing can already hold and that no probe here answered about.",
+    },
+    "cli/src/project/packageManager.ts": {
+      probes: "access",
+      why: "Asks which lockfile is beside the project, and a lockfile reached through a link is still that project's lockfile — following is the right answer, and the probe decides nothing but which package manager to spawn. It writes to one path and it is not one this probe answered about: `declareOnWorker` writes `apps/<worker>/package.json` (#480), through `writeFileAtomic`, having read that same path with `readOptionalFile` rather than probing it.",
     },
     "cli/src/capabilities/remove.ts": {
       probes: "stat",
