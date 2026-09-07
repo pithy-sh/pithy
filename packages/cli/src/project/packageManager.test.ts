@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -393,6 +393,45 @@ describe("declareOnWorker", () => {
 
     expect(await declareOnWorker(dir, workerDir, "@pithy-sh/auth")).toEqual([]);
     expect(await workerDeps()).toEqual({ "@pithy-sh/core": "^0.1.4" });
+  });
+
+  /**
+   * **It runs on every `pithy add`, so a second run must write nothing.**
+   *
+   * `addCapability` is idempotent by contract — CI re-runs it, and a script re-applies a manifest over a
+   * project that already composes the capability. This step is inside that contract now, and it declares
+   * more than it used to: the package *and* its peers. Answering `[]` is the observable half; not
+   * touching the file is the half that matters, because a rewrite of identical bytes still shows up as a
+   * dirty tree in whatever runs next.
+   */
+  test("writes nothing at all on a second run", async () => {
+    const workerDir = await project(
+      { "@pithy-sh/auth": "^0.1.4" },
+      { "@pithy-sh/core": "^0.1.4" },
+      { "@pithy-sh/auth": { peerDependencies: { zod: "^4.4.0", kysely: "^0.29.0" } } },
+    );
+    const path = join(dir, "apps", "api", "package.json");
+
+    expect((await declareOnWorker(dir, workerDir, "@pithy-sh/auth")).length).toBe(3);
+    const after = await readFile(path, "utf8");
+    const stamp = (await stat(path)).mtimeMs;
+
+    expect(await declareOnWorker(dir, workerDir, "@pithy-sh/auth")).toEqual([]);
+    expect(await readFile(path, "utf8")).toBe(after);
+    expect((await stat(path)).mtimeMs).toBe(stamp);
+  });
+
+  // The partial case, which is the one a plain "already declared?" guard gets wrong: the package is
+  // there from an earlier run and a peer is not, so exactly the peer is added.
+  test("adds only what is missing when some of it is already declared", async () => {
+    const workerDir = await project(
+      { "@pithy-sh/auth": "^0.1.4" },
+      { "@pithy-sh/auth": "^0.1.4", zod: "^4.4.0" },
+      { "@pithy-sh/auth": { peerDependencies: { zod: "^4.4.0", kysely: "^0.29.0" } } },
+    );
+
+    expect(await declareOnWorker(dir, workerDir, "@pithy-sh/auth")).toEqual(["kysely"]);
+    expect(await workerDeps()).toEqual({ "@pithy-sh/auth": "^0.1.4", zod: "^4.4.0", kysely: "^0.29.0" });
   });
 
   test("answers empty rather than throwing when the Worker has no manifest", async () => {
