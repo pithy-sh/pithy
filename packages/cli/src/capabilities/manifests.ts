@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { InternalError, messageOf, NotFoundError, type PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
@@ -217,6 +217,44 @@ export interface AvailableManifests {
  * ride back with the manifests rather than throwing, because one broken package must not take the
  * listing of the other fifteen with it.
  */
+/**
+ * Every manifest reachable from a **Worker**, which is the set that Worker's plan is about (#507).
+ *
+ * `availableManifests` scans one directory's `node_modules/@pithy-sh/*`, and every caller passed the
+ * project root because `pithy add` writes each capability to both the root manifest and the Worker's, so
+ * the root copy was always there. That made the root declaration load-bearing with nothing saying so, and
+ * it fails in the shape the kit tells adopters to adopt: a project that declares a capability **only** on
+ * the Worker composing it — the position #480 argued for, and the one this repository's own principle
+ * states, capabilities being per-Worker — installs it under `apps/<name>/node_modules`, where the root
+ * scan never looks.
+ *
+ * **It went unnoticed because the failure looks like health.** A composed capability whose manifest was
+ * not found is skipped by every loop in `buildReconcilePlan`, so its bindings go unchecked, its config
+ * options go unread, and — the one that matters — `prerequisites` answers `ok: true` for a composition
+ * genuinely missing a required peer. Measured on 0.2.0: the same broken config reports the fault when
+ * `@pithy-sh/auth` sits in the root `node_modules` and reports healthy when it does not.
+ *
+ * Both directories, merged by manifest name, and **the Worker's copy wins** — it is the one that Worker
+ * actually loads, so a project pinning a capability differently per Worker is described by what it runs
+ * rather than by what the root happens to hoist. A scan still cannot invent a capability into a plan: every
+ * consumer filters on the Worker's composed set, so a stale package left in `node_modules` after its
+ * declaration was removed contributes a manifest nothing asks for.
+ */
+export async function composedManifests(projectDir: string, workerDir: string): Promise<AvailableManifests> {
+  const root = await availableManifests(projectDir);
+  if (resolve(workerDir) === resolve(projectDir)) return root;
+  const worker = await availableManifests(workerDir);
+
+  const byName = new Map(root.manifests.map((manifest) => [manifest.name, manifest]));
+  for (const manifest of worker.manifests) byName.set(manifest.name, manifest);
+
+  const seen = new Set(root.faults.map((fault) => fault.package));
+  return {
+    manifests: [...byName.values()].sort((left, right) => left.name.localeCompare(right.name)),
+    faults: [...root.faults, ...worker.faults.filter((fault) => !seen.has(fault.package))],
+  };
+}
+
 export async function availableManifests(projectDir: string): Promise<AvailableManifests> {
   const scopeDir = join(projectDir, "node_modules", SCOPE);
   let entries: string[];

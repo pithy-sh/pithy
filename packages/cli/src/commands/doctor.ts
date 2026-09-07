@@ -615,27 +615,56 @@ export interface DoctorReportOptions {
   checkDevSecretsFile?: (projectDir: string) => Promise<DevSecretsLocationCheck | null>;
 }
 
-/** Enumerate installed `@pithy-sh/*` packages (excluding the CLI itself) with their versions, name-sorted. */
+/**
+ * Enumerate installed `@pithy-sh/*` packages (excluding the CLI itself) with their versions, name-sorted.
+ *
+ * **Across the project root and every Worker, because a capability belongs to the Worker composing it
+ * (#507).** This read the root alone, which held only for as long as every project had the root copy —
+ * and every project did, because `pithy add` writes each capability to both manifests. A project that
+ * declares one only where it is used installs it under `apps/<name>/node_modules`, and this listed four
+ * capabilities for a Worker composing nine, reporting "all up to date" about packages it never saw.
+ *
+ * `apps/*` is enumerated directly rather than taken from resolved Workers, for the reason every other
+ * command enumerates it: the folder is the registry, and this runs before the Workers are resolved.
+ *
+ * The **first** version found for a name wins, root first, so a listing stays one row per package. Two
+ * Workers pinning one capability differently is a real thing this cannot say — worth a line of its own
+ * one day, and still better than the four-of-nine it replaced.
+ */
 export async function installedCapabilityVersions(projectDir: string): Promise<{ name: string; version: string }[]> {
-  const scopeDir = join(projectDir, "node_modules", "@pithy-sh");
-  let entries: string[];
+  const appsDir = join(projectDir, "apps");
+  let workers: string[] = [];
   try {
-    entries = await readdir(scopeDir);
+    workers = (await readdir(appsDir, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(appsDir, entry.name));
   } catch {
-    return [];
+    // No `apps/` — a project mid-scaffold, or one whose Workers live nowhere yet.
   }
-  const found: { name: string; version: string }[] = [];
-  for (const entry of entries) {
-    if (entry === "cli") continue; // the CLI binary is the top block, not a project capability
+
+  const found = new Map<string, string>();
+  for (const dir of [projectDir, ...workers]) {
+    const scopeDir = join(dir, "node_modules", "@pithy-sh");
+    let entries: string[];
     try {
-      const raw = await readFile(join(scopeDir, entry, "package.json"), "utf8");
-      const version = (JSON.parse(raw) as { version?: string }).version;
-      if (typeof version === "string") found.push({ name: `@pithy-sh/${entry}`, version });
+      entries = await readdir(scopeDir);
     } catch {
-      // No package.json / unreadable — skip it.
+      continue; // nothing installed here
+    }
+    for (const entry of entries) {
+      if (entry === "cli") continue; // the CLI binary is the top block, not a project capability
+      const name = `@pithy-sh/${entry}`;
+      if (found.has(name)) continue;
+      try {
+        const raw = await readFile(join(scopeDir, entry, "package.json"), "utf8");
+        const version = (JSON.parse(raw) as { version?: string }).version;
+        if (typeof version === "string") found.set(name, version);
+      } catch {
+        // No package.json / unreadable — skip it.
+      }
     }
   }
-  return found.sort((a, b) => a.name.localeCompare(b.name));
+  return [...found].map(([name, version]) => ({ name, version })).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Build the full structured report — always querying the registry fresh (doctor bypasses the notifier cache). */

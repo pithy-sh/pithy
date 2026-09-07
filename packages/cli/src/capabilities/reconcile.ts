@@ -41,7 +41,7 @@ import { exportsName } from "./configImports";
 import { ejectedCapabilities } from "./eject";
 import { findEntitlementGap } from "./entitlementGap";
 import { durableObjectExports, withDurableObjectExports } from "./entryExports";
-import { availableManifests } from "./manifests";
+import { composedManifests } from "./manifests";
 import { MissingPrerequisite, missingPrerequisites } from "./prerequisites";
 import { requiredOptionRefusal } from "./requiredOptions";
 
@@ -1002,13 +1002,18 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   const capabilities = options.capabilities ?? allCapabilities(await loadWorkerConfig(workerDir));
   const readLedger = options.readLedger ?? defaultReadLedger;
 
-  const { manifests } = await availableManifests(projectDir);
+  // Both the project root and this Worker's own `node_modules` (#507). The root alone was wrong wherever
+  // a capability is declared only on the Worker composing it, and a manifest that does not resolve is a
+  // capability every loop below silently skips — which is how `prerequisites` came to report `ok: true`
+  // for a composition missing a required peer.
+  const { manifests } = await composedManifests(projectDir, workerDir);
   const ejected = await ejectedCapabilities(workerDir);
   const configSource = await readConfigSource(workerDir);
   const entrySource = await readEntrySource(workerDir);
   const stanzas = await readStanzas(workerDir);
-  // The Worker's own composed set, by name. Manifests resolve from the shared root install, so this is the
-  // only thing that distinguishes "installed in the project" from "part of this Worker".
+  // The Worker's own composed set, by name — the authority on what belongs to this plan. Manifests are
+  // resolved from the Worker and the root together, so this is what keeps a package that is merely
+  // installed, or merely left behind, out of a report about what this Worker composes.
   const composed = new Set(capabilities.map((capability) => capability.name));
   // The composed instances, by name. Their `requiredBindings` are config-aware where a manifest cannot
   // be — see `effectiveBindings`.
@@ -1341,7 +1346,11 @@ async function applyBindings(
   const caps = plan.perCapability.filter((cap) => cap.missingBindings.length > 0);
   if (caps.length === 0) return added;
 
-  const byName = new Map((await availableManifests(projectDir)).manifests.map((manifest) => [manifest.name, manifest]));
+  // The Worker's manifests, not the root's — these write into the Worker, so resolving from the root
+  // alone skipped every capability declared only where it is composed (#507).
+  const byName = new Map(
+    (await composedManifests(projectDir, workerDir)).manifests.map((manifest) => [manifest.name, manifest]),
+  );
   const composedByName = new Map(capabilities.map((capability) => [capability.name, capability]));
   const config = (await readWranglerConfig(workerDir)) as WranglerStanza;
   const stanzas = envStanzas(config);
@@ -1409,7 +1418,11 @@ async function applyEntryExports(
   plan: ReconcilePlan,
   capabilities: readonly Capability[],
 ): Promise<string[]> {
-  const byName = new Map((await availableManifests(projectDir)).manifests.map((manifest) => [manifest.name, manifest]));
+  // The Worker's manifests, not the root's — these write into the Worker, so resolving from the root
+  // alone skipped every capability declared only where it is composed (#507).
+  const byName = new Map(
+    (await composedManifests(projectDir, workerDir)).manifests.map((manifest) => [manifest.name, manifest]),
+  );
   const composedByName = new Map(capabilities.map((capability) => [capability.name, capability]));
   // Same list the stanza writer used. A declined Durable Object would otherwise stay exported from the
   // entry, pulling the class into the bundle for a binding nothing declares — #428's shape.
