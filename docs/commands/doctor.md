@@ -163,6 +163,25 @@ A decline that cannot be honored does fail it, and `pithy upgrade` refuses befor
 
 In `--json`, the resolved declines ride under `project.health.workers[].bindings.declinedBindings`, in the shape `pithy upgrade --json` documents.
 
+The `bindings` line reports one more thing, and it is the neighboring case: a binding this Worker **has**, whose generated value the kit has since changed its mind about. A rate limiter's `namespace_id` is the one that exists today. It is derived from the binding name so two limiters can never share a budget — and it is written once, at `pithy add`, and never revisited, so a project scaffolded before that derivation landed keeps the id the old positional counter gave it. Nothing rewrites it. Both numbers go on the line, because the whole finding is the comparison:
+
+```
+Project health:
+  api:
+    prereqs      every composed capability has its peers ✓
+    config       parses against every capability schema ✓
+    bindings     all required bindings present ✓
+                 AUTH_RATE_LIMITER (ratelimit) namespace_id is 1001, and the kit writes 3093 today
+                 env: dev, staging, prod. Yours may be deliberate, so nothing rewrites it.
+                 Change it, or name it in pinnedBindings to settle the line.
+    migrations   none pending, none undeclared ✓
+    entitlements no gated route without a provider ✓
+```
+
+**It does not fail the exit, and no command fixes it.** A `namespace_id` is a live budget's identity: two bindings on one id share one counter, so changing it re-partitions traffic that is already flowing. And a value an adopter tuned looks exactly like one that merely predates a change, which is the problem `declinedBindings` solved for absence. So doctor states both numbers and the decision stays yours — edit the stanza, or name the binding in `pinnedBindings` in that Worker's `pithy.config.ts` with the reason you are keeping it (see `docs/CLI.md` §Pinning a generated value). A pinned value still prints, with your sentence in place of the instruction; a pin whose value already matches, or which names nothing this Worker composes, is reported as stale and stays green.
+
+In `--json`, the comparison rides under `project.health.workers[].bindings.generatedValues`, in the shape `pithy upgrade --json` documents.
+
 The block's first per-Worker line is **`prereqs`**, and it is the only check here that is not drift. A capability's manifest declares the capabilities it composes against — `auth` declares `secrets` and `email`, `email` declares `secrets` — and `createBackend` refuses to assemble without them. So a Worker failing this line does not start at all, and every other line below it is describing a Worker that is down. It is reported first for that reason.
 
 ```

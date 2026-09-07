@@ -139,6 +139,18 @@ a weaker gate than the failure it replaced.
 | `declinedBindings.declines[].capability` | string | The composed capability that declares the binding. Absent on `unrecognized` for the same reason |
 | `declinedBindings.declines[].reason` | string | The reason written in `pithy.config.ts` |
 | `declinedBindings.declines[].stillPresentIn` | string[] | Present when `honored`: environments whose stanza still carries the binding, written by an upgrade that ran before the decline. Declining stops it coming back; it never deletes what is there |
+| `generatedValues` | object | Generated binding values this Worker holds that the current kit would derive differently, with each `pinnedBindings` entry resolved. **Report-only in both commands**: an upgrade writes a binding it finds missing and never rewrites one that is there, because a generated value already deployed is a live identity rather than a default. `pithy doctor` is where it is rendered |
+| `generatedValues.state` | `"read"` \| `"invalid"` | Whether the `pinnedBindings` declaration parsed |
+| `generatedValues.problem` | string | Present when `invalid`: what is wrong, naming the entry |
+| `generatedValues.drift` | array | Present when `read`: one entry per differing value, sorted by binding name. Empty is the ordinary case |
+| `generatedValues.drift[].name` | string | The binding whose entry holds the value |
+| `generatedValues.drift[].type` | string | The kind of Cloudflare resource, on `missingBindings[].type`'s scale |
+| `generatedValues.drift[].field` | string | The wrangler field, spelled the way wrangler spells it — `namespace_id` |
+| `generatedValues.drift[].expected` | string | What `pithy add` would write for this binding today |
+| `generatedValues.drift[].actual` | string | What this Worker's `wrangler.jsonc` carries instead |
+| `generatedValues.drift[].envs` | string[] | Environments whose stanza carries `actual` — `dev` for the top-level one, else the `env.<name>` key |
+| `generatedValues.drift[].pinnedReason` | string \| null | The reason written in `pinnedBindings`, or `null` where this binding is not named there |
+| `generatedValues.stalePins` | array | Present when `read`: pins whose binding holds exactly what the kit would write, or which name nothing this Worker composes. Each carries its `name` and `reason`. Reported, never fatal |
 | `ledger` | object | What `env`'s databases have applied against what this Worker declares. **The counts sit behind `state`**, so a sum taken over some of the databases cannot be read as a sum over all of them |
 | `ledger.state` | `"read"` \| `"partial"` \| `"unavailable"` | Whether every database in scope answered, some did, or none did |
 | `ledger.pending` | integer | Unapplied migrations for `env` across this Worker's databases. Applied only with `--migrate`. Present on `read` alone |

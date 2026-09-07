@@ -72,6 +72,7 @@ const plan: ReconcilePlan = {
   entitlements: { state: "read", gates: [] },
   missingPrerequisites: [],
   declinedBindings: { state: "read", declines: [] },
+  generatedValues: { state: "read", drift: [], stalePins: [] },
   missingVersionMetadata: false,
 };
 
@@ -114,6 +115,7 @@ describe("plan rendering", () => {
       entitlements: { state: "read", gates: [] },
       missingPrerequisites: [],
       declinedBindings: { state: "read", declines: [] },
+      generatedValues: { state: "read", drift: [], stalePins: [] },
       missingVersionMetadata: false,
     };
     expect(__test.planLines(clean)).toEqual(["Nothing to upgrade."]);
@@ -180,6 +182,7 @@ describe("worker grouping", () => {
       entitlements: { state: "read", gates: [] },
       missingPrerequisites: [],
       declinedBindings: { state: "read", declines: [] },
+      generatedValues: { state: "read", drift: [], stalePins: [] },
       missingVersionMetadata: false,
     };
     const out = __test.renderUpgrade({
@@ -223,6 +226,7 @@ describe("worker grouping", () => {
       entitlements: { state: "read", gates: [] },
       missingPrerequisites: [],
       declinedBindings: { state: "read", declines: [] },
+      generatedValues: { state: "read", drift: [], stalePins: [] },
       missingVersionMetadata: false,
     };
     expect(__test.renderUpgrade({ workers: [entry(clean)], manifestFaults: [] })).toEqual([
@@ -463,6 +467,7 @@ describe("manifest faults", () => {
       entitlements: { state: "read", gates: [] },
       missingPrerequisites: [],
       declinedBindings: { state: "read", declines: [] },
+      generatedValues: { state: "read", drift: [], stalePins: [] },
       missingVersionMetadata: false,
     };
     expect(__test.renderUpgrade({ workers: [entry(clean)], manifestFaults: [fault] })).toEqual([
@@ -484,6 +489,7 @@ describe("manifest faults", () => {
       entitlements: { state: "read", gates: [] },
       missingPrerequisites: [],
       declinedBindings: { state: "read", declines: [] },
+      generatedValues: { state: "read", drift: [], stalePins: [] },
       missingVersionMetadata: false,
     };
     expect(__test.renderUpgrade({ workers: [entry(clean)], manifestFaults: [] })).toEqual([

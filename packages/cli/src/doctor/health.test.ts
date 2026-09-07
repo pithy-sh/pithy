@@ -29,6 +29,7 @@ function clean(worker: string): ReconcilePlan {
     entitlements: { state: "read", gates: [] },
     missingPrerequisites: [],
     declinedBindings: { state: "read", declines: [] },
+    generatedValues: { state: "read", drift: [], stalePins: [] },
     missingVersionMetadata: false,
   };
 }

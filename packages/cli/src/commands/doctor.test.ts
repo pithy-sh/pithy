@@ -164,6 +164,7 @@ describe("renderDoctorText", () => {
           entitlements: { state: "read", gates: [] },
           missingPrerequisites: [],
           declinedBindings: { state: "read", declines: [] },
+          generatedValues: { state: "read", drift: [], stalePins: [] },
           missingVersionMetadata: false,
         }),
       }),
@@ -825,6 +826,7 @@ describe("project health — installed is not composed (regression)", () => {
       missing: [],
       missingExports: [],
       declinedBindings: { state: "read", declines: [] },
+      generatedValues: { state: "read", drift: [], stalePins: [] },
     });
     expect(report.project?.health.ok).toBe(true);
     expect(doctorExitCode(report)).toBe(0);
