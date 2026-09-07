@@ -121,7 +121,18 @@ ${envStanzas}
         "deploy:staging": "wrangler deploy --env staging",
         "deploy:prod": "wrangler deploy --env prod",
       },
-      dependencies: { ...(kit === null ? {} : { [PACKAGE_NAME]: kit }), hono: "^4.13.2" },
+      // `zod`, `kysely` and `hono` beside the kit, because every capability declares them as
+      // `peerDependencies` — one copy is one type (#477) — and a peer is a requirement the *consumer*
+      // satisfies. npm installs one at the top; bun, for a workspace member, does not, so a Worker that
+      // does not declare them cannot resolve them and `@pithy-sh/core` fails to load inside the project.
+      // `templates/starter/apps/api/package.json` states the same three, and `scaffoldParity.test.ts`
+      // is what keeps the two producers from drifting.
+      dependencies: {
+        ...(kit === null ? {} : { [PACKAGE_NAME]: kit }),
+        hono: "^4.13.2",
+        kysely: "^0.29.0",
+        zod: "^4.4.0",
+      },
       devDependencies: { "@cloudflare/workers-types": "^5.20260729.1", wrangler: WRANGLER_RANGE },
     },
     null,

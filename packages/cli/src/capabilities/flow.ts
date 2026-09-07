@@ -182,7 +182,7 @@ export type InstallStep = (input: { projectDir: string; pkg: string }) => Promis
  * manifest-discovery site looks, and the declaration belongs beside the `pithy.config.ts` that names
  * the capability. Injectable for tests.
  */
-export type DeclareStep = (input: { projectDir: string; workerDir: string; pkg: string }) => Promise<string | null>;
+export type DeclareStep = (input: { projectDir: string; workerDir: string; pkg: string }) => Promise<string[]>;
 
 /** What the migrate step is told: the persistence root, the one Worker just wired, and who owns the data. */
 export interface MigrateTarget {
