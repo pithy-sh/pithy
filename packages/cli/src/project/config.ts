@@ -3,17 +3,19 @@
 
 import { randomUUID } from "node:crypto";
 import { access, copyFile, rm } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ProfileOverride } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import {
   causeMessage,
   failurePosition,
+  importingPackage,
   isBuildFailureWrapper,
   prop,
   rootCause,
   safeReason,
+  unresolvedKind,
   unresolvedSpecifier,
 } from "@pithy-sh/core/src/error/cause";
 import { fromZodError, InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -467,18 +469,65 @@ function isParseError(cause: unknown): boolean {
  *   Bun wraps two or more build diagnostics in an `AggregateError`, and a stray brace cascades, so the
  *   wrapped shape is the *common* one. #207 fixed the bare case and this one classified worse than it.
  */
-export function classifyConfigLoadFailure(wrapped: unknown): ConfigLoadFailure {
+/**
+ * The remedy for an import that would not resolve — **one of three, because there are three causes.**
+ *
+ * Until #489 they wore one sentence: *Install the project's dependencies (bun install), or correct that
+ * import.* For a missing dependency that is right. For the other two, `bun install` is **guaranteed** to
+ * be a no-op, which is what makes the sentence unfollowable rather than merely unhelpful — and an agent
+ * following it has no next move, because the message *was* the recovery path.
+ *
+ * #480 is the case that showed it: `pithy add email` reported `Nothing resolves
+ * "@pithy-sh/core/src/capability/capability"` while core was installed and resolving throughout. The
+ * specifier was honest; the package genuinely absent was the one being added, and the importer is what
+ * would have pointed at it. {@link importingPackage} recovers that where the runtime supplies it.
+ *
+ * `relativeTo` exists because on node the "specifier" *is* an already-resolved absolute path, so this
+ * message printed `/home/…` for every relative import — contradicting the rule the rest of this module
+ * keeps, and the tests that assert an action never carries one.
+ */
+function unresolvedAction(cause: unknown, relativeTo: string | undefined): string {
+  const specifier = unresolvedSpecifier(cause);
+  if (specifier === undefined) {
+    return "An import in the config does not resolve. Check its imports, then install the project's dependencies.";
+  }
+
+  const shown = readable(specifier, relativeTo);
+  const importer = importingPackage(cause);
+  const from = importer === undefined ? "" : ` It is imported by ${importer}.`;
+
+  switch (unresolvedKind(cause)) {
+    case "package":
+      return `Nothing provides "${shown}".${from} Install the project's dependencies (bun install), or correct that import.`;
+    case "package-subpath":
+      // The package is installed and does not export this path. Installing it again produces the same
+      // tree; the fix is a version that has it, or a corrected import.
+      return `"${shown}" is not something its package provides.${from} Check the version you have, or correct that import — installing dependencies will not help.`;
+    case "local-file":
+      return `Nothing at "${shown}". Create that file or correct the import — installing dependencies will not help.`;
+    default:
+      return `Nothing resolves "${shown}".${from} Correct that import, or install the project's dependencies.`;
+  }
+}
+
+/**
+ * A specifier as an adopter would write it: relative to their config when it arrived as a resolved path.
+ *
+ * Node hands back `/home/jo/app/apps/board/src/x`; what they typed was `./src/x`. Printing the former
+ * puts our frame in their message and a machine-specific path in a line meant to be acted on.
+ */
+function readable(specifier: string, relativeTo: string | undefined): string {
+  if (relativeTo === undefined || !isAbsolute(specifier)) return specifier;
+  const within = relative(relativeTo, specifier);
+  return within.startsWith("..") ? specifier : `./${within.split(sep).join("/")}`;
+}
+
+export function classifyConfigLoadFailure(wrapped: unknown, relativeTo?: string): ConfigLoadFailure {
   // Bun hands `import()` failures over inside an `AggregateError`. Classify what is inside it.
   const cause = rootCause(wrapped);
 
   if (isUnresolvedImport(cause)) {
-    const specifier = unresolvedSpecifier(cause);
-    return {
-      kind: "unresolved-import",
-      action: specifier
-        ? `Nothing resolves "${specifier}". Install the project's dependencies (bun install), or correct that import.`
-        : "An import in the config does not resolve. Install the project's dependencies (bun install), then check its imports.",
-    };
+    return { kind: "unresolved-import", action: unresolvedAction(cause, relativeTo) };
   }
 
   if (isParseError(cause)) {
@@ -563,7 +612,8 @@ async function importConfig(path: string, missing: () => never, fresh = false): 
     // there: the CLI renderer prints `message` and `action` only, and the HTTP codec strips `detail`.
     // That boundary is unchanged. What changed is that the part of the cause an adopter can act on now
     // reaches them through `action`, in a form that carries no path, no source line, and no stack.
-    const { kind, action } = classifyConfigLoadFailure(cause);
+    // The config's own directory, so a resolved absolute path is shown the way it was written.
+    const { kind, action } = classifyConfigLoadFailure(cause, dirname(path));
     throw new InternalError({
       message: `Could not load ${path}.`,
       action,

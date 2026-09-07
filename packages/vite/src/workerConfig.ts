@@ -6,6 +6,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import {
   causeMessage,
   failurePosition,
+  importingPackage,
   isBuildFailureWrapper,
   prop,
   rootCause,
@@ -109,17 +110,36 @@ function isParseError(cause: unknown): boolean {
   );
 }
 
-/** Choose the refusal's `action` **from** the failure rather than asserting one over it (#217). */
+/**
+ * Choose the refusal's `action` **from** the failure rather than asserting one over it (#217).
+ *
+ * An unresolved import names its **importer** alongside its specifier when the runtime gave one (#480,
+ * #489). A specifier alone is honest and can still send the reader to the wrong package, because the
+ * import that failed is often not the config's own: `pithy add email` refused with *nothing resolves
+ * `@pithy-sh/core/src/capability/capability`* while core resolved from the Worker throughout, because
+ * the failing import was `@pithy-sh/email`'s. The importer is the half that pointed at `email`, and
+ * `importingPackage` is where core records that both runtimes hand it over. **It asserts nothing about
+ * which package is absent** — nothing here can know that — only where the import is written.
+ */
 export function classifyWorkerConfigFailure(wrapped: unknown): WorkerConfigFailure {
   // Bun hands `import()` failures over inside an `AggregateError`. Classify what is inside it.
   const cause = rootCause(wrapped);
   if (isUnresolvedImport(cause)) {
     const specifier = unresolvedSpecifier(cause);
+    // A package name or nothing — core never hands a path back, so there is none to keep out of here.
+    const importer = importingPackage(cause);
+    if (specifier === undefined) {
+      return {
+        kind: "unresolved-import",
+        action:
+          "An import in the config does not resolve. Install the project's dependencies (bun install), then check its imports.",
+      };
+    }
     return {
       kind: "unresolved-import",
-      action: specifier
-        ? `Nothing resolves "${specifier}". Install the project's dependencies (bun install), or correct that import.`
-        : "An import in the config does not resolve. Install the project's dependencies (bun install), then check its imports.",
+      action: importer
+        ? `Nothing resolves "${specifier}". ${importer} is what imports it, not the config. Install the project's dependencies (bun install).`
+        : `Nothing resolves "${specifier}". Install the project's dependencies (bun install), or correct that import.`,
     };
   }
 

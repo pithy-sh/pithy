@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import {
   causeMessage,
   failurePosition,
+  importingPackage,
   isBuildFailureWrapper,
   prop,
   rootCause,
@@ -260,5 +261,84 @@ describe("unresolvedSpecifier", () => {
     expect(unresolvedSpecifier({ message: "Failed to resolve module" })).toBeUndefined();
     expect(unresolvedSpecifier({ specifier: "" })).toBeUndefined();
     expect(unresolvedSpecifier(null)).toBeUndefined();
+  });
+});
+
+/**
+ * The package the failing import was written in — the half #480's refusal threw away.
+ *
+ * The fixtures are the two runtimes' real shapes, both measured on the layout that produced #480: a
+ * config importing `@pithy-sh/email/src/index`, and `@pithy-sh/email`'s own import of core failing.
+ */
+describe("importingPackage", () => {
+  /** Bun 1.3.14, verbatim, for exactly the tree #480 hit. */
+  const BUN = {
+    name: "ResolveMessage",
+    code: "ERR_MODULE_NOT_FOUND",
+    message:
+      "Cannot find module '@pithy-sh/core/src/capability/capability' from '/p/node_modules/@pithy-sh/email/src/index.ts'",
+    specifier: "@pithy-sh/core/src/capability/capability",
+    referrer: "/p/node_modules/@pithy-sh/email/src/index.ts",
+    importKind: "import-statement",
+  };
+
+  test("Bun carries the referrer as a field, and its package half is what comes back", () => {
+    expect(importingPackage(BUN)).toBe("@pithy-sh/email");
+  });
+
+  test("Node states it in prose, at the end of its sentence", () => {
+    expect(
+      importingPackage({
+        code: "ERR_MODULE_NOT_FOUND",
+        message: "Cannot find package '@pithy-sh/core' imported from /p/node_modules/@pithy-sh/email/src/index.js",
+      }),
+    ).toBe("@pithy-sh/email");
+  });
+
+  test("an unscoped package is named without inventing a scope", () => {
+    expect(importingPackage({ referrer: "/p/node_modules/kysely/dist/index.js" })).toBe("kysely");
+  });
+
+  // Every store nests, and the owner is the last one. Both layouts measured, on pnpm and on Bun 1.3.14.
+  test("the innermost node_modules wins, so a content-addressed store names the package and not its id", () => {
+    expect(importingPackage({ referrer: "/p/node_modules/.pnpm/hono@4.6.3/node_modules/hono/dist/index.js" })).toBe(
+      "hono",
+    );
+    expect(
+      importingPackage({
+        referrer: "/p/node_modules/.bun/@pithy-sh+email@0.1.4/node_modules/@pithy-sh/email/src/i.ts",
+      }),
+    ).toBe("@pithy-sh/email");
+    expect(importingPackage({ referrer: "/p/node_modules/a/node_modules/b/index.js" })).toBe("b");
+  });
+
+  test("a Windows path is a path too", () => {
+    expect(importingPackage({ referrer: "C:\\p\\node_modules\\@pithy-sh\\email\\src\\index.ts" })).toBe(
+      "@pithy-sh/email",
+    );
+  });
+
+  /**
+   * The whole point of the function: a name, never a path. The adopter's own config is where an
+   * unresolved import usually lives, and the refusal already names that file — so there is nothing to
+   * add, and a path is the one thing that must not be added.
+   */
+  test("the adopter's own file is nothing to name, not a path to print", () => {
+    expect(importingPackage({ referrer: "/home/a/apps/board/pithy.config.ts" })).toBeUndefined();
+    expect(importingPackage({ message: "Cannot find package 'x' imported from /home/a/pithy.config.ts" })).toBe(
+      undefined,
+    );
+  });
+
+  test("a store's own bookkeeping directory is not a package", () => {
+    expect(importingPackage({ referrer: "/p/node_modules/.bun/hono@4.6.3/x.js" })).toBeUndefined();
+    expect(importingPackage({ referrer: "/p/node_modules/hono@4.6.3/x.js" })).toBeUndefined();
+    expect(importingPackage({ referrer: "/p/node_modules/" })).toBeUndefined();
+  });
+
+  test("nothing to read is undefined, and an empty field is nothing", () => {
+    expect(importingPackage({ message: "Failed to resolve module" })).toBeUndefined();
+    expect(importingPackage({ referrer: "" })).toBeUndefined();
+    expect(importingPackage(null)).toBeUndefined();
   });
 });
