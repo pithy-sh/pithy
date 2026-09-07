@@ -9,5 +9,8 @@
   },
   "devDependencies": {
     "tsdown": "^0.23.0"
+  },
+  "dependencies": {
+    "@pithy-sh/license-headers": "workspace:*"
   }
 }

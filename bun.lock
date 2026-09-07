@@ -754,6 +754,9 @@
     "tooling/build": {
       "name": "@pithy-sh/build",
       "version": "0.0.0",
+      "dependencies": {
+        "@pithy-sh/license-headers": "workspace:*",
+      },
       "devDependencies": {
         "tsdown": "^0.23.0",
       },

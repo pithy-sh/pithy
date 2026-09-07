@@ -1,7 +1,33 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { buildHeader } from "@pithy-sh/license-headers/src/header";
 import type { UserConfig } from "tsdown";
+
+/**
+ * The notice this package's distributed files carry, built from **its own declared license**.
+ *
+ * One source with the source-side stamper: `buildHeader` is the same function
+ * `scripts/license-headers.ts` writes `src` with, so a `.ts` and the `.js` compiled from it cannot
+ * disagree about who wrote them or under what terms.
+ *
+ * **Read from the manifest rather than fixed at MIT**, and that is not hypothetical tidiness.
+ * `buildHeader` takes a license precisely because the license is per package, and `CLAUDE.md` says a
+ * capability that could become a paid product starts more restrictive than the rest — BSL or AGPL. A
+ * banner hardcoded to MIT would put the wrong terms on the compiled half of the first such package,
+ * while its source carried the right ones, and the two would have to be noticed by a human to differ.
+ *
+ * Called from each package's own `tsdown.config.ts`, so the cwd is that package.
+ */
+function spdxHeader(): string {
+  const manifest = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as { license?: string };
+  if (manifest.license === undefined) {
+    throw new Error(`${process.cwd()}/package.json declares no license, so its build cannot be stamped.`);
+  }
+  return buildHeader(manifest.license);
+}
 
 /**
  * How every published package is built: to JavaScript Node can run, with declarations beside it.
@@ -86,6 +112,17 @@ export function libraryBuild(options: LibraryBuildOptions = {}): UserConfig {
     // The cost is per-file overhead instead of shared chunks, which for a deep-import surface is close
     // to nothing: `exports` is `./src/*`, so a consumer imports the modules it names either way, and
     // the sharing rolldown was doing had already been paid for by the entries that pull it in.
+    // **Every emitted file carries the notice, because every emitted file is what gets distributed.**
+    //
+    // `scripts/license-headers.ts` stamps `src`, and tsdown drops a file's leading comment on emit — so
+    // 130 of `@pithy-sh/core`'s 130 shipped modules had no header while every source file did. The
+    // tarball carries `LICENSE` and the manifest declares `MIT`, so nothing was unlicensed; what was
+    // missing is the notice on the artifact an adopter actually opens, which is what REUSE asks for and
+    // what this repository already asks of itself one directory over.
+    //
+    // `SPDX_HEADER` is shared with the declaration stamper rather than written twice — the two halves of
+    // one module must not be able to disagree about who wrote it.
+    banner: { js: spdxHeader() },
     unbundle: true,
     format: "esm",
     platform: "neutral",

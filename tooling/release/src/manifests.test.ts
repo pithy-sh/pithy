@@ -64,9 +64,31 @@ describe("published manifests", () => {
     }
   });
 
-  it("each declares the Node floor adopters install against", () => {
+  /**
+   * The floor is the version a package actually needs, and for one package that is not the kit's.
+   *
+   * **A library ships compiled JavaScript, so Node 22 runs it.** The CLI does not stop there: it
+   * imports the adopter's `pithy.config.ts` — TypeScript, in their tree — and resolves the extensionless
+   * relative imports inside it. Both of those are runtime features with their own arrival, and each is
+   * newer than 22.0:
+   *
+   * - unflagged type stripping, so a `.ts` file can be imported at all — **Node 22.18**
+   * - `module.registerHooks`, which `typescriptResolve.ts` uses for the specifiers Node will not
+   *   resolve on its own — Node 22.15
+   *
+   * So 22.18 is the real floor for `@pithy-sh/cli`, and `>=22` was a promise it could not keep: an
+   * adopter on 22.10 installs with no warning and then meets an opaque failure inside their own config.
+   * `bin.ts` refuses on the same number, because `engines` is advisory unless somebody set
+   * `engine-strict`.
+   *
+   * Stated per package rather than raised for all twenty-two, because the other twenty-one genuinely do
+   * run on 22.0 and a floor nobody needs is adopters excluded for nothing.
+   */
+  const NODE_FLOOR: Record<string, string> = { "packages/cli": ">=22.18.0" };
+
+  it("each declares the Node floor it actually needs", () => {
     for (const { dir, manifest } of manifests) {
-      expect(manifest.engines?.node, `${dir} engines.node`).toBe(">=22");
+      expect(manifest.engines?.node, `${dir} engines.node`).toBe(NODE_FLOOR[dir] ?? ">=22");
     }
   });
 

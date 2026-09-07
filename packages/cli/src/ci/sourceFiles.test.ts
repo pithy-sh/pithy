@@ -356,6 +356,10 @@ describe("no module writes its own walk over a directory tree", () => {
       walk: "templateSources",
       why: "The third in this package and the same wall as the two above, not a new one: `@pithy-sh/ui-react` cannot depend on `@pithy-sh/cli` without inverting the workspace graph. It sweeps the same committed `packages/ui-react/templates` tree, so it inherits their argument whole — nothing scaffolds into or deletes from it mid-run. Arrived with #441, which needed to assert that no seeded screen writes a sentence a translator cannot reach.",
     },
+    "tooling/build/src/stampDeclarations.ts": {
+      walk: "declarations",
+      why: "`tooling/build` cannot import `@pithy-sh/cli`: every published package's `tsdown.config.ts` imports this package, and `@pithy-sh/cli` depends on those packages — so the edge is a cycle in the workspace graph, the same wall `@pithy-sh/ui-react` hits above. It walks one `dist` directory that the `tsc` two commands earlier has just written and nothing else touches, so the race the primitive was hardened against cannot reach it, and it reads only to prepend a header to files it already knows the extension of.",
+    },
     "tooling/license-headers/src/workspace.ts": {
       walk: "walk",
       // #211 decided this one rather than leaving it implied. The edge is one line — `"@pithy-sh/cli":

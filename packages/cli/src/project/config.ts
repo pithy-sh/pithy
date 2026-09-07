@@ -22,6 +22,7 @@ import { DEFAULT_ENVIRONMENTS, DeclaredEnvironments } from "@pithy-sh/core/src/n
 import { assertValidProjectName, kebab } from "@pithy-sh/core/src/naming/resource";
 import { z } from "zod";
 import { CloudflareAccountName } from "../cloudflare/config";
+import { registerTypeScriptResolution } from "./typescriptResolve";
 import { discoverWorkers } from "./workers";
 
 /** Adopter token configuration: per-profile overrides of the predefined defaults (permissions/resources/store). */
@@ -547,6 +548,11 @@ async function importConfig(path: string, missing: () => never, fresh = false): 
   } catch {
     missing();
   }
+
+  // Before the import, and for the reason `typescriptResolve.ts` gives at length: an adopter's config
+  // imports their own modules the way TypeScript is written — `./src/secret/registry`, no extension —
+  // and node refuses that where Bun did not. Idempotent, so every caller may say it.
+  await registerTypeScriptResolution();
 
   let module: { default?: unknown };
   try {
