@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { isTurnstileCapability } from "@pithy-sh/turnstile/src/capability";
@@ -16,6 +15,7 @@ import { createProjectCliAudit } from "../audit/cliAudit";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import { CloudflareTurnstileDeprovisioner, CloudflareTurnstileProvisioner } from "../capabilities/turnstileProvisioner";
 import type { ConfirmedAccount } from "../cloudflare/accountAnswer";
+import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import {
   loadProject,
@@ -169,7 +169,7 @@ const provision = defineCommand({
         ...(args.worker !== undefined ? { worker: args.worker } : {}),
       });
       const productionDomain = await resolveProductionDomain(worker);
-      const cf = new CloudflareClients({ accountId, apiToken });
+      const cf = await cloudflareClients({ accountId, apiToken });
       // The project name scopes both the widget names (`<project>-prod-turnstile-<mode>`) and the
       // dispatcher's `<project>-<env>-secrets-write` target — and it is `requireProjectName`, because a
       // guessed one reuses another project's widget and dispatches into its manager (docs/NAMING.md).
@@ -178,7 +178,7 @@ const provision = defineCommand({
       // The project's own environment set (#241): what this command fans out across, rather than a
       // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
       const environments = loadProjectEnvironments(projectConfig);
-      const dispatcher = buildSecretDispatcher(accountId, apiToken, project);
+      const dispatcher = await buildSecretDispatcher(accountId, apiToken, project);
       const audit = await buildAudit(projectDir, accountId, apiToken);
       const provisioner = new CloudflareTurnstileProvisioner({
         cf,
@@ -232,7 +232,7 @@ const deprovision = defineCommand({
         projectDir,
         ...(args.worker !== undefined ? { worker: args.worker } : {}),
       });
-      const cf = new CloudflareClients({ accountId, apiToken });
+      const cf = await cloudflareClients({ accountId, apiToken });
       // The project name scopes both the widget names teardown recomputes and the dispatcher's
       // `<project>-<env>-secrets-write` target — and it is `requireProjectName`, because a guessed one
       // would delete a neighboring project's widget (docs/NAMING.md).
@@ -241,7 +241,7 @@ const deprovision = defineCommand({
       // The project's own environment set (#241): what this command fans out across, rather than a
       // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
       const environments = loadProjectEnvironments(projectConfig);
-      const dispatcher = buildSecretDispatcher(accountId, apiToken, project);
+      const dispatcher = await buildSecretDispatcher(accountId, apiToken, project);
       const audit = await buildAudit(projectDir, accountId, apiToken);
       const deprovisioner = new CloudflareTurnstileDeprovisioner({
         cf,

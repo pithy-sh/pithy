@@ -3,13 +3,12 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { parse } from "comment-json";
 import { createRemoteCliAudit } from "../audit/cliAudit";
 import { CloudflareVectorProvisioner, loadVector, type VectorModule } from "../capabilities/vectorProvisioner";
+import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { type AppVectorizeBinding, applyAppBindings, appWorkflowBindings } from "../project/appBindings";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
@@ -107,13 +106,13 @@ async function buildProvisioner(projectDir: string, env: string) {
     config,
     env,
     provisioner: new CloudflareVectorProvisioner({
-      cf: new CloudflareClients({ accountId, apiToken }),
+      cf: await cloudflareClients({ accountId, apiToken }),
       project,
       accountId,
       apiToken,
       config,
       resolveEnv: buildResolveEnv(projectDir),
-      workflows: new CloudflareWorkflowsClient({ accountId, apiToken }),
+      workflows: await cloudflareWorkflows({ accountId, apiToken }),
     }),
     accountId,
     apiToken,
@@ -282,7 +281,7 @@ const reset = defineCommand({
         projectDir,
         env,
         capabilities: await resolveWorkers({ projectDir }).then(projectCapabilities),
-        clients: new CloudflareClients({ accountId, apiToken }),
+        clients: await cloudflareClients({ accountId, apiToken }),
         apiToken,
       });
       const event = {

@@ -89,12 +89,12 @@ describe("reaching the account", () => {
       offline: false,
       env: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "tok" },
       homedir: dir,
-      connect: () =>
+      connect: async () =>
         ({
           d1Provisioner: () => ({ listDatabases }),
           zones: () => ({ findZoneForHostname }),
         }) as never,
-      probe: () => ({ probe: async () => true }),
+      probe: async () => ({ probe: async () => true }),
     });
     if (answer.state !== "reachable") throw new Error(`expected reachable, got ${answer.reason}`);
 
@@ -115,8 +115,8 @@ describe("reaching the account", () => {
       offline: false,
       env: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "tok" },
       homedir: dir,
-      connect: () => ({}) as never,
-      probe: () => ({
+      connect: async () => ({}) as never,
+      probe: async () => ({
         probe: async () => {
           throw new Error("the probe should not be asked about dev");
         },

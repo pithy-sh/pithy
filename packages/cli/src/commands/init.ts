@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { basename, join, resolve } from "node:path";
-import { type CfAccount, listCloudflareAccounts } from "@pithy-sh/cloudflare/src/client/accounts";
+import type { CfAccount } from "@pithy-sh/cloudflare/src/client/accounts";
 import { DEFAULT_ENVIRONMENTS, DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { kebab } from "@pithy-sh/core/src/naming/resource";
 import { PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
@@ -231,7 +231,15 @@ export async function askCloudflareAccount(options: AskCloudflareAccountOptions)
   if (!options.interactive) return nothing;
 
   const paths = options.paths ?? { account: null };
-  const listAccounts = options.listAccounts ?? ((apiToken: string) => listCloudflareAccounts({ apiToken }));
+  // The listing is loaded only when it is about to be made. `client/accounts` constructs the Cloudflare
+  // SDK, so importing it costs ~360 ms under Node — which `pithy init --help` was paying to print a flag
+  // list (#482). `ci/lazyHeavyImports.test.ts` holds it.
+  const listAccounts =
+    options.listAccounts ??
+    (async (apiToken: string) => {
+      const { listCloudflareAccounts } = await import("@pithy-sh/cloudflare/src/client/accounts");
+      return listCloudflareAccounts({ apiToken });
+    });
   const prompt = options.prompt ?? (await clackPrompt());
   const existing = resolveCloudflare(paths).vars;
   const configured = Boolean(existing.CLOUDFLARE_ACCOUNT_ID && existing.CLOUDFLARE_API_TOKEN);

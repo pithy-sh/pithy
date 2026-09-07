@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import type { D1Database } from "@cloudflare/workers-types";
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { readMigrationOwner } from "@pithy-sh/core/src/migrations/owner";
 import { assertValidProjectName, isValidProjectName, kebab } from "@pithy-sh/core/src/naming/resource";
+import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { loadProject, loadProjectCloudflare, type ProjectConfig } from "../project/config";
 import { discoverWorkers, type WorkerTarget } from "../project/workers";
@@ -389,8 +390,7 @@ export async function probeAccountEvidence(
    * had no test at all. It is the only path that can reach the `orphaned` verdict, and that verdict tells
    * an adopter a live database is not theirs.
    */
-  connect: (credentials: { accountId: string; apiToken: string }) => CloudflareClients = (credentials) =>
-    new CloudflareClients(credentials),
+  connect: (credentials: { accountId: string; apiToken: string }) => Promise<CloudflareClients> = cloudflareClients,
 ): Promise<Map<string, AccountEvidence>> {
   const evidence = new Map<string, AccountEvidence>();
   // **A pin the credentials contradict ends the probe, before the network.** `cloudflareEnv` throws on a
@@ -410,7 +410,7 @@ export async function probeAccountEvidence(
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
   if (!accountId || !apiToken) return evidence;
 
-  const clients = connect({ accountId, apiToken });
+  const clients = await connect({ accountId, apiToken });
   const databases = new Set(candidates.filter((entry) => entry.kind === "d1").map((entry) => entry.name));
   const buckets = new Set(candidates.filter((entry) => entry.kind === "r2").map((entry) => entry.name));
 

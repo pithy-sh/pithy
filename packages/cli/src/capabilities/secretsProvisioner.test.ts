@@ -149,7 +149,7 @@ describe("CloudflareSecretsProvisioner", () => {
 
     await provisioner.ensureManagerToken();
 
-    expect(rollToken).toHaveBeenCalledWith(managerCfApiTokenName(PROJECT), managerTokenPermissions("acct-1"));
+    expect(rollToken).toHaveBeenCalledWith(managerCfApiTokenName(PROJECT), await managerTokenPermissions("acct-1"));
     const [name, value] = putSecret.mock.calls[0] ?? [];
     expect(name).toBe(managerCfApiTokenSecretName(PROJECT));
     expect(JSON.parse(value)).toEqual({ currentVersion: "1", versions: { "1": "minted-token" } });
@@ -369,8 +369,8 @@ describe("two projects sharing one Cloudflare account", () => {
 });
 
 describe("managerTokenPermissions", () => {
-  test("scopes a Secrets Store Read + Write token to the account", () => {
-    expect(managerTokenPermissions("acct-9")).toEqual([
+  test("scopes a Secrets Store Read + Write token to the account", async () => {
+    expect(await managerTokenPermissions("acct-9")).toEqual([
       {
         permissionGroupNames: ["Secrets Store Read", "Secrets Store Write"],
         resources: { "com.cloudflare.api.account.acct-9": "*" },

@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { CLOUDFLARE_CREDENTIAL_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
+import { cloudflareClients } from "../cloudflare/clients";
 import {
   type CloudflareAccountMismatch,
   type CloudflareConfigOptions,
@@ -189,7 +190,7 @@ export async function checkCloudflareAccess(options: CloudflareConfigOptions): P
     return { state: "unconfigured", missing: [...missing], tokenStatus: null, credentialSplit, ...where };
 
   const apiToken = vars.CLOUDFLARE_API_TOKEN ?? "";
-  const clients = new CloudflareClients({ accountId: vars.CLOUDFLARE_ACCOUNT_ID ?? "", apiToken });
+  const clients = await cloudflareClients({ accountId: vars.CLOUDFLARE_ACCOUNT_ID ?? "", apiToken });
 
   const tokenStatus = await verifyByKind(clients, apiToken);
   if (tokenStatus === null)

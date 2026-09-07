@@ -3,7 +3,6 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
@@ -17,6 +16,7 @@ import {
   type SupportEnvResources,
 } from "../capabilities/supportProvisioner";
 import type { ConfirmedAccount } from "../cloudflare/accountAnswer";
+import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
@@ -202,7 +202,7 @@ const provision = defineCommand({
       });
       const routing = resolveRouting(args["routing-zone"], args["inbound-address"], args["app-worker"]);
       const provisioner = new CloudflareSupportProvisioner({
-        cf: new CloudflareClients({ accountId, apiToken }),
+        cf: await cloudflareClients({ accountId, apiToken }),
         project,
         account,
         apiToken,
@@ -296,7 +296,7 @@ const deprovision = defineCommand({
         : undefined;
       const deprovisioner = new CloudflareSupportDeprovisioner({
         account,
-        cf: new CloudflareClients({ accountId, apiToken }),
+        cf: await cloudflareClients({ accountId, apiToken }),
         project,
         ...(args["routing-zone"] !== undefined ? { routingZoneId: args["routing-zone"] } : {}),
         ...(r2Credentials !== undefined ? { r2Credentials } : {}),

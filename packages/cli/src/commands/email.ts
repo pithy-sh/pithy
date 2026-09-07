@@ -3,7 +3,7 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { type EmailCapability, isEmailCapability } from "@pithy-sh/email/src/capability";
@@ -21,6 +21,7 @@ import {
   type EmailEnvResources,
 } from "../capabilities/emailProvisioner";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import {
   loadProject,
@@ -293,7 +294,7 @@ const provision = defineCommand({
         projectDir,
         ...(args.worker !== undefined ? { worker: args.worker } : {}),
       });
-      const cf = new CloudflareClients({ accountId, apiToken });
+      const cf = await cloudflareClients({ accountId, apiToken });
       const provisioner = new CloudflareEmailProvisioner({
         cf,
         project,
@@ -342,7 +343,7 @@ const deprovision = defineCommand({
       // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
       const environments = loadProjectEnvironments(config);
       const { account, accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
-      const cf = new CloudflareClients({ accountId, apiToken });
+      const cf = await cloudflareClients({ accountId, apiToken });
       const deprovisioner = new CloudflareEmailDeprovisioner({
         account,
         cf,
@@ -398,7 +399,7 @@ const test = defineCommand({
       };
       const rendered = await renderEmail(args.template, payload, theme, tracking);
       const from = args.from ?? fromAddress;
-      const result = await new CloudflareClients({ accountId, apiToken }).email().send({
+      const result = await (await cloudflareClients({ accountId, apiToken })).email().send({
         to: args.to,
         from: { email: from, name: fromName },
         subject: rendered.subject,

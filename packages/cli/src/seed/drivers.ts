@@ -4,7 +4,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { D1Database, KVNamespace, R2Bucket } from "@cloudflare/workers-types";
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { CloudflareKVManager } from "@pithy-sh/cloudflare/src/kv/kvManager";
 import type { CloudflareImageManager } from "@pithy-sh/cloudflare/src/media/imageManager";
 import type { CloudflareStreamManager } from "@pithy-sh/cloudflare/src/media/streamManager";
@@ -12,7 +12,6 @@ import { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
 import type { CloudflareR2Manager } from "@pithy-sh/cloudflare/src/r2/r2Manager";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
-import { Miniflare } from "miniflare";
 import { type CloudflareAccountSelection, cloudflareCredentials, cloudflareEnv } from "../cloudflare/config";
 import { wranglerConfigPath } from "../provision/featureConfig";
 
@@ -238,6 +237,10 @@ async function openLocalDriver(options: SeedDriverOptions, assets: RemoteAssets)
   for (const entry of config.r2_buckets ?? []) r2Ids[entry.binding] = entry.bucket_name ?? entry.binding;
 
   const state = join(options.persistRoot, ".wrangler", "state", "v3");
+  // Loaded here rather than at module scope: `miniflare` costs ~290 ms to import under Node, and
+  // every command module that could reach this one paid it before citty had parsed a flag (#482).
+  // `ci/lazyHeavyImports.test.ts` holds the property.
+  const { Miniflare } = await import("miniflare");
   const miniflare = new Miniflare({
     modules: true,
     script: "export default {};",
@@ -358,8 +361,22 @@ interface LazyClients {
   r2Credentials(): R2Credentials;
 }
 
-/** Build the credential-lazy clients accessor shared by the remote resources and the always-remote assets. */
-function lazyClients(config: WranglerSeedConfig, account: CloudflareAccountSelection | null): LazyClients {
+/**
+ * Build the credential-lazy clients accessor shared by the remote resources and the always-remote assets.
+ *
+ * **The REST client module is resolved here, once, so {@link LazyClients.get} stays synchronous.** Five
+ * seams behind it — `SeedDriver.d1`/`kv`/`r2`/`images`/`stream` — answer synchronously and are read from
+ * `seed/run.ts` in that shape, so an `await` inside `get()` would have to travel the whole way out. The
+ * `dev` branch therefore pays the import too, and that is the right trade: a driver is only opened by a
+ * seed that is about to run, Images and Stream are remote from either branch, and the cost of a REST
+ * client next to a Miniflare boot is not the cost #482 was about. What matters is that nothing pays it
+ * to print a flag list, and nothing here is on a help path.
+ */
+async function lazyClients(
+  config: WranglerSeedConfig,
+  account: CloudflareAccountSelection | null,
+): Promise<LazyClients> {
+  const { CloudflareClients: Clients } = await import("@pithy-sh/cloudflare/src/client/clients");
   let clients: CloudflareClients | undefined;
   let vars: Record<string, string> | undefined;
   const env = (): Record<string, string> => {
@@ -372,7 +389,7 @@ function lazyClients(config: WranglerSeedConfig, account: CloudflareAccountSelec
       if (clients) return clients;
       // Both refusals — the account mismatch and the empty pair — belong to `cloudflareCredentials`, so
       // this driver and anything that settles the account ahead of a fan-out say them the same way (#236).
-      clients = new CloudflareClients(cloudflareCredentials({ account }));
+      clients = new Clients(cloudflareCredentials({ account }));
       return clients;
     },
     r2Credentials() {
@@ -417,7 +434,7 @@ function remoteAssets(options: SeedDriverOptions, clients: LazyClients): RemoteA
  */
 export async function openSeedDriver(options: SeedDriverOptions): Promise<SeedDriver> {
   const config = await readWranglerConfig(options.workerDir, options.env);
-  const clients = lazyClients(config, options.account);
+  const clients = await lazyClients(config, options.account);
   const assets = remoteAssets(options, clients);
   return options.env === "dev" ? openLocalDriver(options, assets) : openRemoteDriver(options, clients, assets);
 }

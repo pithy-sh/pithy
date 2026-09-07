@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createRemoteCliAudit } from "../audit/cliAudit";
+import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { renderDevSecretsNotes } from "../devSecrets/report";
 import { type DevSecretsSeedReport, seedProjectDevSecrets } from "../devSecrets/seed";
@@ -105,7 +105,7 @@ async function buildSeedAudit(
     projectDir,
     env,
     capabilities,
-    clients: new CloudflareClients({ accountId, apiToken }),
+    clients: await cloudflareClients({ accountId, apiToken }),
     apiToken,
   });
 }

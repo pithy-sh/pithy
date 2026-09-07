@@ -10,7 +10,6 @@ import { masterKeyRegistryEntry } from "@pithy-sh/secrets/src/capability";
 import { type DevSecretsStore, devVarsForRegistry } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
 import { SystemSecretsStore } from "@pithy-sh/secrets/src/store/systemSecretsStore";
-import { Miniflare } from "miniflare";
 import type { StatePathOptions } from "../notifier/state";
 import { resolveStoreIds } from "../seed/drivers";
 import { readBootstrapVars } from "./bootstrapVars";
@@ -155,6 +154,10 @@ export async function openDevSecretsStore(options: OpenDevSecretsStoreOptions): 
   }
 
   const persistPath = localDevStorePath(options.projectDir);
+  // Loaded here rather than at module scope: `miniflare` costs ~290 ms to import under Node, and
+  // every command module that could reach this one paid it before citty had parsed a flag (#482).
+  // `ci/lazyHeavyImports.test.ts` holds the property.
+  const { Miniflare } = await import("miniflare");
   const miniflare = new Miniflare({
     modules: true,
     script: "export default {};",

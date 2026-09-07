@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { SettingsAccountReader, SettingsEnvironment } from "@pithy-sh/core/src/capability/settings";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
+import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import {
   loadProject,
@@ -71,9 +72,9 @@ export interface SettingsAccountOptions {
   /** Home directory seam — the credentials file is resolved under it, exactly as every other doctor path is. */
   homedir?: string;
   /** Cloudflare client seam. */
-  connect?: (credentials: { accountId: string; apiToken: string }) => CloudflareClients;
+  connect?: (credentials: { accountId: string; apiToken: string }) => Promise<CloudflareClients>;
   /** Secret-probe seam — the manager Workflow that answers whether a `d1` secret has a value. */
-  probe?: (credentials: { accountId: string; apiToken: string }, project: string) => SecretProbe;
+  probe?: (credentials: { accountId: string; apiToken: string }, project: string) => Promise<SecretProbe>;
 }
 
 /**
@@ -106,8 +107,8 @@ export async function settingsAccountConnection(options: SettingsAccountOptions)
   if (!accountId || !apiToken) return { state: "skipped", reason: "no-credentials" };
 
   const credentials = { accountId, apiToken };
-  const clients = (options.connect ?? ((creds) => new CloudflareClients(creds)))(credentials);
-  const probe = (
+  const clients = await (options.connect ?? cloudflareClients)(credentials);
+  const probe = await (
     options.probe ?? ((creds, project) => buildSecretDispatcher(creds.accountId, creds.apiToken, project))
   )(credentials, options.project);
 

@@ -6,7 +6,6 @@ import { dirname, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { TokenPermission } from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
 import type { PermissionKey } from "@pithy-sh/cloudflare/src/tokens/permissions";
-import { permissionsForKeys } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
@@ -85,7 +84,11 @@ export interface CloudflareSecretsProvisionerOptions {
  * drift. The manager's only live-CF use is the rotation config write-back; its D1 work runs through
  * the `SECRETS` binding, not this token — so nothing wider is granted.
  */
-export function managerTokenPermissions(accountId: string): TokenPermission[] {
+export async function managerTokenPermissions(accountId: string): Promise<TokenPermission[]> {
+  // Loaded here rather than at module scope. `tokens/profiles` is a pure policy module, but it reaches
+  // the Cloudflare SDK through one value import of `accountResource`, which puts ~355 ms on the static
+  // graph of `pithy add`, `pithy provision` and `pithy secrets` — to print their flag lists (#482).
+  const { permissionsForKeys } = await import("@pithy-sh/cloudflare/src/tokens/profiles");
   return permissionsForKeys([...secretsTokenProfile.permissions] as PermissionKey[], accountId);
 }
 
@@ -135,7 +138,7 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
     if (await store.exists(entry)) return;
     const minted = await this.#cf
       .accountTokens()
-      .rollToken(managerCfApiTokenName(this.#project), managerTokenPermissions(this.#account.accountId));
+      .rollToken(managerCfApiTokenName(this.#project), await managerTokenPermissions(this.#account.accountId));
     await writeManagerCfApiToken(this.#cf, { storeId: this.#storeId, project: this.#project }, minted.value);
     // Never the minted value — just that the manager's own runtime credential was (re)written.
     await this.#audit({
