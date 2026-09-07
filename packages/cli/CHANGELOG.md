@@ -1,5 +1,79 @@
 # @pithy-sh/cli
 
+## 0.1.5
+
+### Patch Changes
+
+- [#494](https://github.com/pithy-sh/pithy/pull/494) [`b887113`](https://github.com/pithy-sh/pithy/commit/b887113ab50ba3f1cf80e68f9148319d0839b172) Thanks [@kingmesal](https://github.com/kingmesal)! - A command no longer loads a network client to print its own flag list.
+  
+  `pithy add --help` took 786 ms. A `--cpu-prof` said that roughly 53% of it was Node's own module loader — resolving and parsing files the command never intended to use. Zod was 2.3% of the profile and citty imported in 6 ms, so it was neither the schemas nor the command tree. It was two leaves: `miniflare` (~290 ms), reached through `migrations/run.ts`, and the Cloudflare SDK (~300 ms), reached through anything naming `CloudflareClients` as a value.
+  
+  Both now load at the point of use. `const { Miniflare } = await import("miniflare")` inside the three functions that start one, and every REST client the CLI builds goes through one `cloudflareClients()` helper that imports the module when a command has decided to talk to Cloudflare.
+  
+  Measured as the minimum of twelve warm runs, before and after interleaved on one machine:
+  
+  | | before | after |
+  |---|---:|---:|
+  | `pithy add --help` | 786 ms | 255 ms |
+  | `pithy doctor --help` | 813 ms | 263 ms |
+  | `pithy deploy --help` | 816 ms | 206 ms |
+  | `pithy migrate --help` | 771 ms | 326 ms |
+  | `pithy --help` (loads all 25) | 1076 ms | 668 ms |
+  | `pithy --version` | 43 ms | 43 ms |
+  
+  `pithy token --help` is the one command still reaching the SDK, because `TOKEN_STORES` is interpolated into the `--store` flag's description and citty evaluates that at import. It is written down in the gate with what it would take to remove.
+  
+  A gate holds the rest. `ci/lazyHeavyImports.test.ts` derives the static import graph from every command module, follows it across package boundaries, and fails on any reach into a named heavy package that is not recorded — in both directions, so an exception that has been fixed has to be deleted rather than left standing. Nothing about the next such import will look wrong, and its cost is invisible: no test fails and no output changes, the command is simply a third of a second slower for everybody who ran a different one.
+
+- [#497](https://github.com/pithy-sh/pithy/pull/497) [`82bb9a0`](https://github.com/pithy-sh/pithy/commit/82bb9a0ce3a70ac0f66cc86d8b7bae64f9a3109e) Thanks [@kingmesal](https://github.com/kingmesal)! - A config that will not load tells you which of three things went wrong.
+  
+  An unresolvable import used to get one sentence whatever the cause: *Install the project's dependencies (bun install), or correct that import.* For a missing dependency that is right. For the other two — a package that is installed but does not provide the subpath, and a relative import of your own file — `bun install` is guaranteed to change nothing, so the advice cannot be followed and following it teaches you nothing.
+  
+  The three now read differently, and two of them say plainly that installing will not help:
+  
+  ```
+  Nothing provides "some-package". Install the project's dependencies (bun install), or correct that import.
+  "pkg/src/gone" is not something its package provides. Check the version you have, or correct that import — installing dependencies will not help.
+  Nothing at "./src/gone". Create that file or correct the import — installing dependencies will not help.
+  ```
+  
+  **And the message names the file the way you wrote it.** On node the runtime hands back an already-resolved absolute path, so this line printed `/home/…` into guidance you are meant to act on — while every other refusal in the module deliberately drops our own frame.
+  
+  Where a runtime supplies it, a failure also names the package the import was written in. That is the half that would have pointed at the real culprit in [#480](https://github.com/pithy-sh/pithy/issues/480), where the message named the one dependency that was fine.
+
+- [#495](https://github.com/pithy-sh/pithy/pull/495) [`509d921`](https://github.com/pithy-sh/pithy/commit/509d921580b6630d27a7534f29206e8e8a4d3678) Thanks [@kingmesal](https://github.com/kingmesal)! - Your `pithy.config.ts` can import your own modules again.
+  
+  0.1.4 could not load a config containing an ordinary TypeScript import of a local file:
+  
+  ```
+  Nothing resolves ".../apps/board/src/secret/registry"
+  ```
+  
+  The file was there. Until [#481](https://github.com/pithy-sh/pithy/issues/481) the CLI ran on Bun, whose resolver reads `./src/secret/registry` as `registry.ts`; it runs on node now, which strips types from the config and then refuses the extensionless specifier inside it. Reported by `pithy-sh/dashboard`, whose config has eleven such imports.
+  
+  The CLI registers a `node:module` resolve hook before loading a config. It runs only after node's own resolution has failed, and only for relative specifiers — a bare specifier is a package and stays with node and the `exports` map.
+  
+  **Every distributed file now carries its SPDX notice**, built from the package's own declared license through the same `buildHeader` that stamps source. `@pithy-sh/audit` is `FSL-1.1-MIT`, so this is not decoration: its compiled output would otherwise have claimed MIT while its source said FSL. `bun run verify-published` refuses a tarball missing one.
+  
+  **`@pithy-sh/cli` now declares `node >=22.18.0`**, which is what it has always needed — unflagged type stripping, without which a `.ts` config cannot be imported at all. The libraries ship compiled JavaScript and still run on 22.0. `pithy` refuses an older node at startup with a message naming both versions, because `engines` only warns unless you set `engine-strict`.
+
+- [`1b3a116`](https://github.com/pithy-sh/pithy/commit/1b3a116e2f21d9c80fa1e494270205f7f8224c2c) Thanks [@kingmesal](https://github.com/kingmesal)! - Every distributed file carries its SPDX notice.
+  
+  The source stamper has always run on `src`. Nothing stamped what is built from it — tsdown drops a file's leading comment on emit, and `tsc --emitDeclarationOnly` drops one that is not attached to a declaration — so the `.js` and `.d.ts` an adopter actually opens carried no notice while every source file did. The tarballs have always shipped `LICENSE` and declared a license, so nothing was ever unlicensed; what was missing is the notice on the artifact.
+  
+  Both halves are stamped now, from **the package's own declared license**, through the same `buildHeader` that writes source. `@pithy-sh/audit` is `FSL-1.1-MIT`, so this is not a formality: a notice fixed at MIT would have put the wrong terms on its compiled output while its source read correctly.
+  
+  `bun run verify-published` refuses a tarball shipping a `dist` file without one.
+  
+  No code changed in this release for most of these packages — the bytes differ only by the two comment lines at the top of each built file.
+- Updated dependencies [[`82bb9a0`](https://github.com/pithy-sh/pithy/commit/82bb9a0ce3a70ac0f66cc86d8b7bae64f9a3109e), [`509d921`](https://github.com/pithy-sh/pithy/commit/509d921580b6630d27a7534f29206e8e8a4d3678), [`1b3a116`](https://github.com/pithy-sh/pithy/commit/1b3a116e2f21d9c80fa1e494270205f7f8224c2c)]:
+  - @pithy-sh/core@0.1.5
+  - @pithy-sh/cloudflare@0.1.4
+  - @pithy-sh/email@0.1.4
+  - @pithy-sh/secrets@0.1.4
+  - @pithy-sh/turnstile@0.1.4
+  - @pithy-sh/ui-react@0.1.4
+
 ## 0.1.4
 
 ### Patch Changes

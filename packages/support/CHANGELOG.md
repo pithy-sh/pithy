@@ -1,5 +1,26 @@
 # @pithy-sh/support
 
+## 0.1.4
+
+### Patch Changes
+
+- [`1b3a116`](https://github.com/pithy-sh/pithy/commit/1b3a116e2f21d9c80fa1e494270205f7f8224c2c) Thanks [@kingmesal](https://github.com/kingmesal)! - Every distributed file carries its SPDX notice.
+  
+  The source stamper has always run on `src`. Nothing stamped what is built from it — tsdown drops a file's leading comment on emit, and `tsc --emitDeclarationOnly` drops one that is not attached to a declaration — so the `.js` and `.d.ts` an adopter actually opens carried no notice while every source file did. The tarballs have always shipped `LICENSE` and declared a license, so nothing was ever unlicensed; what was missing is the notice on the artifact.
+  
+  Both halves are stamped now, from **the package's own declared license**, through the same `buildHeader` that writes source. `@pithy-sh/audit` is `FSL-1.1-MIT`, so this is not a formality: a notice fixed at MIT would have put the wrong terms on its compiled output while its source read correctly.
+  
+  `bun run verify-published` refuses a tarball shipping a `dist` file without one.
+  
+  No code changed in this release for most of these packages — the bytes differ only by the two comment lines at the top of each built file.
+- Updated dependencies [[`82bb9a0`](https://github.com/pithy-sh/pithy/commit/82bb9a0ce3a70ac0f66cc86d8b7bae64f9a3109e), [`509d921`](https://github.com/pithy-sh/pithy/commit/509d921580b6630d27a7534f29206e8e8a4d3678), [`1b3a116`](https://github.com/pithy-sh/pithy/commit/1b3a116e2f21d9c80fa1e494270205f7f8224c2c)]:
+  - @pithy-sh/core@0.1.5
+  - @pithy-sh/auth@0.1.4
+  - @pithy-sh/email@0.1.4
+  - @pithy-sh/payments@0.1.5
+  - @pithy-sh/secrets@0.1.4
+  - @pithy-sh/storage@0.1.4
+
 ## 0.1.3
 
 ### Patch Changes
