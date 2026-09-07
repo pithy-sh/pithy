@@ -191,62 +191,6 @@ export function failurePosition(cause: unknown): FailurePosition | undefined {
   return { line: Number(match[1]), column: Number(match[2]) };
 }
 
-/** What kind of thing failed to resolve — three causes that wear one sentence. */
-export type UnresolvedKind =
-  /** A bare specifier for a package that is not installed. Installing dependencies is the remedy. */
-  | "package"
-  /** An installed package asked for a subpath it does not provide. Installing again changes nothing. */
-  | "package-subpath"
-  /** A relative import of a file in the project's own tree. Installing again changes nothing. */
-  | "local-file";
-
-/** Whether a path sits inside an installed package. */
-function insideNodeModules(path: string): boolean {
-  return path.split(/[\\/]/).includes("node_modules");
-}
-
-/**
- * Which of the three unresolved-import causes this was, or `undefined` when it cannot be told.
- *
- * **The discriminator was already in the message and was being thrown away.** `unresolvedSpecifier`
- * matches `Cannot find (?:package|module)` — and `package` versus `module` is exactly the fact that
- * separates a missing dependency from everything else. It sat in a non-capturing group, so every cause
- * arrived wearing the same sentence, and for two of the three that sentence advised an install that is
- * *guaranteed* to change nothing.
- *
- * Measured across Node 24.13.0 and Bun 1.3.14, because the two runtimes hand back different halves and
- * each hands back exactly one usable one:
- *
- * | cause | Node says | Bun's `specifier` |
- * |---|---|---|
- * | package absent | `Cannot find package 'pkg'`, no `url` | `pkg` |
- * | subpath missing | `Cannot find module '/abs/node_modules/pkg/src/nope.js'`, `url` inside node_modules | `pkg/src/nope` |
- * | adopter's file | `Cannot find module '/abs/apps/board/src/x'`, `url` outside node_modules | `./src/x` |
- *
- * So Bun gives the **raw specifier** — a leading `.` settles it — and Node gives the **resolved path**,
- * where being under `node_modules` settles it. Neither read works alone; the pair does. The same
- * predicate answers both, applied to whichever fact the runtime supplied.
- */
-export function unresolvedKind(cause: unknown): UnresolvedKind | undefined {
-  const message = causeMessage(cause) ?? "";
-  if (/Cannot find package /.test(message)) return "package";
-
-  const specifier = unresolvedSpecifier(cause);
-  if (specifier === undefined) return undefined;
-
-  // Bun's field is the specifier as written, so a relative one is the adopter's own file.
-  if (/^(?:\.|\/|[A-Za-z]:[\\/])/.test(specifier)) {
-    return insideNodeModules(specifier) ? "package-subpath" : "local-file";
-  }
-
-  // Node states an already-resolved absolute path; a bare one that reached here is a package subpath.
-  const url = prop(cause, "url");
-  if (typeof url === "string" && url.length > 0) {
-    return insideNodeModules(url) ? "package-subpath" : "local-file";
-  }
-  return "package-subpath";
-}
-
 /**
  * The specifier that did not resolve.
  *
