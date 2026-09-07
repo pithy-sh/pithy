@@ -146,7 +146,7 @@ Install.
 ```
 $ pithy alias
 Added `alias p.='pithy'` to /home/you/.zshrc
-Reload your shell or run: source /home/you/.zshrc
+Open a new terminal, or run: source /home/you/.zshrc
 ```
 
 Install again.
@@ -173,7 +173,7 @@ Remove.
 ```
 $ pithy alias --remove
 Removed `alias p.='pithy'` from /home/you/.zshrc
-Reload your shell or run: source /home/you/.zshrc
+Open a new terminal, or run: source /home/you/.zshrc
 ```
 
 ```

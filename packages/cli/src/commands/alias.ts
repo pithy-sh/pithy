@@ -107,7 +107,7 @@ export async function installAlias(opts: AliasOptions = {}): Promise<void> {
     return;
   }
   emit(`Added \`${shell.aliasSyntax}\` to ${shell.rcPath}`);
-  emit(`Reload your shell or run: source ${shell.rcPath}`);
+  emit(`Open a new terminal, or run: source ${shell.rcPath}`);
 }
 
 /** Remove the alias block. Prints `No Pithy alias installed.` and exits 0 when there is nothing to remove. */
@@ -128,7 +128,7 @@ export async function removeAlias(opts: AliasOptions = {}): Promise<void> {
     return;
   }
   emit(`Removed \`${shell.aliasSyntax}\` from ${shell.rcPath}`);
-  emit(`Reload your shell or run: source ${shell.rcPath}`);
+  emit(`Open a new terminal, or run: source ${shell.rcPath}`);
 }
 
 /** Report whether the alias is installed. Prints `Unable to detect shell.` for an unknown shell. */

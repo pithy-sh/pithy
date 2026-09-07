@@ -274,7 +274,7 @@ Done.
 Want a shortcut? Type `p.` instead of `pithy`. [Y/n] y
 
 Added `alias p.='pithy'` to ~/.zshrc
-Reload your shell or run: source ~/.zshrc
+Open a new terminal, or run: source ~/.zshrc
 
 $ source ~/.zshrc
 $ p. --version
@@ -286,7 +286,7 @@ pithy 1.0.0
 ```
 $ pithy alias
 Added `alias p.='pithy'` to ~/.zshrc
-Reload your shell or run: source ~/.zshrc
+Open a new terminal, or run: source ~/.zshrc
 ```
 
 **Already installed:**
@@ -310,7 +310,7 @@ $
 ```
 $ pithy alias --remove
 Removed `alias p.='pithy'` from ~/.zshrc
-Reload your shell or run: source ~/.zshrc
+Open a new terminal, or run: source ~/.zshrc
 ```
 
 **The hidden easter egg:**
@@ -318,7 +318,7 @@ Reload your shell or run: source ~/.zshrc
 ```
 $ pithy --pithier
 Added `alias p.='pithy'` to ~/.zshrc
-Reload your shell or run: source ~/.zshrc
+Open a new terminal, or run: source ~/.zshrc
 ```
 
 **The anti-feature:**
@@ -359,7 +359,7 @@ export async function installAlias(opts: { silent?: boolean } = {}) {
 
   await appendToRcFile(shell.rcPath, '\n' + block + '\n');
   console.log(`Added \`${shell.aliasSyntax}\` to ${shell.rcPath}`);
-  console.log(`Reload your shell or run: source ${shell.rcPath}`);
+  console.log(`Open a new terminal, or run: source ${shell.rcPath}`);
 }
 
 export async function removeAlias() {
@@ -372,7 +372,7 @@ export async function removeAlias() {
     return;
   }
   console.log(`Removed \`${shell.aliasSyntax}\` from ${shell.rcPath}`);
-  console.log(`Reload your shell or run: source ${shell.rcPath}`);
+  console.log(`Open a new terminal, or run: source ${shell.rcPath}`);
 }
 
 export async function aliasStatus() {
