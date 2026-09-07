@@ -1233,7 +1233,7 @@ describe("startDev — the .dev.vars a checkout cannot inherit", () => {
 
 describe("startDev — a Worker whose config will not import", () => {
   test("says so, names the Worker, and states that it has no bindings (#199)", async () => {
-    // The silent path this closes. Since #179 a `cf-secrets-store` secret is materialised only if the
+    // The silent path this closes. Since #179 a `cf-secrets-store` secret is materialized only if the
     // Worker's `pithy.config.ts` imports — correct, because the registry decides which secrets a Worker
     // gets and an unreadable registry has no honest answer. But an unresolvable Worker reached the
     // generator as an empty target list, which is also what a project with no secrets looks like. So
@@ -1499,7 +1499,7 @@ describe("startDev — capability hosts", () => {
 
   test("a host whose config could not be resolved is not spawned, and the session still runs", async () => {
     // The note says "it will not run", and until now that sentence was false: the host stayed in the
-    // started set and `wrangler dev` was spawned in a directory materialisation never created. Node
+    // started set and `wrangler dev` was spawned in a directory materialization never created. Node
     // answered ENOENT on the spawn, the `error` handler tore the whole session down, and the two app
     // Workers that were fine went with it.
     const h = hosted({

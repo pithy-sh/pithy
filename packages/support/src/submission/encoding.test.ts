@@ -55,7 +55,7 @@ describe("submission attachment decoding", () => {
   });
 
   test("an oversize payload is refused before it is decoded", () => {
-    // The check is on the encoded length precisely because `atob` materialises the whole result: a
+    // The check is on the encoded length precisely because `atob` materializes the whole result: a
     // post-hoc size check has already been allocated the memory it meant to refuse.
     const huge = "A".repeat(maxEncodedLength(16) + 1);
     let raised: unknown;

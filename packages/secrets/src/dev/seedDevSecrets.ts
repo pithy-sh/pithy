@@ -160,13 +160,13 @@ export function keyedSecretRefusal(name: string, path: string): ValidationError 
 /**
  * Every `cf-secrets-store` secret the file states, as the `.dev.vars` lines a Worker reads them from.
  *
- * **The one materialisation, so the seeder's report and the generated file cannot disagree.** Dev has no
+ * **The one materialization, so the seeder's report and the generated file cannot disagree.** Dev has no
  * Secrets Store, so a binding is the only place one of these can come from — and since the generator
  * builds each Worker's `.dev.vars` from the dev secrets file directly (#179), the generator and the
  * seeder are two callers of this rather than two copies of it.
  *
  * A secret with no value in the file is simply absent, exactly as a Worker with no binding is: this
- * answers what *can* be materialised, and {@link seedDevSecrets} is what reports the rest as missing.
+ * answers what *can* be materialized, and {@link seedDevSecrets} is what reports the rest as missing.
  */
 export function devVarsForRegistry(
   file: DevSecretsFile,
@@ -230,7 +230,7 @@ export interface StatedSecret {
    */
   readonly payload: unknown;
   /**
-   * That payload as the string a binding or a Secrets Store entry carries. **The one materialisation**
+   * That payload as the string a binding or a Secrets Store entry carries. **The one materialization**
    * — `.dev.vars` locally, `secrets_store_secrets` deployed, and a minted store entry all read it here.
    */
   readonly text: string;

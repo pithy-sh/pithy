@@ -40,7 +40,7 @@ async function devVar(dir: string, name: string): Promise<string | undefined> {
  * `undefined` when nothing was written.
  *
  * **`secrets.jsonc`, not `dev.json` (#179).** The master key is a registry secret now, so it lives in the
- * one file that states dev secret values, and the generator materialises it into each Worker's
+ * one file that states dev secret values, and the generator materializes it into each Worker's
  * `.dev.vars` from there.
  *
  * **Read as the entry itself, with nothing taken off it (#323).** Its binding carries a bare
@@ -436,7 +436,7 @@ describe("bootstrapAdd", () => {
     await writeFile(join(dir, "apps", "board", ".dev.vars"), "MINE=1\n");
 
     // The real seeder, because it is what regenerates now: the master key goes into `secrets.jsonc`
-    // and the generation that materialises it into each Worker's file is the seeding run's (#179).
+    // and the generation that materializes it into each Worker's file is the seeding run's (#179).
     const notes = await bootstrapAdd({ account: null, projectDir: dir, manifest: await shippedManifest("secrets") });
 
     expect(notes.join("\n")).toContain(join(dir, "apps", "board"));

@@ -168,7 +168,7 @@ export interface GenerateDevVarsOptions {
    */
   values?: Record<string, string>;
   /**
-   * The Workers whose registries decide which secrets are materialised. Defaults to every one composing
+   * The Workers whose registries decide which secrets are materialized. Defaults to every one composing
    * `secrets`. A seam, and the one `pithy add` uses to hand over a freshly-reloaded composition.
    */
   targets?: DevSecretsTarget[];
@@ -350,7 +350,7 @@ async function devSecretsResolution(options: GenerateDevVarsOptions): Promise<De
  * `cf-secrets-store` secret `secrets.jsonc` states.
  *
  * **The registry decides membership of both halves, and that is the whole point.** A name it declares is
- * materialised from `secrets.jsonc` or not at all; a name it does not declare can only come from
+ * materialized from `secrets.jsonc` or not at all; a name it does not declare can only come from
  * `dev.json`. So there is exactly one file per value and no precedence question to get wrong — and
  * deleting a secret from `secrets.jsonc` deletes it from every generated file rather than falling back
  * to the copy the old seeder left behind.
@@ -373,7 +373,7 @@ async function devVarsSources(
   const registry: SecretRegistry = ownProperties(
     Object.assign({}, ...targets.map((target) => target.registry)) as SecretRegistry,
   );
-  const secrets = await materialisedSecrets(options.projectDir, registry, paths);
+  const secrets = await materializedSecrets(options.projectDir, registry, paths);
 
   const values: Record<string, string> = {};
   for (const [name, value] of Object.entries(await readBootstrapVars(options.projectDir, paths))) {
@@ -386,7 +386,7 @@ async function devVarsSources(
 }
 
 /** Every `cf-secrets-store` secret this project states, as `.dev.vars` values. Empty on any failure. */
-async function materialisedSecrets(
+async function materializedSecrets(
   projectDir: string,
   registry: SecretRegistry,
   paths: StatePathOptions,

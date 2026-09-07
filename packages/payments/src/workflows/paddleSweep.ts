@@ -289,7 +289,7 @@ async function record(
     id: stored?.id ?? row.id,
     fresh: stored === undefined || isWebhookEventOutstanding(webhookEventState(stored)),
     // The column is `NOT NULL DEFAULT 0`; the coalesce covers the row this call just inserted being read
-    // back before the default is materialised, and a row the webhook path wrote before the column existed.
+    // back before the default is materialized, and a row the webhook path wrote before the column existed.
     attempts: stored?.attempts ?? 0,
   };
 }

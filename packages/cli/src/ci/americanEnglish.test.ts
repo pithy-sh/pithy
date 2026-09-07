@@ -175,6 +175,7 @@ const ISE_STEMS = [
   "digit",
   "emphas",
   "final",
+  "material",
   "general",
   "global",
   "initial",

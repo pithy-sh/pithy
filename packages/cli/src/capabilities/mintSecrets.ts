@@ -71,7 +71,7 @@ export function storeSecretMinter(options: {
     // Through `devSecretPayload`, never restating what it says. A Secrets Store entry is read by the
     // Worker straight off its binding, so what is written here is what the Worker gets — and what the
     // dev secrets file states for the same secret, byte for byte. `initialDevSecret` composes the entry
-    // the file would hold; reading it back is the one materialisation every destination shares (#323).
+    // the file would hold; reading it back is the one materialization every destination shares (#323).
     // This wrote an envelope unconditionally, which is the defect that wave was about, at a new producer.
     const stated = initialDevSecret(entry, mintSecretValue(entry.devValue));
     await options.store.put(secretName, devSecretPayload(entry, secretName, stated).text);

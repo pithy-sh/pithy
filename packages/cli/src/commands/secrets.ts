@@ -507,7 +507,7 @@ const provision = defineCommand({
       // adopter's own Workers get the stanza. It corrects an existing entry rather than duplicating it,
       // and leaves a binding this registry does not declare exactly where the adopter put it.
       //
-      // `dev` is deliberately not among them: local dev materialises every `cf-secrets-store` secret into
+      // `dev` is deliberately not among them: local dev materializes every `cf-secrets-store` secret into
       // the generated `.dev.vars` (#179), so a stanza there would name entries a local run never reads.
       const store = cloudflareSecretsStore(cf, storeId);
       // One emitter per environment, resolved once: `buildAudit` reaches the account and the Worker set,

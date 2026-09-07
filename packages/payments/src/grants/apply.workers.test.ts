@@ -345,7 +345,7 @@ describe("a subscription whose money and state are separate rows", () => {
   const projectLs = (input: ProviderEventInput): Promise<PurchaseProjection> =>
     projectPurchase(env.DB, input, { config: LS_CONFIG, environment: "production", now: new Date(T0 + SECOND) });
 
-  const fulfilLs = async (input: ProviderEventInput) =>
+  const fulfillLs = async (input: ProviderEventInput) =>
     await fulfillPurchase(env.DB, await projectLs(input), { config: LS_CONFIG });
 
   /** One billing period's invoice row. Born `expired`: a closed window that took money. */
@@ -363,9 +363,9 @@ describe("a subscription whose money and state are separate rows", () => {
     });
 
   test("two consecutive renewals produce two rows and credit twice", async () => {
-    await fulfilLs(lsEvent({ role: "state", status: "active", expiresAt: new Date(T0 + 30 * DAY) }));
-    await fulfilLs(invoice("8001", T0));
-    await fulfilLs(invoice("8002", T0 + 30 * DAY));
+    await fulfillLs(lsEvent({ role: "state", status: "active", expiresAt: new Date(T0 + 30 * DAY) }));
+    await fulfillLs(invoice("8001", T0));
+    await fulfillLs(invoice("8002", T0 + 30 * DAY));
 
     // 50 per period, twice — and not three times, which is what a crediting state row would have made it.
     expect((await balance(ADA)).balance).toBe(100);
@@ -376,7 +376,7 @@ describe("a subscription whose money and state are separate rows", () => {
   test("the state row never credits, whatever its status says", async () => {
     // An honest `active` on a live subscription passes every paid-status check there is. `role` is the only
     // thing that stops it, and without it every subscriber is credited once more than they paid for.
-    const report = await fulfilLs(lsEvent({ role: "state", status: "active" }));
+    const report = await fulfillLs(lsEvent({ role: "state", status: "active" }));
     expect(report.granted).toEqual([]);
     expect(await transactionRows()).toEqual([]);
   });
@@ -395,10 +395,10 @@ describe("a subscription whose money and state are separate rows", () => {
   });
 
   test("a refund claws back once, against the row that took the money", async () => {
-    await fulfilLs(invoice("8001", T0));
+    await fulfillLs(invoice("8001", T0));
     expect((await balance(ADA)).balance).toBe(50);
 
-    const report = await fulfilLs(
+    const report = await fulfillLs(
       invoice("8001", T0, { status: "refunded", revokedAt: new Date(T0 + DAY), providerEventAt: new Date(T0 + DAY) }),
     );
     expect(report.clawedBack).toHaveLength(1);
@@ -408,11 +408,11 @@ describe("a subscription whose money and state are separate rows", () => {
   test("the revocation that accompanies a refund claws back nothing of its own", async () => {
     // Both halves of one refund land, in the order the route projects them. The state row is `revoked`,
     // which is a reversed status — so only `role` stops it debiting a second time for money it never took.
-    await fulfilLs(invoice("8001", T0));
-    await fulfilLs(
+    await fulfillLs(invoice("8001", T0));
+    await fulfillLs(
       invoice("8001", T0, { status: "refunded", revokedAt: new Date(T0 + DAY), providerEventAt: new Date(T0 + DAY) }),
     );
-    const report = await fulfilLs(
+    const report = await fulfillLs(
       lsEvent({ role: "state", status: "revoked", revokedAt: new Date(T0 + DAY), providerEventAt: new Date(T0 + DAY) }),
     );
 
@@ -425,7 +425,7 @@ describe("a subscription whose money and state are separate rows", () => {
   });
 
   test("a refund revokes the entitlement the money paid for", async () => {
-    await fulfilLs(lsEvent({ role: "state", status: "active", expiresAt: new Date(T0 + 30 * DAY) }));
+    await fulfillLs(lsEvent({ role: "state", status: "active", expiresAt: new Date(T0 + 30 * DAY) }));
     const granted = await projectLs(lsEvent({ role: "state", status: "active", expiresAt: new Date(T0 + 30 * DAY) }));
     expect(granted.entitlements.some((held) => held.entitlement === "pro" && held.active)).toBe(true);
 

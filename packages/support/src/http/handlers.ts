@@ -359,7 +359,7 @@ export async function submitFeedbackRequest(
       context: input.context,
       // Decoded here, at the transport boundary, so `submitFeedback` takes bytes and stays testable
       // without a request — the same split `ingest.ts` has from the `email()` handler. The decode is
-      // bounded before it allocates: `atob` materialises the whole result, so a size check afterwards
+      // bounded before it allocates: `atob` materializes the whole result, so a size check afterwards
       // has already paid for the attack it was meant to refuse.
       attachments: input.attachments.map((attachment) => ({
         filename: attachment.filename,
