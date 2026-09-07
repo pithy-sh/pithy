@@ -1,5 +1,48 @@
 # @pithy-sh/i18n
 
+## 0.1.3
+
+### Patch Changes
+
+- [`9579441`](https://github.com/pithy-sh/pithy/commit/9579441c0cd49bb690f21451a8ec07460e1220d9) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy ui add` no longer crashes on the manifest `pithy init` wrote.
+  
+  It crashed for any adopter whose resolver landed below zod 4.4.0, and for nobody else — the second command of the standard first run, on a file the first command had just written. Below that version `z.record`'s key check enumerates symbol keys, and comment-json hangs a document's comments off exactly those, so a manifest was refused for having comments in it. Bisected: 4.0.0 through 4.3.6 fail, 4.4.0 onward pass.
+  
+  **The defect was the range, not the code.** Every package declared `zod: ^4.0.0` while depending on behavior that arrives in 4.4.0 — a promise about every version in the range that only some of them keep. The floor is now `^4.4.0`, and `manifests.test.ts` holds it there with the reason attached.
+  
+  Nothing loosens `z.record`'s key check. Symbols are preserved deliberately so an adopter's comments round-trip ([#222](https://github.com/pithy-sh/pithy/issues/222)), and the schema already validates by delegation to keep that true.
+  
+  The reporter is fixed too, separately. `whereItBroke` joined an issue path with `Array.prototype.join`, which throws on a symbol — so it threw while reporting, and the adopter got a `TypeError` from an unrelated file instead of a word about theirs. It stringifies each segment now. Nothing in the kit produces such a path any more; a function whose job is to name where something broke still must not be able to break.
+
+- [#479](https://github.com/pithy-sh/pithy/pull/479) [`24d3245`](https://github.com/pithy-sh/pithy/commit/24d32459145ccedd8b2c3b6cf715646acdfdabaa) Thanks [@kingmesal](https://github.com/kingmesal)! - Every package now ships JavaScript with declarations beside it, so node can import the kit.
+  
+  `exports` pointed at `./src/*.ts`. That works for every consumer with a bundler — wrangler, Vite, vitest transforming a test — and fails for the one with none: node, which refuses to strip types under `node_modules` and cannot be argued out of it. An adopter's `vitest.config.ts` importing `@pithy-sh/vite` died there with `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`, and so would any Node script that touched the kit.
+  
+  Each package builds with tsdown for the JavaScript and `tsc --emitDeclarationOnly` for the types. Two tools because each does one half well: tsdown resolves relative imports to real extensions and leaves siblings external, so `core` is not copied into the twenty packages that depend on it, while its own declaration bundling would flatten `src/error/pithyError.ts` to `dist/pithyError.d.ts` and break the `./src/*` deep-import surface. `tsc` mirrors the tree exactly, so `@pithy-sh/core/src/error/pithyError` keeps resolving to the same path it always named.
+  
+  **The import path an adopter writes has not changed.** `exports` still keys on `./src/*`; it resolves onto `./dist/*.js` and `./dist/*.d.ts` now instead of onto the TypeScript. Source still ships, because the declaration and source maps point back into it — stepping into the kit lands on the file it was written in.
+  
+  Two gates were added rather than assumed. `bun run clean-room` imports the packed kit with plain `node` and requires a declaration beside each module; pointing one package's `exports` back at raw TypeScript fails it with the original error. And `bun run verify-published` refuses a tarball that carries no build, or a published module with one half of its pair — a `.js` with no `.d.ts` is an `any` in the adopter's editor, and a `.d.ts` with no `.js` is a type that cannot be imported.
+
+- [#484](https://github.com/pithy-sh/pithy/pull/484) [`800abda`](https://github.com/pithy-sh/pithy/commit/800abdaae3ef4b584c3b0060642d49ebd098fa67) Thanks [@kingmesal](https://github.com/kingmesal)! - `zod`, `kysely` and `hono` are peer dependencies now, so you and the kit share one copy.
+  
+  They were plain dependencies, which meant an adopter who imports them directly — and anyone writing their own schemas or queries does — could end up with a second copy. Two copies of a package whose classes carry private members are two different types, and the compiler says so in a way that names neither the package nor the duplication:
+  
+  ```
+  Type 'Kysely<any>' is not assignable to type 'Kysely<any>'.
+    Property '#private' refers to a different member that cannot be accessed from within type.
+  ```
+  
+  Both paths read identically unless you compare them character by character. A dependency is the kit saying "I need some copy of this"; a peer dependency is the kit saying "you and I must share one", which is the true statement and the one npm, pnpm and bun all act on by installing it once, at the top, where your own import finds it too.
+  
+  **Nothing to do in most projects.** Your installer resolves the peer on the next install. If you already declare these, check the range matches — `zod@^4.4.0`, `kysely@^0.29.0`, `hono@^4.13.2`.
+  
+  `@hono/zod-validator` and `kysely-d1` are deliberately not peers: their types do not cross the published boundary, and each depends on `hono` and `kysely` itself, so the copy that matters is already the shared one.
+  
+  **`pithy doctor` reports a duplicate now**, with the directories each copy was resolved from, because the symptom is otherwise unreadable. It resolves rather than scanning, so what it answers is whether the kit and your code agree on which copy — and it never fails the exit, since a second copy can be deliberate.
+- Updated dependencies [[`9579441`](https://github.com/pithy-sh/pithy/commit/9579441c0cd49bb690f21451a8ec07460e1220d9), [`24d3245`](https://github.com/pithy-sh/pithy/commit/24d32459145ccedd8b2c3b6cf715646acdfdabaa), [`800abda`](https://github.com/pithy-sh/pithy/commit/800abdaae3ef4b584c3b0060642d49ebd098fa67), [`c8e45ba`](https://github.com/pithy-sh/pithy/commit/c8e45baeac30231559ba53dba4b7b9a4a10cd46a), [`8ed1f95`](https://github.com/pithy-sh/pithy/commit/8ed1f958925f6987a1cc357225631b56221d5621)]:
+  - @pithy-sh/core@0.1.3
+
 ## 0.1.2
 
 ### Patch Changes
