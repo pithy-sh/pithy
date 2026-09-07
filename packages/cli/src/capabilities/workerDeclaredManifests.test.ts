@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { DEFAULT_WORKER, scaffoldProject } from "../project/scaffold";
-import { buildReconcilePlan } from "./reconcile";
+import { applyReconcilePlan, buildReconcilePlan } from "./reconcile";
 
 /**
  * A capability declared **only** on the Worker that composes it (#507).
@@ -97,6 +97,31 @@ describe("a capability declared only on the Worker that composes it", () => {
     const plan = await planFor(NEEDS_PEER);
 
     expect(plan.missingPrerequisites).toEqual([{ capability: "needy", requires: "absent" }]);
+  });
+
+  // **The write half, which the read half does not imply.** `upgrade` resolves manifests twice more, in
+  // `applyBindings` and `applyEntryExports`, and those write into the adopter's `wrangler.jsonc` rather
+  // than reporting on it. A capability the scan could not see was one an upgrade silently declined to
+  // wire — a missing file rather than a missing sentence, and nothing covered it, including the fix's own
+  // first test. Asserted through the real apply, because the point is what lands on disk.
+  test("its bindings are written by an upgrade, not silently skipped", async () => {
+    await writeWorkerOnly(NEEDS_PEER);
+    const capabilities = [{ name: NEEDS_PEER.name, requiredBindings: NEEDS_PEER.requiredBindings }] as never;
+
+    const before = await readFile(join(worker, "wrangler.jsonc"), "utf8");
+    expect(before).not.toContain('"binding": "DB"');
+
+    await applyReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir: worker,
+      env: "dev",
+      plan: await planFor(NEEDS_PEER),
+      capabilities,
+      migrate: false,
+    });
+
+    expect(await readFile(join(worker, "wrangler.jsonc"), "utf8")).toContain('"binding": "DB"');
   });
 
   // The floor. Both assertions above are about a manifest being *found*, so a fixture that never placed
