@@ -5,6 +5,7 @@ import type { ConfigOption } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import { coerceConfigValue } from "./flow";
+import { requiredOptionRefusal } from "./requiredOptions";
 
 /** `payments`' real option, in the shape its manifest states it. */
 const BILLING_SUBJECT: ConfigOption = {
@@ -65,5 +66,39 @@ describe("a choice that needs code the CLI cannot write", () => {
   test("an option declaring none of them is unaffected", () => {
     const plain: ConfigOption = { key: "mode", choices: ["a", "b"], describe: "Pick one." };
     expect(coerceConfigValue(plain, "b", "cap")).toBe("b");
+  });
+});
+
+/**
+ * **A refusal never names a value the next refusal rejects.**
+ *
+ * #483 made `billingSubject=organization` unwritable and this sentence went on offering it: `pithy add
+ * payments --json` answered "Pass --set billingSubject=user or --set billingSubject=organization", and
+ * passing the second was refused. Caught by `pithy-sh/dashboard` writing it into a build log — they
+ * would have shipped a document telling readers to run a command the CLI rejects.
+ *
+ * An action line that names a dead end is worse than a shorter one, because the caller it is written
+ * for is the one with no human attached, and it follows the line exactly.
+ */
+describe("the refusal for a required option nobody answered", () => {
+  test("offers only the choices that can actually be passed", () => {
+    const thrown = requiredOptionRefusal({ capability: "payments", missing: [BILLING_SUBJECT] });
+
+    expect(thrown.payload.action).toBe("Pass --set billingSubject=user.");
+    expect(thrown.payload.action).not.toContain("organization");
+  });
+
+  test("still names every choice when none of them needs code", () => {
+    const plain = { key: "mode", choices: ["a", "b"] };
+    expect(requiredOptionRefusal({ capability: "cap", missing: [plain] }).payload.action).toContain(
+      "--set mode=a or --set mode=b",
+    );
+  });
+
+  // The degenerate case: every choice needs code. Naming none of them is right — there is no flag that
+  // works — and it falls back to the open-set wording rather than printing an empty list.
+  test("falls back to <value> when every choice is withheld", () => {
+    const all = { key: "k", choices: ["x"], choicesNeedingCode: { x: "write it by hand." } };
+    expect(requiredOptionRefusal({ capability: "cap", missing: [all] }).payload.action).toContain("--set k=<value>");
   });
 });

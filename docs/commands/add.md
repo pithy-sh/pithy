@@ -198,8 +198,20 @@ Edit registry in the worker's pithy.config.ts — pithy add scaffolds it empty.
 
 ```
 $ pithy add payments --json
-{"error":{"code":"validation/invalid_input","status":400,"issues":[],"message":"payments needs a value for billingSubject, and nothing in this run names one.","action":"Pass --set billingSubject=user or --set billingSubject=organization."}}
+{"error":{"code":"validation/invalid_input","status":400,"issues":[],"message":"payments needs a value for billingSubject, and nothing in this run names one.","action":"Pass --set billingSubject=user."}}
 ```
+
+**A `--set` on a choice the CLI cannot write.** Some values compose only alongside code `pithy add` has no way to produce — it renders JSON into `pithy.config.ts`, not functions — so it refuses at the flag rather than writing a config the kit will then refuse to load.
+
+```
+$ pithy add payments --set billingSubject=organization
+payments cannot be added with "billingSubject" set to "organization".
+It needs a `resolveSubject` seam saying which organization a caller is acting for, and `pithy add`
+writes JSON, not functions. Add payments with --set billingSubject=user, then in this Worker's
+pithy.config.ts change it to "organization" and pass `resolveSubject`.
+```
+
+The rule underneath it: **a scaffolded stub is right when the missing value is data, and a refusal is right when it is behavior.** `pithy add secrets` writes an empty registry with a comment, because an empty registry is a valid empty state you fill in. There is no equivalent for `resolveSubject` — a resolver returning nothing loads and then silently denies every entitlement gate, which is the state the capability refuses to boot into. So the option is refused rather than stubbed, and such a choice is never offered: it is absent from the `--set` action line above, and the interactive prompt omits it while saying what it would take.
 
 **A `--set` outside an option's choices.**
 

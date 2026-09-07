@@ -27,6 +27,17 @@ export interface RequiredOption {
   readonly key: string;
   /** The closed set of values it takes, when it states one. */
   readonly choices?: readonly string[] | undefined;
+  /**
+   * Choices `pithy add` must refuse, mapped to what to do instead — see the manifest's
+   * `configOptions[].choicesNeedingCode`.
+   *
+   * Read here so a refusal never offers a value the next refusal rejects. #483 made
+   * `billingSubject=organization` unwritable, and this sentence went on naming it: `pithy add payments
+   * --json` answered "Pass --set billingSubject=user or --set billingSubject=organization", and passing
+   * the second was refused. An action line that names a dead end is worse than a shorter one, because a
+   * caller with no human attached follows it exactly.
+   */
+  readonly choicesNeedingCode?: Readonly<Record<string, string>> | undefined;
   /** The manifest's default. `undefined` is the declaration that this option is required. */
   readonly default?: unknown;
 }
@@ -58,9 +69,15 @@ export interface RequiredOptionRefusalOptions {
   missing: readonly RequiredOption[];
 }
 
-/** `--set key=a or --set key=b` for a closed set, `--set key=<value>` for an open one. */
+/**
+ * `--set key=a or --set key=b` for a closed set, `--set key=<value>` for an open one.
+ *
+ * A choice needing code is not offered: it is a value `--set` refuses, so naming it here would answer
+ * "you must pass one of these" with something that cannot be passed.
+ */
 function flagsFor(option: RequiredOption): string {
-  const choices = option.choices;
+  const needsCode = option.choicesNeedingCode ?? {};
+  const choices = option.choices?.filter((choice) => needsCode[choice] === undefined);
   if (choices === undefined || choices.length === 0) return `--set ${option.key}=<value>`;
   const flags = choices.map((choice) => `--set ${option.key}=${choice}`);
   if (flags.length === 1) return flags[0] as string;

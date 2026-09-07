@@ -221,6 +221,9 @@ export const MissingConfigKey = z
     choices: ConfigOption.shape.choices.describe(
       "The closed set this option takes, when it states one — carried so a refusal to write a required key can name the legal values rather than only the key.",
     ),
+    choicesNeedingCode: ConfigOption.shape.choicesNeedingCode.describe(
+      "The choices `pithy add` refuses, carried beside `choices` so a refusal never offers a value the next refusal rejects (#483).",
+    ),
     describe: ConfigOption.shape.describe.describe(
       "The option's rationale, rendered as the comment above it in pithy.config.ts.",
     ),
@@ -779,6 +782,9 @@ function computeMissingConfigKeys(manifest: CapabilityManifest, configSource: st
       // manifest states none for is required, and the plan says so by carrying none either.
       ...(option.default === undefined ? {} : { default: option.default }),
       ...(option.choices === undefined ? {} : { choices: option.choices }),
+      // Carried with `choices`, because the two are read together: a refusal that names what to pass
+      // must not name a value `--set` will reject (#483).
+      ...(option.choicesNeedingCode === undefined ? {} : { choicesNeedingCode: option.choicesNeedingCode }),
       describe: option.describe,
       // Decided against this Worker's own source, by the same function `pithy add` calls — so the two
       // commands write the same line for the same option, which is the whole reason the renderers are

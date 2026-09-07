@@ -198,16 +198,27 @@ const promptConfigValues: ConfigPrompt = async (manifest, provided) => {
     // Left as the manifest scaffolds it. A secrets registry is not something anyone types at a prompt,
     // and the fallback offered would have been the string "[object Object]".
     if (isHandWritten(option)) continue;
-    const message = `${option.key} — ${option.describe}`;
+    // **A choice `pithy add` refuses is not offered, and the prompt says why it is missing (#483).**
+    // Selecting it would be refused a moment later by the same rule `--set` is held to, and a select
+    // whose entries are not all selectable is a worse prompt than a shorter one. Naming the absent value
+    // matters too: `organization` is the mode a B2B project is looking for, and a list that simply does
+    // not contain it reads as "unsupported" rather than "needs one line you have to write".
+    const needsCode = option.choicesNeedingCode ?? {};
+    const offered = option.choices?.filter((choice) => needsCode[choice] === undefined);
+    const withheld = Object.entries(needsCode).filter(([choice]) => option.choices?.includes(choice));
+    const message = [
+      `${option.key} — ${option.describe}`,
+      ...withheld.map(([choice, why]) => `  ${choice}: not offered here. ${why}`),
+    ].join("\n");
     const required = option.default === undefined;
-    const answer = option.choices
+    const answer = offered
       ? await select({
           message,
           options: [
             // Only for a required option: an optional one has a default that enter should accept, which is
             // the whole point of having one.
             ...(required ? [{ value: UNANSWERED_CHOICE, label: "Choose one" }] : []),
-            ...option.choices.map((choice) => ({ value: choice, label: choice })),
+            ...offered.map((choice) => ({ value: choice, label: choice })),
           ],
           ...(typeof option.default === "string" ? { initialValue: option.default } : {}),
         })
