@@ -11,6 +11,7 @@ import {
   type BindingDeclines,
   type BuildReconcilePlanOptions,
   buildReconcilePlan,
+  type GeneratedValues,
   type ReconcilePlan,
   undeclinableReason,
 } from "../capabilities/reconcile";
@@ -1189,15 +1190,71 @@ function migrationLines(health: MigrationHealth): string[] {
  * The two refusals name what to do; the stale one names both ways out, because either is correct and
  * only the adopter knows which they meant.
  */
-/** Whether any Worker in the project has something to say about a declined binding. */
-function projectHasDeclines(health: ProjectHealth): boolean {
-  return health.workers.some((worker) => worker.state !== "unavailable" && hasDeclines(worker));
+/**
+ * Whether any Worker in the project has something to say about its bindings that no check failed on.
+ *
+ * Two findings share this gate, because they share the property that puts them here: both are reported on
+ * a project where every check passes, so both need the health block pushed and the Worker's line
+ * uncollapsed, and neither fails the exit.
+ */
+function projectHasBindingNotes(health: ProjectHealth): boolean {
+  return health.workers.some((worker) => worker.state !== "unavailable" && hasBindingNotes(worker));
+}
+
+/** Whether a Worker's checks carry a declined binding or a generated value the kit would now write differently. */
+function hasBindingNotes(worker: WorkerChecks): boolean {
+  return hasDeclines(worker) || hasGeneratedValues(worker);
 }
 
 /** Whether a Worker's checks carry anything to say about a declined binding. */
 function hasDeclines(worker: WorkerChecks): boolean {
   const declines = worker.bindings.declinedBindings;
   return declines.state === "invalid" || declines.declines.length > 0;
+}
+
+/** Whether a Worker's checks carry anything to say about a generated binding value (#499). */
+function hasGeneratedValues(worker: WorkerChecks): boolean {
+  const values = worker.bindings.generatedValues;
+  return values.state === "invalid" || values.drift.length > 0 || values.stalePins.length > 0;
+}
+
+/**
+ * The `bindings` lines for a generated value this Worker holds that the kit would derive differently (#499).
+ *
+ * **Both numbers on the first line, always.** The whole finding is a comparison, and a report naming one
+ * side of it sends the reader to a scaffold they would have to generate to learn the other — which is how
+ * this went unnoticed for months.
+ *
+ * The unpinned sentence never says "run" anything, because there is no command: rewriting a generated
+ * value re-partitions a live budget, and the adopter's number may be the one they meant. So it names the
+ * two ways out and lets them pick — and the pin is what makes this line stop, which the line says, because
+ * a finding nobody can settle is a finding everyone learns to scroll past.
+ */
+function generatedValueLines(values: GeneratedValues): string[] {
+  if (values.state === "invalid") {
+    return ["`pinnedBindings` in pithy.config.ts cannot be read", `${HEALTH_CONT}${values.problem}`];
+  }
+  const lines = values.drift.flatMap((entry) =>
+    entry.pinnedReason === null
+      ? [
+          `${entry.name} (${entry.type}) ${entry.field} is ${entry.actual}, and the kit writes ${entry.expected} today`,
+          `${HEALTH_CONT}env: ${entry.envs.join(", ")}. Yours may be deliberate, so nothing rewrites it.`,
+          `${HEALTH_CONT}Change it, or name it in pinnedBindings to settle the line.`,
+        ]
+      : [
+          `${entry.name} (${entry.type}) ${entry.field} is ${entry.actual}, pinned in pithy.config.ts — ${entry.pinnedReason}`,
+          `${HEALTH_CONT}The kit writes ${entry.expected} today. env: ${entry.envs.join(", ")}.`,
+        ],
+  );
+  // A pin whose binding matches the kit, or names nothing this Worker composes. Reported for the reason a
+  // stale decline is: accepting the kit's value leaves exactly this state, so a red here could never clear.
+  for (const pin of values.stalePins) {
+    lines.push(
+      `${pin.name} pinned in pithy.config.ts, and nothing about it differs`,
+      `${HEALTH_CONT}Nothing is being kept for it. Delete the line, or fix the name.`,
+    );
+  }
+  return lines;
 }
 
 function declineLines(declines: BindingDeclines): string[] {
@@ -1306,6 +1363,13 @@ function workerHealthLines(health: WorkerChecks): string[] {
     if (line.startsWith(HEALTH_CONT)) bindingLines.push(line);
     else bindingLine(line);
   }
+  // And on the same terms, for the same reason one level along: a generated value the kit has since
+  // changed its mind about is invisible on a green report, and the only other way to see it is to
+  // scaffold a second project and diff it (#499).
+  for (const line of generatedValueLines(health.bindings.generatedValues)) {
+    if (line.startsWith(HEALTH_CONT)) bindingLines.push(line);
+    else bindingLine(line);
+  }
   lines.push(...bindingLines);
 
   if (health.migrations.ok) {
@@ -1360,8 +1424,9 @@ function healthBlock(health: ProjectHealth): string {
     // A Worker with a decline is never collapsed to one line, even when every check passes. The
     // decline is the fact this Worker's operator most needs to see and the one nothing else records —
     // a `healthy ✓` here is how a deliberate absence becomes indistinguishable from a forgotten one,
-    // which is the collapse #440 exists to remove.
-    if (worker.ok && !hasDeclines(worker)) {
+    // which is the collapse #440 exists to remove. A generated value the kit would now write differently
+    // is the same collapse on the value rather than the absence (#499), so it holds the line open too.
+    if (worker.ok && !hasBindingNotes(worker)) {
       lines.push(`  ${worker.worker}: healthy ✓`);
       continue;
     }
@@ -1797,10 +1862,11 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     blocks.push(
       ["Project: pithy.config.ts found", capabilitiesBlock(report.project.capabilities, report.offline)].join("\n"),
     );
-    // Or when a Worker declines something. The block is the only place a decline is reported, and a
-    // project whose every check passes is exactly the project a decline is working on — gating the
-    // block on `ok` alone would print the feature's output on every report except the ones it is for.
-    if (!report.project.health.ok || projectHasDeclines(report.project.health)) {
+    // Or when a Worker declines something, or holds a generated value the kit has since changed its mind
+    // about. The block is the only place either is reported, and a project whose every check passes is
+    // exactly the project both are working on — gating the block on `ok` alone would print the feature's
+    // output on every report except the ones it is for.
+    if (!report.project.health.ok || projectHasBindingNotes(report.project.health)) {
       blocks.push(healthBlock(report.project.health));
     }
   } else {

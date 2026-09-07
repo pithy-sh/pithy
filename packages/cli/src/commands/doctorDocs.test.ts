@@ -243,9 +243,9 @@ describe("docs/commands/doctor.md", () => {
     // An unclassified block, a fourth transcript, or a second sample would be an unpinned example. The
     // page total counts the synopsis too, so a worked example added anywhere lands in one of these.
     //
-    // Fourteen since #477 added `Shared runtimes:`, which is the thirteenth block the renderer can
-    // print and the fourteenth fence on the page.
-    expect(WHAT_BLOCKS).toHaveLength(14);
+    // Fifteen since #499 added the generated-value fragment, which is the second block on this page
+    // produced by a project where every check passes.
+    expect(WHAT_BLOCKS).toHaveLength(15);
     expect(EXAMPLE_BLOCKS).toHaveLength(2);
     expect(JSON_SAMPLES).toHaveLength(1);
     expect(fencedBlocks(PAGE)).toHaveLength(WHAT_BLOCKS.length + EXAMPLE_BLOCKS.length + JSON_SAMPLES.length + 1);
@@ -284,6 +284,7 @@ describe("docs/commands/doctor.md", () => {
               entitlements: { state: "read", gates: [] },
               missingPrerequisites: [],
               declinedBindings: { state: "read", declines: [] },
+              generatedValues: { state: "read", drift: [], stalePins: [] },
               missingVersionMetadata: false,
             },
           }),
@@ -469,6 +470,46 @@ describe("docs/commands/doctor.md", () => {
   });
 
   /**
+   * The generated-value fragment (#499), pinned against a Worker holding a rate limiter the kit would
+   * derive differently today.
+   *
+   * The second block on this page produced by a project where every check passes, and it needs the same
+   * two renderer gates the decline fragment does. It is pasted because it is the one finding here no
+   * command fixes: the page has to show what the line looks like *and* that it names two edits rather
+   * than a `pithy` invocation, or an adopter meeting it goes looking for the command that would.
+   */
+  test("the generated-value fragment is what the renderer prints for a value the kit would now derive differently", async () => {
+    const report = await buildDoctorReport(
+      docOptions(
+        harness.baseOptions({
+          resolveWorkers: async () => workerSet("api"),
+          buildPlan: planStub({
+            ...cleanPlanFor("api"),
+            generatedValues: {
+              state: "read",
+              drift: [
+                {
+                  name: "AUTH_RATE_LIMITER",
+                  type: "ratelimit",
+                  field: "namespace_id",
+                  expected: "3093",
+                  actual: "1001",
+                  envs: ["dev", "staging", "prod"],
+                  pinnedReason: null,
+                },
+              ],
+              stalePins: [],
+            },
+          }),
+        }),
+      ),
+    );
+    const fragment = FRAGMENTS[5];
+    if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the generated-value fragment.`);
+    expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  /**
    * The prereqs fragment (#273), pinned against a Worker composing `auth` with neither peer beside it.
    *
    * The one check in the block that is not drift: `createBackend` refuses to assemble that composition, so
@@ -490,7 +531,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[5];
+    const fragment = FRAGMENTS[6];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the prerequisites fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -521,7 +562,7 @@ describe("docs/commands/doctor.md", () => {
       ],
       manifests: { ok: true, faults: [] },
     };
-    const fragment = FRAGMENTS[6];
+    const fragment = FRAGMENTS[7];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the unchecked-worker fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -549,7 +590,7 @@ describe("docs/commands/doctor.md", () => {
         faults: [{ package: "@pithy-sh/leaderboard", reason: "configOptions[0].key: not a bare identifier" }],
       },
     };
-    const fragment = FRAGMENTS[7];
+    const fragment = FRAGMENTS[8];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the Project health fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -575,7 +616,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[8];
+    const fragment = FRAGMENTS[9];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the unknown-alias fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -601,7 +642,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[9];
+    const fragment = FRAGMENTS[10];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the offline fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -649,7 +690,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[10];
+    const fragment = FRAGMENTS[11];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the settings fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -673,7 +714,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[11];
+    const fragment = FRAGMENTS[12];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the local delivery fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });

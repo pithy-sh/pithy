@@ -21,10 +21,17 @@ import {
   appendDurableObjectMigrations,
   type BindingScope,
   envStanzas,
+  generatedFieldDrift,
   stanzaHasBinding,
   type WranglerStanza,
 } from "../project/bindingEntries";
-import { allCapabilities, loadWorkerConfig, readDeclinedBindings, type WorkerConfig } from "../project/config";
+import {
+  allCapabilities,
+  loadWorkerConfig,
+  readDeclinedBindings,
+  readPinnedBindings,
+  type WorkerConfig,
+} from "../project/config";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { applyVersionMetadata, hasVersionMetadata } from "../project/versionMetadata";
 import { workerIdentity } from "../project/workerIdentity";
@@ -174,6 +181,76 @@ export const BindingDeclines = z
 export type BindingDeclines = z.infer<typeof BindingDeclines>;
 
 /**
+ * One generated binding value this Worker holds that the kit would write differently today (#499).
+ *
+ * **Reported, never rewritten, and that is the whole design.** A `namespace_id` is a live budget's
+ * identity, so changing it re-partitions a running counter; and nothing distinguishes a value an adopter
+ * tuned from one that merely predates a derivation, which is #440's problem in the neighboring case. So
+ * the report states both numbers and hands the decision over, and `pinnedReason` is how the decision
+ * comes back.
+ */
+export const GeneratedValueDrift = z
+  .object({
+    name: z.string().describe("The binding whose entry holds the value, as the capability declares it."),
+    type: BindingType.describe("The kind of Cloudflare resource the binding refers to."),
+    field: z.string().describe('The wrangler field, spelled the way wrangler spells it — "namespace_id".'),
+    expected: z.string().describe("What `pithy add` would write for this binding today."),
+    actual: z.string().describe("What this Worker's wrangler.jsonc carries instead."),
+    envs: z
+      .array(z.string())
+      .describe(
+        'Environments whose stanza carries `actual` — "dev" for the top-level one, else the env.<name> key. Grouped on the value rather than reported per environment, because one derivation change produces the same difference in every stanza it was written into.',
+      ),
+    pinnedReason: z
+      .string()
+      .nullable()
+      .describe(
+        "The adopter's own reason from `pinnedBindings`, or null where they have not named this binding. Printed in place of the difference: a pinned value is a decision, and a report that keeps calling it a difference is a report the next person learns to skip.",
+      ),
+  })
+  .describe("A generated binding value this Worker holds that the current kit would derive differently.");
+export type GeneratedValueDrift = z.infer<typeof GeneratedValueDrift>;
+
+/**
+ * Every generated value this Worker holds that the kit has since changed its mind about — or the fact
+ * that its `pinnedBindings` declaration could not be read.
+ *
+ * The two-state shape {@link BindingDeclines}, {@link EntitlementGap} and the ledger all carry, for the
+ * one reason: a declaration that does not parse is not "nothing pinned", and an empty list cannot say so.
+ */
+export const GeneratedValues = z
+  .discriminatedUnion("state", [
+    z
+      .object({
+        state: z.literal("read").describe("The `pinnedBindings` declaration parsed, and the values were compared."),
+        drift: z
+          .array(GeneratedValueDrift)
+          .describe("One entry per differing value, sorted by binding name. Empty is the ordinary case."),
+        stalePins: z
+          .array(
+            z.object({
+              name: z.string().describe("The binding named in `pinnedBindings`."),
+              reason: z.string().describe("The adopter's own reason, carried so the line can quote it."),
+            }),
+          )
+          .describe(
+            "Pins whose binding holds exactly what the kit would write, or which name nothing this Worker composes. Reported and never fatal, on the same rule an unrecognized decline follows: accepting the kit's value leaves precisely this state, and a red no command could clear would be worse than the line naming it.",
+          ),
+      })
+      .describe("The comparison's answer. An empty `drift` here is a real answer and means nothing differs."),
+    z
+      .object({
+        state: z.literal("invalid").describe("The `pinnedBindings` declaration is present and malformed."),
+        problem: z.string().describe("What is wrong with it, naming the entry — an operator's sentence."),
+      })
+      .describe("A `pinnedBindings` declaration that is present and cannot be read."),
+  ])
+  .describe(
+    "This Worker's generated binding values compared against what the current kit would write, with each adopter pin resolved — or the fact that the pins could not be read.",
+  );
+export type GeneratedValues = z.infer<typeof GeneratedValues>;
+
+/**
  * Whether a binding of this kind may never be declined.
  *
  * **Two rules, and only one of them is hand-written.** A *provisioned* kind — `secret`, `workflow`,
@@ -314,6 +391,9 @@ export const ReconcilePlan = z
       ),
     declinedBindings: BindingDeclines.describe(
       "Optional bindings this Worker's pithy.config.ts declines, each resolved against what it composes. An honored decline is left out of wrangler.jsonc by an upgrade and reported as declined rather than missing by doctor; a refused one stops an upgrade before it writes. It rides the plan because `applyReconcilePlan` re-reads nothing — plan and write must be one decision, which is what #318 cost when they were two.",
+    ),
+    generatedValues: GeneratedValues.describe(
+      "Generated binding values this Worker holds that the current kit would derive differently, each with the adopter's pin resolved. Report-only in both commands: an upgrade writes a binding it finds missing and never rewrites one that is there, because a generated value that is already deployed is a live identity rather than a default (#499).",
     ),
     missingVersionMetadata: z
       .boolean()
@@ -622,6 +702,64 @@ function honoredDeclines(plan: ReconcilePlan): ReadonlySet<string> {
   );
 }
 
+/**
+ * Compare every generated value this Worker's stanzas hold against what the writer derives for it today,
+ * and resolve each adopter pin against the answer (#499).
+ *
+ * **Scoped to what this Worker composes, never to what the stanzas contain.** Walking `ratelimits`
+ * directly would be shorter and would report an adopter's own hand-written limiter as kit drift — a
+ * finding about a binding the kit never wrote and has no opinion about. So the composed bindings lead and
+ * the stanza is what they are looked up in, exactly as the missing-binding scan does it.
+ *
+ * Declined bindings are excluded through the same `effectiveBindings` every other contributor uses: a
+ * binding this Worker is deliberately leaving out is not one to report a number for.
+ *
+ * Grouped on `(name, field, actual)` so one derivation change is one line naming its environments, and
+ * sorted, so two runs over one unchanged project print the same report — a `--json` consumer diffing two
+ * runs must not read a reordering as a change.
+ */
+function resolveGeneratedValues(
+  manifests: readonly CapabilityManifest[],
+  composed: ReadonlySet<string>,
+  ejected: readonly string[],
+  stanzas: readonly { env: string; stanza: WranglerStanza }[],
+  instances: ReadonlyMap<string, Capability>,
+  declined: ReadonlySet<string>,
+  pinned: Record<string, string>,
+): { drift: GeneratedValueDrift[]; stalePins: { name: string; reason: string }[] } {
+  const byKey = new Map<string, GeneratedValueDrift>();
+  for (const manifest of manifests) {
+    if (!composed.has(manifest.name) || ejected.includes(manifest.name)) continue;
+    for (const binding of effectiveBindings(manifest, instances.get(manifest.name), declined)) {
+      for (const { env, stanza } of stanzas) {
+        for (const field of generatedFieldDrift(stanza, binding)) {
+          const key = `${binding.name} ${field.field} ${field.actual}`;
+          // Two capabilities may declare one binding name — that is how Workers share a resource — so the
+          // first to reach a given value owns the entry and the rest only add their environments.
+          const entry = byKey.get(key) ?? {
+            name: binding.name,
+            type: binding.type,
+            ...field,
+            envs: [],
+            pinnedReason: pinned[binding.name] ?? null,
+          };
+          if (!entry.envs.includes(env)) entry.envs.push(env);
+          byKey.set(key, entry);
+        }
+      }
+    }
+  }
+  const drift = [...byKey.values()].sort(
+    (a, b) => a.name.localeCompare(b.name) || a.field.localeCompare(b.field) || a.actual.localeCompare(b.actual),
+  );
+  const differing = new Set(drift.map((entry) => entry.name));
+  const stalePins = Object.entries(pinned)
+    .filter(([name]) => !differing.has(name))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, reason]) => ({ name, reason }));
+  return { drift, stalePins };
+}
+
 /** Every required binding absent from an environment, across every environment. Unsupported kinds are skipped. */
 function computeMissingBindings(
   manifest: CapabilityManifest,
@@ -894,6 +1032,18 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
       : [],
   );
 
+  // The neighboring read, and it reads the same config object (#499). `declinedBindings` is about a
+  // binding this Worker does not have; this is about one it does, whose generated value the kit has since
+  // changed its mind about. Report-only in both commands, so nothing downstream gates on it.
+  const pins = readPinnedBindings(options.workerConfig ?? { capabilities });
+  const generatedValues: GeneratedValues =
+    pins.state === "invalid"
+      ? { state: "invalid", problem: pins.problem }
+      : {
+          state: "read",
+          ...resolveGeneratedValues(manifests, composed, ejected, stanzas, byName, honored, pins.declared),
+        };
+
   const perCapability: CapabilityReconcile[] = [];
   for (const manifest of manifests) {
     if (ejected.includes(manifest.name)) continue; // ejected — reported below, never reconciled
@@ -962,6 +1112,7 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
     perCapability,
     ejectedSkipped,
     declinedBindings,
+    generatedValues,
     ledger,
     entitlements,
     // Across every composed capability, ejected ones included: eject copies the source, it does not

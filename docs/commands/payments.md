@@ -29,7 +29,7 @@ pithy payments reconcile [--env <environment>] [--subject <holder>] [--rail <rai
 
 `pithy add payments` writes bindings and touches no Cloudflare account. `provision` stands up the one thing those bindings point at: the prebuilt reconcile Worker that hosts the nightly pass. For each of `staging` and `prod` it checks the account once up front, deploys the Worker, and then writes that environment's `workflows` binding into the app's `wrangler.jsonc`. The binding cannot be written by `add` — wrangler requires a `name` and a `class_name` on every entry, and the deployed name is per environment (`<project>-<env>-payments-reconcile`), so `add` emits none and this completes it.
 
-**No credential is written here, and that is not an omission.** Apple's `.p8`, Google's service-account key, Stripe's key pair, and Lemon Squeezy's and Paddle's API keys are taken by a human from five consoles; nothing can mint them. They go in through `pithy secrets set payments-provider-credentials`, and this command deploys the Worker that reads them. A `provision` run before the secrets are set still succeeds — the first pass is what reports the missing rail.
+**No credential is written here, and that is not an omission.** Apple's `.p8`, Google's service-account key, Stripe's key pair, and Lemon Squeezy's and Paddle's API keys are taken by a human from five consoles; nothing can mint them. They go in through `pithy secrets create payments-provider-credentials`, and this command deploys the Worker that reads them. A `provision` run before the secrets are set still succeeds — the first pass is what reports the missing rail.
 
 ### Where each rail's credentials come from
 
@@ -136,7 +136,7 @@ Stand the reconcile Worker up across every managed environment.
 $ pithy payments provision
 staging: reconcile worker deployed, PAYMENTS_RECONCILE bound.
 prod: reconcile worker deployed, PAYMENTS_RECONCILE bound.
-Set each rail's credentials with `pithy secrets set payments-provider-credentials` — nothing can mint them.
+Set each rail's credentials with `pithy secrets create payments-provider-credentials` — nothing can mint them.
 Done.
 ```
 

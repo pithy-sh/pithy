@@ -632,6 +632,37 @@ Three declines are refused, and `pithy upgrade` stops before it writes anything 
 
 A decline naming a binding nothing composes is reported and never fatal: `pithy remove <capability>` leaves exactly that state, and a failure no command could clear would be worse than the line that names it. Declining also never *deletes* a binding an earlier upgrade wrote — `pithy doctor` names the environments it survives in, and removing them is your call.
 
+#### Pinning a generated value
+
+Some binding entries carry a value `pithy` generates for you. A rate limiter's `namespace_id` is the one that exists today: it is derived from the binding name, so two limiters can never end up sharing one budget.
+
+That entry is written once, when the capability is composed, and no command revisits it. So when the kit changes how a value is derived, a project that already has the old one keeps it — and keeps it silently, because the config is valid and every check passes. `pithy doctor` reports the difference, and states both numbers:
+
+```
+    bindings     AUTH_RATE_LIMITER (ratelimit) namespace_id is 1001, and the kit writes 3093 today
+                 env: dev, staging, prod. Yours may be deliberate, so nothing rewrites it.
+                 Change it, or name it in pinnedBindings to settle the line.
+```
+
+**Nothing rewrites it, and that is the design.** A `namespace_id` is a live budget's identity — two bindings on one id share one counter — so changing it re-partitions traffic that is already flowing. And a value you tuned looks exactly like one that merely predates a change. Only you know which yours is.
+
+Two edits settle the line, and either is correct. Change the value in `wrangler.jsonc` to what the kit writes, or keep yours and say so:
+
+```ts
+const config = {
+  domains: DOMAINS,
+  capabilities: [ … ],
+  pinnedBindings: {
+    AUTH_RATE_LIMITER: "20/60 is our upstream quota; this id is the budget we've been running",
+  },
+  app,
+};
+```
+
+**The reason is required here for the reason it is required on a decline.** A pinned value still prints on every run, with your sentence where the instruction was — so the next person reads a decision rather than a difference. A pin whose value already matches the kit, or which names a binding this Worker does not compose, is reported as stale and never fails anything: accepting the kit's value leaves exactly that state, and a red no command could clear would be worse than the line naming it.
+
+The comparison covers only values the kit owns. A limiter's `limit` and `period` are yours to tune and are never reported; a D1 `database_name` is a proposal you are meant to be able to change; a `workflows` entry has its own line under `Workflows:`.
+
 **An environment absent from `domains` resolves to `http://localhost`, never to another environment's origin.** An undeclared environment is an unpublished one, and the only unpublished environment is the local one — so the fallback fails closed: a link that goes nowhere, which is useless rather than harmful. A *deployed* environment must never keep it, and it cannot: `pithy deploy --env <name>` refuses an environment whose config declares no origin, and `pithy doctor` reports it first.
 
 **One origin deliberately does not derive: `controlplane.issuer`.** It is an identity, not an address. A connection stores the issuer it was created with and verification checks that stored value, so a per-environment issuer would make a connection minted in staging unverifiable in production. That may well be the better isolation, but it is a decision about trust rather than about reachability — write it, do not derive it.

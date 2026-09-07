@@ -150,9 +150,17 @@ const RATE_LIMIT_PERIOD_SECONDS = 60;
  *
  * Cloudflare has the adopter choose this, and it is the counter's identity: two bindings sharing one id
  * share one budget. Deriving it from the binding name rather than counting entries is what makes the
- * value **stable** — the same across environments, across a re-add, across `pithy upgrade` retrofitting an
- * older project, and independent of the order capabilities were composed in. A positional counter would
- * renumber every limiter the moment one was removed, silently merging two budgets.
+ * value **stable** — the same across environments, across a re-add, and independent of the order
+ * capabilities were composed in. A positional counter would renumber every limiter the moment one was
+ * removed, silently merging two budgets.
+ *
+ * **Stable is not retrofitted, and this docstring used to claim it was (#499).** It named `pithy upgrade`
+ * retrofitting an older project among the things the derivation buys, and no command does that: a
+ * limiter's stanza is written once at `pithy add` and never revisited, so a project scaffolded before this
+ * function keeps the positional id it was given (`1001` where the kit now writes `3093`). Rewriting one is
+ * not the obvious repair either — a `namespace_id` is a live budget's identity, so changing it
+ * re-partitions a counter under running traffic. The value is left alone and the difference is
+ * **reported**: {@link generatedFieldDrift} is what `pithy doctor` compares, and the adopter decides.
  *
  * Four digits, from an FNV-1a hash: numeric because every Cloudflare example is, and bounded because the
  * id is a label rather than an address. Two different bindings colliding would share one budget — a
@@ -166,6 +174,54 @@ export function rateLimitNamespaceId(binding: string): string {
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
   return String(1000 + (hash % 9000));
+}
+
+/** One field of a binding's `wrangler.jsonc` entry whose value the kit derives, beside what the entry holds. */
+export interface GeneratedFieldDrift {
+  /** The wrangler field, spelled the way wrangler spells it — `namespace_id`. */
+  field: string;
+  /** What {@link appendBinding} would write for this binding today. */
+  expected: string;
+  /** What this environment's stanza carries instead. */
+  actual: string;
+}
+
+/**
+ * Where an environment's stanza disagrees with the value this writer derives for a binding **today**.
+ *
+ * A generated value whose derivation changes is never retrofitted (#499): the entry was written once, and
+ * every later command reads the binding by name alone — {@link stanzaHasBinding} says why, and it is right
+ * to. So the only thing that can notice is a comparison, and this is it. Report-only by construction: it
+ * returns a difference, it never writes one, because a `namespace_id` is a live budget's identity and the
+ * adopter's number may be the one they meant.
+ *
+ * **One kind participates, and the boundary is not shyness — it is the difference between a value the kit
+ * owns and a value the kit hands over.**
+ *
+ * - `ratelimit.namespace_id` is ours: the writer derives it from the binding name and nothing about a
+ *   project changes it, so a different number can only mean the entry predates the derivation.
+ * - `simple.limit` and `simple.period` are the adopter's, said out loud by the constants above — "the
+ *   number belongs in the adopter's config where they can tune it". A tuned limiter reported as drift is
+ *   the feature working being called a fault.
+ * - A D1 `database_name` is a *proposal*, not a derivation. An adopter pointing a binding at a database
+ *   they already had is the case it exists to allow.
+ * - A `workflows` entry is fully derived and genuinely worth comparing — and already is, by
+ *   `project/workflows.ts`, which doctor renders in its own `Workflows:` block. A second comparison of one
+ *   fact is how two reports come to disagree about it.
+ *
+ * A binding the stanza does not carry yields nothing: that is a *missing* binding, which the reconcile
+ * plan already reports and an upgrade already writes. So does an entry with no `namespace_id` at all —
+ * wrangler refuses that file outright, and a report about the wrong number would bury the reason.
+ */
+export function generatedFieldDrift(stanza: WranglerStanza, binding: BindingSpec): GeneratedFieldDrift[] {
+  if (binding.type !== "ratelimit") return [];
+  const entry = (stanza.ratelimits ?? []).find((candidate) => candidate.name === binding.name);
+  // `String(…)`, because this stanza is the adopter's hand-editable JSONC read through a cast: wrangler
+  // wants the id quoted, and an unquoted `3093` there must compare as the same value rather than as drift.
+  if (entry?.namespace_id === undefined) return [];
+  const expected = rateLimitNamespaceId(binding.name);
+  const actual = String(entry.namespace_id);
+  return actual === expected ? [] : [{ field: "namespace_id", expected, actual }];
 }
 
 /**

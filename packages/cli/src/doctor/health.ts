@@ -9,6 +9,7 @@ import {
   type BuildReconcilePlanOptions,
   buildReconcilePlan,
   type EntitlementGap,
+  type GeneratedValues,
   type ReadLedger,
   type ReconcilePlan,
 } from "../capabilities/reconcile";
@@ -59,6 +60,18 @@ export interface BindingHealth {
    * the adopter believes a binding is being left out that is not.
    */
   declinedBindings: BindingDeclines;
+  /**
+   * Generated binding values this Worker holds that the current kit would derive differently, with each
+   * `pinnedBindings` entry resolved (#499).
+   *
+   * Taken from the plan by reference, on the rule the field above states.
+   *
+   * **It never fails `ok`, and that is the finding, not a softening of it.** The adopter's value may be
+   * the one they meant — a limiter is theirs to tune — and a generated value already deployed is a live
+   * identity rather than a default. A red here would be a red no command clears, on a project that is
+   * working. So it reports, it says what the kit would write now, and the decision stays the adopter's.
+   */
+  generatedValues: GeneratedValues;
 }
 
 /**
@@ -254,6 +267,7 @@ function healthFromPlan(worker: string, plan: ReconcilePlan): WorkerHealth {
   // does not: `pithy remove <capability>` produces it, and a red no command can clear is worse than the
   // line that reports it.
   const declinedBindings = plan.declinedBindings;
+  const generatedValues = plan.generatedValues;
   const badDeclines =
     declinedBindings.state === "invalid" ||
     declinedBindings.declines.some((decline) => decline.state === "required" || decline.state === "undeclinable");
@@ -262,6 +276,7 @@ function healthFromPlan(worker: string, plan: ReconcilePlan): WorkerHealth {
     missing,
     missingExports,
     declinedBindings,
+    generatedValues,
   };
 
   // `ok` only on a whole read with nothing on either side of it. A `partial` ledger is a database this

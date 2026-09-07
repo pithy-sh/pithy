@@ -236,7 +236,36 @@ export interface WorkerConfig {
    * still produce a report for a Worker whose declaration is malformed.
    */
   declinedBindings?: unknown;
+  /**
+   * Generated binding values this Worker keeps as they are, each mapped to the reason it keeps them.
+   *
+   * The neighboring declaration to {@link WorkerConfig.declinedBindings}, for the neighboring case
+   * (#499): a binding this Worker *has*, whose generated value the kit has since changed its mind about.
+   * A rate limiter's `namespace_id` is the known one — written once at `pithy add`, never revisited, and
+   * a project scaffolded before the derivation landed keeps the positional id it was given.
+   *
+   * `pithy doctor` reports that difference so it stops being invisible. Nothing rewrites it: the number
+   * may be the one the adopter meant, and a `namespace_id` is a live budget's identity. Naming the
+   * binding here says so, and the line changes from a difference to a decision.
+   *
+   * Typed `unknown` and read through {@link readPinnedBindings} for the same reason its neighbor is.
+   */
+  pinnedBindings?: unknown;
 }
+
+/**
+ * One line of an adopter's own prose, carried into a fixed-width terminal report.
+ *
+ * The shared base of {@link DeclineReason} and {@link PinReason}. They are the same constraint for the
+ * same reason — the report prints it back beside the binding it explains — and two copies of it are two
+ * things to keep in lockstep. What differs is what each one is a reason *for*, which is the `.describe()`.
+ */
+const ReasonLine = z
+  .string()
+  .trim()
+  .min(1)
+  .max(160)
+  .refine((reason) => !/[\r\n]/.test(reason), { message: "A reason is one line." });
 
 /**
  * The reason a Worker gives for declining an optional binding.
@@ -246,15 +275,9 @@ export interface WorkerConfig {
  * person reads why rather than guessing whether the absence was a choice. Single-line and bounded
  * because it lands in a fixed-width terminal report beside the binding it explains.
  */
-export const DeclineReason = z
-  .string()
-  .trim()
-  .min(1)
-  .max(160)
-  .refine((reason) => !/[\r\n]/.test(reason), { message: "A reason is one line." })
-  .describe(
-    "Why this Worker will not have the binding. Printed back by `pithy doctor` on every run, so write it for the next person: one line, up to 160 characters.",
-  );
+export const DeclineReason = ReasonLine.describe(
+  "Why this Worker will not have the binding. Printed back by `pithy doctor` on every run, so write it for the next person: one line, up to 160 characters.",
+);
 export type DeclineReason = z.infer<typeof DeclineReason>;
 
 /**
@@ -334,26 +357,81 @@ function normalizeKey(key: string): string {
  * adopter thought they had declined comes back on the next upgrade with no line anywhere saying why.
  */
 export function readDeclinedBindings(config: WorkerConfig): DeclinedBindingsRead {
-  const record = config as unknown as Record<string, unknown>;
-  const nearMiss = Object.keys(record).find(
-    (key) => key !== "declinedBindings" && DECLINE_NEAR_MISSES.includes(normalizeKey(key)),
+  return readReasonRecord(config, "declinedBindings", DECLINE_NEAR_MISSES, DeclinedBindings);
+}
+
+/**
+ * The reason a Worker gives for keeping a generated binding value the kit would now write differently.
+ *
+ * Required, on {@link DeclineReason}'s rule and for {@link DeclineReason}'s reason (#499): a value that
+ * merely differs is indistinguishable from one nobody has looked at, which is the whole finding this
+ * dismisses. The sentence is what turns the difference into a decision, and `pithy doctor` prints it back.
+ */
+export const PinReason = ReasonLine.describe(
+  "Why this Worker keeps its own generated value. Printed back by `pithy doctor` on every run in place of the difference, so write it for the next person: one line, up to 160 characters.",
+);
+export type PinReason = z.infer<typeof PinReason>;
+
+export const PinnedBindings = z
+  .record(BindingName, PinReason)
+  .describe(
+    "Bindings whose generated values this Worker keeps as they are, keyed by binding name. `pithy doctor` reports each as pinned rather than as a difference from what the kit would write today.",
   );
+export type PinnedBindings = z.infer<typeof PinnedBindings>;
+
+/** What a Worker's `pinnedBindings` declaration turned out to be — {@link DeclinedBindingsRead}'s shape. */
+export type PinnedBindingsRead = { state: "read"; declared: PinnedBindings } | { state: "invalid"; problem: string };
+
+/**
+ * The spellings of `pinnedBindings` near enough to be a typo, on {@link DECLINE_NEAR_MISSES}' rule.
+ *
+ * A pin nothing reads costs the adopter the dismissal they wrote, and puts the difference back on every
+ * run with nothing anywhere saying why — the same silence the near-miss guard exists to break.
+ */
+const PIN_NEAR_MISSES = ["pinnedbindings", "pinnedbinding", "pinbindings", "pinbinding", "pinnedbindingvalues"];
+
+/**
+ * Read a Worker's `pinnedBindings` declaration.
+ *
+ * Absent is the ordinary state: a Worker whose generated values are whatever the kit last wrote has
+ * nothing to pin. A near-miss key is an error on its neighbor's grounds.
+ */
+export function readPinnedBindings(config: WorkerConfig): PinnedBindingsRead {
+  return readReasonRecord(config, "pinnedBindings", PIN_NEAR_MISSES, PinnedBindings);
+}
+
+/**
+ * Read one `binding name → reason` declaration off a Worker's config: near misses first, then the schema.
+ *
+ * **One reader for both declarations.** `declinedBindings` and `pinnedBindings` are the same three-branch
+ * read — a typo'd key, an absent key, a malformed value — and a second copy of it is a third answer
+ * waiting to differ from the other two. What is per declaration is the key, its near misses and its
+ * schema, so those are the parameters and nothing else is.
+ *
+ * It reports rather than throws, because `pithy doctor` reads both: a doctor that refuses to report
+ * because one declaration is malformed goes silent exactly when something is wrong.
+ */
+function readReasonRecord(
+  config: WorkerConfig,
+  key: "declinedBindings" | "pinnedBindings",
+  nearMisses: readonly string[],
+  schema: z.ZodType<Record<string, string>>,
+): { state: "read"; declared: Record<string, string> } | { state: "invalid"; problem: string } {
+  const record = config as unknown as Record<string, unknown>;
+  const nearMiss = Object.keys(record).find((other) => other !== key && nearMisses.includes(normalizeKey(other)));
   if (nearMiss !== undefined) {
     return {
       state: "invalid",
-      problem: `\`${nearMiss}\` is not a key this Worker's config declares. Did you mean \`declinedBindings\`?`,
+      problem: `\`${nearMiss}\` is not a key this Worker's config declares. Did you mean \`${key}\`?`,
     };
   }
-  if (record.declinedBindings === undefined || record.declinedBindings === null) {
-    return { state: "read", declared: {} };
-  }
-  const parsed = DeclinedBindings.safeParse(record.declinedBindings);
+  const declared = record[key];
+  if (declared === undefined || declared === null) return { state: "read", declared: {} };
+  const parsed = schema.safeParse(declared);
   if (!parsed.success) {
     return {
       state: "invalid",
-      problem: parsed.error.issues
-        .map((issue) => `${issue.path.join(".") || "declinedBindings"}: ${issue.message}`)
-        .join("; "),
+      problem: parsed.error.issues.map((issue) => `${issue.path.join(".") || key}: ${issue.message}`).join("; "),
     };
   }
   return { state: "read", declared: parsed.data };
