@@ -49,7 +49,7 @@ describe("installAlias", () => {
     await installAlias();
     const contents = await readFile(rcPath, "utf8");
     expect(contents).toContain(`${OPEN}\n${ZSH_ALIAS}\n# <<< pithy alias <<<`);
-    expect(out.join("")).toBe(`Added \`${ZSH_ALIAS}\` to ${rcPath}\nReload your shell or run: source ${rcPath}\n`);
+    expect(out.join("")).toBe(`Added \`${ZSH_ALIAS}\` to ${rcPath}\nOpen a new terminal, or run: source ${rcPath}\n`);
   });
 
   test("creates a missing rc file with mode 0644", async () => {
@@ -123,7 +123,9 @@ describe("removeAlias", () => {
     expect(after).toContain("export FOO=1");
     expect(after).toContain("alias bar='baz'");
     expect(after).not.toContain(OPEN);
-    expect(out.join("")).toBe(`Removed \`${ZSH_ALIAS}\` from ${rcPath}\nReload your shell or run: source ${rcPath}\n`);
+    expect(out.join("")).toBe(
+      `Removed \`${ZSH_ALIAS}\` from ${rcPath}\nOpen a new terminal, or run: source ${rcPath}\n`,
+    );
   });
 
   test("prints `No Pithy alias installed.` and exits 0 when nothing is installed", async () => {

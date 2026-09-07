@@ -120,7 +120,7 @@ Done.
 Want a shortcut? Type `p.` instead of `pithy`.
 ```
 
-Answering yes installs the alias silently — its own `Added …` and `Reload your shell …` lines are the only output. See `pithy alias`.
+Answering yes installs the alias silently — its own `Added …` and `Open a new terminal …` lines are the only output. See `pithy alias`.
 
 Scaffold headlessly. Both names given, so nothing is asked.
 
