@@ -479,6 +479,10 @@ describe("only readOptionalFile.ts decides what a failed read means", () => {
       reads: "readFile, readFileSync",
       why: "`.dev-state.json` is this run's own disposable artifact and this run overwrites it regardless, so an unreadable one is genuinely 'no previous session'. The sync teardown unlinks only a file that names our own pid, and a read that failed names nothing.",
     },
+    "cli/src/project/packageManager.ts": {
+      reads: "readFile",
+      why: "`linkedFromCheckout` is a probe, and the question it asks is *is this package a linked checkout* — for which missing, dangling, unreadable and unparsable are all the same true answer, `no`. The read, the `realpath` pair and the `JSON.parse` share one `catch` for that reason: none of them failing is a fault to report, and each of them failing means the package came from a registry. It reached this gate only when #480 gave the module a write — `declareOnWorker`, which does its own read through `readOptionalFile` and refuses, because it is the call that could overwrite what it could not read. The split is by power, as everywhere else in this table.",
+    },
     "cli/src/project/askDomains.ts": {
       reads: "readFile",
       why: "A `pithy.config.ts` it cannot read is one it declines to edit: it answers false, and the caller prints the declaration for the adopter to paste. Editing a config blind is exactly what the false is there to prevent.",

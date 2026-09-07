@@ -458,6 +458,15 @@ export const ConfigOption = z
       .describe(
         "The values this option accepts, when they are a closed set. Three things follow from stating them, and none of them can be had without: the prompt is a select rather than free text, `--set` refuses a value outside them instead of writing it into the config, and a refusal can name what is legal — which is the whole of what a caller needs in order to answer a required option. Held to the same printable-string rule as a default, because a choice becomes the value written into the adopter's TypeScript.",
       ),
+    // The key is a choice, so it is held to what a rendered value may be. **The value is not**: it is an
+    // error's action line and reaches no generated source, so the printable rule that governs every
+    // other string here would be the wrong constraint — it forbids a double quote, and the sentence has
+    // to be able to say `billingSubject: "user"`.
+    choicesNeedingCode: manifestRecord(z.record(PrintableString, z.string().min(1)))
+      .optional()
+      .describe(
+        "Choices `pithy add` must refuse, each mapped to the sentence telling the adopter what to do instead — a value whose composition needs a seam only they can write. `pithy add` renders JSON into `pithy.config.ts`; it cannot render a function, so a choice whose validity depends on one is a choice it can write and the kit will then refuse to load. `payments`' `billingSubject: \"organization\"` is the one: it requires a `resolveSubject` saying which organization a caller acts for, deliberately has no default because a capability that guessed would key a company's plan to whoever signed in first, and so a config carrying the choice without the seam is refused at assembly — bricking every later command in the project, since they all begin by loading the config (#483). Refusing the choice up front costs the adopter one hand-edit; writing it costs them the project.",
+      ),
     constant: ConfigConstant.optional().describe(
       "A constant the scaffolded pithy.config.ts defines, rendered *unquoted* in place of `default` when the target config declares it. The one that exists is `publicOrigin` — `PUBLIC_ORIGIN`, this Worker's address for the environment it composes in. An option whose value is an origin must name it rather than state a URL, because a URL written down is production's URL written into staging: it is what mailed staging's testers magic links into production and unsubscribed them there (#256). `default` is still required *for such an option* and is what a config with no such constant gets, so an older project is never handed an identifier it does not define — the one place the absent-default rule does not reach, and it is checked rather than trusted.",
     ),
@@ -484,6 +493,18 @@ export const ConfigOption = z
         path: ["default"],
         message: `A config option's default must be one of its choices, and ${JSON.stringify(option.default)} is not — ${option.key} offers ${JSON.stringify(option.choices)}.`,
       });
+    }
+    // A choice that cannot be chosen has to be a choice. Without this, a typo names a value nothing
+    // offers, the refusal never fires, and the config it was meant to prevent is written as before.
+    for (const choice of Object.keys(option.choicesNeedingCode ?? {})) {
+      if (!option.choices?.includes(choice)) {
+        ctx.issues.push({
+          code: "custom",
+          input: choice,
+          path: ["choicesNeedingCode", choice],
+          message: `A choice needing code must be one this option offers, and ${JSON.stringify(choice)} is not — ${option.key} offers ${JSON.stringify(option.choices ?? [])}.`,
+        });
+      }
     }
     if (option.constant !== undefined && option.default === undefined) {
       ctx.issues.push({

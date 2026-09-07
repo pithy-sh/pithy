@@ -6,6 +6,8 @@ import { access, readFile, realpath } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { writeFileAtomic } from "./atomic";
+import { readOptionalFile } from "./readOptionalFile";
 
 const run = promisify(execFile);
 
@@ -235,4 +237,50 @@ export async function promoteDependencies(
     await (runner ?? spawnInstall)(packageManager, installArgs(packageManager, packages), projectDir);
   }
   return { packageManager };
+}
+
+/**
+ * Declare `pkg` in the Worker's own `package.json`, at the range the project root resolved it to.
+ *
+ * ## Why a capability is declared twice
+ *
+ * The install runs at the root, because that is where the lockfile is and where every one of the CLI's
+ * nine manifest-discovery sites looks. But `pithy add <cap> --worker <w>` writes its import into
+ * `apps/<w>/pithy.config.ts`, so `apps/<w>` is what actually depends on the capability — and until
+ * #480 nothing said so. The Worker's manifest, which the scaffold's own comments describe as what this
+ * Worker is made of, listed `@pithy-sh/core` and nothing else however many capabilities it composed.
+ *
+ * That is not only tidiness. The composed config is per-Worker by design: two Workers are meant to
+ * compose different sets, and a single root dependency list cannot express that — neither Worker's
+ * manifest says what it is. And under a package manager that does not hoist, a capability declared only
+ * at the root is not linked beside the Worker at all.
+ *
+ * `pithy ui add` has always written into `apps/<worker>/package.json`, which is the precedent this
+ * follows rather than a new idea.
+ *
+ * ## The range is read back, never invented
+ *
+ * Whatever the install just wrote at the root is what the Worker gets, so the two cannot disagree and
+ * this file never has to know how a manager spells a range. A package the root does not declare — the
+ * linked-checkout case {@link installPackage} documents, where nothing is written anywhere — is left
+ * alone here too, for the same reason: the only range available names a version no registry has.
+ *
+ * Merge, never replace: a range the adopter already chose survives untouched.
+ */
+export async function declareOnWorker(projectDir: string, workerDir: string, pkg: string): Promise<string | null> {
+  const rootRaw = await readOptionalFile(join(projectDir, "package.json"));
+  if (rootRaw === null) return null;
+  const root = JSON.parse(rootRaw) as { dependencies?: Record<string, string> };
+  const range = root.dependencies?.[pkg];
+  if (range === undefined) return null;
+
+  const path = join(workerDir, "package.json");
+  const workerRaw = await readOptionalFile(path);
+  if (workerRaw === null) return null;
+  const worker = JSON.parse(workerRaw) as { dependencies?: Record<string, string> };
+  if (worker.dependencies?.[pkg] !== undefined) return null;
+
+  worker.dependencies = { ...(worker.dependencies ?? {}), [pkg]: range };
+  await writeFileAtomic(path, `${JSON.stringify(worker, null, 2)}\n`);
+  return range;
 }

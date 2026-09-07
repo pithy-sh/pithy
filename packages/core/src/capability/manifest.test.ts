@@ -692,6 +692,13 @@ describe("every manifest string that reaches generated source is constrained at 
   const NEVER_RENDERED = new Set([
     "scaffold[]",
     "whenToEnable",
+    // The action line of a refusal, and the only manifest string that exists *because* a value is never
+    // rendered: `choicesNeedingCode` names the choices `pithy add` must not write into a config, so a
+    // sentence under one of them reaches a terminal and nothing else. It is exempt for the same reason
+    // as `whenToEnable` beside it, and constrained differently on purpose — the printable rule forbids a
+    // double quote, and this sentence has to be able to say `billingSubject: "user"` (#483). Its *key* is
+    // a choice, so the key stays held to what a rendered value may be.
+    "configOptions[].choicesNeedingCode{value}",
     "requiredBindings[].name",
     "requiredBindings[].service",
     "devSecrets[].name",

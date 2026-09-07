@@ -154,6 +154,112 @@ try {
 
   drive("pithy ui add react", ["ui", "add", "react", "--worker", "api"], app);
 
+  // **The capability lifecycle, which nothing above reaches — #480, #483.**
+  //
+  // Everything before this drives `init` and `ui add`. `pithy add <capability>` is the command an
+  // adopter runs next, several times, and it was unasserted end to end: both open issues found against
+  // 0.1.2 live in it, and so do two promises the capability contract makes and nothing checks.
+  //
+  // **Every add runs once, and a failure is a failure.** Not retried — retrying is exactly what hid
+  // #480, where a capability declared on the wrong `package.json` loses a race with its own install and
+  // then succeeds on a second attempt because the failed run left the package on disk. A bug that
+  // survives one attempt and not two is invisible to a suite that retries, and it is the shape an
+  // adopter meets on their first day and a maintainer never reproduces.
+  const CAPABILITIES = ["secrets", "email", "audit", "i18n"];
+  for (const capability of CAPABILITIES) {
+    drive(`pithy add ${capability}`, ["add", capability, "--worker", "api"], app);
+  }
+
+  // **A capability is declared on the Worker whose config imports it.** `pithy add` writes the import
+  // into `apps/api/pithy.config.ts`, so that is where the dependency belongs — which is where `init`
+  // already puts `@pithy-sh/core`. Declared at the root instead, it only resolves because most package
+  // managers hoist; under bun's isolated linker `apps/api/node_modules` receives what `apps/api`
+  // declares and nothing else.
+  //
+  // Read off the manifests rather than inferred from a successful command, because hoisting means the
+  // command succeeds either way on most machines. The placement is the property; the failure is
+  // downstream of it and only on some installers.
+  const declared = (manifest: string): string[] =>
+    Object.keys(
+      (JSON.parse(readFileSync(manifest, "utf8")) as { dependencies?: Record<string, string> }).dependencies ?? {},
+    ).filter((name) => name.startsWith("@pithy-sh/"));
+
+  const onWorker = declared(join(app, "apps", "api", "package.json"));
+  const onRoot = declared(join(app, "package.json"));
+  const missing = CAPABILITIES.map((name) => `@pithy-sh/${name}`).filter((name) => !onWorker.includes(name));
+  if (missing.length > 0) {
+    fail(
+      "declaring capabilities on the Worker that imports them",
+      `apps/api/package.json is missing ${missing.join(", ")}.\n` +
+        `  apps/api declares: ${onWorker.join(" ") || "(none)"}\n` +
+        `  the root declares: ${onRoot.join(" ") || "(none)"}\n\n` +
+        "The import goes into apps/api/pithy.config.ts, so the dependency belongs beside it.",
+    );
+  }
+  process.stdout.write(`  capabilities declared on the Worker: ${onWorker.length}\n`);
+
+  // **A choice that cannot compose is refused, not written — #483.** `--set billingSubject=organization`
+  // used to succeed and leave a config the kit refuses to load, so every later command in the project
+  // failed on the config `add` had just written. The assertion is in two halves and both matter: the
+  // add is refused, *and* the project still works afterwards. Checking only the refusal would pass on a
+  // CLI that refused and had already written half the wiring.
+  process.stdout.write("  pithy add payments --set billingSubject=organization is refused\n");
+  let refused = false;
+  try {
+    run(pithy, ["add", "payments", "--worker", "api", "--set", "billingSubject=organization"], app);
+  } catch (cause) {
+    refused = true;
+    const said = cause instanceof Error ? cause.message : String(cause);
+    if (!said.includes("resolveSubject")) {
+      fail("refusing billingSubject=organization", `refused without naming resolveSubject:\n${said}`);
+    }
+  }
+  if (!refused) {
+    fail(
+      "refusing billingSubject=organization",
+      "the add succeeded. It writes a config the kit refuses to load, which fails every later command.",
+    );
+  }
+
+  // The project is still usable — the half that says the refusal left nothing behind.
+  drive("pithy add turnstile (after the refusal)", ["add", "turnstile", "--worker", "api"], app);
+
+  // And the choice that does compose still composes, so the refusal is about one value rather than the
+  // option. Without this the gate above would pass on a CLI that had broken `billingSubject` entirely.
+  drive(
+    "pithy add payments --set billingSubject=user",
+    ["add", "payments", "--worker", "api", "--set", "billingSubject=user"],
+    app,
+  );
+
+  // **Idempotency, which `addCapability` states as a contract and nothing checked.** "A second run
+  // changes nothing" is what lets CI re-run a manifest and a script re-apply one; it is also what makes
+  // a half-finished run recoverable. Asserted by re-adding everything and diffing the files an add writes.
+  //
+  // Re-running carries no `--set`, deliberately: the answer is already committed to `pithy.config.ts`,
+  // and a re-run that demanded it again would fail where the first run succeeded.
+  const wiring = (): Record<string, string> =>
+    Object.fromEntries(
+      ["pithy.config.ts", "wrangler.jsonc", "package.json"].map((file) => [
+        file,
+        readFileSync(join(app, "apps", "api", file), "utf8"),
+      ]),
+    );
+
+  const before = wiring();
+  process.stdout.write("  every add again, changing nothing\n");
+  for (const capability of [...CAPABILITIES, "turnstile", "payments"]) {
+    drive(`  re-add ${capability}`, ["add", capability, "--worker", "api"], app);
+  }
+  const after = wiring();
+  const moved = Object.keys(before).filter((file) => before[file] !== after[file]);
+  if (moved.length > 0) {
+    fail(
+      "re-adding every capability",
+      `a second run rewrote ${moved.join(", ")}. \`pithy add\` is idempotent by contract — CI re-runs it.`,
+    );
+  }
+
   // **The same commands again with Bun removed from PATH — #474.** `bin` was `./src/bin.ts` behind
   // `#!/usr/bin/env bun`, so `pithy` installed for everyone and started for nobody without Bun:
   // `/usr/bin/env: 'bun': No such file or directory`. Nothing in this repository could see it. Every
