@@ -9,6 +9,7 @@ import type {
   SettingsFinding,
 } from "@pithy-sh/core/src/capability/settings";
 import { hostEnvFindings } from "@pithy-sh/core/src/capability/settings";
+import { LOCAL_ORIGIN } from "@pithy-sh/core/src/naming/domains";
 import { checkHostEnv } from "@pithy-sh/core/src/workflow/hostEnv";
 import { EMAIL_LINK_SIGNING_KEY } from "../crypto/signingKey";
 import type { EmailTheme } from "../templates/theme";
@@ -113,6 +114,22 @@ function localHostEnv(config: EmailSettingsInput): SettingsFinding[] {
 }
 
 /**
+ * Whether a URL points at this machine — {@link LOCAL_ORIGIN} and every spelling of it, port or none.
+ *
+ * Matched on the host rather than the whole origin because the derived value carries no port and a
+ * hand-written one usually does (`http://localhost:8787`), and the two are the same claim: a loopback
+ * address is not an origin anything is deployed on, so it can only ever be the local answer.
+ */
+function isLoopback(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.replace(/^\[|\]$/g, "");
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Whether the configured base URL is an origin this project actually answers on.
  *
  * `pithy email provision` stamps each host's `BASE_URL` from that environment's *resolved worker address*,
@@ -120,12 +137,31 @@ function localHostEnv(config: EmailSettingsInput): SettingsFinding[] {
  * against and what the repository states its intent with, and a value matching no declared origin is a
  * link to a host nothing serves. Asked only when some environment declares one: a project before its first
  * domain has nothing to compare against, and `Origins:` already reports that.
+ *
+ * **{@link LOCAL_ORIGIN} is passed over, and that is the whole of #510.** The recommended shape is
+ * `email({ baseUrl: PUBLIC_ORIGIN })` over `originFor(compositionEnvironment(), DOMAINS)`, and every
+ * caller of this loads the config **once, under `dev`** — an environment `domains` declares by design
+ * (`docs/NAMING.md`), so `resolveOrigin` correctly answers `http://localhost`. That value is then compared
+ * against staging's and prod's origins, matches neither, and the project is told to set `baseUrl` to one
+ * of them **by name**.
+ *
+ * Which is the mistake `docs/CLI.md` exists to prevent, offered to the projects that got it right: write
+ * one environment's origin into that key and a staging deploy mails real users links into production. A
+ * report that is easy to follow and wrong is worse than none, and this one named two specific origins.
+ *
+ * A hardcoded `http://localhost` is genuinely indistinguishable from a derived one here — same string,
+ * same key, and no environment in hand to tell them apart. So the question is left to where it can be
+ * answered: `resolveOrigin`'s own contract puts it on `pithy deploy --env <name>`, which refuses an
+ * environment whose origin its config does not declare (#253), and on `Origins:`, which reports the
+ * placeholder before a deploy is attempted. Two checks already own it; this one was the third and the
+ * only one without the environment it needed.
  */
 function localBaseUrlOrigin(config: EmailSettingsInput, context: SettingsCheckContext): SettingsFinding[] {
   const declared = context.environments
     .map((environment) => (environment.origin === null ? null : originOf(environment.origin)))
     .filter((origin): origin is string => origin !== null);
   const configured = originOf(config.baseUrl);
+  if (isLoopback(config.baseUrl)) return [];
   if (declared.length === 0 || configured === null || declared.includes(configured)) return [];
   return [
     {

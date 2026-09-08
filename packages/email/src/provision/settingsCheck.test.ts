@@ -93,17 +93,37 @@ describe("the local tier", () => {
   });
 
   test("a base URL no declared environment answers on is a finding", async () => {
-    const findings = await emailSettings({ ...config, baseUrl: "http://localhost:8787" }).local(context());
+    const findings = await emailSettings({ ...config, baseUrl: "https://typo.acme.dev" }).local(context());
     expect(findings).toEqual([
       {
         setting: "BASE_URL",
         environment: null,
         problem:
-          "Links are built against http://localhost:8787, and no environment this project declares answers on it.",
+          "Links are built against https://typo.acme.dev, and no environment this project declares answers on it.",
         action:
           "Set `email({ baseUrl })` to an origin this project serves: https://staging.acme.dev, https://api.acme.dev.",
       },
     ]);
+  });
+
+  /**
+   * **The recommended shape must not be reported as a fault — #510.**
+   *
+   * `email({ baseUrl: PUBLIC_ORIGIN })` over `originFor(compositionEnvironment(), DOMAINS)` is what
+   * `docs/CLI.md` tells an adopter to write, and every caller of this check loads the config **once, under
+   * `dev`** — which `domains` declares by design, so the derived value is `http://localhost`. Compared
+   * against staging and prod it matched neither, and the project that got it right was told to set
+   * `baseUrl` to one of them *by name*: the single-origin mistake that same page exists to prevent, and a
+   * staging deploy mailing real users links into production.
+   *
+   * This case used to assert the opposite, which is how the defect survived. A hardcoded loopback is
+   * indistinguishable from a derived one here — same string, same key, no environment in hand — so the
+   * question belongs to `pithy deploy --env` (#253) and to `Origins:`, which both have one.
+   */
+  test("a loopback origin is passed over, because in dev it is the derived answer", async () => {
+    for (const baseUrl of ["http://localhost", "http://localhost:8787", "http://127.0.0.1:8787"]) {
+      expect(await emailSettings({ ...config, baseUrl }).local(context()), baseUrl).toEqual([]);
+    }
   });
 
   test("a project with no declared origin is not judged against one nobody named", async () => {
