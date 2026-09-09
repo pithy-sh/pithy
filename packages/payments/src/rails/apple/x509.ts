@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { PaymentsInvalidReceiptError, PaymentsVerificationFailedError } from "../../error/errors";
 import {
   ASN1_BOOLEAN,
@@ -354,7 +355,24 @@ export async function verifyCertificateChain(
   }
 
   const certificates = chain.map((der) => parseCertificate(der));
+  // The fourth instance of #521's shape, in the package the sweep was written from. `at` is one operand of
+  // both comparisons below, and `NaN < x` and `NaN > x` are false alike — so an invalid `now` does not widen
+  // the validity window, it deletes it, and every certificate in the chain passes the one check that says a
+  // certificate is still in date. That is the whole of expiry: a leaf Apple retired years ago, or one whose
+  // `notBefore` has not arrived, would verify against a chain that still roots in the pinned certificate.
+  //
+  // `InternalError`, not `rejected()`. Only a caller-supplied clock reaches here — the certificate's own
+  // dates are parsed from ASN.1 and are `Date`s or a `malformed` throw — so this is our configuration, and
+  // the 400 `rejected()` raises would tell a buyer their purchase is invalid over our broken clock.
   const at = options.now.getTime();
+  if (!Number.isFinite(at)) {
+    throw new InternalError({
+      message: "That purchase could not be verified.",
+      action: "Give the Apple rail a valid clock.",
+      detail:
+        "X.509: chain verification was handed a clock that is not a valid Date, so no certificate's validity window can be judged.",
+    });
+  }
   for (const [index, certificate] of certificates.entries()) {
     if (at < certificate.notBefore.getTime() || at > certificate.notAfter.getTime()) {
       throw rejected(

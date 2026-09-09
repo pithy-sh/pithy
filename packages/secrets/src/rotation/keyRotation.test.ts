@@ -54,4 +54,24 @@ describe("isRotationDue", () => {
   test("is not due before the interval elapses", () => {
     expect(isRotationDue("2026-01-01T00:00:00.000Z", 30, new Date("2026-01-15T00:00:00.000Z"))).toBe(false);
   });
+
+  test.each([
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["zero", 0],
+    ["a negative interval", -30],
+  ])("refuses an interval of %s rather than answering it", (_label, intervalDays) => {
+    // The cron computes this as `Number(env.ROTATION_INTERVAL_DAYS)`, so `"30 days"` is `NaN` — and
+    // `now >= NaN` is false, which means at-rest rotation of the master key never comes due, on every tick,
+    // forever, with no error and no line in the log. Zero and a negative are the opposite failure: due on
+    // every tick. Neither has a safe number to clamp to.
+    expect(() =>
+      isRotationDue("2026-01-01T00:00:00.000Z", intervalDays as number, new Date("2027-01-01T00:00:00.000Z")),
+    ).toThrowError(/misconfigured/);
+  });
+
+  test("a rotation a decade overdue is still answered true once the interval is a number", () => {
+    // The half that keeps the cases above about the interval rather than about the dates.
+    expect(isRotationDue("2016-01-01T00:00:00.000Z", 30, new Date("2026-01-01T00:00:00.000Z"))).toBe(true);
+  });
 });

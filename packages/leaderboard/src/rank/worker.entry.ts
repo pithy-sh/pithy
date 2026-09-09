@@ -9,7 +9,7 @@ import { LeaderboardConfig } from "../config/config";
 import { leaderboardDatabase } from "../data/tables";
 import { pruneBoards } from "../retention/prune";
 import { windowKeyAt } from "../window/schedule";
-import { acquireRefreshLock, releaseRefreshLock } from "./lock";
+import { acquireRefreshLock, releaseRefreshLock, requireLockStaleMs } from "./lock";
 import { type Keyset, REFRESH_BATCH_CHUNKS, type RefreshResult, refreshWindowRanks } from "./materialize";
 import { leaderboardWorkflowRetry } from "./retryPolicy";
 import { materializedBoards } from "./worker";
@@ -62,7 +62,12 @@ export class RankRefreshWorkflow extends WorkflowEntrypoint<RankWorkerEnv, unkno
     const steps = classifiedSteps(step, leaderboardWorkflowRetry, NonRetryableError);
     const config = LeaderboardConfig.parse(JSON.parse(this.env.LEADERBOARD_CONFIG));
     const db = leaderboardDatabase(this.env.DB);
-    const staleMs = this.env.LEADERBOARD_LOCK_STALE_MS ? Number(this.env.LEADERBOARD_LOCK_STALE_MS) : undefined;
+    // Checked here as well as inside `acquireRefreshLock`, and deliberately: this is where the string an
+    // operator typed becomes a number, so this is where the refusal can name the var. The coercion and the
+    // check are one expression because a bare `Number(env.…)` is what #521 keeps finding.
+    const staleMs = this.env.LEADERBOARD_LOCK_STALE_MS
+      ? requireLockStaleMs(Number(this.env.LEADERBOARD_LOCK_STALE_MS))
+      : undefined;
 
     // Mint this instance's identity and its clock ONCE, in a memoized step, and read them from the step's
     // return value. A replay does not re-run the step body, so it reuses the same holder token and the

@@ -382,6 +382,49 @@ describe("one fault, one issue", () => {
       rails.push(...original);
     }
   });
+
+  /**
+   * **The freshness ceiling is deliberately not enforced here, and that is the fix rather than an omission.**
+   *
+   * This schema is parsed at module scope — `payments()` calls `PaymentsConfig.parse` — so a `.max()` on this
+   * field refuses the *Worker*, not the endpoint: every route goes dark, including the ones that have never
+   * heard of Paddle, on a patch upgrade, for a project whose window was legal the day before. The bound lives
+   * in `verifyPaddleSignature`, on the only path that compares the number and with no way around it, so an
+   * over-wide window costs the Paddle webhook route alone and Paddle redelivers while it is fixed. Fail
+   * closed, for one route.
+   *
+   * The shape checks stay: `NaN`, a fraction and a negative are refused here as they are for every numeric
+   * field in the kit, and none of them is the case that made a whole Worker's blast radius the wrong trade.
+   */
+  test("a window past the verifier's ceiling parses — the refusal belongs to the route, not to boot", () => {
+    const parsed = PaymentsConfig.safeParse({
+      ...BILLING_SUBJECT,
+      rails: { paddle: true },
+      paddle: { ...PADDLE_SETTINGS, webhookFreshnessSeconds: 86_400 },
+      products: {
+        pro_monthly: { type: "subscription", name: "Pro", entitlements: ["pro"], paddle: { priceId: "pri_01a" } },
+      },
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.paddle?.webhookFreshnessSeconds).toBe(86_400);
+  });
+
+  test.each([
+    ["NaN", Number.NaN],
+    ["a fraction", 1.5],
+    ["zero", 0],
+    ["a negative", -1],
+  ])("still refuses a window of %s here — a shape check, not a policy one", (_label, webhookFreshnessSeconds) => {
+    const parsed = PaymentsConfig.safeParse({
+      ...BILLING_SUBJECT,
+      rails: { paddle: true },
+      paddle: { ...PADDLE_SETTINGS, webhookFreshnessSeconds },
+      products: {
+        pro_monthly: { type: "subscription", name: "Pro", entitlements: ["pro"], paddle: { priceId: "pri_01a" } },
+      },
+    });
+    expect(parsed.success).toBe(false);
+  });
 });
 
 describe("catalog lookups", () => {

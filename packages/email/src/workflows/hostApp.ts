@@ -3,7 +3,7 @@
 
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import type { AmbientEnv } from "@pithy-sh/core/src/env/ambient";
-import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
+import { loggingErrorHandler } from "@pithy-sh/core/src/logger/errorHandler";
 import { registerWorkflowDispatchRoute } from "@pithy-sh/core/src/workflow/dispatchRoute";
 import { Hono } from "hono";
 import { EMAIL_CAPABILITY } from "../provision/provisionEmail";
@@ -43,8 +43,9 @@ export function createEmailHostApp(options: EmailHostAppOptions = {}): Hono<Pith
   const app = new Hono<PithyHonoEnv>();
   // The same handler every composed Pithy app mounts, so a refusal on this door renders as a
   // `PithyError` on the wire rather than as a stack trace the loopback dispatcher would report as an
-  // unreadable body.
-  app.onError(pithyErrorHandler);
+  // unreadable body — and lands in Workers Logs with its `action`, which the wire body strips. This
+  // app has no base middleware binding `c.var.log`, so the handler's own CF-native fallback writes it.
+  app.onError(loggingErrorHandler);
   registerWorkflowDispatchRoute(app, {
     capability: EMAIL_CAPABILITY,
     registry: emailWorkflowRegistry,

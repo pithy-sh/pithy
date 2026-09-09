@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS } from "@pithy-sh/core/src/http/signedWebhook";
 import { describe, expect, test } from "vitest";
 import {
   PADDLE_DEFAULT_FRESHNESS_SECONDS,
@@ -164,6 +165,48 @@ describe("verifyPaddleSignature", () => {
       verifyPaddleSignature(BODY, nearly, { secret: SECRET, now: NOW, toleranceSeconds: undefined }),
     ).resolves.toBeUndefined();
     expect((await refusal(BODY, nearly, NOW, 5)).payload.code).toBe("payments/verification_failed");
+  });
+
+  test.each([
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["-Infinity", Number.NEGATIVE_INFINITY],
+    ["a negative window", -1],
+    ["wider than the maximum", SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS + 1],
+  ])("refuses a decade-old delivery when the window is %s, and as our fault", async (_label, tolerance) => {
+    // `drift > NaN` is false, so a non-finite window does not widen it — it deletes it, and this correctly
+    // signed capture from ten years ago verifies. `core/internal`, never a 401: the sender did nothing wrong,
+    // and calling it an unverified webhook would send an operator hunting a forger who is not there.
+    const ancient = await header(BODY, new Date(NOW.getTime() - 10 * 365 * 24 * 3600 * 1000));
+    const payload = (await refusal(BODY, ancient, NOW, tolerance)).payload;
+    expect(payload.code).toBe("core/internal");
+    expect(payload.status).toBe(500);
+    expect(payload.action).toContain(String(SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS));
+  });
+
+  test("that same decade-old delivery is refused as a stale one under an honest window", async () => {
+    const ancient = await header(BODY, new Date(NOW.getTime() - 10 * 365 * 24 * 3600 * 1000));
+    expect((await refusal(BODY, ancient, NOW, 300)).payload.code).toBe("payments/verification_failed");
+    expect((await refusal(BODY, ancient)).payload.code).toBe("payments/verification_failed");
+  });
+
+  test("a clock that is not a clock fails closed, the same fault one operand over", async () => {
+    const signed = await header(BODY, NOW);
+    const payload = (await refusal(BODY, signed, new Date("not a date"))).payload;
+    expect(payload.code).toBe("core/internal");
+    expect(payload.status).toBe(500);
+  });
+
+  test("a window inside the bound still widens the one it is given", async () => {
+    const old = await header(BODY, new Date(NOW.getTime() - 1_000_000));
+    expect((await refusal(BODY, old)).payload.code).toBe("payments/verification_failed");
+    await expect(
+      verifyPaddleSignature(BODY, old, {
+        secret: SECRET,
+        now: NOW,
+        toleranceSeconds: SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS,
+      }),
+    ).resolves.toBeUndefined();
   });
 
   test("a refusal carries nothing the delivery supplied", async () => {
