@@ -51,6 +51,10 @@ const FLAGGED = [
 
 const PLAIN = ["---", '"@pithy-sh/core": minor', "---", "", "A feature that is not a security fix."].join("\n");
 
+/** The two ingest endpoints, which differ in origin — which is what makes their audiences differ. */
+const STAGING_URL = "https://staging.dashboard.pithy.sh/api/releases";
+const PROD_URL = "https://dashboard.pithy.sh/api/releases";
+
 describe("release records", () => {
   let fixture: ReturnType<typeof repo>;
 
@@ -148,6 +152,15 @@ describe("post", () => {
     await run(["build"], { root: fixture.root, env: {} });
   }
 
+  /** Both dashboards configured, and no secret between them — what `release.yml` passes the step. */
+  const BOTH = {
+    PITHY_RELEASE_RECORDS_URL_STAGING: STAGING_URL,
+    PITHY_RELEASE_RECORDS_URL_PROD: PROD_URL,
+  };
+
+  /** A minter that names the audience it was asked for, standing in for the runner's endpoint. */
+  const mintToken = async (audience: string) => `token-for-${audience}`;
+
   // The dashboard is not up. This is the state the pipeline ships in, and it is a pass.
   it("says the dashboard is off and succeeds when nothing is configured", async () => {
     await build();
@@ -158,35 +171,96 @@ describe("post", () => {
     expect(result.output).toMatch(/off/i);
   });
 
-  it("posts when an endpoint is configured", async () => {
+  it("posts to both destinations when both are configured", async () => {
     await build();
     const send = vi.fn(async () => new Response("{}", { status: 202 })) as unknown as typeof fetch;
 
-    const result = await run(["post"], {
-      root: fixture.root,
-      env: { PITHY_RELEASE_RECORDS_URL: "https://dashboard.pithy.sh/api", PITHY_RELEASE_RECORDS_TOKEN: "t" },
-      fetch: send,
-    });
+    const result = await run(["post"], { root: fixture.root, env: BOTH, fetch: send, mintToken });
 
     expect(result.code).toBe(0);
-    expect(send).toHaveBeenCalledOnce();
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(result.output).toMatch(/staging, prod/);
   });
 
-  // The one property the release depends on: a dashboard problem is never a release problem.
-  it("does not fail the release when the write fails", async () => {
+  // The release stands — step 5 published long ago and `replay` recovers the record. But a rejected
+  // delivery is not a green step: it exits non-zero under `continue-on-error: true`, so GitHub renders
+  // a failed step under a green job instead of one line in a log nobody opens.
+  it("exits non-zero when a delivery fails", async () => {
     await build();
     const send = vi.fn(async () => {
       throw new Error("ECONNREFUSED");
     }) as unknown as typeof fetch;
 
-    const result = await run(["post"], {
+    const result = await run(["post"], { root: fixture.root, env: BOTH, fetch: send, mintToken });
+
+    expect(result.code).toBe(1);
+    expect(result.output).toMatch(/ECONNREFUSED/);
+    expect(result.output).toMatch(/replay/);
+  });
+
+  it("annotates a failure so the run list shows it", async () => {
+    await build();
+    const send = vi.fn(async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
+
+    const result = await run(["post"], { root: fixture.root, env: BOTH, fetch: send, mintToken });
+
+    expect(result.output).toMatch(/^::warning title=Release reporting::/);
+  });
+
+  it("writes the outcome to the step summary", async () => {
+    await build();
+    const summary = join(fixture.root, "summary.md");
+    const send = vi.fn(async () => new Response("{}", { status: 202 })) as unknown as typeof fetch;
+
+    await run(["post"], {
       root: fixture.root,
-      env: { PITHY_RELEASE_RECORDS_URL: "https://dashboard.pithy.sh/api", PITHY_RELEASE_RECORDS_TOKEN: "t" },
+      env: { ...BOTH, GITHUB_STEP_SUMMARY: summary },
       fetch: send,
+      mintToken,
     });
 
+    expect(readFileSync(summary, "utf8")).toMatch(/Release reporting: Posted 1 records to staging, prod\./);
+  });
+
+  // *Posted to prod, failed to staging* is a different thing from *failed*, and the exit code cannot
+  // carry the difference. Collapsing them would lose the production record's own good news.
+  it("renders a partial outcome as one, not as a failure", async () => {
+    await build();
+    const send = vi.fn(async (url: string) =>
+      url === STAGING_URL ? Promise.reject(new Error("ECONNREFUSED")) : new Response("{}", { status: 202 }),
+    ) as unknown as typeof fetch;
+
+    const result = await run(["post"], { root: fixture.root, env: BOTH, fetch: send, mintToken });
+
+    expect(result.code).toBe(1);
+    expect(result.output).toMatch(/Posted 1 records to prod\./);
+    expect(result.output).toMatch(/Failed to staging: ECONNREFUSED\./);
+  });
+
+  // Without this the first exercise of the OIDC path would be a real release. A dry run mints a real
+  // token and gets a real answer — and writes no rows, because the versions it built were not published.
+  it("posts a zero-record delivery to staging on a dry run", async () => {
+    await build();
+    const send = vi.fn(async () => new Response("{}", { status: 202 })) as unknown as typeof fetch;
+
+    const result = await run(["post", "--dry-run"], { root: fixture.root, env: BOTH, fetch: send, mintToken });
+
     expect(result.code).toBe(0);
-    expect(result.output).toMatch(/ECONNREFUSED/);
+    const posted = (send as unknown as ReturnType<typeof vi.fn>).mock.calls as [string, RequestInit][];
+    expect(posted).toHaveLength(1);
+    expect(posted[0]?.[0]).toBe(STAGING_URL);
+    expect(JSON.parse(posted[0]?.[1].body as string)).toEqual({ records: [] });
+    expect(result.output).toMatch(/Dry run\./);
+  });
+
+  it("still fails visibly when the dry run's delivery is refused", async () => {
+    await build();
+    const send = vi.fn(async () => new Response("bad audience", { status: 401 })) as unknown as typeof fetch;
+
+    const result = await run(["post", "--dry-run"], { root: fixture.root, env: BOTH, fetch: send, mintToken });
+
+    expect(result.code).toBe(1);
+    expect(result.output).toMatch(/401/);
   });
 });
 

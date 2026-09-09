@@ -185,31 +185,45 @@ Every release emits one record per package — the version already split into `m
 
 They are always written to `.release/records.json` and uploaded as the `release-records` artifact on every run, published or not.
 
-### Reporting is configured and currently off
+### Two destinations, two variables, no secret
 
-The dashboard endpoint does not exist yet, so the reporting step is off. It is off because nothing is configured — not because a second switch says so, which is a flag that can disagree with reality.
-
-Turn it on by setting both of these, and it starts reporting on the next release with no code change:
+Staging and production both receive records — staging's release pane is otherwise empty of anything a real pipeline produced. Each is turned on by its own variable, and each is attempted independently, so a staging outage cannot cost the production record.
 
 | Where | Name | What it is |
 |---|---|---|
-| Repository **variable** | `RELEASE_RECORDS_URL` | The dashboard's ingest endpoint. Must be `https`. |
-| Repository **secret** | `RELEASE_RECORDS_TOKEN` | A scoped credential for that one endpoint. |
+| Repository **variable** | `RELEASE_RECORDS_URL_STAGING` | Staging's ingest endpoint. Must be `https`. |
+| Repository **variable** | `RELEASE_RECORDS_URL_PROD` | Production's ingest endpoint. Must be `https`. |
 
 ```bash
-gh variable set RELEASE_RECORDS_URL --body "https://dashboard.pithy.sh/api/releases"
-gh secret set RELEASE_RECORDS_TOKEN
+gh variable set RELEASE_RECORDS_URL_STAGING --body "https://staging.dashboard.pithy.sh/api/releases"
+gh variable set RELEASE_RECORDS_URL_PROD --body "https://dashboard.pithy.sh/api/releases"
 ```
 
-Until then the step prints `Dashboard reporting is off: no endpoint configured.` and succeeds.
+There is **no secret to set**, on either side. The release job holds `id-token: write` for npm trusted publishing, and the same permission mints the credential the dashboard takes: a short-lived GitHub-signed OIDC token. The dashboard fetches GitHub's published keys, verifies the signature, and then checks the claims — issuer, audience, and `sub`, which for this job is `repo:pithy-sh/pithy:environment:npm-publish`. The allowlisted `sub` is configuration on the receiver, so revoking is a config edit rather than a rotation held on two sides.
 
-**Never a Cloudflare API token.** Cloudflare tokens are not table-scoped: one able to insert release rows could read and write everything in that database, including the dashboard's users, subscriptions, and the control-plane private keys it holds for every customer. The credential above grants one operation instead of a database.
+**The audience is per destination — the endpoint's own origin.** One token is minted for each, so a token minted for staging is not replayable against production. That costs one extra request against a runner-local endpoint and buys a credential that is narrow as well as short-lived.
 
-### A failed write never fails a release
+With neither variable set the step prints `Dashboard reporting is off: no endpoint configured.` and succeeds. Off is the absence of configuration, not a second switch that can disagree with it.
 
-An unreachable dashboard cannot block publishing an open-source package, so the step logs and continues.
+**Never a Cloudflare API token.** Cloudflare tokens are not table-scoped: one able to insert release rows could read and write everything in that database, including the dashboard's users, subscriptions, and the control-plane private keys it holds for every customer. The token above grants one operation instead of a database.
 
-The cost is a dashboard silently missing a release. That is recoverable, because the `Security:` marker is visible prose committed to the CHANGELOG:
+### Proving it before it matters
+
+A dry run posts a **zero-record delivery to staging**: a real token against the real verifier, and no rows written.
+
+```bash
+gh workflow run release.yml -f dry_run=true
+```
+
+Reporting used to be skipped entirely on a dry run, which meant the first exercise of the path would have been a real release.
+
+### A failed write never fails a release, and is never silent either
+
+An unreachable dashboard cannot block publishing an open-source package. Publishing is step 5 and is long over by the time anything is reported, so nothing here rolls a release back.
+
+It is still visible. A failed delivery exits non-zero and the step carries `continue-on-error: true`, so GitHub renders a **failed step under a green job** — in the run list, not only in a log — with a `::warning::` annotation and a line in the run summary naming which destination failed and why. Partial outcomes stay legible: *Posted 12 records to prod. Failed to staging: ECONNREFUSED.* is a different sentence from *failed*.
+
+The remaining cost is a dashboard missing a release. That is recoverable, because the `Security:` marker is visible prose committed to the CHANGELOG:
 
 ```bash
 bun scripts/releaseRecords.ts replay                          # every package

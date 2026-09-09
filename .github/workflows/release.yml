@@ -5,7 +5,8 @@ name: Release
 # **Started by hand, never by a push.** A release is a deliberate act, and this repository has no `push`
 # trigger on `main` for CI either (see `ci.yml` for why). Run it with `dry_run: true` first to see the
 # plan; the dry run versions, builds the records, and prints them without publishing, tagging, or
-# pushing anything.
+# pushing anything. It does post one thing: a zero-record delivery to the staging dashboard, which
+# proves the OIDC claims agree with the verifier without waiting for a real release to find out.
 #
 #   gh workflow run release.yml -f dry_run=true    # see what would ship
 #   gh workflow run release.yml                    # ship it
@@ -44,6 +45,10 @@ name: Release
 #
 # `GITHUB_TOKEN` is needed at **version** time, not publish time: `@changesets/changelog-github` calls
 # the GitHub API to attribute every changeset, and `changeset version` exits 1 without it.
+#
+# **The same OIDC identity authenticates step 7.** The dashboard's ingest endpoint takes a GitHub-signed
+# token rather than a shared string, and checks `sub` — `repo:pithy-sh/pithy:environment:npm-publish`.
+# So reporting adds two repository *variables* and no secret, and the claim above stays literally true.
 
 on:
   workflow_dispatch:
@@ -340,15 +345,34 @@ jobs:
           git commit -m "chore(release): version packages" || echo "Nothing to commit."
           git push --follow-tags origin HEAD:main
 
-      # Step 7. Tell the dashboard what shipped.
+      # Step 7. Tell the dashboard what shipped — staging and production, each on its own.
       #
-      # **Off until the dashboard exists**, and off because nothing is configured rather than because a
-      # second switch says so. With neither variable set this prints one line and succeeds. A failure
-      # here never fails a release either: the records are on the artifact above and in the CHANGELOGs,
-      # and `releaseRecords.ts replay` recovers them.
+      # **Two variables and no secret.** The job's `id-token: write` already mints the npm token; it
+      # mints one of these per destination too, naming that destination's origin as the audience, so a
+      # token minted for staging is not replayable against production. Nothing is held on two sides,
+      # which is why the header above still says there is no secret in this repository at all.
+      #
+      # **Off because nothing is configured**, rather than because a second switch says so. With neither
+      # variable set this prints one line and succeeds.
+      #
+      # **`continue-on-error`, deliberately paired with a non-zero exit.** The release stands: publishing
+      # was step 5, the records are on the artifact above and in the CHANGELOGs, and
+      # `releaseRecords.ts replay` recovers a missed write. But a rejected delivery used to exit 0, which
+      # made it a green step and one line in a log nobody opens. Now it exits 1 and GitHub renders a
+      # failed step under a green job — visible in the run list, fatal to nothing.
+      #
+      # A dry run posts a **zero-record delivery to staging**: a real token against the real verifier,
+      # with no rows written. Without it the first exercise of this path would be a real release.
       - name: Report the release
-        if: ${{ !inputs.dry_run }}
+        continue-on-error: true
         env:
-          PITHY_RELEASE_RECORDS_URL: ${{ vars.RELEASE_RECORDS_URL }}
-          PITHY_RELEASE_RECORDS_TOKEN: ${{ secrets.RELEASE_RECORDS_TOKEN }}
-        run: bun scripts/releaseRecords.ts post
+          PITHY_RELEASE_RECORDS_URL_STAGING: ${{ vars.RELEASE_RECORDS_URL_STAGING }}
+          PITHY_RELEASE_RECORDS_URL_PROD: ${{ vars.RELEASE_RECORDS_URL_PROD }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = "true" ]; then
+            bun scripts/releaseRecords.ts post --dry-run
+          else
+            bun scripts/releaseRecords.ts post
+          fi
