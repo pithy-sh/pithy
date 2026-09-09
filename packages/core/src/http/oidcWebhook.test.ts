@@ -8,6 +8,7 @@ import { z } from "zod";
 import type { PithyHonoEnv } from "../capability/capability";
 import { pithyErrorHandler } from "../error/http";
 import { InternalError, PithyError, UpstreamError, WebhookUnverifiedError } from "../error/pithyError";
+import { base64Url, type MintedKey, mintKey, publishing, signToken } from "../test-utils/oidcFixtures";
 import {
   memoryJwksCache,
   OIDC_JWKS_TTL_SECONDS,
@@ -32,6 +33,12 @@ import { validationHook } from "./validation";
  * **The claims are the boundary, not the signature.** Every token in the `refuses` cases verifies
  * cryptographically. What separates ours from anyone else's is `aud` and the `claims` predicate — which is
  * exactly why those two cases matter more than the signature ones.
+ *
+ * **The issuer's side comes from `../test-utils/oidcFixtures`, which adopters import too.** It used to be
+ * private here, so the first project mounting `requireOidcWebhook` re-derived 103 lines of it and got the
+ * wire format wrong — a transport answering `json()` where the seam declares `text()`. This suite is that
+ * module's first consumer rather than a copy of it, which is the only thing that keeps a shipped fixture
+ * honest: the helpers a customer's route is proved with are the helpers the verifier is proved with.
  */
 
 const ISSUER = "https://token.actions.githubusercontent.com";
@@ -66,15 +73,6 @@ function claims(overrides: Record<string, unknown> = {}): Record<string, unknown
   };
 }
 
-/** A transport that publishes `keys` at the JWKS URL and records every URL it was asked for. */
-function publishing(keys: readonly OidcJwk[], seen: string[] = []): OidcJwksFetch {
-  return async (url) => {
-    seen.push(url);
-    if (url !== JWKS_URL) return { ok: false, status: 404, text: async () => "{}" };
-    return { ok: true, status: 200, text: async () => JSON.stringify({ keys }) };
-  };
-}
-
 /** The verifier under the suite's defaults: this issuer, this audience, this subject, the suite's key. */
 function verify(token: string, overrides: Record<string, unknown> = {}) {
   return verifyOidcToken(token, {
@@ -83,7 +81,7 @@ function verify(token: string, overrides: Record<string, unknown> = {}) {
     audience: AUDIENCE,
     claims: (c) => c.sub === SUBJECT,
     now: NOW,
-    transport: publishing([key.jwk]),
+    transport: publishing(JWKS_URL, [key.jwk]),
     ...overrides,
   });
 }
@@ -361,7 +359,7 @@ describe("the issuer's published keys", () => {
   test("are fetched when nothing is cached", async () => {
     const seen: string[] = [];
     await expect(
-      verify(await signToken(claims(), key), { transport: publishing([key.jwk], seen) }),
+      verify(await signToken(claims(), key), { transport: publishing(JWKS_URL, [key.jwk], seen) }),
     ).resolves.toBeDefined();
     expect(seen).toEqual([JWKS_URL]);
   });
@@ -371,7 +369,7 @@ describe("the issuer's published keys", () => {
     const cache = memoryJwksCache({ now: () => NOW });
     await cache.set(JWKS_URL, [key.jwk], OIDC_JWKS_TTL_SECONDS);
     await expect(
-      verify(await signToken(claims(), key), { transport: publishing([], seen), jwksCache: cache }),
+      verify(await signToken(claims(), key), { transport: publishing(JWKS_URL, [], seen), jwksCache: cache }),
     ).resolves.toBeDefined();
     expect(seen).toEqual([]);
   });
@@ -381,7 +379,7 @@ describe("the issuer's published keys", () => {
     const cache = memoryJwksCache({ now: () => NOW });
     const token = await signToken(claims(), key);
     for (let index = 0; index < 3; index += 1) {
-      await verify(token, { transport: publishing([key.jwk], seen), jwksCache: cache });
+      await verify(token, { transport: publishing(JWKS_URL, [key.jwk], seen), jwksCache: cache });
     }
     expect(seen).toEqual([JWKS_URL]);
   });
@@ -411,7 +409,10 @@ describe("the issuer's published keys", () => {
     const seen: string[] = [];
     const cache = memoryJwksCache({ now: () => NOW });
     const thrown = await refusal(
-      verify(await signToken(claims(), impostor), { transport: publishing([key.jwk], seen), jwksCache: cache }),
+      verify(await signToken(claims(), impostor), {
+        transport: publishing(JWKS_URL, [key.jwk], seen),
+        jwksCache: cache,
+      }),
     );
     expect(thrown).toBeInstanceOf(WebhookUnverifiedError);
     expect(seen).toEqual([JWKS_URL]);
@@ -423,7 +424,7 @@ describe("the issuer's published keys", () => {
     // attacker's imagination.
     const seen: string[] = [];
     const cache = memoryJwksCache({ now: () => NOW });
-    const transport = publishing([key.jwk], seen);
+    const transport = publishing(JWKS_URL, [key.jwk], seen);
     for (let index = 0; index < 10; index += 1) {
       const forged = await mintKey(`forged-${index}`);
       await refusal(verify(await signToken(claims(), forged), { transport, jwksCache: cache }));
@@ -436,10 +437,10 @@ describe("the issuer's published keys", () => {
     let clock = NOW;
     const cache = memoryJwksCache({ now: () => clock });
     const token = await signToken(claims(), key);
-    await verify(token, { transport: publishing([key.jwk], seen), jwksCache: cache, now: clock });
+    await verify(token, { transport: publishing(JWKS_URL, [key.jwk], seen), jwksCache: cache, now: clock });
     clock = new Date(NOW.getTime() + (OIDC_JWKS_TTL_SECONDS + 1) * 1000);
     await verify(await signToken(claims({ exp: epochSeconds(clock) + 300 }), key), {
-      transport: publishing([key.jwk], seen),
+      transport: publishing(JWKS_URL, [key.jwk], seen),
       jwksCache: cache,
       now: clock,
     });
@@ -485,7 +486,7 @@ describe("a failure that is not the sender's", () => {
   });
 
   test("an empty key set is a 502, never a pass", async () => {
-    const thrown = await refusal(verify(await signToken(claims(), key), { transport: publishing([]) }));
+    const thrown = await refusal(verify(await signToken(claims(), key), { transport: publishing(JWKS_URL, []) }));
     expect(thrown).toBeInstanceOf(UpstreamError);
   });
 
@@ -583,7 +584,7 @@ describe("requireOidcWebhook", () => {
 
   test("refuses a delivery with no authorization header, and buys nothing on its way", async () => {
     const seen: string[] = [];
-    const response = await guardedApp({ transport: publishing([key.jwk], seen) }).request("/hooks/release", {
+    const response = await guardedApp({ transport: publishing(JWKS_URL, [key.jwk], seen) }).request("/hooks/release", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ event: "release.published" }),
@@ -670,7 +671,7 @@ describe("requireOidcWebhook", () => {
     // the multiplier points at somebody else's endpoint, and the 502 that arrives when they rate-limit us
     // refuses the genuine deliveries alongside the forgeries.
     const seen: string[] = [];
-    const app = guardedApp({ transport: publishing([key.jwk], seen) });
+    const app = guardedApp({ transport: publishing(JWKS_URL, [key.jwk], seen) });
     const forged = await signToken(claims(), impostor, { kid: key.kid });
     for (let index = 0; index < 20; index += 1) {
       const response = await app.request("/hooks/release", {
@@ -694,8 +695,8 @@ describe("requireOidcWebhook", () => {
       headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
       body: JSON.stringify({ event: "release.published" }),
     };
-    await guardedApp({ transport: publishing([key.jwk], first) }).request("/hooks/release", delivery);
-    await guardedApp({ transport: publishing([key.jwk], second) }).request("/hooks/release", delivery);
+    await guardedApp({ transport: publishing(JWKS_URL, [key.jwk], first) }).request("/hooks/release", delivery);
+    await guardedApp({ transport: publishing(JWKS_URL, [key.jwk], second) }).request("/hooks/release", delivery);
     expect(first).toEqual([JWKS_URL]);
     expect(second).toEqual([JWKS_URL]);
   });
@@ -727,7 +728,7 @@ function guardedApp(overrides: Record<string, unknown> = {}, onHandler?: () => v
       audience: AUDIENCE,
       claims: (c: OidcClaims) => c.sub === SUBJECT,
       now: () => NOW,
-      transport: publishing([key.jwk]),
+      transport: publishing(JWKS_URL, [key.jwk]),
       ...overrides,
     }),
     zValidator("json", Delivery, validationHook),
@@ -748,65 +749,6 @@ async function refusal(pending: Promise<unknown>): Promise<PithyError> {
     throw error;
   }
   throw new Error("Expected the verifier to refuse, and it resolved.");
-}
-
-/** A minted signing key: the JWK a verifier is given, and the private half a test signs with. */
-interface MintedKey {
-  /** The key id, matched against a token header's `kid`. */
-  kid: string;
-  /** The public key as a JWK, in the shape a JWKS endpoint publishes it. */
-  jwk: OidcJwk;
-  /** The private half. What signs a token. */
-  privateKey: CryptoKey;
-}
-
-/**
- * Mint one RSA key pair and publish its public half as a JWK.
- *
- * Real WebCrypto, not a fixture: a hand-rolled key and a hand-rolled signature would let every signature
- * assertion below pass by agreeing with itself. A minted second key is what makes "signed by somebody else"
- * a real statement.
- */
-async function mintKey(kid: string): Promise<MintedKey> {
-  const pair = (await crypto.subtle.generateKey(
-    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]) },
-    true,
-    ["sign", "verify"],
-  )) as CryptoKeyPair;
-  const exported = (await crypto.subtle.exportKey("jwk", pair.publicKey)) as JsonWebKey;
-  if (exported.kty === undefined || exported.n === undefined || exported.e === undefined) {
-    // Cannot happen for an RSA key, and a fixture that silently minted one with an empty modulus would make
-    // every signature test pass against nothing.
-    throw new Error("WebCrypto exported an RSA public key with no kty, n, or e.");
-  }
-  return {
-    kid,
-    jwk: { ...exported, kty: exported.kty, n: exported.n, e: exported.e, kid, alg: "RS256", use: "sig" },
-    privateKey: pair.privateKey,
-  };
-}
-
-/** base64url without padding — how every segment of a compact JWS is encoded. */
-function base64Url(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
-}
-
-/**
- * Sign a compact JWT the way an identity provider signs an OIDC token.
- *
- * `header` overrides let a test present a header no provider would — `alg: "none"`, `alg: "RS512"`, a `kid`
- * nobody published — which is how algorithm confusion is proved rejected rather than assumed impossible.
- */
-async function signToken(payload: unknown, signer: MintedKey, header: Record<string, unknown> = {}): Promise<string> {
-  const encoder = new TextEncoder();
-  const head = base64Url(encoder.encode(JSON.stringify({ alg: "RS256", typ: "JWT", kid: signer.kid, ...header })));
-  const body = base64Url(encoder.encode(JSON.stringify(payload)));
-  const signature = new Uint8Array(
-    await crypto.subtle.sign("RSASSA-PKCS1-v1_5", signer.privateKey, encoder.encode(`${head}.${body}`)),
-  );
-  return `${head}.${body}.${base64Url(signature)}`;
 }
 
 /**
