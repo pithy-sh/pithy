@@ -80,6 +80,30 @@ So `apps/<worker>/wrangler.jsonc` declared `"database_name": "<project>-staging-
 7. **Retargets `service` bindings** at this environment's copy of the callee, resolved through each Worker's real deploy name rather than its `apps/<name>` directory.
 8. **Migrates**, and seeds when asked. A feature also mints its own master key and records a manifest so `pithy feature destroy` deletes exactly what was created — the two things a declared environment has no equivalent of, which are [`feature.md`](feature.md)'s subject.
 
+## What it left out
+
+A binding a Worker names in `declinedBindings` gets no resource created for it, and no entry in that Worker's stanza. See [`docs/CLI.md`](../CLI.md) for the declaration itself.
+
+A decline is the one input to this command that *removes* work, and removed work leaves no trace of itself: the summary lists what was made, so a decline read correctly and a decline dropped on the floor print the same bytes. So the run states what it left out, and why, one line per entry:
+
+```
+SUPPORT_BUCKET (r2) declined by board. Not created by this run. — Attachments are off, so nothing would ever be written to it.
+ASSETS (r2) declined by board. Created anyway for collab. — no R2 for this Worker.
+ASSET declined by board. Nothing it composes declares it, so nothing was left out. — no R2 in this account.
+DB (d1) declined by board. auth requires it, so nothing was left out. — we use Postgres.
+declinedBindings in board's pithy.config.ts cannot be read, so nothing was left out: `declinedBinding` is not a key this Worker's config declares. Did you mean `declinedBindings`?
+```
+
+Your own reason is printed back verbatim — it is required in `declinedBindings` precisely so a report can hand it back, and it carries the one fact the binding name does not.
+
+Every line but the first says **nothing was left out**, and none of them is noise:
+
+- **`Created anyway for <workers>`.** Provisioning is per binding *name*, which is how two Workers share a database. One Worker declining `ASSETS` while a sibling still declares it leaves the resource in place and the declining Worker's stanza without it. A line that called this a skip would send you looking for a resource that exists.
+- **A decline that names nothing, or that is refused.** A one-character slip in the binding name is the likeliest typo in a decline, and it resolves against nothing. So does a decline of a binding a capability requires, or of a Workflow or Durable Object. Each is reported and none is fatal.
+- **A declaration that cannot be read.** One typo in the block and *every* declined resource is created. Without this line that run is byte-identical to a project that declines nothing.
+
+**`Not created by this run` is the exact claim, and no larger one.** Provisioning adds bindings and never removes them, so declining something an earlier run already provisioned leaves the resource in your account and the binding in the Worker's stanza. Delete both by hand; `pithy doctor` names the environments the binding survives in.
+
 ## The secrets it cannot create
 
 A `d1` secret — the auth session secret, the email link-signing key — is sealed under a master key that lives inside an environment's secrets manager Worker. Only that manager can write one, and this command runs before the managers are necessarily deployed. So it creates none of them, and it says which, rather than reporting `Provisioned prod. Migrated.` for an environment that cannot serve a request.
@@ -137,12 +161,12 @@ For a declared environment there is none, deliberately. Staging and production a
 
 ```
 $ pithy provision --env staging --yes --json
-{"command":"provision","env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}],"workers":[{"worker":"replay-board","name":"replay-board-staging"}],"services":[],"secretBindings":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true,"pendingSecrets":["auth-session-secret","email-link-signing-key"],"pendingSecretsRemedy":"pithy secrets provision"}
+{"command":"provision","env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}],"workers":[{"worker":"replay-board","name":"replay-board-staging"}],"services":[],"secretBindings":[],"declined":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true,"pendingSecrets":["auth-session-secret","email-link-signing-key"],"pendingSecretsRemedy":"pithy secrets provision"}
 ```
 
 ```
 $ pithy provision --feature --json
-{"command":"provision","env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command-db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command-replay-board"}],"services":[],"secretBindings":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret","email-link-signing-key"],"pendingSecretsRemedy":null}
+{"command":"provision","env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command-db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command-replay-board"}],"services":[],"secretBindings":[],"declined":[{"state":"read","worker":"replay-board","declines":[{"state":"honored","name":"SUPPORT_BUCKET","type":"r2","capability":"support","reason":"Attachments are off.","wantedBy":[]}]}],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret","email-link-signing-key"],"pendingSecretsRemedy":null}
 ```
 
 | key | type | meaning |
@@ -166,6 +190,17 @@ $ pithy provision --feature --json
 | `secretBindings[].entry` | `string` | The Secrets Store entry it resolves to in this environment |
 | `secretBindings[].bound` | `boolean` | True when the entry exists and the binding was written. False when the secret is declared and its entry has never been created — binding it anyway would make wrangler refuse the whole config |
 | `secretBindings[].minted` | `boolean` | True when **this run** created the value, because the registry declared it may be minted. False on a re-run, which leaves an existing value alone |
+| `declined` | `object[]` | One entry per Worker whose `declinedBindings` has something to say. Empty for a project that declines nothing, which is most of them |
+| `declined[].state` | `"read" \| "invalid"` | Whether that Worker's declaration parsed. `invalid` means it did not, so **nothing was left out for that Worker** and every declined resource was created |
+| `declined[].worker` | `string` | The Worker's own deploy name |
+| `declined[].problem` | `string` | `invalid` only: what is wrong with the declaration, naming the entry |
+| `declined[].declines` | `object[]` | `read` only: every entry in that Worker's declaration, resolved |
+| `declined[].declines[].state` | `"honored" \| "required" \| "undeclinable" \| "unrecognized"` | **Only `honored` left something out.** The other three are reported so a decline that changed nothing is not silent — the likeliest typo in a decline is in the binding name, and it lands on `unrecognized` |
+| `declined[].declines[].name` | `string` | The binding name, as you wrote it |
+| `declined[].declines[].type` | `"d1" \| "kv" \| "r2" \| …` | The kind of resource it refers to. Absent on `unrecognized`, which names no binding to have a kind |
+| `declined[].declines[].capability` | `string` | The composed capability that declares it. Absent on `unrecognized` |
+| `declined[].declines[].reason` | `string` | Your own reason, verbatim |
+| `declined[].declines[].wantedBy` | `string[]` | `honored` only: other Workers that declare the same binding and did not decline it. **Non-empty means the resource was created anyway** — provisioning is per binding name, and that is how two Workers share a database. Only this Worker's stanza leaves it out |
 | `configs` | `object[]` | Where the ids were written, one entry per Worker |
 | `configs[].worker` | `string` | The Worker's own deploy name |
 | `configs[].path` | `string` | The file written, relative to the project root |

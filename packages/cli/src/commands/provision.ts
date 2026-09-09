@@ -21,7 +21,7 @@ import {
 import { requireManagedEnvironment } from "../project/environment";
 import { projectCapabilities, resolveWorkers } from "../project/workerScope";
 import { assertProvisionConfirmed, provisionConfirmPhrase } from "../provision/confirm";
-import { type ProvisionReport, provisionEnvironment } from "../provision/environment";
+import { type ProvisionedDecline, type ProvisionReport, provisionEnvironment } from "../provision/environment";
 import { type ProvisionMode, requireProvisionMode } from "../provision/mode";
 import { type PendingSecrets, pendingSecretLines, pendingSecrets } from "../provision/pendingSecrets";
 import { AUDIT_DESTINATION_ENV, cloudflareProvisioners, type ResourceProvisioners } from "../provision/resources";
@@ -186,8 +186,75 @@ function deferredSecrets(capabilities: Capability[], mode: ProvisionMode): Pendi
   return pendingSecrets(workerSecretRegistry(capabilities) ?? {}, mode);
 }
 
-/** Write the report: one JSON line, or the human summary. */
-function writeReport(
+/**
+ * **What this run left out, and why — one line per Worker's declaration.**
+ *
+ * A decline is the one input that removes work, and until #514 the run said nothing about it: the summary
+ * lists what was made, so a decline honored and a decline dropped on the floor printed the same output.
+ * The reason string is mandatory in `declinedBindings` precisely so a report can hand it back, so it goes
+ * out verbatim — it is the adopter's own sentence, and rewording it would lose the one fact the line has
+ * that the binding name does not.
+ *
+ * One sentence per outcome, because reading any two of them as one is a lie an operator acts on:
+ *
+ * - **Declined, and nothing created for it** — the ordinary case. **"by this run"**, and the words are
+ *   load-bearing: adding a decline to an environment that was already provisioned is the *likeliest* way
+ *   to reach this line, and there the bucket is in the account and the Worker's stanza still binds it,
+ *   because provisioning upserts and never deletes (`applyProvisionedEnv`, and docs/CLI.md says so on
+ *   purpose). A bare "Not created." claims a fact about an account this run did not check, and the
+ *   operator concludes the decline took effect while the Worker still deploys against the resource.
+ * - **Declined and created anyway** — a sibling Worker declares the same binding name and wants it, which
+ *   is how two Workers share a database. This Worker's stanza leaves it out; the resource is there.
+ * - **Declined and refused, or naming nothing** — a `required` or `undeclinable` binding, or a name no
+ *   composed capability declares. Nothing was left out, and the run says so rather than printing the
+ *   silence a project that declines nothing prints. The likeliest typo in a decline is in the binding
+ *   name, and that one lands here.
+ * - **Unreadable** — one typo in the block and every declined resource is created. That state collapses
+ *   to an empty set at the filter, so without this line the run is indistinguishable from a project that
+ *   declines nothing, which is the failure the whole declaration exists to prevent.
+ */
+function describeDeclines(report: ProvisionReport): string[] {
+  return report.declined.flatMap((entry) => {
+    if (entry.state === "invalid") {
+      return [
+        `declinedBindings in ${entry.worker}'s pithy.config.ts cannot be read, so nothing was left out: ${entry.problem}`,
+      ];
+    }
+    return entry.declines.map((decline) => `${declineFate(decline, entry.worker)} — ${decline.reason}`);
+  });
+}
+
+/**
+ * The half of a decline line before the adopter's own sentence: what it is, and what became of it.
+ *
+ * The kind rides with the name wherever there is one, so the lines stack in a column an operator can
+ * skim. `unrecognized` is the one state with no kind to name, because it resolved against no binding.
+ */
+function declineFate(decline: ProvisionedDecline, worker: string): string {
+  const named = decline.state === "unrecognized" ? decline.name : `${decline.name} (${decline.type})`;
+  const declined = `${named} declined by ${worker}.`;
+  switch (decline.state) {
+    case "honored":
+      return decline.wantedBy.length === 0
+        ? `${declined} Not created by this run.`
+        : `${declined} Created anyway for ${decline.wantedBy.join(", ")}.`;
+    case "required":
+      return `${declined} ${decline.capability} requires it, so nothing was left out.`;
+    case "undeclinable":
+      return `${declined} Its kind cannot be declined, so nothing was left out.`;
+    default:
+      return `${declined} Nothing it composes declares it, so nothing was left out.`;
+  }
+}
+
+/**
+ * Write the report: one JSON line, or the human summary.
+ *
+ * Exported for its tests. It is the whole of what an operator sees of a run that created nothing, and a
+ * command whose output is only reachable by provisioning against a live account is a command whose output
+ * nothing checks.
+ */
+export function writeReport(
   report: ProvisionReport,
   options: { json: boolean; seeded: boolean; pending: PendingSecrets },
 ): void {
@@ -205,6 +272,8 @@ function writeReport(
   for (const resource of report.resources) {
     process.stdout.write(`${resource.name}: ${resource.created ? "created" : "exists"}.\n`);
   }
+  // Beside what was made, because it is the same subject: what this environment has, and what it does not.
+  for (const line of describeDeclines(report)) process.stdout.write(`${line}\n`);
   for (const worker of report.workers) {
     process.stdout.write(`${worker.worker} deploys as ${worker.name}.\n`);
   }

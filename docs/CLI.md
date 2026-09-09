@@ -620,6 +620,8 @@ const config = {
 
 `pithy upgrade` leaves it out of `wrangler.jsonc`, and `pithy doctor` reports it as declined rather than missing — so a stanza you delete by hand stays deleted instead of coming back on the next upgrade.
 
+`pithy provision` honors the same declaration: it creates no Cloudflare resource for a declined binding and writes no entry for it, and it prints what it left out, with your reason. Both halves matter, because stopping the upgrade writing the binding while still creating the bucket hands you exactly the resource you declined. It says so in the run rather than only in `pithy doctor`, because removed work leaves no other trace — [`docs/commands/provision.md`](commands/provision.md) has the lines.
+
 **The reason is required, and it is the point.** A binding simply absent is indistinguishable from one somebody forgot, which is the state this replaced. `pithy doctor` prints your sentence back on every run, so write it for whoever reads the report next.
 
 **Reach for the capability's own config first.** Turning attachments off is a better answer than declining the bucket, because the capability then declares nothing at all. This is the escape hatch for the case a config option does not cover.
@@ -630,7 +632,7 @@ Three declines are refused, and `pithy upgrade` stops before it writes anything 
 - **A Workflow.** `optional` there means *not provisioned yet* — `pithy <capability> provision` is the fix, and declining only hides the instruction.
 - **A Durable Object.** A class migration tag is written once and never revisited, so a decline arriving after an upgrade cannot undo what that upgrade stamped.
 
-A decline naming a binding nothing composes is reported and never fatal: `pithy remove <capability>` leaves exactly that state, and a failure no command could clear would be worse than the line that names it. Declining also never *deletes* a binding an earlier upgrade wrote — `pithy doctor` names the environments it survives in, and removing them is your call.
+A decline naming a binding nothing composes is reported and never fatal: `pithy remove <capability>` leaves exactly that state, and a failure no command could clear would be worse than the line that names it. Declining also never *deletes* a binding an earlier upgrade wrote, and never deletes the resource behind it — `pithy provision` says `Not created by this run` for exactly that reason. `pithy doctor` names the environments the binding survives in, and removing them is your call.
 
 #### Pinning a generated value
 

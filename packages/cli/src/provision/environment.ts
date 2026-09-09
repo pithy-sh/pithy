@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { relative } from "node:path";
+import type { BindingType } from "@pithy-sh/core/src/capability/bindings";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { ProvisionScope } from "@pithy-sh/core/src/naming/provisionScope";
 import type { CliAuditEmit } from "../audit/cliAudit";
-import { availableManifests } from "../capabilities/manifests";
-import { honoredDeclineNames } from "../capabilities/reconcile";
+import { composedManifests } from "../capabilities/manifests";
+import { type BindingDecline, type BindingDeclines, honoredNames, workerDeclines } from "../capabilities/reconcile";
 import { provisionableBindings, serviceBindings } from "../feature/bindings";
 import type { FeatureResource } from "../feature/manifest";
 import { migrateProject } from "../migrations/run";
@@ -87,6 +88,76 @@ export interface ProvisionRecord {
   save(resources: FeatureResource[]): Promise<void>;
 }
 
+/**
+ * One Worker's declines as this run resolved them — or the fact that its declaration would not read.
+ *
+ * The same two-state shape `BindingDeclines` carries, and for its reason: a declaration that does not
+ * parse is neither "declines nothing" nor a crash. The distinction is load-bearing here rather than
+ * merely tidy — an unreadable block resolves to an empty set, so **every declined resource is created**,
+ * and a run that printed no decline line for it would be indistinguishable from a project that declines
+ * nothing. One typo is enough (#514).
+ */
+export type ProvisionedDeclines =
+  /** The declaration parsed, and carries at least one entry. */
+  | { state: "read"; worker: string; declines: ProvisionedDecline[] }
+  /** The declaration is present and malformed, so nothing was left out for it. */
+  | { state: "invalid"; worker: string; problem: string };
+
+/**
+ * One `declinedBindings` entry, as this run resolved it — the same four states {@link BindingDecline} has.
+ *
+ * **Every entry, not the honored ones alone.** The honored-only version shipped first, on the argument
+ * that a refused or stale decline "changes nothing about what this run provisioned, and a command reports
+ * what it did". That argument is the one #514 rejected for the `invalid` state, and it is no better here:
+ * the likeliest typo in a decline is in the **binding name**, which resolves `unrecognized`, and a run
+ * that says nothing about it is byte-identical to a project that declines nothing — the exact failure the
+ * report exists to remove, reached by a shorter path than a malformed block. So all four states come out.
+ * Only `honored` is a skip; the other three say, in the run that read them, that nothing was left out.
+ */
+export type ProvisionedDecline =
+  /** Applied: this run created nothing for the binding, unless a sibling Worker still wanted it. */
+  | {
+      state: "honored";
+      /** The binding name, as the adopter wrote it and as the capability declares it. */
+      name: string;
+      /** The kind of Cloudflare resource the declined binding refers to. */
+      type: BindingType;
+      /** The composed capability that declares it optional — the one taking its absence path. */
+      capability: string;
+      /** The adopter's own reason, carried so the run can print back the sentence they wrote. */
+      reason: string;
+      /**
+       * Other Workers that declare this binding and did not decline it.
+       *
+       * Empty is the ordinary case and the only one where nothing was created for it. When it is not
+       * empty the environment still provisioned the resource, because provisioning is per binding *name*
+       * and that is how two Workers share a database — this Worker's stanza leaves it out, the sibling's
+       * does not. A report that said "skipped" there would be false, and false in the direction that
+       * matters: an operator would go looking for a resource that exists.
+       */
+      wantedBy: string[];
+    }
+  /** Refused: some composed capability requires the binding, or its kind cannot be declined. */
+  | {
+      state: "required" | "undeclinable";
+      /** The binding name the adopter declined. */
+      name: string;
+      /** The kind of Cloudflare resource it refers to. */
+      type: BindingType;
+      /** The composed capability that requires it, or that declares the undeclinable kind. */
+      capability: string;
+      /** The adopter's stated reason, carried so the line can quote it back. */
+      reason: string;
+    }
+  /** Stale: nothing this Worker composes declares the binding, so nothing was left out for it. */
+  | {
+      state: "unrecognized";
+      /** The binding name the adopter declined — most often one character off the real one. */
+      name: string;
+      /** The adopter's stated reason, carried so the line can quote it back. */
+      reason: string;
+    };
+
 /** One provisioned resource in the report: what it is, and whether this run created it or adopted it. */
 export interface ProvisionedResource extends FeatureResource {
   /** True when this run created the resource; false when it already existed (re-run, or adoption). */
@@ -111,6 +182,18 @@ export interface ProvisionReport {
   services: ServiceEntry[];
   /** Every `cf-secrets-store` secret this environment declares, and whether it was bound. */
   secretBindings: ProvisionedSecret[];
+  /**
+   * **What each Worker's `declinedBindings` cost it — one entry per Worker with something to say.**
+   *
+   * A decline is the one input to this command that removes work, and it was the one thing the run said
+   * nothing about (#514). A resource that was not created leaves no trace: the report listed what it made,
+   * so a decline read correctly and a decline dropped on the floor produced byte-identical output, and
+   * the only way to tell them apart was to go and look at the account. Reporting the skip is what makes
+   * the declaration observable from the run that honored it.
+   *
+   * Empty for a project that declines nothing, which is most of them.
+   */
+  declined: ProvisionedDeclines[];
   /** Where each Worker's ids were written, project-relative — one entry per Worker, in write order. */
   configs: ProvisionedConfig[];
   /**
@@ -286,24 +369,53 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   // **Declines are per Worker, and a resource survives one Worker declining it.** The environment
   // provisions one resource per binding *name* — that is how two Workers share a database — so a binding
   // is skipped only when every Worker that declares it declines it. Resolved through the reconcile
-  // engine's own `honoredDeclineNames` so `pithy upgrade` and `pithy provision` cannot come to mean two
-  // different things by "declined" (#440).
-  const manifests = (await availableManifests(options.projectDir)).manifests;
+  // engine's own rule so `pithy upgrade` and `pithy provision` cannot come to mean two different things
+  // by "declined" (#440).
+  //
+  // **Per Worker, from that Worker's own `node_modules` as well as the root's (#507).** This read the root
+  // alone, which is where the fix for #440 stopped short: a capability declared only on the Worker
+  // composing it — the shape the kit tells adopters to adopt — installs under `apps/<name>/node_modules`,
+  // so the root scan found no manifest, the decline resolved as `unrecognized`, and provisioning created
+  // the resource and wrote the binding back into a file the adopter had removed it from (#514). The two
+  // manifest sets are not merged into one list: two Workers may pin a capability differently, and
+  // resolving each Worker against what *it* loads is the point.
+  //
+  // **No `ejected` here, and that is the one place this parts from `buildReconcilePlan` — deliberately.**
+  // An upgrade skips a forked capability outright (`if (ejected.includes(manifest.name)) continue;`), so
+  // it writes nothing for one and a decline of a fork's binding costs it nothing either way. Provisioning
+  // does the opposite: it decides what to create from the **composed instances**, and a fork is composed,
+  // so its `r2 SUPPORT_BUCKET` is created and written into the stanza like any other binding. Dropping the
+  // fork's manifest from this resolution resolves the decline as `unrecognized`, creates the bucket, and
+  // writes the binding back into the file the adopter had removed it from — #440 again, for the one
+  // capability whose code the adopter owns, and silently, because an unrecognized decline is not a skip.
+  //
+  // A fork that has drifted from its manifest is already covered without it: `resolveDeclines` refuses a
+  // decline the composed *instance* declares non-optionally, so a fork that made the binding required
+  // refuses the decline whatever its manifest still says.
   const declinedPerWorker = new Map<string, ReadonlySet<string>>();
+  const declines: { worker: ProvisionWorker; resolved: BindingDeclines }[] = [];
   for (const worker of workers) {
-    declinedPerWorker.set(
-      worker.name,
-      honoredDeclineNames({ manifests, capabilities: worker.capabilities, workerConfig: worker.config }),
-    );
+    const { manifests } = await composedManifests(options.projectDir, worker.dir);
+    const resolved = workerDeclines({ manifests, capabilities: worker.capabilities, workerConfig: worker.config });
+    declines.push({ worker, resolved });
+    declinedPerWorker.set(worker.name, honoredNames(resolved));
   }
-  const wantedSomewhere = new Set(
-    workers.flatMap((worker) =>
-      provisionableBindings(worker.capabilities, declinedPerWorker.get(worker.name)).map((b) => b.binding),
-    ),
+  const wantedPerWorker = new Map(
+    workers.map((worker) => [
+      worker.name,
+      new Set(provisionableBindings(worker.capabilities, declinedPerWorker.get(worker.name)).map((b) => b.binding)),
+    ]),
   );
+  const wantedSomewhere = new Set([...wantedPerWorker.values()].flatMap((wanted) => [...wanted]));
   // The union is still the source of the *kinds* — `options.capabilities` spans the environment, and a
   // Worker resolver seam may hand back fewer Workers than that union was built from. Only names no
   // Worker wants are dropped.
+  //
+  // **No Workers resolved provisions the caller's union whole, deliberately.** A decline is a *Worker's*
+  // statement, so with no Worker there is no statement, and the filter has nothing to say rather than
+  // everything: reading an empty `wantedSomewhere` as "nothing is wanted" would turn a resolver that came
+  // back empty into a silent no-op run reporting success. Unreachable from `pithy provision --env`, which
+  // enumerates `apps/*`; reachable through the `resolveWorkers` seam `provisionFeature` forwards.
   const bindings = provisionableBindings(options.capabilities).filter(
     (binding) => workers.length === 0 || wantedSomewhere.has(binding.binding),
   );
@@ -350,9 +462,10 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   const secrets: ProvisionedSecret[] = [];
   const configs: ProvisionedConfig[] = [];
   for (const worker of workers) {
-    const declared = new Set(
-      provisionableBindings(worker.capabilities, declinedPerWorker.get(worker.name)).map((binding) => binding.binding),
-    );
+    // The same set the resource loop filtered on, read rather than recomputed. Resolving a Worker's
+    // declines once and reading the answer twice is what keeps "created but not written" — and its
+    // mirror, "written but never created" — unreachable rather than merely untested.
+    const declared = wantedPerWorker.get(worker.name) ?? new Set<string>();
     const workerSecrets = (await options.secretBindings?.(worker.capabilities)) ?? {
       bound: [],
       missing: [],
@@ -401,7 +514,59 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
     workers: workers.map((worker) => ({ worker: worker.name, name: scope.worker(worker.name) })),
     services,
     secretBindings: secrets,
+    declined: reportedDeclines(declines, wantedPerWorker),
     configs,
     committed: scope.source,
+  };
+}
+
+/**
+ * The decline lines this run earned: one entry per Worker that declined something, or could not be read.
+ *
+ * A Worker that declines nothing contributes nothing — the ordinary project reports an empty list rather
+ * than one empty entry per Worker, so a `--json` consumer can branch on the array itself.
+ */
+function reportedDeclines(
+  resolved: readonly { worker: ProvisionWorker; resolved: BindingDeclines }[],
+  wantedPerWorker: ReadonlyMap<string, ReadonlySet<string>>,
+): ProvisionedDeclines[] {
+  const entries: ProvisionedDeclines[] = [];
+  for (const { worker, resolved: declines } of resolved) {
+    if (declines.state === "invalid") {
+      entries.push({ state: "invalid", worker: worker.name, problem: declines.problem });
+      continue;
+    }
+    if (declines.declines.length === 0) continue;
+    entries.push({
+      state: "read",
+      worker: worker.name,
+      declines: declines.declines.map((decline) => reportedDecline(decline, worker.name, wantedPerWorker)),
+    });
+  }
+  return entries;
+}
+
+/** One resolved entry, projected onto what a provisioning run can say about it. */
+function reportedDecline(
+  decline: BindingDecline,
+  worker: string,
+  wantedPerWorker: ReadonlyMap<string, ReadonlySet<string>>,
+): ProvisionedDecline {
+  if (decline.state === "unrecognized") return { state: "unrecognized", name: decline.name, reason: decline.reason };
+  const { name, type, capability, reason } = decline;
+  if (decline.state !== "honored") return { state: decline.state, name, type, capability, reason };
+  return {
+    state: "honored",
+    name,
+    type,
+    capability,
+    reason,
+    // Every other Worker that declares this binding and wants it. Computed from the same per-Worker
+    // sets the resource loop filtered on, so the report cannot claim a skip the run did not take.
+    //
+    // `stillPresentIn` is deliberately not mirrored here: `resolveDeclines` fills it from stanzas, and
+    // this call passes none. What an earlier run left behind is a separate fact, and the human line says
+    // "not created by this run" rather than pretending to know the account (#514 review).
+    wantedBy: [...wantedPerWorker].filter(([other, wanted]) => other !== worker && wanted.has(name)).map(([o]) => o),
   };
 }

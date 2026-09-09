@@ -140,9 +140,13 @@ describe("provisionFeature / deprovisionFeature", () => {
     // No `command`: the name of a command belongs to the command, and one command produces this report
     // under two spellings (#251). `configs` and `committed` are the run saying which file it wrote and
     // what happens to it — asserted as a property in `provision/destination.test.ts`.
+    // `declined` is the same fact one level down: what this run did *not* make, and why the adopter said
+    // so (#514). A feature environment carries it for the reason a declared one does — a resource that was
+    // never created leaves no other trace of itself.
     expect(Object.keys(report).sort()).toEqual([
       "committed",
       "configs",
+      "declined",
       "env",
       "resources",
       "secretBindings",
