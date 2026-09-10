@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
-import { SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS } from "@pithy-sh/core/src/http/signedWebhook";
+import { SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS } from "@pithy-sh/core/src/http/webhookWindow";
 import { PaymentsVerificationFailedError } from "../../error/errors";
 
 /**

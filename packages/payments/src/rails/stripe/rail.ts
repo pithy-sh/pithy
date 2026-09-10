@@ -50,7 +50,17 @@ import { parseStripeNotification } from "./webhook";
 export interface StripeRailOptions {
   /** The HTTP seam Stripe's API is reached through. Defaults to the runtime's `fetch`. */
   transport?: StripeHttpFetch;
-  /** The signature freshness window, in seconds. Defaults to Stripe's own five minutes. */
+  /**
+   * The signature freshness window, in seconds. Defaults to Stripe's own five minutes.
+   *
+   * Threaded down unchanged and validated in exactly one place: `@pithy-sh/core`'s `checkSignedWebhook`, which
+   * refuses a non-finite, negative, or over-wide window as `core/internal` before it compares anything. This
+   * layer, `webhook.ts` and `signature.ts` each re-apply a default with `??` — which catches `undefined` and
+   * never `NaN` — and none of them re-checks the number. That is deliberate: one place that refuses is better
+   * than three that each half-check, and nothing on this path can reach the comparison without going through
+   * the primitive, so there is no bypass for a second check to cover. Three copies of the bound would only be
+   * three chances for one of them to drift.
+   */
   toleranceSeconds?: number;
 }
 

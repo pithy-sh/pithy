@@ -131,6 +131,13 @@ describe("payments()", () => {
     expect(Object.keys(payments(CATALOG).secretRegistry ?? {})).toEqual(["payments-provider-credentials"]);
   });
 
+  test("declares which rails' credentials `pithy secrets` should ask for — the configured ones", () => {
+    // The schema knows five rails are possible and only this catalog knows two are on. The CLI reads
+    // this rather than matching `rails.stripe` against the schema key of the same name (#516).
+    expect(payments(CATALOG).secretBranches).toEqual({ [PAYMENTS_PROVIDER_SECRET]: ["apple", "stripe"] });
+    expect(payments({ billingSubject: "user" }).secretBranches).toEqual({ [PAYMENTS_PROVIDER_SECRET]: [] });
+  });
+
   test("contributes its routes, mounted under the configured basePath", () => {
     const app = new Hono<PithyHonoEnv>();
     payments({ ...CATALOG, basePath: "/billing" }).routes?.(app);

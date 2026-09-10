@@ -7,7 +7,13 @@ import { dirname, join } from "node:path";
 import { CLOUDFLARE_ENV_KEYS } from "@pithy-sh/cloudflare/src/env/devVars";
 import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
 import { type DevSecretsStore, seedDevSecrets } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
-import { defineSecretRegistry, SecretBackend, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
+import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
+import {
+  defineSecretRegistry,
+  isProvisionableSecret,
+  SecretBackend,
+  type SecretRegistryEntry,
+} from "@pithy-sh/secrets/src/registry";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
 import { devSecretsFile } from "../devSecrets/location";
@@ -332,6 +338,7 @@ describe("devSecretsHealthy", () => {
     misplaced: [],
     missing: [],
     bootstrapMissing: [],
+    bootstrapUnmintable: [],
     undeclared: [],
     mode: 0o600,
     unreadable: null,
@@ -370,6 +377,7 @@ describe("describeDevSecrets", () => {
       misplaced: [],
       missing: [],
       bootstrapMissing: [],
+      bootstrapUnmintable: [],
       undeclared: [],
       mode: 0o600,
       unresolvable: [],
@@ -385,6 +393,7 @@ describe("describeDevSecrets", () => {
       misplaced: [{ name: "auth-session-secret", state: "unmoved" }],
       missing: [],
       bootstrapMissing: [],
+      bootstrapUnmintable: [],
       undeclared: [],
       unresolvable: [],
       mode: null,
@@ -402,6 +411,7 @@ describe("describeDevSecrets", () => {
       misplaced: [{ name: "auth-session-secret", state: "duplicate" }],
       missing: [],
       bootstrapMissing: [],
+      bootstrapUnmintable: [],
       undeclared: [],
       unresolvable: [],
       mode: 0o600,
@@ -419,6 +429,7 @@ describe("describeDevSecrets", () => {
       misplaced: [],
       missing: [],
       bootstrapMissing: [],
+      bootstrapUnmintable: [],
       undeclared: [],
       mode: 0o644,
       unresolvable: [],
@@ -435,6 +446,7 @@ describe("describeDevSecrets", () => {
       misplaced: [],
       missing: [],
       bootstrapMissing: [],
+      bootstrapUnmintable: [],
       undeclared: [],
       mode: 0o600,
       unresolvable: [],
@@ -641,6 +653,134 @@ describe("a green report means the next seed works (#325)", () => {
     expect(result?.malformed.map((one) => one.name)).toEqual(["CONNECTION_SIGNING_KEY"]);
     expect(describeDevSecrets(result as NonNullable<typeof result>).join("\n")).toContain(
       "is a keyspace, not a single value",
+    );
+  });
+});
+
+/**
+ * **#517's defect, one block up in the same report.**
+ *
+ * The Dev secrets block split on `entry.bootstrap` — the *axis* — which is the exact read
+ * `isProvisionableSecret` was written to stop the Secret bindings block making. `bootstrap` says a value
+ * is read straight from its binding before any store is open; it says nothing about what creates one.
+ * `ensureDevMasterKey` mints exactly one binding, so an adopter's own bootstrap entry was handed
+ * `Run pithy add secrets — it mints one`, and running it mints the master key and every mintable secret
+ * and leaves that entry untouched. The identical line comes back. A dead end, one command later.
+ *
+ * Two registries rather than one, so each finding is established alone: a fixture holding both would let
+ * a line for the master key stand in for a line about the other.
+ */
+describe("a bootstrap secret nothing mints is its own finding", () => {
+  const master = defineSecretRegistry({
+    SECRETS_ENCRYPTION_KEYS: {
+      backend: "cf-secrets-store",
+      scope: "environment",
+      rotatable: false,
+      valueType: "text",
+      bootstrap: true,
+    },
+  });
+  const adopters = defineSecretRegistry({
+    CONNECT_DEVICE_ATTESTATION_KEY: {
+      backend: "cf-secrets-store",
+      scope: "environment",
+      rotatable: false,
+      valueType: "text",
+      bootstrap: true,
+    },
+  });
+
+  /** The check over one registry, with an empty secrets file — nothing stated, nothing minted. */
+  async function over(registry: DevSecretsTarget["registry"]) {
+    await writeFile(path, "{}", { mode: 0o600 });
+    return checkDevSecrets({
+      projectDir: dir,
+      targets: [{ name: "board", dir: join(dir, "apps", "board"), registry }],
+      paths: paths(),
+    });
+  }
+
+  test("the master key is the one bootstrap secret pithy add secrets mints, and keeps that line", async () => {
+    const result = await over(master);
+    expect(result?.bootstrapMissing).toEqual(["SECRETS_ENCRYPTION_KEYS"]);
+    expect(result?.bootstrapUnmintable).toEqual([]);
+    expect(describeDevSecrets(result as NonNullable<typeof result>).join("\n")).toContain("pithy add secrets");
+  });
+
+  test("an adopter's own bootstrap secret is not sent to a command that does nothing for it", async () => {
+    const result = await over(adopters);
+    expect(result?.bootstrapMissing).toEqual([]);
+    expect(result?.bootstrapUnmintable).toEqual(["CONNECT_DEVICE_ATTESTATION_KEY"]);
+    const lines = describeDevSecrets(result as NonNullable<typeof result>).join("\n");
+    // The whole of it: the command that mints nothing for this entry is not named.
+    expect(lines).not.toContain("pithy add secrets");
+    expect(lines).toContain("CONNECT_DEVICE_ATTESTATION_KEY");
+    expect(lines).toContain("Nothing mints it");
+    expect(lines).toContain("pithy secrets edit");
+    expect(lines).toContain(path);
+  });
+
+  /**
+   * **The remedy, run to completion.** `pithy secrets edit` opens the secrets file; writing the value into
+   * it is what the line asks for, and it is what clears the finding. Asserted by doing it, because
+   * asserting the sentence is what let the previous wording survive four rounds.
+   */
+  test("writing the value into the secrets file clears the finding", async () => {
+    await over(adopters);
+    await writeFile(
+      path,
+      JSON.stringify({ CONNECT_DEVICE_ATTESTATION_KEY: { currentVersion: "v1", versions: { v1: "attested" } } }),
+      { mode: 0o600 },
+    );
+    const result = await checkDevSecrets({
+      projectDir: dir,
+      targets: [{ name: "board", dir: join(dir, "apps", "board"), registry: adopters }],
+      paths: paths(),
+    });
+    expect(result?.bootstrapUnmintable).toEqual([]);
+    expect(describeDevSecrets(result as NonNullable<typeof result>).join("\n")).not.toContain(
+      "CONNECT_DEVICE_ATTESTATION_KEY",
+    );
+  });
+
+  /**
+   * **The bucket is `isProvisionableSecret`'s answer, and this is what says so.**
+   *
+   * The two blocks of this report used to derive *what creates a value* independently — one from a name,
+   * one from the `bootstrap` axis — and #517 is what that cost. Read through the shipped predicate here,
+   * over every shape a declaration can take, so a rewrite that re-derives it lands on a failure rather
+   * than on an adopter's terminal.
+   */
+  test.each([
+    ["the master key", MASTER_KEY_BINDING, { bootstrap: true }, "bootstrapMissing"],
+    ["an adopter's own bootstrap secret", "CONNECT_ATTESTATION", { bootstrap: true }, "bootstrapUnmintable"],
+    ["a supplied secret", "OAUTH_CLIENT_SECRET", {}, "missing"],
+  ] as const)("%s lands in %s's bucket", async (_label, name, extra, bucket) => {
+    const registry = defineSecretRegistry({
+      [name]: {
+        backend: "cf-secrets-store",
+        scope: "environment",
+        rotatable: false,
+        valueType: "text",
+        ...extra,
+      },
+    });
+    const result = await over(registry);
+    const entry = registry[name] as SecretRegistryEntry;
+    // The predicate, asked directly, and the bucket it decides — pinned to each other rather than each to
+    // a literal, so the two cannot be corrected apart.
+    expect(isProvisionableSecret(name, entry)).toBe(bucket === "bootstrapMissing");
+    for (const candidate of ["bootstrapMissing", "bootstrapUnmintable", "missing"] as const) {
+      expect(result?.[candidate], candidate).toEqual(candidate === bucket ? [name] : []);
+    }
+  });
+
+  /** Neither is "issued by somebody else, fine to leave" — a bootstrap value is read before the store opens. */
+  test("it is never folded into the missing line, whose sentence would send the reader past it", async () => {
+    const result = await over(adopters);
+    expect(result?.missing).toEqual([]);
+    expect(describeDevSecrets(result as NonNullable<typeof result>).join("\n")).not.toContain(
+      "issued by somebody else",
     );
   });
 });

@@ -517,7 +517,15 @@ describe("mintDeclaredSecrets", () => {
     const declared = ["staging", "canary", "prod"] as const;
     const managers = fakeManagers(declared);
     for (const env of declared) {
-      await managers.dispatch({ env, mode: "create", name: "auth-session-secret", value: "theirs" });
+      await managers.dispatch({
+        env,
+        mode: "create",
+        name: "auth-session-secret",
+        backend: "d1",
+        scope: "environment",
+        bootstrap: false,
+        value: "theirs",
+      });
     }
     managers.breakOn(({ env, phase }) => env === "prod" && phase === "write");
 
@@ -543,7 +551,15 @@ describe("mintDeclaredSecrets", () => {
     const managers = fakeManagers(["staging", "prod"]);
     // The global key is in staging only — the split. The session secret is absent everywhere, and sorts
     // first, so this run creates it and then refuses.
-    await managers.dispatch({ env: "staging", mode: "create", name: "email-link-signing-key", value: "theirs" });
+    await managers.dispatch({
+      env: "staging",
+      mode: "create",
+      name: "email-link-signing-key",
+      backend: "d1",
+      scope: "global",
+      bootstrap: false,
+      value: "theirs",
+    });
 
     const refusal = await mintDeclaredSecrets({
       registry: { "auth-session-secret": sessionSecret, "email-link-signing-key": linkKey },
@@ -648,7 +664,15 @@ describe("mintDeclaredSecrets", () => {
       probe: async () => false,
       dispatch: managers.dispatch,
     };
-    await managers.dispatch({ env: "staging", mode: "create", name: "email-link-signing-key", value: "theirs" });
+    await managers.dispatch({
+      env: "staging",
+      mode: "create",
+      name: "email-link-signing-key",
+      backend: "d1",
+      scope: "global",
+      bootstrap: false,
+      value: "theirs",
+    });
 
     await expect(mintDeclaredSecrets({ registry, dispatcher: racing, probe: racing, environments })).rejects.toThrow(
       SecretAlreadyExistsError,

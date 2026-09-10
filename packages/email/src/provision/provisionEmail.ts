@@ -3,6 +3,7 @@
 
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { GLOBAL_SCOPE } from "@pithy-sh/core/src/naming/environment";
+import { bindingResourceName, type ProjectGlobalNaming } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceName } from "@pithy-sh/core/src/naming/resource";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
@@ -33,6 +34,18 @@ import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/
 /** The capability segment every email-owned name carries — the migration namespace and error domain too. */
 export const EMAIL_CAPABILITY = "email";
 
+/** The D1 binding the suppression database is bound to, in every Worker and every environment. */
+export const EMAIL_SUPPRESSIONS_BINDING = "EMAIL_SUPPRESSIONS";
+
+/**
+ * What `packages/email/pithy.manifest.json` declares about naming {@link EMAIL_SUPPRESSIONS_BINDING} —
+ * restated here because a bundled Worker package cannot read its own manifest, and **pinned to it by
+ * `cli/src/ci/bindingResourceNames.test.ts`**, which fails the moment the two answers differ.
+ *
+ * No `resource`: `email-suppressions` is the kebabbed binding, which is what the composer already uses.
+ */
+const EMAIL_SUPPRESSIONS_NAMING: ProjectGlobalNaming = { scope: GLOBAL_SCOPE };
+
 /**
  * The shared, durable suppression database — **one per project, shared across that project's
  * environments**: `<project>-global-email-suppressions`.
@@ -51,9 +64,20 @@ export const EMAIL_CAPABILITY = "email";
  *
  * Composed through core's naming facade under the **`d1`** namespace, so the name is measured against
  * a D1 database name's limit rather than the single 63 the generic composer defaults to.
+ *
+ * **Through {@link bindingResourceName}, the same expression `pithy add` and `pithy provision` compose
+ * with — because until #513 it was a *different* expression, and that was the defect.** This function
+ * said `<project>-global-email-suppressions` while the two writers said `<project>-<env>-email-
+ * suppressions`, so `pithy add email` wrote three per-environment databases into `wrangler.jsonc` and
+ * `pithy email provision` created the one this names. The app Worker and the email Worker then read
+ * different suppression lists, and an unsubscribe recorded on either was invisible to the other. One
+ * expression, driven by one declaration, is what makes that unexpressible rather than merely fixed.
+ *
+ * The output is byte-identical to what it always was: `kebab("EMAIL_SUPPRESSIONS")` is
+ * `email-suppressions`, and the composer's `global` branch is the facade call this used to make directly.
  */
 export function suppressionDatabaseName(project: string): string {
-  return resourceNames(project).global.d1(`${EMAIL_CAPABILITY}-suppressions`);
+  return bindingResourceName(project, EMAIL_SUPPRESSIONS_BINDING, "d1", EMAIL_SUPPRESSIONS_NAMING);
 }
 
 /**

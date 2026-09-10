@@ -76,9 +76,52 @@ So `apps/<worker>/wrangler.jsonc` declared `"database_name": "<project>-staging-
 3. **Adopts rather than duplicates.** Every resource is matched by name before it is created, so a re-run is a no-op and a database an adopter made by hand under the right name is taken up rather than shadowed by a second one.
 4. **Writes the ids into each Worker's config**, under `env.<name>` — and a Worker receives only the bindings its own config declares. The D1 entry gets its `database_name` alongside its `database_id`, because `pithy add` proposes the name offline and this is the step that makes the proposal true. The stanza is created when it is absent, so an environment declared after the project was scaffolded needs no hand-editing.
 5. **Writes the `secrets_store_secrets` stanza** for every `cf-secrets-store` secret the Worker's own registry declares, when a Secrets Store id is in hand. `pithy add` deliberately could not write it — the entry needs a `store_id` and a `secret_name` that do not exist until an account has been reached — so a Worker deployed without `SECRETS_ENCRYPTION_KEYS` and failed at its first request. A declared secret whose entry has not been created is reported rather than bound: wrangler refuses a config naming an absent entry, so binding it would turn one missing value into a failed deploy of the whole Worker.
-6. **Creates the secrets that have no decision in them.** A registry entry declares whether its value is *arbitrary* — a signing key, an ingest secret: any random string works, because nothing outside the project has to agree with it. Provisioning mints those and binds them in the same pass. It still stops for a *supplied* secret — an OAuth client secret, a payment rail's key — because a random string there authenticates against nothing. Absence is checked first, always: an existing value is never replaced, and replacing one is rotation, which is a separate and deliberate act. No minted value is printed, logged, or put in an audit event; the run reports that the secret was created and which entry it went to.
+6. **Creates the secrets that have no decision in them.** A registry entry declares whether its value is *arbitrary* — a signing key, an ingest secret: any random string works, because nothing outside the project has to agree with it. Provisioning mints those and binds them in the same pass. It still stops for a *supplied* secret — an OAuth client secret, a payment rail's key — because a random string there authenticates against nothing. Absence is checked first, always: an existing value is never replaced, and replacing one is rotation, which is a separate and deliberate act. No minted value is printed, logged, or put in an audit event; the run reports that the secret was created and which entry it went to. A supplied secret gets the line that names the two commands that finish it — `SESSION_SIGNING_KEY has no store entry yet. Run pithy secrets create SESSION_SIGNING_KEY --env staging to supply its value, then pithy secrets provision to write the stanza.` — and an entry the kit *can* compose a value for, including `SECRETS_ENCRYPTION_KEYS`, gets the other one: `Run pithy secrets provision — it creates the store entries and writes the stanza.` Which of the two you get is one decision, taken in one place, and `pithy doctor` prints the same answer for the same finding.
 7. **Retargets `service` bindings** at this environment's copy of the callee, resolved through each Worker's real deploy name rather than its `apps/<name>` directory.
 8. **Migrates**, and seeds when asked. A feature also mints its own master key and records a manifest so `pithy feature destroy` deletes exactly what was created — the two things a declared environment has no equivalent of, which are [`feature.md`](feature.md)'s subject.
+
+## While it runs
+
+Provisioning creates real resources over a network, one at a time. So it says what it is about to do before it does any of it, then narrates each step as it happens — a run against a slow account and a hung command are not the same thing, and a command that prints nothing until it finishes cannot tell you which one you have (#515).
+
+The plan comes **before the confirmation**, because that is the moment you are being asked to authorize real Cloudflare resources:
+
+```
+Provisioning staging for dash.
+
+  databases  dash-global-email-suppressions, dash-staging-db
+  buckets    dash-staging-media
+  workers    board, email
+  secrets    dash-staging-secrets-encryption-keys
+
+▸ dash-global-email-suppressions...
+dash-global-email-suppressions: created.
+▸ dash-staging-db...
+dash-staging-db: exists.
+```
+
+Nothing in the plan reaches your account to produce it: the resource set, the Worker set and the store entries are all resolved from your own repository, and they are the run's own inputs rather than a second calculation of them — so a plan that named something the run then skipped would fail this project's tests rather than mislead you.
+
+That pairing is also what makes an interrupted run readable. Provisioning is idempotent and safe to re-run, but idempotence only helps if you know where it stopped: the last `▸` line names the resource that was in flight.
+
+Plain lines, printed once, never redrawn — so the history survives in your scrollback and in a CI log, and a non-interactive run gets the same bytes without escape codes. Under `--json` none of it is printed: that output is exactly one line, as it is for every command.
+
+## A manifest it could not read
+
+An installed `@pithy-sh/*` package whose `pithy.manifest.json` is present and will not parse is named — above the plan, and again on stderr when the run finishes:
+
+```
+Provisioning staging for dash.
+
+  @pithy-sh/email: malformed pithy.manifest.json. Its resource naming and declines went unread.
+    requiredBindings[1].scope: not a known scope
+
+  databases  dash-staging-db, dash-staging-email-suppressions
+```
+
+It sits above the rows because it is what puts them in doubt. The bindings themselves come from the composed capability, so the resources are still created — but two things that decide **what they are called** and **whether they are wanted** live in that file. A manifest nobody could read declares no `scope`, so a project-global suppression database is created per environment, which is the split [#513](https://github.com/pithy-sh/pithy/issues/513) exists to remove; and it resolves a `declinedBindings` entry as `unrecognized`, so a binding you removed is created and written back. Neither is a refusal — one broken package must not cost you the other fifteen capabilities' provisioning — and both are silent without this line.
+
+It is a defect in somebody's package rather than a fact about your run, so the summary copy goes to stderr and the run's own lines stay on stdout. `--json` carries it as `manifestFaults`. `pithy add --list`, `pithy upgrade` and `pithy doctor` report the same packages.
 
 ## What it left out
 
@@ -161,12 +204,12 @@ For a declared environment there is none, deliberately. Staging and production a
 
 ```
 $ pithy provision --env staging --yes --json
-{"command":"provision","env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}],"workers":[{"worker":"replay-board","name":"replay-board-staging"}],"services":[],"secretBindings":[],"declined":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true,"pendingSecrets":["auth-session-secret","email-link-signing-key"],"pendingSecretsRemedy":"pithy secrets provision"}
+{"command":"provision","env":"staging","resources":[{"kind":"d1","binding":"DB","name":"replay-staging-db","id":"9f0…","created":true}],"workers":[{"worker":"replay-board","name":"replay-board-staging"}],"services":[],"secretBindings":[],"declined":[],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/wrangler.jsonc","ids":3}],"committed":true,"pendingSecrets":["auth-session-secret","email-link-signing-key"],"pendingSecretsRemedy":"pithy secrets provision"}
 ```
 
 ```
 $ pithy provision --feature --json
-{"command":"provision","env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command-db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command-replay-board"}],"services":[],"secretBindings":[],"declined":[{"state":"read","worker":"replay-board","declines":[{"state":"honored","name":"SUPPORT_BUCKET","type":"r2","capability":"support","reason":"Attachments are off.","wantedBy":[]}]}],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret","email-link-signing-key"],"pendingSecretsRemedy":null}
+{"command":"provision","env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command-db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command-replay-board"}],"services":[],"secretBindings":[],"declined":[{"state":"read","worker":"replay-board","declines":[{"state":"honored","name":"SUPPORT_BUCKET","type":"r2","capability":"support","reason":"Attachments are off.","wantedBy":[]}]}],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret","email-link-signing-key"],"pendingSecretsRemedy":null}
 ```
 
 | key | type | meaning |
@@ -201,6 +244,9 @@ $ pithy provision --feature --json
 | `declined[].declines[].capability` | `string` | The composed capability that declares it. Absent on `unrecognized` |
 | `declined[].declines[].reason` | `string` | Your own reason, verbatim |
 | `declined[].declines[].wantedBy` | `string[]` | `honored` only: other Workers that declare the same binding and did not decline it. **Non-empty means the resource was created anyway** — provisioning is per binding name, and that is how two Workers share a database. Only this Worker's stanza leaves it out |
+| `manifestFaults` | array | Installed packages shipping a `pithy.manifest.json` that is present and unusable. Project-wide, not per Worker. Empty on a healthy install |
+| `manifestFaults[].package` | string | The package the manifest was read from, as an adopter names it: `@pithy-sh/audit` |
+| `manifestFaults[].reason` | string | Why it could not be used — the schema's refusal text, or the errno where the file would not open |
 | `configs` | `object[]` | Where the ids were written, one entry per Worker |
 | `configs[].worker` | `string` | The Worker's own deploy name |
 | `configs[].path` | `string` | The file written, relative to the project root |

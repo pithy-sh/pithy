@@ -40,6 +40,65 @@ describe("rateLimitNamespaceId", () => {
   });
 });
 
+describe("a binding's declared naming", () => {
+  /** The suppression database as `@pithy-sh/email` needs it: one per project, not one per environment. */
+  const suppressions = BindingSpec.parse({ type: "d1", name: "EMAIL_SUPPRESSIONS", scope: "global" });
+
+  test("writes the project's one name into whichever stanza it is filling", () => {
+    for (const env of ["dev", "staging", "prod"]) {
+      const stanza: WranglerStanza = {};
+      appendBinding(stanza, suppressions, { ...SCOPE, env, capability: "email" });
+      expect(stanza.d1_databases).toEqual([
+        { binding: "EMAIL_SUPPRESSIONS", database_name: "acme-global-email-suppressions" },
+      ]);
+    }
+  });
+
+  /**
+   * **The environment guard sits below the global branch, and this is the case that says so.**
+   *
+   * A stanza key the naming scheme refuses proposes nothing for an ordinary binding — a name with an
+   * eleven-character environment in it is a name no command would recompute the same way. A global name
+   * has no environment segment at all, so none of that applies: withholding it there would leave one
+   * stanza pointing at nothing, in the one case where every stanza has to point at the same thing.
+   */
+  test("proposes a project-global name even in a stanza the naming scheme refuses", () => {
+    const scope = { ...SCOPE, env: "integration", capability: "email" };
+    const global: WranglerStanza = {};
+    appendBinding(global, suppressions, scope);
+    expect(global.d1_databases).toEqual([
+      { binding: "EMAIL_SUPPRESSIONS", database_name: "acme-global-email-suppressions" },
+    ]);
+
+    // And the control beside it: the per-environment binding in the same stanza still proposes nothing,
+    // so this is the global branch answering and not the guard having been deleted.
+    const scoped: WranglerStanza = {};
+    appendBinding(scoped, BindingSpec.parse({ type: "d1", name: "DB" }), scope);
+    expect(scoped.d1_databases).toEqual([{ binding: "DB" }]);
+  });
+
+  test("proposes the `<thing>` the binding declares, not the binding", () => {
+    const stanza: WranglerStanza = {};
+    const write = appendBinding(
+      stanza,
+      BindingSpec.parse({ type: "kv", name: "MEDIA_CACHE", resource: "media" }),
+      SCOPE,
+    );
+    expect(write).toEqual({
+      outcome: "written",
+      proposed: { binding: "MEDIA_CACHE", env: "dev", name: "acme-dev-media" },
+    });
+  });
+
+  test("a binding with no opinion is named exactly as it always was", () => {
+    const stanza: WranglerStanza = {};
+    appendBinding(stanza, BindingSpec.parse({ type: "d1", name: "EMAIL_SUPPRESSIONS" }), SCOPE);
+    expect(stanza.d1_databases).toEqual([
+      { binding: "EMAIL_SUPPRESSIONS", database_name: "acme-dev-email-suppressions" },
+    ]);
+  });
+});
+
 describe("generatedFieldDrift", () => {
   /** A stanza with one limiter in it, at whatever `namespace_id` the caller says. */
   const stanzaAt = (namespaceId: string): WranglerStanza => ({

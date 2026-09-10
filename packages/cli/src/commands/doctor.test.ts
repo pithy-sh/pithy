@@ -239,6 +239,259 @@ describe("renderDoctorText", () => {
   });
 
   /**
+   * #513, and the case that would otherwise be invisible: a stale `env dev` name **never fails the exit**,
+   * because `pithy provision` writes `env.<stanza>` and never reaches the top-level one, and locally the
+   * binding is the address anyway. So the block cannot be gated on `ok` alone — it would print this
+   * finding on every report except the ones it is for, which is the collapse #440 and #499 each removed
+   * one level up.
+   */
+  test("a project-global binding a project still binds per environment opens the health block on its own", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        installedVersion: "1.3.0",
+        fetch: registryFetch({ cli: "1.3.0" }),
+        installedCapabilities: async () => [],
+        resolveWorkers: async () => workerSet("api"),
+        buildPlan: planStub(cleanPlanFor("api")),
+      }),
+    );
+    if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere to sit.");
+    report.project.health = {
+      ...report.project.health,
+      // Every Worker passes and the whole project is `ok`. Only the `dev` stanza disagrees, and no
+      // command rewrites it.
+      ok: true,
+      bindingScope: {
+        ok: true,
+        partial: false,
+        divergent: [],
+        split: [
+          {
+            capability: "email",
+            package: "@pithy-sh/email",
+            binding: "EMAIL_SUPPRESSIONS",
+            kind: "d1",
+            expected: "acme-global-email-suppressions",
+            stale: [{ worker: "api", env: "dev", name: "acme-dev-email-suppressions" }],
+            repointable: true,
+          },
+        ],
+      },
+    };
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain(
+      [
+        "Project health:",
+        "  shared:",
+        "    EMAIL_SUPPRESSIONS (d1) is one resource for the whole project: acme-global-email-suppressions",
+        "      api env.dev points at acme-dev-email-suppressions",
+        "      No command rewrites env dev, and locally the binding is the address — edit it or leave it.",
+      ].join("\n"),
+    );
+    // No `Run:` line, because there is no environment `provision` would reach.
+    expect(text).not.toContain("pithy provision --env dev");
+  });
+
+  /**
+   * **The order the section prints its remedy in, because the reverse of it loses data (#513 review).**
+   *
+   * `pithy provision` changes which resource a binding names and moves nothing. The per-environment
+   * resource is the one that has been in use — `EMAIL_SUPPRESSIONS` and `SUPPORT_BUCKET` are both bound
+   * in the **app** Worker's env — so the project-global one is the empty side, and repointing first makes
+   * every existing suppression stop being honored and every stored attachment unreachable. The section
+   * used to say only "check them for rows before deleting", which is the wrong end of it twice: the loss
+   * is at the repoint, and nothing is deleted at all.
+   */
+  test("the shared section says copy first, and says it before the command that repoints", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        installedVersion: "1.3.0",
+        fetch: registryFetch({ cli: "1.3.0" }),
+        installedCapabilities: async () => [],
+        resolveWorkers: async () => workerSet("api"),
+        buildPlan: planStub(cleanPlanFor("api")),
+      }),
+    );
+    if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere to sit.");
+    report.project.health = {
+      ...report.project.health,
+      ok: false,
+      bindingScope: {
+        ok: false,
+        partial: false,
+        divergent: [],
+        split: [
+          {
+            capability: "email",
+            package: "@pithy-sh/email",
+            binding: "EMAIL_SUPPRESSIONS",
+            kind: "d1",
+            expected: "acme-global-email-suppressions",
+            stale: [{ worker: "api", env: "staging", name: "acme-staging-email-suppressions" }],
+            repointable: true,
+          },
+        ],
+      },
+    };
+    const text = renderDoctorText(report, "/home/u");
+
+    expect(text).toContain("Copy the rows across first.");
+    expect(text).toContain("every unsubscribe recorded above stops being honored, and nothing moves it for you.");
+    expect(text).toContain("wrangler d1 export each old database, then wrangler d1 execute it against");
+    // The order is the instruction. A `Run:` line above the copy would be the sentence read first.
+    expect(text.indexOf("Copy the rows across first.")).toBeLessThan(
+      text.indexOf("Then run: pithy provision --env staging"),
+    );
+    // And the sentence that was the wrong end of it is gone rather than merely joined.
+    expect(text).not.toContain("Check them for rows before deleting.");
+  });
+
+  test("an r2 binding gets the objects sentence, not the rows one", async () => {
+    // A bucket cannot be exported with `wrangler d1`, and the thing that becomes unreachable is an
+    // attachment rather than an unsubscribe. One sentence for two kinds would be true of neither.
+    const report = await buildDoctorReport(
+      baseOptions({
+        installedVersion: "1.3.0",
+        fetch: registryFetch({ cli: "1.3.0" }),
+        installedCapabilities: async () => [],
+        resolveWorkers: async () => workerSet("api"),
+        buildPlan: planStub(cleanPlanFor("api")),
+      }),
+    );
+    if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere to sit.");
+    report.project.health = {
+      ...report.project.health,
+      ok: false,
+      bindingScope: {
+        ok: false,
+        partial: false,
+        divergent: [],
+        split: [
+          {
+            capability: "support",
+            package: "@pithy-sh/support",
+            binding: "SUPPORT_BUCKET",
+            kind: "r2",
+            expected: "acme-global-support",
+            stale: [{ worker: "api", env: "staging", name: "acme-staging-support-bucket" }],
+            repointable: true,
+          },
+        ],
+      },
+    };
+    const text = renderDoctorText(report, "/home/u");
+
+    expect(text).toContain("Copy the objects across first.");
+    expect(text).toContain("every attachment and raw message in the old ones becomes unreachable");
+    expect(text).toContain("Sync each old bucket into acme-global-support over R2's S3 endpoint");
+    expect(text).toContain("The old buckets are left where they are.");
+    expect(text).not.toContain("wrangler d1 export");
+  });
+
+  /**
+   * **The skew this check exists for, and the remedy it must not print there (#513 review, #517).**
+   *
+   * The finding is keyed on the capability's own namer so a newer CLI beside an older `@pithy-sh/email`
+   * still answers — that install is the one most likely to be split. But `pithy provision` composes the
+   * name from that older manifest, so the run writes the per-environment name straight back and the next
+   * `doctor` prints the same finding. Naming a command that cannot clear its own finding is #517's
+   * defect, which took four rounds; here the package moves first and the report says so.
+   */
+  test("under version skew the report names the package to upgrade before the run", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        installedVersion: "1.3.0",
+        fetch: registryFetch({ cli: "1.3.0" }),
+        installedCapabilities: async () => [],
+        resolveWorkers: async () => workerSet("api"),
+        buildPlan: planStub(cleanPlanFor("api")),
+      }),
+    );
+    if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere to sit.");
+    report.project.health = {
+      ...report.project.health,
+      ok: false,
+      bindingScope: {
+        ok: false,
+        partial: false,
+        divergent: [],
+        split: [
+          {
+            capability: "email",
+            package: "@pithy-sh/email",
+            binding: "EMAIL_SUPPRESSIONS",
+            kind: "d1",
+            expected: "acme-global-email-suppressions",
+            stale: [{ worker: "api", env: "staging", name: "acme-staging-email-suppressions" }],
+            repointable: false,
+          },
+        ],
+      },
+    };
+    const text = renderDoctorText(report, "/home/u");
+
+    expect(text).toContain("Nothing installed declares this binding project-wide, so pithy provision would compose");
+    expect(text).toContain("Upgrade @pithy-sh/email first");
+    // Still the command, and still after the step that makes it work.
+    expect(text.indexOf("Upgrade @pithy-sh/email first")).toBeLessThan(
+      text.indexOf("Then run: pithy provision --env staging"),
+    );
+  });
+
+  /**
+   * **The divergence half carries the same carry-over, because it is the same loss (#513 review).**
+   *
+   * Two stanzas naming one resource and opening two is `hostEnv.ts`'s "bound identically in every
+   * environment" failing on the id rather than on the name. Repointing them at one strands whatever the
+   * other holds, exactly as the name split does — so the section says which to copy before it says which
+   * command to run, and the ids above it are what the decision is made from.
+   */
+  test("two stanzas opening two resources get the copy-first step and the run after it", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        installedVersion: "1.3.0",
+        fetch: registryFetch({ cli: "1.3.0" }),
+        installedCapabilities: async () => [],
+        resolveWorkers: async () => workerSet("api"),
+        buildPlan: planStub(cleanPlanFor("api")),
+      }),
+    );
+    if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere to sit.");
+    report.project.health = {
+      ...report.project.health,
+      ok: false,
+      bindingScope: {
+        ok: false,
+        partial: false,
+        split: [],
+        divergent: [
+          {
+            capability: "email",
+            package: "@pithy-sh/email",
+            binding: "EMAIL_SUPPRESSIONS",
+            kind: "d1",
+            expected: "acme-global-email-suppressions",
+            ids: [
+              { id: "sup-1", at: [{ worker: "api", env: "staging" }] },
+              { id: "sup-2", at: [{ worker: "api", env: "prod" }] },
+            ],
+            repointable: true,
+          },
+        ],
+      },
+    };
+    const text = renderDoctorText(report, "/home/u");
+
+    expect(text).toContain("EMAIL_SUPPRESSIONS is bound to 2 different resources");
+    expect(text).toContain("sup-1: api env.staging");
+    expect(text).toContain("It must be bound identically in every environment.");
+    expect(text).toContain("Copy the rows across first.");
+    expect(text.indexOf("Copy the rows across first.")).toBeLessThan(
+      text.indexOf("Then run: pithy provision --env <env>"),
+    );
+  });
+
+  /**
    * #282. Nothing was pending, so the line read `none pending ✓` — about a database `pithy migrate`
    * refused to touch. The two directions are two different faults with two different remedies, so the
    * undeclared one gets its own sentence rather than a second number on the pending line.
@@ -1995,6 +2248,7 @@ describe("a Worker nobody could ask, in the report (#208)", () => {
         misplaced: [],
         missing: [],
         bootstrapMissing: [],
+        bootstrapUnmintable: [],
         malformed: [],
         undeclared: [],
         mode: null,
@@ -2055,6 +2309,7 @@ describe("--json carries every dev-secrets fault the text block prints (#325)", 
         misplaced: [],
         missing: [],
         bootstrapMissing: ["SECRETS_ENCRYPTION_KEYS"],
+        bootstrapUnmintable: [],
         malformed: [{ name: "auth-google-credentials", reason: "auth-google-credentials is not the shape it needs." }],
         undeclared: [],
         mode: null,
@@ -2091,6 +2346,7 @@ describe("--json carries every dev-secrets fault the text block prints (#325)", 
           misplaced: [],
           missing: [],
           bootstrapMissing: [],
+          bootstrapUnmintable: [],
           malformed: [],
           undeclared: [],
           mode: null,
@@ -2113,6 +2369,7 @@ describe("--json carries every dev-secrets fault the text block prints (#325)", 
             misplaced: [],
             missing: [],
             bootstrapMissing: [],
+            bootstrapUnmintable: [],
             malformed: [],
             undeclared: [],
             mode: null,

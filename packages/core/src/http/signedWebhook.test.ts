@@ -13,11 +13,10 @@ import {
   parseSignedWebhookHeader,
   requireSignedWebhook,
   SIGNED_WEBHOOK_MAX_CANDIDATES,
-  SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS,
-  SIGNED_WEBHOOK_TOLERANCE_SECONDS,
   verifySignedWebhook,
 } from "./signedWebhook";
 import { validationHook } from "./validation";
+import { SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS, SIGNED_WEBHOOK_TOLERANCE_SECONDS } from "./webhookWindow";
 
 const SECRET = "whsec_a_secret_nobody_should_ever_read_back";
 const HEADER = "x-pithy-signature";

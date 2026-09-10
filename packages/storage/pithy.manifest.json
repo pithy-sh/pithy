@@ -3,7 +3,7 @@
   "package": "@pithy-sh/storage",
   "requiredBindings": [
     { "type": "d1", "name": "DB" },
-    { "type": "r2", "name": "STORAGE_BUCKET" },
+    { "type": "r2", "name": "STORAGE_BUCKET", "resource": "storage" },
     {
       "type": "workflow",
       "name": "STORAGE_SWEEP",

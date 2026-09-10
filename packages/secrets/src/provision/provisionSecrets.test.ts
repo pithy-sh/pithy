@@ -79,6 +79,37 @@ describe("provisionSecrets", () => {
     expect(result.perEnv.map((entry) => entry.env)).toEqual(["staging", "live"]);
   });
 
+  /**
+   * **The exclusion, pinned.** Six capability provisioning commands stopped spanning every declared
+   * environment: one whose app `DB` binding has no `database_id` is skipped and reported so a project can
+   * stand staging up and prove it before production exists (pithy-sh/pithy#512). This command looks like
+   * the seventh and is not, and the difference is worth stating rather than remembering.
+   *
+   * There is nothing here for a readiness check to consult and nothing an unready environment could mean.
+   * This command **creates** each environment's D1 rather than reading one; it takes no `resolveEnv`, opens
+   * no app `wrangler.jsonc`, and reads no `DB` binding. An environment with no secrets database is exactly
+   * the environment this exists to make one for — and it is step 1 of any bring-up, which four of those six
+   * refuse without ("Run `pithy secrets provision` first").
+   *
+   * So: the fan-out is **unconditional**, the seam has no readiness input, and the result has no `skipped`
+   * field. A sweeping refactor that gave this the same treatment would break all three, and the tests above
+   * would still pass, because they only ever assert a happy path.
+   */
+  test("spans every declared environment unconditionally — no filter, no readiness input, no skip", async () => {
+    const provisioner = new StubProvisioner();
+
+    const result = await provisionSecrets(provisioner, ["staging", "prod"]);
+
+    expect(result.perEnv.map((entry) => entry.env)).toEqual(["staging", "prod"]);
+    // Two arguments and no third: nothing may be passed that narrows the set or reports what was left out.
+    expect(provisionSecrets.length).toBe(2);
+    // The seam is what a readiness check would have to arrive through, and it has no such member.
+    expect(Object.keys(provisioner)).not.toContain("resolveEnv");
+    // A `skipped` or `status` key here is the tell that this was swept into the shared abstraction.
+    expect(Object.keys(result)).toEqual(["perEnv"]);
+    for (const entry of result.perEnv) expect(Object.keys(entry)).toEqual(["env", "databaseId", "storeId"]);
+  });
+
   test("a failing preflight aborts before any resource is created", async () => {
     const provisioner = new StubProvisioner();
     provisioner.preflight = async () => {

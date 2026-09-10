@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import type { BindingSpec } from "@pithy-sh/core/src/capability/bindings";
-import { isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
+import { GLOBAL_SCOPE, isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
+import { bindingResourceName } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { workflowScriptName } from "@pithy-sh/core/src/workflow/naming";
 
@@ -102,13 +103,16 @@ export type BindingWrite =
   /** The entry could not be composed honestly. Nothing was written, and this says what was missing. */
   | { outcome: "skipped"; reason: string };
 
-/** A `<project>-<env>-<binding>` name proposed for a resource the adopter creates themselves. */
+/** A name proposed for a resource the adopter creates themselves, composed by the one naming rule. */
 export interface ProposedName {
   /** The Worker env binding the name is proposed for (e.g. `SESSIONS`). */
   binding: string;
   /** The environment whose stanza declares it — `dev` for the top-level one. */
   env: string;
-  /** The proposed resource name, composed by the one naming rule: `<project>-<env>-<binding>`. */
+  /**
+   * The proposed resource name: `<project>-<env>-<thing>`, or `<project>-global-<thing>` where the
+   * binding declares its resource the project's rather than the environment's (#513).
+   */
   name: string;
 }
 
@@ -234,21 +238,39 @@ function withRemote<Entry extends object>(entry: Entry, binding: BindingSpec): E
 }
 
 /**
- * The `<project>-<env>-<binding>` name to propose for a binding, or `undefined` when there is nothing safe
- * to propose.
+ * The name to propose for a binding's resource, or `undefined` when there is nothing safe to propose.
+ *
+ * **Not always `<project>-<env>-<binding>`, and that is #513.** A binding whose manifest says its
+ * resource is the project's rather than the environment's composes `<project>-global-<thing>`, so every
+ * environment's stanza names the identical resource — which is what `EMAIL_SUPPRESSIONS` requires and
+ * what this writer had no way to say. It wrote three per-environment suppression databases, `pithy email
+ * provision` created the one global one, and an unsubscribe recorded through either was invisible to the
+ * other. The spec is taken whole rather than by name for exactly that: the answer is on it.
+ *
+ * **Through the same composer a provisioning run uses**, so the two writers cannot disagree about one
+ * resource. The scoped half stays here as a callback because only this writer knows which stanza it is
+ * filling in.
  *
  * **Through the facade, per namespace.** A D1 database and a KV namespace are different Cloudflare
  * namespaces with different limits — no published cap and 512 respectively — and calling the generic
  * composer held both to 63, which is R2's number and only R2's.
  *
  * Two cases propose nothing rather than guessing. No project name: a guessed prefix is worse than none,
- * since every command that later recomputes the name would compute a different one. And an `env.<key>` the
- * naming scheme does not accept — an eleven-character environment eats the room every project name was
- * already accepted against, so no name for it is honest. The binding is still wired either way.
+ * since every command that later recomputes the name would compute a different one. And an `env.<key>`
+ * the naming scheme does not accept — an eleven-character environment eats the room every project name
+ * was already accepted against, so no name for it is honest. The binding is still wired either way.
+ *
+ * **The environment guard sits below the global branch, deliberately.** A global name has no environment
+ * segment in it at all, so an `env.<key>` the scheme refuses is no reason to withhold one: refusing it
+ * there would leave that stanza the single stanza pointing at nothing, in the one case where every
+ * stanza has to point at the same thing.
  */
-function proposeName(scope: BindingScope, binding: string, kind: "d1" | "kv"): string | undefined {
-  if (scope.project === undefined || !isValidEnvironment(scope.env)) return undefined;
-  return resourceNames(scope.project).env(scope.env)[kind](binding);
+function proposeName(scope: BindingScope, binding: BindingSpec, kind: "d1" | "kv"): string | undefined {
+  const { project } = scope;
+  if (project === undefined) return undefined;
+  if (binding.scope !== GLOBAL_SCOPE && !isValidEnvironment(scope.env)) return undefined;
+  const names = resourceNames(project);
+  return bindingResourceName(project, binding.name, kind, binding, (thing) => names.env(scope.env)[kind](thing));
 }
 
 /**
@@ -350,7 +372,7 @@ export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scop
   switch (binding.type) {
     case "d1": {
       stanza.d1_databases ??= [];
-      const name = proposeName(scope, binding.name, "d1");
+      const name = proposeName(scope, binding, "d1");
       stanza.d1_databases.push(
         withRemote({ binding: binding.name, ...(name ? { database_name: name } : {}) }, binding),
       );
@@ -359,7 +381,7 @@ export function appendBinding(stanza: WranglerStanza, binding: BindingSpec, scop
     case "kv": {
       stanza.kv_namespaces ??= [];
       stanza.kv_namespaces.push(withRemote({ binding: binding.name }, binding));
-      const name = proposeName(scope, binding.name, "kv");
+      const name = proposeName(scope, binding, "kv");
       return name
         ? { outcome: "written", proposed: { binding: binding.name, env: scope.env, name } }
         : { outcome: "written" };

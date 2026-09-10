@@ -11,6 +11,21 @@ export function formatDone(): string {
   return `Done${saffron(".")}`;
 }
 
+/**
+ * An operation in progress: `▸ <what>...` (docs/CLI.md §3.1).
+ *
+ * The arrow and the body stay in the terminal's own foreground — §3.4 gives this line no tier, because
+ * a color forced here is a color wrong in somebody's theme. The trailing `...` is what marks it as
+ * unfinished, and it never appears on a line that reports a completed thing.
+ *
+ * **A plain line, printed once, never redrawn.** A repainting spinner collapses a run's history into one
+ * line, which is precisely the history these exist to leave behind, and writes cursor escapes into every
+ * CI log. Saffron's spinner glyphs stay reserved for a single indivisible wait.
+ */
+export function formatStep(what: string): string {
+  return `▸ ${what}...`;
+}
+
 /** One machine-readable line — every command's `--json` output shape. */
 export function formatJsonLine(payload: Record<string, unknown>): string {
   return JSON.stringify(payload);

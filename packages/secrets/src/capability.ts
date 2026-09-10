@@ -5,7 +5,7 @@ import { type Capability, defineCapability } from "@pithy-sh/core/src/capability
 import { secretsHealth } from "./admin/health";
 import { EncryptionConfig } from "./crypto/envelope";
 import { secretsTables } from "./data/tables";
-import { MASTER_KEY_BINDING } from "./env/bindings";
+import { MASTER_KEY_BINDING } from "./env/masterKeyBinding";
 import { secretsAdminRoutes } from "./http/guards";
 import { registerSecretsRoutes, SECRETS_DEFAULT_BASE_PATH } from "./http/routes";
 import { secrets_0001_init } from "./migrations/0001_init";

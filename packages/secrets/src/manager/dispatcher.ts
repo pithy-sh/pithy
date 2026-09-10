@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
-import { UpstreamError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, UpstreamError } from "@pithy-sh/core/src/error/pithyError";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type {
-  SecretDispatcher,
+  PreflightSecretDispatcher,
   SecretProbe,
   SecretProbeRequest,
   SecretRotationCloseRequest,
@@ -13,6 +13,7 @@ import type {
   SecretRotationRecorder,
   SecretWriteRequest,
 } from "../cli/dispatch";
+import { SecretAlreadyExistsError, SecretNotFoundError } from "../error/errors";
 import type { ManagedEnvironment } from "../scope";
 import { WriteWorkflowResult } from "./writeWorkflow";
 
@@ -51,7 +52,7 @@ export function secretsRotateWorkflowName(project: string, env: ManagedEnvironme
 }
 
 /**
- * The real {@link SecretDispatcher}: dispatches a write to the target environment's manager
+ * The real {@link PreflightSecretDispatcher}: dispatches a write to the target environment's manager
  * write-Workflow over the CF Workflows REST API and polls to completion. This is the CLI's write
  * path — the master key is worker-only, so the CLI never encrypts or stores locally. The dispatched
  * params carry the (already validated) value, so failures never echo them (see the client).
@@ -61,7 +62,7 @@ export function secretsRotateWorkflowName(project: string, env: ManagedEnvironme
  * the environment quietly invited a caller to supply an unscoped name that resolves to whichever
  * project provisioned the account last.
  */
-export class WorkflowSecretDispatcher implements SecretDispatcher, SecretProbe, SecretRotationRecorder {
+export class WorkflowSecretDispatcher implements PreflightSecretDispatcher, SecretProbe, SecretRotationRecorder {
   readonly #client: CloudflareWorkflowsClient;
   readonly #project: string;
 
@@ -70,13 +71,83 @@ export class WorkflowSecretDispatcher implements SecretDispatcher, SecretProbe, 
     this.#project = project;
   }
 
+  /**
+   * **`d1` only, and a request for any other backend is refused rather than performed** (#517).
+   *
+   * This dispatcher's whole reach is one environment's manager Workflow, and that Workflow runs
+   * `runWriteSecret` against `SystemSecretsStore` — the encrypted D1. It has no route to a Secrets Store
+   * entry and never had one. Before the request carried a backend it could not tell, so a
+   * `cf-secrets-store` write arrived here and became a D1 row: `pithy secrets create` exited 0 having
+   * written a value nothing reads, and `pithy secrets rm` deleted that row and reported the revocation of
+   * a live entry it never touched.
+   *
+   * {@link backendRoutedDispatcher} is what sends a store write elsewhere, so this refusal should be
+   * unreachable — which is exactly why it is here. A write path added later that forgets to route fails
+   * loudly at the first dispatch instead of quietly filling a database with values no reader looks in.
+   */
   async dispatch(request: SecretWriteRequest): Promise<void> {
+    this.#requireD1(request, "dispatch");
     await this.#client.dispatchAndPoll(secretsWriteWorkflowName(this.#project, request.env), {
       mode: request.mode,
       name: request.name,
       value: request.value,
       valueType: request.valueType,
       rotatable: request.rotatable,
+    });
+  }
+
+  /**
+   * **The same two refusals {@link dispatch} would raise, asked with nothing written** (#517).
+   *
+   * This is the half of the pre-flight the first fix did not land. `storeSecretWriter` got one and this
+   * did not, the router called it with `?.`, and the omission read as *nothing to ask* — so on the more
+   * common backend `pithy secrets rotate` still called the issuer, took delivery of a new credential, and
+   * only then dispatched an `update` the manager answered `Secret 'X' does not exist` to. The old
+   * credential was dead at the issuer and the new one existed only in the process raising that error.
+   *
+   * Both refusals are facts about the destination and both are knowable now. The manager itself may be
+   * unreachable — never provisioned, deployed under another project's name, or simply down — and that is
+   * the first thing `probe` finds out, because it is the same dispatch-and-poll against the same Workflow.
+   * And an `update` needs the secret to be there while a `create` needs it not to be, which is precisely
+   * what a probe answers: it is the one mode of the write Workflow that writes nothing, so the pre-flight
+   * and the write read the same store through the same code and cannot come to two answers.
+   *
+   * `delete` is asked nothing beyond reachability — it refuses nothing and is idempotent, exactly as the
+   * store writer's is — and no branch here looks at the value: a pre-flight that could fail on a value
+   * would be a validation, and `validateSecretValue` owns that, before a prompt is even answered.
+   */
+  async preflight(request: SecretWriteRequest): Promise<void> {
+    this.#requireD1(request, "preflight");
+    const present = await this.probe({ env: request.env, name: request.name });
+    if (request.mode === "delete") return;
+    // The words `runWriteSecret` uses, because it is the same rule and the operator meets it twice: a typo
+    // must not create a second secret, and must not be answered differently depending on how early it was
+    // caught. Only `detail` differs, and it says where the answer came from.
+    if (request.mode === "create" && present) {
+      throw new SecretAlreadyExistsError({
+        message: `Secret '${request.name}' already exists.`,
+        action: `Use pithy secrets update ${request.name} to replace it.`,
+        detail: `create '${request.name}': already present in the ${request.env} manager's store (pre-flight)`,
+      });
+    }
+    if (request.mode === "update" && !present) {
+      throw new SecretNotFoundError({
+        message: `Secret '${request.name}' does not exist.`,
+        action: "Use create to add a new secret.",
+        detail: `update '${request.name}': not present in the ${request.env} manager's store (pre-flight)`,
+      });
+    }
+  }
+
+  /**
+   * The backend guard, on both entry points rather than on the write alone — a pre-flight that answered
+   * about a destination this writer cannot reach would be worse than not asking, because it would resolve.
+   */
+  #requireD1(request: SecretWriteRequest, step: "dispatch" | "preflight"): void {
+    if (request.backend === "d1") return;
+    throw new InternalError({
+      message: `Secret '${request.name}' is held in the Secrets Store, and this writer only reaches D1.`,
+      detail: `secrets manager ${step}: ${request.mode} '${request.name}' arrived with backend '${request.backend}'; route it through backendRoutedDispatcher`,
     });
   }
 

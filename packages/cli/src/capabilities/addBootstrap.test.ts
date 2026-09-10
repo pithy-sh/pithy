@@ -8,7 +8,7 @@ import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { EncryptionConfig } from "@pithy-sh/secrets/src/crypto/envelope";
 import { DevSecretEnvelope } from "@pithy-sh/secrets/src/dev/devSecretsFile";
-import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
+import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { readBootstrapVars } from "../devSecrets/bootstrapVars";
 import { readDevSecrets } from "../devSecrets/file";

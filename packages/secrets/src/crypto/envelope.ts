@@ -53,16 +53,20 @@ export const EncryptionConfig = z
   .object({
     currentVersion: z
       .string()
+      .meta({ multiline: false })
       .describe(
         "The version key (a stringified integer) whose master key encrypts new writes — the active master key.",
       ),
     versions: z
-      .record(z.string(), z.string())
+      // Every string leaf of a `json` secret says whether it fits on a terminal line, and a base64 key
+      // does. See `cli/promptPlan.ts`; held repo-wide by `packages/cli/src/ci/secretFieldLines.test.ts`.
+      .record(z.string(), z.string().meta({ multiline: false }))
       .describe(
         "Every still-valid master key: version key (stringified integer) → base64-encoded AES-256 key. Holds the current key plus any prior versions still needed to decrypt rows not yet re-encrypted.",
       ),
     lastRotatedAt: z.iso
       .datetime()
+      .meta({ multiline: false })
       .describe(
         "ISO-8601 timestamp of the last at-rest key rotation; the cron compares against it to decide when to rotate.",
       ),
@@ -91,7 +95,7 @@ function toBase64(bytes: Uint8Array): string {
 }
 
 /** Decode base64 to raw bytes. */
-function fromBase64(b64: string): Uint8Array {
+function fromBase64(b64: string): Uint8Array<ArrayBuffer> {
   return Uint8Array.from(atob(b64), (char) => char.charCodeAt(0));
 }
 
@@ -108,11 +112,13 @@ const AAD_CONTEXT = "pithy.secrets.v1:";
  * An empty name is refused on both halves. It would bind the prefix alone — every secret sharing one
  * context is the same as binding nothing, and it would fail open rather than loudly.
  */
-function additionalData(name: string): Uint8Array {
+function additionalData(name: string): Uint8Array<ArrayBuffer> {
   if (name.length === 0) {
     throw new SecretCryptoError({ detail: "the envelope needs a secret name to bind; an empty name binds nothing" });
   }
-  return new TextEncoder().encode(`${AAD_CONTEXT}${name}`);
+  // Copied through `from` so the view is backed by an `ArrayBuffer` rather than an `ArrayBufferLike`:
+  // workers-types types `encode` as the wider one, which no longer satisfies `BufferSource`.
+  return Uint8Array.from(new TextEncoder().encode(`${AAD_CONTEXT}${name}`));
 }
 
 /** Import the AES-GCM key for `version` from the config, or throw if that version is absent. */

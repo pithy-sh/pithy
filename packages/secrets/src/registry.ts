@@ -5,6 +5,7 @@ import { DevSecretValue } from "@pithy-sh/core/src/capability/devSecret";
 import { SecretOrigin, SecretRotation } from "@pithy-sh/core/src/capability/secretOrigin";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
+import { MASTER_KEY_BINDING } from "./env/masterKeyBinding";
 import { KEYSPACE_SEPARATOR } from "./keyspace";
 import type { ValueRotator } from "./rotation/valueRotator";
 
@@ -261,6 +262,40 @@ export type KeyedSecretName<R extends SecretRegistry> = {
  */
 export function isMintableSecret(entry: SecretRegistryEntry): boolean {
   return entry.devValue !== undefined && !entry.keyed;
+}
+
+/**
+ * **Can `pithy secrets provision` create this entry?** The question anything naming a remedy asks — and
+ * it is deliberately not {@link isMintableSecret}'s question.
+ *
+ * {@link isMintableSecret} answers *may anything invent this value*. It gates the `mint` callback inside
+ * `secretsStoreBindings`, which is one of provisioning's two creation paths and not the first one.
+ * `provisionSecrets` runs `ensureMasterKey` per environment before any binding pass — the master key is
+ * composed by `initialMasterKeyConfig` and written into the Secrets Store there — so the one
+ * `cf-secrets-store` secret a stock adopter Worker declares is created by the command *and* answers
+ * `false` to the other predicate. It has to: `defineSecretRegistry` refuses `devValue` on a `bootstrap`
+ * entry, because nothing may invent the value every other secret is read through. Splitting a remedy on
+ * mintability therefore sent the commonest case toward hand-writing a master key (#517).
+ *
+ * The two disjuncts **are** those two paths, and the second is **one named secret rather than an axis**.
+ * `bootstrap` says a value is read straight from its binding before any store is open; it does not say
+ * anything creates it. `ensureMasterKey` creates exactly one thing — the master key, found by the store
+ * entry `masterKeySecretName` composes and bound as {@link MASTER_KEY_BINDING} — and there is no step in
+ * `provisionSecrets` for a second one. Reading the axis instead said yes to an adopter's own bootstrap
+ * entry, which `defineSecretRegistry` accepts and nothing creates: `Run pithy secrets provision`, run it,
+ * get the same complaint back, which is the dead-end loop #517 exists to remove. So the name is checked,
+ * and a second bootstrap secret becomes provisionable on the day it gets a step here — not before.
+ *
+ * The name is enough because it *is* the binding: the store entry is scoped per project and environment,
+ * but every Worker reads it as `SECRETS_ENCRYPTION_KEYS`, and a registry entry's key is the binding name.
+ * `bootstrap` and `keyed` are still checked with it, so a registry declaring that name as something else
+ * cannot inherit the master key's remedy.
+ *
+ * `false` is a **supplied** secret — an OAuth client secret, a payment rail's key. Provisioning binds one
+ * and creates nothing, so only `pithy secrets create` closes that gap.
+ */
+export function isProvisionableSecret(name: string, entry: SecretRegistryEntry): boolean {
+  return isMintableSecret(entry) || (name === MASTER_KEY_BINDING && entry.bootstrap === true && !entry.keyed);
 }
 
 /**

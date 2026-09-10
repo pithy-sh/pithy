@@ -83,6 +83,10 @@ function dispatcher(refuse: string[] = []): SecretRotationDispatcher & {
       sent.push(request);
       if (refuse.includes(request.env)) throw new Error(`${request.env} refused`);
     },
+    // A reachable manager holding the secret an `update` replaces — the ordinary case, so these cases stay
+    // about what a rotation *does*. The pre-flight's own refusals are driven through the real dispatcher
+    // in `rotationPreflight.test.ts`.
+    async preflight() {},
     async openRotation(request) {
       opened.push(request);
       return opened.length;
@@ -385,5 +389,121 @@ describe("when the rotator itself fails", () => {
     expect(failure.payload.message).toContain("may have been rolled at cloudflare");
     // Rolling again at an issuer that already rolled produces a second orphan, so the check comes first.
     expect(failure.payload.action).toContain("Check at cloudflare whether a new credential was issued.");
+  });
+});
+
+/**
+ * # `pithy secrets rotate` reaches the store the registry names, and refuses in front of the issuer (#517)
+ *
+ * `rotate` was the one value-touching command left off `backendRoutedDispatcher`, because it also needs
+ * the ledger and the ledger is the manager's alone. So a `cf-secrets-store` rotation dispatched an
+ * `update` to `WorkflowSecretDispatcher`, which reaches one environment's D1 and refuses anything else —
+ * a 500 `InternalError`, raised **after** `rotateSecretValue` had produced the value. With a `provider`
+ * rotator that means the kit asked an issuer for a new credential, received it, and threw before storing
+ * it: the previous credential is dead, the successor exists only in a process that is exiting, and the
+ * command's own report calls that state `unrecorded`.
+ *
+ * Two things fix it and both are asserted here: the write is routed, and every refusal a store write owns
+ * is asked above the irreversible line.
+ */
+describe("a store-backed rotation", () => {
+  const storeProvider: SecretRegistryEntry = { ...provider, backend: "cf-secrets-store" };
+
+  /** The routed shape `commands/secrets.ts` composes: the store writer for the write, the manager for the row. */
+  function routed(store: {
+    dispatch?: (request: SecretWriteRequest) => Promise<void>;
+    preflight?: (request: SecretWriteRequest) => Promise<void>;
+  }): SecretRotationDispatcher & { sent: SecretWriteRequest[]; opened: SecretRotationOpenRequest[] } {
+    const manager = dispatcher();
+    return {
+      sent: manager.sent,
+      opened: manager.opened,
+      dispatch: async (request) => {
+        manager.sent.push(request);
+        if (request.backend === "d1") throw new Error("a store secret reached the manager");
+        await store.dispatch?.(request);
+      },
+      preflight: async (request) => {
+        await store.preflight?.(request);
+      },
+      openRotation: (request) => manager.openRotation(request),
+      closeRotation: (request) => manager.closeRotation(request),
+    };
+  }
+
+  test("the rotated value is written where the registry says it is held", async () => {
+    const written: SecretWriteRequest[] = [];
+    const dispatchers = routed({
+      dispatch: async (request) => {
+        written.push(request);
+      },
+    });
+
+    const outcome = await runSecretRotation(registry(storeProvider), dispatchers, {
+      name: "THE_SECRET",
+      env: "prod",
+      environments: DECLARED,
+    });
+
+    expect(outcome).toMatchObject({ status: "rotated", rolled: true, recorded: ["prod"] });
+    // The routing facts the writer needs, forwarded from the entry rather than re-derived downstream.
+    expect(written).toEqual([
+      expect.objectContaining({
+        env: "prod",
+        mode: "update",
+        name: "THE_SECRET",
+        backend: "cf-secrets-store",
+        scope: "environment",
+        bootstrap: false,
+        value: "issued-by-cloudflare",
+      }),
+    ]);
+  });
+
+  /**
+   * **The whole point of the pre-flight.** The account's Secrets Store is resolved lazily, so a project
+   * with no `SECRETS_STORE_ID` used to discover it at the write — with the credential already rolled.
+   * Here the same failure arrives with the rotator untouched, the row never opened, and the previous
+   * credential still live, which is an ordinary re-runnable refusal.
+   */
+  test("a refusal the store owns lands before the issuer is called", async () => {
+    let rolled = 0;
+    const entry: SecretRegistryEntry = {
+      ...storeProvider,
+      rotator: {
+        async roll() {
+          rolled += 1;
+          return { newValue: "issued-by-cloudflare" };
+        },
+      },
+    };
+    const dispatchers = routed({
+      preflight: async () => {
+        throw new Error("SECRETS_STORE_ID is not set");
+      },
+      dispatch: async () => {
+        throw new Error("the write was reached, which means the preflight did not refuse");
+      },
+    });
+
+    await expect(
+      runSecretRotation(registry(entry), dispatchers, { name: "THE_SECRET", env: "prod", environments: DECLARED }),
+    ).rejects.toThrow(/SECRETS_STORE_ID/);
+
+    expect(rolled, "the issuer was called for a rotation that could never be recorded").toBe(0);
+    // And no history was written for a rotation that never started.
+    expect(dispatchers.opened).toEqual([]);
+  });
+
+  /** A dispatcher with no pre-flight — the manager's — is unchanged, and a `d1` rotation still works. */
+  test("a d1 rotation is unaffected", async () => {
+    const sent = dispatcher();
+    const outcome = await runSecretRotation(registry(provider), sent, {
+      name: "THE_SECRET",
+      env: "prod",
+      environments: DECLARED,
+    });
+    expect(outcome).toMatchObject({ status: "rotated", recorded: ["prod"] });
+    expect(sent.sent[0]).toMatchObject({ backend: "d1", bootstrap: false });
   });
 });

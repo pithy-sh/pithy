@@ -5,9 +5,11 @@ import { DeclaredSecret } from "@pithy-sh/core/src/capability/secretOrigin";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
+import { MASTER_KEY_BINDING } from "./env/masterKeyBinding";
 import {
   defineSecretRegistry,
   isMintableSecret,
+  isProvisionableSecret,
   SecretBackend,
   type SecretRegistry,
   type SecretRegistryEntry,
@@ -507,5 +509,60 @@ describe("the rotator seam (#367)", () => {
     expect(() => defineSecretRegistry(asRegistry({ CF_TOKEN: { ...providerEntry, rotator: {} } }))).toThrow(
       /no roll\(\)/,
     );
+  });
+});
+
+/**
+ * The distinction #517 turned on, pinned as its own set of cases because a predicate that is *nearly*
+ * this one reads as correct at every call site and is wrong about the commonest secret in the kit.
+ */
+describe("isProvisionableSecret", () => {
+  const text: SecretRegistryEntry = { backend: "d1", scope: "environment", rotatable: true, valueType: "text" };
+  /** What the master key is, in the two fields this turns on: `bootstrap`, and no `devValue`. */
+  const bootstrap: SecretRegistryEntry = {
+    backend: "cf-secrets-store",
+    scope: "environment",
+    rotatable: false,
+    bootstrap: true,
+    valueType: "text",
+  };
+
+  test("a mintable secret is provisionable — the mint callback creates it, under any name", () => {
+    expect(isProvisionableSecret("AUTH_SESSION_SECRET", { ...text, devValue: "random" })).toBe(true);
+  });
+
+  /**
+   * The whole point. `ensureMasterKey` runs per environment before the binding pass, so provisioning
+   * creates this — and `defineSecretRegistry` refuses `devValue` on a bootstrap entry, so it can never be
+   * mintable. The two predicates must disagree here, and a remedy split on the wrong one steers an
+   * operator toward hand-writing a master key.
+   */
+  test("the master key is provisionable and is not mintable", () => {
+    expect(isProvisionableSecret(MASTER_KEY_BINDING, bootstrap)).toBe(true);
+    expect(isMintableSecret(bootstrap)).toBe(false);
+  });
+
+  /**
+   * **`bootstrap` says how a value is read, never that anything creates it.** `defineSecretRegistry`
+   * accepts an adopter's own bootstrap entry and `provisionSecrets` has exactly one creation step, for
+   * the master key alone — so saying yes here sent that adopter to `pithy secrets provision`, which
+   * created nothing and gave the same complaint back. The dead-end loop is the defect #517 exists to
+   * remove, so the axis is not the predicate: the name is.
+   */
+  test("another bootstrap secret is not — no step of provisioning creates one", () => {
+    expect(isProvisionableSecret("CONNECT_SIGNING_KEYS", bootstrap)).toBe(false);
+    // And the name alone is not enough either: a registry declaring it as something else does not
+    // inherit the master key's remedy.
+    expect(isProvisionableSecret(MASTER_KEY_BINDING, { ...text, backend: "cf-secrets-store" })).toBe(false);
+  });
+
+  /** Issued in somebody else's console. No step of provisioning composes one. */
+  test("a supplied secret is neither", () => {
+    expect(isProvisionableSecret("AUTH_GOOGLE_CREDENTIALS", { ...text, backend: "cf-secrets-store" })).toBe(false);
+  });
+
+  /** A keyspace has no one value, so no one entry to create. Refused again, as mintability refuses it. */
+  test("a keyspace is never provisionable", () => {
+    expect(isProvisionableSecret("TENANT_KEYS", { ...text, keyed: true, devValue: "random" })).toBe(false);
   });
 });

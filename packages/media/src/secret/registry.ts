@@ -50,8 +50,9 @@ export const MediaStorageCredentials = z
   .object({
     apiToken: z
       .string()
+      .meta({ multiline: false })
       .describe("A scoped Cloudflare API token with Images and Stream permissions, for minting direct-upload URLs."),
-    accountId: z.string().describe("The Cloudflare account id the media resources live in."),
+    accountId: z.string().meta({ multiline: false }).describe("The Cloudflare account id the media resources live in."),
   })
   .describe("The credentials the media capability reads to mint Cloudflare Images and Stream direct-upload URLs.");
 export type MediaStorageCredentials = z.output<typeof MediaStorageCredentials>;

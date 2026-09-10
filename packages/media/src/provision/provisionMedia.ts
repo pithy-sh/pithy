@@ -58,6 +58,15 @@ function mediaNames(project: string, env: ManagedEnvironment): ScopedNames {
  *
  * Named through the facade's `r2` getter, which carries R2's own rule — 3 to 63 characters, starting
  * and ending alphanumeric — rather than a number this file picked.
+ *
+ * **The `<thing>` segment is `media`, and `packages/media/pithy.manifest.json` now says so too**, with
+ * `"resource": "media"` on the `MEDIA_BUCKET` binding (#519). Until it did, `pithy add` and `pithy
+ * provision` composed `<project>-<env>-media-bucket` from the binding name while this composed
+ * `<project>-<env>-media`: two names for one bucket, which is #513's defect in the two capabilities that
+ * issue left out. The binding keeps `_BUCKET` — it is read as `env.MEDIA_BUCKET` in a Worker and should
+ * say what kind of thing it is — and the resource drops it, because `r2` is already the composed name's
+ * own kind. `cli/src/ci/bindingResourceNames.test.ts` holds this function and that manifest line to one
+ * string, at a four-character project name and at the longest one a config may declare.
  */
 export function mediaBucketName(project: string, env: ManagedEnvironment): string {
   return mediaNames(project, env).r2(MEDIA_CAPABILITY);
@@ -131,9 +140,10 @@ export interface MediaProvisionResult {
  * order is the contract — the resources exist before a secret names them, and the secrets exist before a
  * worker that reads them boots. Idempotent end to end (each step is).
  *
- * `environments` is the project's declaration from the root `pithy.config.ts` (#241). Every declared
- * environment is provisioned; an environment this skipped would be one the project deploys to with no
- * resources behind it — the silence the closed `ManagedEnvironment` enum used to produce.
+ * `environments` is **what the caller determined it can act on**, which the CLI narrows from the project's
+ * declaration (#241) to the environments whose app database exists (pithy-sh/pithy#512). Nothing is
+ * skipped here and nothing decides here: an environment reaching this list is provisioned, and one that
+ * did not was already reported to the operator by name, with why and with the command that fixes it.
  */
 export async function provisionMedia(
   provisioner: MediaProvisioner,

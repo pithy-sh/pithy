@@ -1129,6 +1129,10 @@ describe("the gate on the gate", () => {
       probes: "stat",
       why: "Reads `mtimeMs` off a lock file it created itself, to age it out. Not an existence probe.",
     },
+    "cli/src/ci/distTypes.ts": {
+      probes: "existsSync",
+      why: "A CI harness, never an adopter's tree. It asks whether a package's `dist` was built and whether the repository's own `tsc` is installed — two questions whose answer through a link is still yes, and a workspace install links both. What it writes it writes under `os.tmpdir()`, on a path it derives from a hash of the checkout root, and no probe here answered about that path.",
+    },
     "cli/src/feature/worktree.ts": {
       probes: "existsSync",
       why: "Asks about a git worktree directory before handing it to `git worktree add`, which does its own refusing. Nothing is composed and written through the answer.",
@@ -1259,6 +1263,8 @@ describe("the gate on the gate", () => {
    * this is here.
    */
   const REMOVES_ON_PURPOSE: Record<string, string> = {
+    "cli/src/ci/distTypes.ts":
+      "Clears the scratch program it is about to write, under `os.tmpdir()` on a path derived from a hash of the checkout root — never a path an adopter named and never one inside a project. `writeProgram` recreates the directory on the next line, so the delete is the first half of one write.",
     "cli/src/capabilities/eject.ts":
       "Discards the fork it is about to re-copy under `--force`, on the exact path `ensureScaffoldPath(projectDir, dest)` cleared on the line above and `pathExists` then confirmed with an `lstat`. The gate is there; only the `rm` is local.",
   };

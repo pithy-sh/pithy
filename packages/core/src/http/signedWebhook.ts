@@ -4,6 +4,9 @@
 import type { MiddlewareHandler } from "hono";
 import type { PithyHonoEnv } from "../capability/capability";
 import { InternalError, WebhookUnverifiedError } from "../error/pithyError";
+// The bounds live in a leaf so a browser-facing config schema can quote them without reaching this
+// middleware's Worker graph (#521). See `webhookWindow.ts`.
+import { SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS, SIGNED_WEBHOOK_TOLERANCE_SECONDS } from "./webhookWindow";
 
 /**
  * The `signed-webhook` strategy, for any sender. Secret, header name, tolerance and the exact received
@@ -70,23 +73,6 @@ import { InternalError, WebhookUnverifiedError } from "../error/pithyError";
  * {@link checkSignedWebhook}, which reports rather than throws. {@link verifySignedWebhook} is that plus the
  * kit's error.
  */
-
-/** How far a delivery's own timestamp may be from now. Stripe's default, and generous against clock skew. */
-export const SIGNED_WEBHOOK_TOLERANCE_SECONDS = 300;
-
-/**
- * The widest freshness window this verifier accepts, and it refuses above rather than clamping.
- *
- * A tolerance is a replay window in the plainest possible units: every second of it is a second longer a
- * captured delivery keeps working. The five minutes above is Stripe's own and covers clock drift plus ordinary
- * delivery latency; an hour is the far end of a sender that queues a delivery and re-sends it without re-dating
- * it. Past that a number has stopped covering latency and started covering a capture.
- *
- * Refused rather than clamped because an `86400` is a typo or a misunderstanding either way — clamped, the
- * endpoint keeps working and nobody reads the line again; refused, the first delivery says which knob is wrong
- * and it is a two-character fix.
- */
-export const SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS = 3600;
 
 /** The header key naming the timestamp, unless a sender names it otherwise. */
 const DEFAULT_TIMESTAMP_KEY = "t";

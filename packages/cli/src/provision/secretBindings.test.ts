@@ -80,7 +80,33 @@ describe("secretsStoreBindings", () => {
     });
 
     expect(bound.map((entry) => entry.binding)).toEqual(["RELEASE_INGEST_SECRET"]);
-    expect(missing).toEqual(["CONNECTION_KEY_ENCRYPTION_KEY"]);
+    expect(missing).toEqual([
+      { binding: "CONNECTION_KEY_ENCRYPTION_KEY", entry: "replay-staging-connection-key-encryption-key" },
+    ]);
+  });
+
+  /**
+   * **A missing secret carries the entry name it would have been bound at, and the scope decides it.**
+   *
+   * `pithy provision --json` reported one, and recomposed the name from the binding alone — which means
+   * supplying a scope, and the only one available at that call site was `"environment"`. So a missing
+   * `global` secret was reported at `<project>-<env>-…`, an address that is not the one the Worker binds:
+   * an operator creating a value there would create it, be told nothing was wrong, and still deploy a
+   * Worker with an unbound secret. Both scopes are asserted together, because a producer that hardcoded
+   * either one satisfies a test that only checks the other.
+   */
+  test("a missing secret's entry name is the scoped one, global and environment alike", async () => {
+    const { missing } = await secretsStoreBindings({
+      registry,
+      scope: environmentScope("replay", "staging"),
+      storeId: "store-1",
+      exists: async () => false,
+    });
+
+    expect(missing).toEqual([
+      { binding: "CONNECTION_KEY_ENCRYPTION_KEY", entry: "replay-staging-connection-key-encryption-key" },
+      { binding: "RELEASE_INGEST_SECRET", entry: "replay-global-release-ingest-secret" },
+    ]);
   });
 
   test("the master key the secrets capability merges in is one of them", async () => {
@@ -242,7 +268,7 @@ describe("secretsStoreBindings — minting", () => {
 
     expect(minted).toEqual([]);
     expect(result.minted).toEqual([]);
-    expect(result.missing).toEqual(["STRIPE_SECRET_KEY"]);
+    expect(result.missing.map((secret) => secret.binding)).toEqual(["STRIPE_SECRET_KEY"]);
   });
 
   /** No minter, no minting: a caller with no store credentials reports exactly what it did before. */
@@ -255,6 +281,10 @@ describe("secretsStoreBindings — minting", () => {
     });
 
     expect(result.minted).toEqual([]);
-    expect(result.missing).toEqual(["CONNECTION_KEY_ENCRYPTION_KEY", "RELEASE_INGEST_SECRET", "STRIPE_SECRET_KEY"]);
+    expect(result.missing.map((secret) => secret.binding)).toEqual([
+      "CONNECTION_KEY_ENCRYPTION_KEY",
+      "RELEASE_INGEST_SECRET",
+      "STRIPE_SECRET_KEY",
+    ]);
   });
 });

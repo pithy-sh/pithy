@@ -29,11 +29,20 @@ import { z } from "zod";
  * to define, and `CloudflareR2Manager` validates its config against it.
  */
 export const R2StorageCredentials = R2Credentials.extend({
-  accountId: z.string().min(1).describe("The Cloudflare account id the bucket lives in — the S3 endpoint host."),
-  bucket: z.string().min(1).describe("The R2 bucket name every presigned URL and server-side object call targets."),
+  accountId: z
+    .string()
+    .min(1)
+    .meta({ multiline: false })
+    .describe("The Cloudflare account id the bucket lives in — the S3 endpoint host."),
+  bucket: z
+    .string()
+    .min(1)
+    .meta({ multiline: false })
+    .describe("The R2 bucket name every presigned URL and server-side object call targets."),
   apiToken: z
     .string()
     .min(1)
+    .meta({ multiline: false })
     .describe(
       "The R2-scoped Cloudflare API token the key pair was derived from. Carried alongside because an R2 S3 access key IS a CF API token — the id is the key id, the SHA-256 of the value is the secret — so whatever provisions the pair already holds it, and `CloudflareR2Manager` needs it to prove bucket access.",
     ),

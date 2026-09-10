@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { authSecretsRegistry } from "@pithy-sh/auth/src/instance/secrets";
 import { emailSigningRegistry } from "@pithy-sh/email/src/crypto/signingKey";
 import { masterKeyRegistryEntry } from "@pithy-sh/secrets/src/capability";
-import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
+import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { describe, expect, test } from "vitest";
 import { requireProvisionMode } from "./mode";

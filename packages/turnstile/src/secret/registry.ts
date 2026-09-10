@@ -13,10 +13,15 @@ import { TurnstileConfigError } from "../error/errors";
  */
 export const TurnstileSecretEntry = z
   .object({
-    key: z.string().min(1).describe("The widget's secret key, used server-side at Cloudflare siteverify."),
+    key: z
+      .string()
+      .min(1)
+      .meta({ multiline: false })
+      .describe("The widget's secret key, used server-side at Cloudflare siteverify."),
     lastRotatedAt: z
       .string()
       .optional()
+      .meta({ multiline: false })
       .describe("ISO-8601 timestamp of the last rotation, if any. Informational; enables future rotation."),
   })
   .describe("One widget's secret key plus optional rotation metadata.");

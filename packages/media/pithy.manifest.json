@@ -3,7 +3,7 @@
   "package": "@pithy-sh/media",
   "requiredBindings": [
     { "type": "d1", "name": "DB" },
-    { "type": "r2", "name": "MEDIA_BUCKET" },
+    { "type": "r2", "name": "MEDIA_BUCKET", "resource": "media" },
     {
       "type": "workflow",
       "name": "MEDIA_IMAGE_TO_TEXT",

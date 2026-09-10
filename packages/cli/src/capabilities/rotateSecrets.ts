@@ -3,7 +3,11 @@
 
 import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
-import type { SecretDispatcher, SecretRotationRecorder } from "@pithy-sh/secrets/src/cli/dispatch";
+import type {
+  PreflightSecretDispatcher,
+  SecretRotationRecorder,
+  SecretWriteRequest,
+} from "@pithy-sh/secrets/src/cli/dispatch";
 import { dispatchedRotationLedger } from "@pithy-sh/secrets/src/cli/rotationLedger";
 import { secretWriteTargets } from "@pithy-sh/secrets/src/cli/writeTargets";
 import { SecretRotationUnrecordedError } from "@pithy-sh/secrets/src/error/errors";
@@ -56,13 +60,20 @@ import type { CliAuditEmit } from "../audit/cliAudit";
 export const EXIT_ROLLED_NOT_RECORDED = 3;
 
 /**
- * What a rotation needs from the manager: the write, and the ledger row around it.
+ * What a rotation needs from the manager: the write, **the refusals asked before it**, and the ledger row
+ * around it.
  *
- * One object rather than two arguments because a rotation is one act and the two calls must land on the
- * same project's managers. `WorkflowSecretDispatcher` implements both, so this is a description of what is
- * already true rather than a constraint anything has to satisfy separately.
+ * One object rather than three arguments because a rotation is one act and the calls must land on the
+ * same project's managers. `WorkflowSecretDispatcher` implements all of it, so this is a description of
+ * what is already true rather than a constraint anything has to satisfy separately.
+ *
+ * **`PreflightSecretDispatcher` rather than `SecretDispatcher`, and that is load-bearing** (#517). This
+ * command is the one place where a refusal arriving late costs a live credential, so the type it accepts
+ * is the one that has a pre-flight to ask. A rotation dispatcher that offers none is a compile error here
+ * — not a `?.` that resolves, which is what let the `d1` half keep rolling credentials it could not
+ * store.
  */
-export type SecretRotationDispatcher = SecretDispatcher & SecretRotationRecorder;
+export type SecretRotationDispatcher = PreflightSecretDispatcher & SecretRotationRecorder;
 
 /** What the command asks for: one secret, in one environment (or none, for a `global` secret). */
 export interface SecretRotateCommand {
@@ -132,20 +143,38 @@ export async function runSecretRotation(
         declared: command.environments,
       });
 
+  // The routing facts, resolved once from the entry `secretWriteTargets` was asked about, and shared by
+  // the write and the pre-flight so the two cannot ask about different destinations.
+  const routing = {
+    mode: "update",
+    name: command.name,
+    backend: entry.backend,
+    scope: entry.scope,
+    // A rotated value is stored in exactly the shape a created one is, so the flag that decides that
+    // shape travels with it. Nothing else downstream knows a `bootstrap` entry from an ordinary one.
+    bootstrap: entry.bootstrap === true,
+    valueType: entry.valueType,
+    rotatable: entry.rotatable,
+  } as const satisfies Omit<SecretWriteRequest, "env" | "value">;
+  // **The dispatcher's own refusals, asked before the issuer is called** (#517). Each backend has the
+  // same two, over its own destination: it cannot be reached at all, and an `update` of a secret that is
+  // not there. Both were reached at the write, which for a `provider` rotation is after the credential
+  // has been rolled and its successor exists only in this process — measured on `cf-secrets-store` first
+  // and then, unchanged, on `d1`. Not optional and not bound conditionally: the type demands one, so
+  // there is no dispatcher here that quietly asks nothing.
+  const preflight = dispatcher.preflight.bind(dispatcher);
+
   const outcome = await rotateSecretValue({
     name: command.name,
     entry,
     targets,
     ledger: dispatchedRotationLedger(dispatcher, { targets }),
-    store: ({ env, value }) =>
-      dispatcher.dispatch({
-        env,
-        mode: "update",
-        name: command.name,
-        value,
-        valueType: entry.valueType,
-        rotatable: entry.rotatable,
-      }),
+    // A rotation writes wherever the secret is held, and a rotated value that landed in the wrong store
+    // is a live credential rolled at the issuer and lost here (#517).
+    store: ({ env, value }) => dispatcher.dispatch({ ...routing, env, value }),
+    // Asked once per target by `rotateSecretValue`, above the line either side of which everything
+    // changes. Same facts, same destination, nothing written.
+    preflight: (env: ManagedEnvironment) => preflight({ ...routing, env }),
     ...(command.attempts !== undefined ? { attempts: command.attempts } : {}),
     ...(command.sleep !== undefined ? { sleep: command.sleep } : {}),
     ...(command.dryRun !== undefined ? { dryRun: command.dryRun } : {}),

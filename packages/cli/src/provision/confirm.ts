@@ -36,6 +36,19 @@ export interface ConfirmProvisionOptions {
   confirmPhrase?: string;
   /** Interactive confirm seam: ask the operator for the phrase. Never called under `--json`. */
   prompt?: () => Promise<string>;
+  /**
+   * **Say what is about to happen, before asking anyone to agree to it (#515).**
+   *
+   * This is where an operator is asked to authorize real Cloudflare resources, and it asked without
+   * naming a single one. The plan goes here rather than a line later, so the production prompt is
+   * answered by someone who has read what they are unlocking.
+   *
+   * Called **after** the `--yes` check and before anything is classified as production, and it is a
+   * callback rather than a string for exactly that ordering: a run with no `--yes` is a mistake in the
+   * command line, gets an answer about the command line, and must not pay for a Worker resolution to
+   * hear it. Omitted under `--json`, which prints one line and nothing else.
+   */
+  announce?: () => Promise<void>;
   /** The names this project classifies as production (`seed.productionEnvironments`), plus the built-ins. */
   productionEnvironments?: readonly string[];
 }
@@ -44,6 +57,8 @@ export interface ConfirmProvisionOptions {
  * Enforce the gate. Resolves when the run is authorized, throws a `ValidationError` otherwise.
  *
  * - Any environment → requires `--yes`. Provisioning is never the accidental result of a bare command.
+ * - Authorized, and the run has something to say → {@link ConfirmProvisionOptions.announce} prints the
+ *   plan. After the flag check, before the production classification, so nobody types a phrase blind.
  * - Production → requires `--yes` **and** the exact {@link provisionConfirmPhrase}, from `--confirm` or,
  *   interactively, from the prompt. `--json` forbids the prompt, so a headless production provision
  *   happens only when a human wrote the phrase into the pipeline.
@@ -55,6 +70,9 @@ export async function assertProvisionConfirmed(options: ConfirmProvisionOptions)
       action: `Re-run with --yes to provision ${options.env}.`,
     });
   }
+
+  // What the run will touch, before the production gate and before any prompt. See `announce`.
+  await options.announce?.();
 
   if (!isProductionEnv(options.env, options.productionEnvironments)) return;
 

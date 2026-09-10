@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { EntitlementKey } from "@pithy-sh/core/src/entitlement/entitlement";
-import { SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS } from "@pithy-sh/core/src/http/signedWebhook";
+import { SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS } from "@pithy-sh/core/src/http/webhookWindow";
 import { z } from "zod";
 import { PAYMENTS_RAILS, type PaymentsRail } from "../data/rail";
 import { PaymentsSubjectType } from "../data/subject";

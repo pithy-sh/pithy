@@ -3,7 +3,8 @@
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { isProvisionableSecret, type SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, createCliAudit } from "../audit/cliAudit";
 import { storeSecretMinter } from "../capabilities/mintSecrets";
@@ -19,15 +20,24 @@ import {
   requireProjectName,
 } from "../project/config";
 import { requireManagedEnvironment } from "../project/environment";
-import { projectCapabilities, resolveWorkers } from "../project/workerScope";
+import { projectCapabilities, type ResolvedWorker, resolveWorkers } from "../project/workerScope";
 import { assertProvisionConfirmed, provisionConfirmPhrase } from "../provision/confirm";
-import { type ProvisionedDecline, type ProvisionReport, provisionEnvironment } from "../provision/environment";
+import {
+  type ProvisionedDecline,
+  type ProvisionedResource,
+  type ProvisionProgress,
+  type ProvisionReport,
+  type ProvisionWorker,
+  provisionEnvironment,
+} from "../provision/environment";
 import { type ProvisionMode, requireProvisionMode } from "../provision/mode";
 import { type PendingSecrets, pendingSecretLines, pendingSecrets } from "../provision/pendingSecrets";
+import { formatProvisionPlan, manifestFaultLines, provisionPlan } from "../provision/plan";
 import { AUDIT_DESTINATION_ENV, cloudflareProvisioners, type ResourceProvisioners } from "../provision/resources";
 import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
+import { storeEntryRemedy } from "../provision/secretEntryRemedy";
 import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
-import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
+import { formatDone, formatJsonLine, formatStep, withErrorReporting } from "../terminal/output";
 
 /**
  * `pithy provision --env <name>` and `pithy provision --feature` — **one command, because provisioning is
@@ -164,6 +174,57 @@ export interface ProvisionRunOptions {
   json: boolean;
 }
 
+/**
+ * One resource, as a line: what it is called, and whether this run made it or found it.
+ *
+ * One sentence, one writer. It is printed as the resource settles now (#515) and was printed in the
+ * summary before; two copies of it would drift the first time one of them was reworded, and an operator
+ * comparing a streamed line against a summary line would have no way to tell a rewording from a
+ * different resource.
+ */
+function resourceLine(resource: ProvisionedResource): string {
+  return `${resource.name}: ${resource.created ? "created" : "exists"}.`;
+}
+
+/**
+ * **Where a run narrates itself, or nothing at all.**
+ *
+ * The gate is `--json` and only `--json`: every command is agent-drivable, and a machine reads exactly one
+ * line. It is deliberately **not** the `interactive` boolean the confirm prompt uses — that one also asks
+ * whether a TTY is attached, and a run in CI is the run whose log most needs to say where it got to. A
+ * non-TTY simply renders these lines plain, which is what the whole terminal seam already does with color.
+ */
+export function provisionProgress(options: { json: boolean }): ProvisionProgress | undefined {
+  if (options.json) return undefined;
+  return (event) => {
+    // `▸ <name>...` before the find, then the settled line the summary used to hold until the end.
+    const line = event.phase === "start" ? formatStep(event.name) : resourceLine(event.resource);
+    process.stdout.write(`${line}\n`);
+  };
+}
+
+/**
+ * One Worker resolution, read as many times as a run needs it.
+ *
+ * The plan and the work must name the same Workers, and the cheapest way to guarantee that is to resolve
+ * them once and hand the same array to both. Memoized on the promise rather than the result, so two
+ * callers racing it still share one read.
+ */
+function workerSetOnce(projectDir: string): () => Promise<ResolvedWorker[]> {
+  let pending: Promise<ResolvedWorker[]> | null = null;
+  return () => (pending ??= resolveWorkers({ projectDir }));
+}
+
+/** The provisioning view of a resolved Worker: where it lives, what it composes, what it declines. */
+function provisionWorkers(workers: readonly ResolvedWorker[]): ProvisionWorker[] {
+  return workers.map((worker) => ({
+    name: worker.name,
+    dir: worker.dir,
+    capabilities: worker.capabilities,
+    config: worker.config,
+  }));
+}
+
 /** One line per file written: what landed there, and what happens to it next. */
 function describeConfigs(report: ProvisionReport): string[] {
   return report.configs.map((config) => {
@@ -256,7 +317,32 @@ function declineFate(decline: ProvisionedDecline, worker: string): string {
  */
 export function writeReport(
   report: ProvisionReport,
-  options: { json: boolean; seeded: boolean; pending: PendingSecrets },
+  options: {
+    json: boolean;
+    seeded: boolean;
+    pending: PendingSecrets;
+    /**
+     * The project's merged secret registry — read for one fact and one only: a missing entry's declared
+     * `scope`, which decides whether its `pithy secrets create` carries `--env` (#517).
+     *
+     * `ProvisionedSecret` does not carry the scope and this report cannot invent it: `secretWriteTargets`
+     * refuses `--env` on a `global` secret, so a remedy that guessed would be the third round of this
+     * issue printed by a different command. The registry is the authority both reports read, which is
+     * what makes them able to agree.
+     */
+    registry: SecretRegistry;
+    /**
+     * Whether each resource already printed its own line as it settled (#515).
+     *
+     * The summary's resource block **moves** rather than being joined by a second copy: with the lines
+     * arriving in place, interleaved with the `▸` step that produced each one, repeating them at the end
+     * says nothing the scrollback above does not already say in better order. Everything else in the
+     * summary stays — those are facts about the run as a whole, not about one resource.
+     *
+     * Defaulted off, because `--json` streams nothing and neither does any caller that passes no sink.
+     */
+    streamed?: boolean;
+  },
 ): void {
   if (options.json) {
     process.stdout.write(
@@ -269,9 +355,17 @@ export function writeReport(
     );
     return;
   }
-  for (const resource of report.resources) {
-    process.stdout.write(`${resource.name}: ${resource.created ? "created" : "exists"}.\n`);
+  if (!options.streamed) {
+    for (const resource of report.resources) process.stdout.write(`${resourceLine(resource)}\n`);
   }
+  // **First of the summary lines, because it is what puts the lines under it in doubt.** A capability
+  // whose manifest would not parse still gets its resources created — the bindings come from the composed
+  // instance — but under the generic `<project>-<env>-<binding>` name, because `scope` and `resource` are
+  // read out of the file nobody could open (#513). A project-global database created per environment is
+  // the exact split #513 removed, and without this line the run reporting it is byte-identical to a
+  // healthy one (#184). To stderr, like `pithy add`'s and for the same reason: it is a defect in someone's
+  // package rather than a fact about this run, and a `--json` consumer already has it as `manifestFaults`.
+  for (const line of manifestFaultLines(report.manifestFaults)) process.stderr.write(`${line}\n`);
   // Beside what was made, because it is the same subject: what this environment has, and what it does not.
   for (const line of describeDeclines(report)) process.stdout.write(`${line}\n`);
   for (const worker of report.workers) {
@@ -288,8 +382,25 @@ export function writeReport(
     } else if (secret.bound) {
       process.stdout.write(`${secret.binding} reads ${secret.entry}.\n`);
     } else {
+      // **`doctor`'s answer, not a second one** (#517). This is the same finding that command reports
+      // from the files afterwards, and each report used to render it itself: a reviewer ran both to
+      // completion and found doctor's corrected and this one still naming the dead end four rounds had
+      // been about. Sharing the *renderer* was the first fix and was not enough — this went on handing
+      // it the supplied-value question for every secret, including the mintable ones and the master key,
+      // and told an operator to hand-write a value the next `pithy secrets provision` would generate. So
+      // it asks `storeEntryRemedy`, which is the whole answer, over the registry facts doctor reads too:
+      // the scope decides whether the command carries `--env`, and `isProvisionableSecret` decides which
+      // of the two commands it is.
+      const declared = options.registry[secret.binding];
       process.stdout.write(
-        `${secret.binding} has no store entry yet. Create it with pithy secrets create ${secret.binding}.\n`,
+        `${secret.binding} has no store entry yet. ${storeEntryRemedy([
+          {
+            binding: secret.binding,
+            scope: declared?.scope ?? "environment",
+            env: report.env,
+            provisionable: declared !== undefined && isProvisionableSecret(secret.binding, declared),
+          },
+        ])}\n`,
       );
     }
   }
@@ -321,10 +432,33 @@ async function provisionDeclared(
   // that name is a legal stanza key and an illegal declaration, so no project can admit it.
   const environment = requireManagedEnvironment(env, loadProjectEnvironments(config));
   const interactive = !options.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+  const project = requireProjectName(config);
+  // The scope carries both the names and the stanza. There is no second argument to disagree with.
+  const scope = environmentScope(project, environment);
+  // Resolved once, read by the plan and by the run — so the two cannot name different Workers.
+  const resolved = workerSetOnce(projectDir);
+  const workers = async (): Promise<ProvisionWorker[]> => provisionWorkers(await resolved());
+  const progress = provisionProgress(options);
   await assertProvisionConfirmed({
     env: environment,
     yes: options.yes,
     json: options.json,
+    // The plan, before anyone agrees to it and before the first Cloudflare call (#515). Under `--json`
+    // there is no sink, so nothing is resolved for it and nothing is printed.
+    ...(progress
+      ? {
+          announce: async () => {
+            const plan = await provisionPlan({
+              projectDir,
+              project,
+              scope,
+              capabilities: projectCapabilities(await resolved()),
+              workers: await workers(),
+            });
+            process.stdout.write(`${formatProvisionPlan(plan)}\n\n`);
+          },
+        }
+      : {}),
     ...(options.confirm !== undefined ? { confirmPhrase: options.confirm } : {}),
     ...(interactive ? { prompt: confirmPrompt(environment) } : {}),
     ...(config.seed?.productionEnvironments !== undefined
@@ -334,9 +468,7 @@ async function provisionDeclared(
 
   const account = loadProjectCloudflare(config) ?? null;
   const provisioners = await requireProvisioners(account, environment);
-  const capabilities = projectCapabilities(await resolveWorkers({ projectDir }));
-  // The scope carries both the names and the stanza. There is no second argument to disagree with.
-  const scope = environmentScope(requireProjectName(config), environment);
+  const capabilities = projectCapabilities(await resolved());
   const store = await buildStore(account);
   const audit = await buildAudit(projectDir, capabilities, account);
   const report = await provisionEnvironment({
@@ -344,6 +476,9 @@ async function provisionDeclared(
     scope,
     capabilities,
     provisioners,
+    // The Workers the plan named, not a second resolution that might disagree with it.
+    resolveWorkers: workers,
+    ...(progress ? { onProgress: progress } : {}),
     ...(store
       ? {
           secretBindings: async (workerCapabilities) =>
@@ -364,7 +499,13 @@ async function provisionDeclared(
     seedData: options.seed,
     audit,
   });
-  writeReport(report, { json: options.json, seeded: options.seed, pending: deferredSecrets(capabilities, mode) });
+  writeReport(report, {
+    json: options.json,
+    seeded: options.seed,
+    pending: deferredSecrets(capabilities, mode),
+    registry: workerSecretRegistry(capabilities) ?? {},
+    streamed: progress !== undefined,
+  });
 }
 
 /**
@@ -381,6 +522,22 @@ async function provisionBranch(
   options: ProvisionRunOptions,
 ): Promise<void> {
   const { identity, capabilities } = await branchIdentity(projectDir);
+  const scope = featureScope(identity);
+  const resolved = workerSetOnce(projectDir);
+  const workers = async (): Promise<ProvisionWorker[]> => provisionWorkers(await resolved());
+  const progress = provisionProgress(options);
+  // No confirmation gate here — a feature environment is created per pull request, so there is no prompt
+  // to hang the plan off. It goes where the confirmation's would: before the first Cloudflare call.
+  if (progress) {
+    const plan = await provisionPlan({
+      projectDir,
+      project: identity.project,
+      scope,
+      capabilities,
+      workers: await workers(),
+    });
+    process.stdout.write(`${formatProvisionPlan(plan)}\n\n`);
+  }
   const account = await projectCloudflareAccount(projectDir);
   const provisioners = await requireProvisioners(account, "a feature environment");
   const store = await buildStore(account);
@@ -390,9 +547,17 @@ async function provisionBranch(
     ...(store ? { store } : {}),
     identity,
     provisioners,
+    resolveWorkers: workers,
+    ...(progress ? { onProgress: progress } : {}),
     audit: await buildAudit(projectDir, capabilities, account),
   });
-  writeReport(report, { json: options.json, seeded: true, pending: deferredSecrets(capabilities, mode) });
+  writeReport(report, {
+    json: options.json,
+    seeded: true,
+    pending: deferredSecrets(capabilities, mode),
+    registry: workerSecretRegistry(capabilities) ?? {},
+    streamed: progress !== undefined,
+  });
 }
 
 /**

@@ -280,6 +280,14 @@ export async function mintDeclaredSecrets(options: {
           env,
           mode: "create",
           name,
+          // `isManagerMinted` has already established `d1`, so this is a restatement of a fact rather
+          // than a choice — and it is stated because a request states its destination now (#517), never
+          // because a caller may pick one.
+          backend: entry.backend,
+          scope: entry.scope,
+          // Always false here — `defineSecretRegistry` refuses `devValue` on a `bootstrap` entry, so
+          // nothing mintable can be one. Stated for the same reason as the backend beside it.
+          bootstrap: entry.bootstrap === true,
           value: shared ?? mintSecretValue(entry.devValue),
           valueType: entry.valueType,
           rotatable: entry.rotatable,

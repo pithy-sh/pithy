@@ -243,9 +243,9 @@ describe("docs/commands/doctor.md", () => {
     // An unclassified block, a fourth transcript, or a second sample would be an unpinned example. The
     // page total counts the synopsis too, so a worked example added anywhere lands in one of these.
     //
-    // Fifteen since #499 added the generated-value fragment, which is the second block on this page
-    // produced by a project where every check passes.
-    expect(WHAT_BLOCKS).toHaveLength(15);
+    // Sixteen since #513 added the `shared:` fragment — a project-global resource its Workers do not all
+    // point at, which is the first finding here that belongs to no single Worker but the manifest read.
+    expect(WHAT_BLOCKS).toHaveLength(16);
     expect(EXAMPLE_BLOCKS).toHaveLength(2);
     expect(JSON_SAMPLES).toHaveLength(1);
     expect(fencedBlocks(PAGE)).toHaveLength(WHAT_BLOCKS.length + EXAMPLE_BLOCKS.length + JSON_SAMPLES.length + 1);
@@ -561,6 +561,7 @@ describe("docs/commands/doctor.md", () => {
         ...report.project.health.workers.filter((worker) => worker.worker === "collab"),
       ],
       manifests: { ok: true, faults: [] },
+      bindingScope: { ok: true, split: [], divergent: [], partial: false },
     };
     const fragment = FRAGMENTS[7];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the unchecked-worker fragment.`);
@@ -589,9 +590,55 @@ describe("docs/commands/doctor.md", () => {
         ok: false,
         faults: [{ package: "@pithy-sh/leaderboard", reason: "configOptions[0].key: not a bare identifier" }],
       },
+      bindingScope: { ok: true, split: [], divergent: [], partial: false },
     };
     const fragment = FRAGMENTS[8];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the Project health fragment.`);
+    expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  /**
+   * The `shared:` fragment (#513), pinned against a project whose stanzas name three different suppression
+   * databases where `@pithy-sh/email` creates one.
+   *
+   * Set on the report rather than on disk for the reason the manifest fragment is: `bindingScopeHealth`
+   * reads every Worker's `wrangler.jsonc` for itself, and the renderer is a pure function of the structure
+   * either way. What the page must not be allowed to drift from is the *wording* — the `Run:` line, and
+   * the two sentences about what is left behind — because an adopter acts on both.
+   */
+  test("the shared fragment is what the renderer prints for a project-global binding bound per environment", async () => {
+    const report = await buildDoctorReport(
+      docOptions(
+        harness.baseOptions({ resolveWorkers: async () => workerSet("api"), buildPlan: planStub(cleanPlanFor("api")) }),
+      ),
+    );
+    if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere else to sit.");
+    report.project.health = {
+      ok: false,
+      workers: report.project.health.workers,
+      manifests: { ok: true, faults: [] },
+      bindingScope: {
+        ok: false,
+        partial: false,
+        divergent: [],
+        split: [
+          {
+            capability: "email",
+            package: "@pithy-sh/email",
+            binding: "EMAIL_SUPPRESSIONS",
+            kind: "d1",
+            expected: "acme-global-email-suppressions",
+            repointable: true,
+            stale: [
+              { worker: "api", env: "dev", name: "acme-dev-email-suppressions" },
+              { worker: "api", env: "staging", name: "acme-staging-email-suppressions" },
+            ],
+          },
+        ],
+      },
+    };
+    const fragment = FRAGMENTS[9];
+    if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the shared-binding fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
 
@@ -616,7 +663,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[9];
+    const fragment = FRAGMENTS[10];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the unknown-alias fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -642,7 +689,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[10];
+    const fragment = FRAGMENTS[11];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the offline fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -690,7 +737,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[11];
+    const fragment = FRAGMENTS[12];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the settings fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -714,7 +761,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[12];
+    const fragment = FRAGMENTS[13];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the local delivery fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -824,6 +871,9 @@ const SPREAD_BUILT = [
 /** Commands with a site the object pattern cannot parse: a nested object, a template placeholder, a value. */
 const UNPARSED_SITES = ["doctor", "secrets", "testers"];
 
+/** The second halves of backticked `a.b` spans that name a file rather than a payload field. */
+const FILE_SUFFIXES = new Set(["json", "jsonc", "ts", "tsx", "md", "toml", "sh", "log", "lock"]);
+
 describe("the docs say what the code emits", () => {
   /**
    * The gate #184's `manifests:` block walked straight past: three transcripts pinned, all three green,
@@ -847,6 +897,66 @@ describe("the docs say what the code emits", () => {
     if (block === undefined) throw new Error(`${WHERE} no longer pastes a \`pithy doctor --json\` sample.`);
     const sample: unknown = JSON.parse(block.split("\n").slice(1).join("\n"));
     expect(Object.keys(sample as Record<string, unknown>).sort()).toEqual(Object.keys(renderDoctorJson(report)).sort());
+  });
+
+  /**
+   * **A field the page documents inside a block is a field the payload still emits** (#517).
+   *
+   * The gate above compares the sample's **top-level** keys, which is where every previous hole in this
+   * area was. It says nothing about a key nested inside one — and `devSecrets.bootstrapUnmintable` could
+   * be deleted from the payload with every test in this repository green while `doctor.md` went on telling
+   * adopters to branch on it. A documented field that quietly stops being emitted is worse than an
+   * undocumented one: a script reads `undefined` and takes the healthy branch.
+   *
+   * Read off the page rather than listed here, so it covers whatever the page happens to document today.
+   * It is deliberately one-directional: the page explains the fields worth branching on and is not
+   * required to enumerate every key, so this holds *documented ⊆ emitted* and never the reverse.
+   */
+  test("every block field doctor.md documents is one the payload emits", async () => {
+    // A report with every block **present**, because a `null` block answers nothing: the fields this gate
+    // is for live inside `devSecrets`, which a healthy fixture leaves unchecked.
+    const payload = renderDoctorJson(
+      await buildDoctorReport(
+        docOptions({
+          ...harness.healthyOptions(),
+          checkDevSecrets: async () => ({
+            path: "/home/u/.config/pithy/acme/secrets.jsonc",
+            misplaced: [],
+            missing: [],
+            bootstrapMissing: [],
+            bootstrapUnmintable: [],
+            malformed: [],
+            undeclared: [],
+            mode: 0o600,
+            unreadable: null,
+            unresolvable: [],
+          }),
+        }),
+      ),
+    );
+    const missing: string[] = [];
+    const checked: string[] = [];
+    for (const match of PAGE.matchAll(/`([A-Za-z]+)\.([A-Za-z]+)`/g)) {
+      const [, block, field] = match as unknown as [string, string, string];
+      // A backticked `a.b` on this page is sometimes a file — `cloudflare.json` is the credentials file
+      // and `cloudflare` is also a payload block, so the shapes are genuinely ambiguous and the suffix is
+      // what tells them apart. No key of this payload is named for a file extension, and one that was
+      // would be skipped rather than misreported.
+      if (FILE_SUFFIXES.has(field)) continue;
+      const value = (payload as Record<string, unknown>)[block];
+      // Only a block this render actually produced can be asked. A `null` one is a check that did not
+      // arise here, and "this field is absent" would be a claim about the wrong report.
+      if (value === null || typeof value !== "object") continue;
+      checked.push(`${block}.${field}`);
+      if (!Object.hasOwn(value as Record<string, unknown>, field)) missing.push(`${block}.${field}`);
+    }
+    expect([...new Set(missing)]).toEqual([]);
+    // Named rather than counted, for the field this gate was written for: `bootstrapUnmintable` is
+    // documented as the one a script branches on to tell "nothing mints this" from "add secrets will".
+    // A count alone would go green the day the page stopped mentioning it.
+    expect(checked).toContain("devSecrets.bootstrapUnmintable");
+    expect(checked).toContain("devSecrets.bootstrapMissing");
+    expect(checked.length).toBeGreaterThan(5);
   });
 
   /**
@@ -1122,7 +1232,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   // Three commands whose work is a fan-out with no transaction across it: a run that failed part-way
   // says what it wrote, and this is the flag that says the report beside it is truncated (#324, #380).
   interrupted: ["feature", "migrate", "secrets"],
-  manifestFaults: ["add", "upgrade"],
+  manifestFaults: ["add", "provision", "upgrade"],
   name: ["secrets", "token"],
   packageManager: ["add", "ui"],
   project: ["doctor", "migrate"],
@@ -1133,6 +1243,11 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   // says which a declared environment still has no binding for. One subject, two directions.
   secretBindings: ["doctor", "provision"],
   shell: ["alias", "doctor"],
+  // The environments a capability provisioning run created nothing for, each with why and the command
+  // that resolves it. Six commands, one meaning, because it is one helper (#512). Deliberately not
+  // `skipped`: `pithy ui add` already emits that name for a `string[]` of files it left alone, and a
+  // shared name carrying two types is the defect #235 is about.
+  skippedEnvironments: ["email", "media", "payments", "storage", "support", "testers"],
   storageDeleted: ["media", "storage", "support"],
   to: ["email", "worker"],
   worker: ["add", "init", "ui", "upgrade", "worker"],
@@ -1176,6 +1291,7 @@ const SHARED_JSON_KEY_TYPES: Record<string, string> = {
   routing: "object",
   runs: "object[]",
   shell: "string",
+  skippedEnvironments: "object[]",
   storageDeleted: "boolean",
   to: "string",
   worker: "string",

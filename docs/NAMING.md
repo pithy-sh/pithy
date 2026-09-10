@@ -92,6 +92,8 @@ Some things are shared across all of a project's environments on purpose. They p
 - `<project>-global-support` — the bucket the support inbox's attachments and raw messages live in. A thread does not belong to an environment; the environments are separated by which bucket an operator binds.
 - `<project>-global-email-bounce`, `<project>-global-support-inbound` — the Email Routing rules. There is one rule per zone; environments are separated by which Worker it points at, not by the rule.
 
+**Two of those are Worker bindings, and they say so in code rather than in this list.** `EMAIL_SUPPRESSIONS` and `SUPPORT_BUCKET` carry `scope: "global"` in their capability's `pithy.manifest.json`, and every writer reads it: `pithy add` proposes the name, `pithy provision` creates the resource under it, and the capability's own provisioner composes it through the same expression. Before that the manifest had no way to say it, so `pithy add email` wrote a *per-environment* suppression database into every stanza while `pithy email provision` created the one global one — two names for a resource defined as one, and an unsubscribe recorded through either was invisible to the other. `pithy doctor`'s `shared:` section reports a project still in that state. The other entries above are not bindings — an Email Routing rule and a Secrets Store entry are named by their own writers — so this list stays the statement of record for them.
+
 `global` is a scope decision, not a shortcut. Anything not on a list like this one is per-environment.
 
 ## Feature environments

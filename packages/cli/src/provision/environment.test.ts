@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
-import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { provisionEnvironment } from "./environment";
@@ -663,5 +663,172 @@ describe("provisionEnvironment, for a declared environment", () => {
       seed: async ({ env }) => void calls.push(`seed:${env}`),
     });
     expect(calls).toEqual(["migrate:staging", "seed:staging"]);
+  });
+
+  /**
+   * **What a binding's manifest says about its resource's name, honored by the run (#513).**
+   *
+   * The run reads `scope` and `resource` from the manifest and from nowhere else — `pithy add` and
+   * `pithy upgrade` both read the manifest and neither reaches a composed instance, so a declaration on
+   * the capability object would be invisible to two of the three writers. These tests install fixture
+   * manifests for that reason: a capability composed with no manifest declares nothing, which is the
+   * adopter's own `app` capability and stays exactly as it was.
+   */
+  describe("a binding's declared naming", () => {
+    /** Install a fixture manifest where a Worker's composed manifests are resolved from. */
+    const install = async (root: string, name: string, requiredBindings: unknown[]): Promise<void> => {
+      const pkgDir = join(root, "node_modules", "@pithy-sh", name);
+      await mkdir(pkgDir, { recursive: true });
+      await writeFile(
+        join(pkgDir, "pithy.manifest.json"),
+        JSON.stringify({ name, package: `@pithy-sh/${name}`, requiredBindings }),
+      );
+    };
+
+    const emailBindings = [
+      { type: "d1", name: "DB" },
+      { type: "d1", name: "EMAIL_SUPPRESSIONS", scope: "global" },
+    ];
+    const email = defineCapability({
+      name: "email",
+      requiredBindings: emailBindings as BindingSpecInput[],
+    });
+    const emailWorkers = () => async () => [{ name: "replay-board", dir: workerDir, capabilities: [email] }];
+
+    test("creates a project-global resource once, under `global`, and writes it into the stanza", async () => {
+      await install(dir, "email", emailBindings);
+      const { stores, provisioners } = fakeProvisioners();
+
+      const report = await provisionEnvironment({
+        projectDir: dir,
+        scope,
+        capabilities: [email],
+        provisioners,
+        resolveWorkers: emailWorkers(),
+        ...noBackend,
+      });
+
+      // The suppression database carries no environment segment; the app database beside it still does.
+      expect(report.resources.map((resource) => resource.name)).toEqual([
+        "replay-staging-db",
+        "replay-global-email-suppressions",
+      ]);
+      expect([...stores.d1.keys()]).toEqual(["replay-staging-db", "replay-global-email-suppressions"]);
+
+      const stanza = await readStanza(workerDir, "staging");
+      expect(stanza?.d1_databases).toEqual([
+        { binding: "DB", database_name: "replay-staging-db", database_id: "d1-1" },
+        { binding: "EMAIL_SUPPRESSIONS", database_name: "replay-global-email-suppressions", database_id: "d1-2" },
+      ]);
+    });
+
+    test("refuses two capabilities that disagree about the resource behind one binding", async () => {
+      // First-wins would let `readdir` order decide where a project's data lives — one run's suppression
+      // list is the project's, the next run's is staging's, and nothing said so.
+      await install(dir, "email", emailBindings);
+      await install(dir, "other", [{ type: "d1", name: "EMAIL_SUPPRESSIONS" }]);
+      const other = defineCapability({
+        name: "other",
+        requiredBindings: [{ type: "d1", name: "EMAIL_SUPPRESSIONS" }] satisfies BindingSpecInput[],
+      });
+      const { stores, provisioners } = fakeProvisioners();
+
+      const run = provisionEnvironment({
+        projectDir: dir,
+        scope,
+        capabilities: [email, other],
+        provisioners,
+        resolveWorkers: async () => [{ name: "replay-board", dir: workerDir, capabilities: [email, other] }],
+        ...noBackend,
+      });
+
+      await expect(run).rejects.toThrow(/email.*other|other.*email/);
+      await expect(run).rejects.toThrow(/replay-global-email-suppressions/);
+      await expect(run).rejects.toThrow(/replay-staging-email-suppressions/);
+      // Refused before the account was reached — a refusal after the third create is a half-provisioned
+      // account, which is worse than either name.
+      expect([...stores.d1.keys()]).toEqual([]);
+    });
+
+    test("refuses two bindings that compose one name", async () => {
+      // `resource` removes the property that made the binding name the unique key. Nothing else would
+      // catch it: the run would create one bucket, adopt it on the second pass, and hand two capabilities
+      // a store each believes is its own.
+      const bindings = [
+        { type: "r2", name: "SUPPORT_BUCKET", resource: "support" },
+        { type: "r2", name: "SUPPORT" },
+      ];
+      await install(dir, "support", [bindings[0]]);
+      await install(dir, "helpdesk", [bindings[1]]);
+      const support = defineCapability({
+        name: "support",
+        requiredBindings: [{ type: "r2", name: "SUPPORT_BUCKET" }] satisfies BindingSpecInput[],
+      });
+      const helpdesk = defineCapability({
+        name: "helpdesk",
+        requiredBindings: [{ type: "r2", name: "SUPPORT" }] satisfies BindingSpecInput[],
+      });
+      const { stores, provisioners } = fakeProvisioners();
+
+      const run = provisionEnvironment({
+        projectDir: dir,
+        scope,
+        capabilities: [support, helpdesk],
+        provisioners,
+        resolveWorkers: async () => [{ name: "replay-board", dir: workerDir, capabilities: [support, helpdesk] }],
+        ...noBackend,
+      });
+
+      await expect(run).rejects.toThrow(/support.*helpdesk|helpdesk.*support/);
+      await expect(run).rejects.toThrow(/replay-staging-support\b/);
+      expect([...stores.r2.keys()]).toEqual([]);
+    });
+
+    test("keeps a project-global resource out of a feature's teardown record", async () => {
+      // A feature's record is its exact-id delete list. A resource the whole project shares has no
+      // business in it — `destroy` deletes what it finds there by id, so one branch would take the
+      // project's suppression list with it.
+      await install(dir, "email", emailBindings);
+      const { provisioners } = fakeProvisioners();
+      const saved: { binding: string; name: string }[][] = [];
+      const record = {
+        load: async () => [],
+        save: async (resources: { binding: string; name: string }[]) => void saved.push(resources),
+      };
+
+      // A feature names nothing `global` in the first place — `featureScope` takes the naming and ignores
+      // it — so every resource here is the feature's own and every one of them is recorded.
+      const feature = await provisionEnvironment({
+        projectDir: dir,
+        scope: featureScope({ project: "replay", issue: "513", slug: "binding-scope" }),
+        capabilities: [email],
+        provisioners,
+        resolveWorkers: emailWorkers(),
+        record,
+        ...noBackend,
+      });
+      expect(feature.resources.map((resource) => resource.name)).toEqual([
+        "replay-f513-binding-scope-db-d1",
+        "replay-f513-binding-scope-email-suppressions-d1",
+      ]);
+      expect(saved.at(-1)?.map((resource) => resource.name)).toEqual([
+        "replay-f513-binding-scope-db-d1",
+        "replay-f513-binding-scope-email-suppressions-d1",
+      ]);
+
+      // And the guard from the other end, so honoring `global` in a feature namer could never quietly
+      // become a deletion: a run that *does* compose a global name records everything but that.
+      saved.length = 0;
+      await provisionEnvironment({
+        projectDir: dir,
+        scope,
+        capabilities: [email],
+        provisioners,
+        resolveWorkers: emailWorkers(),
+        record,
+        ...noBackend,
+      });
+      expect(saved.at(-1)?.map((resource) => resource.name)).toEqual(["replay-staging-db"]);
+    });
   });
 });

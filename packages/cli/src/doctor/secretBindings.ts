@@ -1,10 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { isProvisionableSecret, type SecretRegistryEntry, type SecretScope } from "@pithy-sh/secrets/src/registry";
 import { resolveDevSecretsTargets } from "../devSecrets/targets";
-import { projectEnvironments } from "../project/config";
+import { loadProject, projectEnvironments, requireProjectName } from "../project/config";
 import { readOptionalWranglerConfig } from "../project/wrangler";
 import { boundSecretNames } from "../provision/secretBindings";
+import { storeEntryRemedy } from "../provision/secretEntryRemedy";
 
 /**
  * **Does every deployed environment bind the `cf-secrets-store` secrets its Workers read?** (#238)
@@ -22,7 +25,39 @@ import { boundSecretNames } from "../provision/secretBindings";
  * and provisioning is what asks it — a declared secret whose entry has not been written is reported
  * rather than bound, because wrangler refuses a config naming an absent entry and binding one would turn
  * a single missing value into a failed deploy of the whole Worker. So this reports the stanza against the
- * registry and names the command that reconciles both.
+ * registry and names what reconciles both.
+ *
+ * ## What the remedy is, and how #517 got it wrong four times
+ *
+ * Every secret reported here is `cf-secrets-store` — {@link boundSecretNames} filters on exactly that —
+ * so the whole question is **what writes a Secrets Store entry**. There are two answers and no third:
+ *
+ * - **`pithy secrets provision`**, for the entries it can compose a value for: a mintable one, through
+ *   the `mint` callback inside `secretsStoreBindings`, and the master key, in `ensureMasterKey` a step
+ *   ahead of the binding pass. {@link isProvisionableSecret} is that pair, and it is the predicate here.
+ * - **`pithy secrets create`**, for every other entry — an adopter's own `bootstrap` secret, an OAuth
+ *   client secret, a payment rail's key. The value is one a human holds, so no command may invent it, and
+ *   what the operator needed was a way to hand one over.
+ *
+ * **The second answer is new, and for four rounds it was a lie.** `pithy secrets create` accepted these
+ * and wrote them into the wrong store: `SecretWriteRequest` carried no `backend`, so a write of any shape
+ * was dispatched to that environment's manager Workflow and `runWriteSecret` put it in
+ * `SystemSecretsStore`, which is D1. The command exited 0, printed a success line, created no store entry,
+ * and the complaint that named it came back byte-identical. Each of the first three attempts corrected
+ * *which* command was printed — mintability was the wrong predicate, then the master key by name was the
+ * right one, then the `--env` flag was refused by the write rule for a `global` secret — without asking
+ * whether **any** command worked. The fourth stopped naming one at all and told the operator to create the
+ * entry in the account's Secrets Store by hand, which was honest and was a dead end with better manners.
+ *
+ * The write path knows its backend now (`SecretWriteRequest.backend`) and `capabilities/storeSecretWrites`
+ * performs the write against the account's Secrets Store, at the entry name `secretsStoreBindings` will
+ * ask for. So the command is named again, and `secretBindings.test.ts` establishes that by **running it**
+ * and re-reading the report — never by asserting the sentence.
+ *
+ * **The sentence itself is not written here.** `provision/secretEntryRemedy.ts` owns it, and
+ * `pithy provision`'s report prints the same function's output for the same finding. Two renderers of one
+ * sentence is how the two commands came to contradict each other on one project (#517), with doctor
+ * corrected and provisioning still naming the dead end.
  *
  * **`dev` never appears, and not by being filtered.** The environments walked are the ones the project
  * declares, and `dev` is not among them. Local dev materializes every `cf-secrets-store` secret into the
@@ -41,13 +76,43 @@ export interface MissingSecretBinding {
   env: string;
   /** The binding name — the registry key, which is also the name every read site uses. */
   binding: string;
+  /**
+   * **May `pithy secrets provision` create this entry?** {@link isProvisionableSecret} answers it, here as
+   * everywhere — never re-derived from `devValue`, `bootstrap` or `origin`, so the remedy this report
+   * names cannot disagree with what the command does.
+   *
+   * `false` means **the operator supplies the value**, through `pithy secrets create`. It is not a
+   * statement that nothing can create the entry — that was true for as long as the write path was
+   * backend-blind, and the remedy line said so; it is not true now.
+   */
+  provisionable: boolean;
+  /**
+   * **The entry's declared scope, because it decides how many entries there are.**
+   *
+   * A `global` secret resolves to one account-level `<project>-global-<secret>` entry that every
+   * environment binds, so creating it once clears every short stanza; an `environment` one needs an entry
+   * per environment. That is what the report groups on. It is carried rather than folded into a
+   * pre-rendered string so `describeSecretBindings` and the namer can be run against each other in a
+   * test, which is the only way this stays true.
+   */
+  scope: SecretScope;
+  /**
+   * **The Secrets Store entry provisioning will look for**, composed through {@link environmentScope} —
+   * the same call `pithy secrets provision` makes.
+   *
+   * The remedy line names a command rather than this string, because a command that composes the name
+   * itself cannot mistype it. The field stays because it is the one thing that says *where the value went*
+   * — it is in `--json`, and `secretBindings.test.ts` runs it against the namer, so the address a write
+   * lands at and the address provisioning looks for are pinned to each other rather than to a sentence.
+   */
+  entry: string;
 }
 
 /** What this check established. Listed positively, so an inconclusive read says so. */
 export type SecretBindingsState =
   /** Every declared environment binds every `cf-secrets-store` secret its Worker reads. */
   | "ok"
-  /** A `wrangler.jsonc` would not parse, or the declared set would not load. */
+  /** A `wrangler.jsonc` would not parse, the declared set would not load, or the project has no name. */
   | "could-not-check"
   /** A deployed environment declares a secret it does not bind. */
   | "unbound";
@@ -63,7 +128,7 @@ interface RawWrangler {
   env?: Record<string, { secrets_store_secrets?: { binding?: string }[] } | undefined>;
 }
 
-/** What {@link checkSecretBindings} needs. Both seams default to the real project's. */
+/** What {@link checkSecretBindings} needs. Every seam defaults to the real project's. */
 export interface CheckSecretBindingsOptions {
   /** The project root. */
   projectDir: string;
@@ -76,6 +141,14 @@ export interface CheckSecretBindingsOptions {
   unresolvable?: readonly unknown[];
   /** The environments to check. Defaults to the set the root `pithy.config.ts` declares. */
   environments?: readonly string[];
+  /**
+   * The project name — the leading segment of every store entry this report names.
+   *
+   * Defaults to {@link requireProjectName}, never `resolveProjectName`: its fallbacks differ between
+   * checkouts, so a guessed name would put an operator's hand-created entry at an address provisioning
+   * never looks at. A project with no name resolves to `could-not-check` rather than to a guess.
+   */
+  project?: string;
 }
 
 /**
@@ -111,6 +184,23 @@ export async function checkSecretBindings(options: CheckSecretBindingsOptions): 
     }
   }
 
+  // The entry names, composed once per environment through provisioning's own scope. A project with no
+  // usable `name`, or an environment the namer refuses, cannot be told which entry to create — and a
+  // remedy naming the wrong entry is worse than none, because the operator creates something and the
+  // complaint stays. `Project name:` is the block that says why.
+  let entryNames: Map<string, (binding: string, scope: SecretScope) => string>;
+  try {
+    const project = options.project ?? requireProjectName(await loadProject(options.projectDir));
+    entryNames = new Map(
+      environments.map((env) => {
+        const scope = environmentScope(project, env);
+        return [env, (binding: string, secretScope: SecretScope) => scope.secretEntry(binding, secretScope)] as const;
+      }),
+    );
+  } catch {
+    return { state: "could-not-check", missing: [] };
+  }
+
   const missing: MissingSecretBinding[] = [];
   let unreadable = false;
   for (const target of targets) {
@@ -133,8 +223,19 @@ export async function checkSecretBindings(options: CheckSecretBindingsOptions): 
       const bound = new Set(
         (config.env?.[env]?.secrets_store_secrets ?? []).map((entry) => entry.binding).filter(Boolean),
       );
+      const nameFor = entryNames.get(env);
+      if (!nameFor) continue;
       for (const binding of declared) {
-        if (!bound.has(binding)) missing.push({ worker: target.name, env, binding });
+        if (bound.has(binding)) continue;
+        const entry = (target.registry as Record<string, SecretRegistryEntry>)[binding] as SecretRegistryEntry;
+        missing.push({
+          worker: target.name,
+          env,
+          binding,
+          provisionable: isProvisionableSecret(binding, entry),
+          scope: entry.scope,
+          entry: nameFor(binding, entry.scope),
+        });
       }
     }
   }
@@ -146,21 +247,124 @@ export async function checkSecretBindings(options: CheckSecretBindingsOptions): 
 /**
  * The lines the report prints, or none at all when there is nothing to say.
  *
- * One line per Worker-and-environment rather than per binding: the remedy is the same command for all of
- * them, and a project composing four `cf-secrets-store` secrets would otherwise print eight sentences
- * that differ only in a name. An adopter counts lines.
+ * One line per Worker-and-environment rather than per binding: a project composing four
+ * `cf-secrets-store` secrets would otherwise print eight sentences that differ only in a name. An
+ * adopter counts lines.
+ *
+ * **Except where the remedy differs, which is the whole of #517.** Grouping is what makes a line
+ * countable, and grouping on `worker` and `env` alone put entries with two different answers into one
+ * sentence offering one. There are exactly two answers — `pithy secrets provision` creates a store entry
+ * when {@link isProvisionableSecret}, and for everything else the operator supplies the value with
+ * `pithy secrets create` — so a Worker-and-environment splits at most in two: provisionable line first,
+ * the rest under it, adjacent, because they are one Worker's two answers rather than two reports. A group
+ * with one answer is still one sentence.
+ *
+ * **The remedy is `storeEntryRemedy`'s and not this module's**, because `pithy provision` prints
+ * the same finding as it writes each stanza and the two disagreed for a whole round of this issue. One
+ * function, two callers, and a wording change lands in both or in neither.
+ *
+ * **A line may name a command only if running that command clears the line**, which is the standard the
+ * first four rounds each failed a different way. `secretBindings.test.ts` holds it by running the remedy
+ * through the real write path — `runSecretWrite`, the real routing, a recording store and a recording D1
+ * — and re-reading the report, so a command that writes to the wrong store fails here rather than in an
+ * adopter's terminal.
+ *
+ * **The unfillable line splits on scope, and the reason is not the one the third attempt used.** That one
+ * split on `--env` because the write rule refuses the flag for a `global` secret and the line carried it
+ * anyway. The flag is right on the command now — `supplyStoreEntryCommand` puts it there for an
+ * `environment` secret and leaves it off a `global` one — and the split is about *how many entries there
+ * are*: a `global` secret resolves to **one** account-level entry, `<project>-global-…`, that every
+ * environment binds, so it is supplied once however many stanzas are short of it. Three declared
+ * environments used to print three byte-identical remedies, and an operator following them in order did
+ * the same thing twice for nothing. Every short stanza is still named in the head, because provisioning
+ * writes all of them; it is the remedy that is stated once.
  */
 export function describeSecretBindings(check: SecretBindingsCheck): string[] {
-  const grouped = new Map<string, MissingSecretBinding[]>();
-  for (const entry of check.missing) {
-    // `\0` written as the escape, never raw: a raw NUL makes the whole file binary to git, so it
-    // has no line diff and nothing in review can see what changed around it.
-    const key = `${entry.worker}\0${entry.env}`;
-    grouped.set(key, [...(grouped.get(key) ?? []), entry]);
+  const byWorker = new Map<string, MissingSecretBinding[]>();
+  for (const entry of check.missing) byWorker.set(entry.worker, [...(byWorker.get(entry.worker) ?? []), entry]);
+  const lines: string[] = [];
+  for (const entries of byWorker.values()) {
+    const perEnv = new Map<string, MissingSecretBinding[]>();
+    for (const entry of entries) {
+      if (isGlobalUnfillable(entry)) continue;
+      perEnv.set(entry.env, [...(perEnv.get(entry.env) ?? []), entry]);
+    }
+    for (const group of perEnv.values()) {
+      const provisionable = group.filter((entry) => entry.provisionable);
+      // One answer per line stays the rule, and a group with one answer is still one sentence.
+      const unfillable = group.filter((entry) => !entry.provisionable);
+      if (provisionable.length > 0) lines.push(provisionableLine(provisionable));
+      if (unfillable.length > 0) lines.push(unfillableLine(unfillable));
+    }
+    // Last, and once for the Worker: one account-level entry is one sentence.
+    const everywhere = entries.filter(isGlobalUnfillable);
+    if (everywhere.length > 0) lines.push(globalUnfillableLine(everywhere));
   }
-  return [...grouped.values()].map((entries) => {
-    const first = entries[0] as MissingSecretBinding;
-    const names = entries.map((entry) => entry.binding).join(", ");
-    return `${first.worker} env.${first.env} binds no ${names}. Run pithy secrets provision — it creates the store entries and writes the stanza.`;
-  });
+  return lines;
+}
+
+/**
+ * A value the operator supplies, held once for the whole project — the one line that is not per
+ * environment, because the entry it names is a single account-level one.
+ */
+function isGlobalUnfillable(entry: MissingSecretBinding): boolean {
+  return !entry.provisionable && entry.scope === "global";
+}
+
+/** The distinct members of `values`, in first-seen order. */
+function unique(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+/** What a Worker-and-environment's missing secrets share: who is short of what. The remedy follows it. */
+function head(entries: MissingSecretBinding[]): string {
+  const first = entries[0] as MissingSecretBinding;
+  return `${first.worker} env.${first.env} binds no ${entries.map((entry) => entry.binding).join(", ")}.`;
+}
+
+/**
+ * The same sentence for a secret whose remedy is not per environment: every stanza that is short of it,
+ * named together, because provisioning writes all of them from the one entry.
+ */
+function globalHead(entries: MissingSecretBinding[]): string {
+  const first = entries[0] as MissingSecretBinding;
+  const environments = unique(entries.map((entry) => entry.env));
+  const verb = environments.length === 1 ? "binds" : "bind";
+  const stanzas = environments.map((env) => `env.${env}`).join(", ");
+  return `${first.worker} ${stanzas} ${verb} no ${unique(entries.map((entry) => entry.binding)).join(", ")}.`;
+}
+
+/**
+ * Values the kit composes — a random string nobody chooses, or the master key `ensureMasterKey` mints.
+ * One command creates every one of them and writes the stanza in the same pass.
+ */
+function provisionableLine(entries: MissingSecretBinding[]): string {
+  return `${head(entries)} ${storeEntryRemedy(entries)}`;
+}
+
+/**
+ * **Entries whose value only the operator holds** — an OAuth client secret, a payment rail's key, an
+ * adopter's own bootstrap value. The line names each one's `pithy secrets create`, then the provision
+ * that writes the stanza.
+ *
+ * Both halves are required and neither is optional: `create` writes the store entry and has no stanza to
+ * write; `provision` binds on `exists`, so an entry written a moment ago is bound exactly like one it
+ * minted itself.
+ */
+function unfillableLine(entries: MissingSecretBinding[]): string {
+  return `${head(entries)} ${storeEntryRemedy(entries)}`;
+}
+
+/**
+ * The same, for a value held **once for every environment**: `global` resolves to a single
+ * `<project>-global-<secret>` entry that every stanza binds, so it is supplied once however many stanzas
+ * are short of it — and its command carries no `--env`, because the write rule refuses one.
+ *
+ * **One line for every environment short of it.** Three declared environments used to mean three
+ * byte-identical remedies, and running the same command three times is the same dead end as running one
+ * that cannot work: the second and third attempts achieve nothing and the operator cannot tell that from
+ * a remedy that failed.
+ */
+function globalUnfillableLine(entries: MissingSecretBinding[]): string {
+  return `${globalHead(entries)} ${storeEntryRemedy(entries)}`;
 }

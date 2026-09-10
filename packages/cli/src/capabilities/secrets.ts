@@ -11,8 +11,9 @@ import {
   type SecretDispatcher,
 } from "@pithy-sh/secrets/src/cli/dispatch";
 import { validateSecretValue } from "@pithy-sh/secrets/src/cli/validate";
+import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { parseKeyedSecretName } from "@pithy-sh/secrets/src/keyspace";
-import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
+import type { SecretRegistry, SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import type { CliAuditEmit } from "../audit/cliAudit";
@@ -94,6 +95,35 @@ export interface SecretWriteCommand {
 }
 
 /**
+ * **The master key is not a secret `pithy secrets` may touch, in any mode** (#517).
+ *
+ * It is the value every other secret in an environment is sealed under, and each mode is a different way
+ * to lose all of them at once: `create` and `update` replace the `EncryptionConfig` that decrypts every
+ * D1 row, orphaning each one with no error naming the cause, and `rm` deletes it, which is the same loss
+ * with nothing to put back. Before the write path knew its backend the damage was quieter and no smaller
+ * — a master-key-shaped value was written as a versioned envelope into the very D1 the master key opens,
+ * so the command reported success over a row no reader could ever use.
+ *
+ * `ensureMasterKey` creates it, once, when it is absent, and `pithy add secrets` mints the local one.
+ * Rotation is a rotation of the `versions` map inside the config, which is why the entry declares
+ * `rotatable: false`. There is no operator-supplied value for it, so there is nothing here to route.
+ *
+ * **Exported because the command asks it before it asks for a value.** {@link runSecretWrite} raises it
+ * too — that is the guarantee, since nothing reaches a store without passing through there — but a
+ * refusal that arrives after a masked prompt has taken a production credential is a refusal that cost the
+ * operator the thing it was protecting. One function, so the two cannot come to two rules.
+ */
+export function assertNotTheMasterKey(mode: SecretWriteCommand["mode"], name: string): void {
+  if (name !== MASTER_KEY_BINDING) return;
+  throw new ValidationError({
+    message: `Secret '${name}' is the master key every other secret is sealed under.`,
+    action:
+      "Run pithy secrets provision, which creates it when it is absent. Replacing it makes every secret in that environment unreadable.",
+    detail: `${mode} '${name}': refused — the master key is created by provisioning, never written by hand`,
+  });
+}
+
+/**
  * Validate a value client-side (the authoritative A2 check) and dispatch the write to the manager
  * Workflow(s). The registry lookup gives the routing facts (backend, scope) and the schema; an
  * undeclared secret is rejected before anything is sent. Returns the environments written.
@@ -116,6 +146,8 @@ export async function runSecretWrite(
       action: "Add it to your secret registry, then run this again.",
     });
   }
+
+  assertNotTheMasterKey(command.mode, command.name);
 
   // A keyspace has no single value to write, and a write under its bare name would land somewhere no
   // member read ever looks. Its members belong to the app that mints them, which writes them in-worker.
@@ -143,6 +175,10 @@ export async function runSecretWrite(
         name: command.name,
         backend: entry.backend,
         scope: entry.scope,
+        // The third routing fact, and the only one that decides what the value is wrapped in: a
+        // `bootstrap` secret's destination holds the value, because its reader runs before the decoder
+        // exists. Read off the same entry as the other two, never re-derived downstream (#517).
+        bootstrap: entry.bootstrap === true,
         rotatable: entry.rotatable,
         valueType: entry.valueType,
         value,
@@ -156,7 +192,10 @@ export async function runSecretWrite(
       severity: "warning",
       resourceType: "secret",
       resourceId: command.name,
-      metadata: { name: command.name, environments: targets },
+      // The backend, because a value's destination is the fact this trail could not answer (#517). Two
+      // secrets with the same name in the same environment land in different stores, and "written to
+      // staging" said the same thing about both — including about the writes that landed in the wrong one.
+      metadata: { name: command.name, backend: entry.backend, environments: targets },
     });
     return targets;
   } catch (error) {
@@ -170,10 +209,73 @@ export async function runSecretWrite(
       severity: "warning",
       resourceType: "secret",
       resourceId: command.name,
-      metadata: { name: command.name, environments: environmentsWrittenBeforeFailure(error) },
+      metadata: { name: command.name, backend: entry.backend, environments: environmentsWrittenBeforeFailure(error) },
     });
     throw error;
   }
+}
+
+/**
+ * **What a finished write changed — which is not always the environments it was dispatched to** (#517).
+ *
+ * `secretWriteTargets` answers *where does this write go*, and for a `global` + `cf-secrets-store` secret
+ * the answer is one environment: the canonical one, whose manager performs the single account-level
+ * write. That is the right dispatch answer and the wrong report. A Secrets Store entry is
+ * `<project>-global-<secret>`, flat and account-wide, and **every** environment's stanza binds it — so
+ * `pithy secrets update payments-provider-credentials` printed `written to prod` over a change that
+ * replaced the credential staging and every other environment reads too. An operator who read that line
+ * and then went to update staging separately was reading a report of a fan-out that had already happened.
+ *
+ * The other three cells are unchanged, because for them the dispatch answer *is* the effect: an
+ * `environment` secret has one entry or one row per environment, and a `global` + `d1` secret is a real
+ * fan-out that writes each environment's database in turn.
+ *
+ * One producer for the sentence and the `--json` line, so the two cannot say different things about one
+ * act — which is the shape of the defect this issue has produced four times in other places.
+ */
+export interface SecretWriteEffect {
+  /** Every environment now reading the new value. The dispatch targets, widened where they understate. */
+  environments: ManagedEnvironment[];
+  /**
+   * Whether what changed is **one account-level Secrets Store entry** rather than a per-environment
+   * value. It is what makes the sentence able to say *one entry, read by these* rather than listing
+   * environments as though each held a copy.
+   */
+  accountEntry: boolean;
+}
+
+/**
+ * Read the effect of a write off the registry entry it was resolved from, the dispatch targets, and the
+ * project's declared set. Pure — the report and the `--json` line both call it.
+ *
+ * An unknown name (nothing in the registry) reports the targets verbatim: `runSecretWrite` refuses one
+ * before anything is dispatched, so there is no write for this to describe and nothing to widen.
+ */
+export function secretWriteEffect(
+  entry: SecretRegistryEntry | undefined,
+  targets: readonly ManagedEnvironment[],
+  declared: DeclaredEnvironments | readonly string[],
+): SecretWriteEffect {
+  if (entry?.backend === "cf-secrets-store" && entry.scope === "global") {
+    return { environments: [...declared], accountEntry: true };
+  }
+  return { environments: [...targets], accountEntry: false };
+}
+
+/**
+ * The one line an operator reads when a write lands: what changed, and where it is read.
+ *
+ * `written to` / `removed from` stays the verb for a per-environment value. A `global` store entry gets
+ * its own clause because the count is the fact: **one** entry, however many stanzas bind it.
+ */
+export function secretWriteReportLine(
+  name: string,
+  mode: SecretWriteCommand["mode"],
+  effect: SecretWriteEffect,
+): string {
+  const verb = mode === "delete" ? "removed from" : "written to";
+  const where = effect.environments.join(", ");
+  return effect.accountEntry ? `${name} ${verb} one account entry, read by ${where}.` : `${name} ${verb} ${where}.`;
 }
 
 /** The `ls` / `ls --check` view: the declared names (keyspaces included), the audit, and the gate. */

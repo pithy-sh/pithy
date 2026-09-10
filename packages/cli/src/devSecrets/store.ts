@@ -8,7 +8,7 @@ import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { sentenceOf } from "@pithy-sh/core/src/error/pithyError";
 import { masterKeyRegistryEntry } from "@pithy-sh/secrets/src/capability";
 import { type DevSecretsStore, devVarsForRegistry } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
-import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
+import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { SystemSecretsStore } from "@pithy-sh/secrets/src/store/systemSecretsStore";
 import type { StatePathOptions } from "../notifier/state";
 import { resolveStoreIds } from "../seed/drivers";

@@ -8,7 +8,7 @@ import { sentenceOf } from "@pithy-sh/core/src/error/pithyError";
 import { type DevSecretsFile, ENVELOPE_SHAPE } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
 import { devSecretPayload, keyedSecretRefusal } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
-import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
+import { isMintableSecret, isProvisionableSecret, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { DEV_SECRETS_FILE_NAME, resolveDevSecretsFile } from "../devSecrets/location";
 import { type DevSecretsTarget, resolveDevSecretsTargets, type UnresolvableWorker } from "../devSecrets/targets";
 import { type StatePathOptions, stateDir } from "../notifier/state";
@@ -96,13 +96,30 @@ export interface DevSecretsCheck {
    */
   missing: string[];
   /**
-   * Declared **bootstrap** secrets with no value — `SECRETS_ENCRYPTION_KEYS` above all. Kept apart from
-   * {@link missing} because the answer is a different one: nothing outside the project issues a master
-   * key, `pithy add secrets` mints it, and until it does the local `SECRETS` store cannot be opened at
-   * all. Telling somebody it is "issued by somebody else, fine to leave until you need it" is the one
-   * sentence that would send them past the thing actually stopping them.
+   * The **master key** with no value. Kept apart from {@link missing} because the answer is a different
+   * one: nothing outside the project issues a master key, `pithy add secrets` mints it, and until it does
+   * the local `SECRETS` store cannot be opened at all. Telling somebody it is "issued by somebody else,
+   * fine to leave until you need it" is the one sentence that would send them past the thing actually
+   * stopping them.
+   *
+   * **{@link isProvisionableSecret}, not the `bootstrap` axis — the same predicate the block above uses.**
+   * This split on `entry.bootstrap`, which is the axis that predicate was written to stop reading for
+   * exactly this reason: `bootstrap` says a value is read straight from its binding before any store is
+   * open, and says nothing about what creates one. `ensureDevMasterKey` mints exactly one thing — this
+   * binding — so an adopter's own `bootstrap` entry was told to run `pithy add secrets`, ran it, and got
+   * the identical line back. That is a dead end, and the remedy for it is {@link bootstrapUnmintable}.
    */
   bootstrapMissing: string[];
+  /**
+   * Declared **bootstrap** secrets, other than the master key, with no value and nothing that mints one.
+   *
+   * Apart from {@link missing} because "fine to leave until you need it" is not true of one: a bootstrap
+   * value is read straight from its binding by code that runs before any store is open, so whatever reads
+   * it fails at boot rather than at the first request that wants it. Apart from {@link bootstrapMissing}
+   * because `pithy add secrets` does not mint it — nothing does. The value is written into the dev secrets
+   * file by hand, which is what `pithy secrets edit` opens.
+   */
+  bootstrapUnmintable: string[];
   /**
    * Declared secrets the file **states** and whose stated value will not read — a `json` value that
    * violates its registry schema, a `text` one written as a number (#323).
@@ -200,6 +217,7 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
   const malformed: MalformedDevSecret[] = [];
   const missing = new Set<string>();
   const bootstrapMissing = new Set<string>();
+  const bootstrapUnmintable = new Set<string>();
   const seen = new Set<string>();
   for (const target of targets) {
     for (const [name, entry] of Object.entries(target.registry)) {
@@ -248,8 +266,19 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
       }
       // Mintable means the next seed supplies it. Only a value that has to come from somewhere real is
       // something the adopter has to do — and the file, not the store, is dev's source of truth for it.
-      if (entry.devValue) continue;
-      if (entry.bootstrap) bootstrapMissing.add(name);
+      if (isMintableSecret(entry)) continue;
+      // **{@link isProvisionableSecret}, never the `bootstrap` axis** (#517). `bootstrap` says a value is
+      // read straight from its binding before any store is open; it says nothing about what creates one.
+      // Reading the axis put an adopter's own bootstrap entry on a line naming `pithy add secrets` — a
+      // command that runs, exits 0, mints the mintable secrets, leaves that entry untouched, and gives
+      // back the identical line. The predicate is the one the block above it uses, so the two halves of
+      // one report cannot come to two answers about what creates a value; mintable is already gone by the
+      // line above, so what it selects here is exactly the master key, which `ensureDevMasterKey` mints.
+      if (isProvisionableSecret(name, entry)) bootstrapMissing.add(name);
+      // The axis, and here it is the right one: what is left is a value nothing creates, and `bootstrap`
+      // is the difference between failing at boot and failing at the first request that wants it. That is
+      // a fact about how it is *read*, which is what this field has always meant.
+      else if (entry.bootstrap) bootstrapUnmintable.add(name);
       else missing.add(name);
     }
   }
@@ -276,6 +305,7 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
     misplaced: unreadable ? [] : misplaced,
     missing: unreadable ? [] : [...missing].sort(),
     bootstrapMissing: unreadable ? [] : [...bootstrapMissing].sort(),
+    bootstrapUnmintable: unreadable ? [] : [...bootstrapUnmintable].sort(),
     // And nothing about a stated value's shape either: a file that will not parse stated nothing.
     malformed: unreadable ? [] : malformed,
     undeclared,
@@ -350,6 +380,16 @@ export function describeDevSecrets(check: DevSecretsCheck): string[] {
   if (check.bootstrapMissing.length > 0) {
     lines.push(
       `No dev value for ${check.bootstrapMissing.join(", ")}. Run pithy add secrets — it mints one into ${check.path}. Until then the local SECRETS store cannot be opened.`,
+    );
+  }
+  // Its own line, because its remedy is its own. `pithy add secrets` mints the master key and every
+  // mintable secret and nothing else, so an adopter's own bootstrap entry sent there ran a command that
+  // did nothing for it and reported the same thing again (#517). Nothing mints one; the value is typed
+  // into the file, and `pithy secrets edit` is what opens it.
+  if (check.bootstrapUnmintable.length > 0) {
+    const it = check.bootstrapUnmintable.length === 1 ? "it" : "them";
+    lines.push(
+      `No dev value for ${check.bootstrapUnmintable.join(", ")}. Nothing mints ${it}, and ${it === "it" ? "it is" : "they are"} read straight from the binding before the store opens. Run pithy secrets edit, and write ${it} into ${check.path}.`,
     );
   }
   if (check.missing.length > 0) {

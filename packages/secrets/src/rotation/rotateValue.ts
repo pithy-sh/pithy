@@ -20,7 +20,10 @@ import type { OpenRotation, RotationLedger } from "./rotationLedger";
  *
  * 1. **Refuse everything refusable before anything is called.** A keyspace, an undeclared rotation, a
  *    `provider` secret with no rotator, the master key — each is answered with nothing rolled and nothing
- *    written. A refusal after a roll would be the worst of both.
+ *    written. A refusal after a roll would be the worst of both. {@link RotateSecretValueOptions.preflight}
+ *    extends the same step to the refusals the *destination* owns, which #517 found being reached at the
+ *    write, on both backends in turn: an unreachable store, and a secret an `update` needs that is not
+ *    there, are each knowable before an issuer is called, and neither was asked.
  * 2. **Produce the value once.** `local` mints it; `provider` calls the rotator. Exactly one call, and
  *    it is never repeated for any reason.
  * 3. **Store with retries, against that value.** Every attempt writes the same string. A store that
@@ -151,6 +154,26 @@ export interface RotateSecretValueOptions {
    * rotation, and the secret reported overdue permanently. See {@link RotationLedger}.
    */
   ledger: RotationLedger;
+  /**
+   * **Whatever the store would refuse, asked once per target before anything is called.**
+   *
+   * Step 1 of this module's ordering is *refuse everything refusable before anything is called*, and
+   * until #517 that meant only what the **declaration** can answer. A store has refusals of its own that
+   * are equally knowable in advance and were reached at the write: `pithy secrets rotate` on a
+   * `cf-secrets-store` secret resolved the account's Secrets Store lazily, so a project with no
+   * `SECRETS_STORE_ID` — or an entry that does not exist yet — raised a failure *after* the rotator had
+   * rolled the credential at its issuer. The successor then existed only in this process, which threw.
+   *
+   * Asked before the row is opened, so a refusal here writes no history. It answers nothing: this is a
+   * pre-flight, and every question it asks is asked again by the store write it precedes.
+   *
+   * Optional *here*, because this function's `store` is a bare write and a caller may have no destination
+   * to ask. It is **not** optional where the destinations live: every route on `backendRoutedDispatcher`
+   * is a `PreflightSecretDispatcher`, so the kit's own backends cannot supply nothing by omission. That
+   * distinction is the second half of #517 — `cf-secrets-store` implemented the seam, `d1` did not, and
+   * an optional method is how the gap read as a decision.
+   */
+  preflight?: (env: ManagedEnvironment) => Promise<void>;
   /** Store attempts per environment before the run ends. Defaults to 3. Never a re-roll. */
   attempts?: number;
   /** Injected in tests. Defaults to a real `setTimeout`. */
@@ -318,6 +341,11 @@ export async function rotateSecretValue(options: RotateSecretValueOptions): Prom
       detail: `rotate refused: '${name}' resolved to no write targets`,
     });
   }
+
+  // The store's own refusals, still above the line: it cannot be reached at all, or the entry an
+  // `update` needs is not there. Both are facts about the destination rather than about the value, so
+  // both are knowable now — and asking them after the roll is how a refusal costs a live credential.
+  if (options.preflight !== undefined) for (const env of targets) await options.preflight(env);
 
   // **The line either side of which everything changes.** Above it, a refusal costs nothing. Below it, a
   // credential may already be dead at its issuer, and every remaining step is retryable against one value.

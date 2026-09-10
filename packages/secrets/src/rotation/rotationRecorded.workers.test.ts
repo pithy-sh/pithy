@@ -136,7 +136,17 @@ async function rotateThroughTheCli(targets: ["prod"], rotator?: () => Promise<st
     ledger: dispatchedRotationLedger(dispatcher, { targets }),
     store: ({ env: target, value }) =>
       dispatcher
-        .dispatch({ env: target, mode: "update", name: NAME, value, valueType: "text", rotatable: true })
+        .dispatch({
+          env: target,
+          mode: "update",
+          name: NAME,
+          backend: "d1",
+          scope: "environment",
+          bootstrap: false,
+          value,
+          valueType: "text",
+          rotatable: true,
+        })
         .then(() => undefined),
   });
 }

@@ -3,7 +3,7 @@
   "package": "@pithy-sh/support",
   "requiredBindings": [
     { "type": "d1", "name": "DB" },
-    { "type": "r2", "name": "SUPPORT_BUCKET", "optional": true },
+    { "type": "r2", "name": "SUPPORT_BUCKET", "optional": true, "scope": "global", "resource": "support" },
     {
       "type": "workflow",
       "name": "SUPPORT_CLASSIFY",

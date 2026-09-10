@@ -6,6 +6,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { platform as osPlatform, release as osRelease } from "node:os";
 import { join } from "node:path";
 import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
 import {
   type BindingDeclines,
@@ -16,6 +17,7 @@ import {
   undeclinableReason,
 } from "../capabilities/reconcile";
 import { pithyOffline } from "../cloudflare/config";
+import type { BindingScopeHealth } from "../doctor/bindingScope";
 import { type CloudflareAccess, checkCloudflareAccess, describeCloudflareAccess } from "../doctor/cloudflare";
 import { checkDevPreferences, type DevPreferencesCheck, describeDevPreferences } from "../doctor/devPreferences";
 import {
@@ -443,6 +445,9 @@ function jsonDevSecrets(value: Checked<DevSecretsCheck> | null): Record<string, 
     // consumer could not see the fault class that wave added — and `malformed` is the one that flips
     // the exit, so a script read a value the next seed refuses as a healthy project.
     bootstrapMissing: check.bootstrapMissing,
+    // Beside it since #517: a bootstrap secret `pithy add secrets` does not mint is a different finding
+    // with a different remedy, and folding the two lost the distinction a script would branch on.
+    bootstrapUnmintable: check.bootstrapUnmintable,
     malformed: check.malformed,
     undeclared: check.undeclared,
     mode: check.mode === null ? null : check.mode.toString(8),
@@ -1227,6 +1232,11 @@ function migrationLines(health: MigrationHealth): string[] {
  * uncollapsed, and neither fails the exit.
  */
 function projectHasBindingNotes(health: ProjectHealth): boolean {
+  // The project-global comparison joins them on the same rule: a stale `env dev` name never fails `ok`
+  // (no command rewrites that stanza), so gating the block on `ok` alone would print the finding on every
+  // report except the ones it is for.
+  const scope = health.bindingScope;
+  if (scope.split.length > 0 || scope.divergent.length > 0 || scope.partial) return true;
   return health.workers.some((worker) => worker.state !== "unavailable" && hasBindingNotes(worker));
 }
 
@@ -1425,6 +1435,115 @@ function workerHealthLines(health: WorkerChecks): string[] {
  * The `Project health` lines — shown only when some Worker is failing a check, grouped one block per Worker.
  * A healthy Worker collapses to a single line: it was checked, and there is nothing to say about it.
  */
+/**
+ * The `shared:` lines — a resource the whole project shares that its Workers do not all point at (#513).
+ *
+ * Above the Workers, beside `manifests:`, because no Worker owns it: the finding *is* that two stanzas
+ * disagree, so attributing it to one of them would hide the half that makes it a finding. Every line names
+ * the environment and the Worker it came from, which is what turns a report into an edit.
+ */
+function bindingScopeLines(scope: BindingScopeHealth): string[] {
+  const lines: string[] = [];
+  for (const entry of scope.split) {
+    lines.push(
+      `${HEALTH_INDENT}${entry.binding} (${entry.kind}) is one resource for the whole project: ${entry.expected}`,
+    );
+    for (const stale of entry.stale) {
+      lines.push(`${HEALTH_INDENT}  ${stale.worker} env.${stale.env} points at ${stale.name}`);
+    }
+    const fixable = [
+      ...new Set(entry.stale.filter((stale) => stale.env !== LOCAL_ENVIRONMENT).map((stale) => stale.env)),
+    ];
+    if (fixable.length > 0) {
+      lines.push(...carryOverLines(entry.kind, entry.expected));
+      lines.push(...upgradeFirstLines(entry));
+      for (const env of fixable) lines.push(`${HEALTH_INDENT}  Then run: pithy provision --env ${env}`);
+    }
+
+    // `provision` writes `config.env[<stanza>]` and `dev` is never a declared environment, so no command
+    // reaches the top-level stanza. It is also inert: wrangler keys a local D1 on the binding when the
+    // entry carries no `database_id`. Said out loud so the line is not read as work left undone.
+    if (entry.stale.some((stale) => stale.env === LOCAL_ENVIRONMENT)) {
+      lines.push(
+        `${HEALTH_INDENT}  No command rewrites env dev, and locally the binding is the address — edit it or leave it.`,
+      );
+    }
+  }
+  for (const entry of scope.divergent) {
+    lines.push(`${HEALTH_INDENT}${entry.binding} is bound to ${entry.ids.length} different resources`);
+    for (const { id, at } of entry.ids) {
+      lines.push(`${HEALTH_INDENT}  ${id}: ${at.map((where) => `${where.worker} env.${where.env}`).join(", ")}`);
+    }
+    lines.push(`${HEALTH_INDENT}  It must be bound identically in every environment.`);
+    // The same carry-over, for the same reason: the stanzas name one resource and open two, so repointing
+    // them at one strands whatever the other holds. Which of the two to keep is the operator's decision —
+    // the ids above are what it is made from — and this is the step after it.
+    lines.push(...carryOverLines(entry.kind, entry.expected));
+    lines.push(...upgradeFirstLines(entry));
+    lines.push(`${HEALTH_INDENT}  Then run: pithy provision --env <env>`);
+  }
+  if (scope.partial) {
+    lines.push(`${HEALTH_INDENT}Some wiring would not read, so this comparison is partial.`);
+  }
+  return lines;
+}
+
+/**
+ * **What has to happen before the repoint, because the repoint does not do it (#513 review).**
+ *
+ * `pithy provision` changes which resource the binding names. It does not move a byte or a row, and the
+ * resource it is moving *away from* is the one the app Worker has been reading and writing all along —
+ * `EMAIL_SUPPRESSIONS` is bound in the app's env, so the unsubscribe callback wrote every suppression
+ * into the per-environment database, and `SUPPORT_BUCKET` is bound there too, so every attachment and
+ * every raw message went into the per-environment bucket. The project-global one is the empty side.
+ *
+ * So the old advice — "check them for rows before deleting" — was the wrong end of it twice over. The
+ * loss is not at the delete, it is at the repoint: an unsubscribed recipient starts receiving mail again
+ * the moment the app reads a database that never heard about them, and a stored attachment becomes
+ * unreachable the moment the binding names a different bucket. Nothing is deleted and nothing is
+ * recoverable by re-running anything.
+ *
+ * There is no safe automatic path, so this says so and gives the manual one. Pithy will not copy the data:
+ * a cross-resource copy under an adopter's own credentials, from a diagnostic, is not a thing `doctor`
+ * gets to do on somebody's behalf — and for R2 it is an S3-protocol job the API token cannot even reach.
+ */
+function carryOverLines(kind: "d1" | "r2", expected: string): string[] {
+  const copy =
+    kind === "d1"
+      ? [
+          `Copy the rows across first. The repoint changes which database is read, not what is in it:`,
+          `every unsubscribe recorded above stops being honored, and nothing moves it for you.`,
+          `wrangler d1 export each old database, then wrangler d1 execute it against ${expected}.`,
+        ]
+      : [
+          `Copy the objects across first. The repoint changes which bucket is read, not what is in it:`,
+          `every attachment and raw message in the old ones becomes unreachable, and nothing moves it for you.`,
+          `Sync each old bucket into ${expected} over R2's S3 endpoint — the API token cannot do it.`,
+        ];
+  return [...copy, `The old ${kind === "d1" ? "databases" : "buckets"} are left where they are.`].map(
+    (line) => `${HEALTH_INDENT}  ${line}`,
+  );
+}
+
+/**
+ * **The step the remedy needs under version skew, and nothing when there is none (#513 review).**
+ *
+ * `pithy provision` composes the resource name from the *installed manifest*, and this whole check is
+ * keyed on the capability's own namer precisely so it still answers when the two disagree — a newer CLI
+ * beside an older `@pithy-sh/email` is the ordinary skew, and it is the install most likely to be split.
+ * There, `pithy provision --env staging` writes the per-environment name straight back and the next
+ * `doctor` reports the same finding. Printing a command that cannot clear the thing it is printed under
+ * is #517's defect, which took four rounds; the package moves first, and the line says so.
+ */
+function upgradeFirstLines(entry: { repointable: boolean; package: string }): string[] {
+  if (entry.repointable) return [];
+  return [
+    `Nothing installed declares this binding project-wide, so pithy provision would compose`,
+    `the per-environment name again. Upgrade ${entry.package} first — its pithy.manifest.json is what`,
+    `the writer reads, and this finding is keyed on the capability's own namer instead.`,
+  ].map((line) => `${HEALTH_INDENT}  ${line}`);
+}
+
 function healthBlock(health: ProjectHealth): string {
   const lines = ["Project health:"];
   // First, and above the Workers, because it explains a hole in every one of their blocks: a capability
@@ -1441,6 +1560,12 @@ function healthBlock(health: ProjectHealth): string {
       );
       for (const line of fault.reason.split("\n")) lines.push(`${HEALTH_INDENT}  ${line}`);
     }
+  }
+  // Beside the manifest hole and for the same reason: it belongs to the project rather than to a Worker,
+  // and it explains a disagreement that only exists *between* two of the blocks below.
+  if (!health.bindingScope.ok || health.bindingScope.split.length > 0 || health.bindingScope.divergent.length > 0) {
+    lines.push("  shared:");
+    lines.push(...bindingScopeLines(health.bindingScope));
   }
   for (const worker of health.workers) {
     // Not "healthy", and not five empty checks either. Nothing was read about this Worker, so the block

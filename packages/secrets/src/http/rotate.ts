@@ -6,7 +6,7 @@ import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { Context } from "hono";
 import type { SecretBinding, SecretsStoreEnv } from "../env/bindings";
-import { MASTER_KEY_BINDING } from "../env/bindings";
+import { MASTER_KEY_BINDING } from "../env/masterKeyBinding";
 import { SecretNotFoundError, SecretRotationUnsupportedError } from "../error/errors";
 import { runWriteSecret } from "../management/writeSecret";
 import type { SecretRegistryEntry } from "../registry";

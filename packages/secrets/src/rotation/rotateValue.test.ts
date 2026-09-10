@@ -550,3 +550,99 @@ describe("the declaration and the code cannot disagree", () => {
     expect(() => defineSecretRegistry({ KEY: provider(rotator) })).not.toThrow();
   });
 });
+
+/**
+ * # The refusals the destination owns belong above the line too (#517)
+ *
+ * Step 1 of this module is *refuse everything refusable before anything is called*, and until #517 it
+ * meant only what the declaration can answer. A store has refusals that are just as knowable and were
+ * reached at the write: `pithy secrets rotate` on a `cf-secrets-store` secret resolved the account's
+ * Secrets Store lazily, so a project with no `SECRETS_STORE_ID` — or an entry not yet created — raised
+ * a failure *after* the rotator had rolled the credential. The successor then existed only in the process
+ * that was throwing.
+ *
+ * `preflight` is the seam that moves those questions above the line. Every case here is about **order**.
+ */
+describe("the store's own refusals", () => {
+  test("are asked before the issuer, and a refusal rolls nothing and records nothing", async () => {
+    const log: string[] = [];
+    const rotator = countingRotator("issued", log);
+    const store = recordingStore();
+    const ledger = recordingLedger();
+
+    await expect(
+      rotateSecretValue({
+        ledger: ledger.ledger,
+        name: "THE_SECRET",
+        entry: provider(rotator),
+        targets: ["prod"],
+        store: store.store,
+        preflight: async () => {
+          log.push("preflight");
+          throw new Error("SECRETS_STORE_ID is not set");
+        },
+      }),
+    ).rejects.toThrow(/SECRETS_STORE_ID/);
+
+    // The whole assertion: the pre-flight ran, and nothing after it did.
+    expect(log).toEqual(["preflight"]);
+    expect(rotator.calls).toBe(0);
+    expect(store.attempts).toBe(0);
+    // And no history for a rotation that never started, exactly as for the declaration's own refusals.
+    expect(ledger.events).toEqual([]);
+  });
+
+  /** Asked once per target, so a `global` fan-out cannot pass on the first and refuse on the third. */
+  test("are asked of every target before the value is produced", async () => {
+    const log: string[] = [];
+    const rotator = countingRotator("issued", log);
+    const asked: string[] = [];
+
+    await rotateSecretValue({
+      ledger: recordingLedger().ledger,
+      name: "THE_SECRET",
+      entry: provider(rotator),
+      targets: ["staging", "prod"],
+      store: recordingStore().store,
+      preflight: async (env) => {
+        asked.push(env);
+        log.push(`preflight:${env}`);
+      },
+    });
+
+    expect(asked).toEqual(["staging", "prod"]);
+    expect(log).toEqual(["preflight:staging", "preflight:prod", "roll"]);
+  });
+
+  /** A dry run reaches no account at all, which is what makes it usable before the credentials exist. */
+  test("are not asked by a dry run", async () => {
+    let asked = 0;
+    const outcome = await rotateSecretValue({
+      ledger: recordingLedger().ledger,
+      name: "THE_SECRET",
+      entry: provider(countingRotator("issued")),
+      targets: ["prod"],
+      store: recordingStore().store,
+      dryRun: true,
+      preflight: async () => {
+        asked += 1;
+      },
+    });
+    expect(outcome).toMatchObject({ status: "unchanged", reason: "dry-run" });
+    expect(asked).toBe(0);
+  });
+
+  /** And a rotation with no pre-flight is exactly what it was — the seam is optional by design. */
+  test("are simply absent when nothing offers them", async () => {
+    const store = recordingStore();
+    const outcome = await rotateSecretValue({
+      ledger: recordingLedger().ledger,
+      name: "THE_SECRET",
+      entry: provider(countingRotator("issued")),
+      targets: ["prod"],
+      store: store.store,
+    });
+    expect(outcome).toMatchObject({ status: "rotated", recorded: ["prod"] });
+    expect(store.writes).toHaveLength(1);
+  });
+});

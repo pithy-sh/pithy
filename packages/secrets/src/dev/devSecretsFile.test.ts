@@ -7,7 +7,7 @@ import { z } from "zod";
 import { masterKeyRegistryEntry } from "../capability";
 import type { EncryptionConfig } from "../crypto/envelope";
 import { VersionedValue } from "../crypto/versionedValue";
-import { MASTER_KEY_BINDING } from "../env/bindings";
+import { MASTER_KEY_BINDING } from "../env/masterKeyBinding";
 import { defineSecretRegistry, type SecretRegistry, type SecretRegistryEntry } from "../registry";
 import { initialDevSecret } from "./devSecretsFile";
 import { loadDevSecrets } from "./loadDevSecrets";

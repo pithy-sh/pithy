@@ -5,17 +5,9 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { EncryptionConfig } from "../crypto/envelope";
 import { SecretCryptoError, SecretNotFoundError } from "../error/errors";
 import type { ManagedEnvironment } from "../scope";
-
-/**
- * The **binding name** every worker reads the master key through, fixed across environments — the
- * counterpart to `masterKeySecretName`, which scopes the Secrets Store *entry* the binding points at.
- * Local dev has no store: `.dev.vars` supplies this same name as a string, so it is also the key
- * `pithy add secrets` writes there.
- *
- * Stated once, and here, beside the reader: the writer is in another package, and a near-miss between
- * the two ends is a worker that boots into "Missing required bindings" over a value that was written.
- */
-export const MASTER_KEY_BINDING = "SECRETS_ENCRYPTION_KEYS";
+// A leaf, so the registry — and the admin response schema that reaches it — can name the binding without
+// reaching the Workers types this module declares.
+import { MASTER_KEY_BINDING } from "./masterKeyBinding";
 
 /**
  * A Cloudflare Secrets Store binding: `.get()` resolves the secret's plaintext inside the

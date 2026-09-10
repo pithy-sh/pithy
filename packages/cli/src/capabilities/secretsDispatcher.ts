@@ -1,7 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { SecretDispatcher, SecretProbe, SecretRotationRecorder } from "@pithy-sh/secrets/src/cli/dispatch";
+import type {
+  PreflightSecretDispatcher,
+  SecretProbe,
+  SecretRotationRecorder,
+} from "@pithy-sh/secrets/src/cli/dispatch";
 import { WorkflowSecretDispatcher } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { cloudflareWorkflows } from "../cloudflare/clients";
 
@@ -19,11 +23,15 @@ import { cloudflareWorkflows } from "../cloudflare/clients";
  * {@link SecretRotationRecorder}, the rotation ledger `pithy secrets rotate` opens a row in before it rolls
  * (`#379`). All three contracts land on the same Workflow, so the same one object answers them, and a
  * caller cannot end up probing or recording against one project's manager while writing to another's.
+ *
+ * And it is a {@link PreflightSecretDispatcher}: the refusals a `d1` write owns — no manager to reach, an
+ * `update` of a secret that is not there — are askable before a rotator is called, over the same Workflow
+ * and the same store (#517).
  */
 export async function buildSecretDispatcher(
   accountId: string,
   apiToken: string,
   project: string,
-): Promise<SecretDispatcher & SecretProbe & SecretRotationRecorder> {
+): Promise<PreflightSecretDispatcher & SecretProbe & SecretRotationRecorder> {
   return new WorkflowSecretDispatcher(await cloudflareWorkflows({ accountId, apiToken }), project);
 }
