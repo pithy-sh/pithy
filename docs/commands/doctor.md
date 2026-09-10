@@ -232,7 +232,13 @@ Project health:
       api env.staging points at acme-staging-email-suppressions
       Copy the rows across first. The repoint changes which database is read, not what is in it:
       every unsubscribe recorded above stops being honored, and nothing moves it for you.
-      wrangler d1 export each old database, then wrangler d1 execute it against acme-global-email-suppressions.
+      Make the destination if it is not there yet: pithy email provision
+      The copy is not an export and an import. A whole dump carries the migration ledger and its
+      own row ids, and it aborts against the destination having copied nothing.
+      The sequence that works: https://pithy.sh/docs/cli/commands/doctor#carrying-the-data-across
+      One address suppressed in two of them is two rows that merge into one. The sequence keeps the
+      earlier row, unless one of them expires and the other does not — a permanent suppression is never
+      replaced by a temporary one. Everything the kit writes is permanent, so it is usually the date.
       The old databases are left where they are.
       Then run: pithy provision --env staging
       No command rewrites env dev, and locally the binding is the address — edit it or leave it.
@@ -241,17 +247,53 @@ Project health:
 
 **Copy the data across before you repoint, and read that order carefully — the reverse loses it.** `pithy provision --env <env>` changes which resource the binding names. It moves no row and no byte, and the resource it moves *away from* is the one that has been in use: `EMAIL_SUPPRESSIONS` is bound in the **app** Worker's env, so the unsubscribe callback wrote every suppression into the per-environment database, and `SUPPORT_BUCKET` is bound there too, so every attachment and every raw message went into the per-environment bucket. The project-global one — the one `pithy email provision` and `pithy support provision` create — is the empty side of the split.
 
-So the loss is at the repoint and not at a delete. An unsubscribed recipient starts receiving mail again the moment the app reads a database that never heard about them; a stored attachment becomes unreachable the moment the binding names a different bucket. Nothing is deleted, and nothing is put back by re-running anything.
+So the loss is at the repoint and not at a delete. An unsubscribed recipient starts receiving mail again the moment the app reads a database that never heard about them. Nothing is deleted, and nothing is put back by re-running anything.
 
-**There is no safe automatic path, and Pithy will not invent one.** A cross-resource copy under your own credentials is not something a diagnostic gets to do on your behalf, and for R2 it is an S3-protocol job a Cloudflare API token cannot reach at all. The manual sequence, per declared environment:
+**The bucket is the same shape with one more address in it, and the difference matters to the order you work in.** `SUPPORT_BUCKET` is write-only: `attachment/store.ts` and `inbound/ingest.ts` both `put` through the binding, nothing under `packages/support/src` ever calls `get` or `head`, and the one read is a presigned URL signed against the `bucket` field inside `support-r2-credentials`. So the repoint moves the **writes** and leaves the reads where they were — every attachment stored afterwards 404s, while everything already there stays readable until the secret moves. Move the secret without copying and it is the other way round. Two addresses, two steps, and the section says both.
 
-1. Copy the data into the project-global resource. For D1, `wrangler d1 export` the old database and `wrangler d1 execute --file` the dump against the new one. For R2, sync the old bucket into the new one over R2's S3 endpoint (`rclone`, `aws s3 sync`, anything that speaks S3) with the key pair you made under **R2 → Manage API tokens**.
-2. Run `pithy provision --env <env>`. It writes the project-global name into that environment's stanza.
-3. Deploy, and only then consider deleting the old resource. It is left exactly where it is until you do.
+**There is no safe automatic path, and Pithy will not invent one.** A cross-resource copy under your own credentials is not something a diagnostic gets to do on your behalf, and for R2 it is an S3-protocol job a Cloudflare API token cannot reach at all. The order, per declared environment:
 
-**Under version skew the run is not the whole remedy, and the report says so.** This check is keyed on the capability's own namer rather than on its manifest, deliberately — a newer CLI beside an older `@pithy-sh/email` is the install most likely to be split, and reading the manifest would make the check go quiet on exactly it. But `pithy provision` composes the name *from* that manifest, so an older one writes the per-environment name straight back. Where that is the case the section says `Nothing installed declares this binding project-wide` and names the package to upgrade first; a command that cannot clear its own finding is not printed.
+1. **Make the destination, if it is not there yet.** `pithy email provision` creates the one suppression database; `pithy support provision` creates the one bucket. Doctor reads files and never reaches your account, so it cannot know whether either has ever run — and if you skip this, `pithy provision --env <env>` creates the project-global resource itself and you are live on something created empty seconds earlier.
+2. **Copy the data in.** For D1 this is not an export piped into an import — see [Carrying the data across](#carrying-the-data-across) below, which is the only sequence that works. For R2, sync the old bucket into the new one over R2's S3 endpoint (`rclone`, `aws s3 sync`, anything that speaks S3) with the key pair you made under **R2 → Manage API tokens**.
+3. **Run `pithy provision --env <env>`.** It writes the project-global name into that environment's stanza.
+4. **For `SUPPORT_BUCKET`, move the credential too:** `pithy secrets update support-r2-credentials --env <env>`. The binding is not the only place the bucket is named. Attachments are written through `env.SUPPORT_BUCKET`, and every **presigned** URL is signed against the `bucket` field inside that secret instead — a second string the repoint does not touch. Move one without the other and writes go to the project-global bucket while signed reads keep addressing the per-environment one, so every attachment stored after the repoint 404s. **The verb depends on the project, not on the environment:** nothing in the kit writes this secret — `pithy support provision` writes none, and only `storage` and `media` have provisioners that write theirs — so a project whose attachments were written but never signed-read has none to update, and `pithy secrets update` refuses a secret that does not exist. There it is `pithy secrets create support-r2-credentials --env <env>`, same arguments. `media` had the same shape and does not need this step — #519 converged `MEDIA_BUCKET` *onto* the name `media-r2-credentials` already carried, where support's secret is the half that has to move.
+5. **Deploy, and only then consider deleting the old resource.** It is left exactly where it is until you do.
 
-The `dev` stanza is the one line here that never fails the exit: `provision` writes `env.<stanza>` and `dev` is never a declared environment, so no command reaches it, and it is inert anyway because wrangler keys a local database on the binding when the entry carries no `database_id`. The section also reports the other shape of the same fault — two stanzas naming the right resource and carrying two different `database_id`s, which is `hostEnv.ts`'s "bound identically in every environment" stated as a check rather than as prose. That one has the same carry-over: the stanzas name one resource and open two, so repointing them at one strands whatever the other holds, and the ids in the report are what you decide from.
+**Under version skew the run is not the whole remedy, and the report says so.** This check is keyed on the capability's own namer rather than on its manifest, deliberately — a newer CLI beside an older `@pithy-sh/email` is the install most likely to be split, and reading the manifest would make the check go quiet on exactly it. But `pithy provision` composes the name *from* that manifest, so an older one writes the per-environment name straight back. Where that is the case the section says `Nothing installed declares this binding project-wide` and names the package to upgrade first. The command is still printed — it is what clears the finding once the package has moved — and it is never printed alone: the step that makes it work is printed above it, every time.
+
+The `dev` stanza is the one line here that never fails the exit: `provision` writes `env.<stanza>` and `dev` is never a declared environment, so no command reaches it, and it is inert anyway because wrangler keys a local database on the binding when the entry carries no `database_id`. **That exemption covers both shapes, and for a round it covered only one.** A top-level stanza carrying its own `database_id` beside a managed one that carries another is two ids forever, so a divergence touching `dev` failed the exit unconditionally: the operator ran every printed line, doctor still exited 1, and the same screen told them nothing would ever rewrite the dev id. Only the ids some **managed** stanza carries are counted now. Two of those disagreeing is a red that provisioning clears; one, beside a different id in `dev`, is reported, explained, and green — and the remedy about which database survives is not printed at all, because there is no choice to make.
+
+**A value that is still the scaffold's placeholder is not a resource.** `docs/commands/env.md` states the rule for the whole toolchain — an empty value, a `<database_id>` stub, or anything containing `placeholder` reads as not provisioned — and this check reads it through the same predicate. Without that it accepted any non-empty `database_id`, so a freshly scaffolded `env.staging` was counted as one of "2 different resources" and the operator was told to copy its rows across. There is nothing there to copy.
+
+**The other shape of the same fault gets its own remedy, because it is a different job.** Two stanzas can name the right resource and carry two different `database_id`s — `hostEnv.ts`'s "bound identically in every environment" stated as a check rather than as prose. Nothing there is stale by name, so there is no "old database" to export from: there are two live ones, and the question is which survives.
+
+```
+Project health:
+  shared:
+    EMAIL_SUPPRESSIONS is bound to 2 different resources
+      sup-1: api env.staging
+      sup-2: api env.prod
+      It must be bound identically in every environment.
+      Two databases are open and one survives. pithy provision picks it by name, not from the ids
+      above: it resolves acme-global-email-suppressions on the account and writes that id into every stanza.
+      Decide from the ids which one that is, and copy the other's rows into it first.
+      They answer to one name, so no wrangler command can tell them apart by it. Each is reachable
+      only through its own stanza — the EMAIL_SUPPRESSIONS binding under -e <env>, never the shared name.
+      The copy is not an export and an import. A whole dump carries the migration ledger and its
+      own row ids, and it aborts against the destination having copied nothing.
+      The sequence that works: https://pithy.sh/docs/cli/commands/doctor#when-two-databases-answer-to-one-name
+      One address suppressed in two of them is two rows that merge into one. The sequence keeps the
+      earlier row, unless one of them expires and the other does not — a permanent suppression is never
+      replaced by a temporary one. Everything the kit writes is permanent, so it is usually the date.
+      The database that loses is left where it is.
+      Then run: pithy provision --env staging
+      Then run: pithy provision --env prod
+  api: healthy ✓
+```
+
+`pithy provision` cannot make the choice for you and does not pretend to: it resolves the expected *name* against your account and writes whatever that resolves to into every stanza, having never read the ids. So the decision is yours, the ids in the report are what it is made from, and the losing resource's rows have to be moved before anything is run. The run lines are enumerated per environment from the stanzas the ids were read in, so each one is a command you can paste.
+
+**And the copy itself is addressed differently here, which is why this block points at its own subsection.** Two databases sharing one name is exactly the state no `wrangler d1` command can resolve by that name, so the sequence under [Carrying the data across](#carrying-the-data-across) — every command of which addresses a database by name — reaches neither. [When two databases answer to one name](#when-two-databases-answer-to-one-name) is the form that does.
 
 The **`Alias:`** line has three states, not two: installed, not installed, and **unknown** — because the rc file it reads may not open. A wrong mode, a dangling symlink, an `EIO`: the read used to throw and take the entire report with it, so the least important line here cost Cloudflare reachability, the secrets paths, project health and dev secrets. Catching it to `not installed` would have been worse than the crash — it is a claim about a file nothing could read, and the adopter's next move on reading it is `pithy alias`, which fails on the same file. So the third state says what it is and names the file:
 
@@ -457,6 +499,102 @@ Shared runtimes:
 It is here because the natural symptom is unreadable. Two copies of a class carrying private members are two different types, and TypeScript reports `Type 'Kysely<any>' is not assignable to type 'Kysely<any>'` with both paths identical unless you compare them character by character — naming neither the package nor the duplication. The check **resolves** rather than reading a directory, so it answers the question that matters: whether the kit and your own code agree on which copy, not how many exist somewhere on disk. **It does not fail the exit** — a second copy is nearly always a fault, and "nearly" is doing real work, since a project may have pinned one deliberately — and the block is absent when there is nothing to say.
 
 A **`Worker names:`** block appears when a Worker's three names stop agreeing — its `apps/<dir>`, the deployed script name in its `wrangler.jsonc`, and its `vars.WORKER`. It is the hand-rename check: `git mv apps/api apps/board` and one forgotten edit leaves a Worker deploying under one name and stamping its audit events with another, and nothing else in the toolchain notices. Shown per Worker, one line per stamp that disagrees, and it **fails the exit** — the contradiction is between this repo's own directory and its own config, so it is established from local files alone and no account is consulted. Held to the same evidence bar as `Project name:`: a script name that was never composed from `<project>-<worker>` was brought in from somewhere, not renamed, and passes. `pithy worker rename` (`docs/commands/worker.md`) is what moves all three at once.
+
+## Carrying the data across
+
+**The `shared:` section names this page rather than printing a pair of `wrangler` commands, because the obvious pair does not work and one half of it is destructive.** It used to print `wrangler d1 export each old database, then wrangler d1 execute it against <expected>`. Run exactly as printed, that reports success and copies nothing:
+
+- **`wrangler d1` defaults to local.** With no `--remote` the export reads `.wrangler/state`, prints `Resource location: local` and `Done!`, and exits 0. The next line on screen is the repoint, so the operator runs it believing production was copied, and production is live on an empty database.
+- **A whole-database export cannot be imported into a provisioned destination.** The dump carries `pithy_migrations`, `pithy_migrations_lock`, `pithy_migrations_owner`, a `DELETE FROM sqlite_sequence`, and an explicit `id` on every row. The destination already holds all of that, because `pithy email provision` created and migrated it. The execute aborts transactionally on the first `UNIQUE constraint failed` — against a migrated but empty destination it is `pithy_migrations.name` — and the whole file rolls back, so the count afterwards is 0.
+- **A table-scoped export still collides on `id`.** Every environment's database allocated `id` from 1, so `--table pithy_email_suppressions --no-schema` imports the first environment and then fails on the second.
+
+So the copy is a narrow, table-scoped export plus a text edit, and a text edit is not a command. What follows is the sequence that works.
+
+**One.** Export one table from the **remote** database. Not the whole database, and never the local one.
+
+**Two.** Edit `staging.sql`. Two changes to every statement in it: name the columns and drop `id`, from the column list and from the values; and append the `ON CONFLICT` clause that decides which row survives when two environments suppressed one address. The clause is the same text on every statement. An illustration rather than literal bytes — check what your own export wrote:
+
+```
+before: INSERT INTO pithy_email_suppressions VALUES(1,'a@example.com','hard_bounce',...);
+after:  INSERT INTO pithy_email_suppressions
+          (email,reason,job_id,environment,detail,created_at,expires_at)
+          VALUES('a@example.com','hard_bounce',...)
+        ON CONFLICT(email) DO UPDATE SET
+          reason=excluded.reason, job_id=excluded.job_id, environment=excluded.environment,
+          detail=excluded.detail, created_at=excluded.created_at, expires_at=excluded.expires_at
+        WHERE excluded.expires_at IS NULL AND pithy_email_suppressions.expires_at IS NOT NULL
+           OR (excluded.expires_at IS NULL)=(pithy_email_suppressions.expires_at IS NULL)
+              AND (excluded.expires_at>pithy_email_suppressions.expires_at
+                   OR excluded.expires_at IS pithy_email_suppressions.expires_at
+                      AND excluded.created_at<pithy_email_suppressions.created_at);
+```
+
+**Three.** Apply it to the **remote** project-global database. **Four.** Repeat one through three for each environment, then count what arrived.
+
+```
+cd apps/<worker>
+
+wrangler d1 export acme-staging-email-suppressions --remote \
+  --table pithy_email_suppressions --no-schema --output staging.sql
+
+wrangler d1 execute acme-global-email-suppressions --remote --file staging.sql
+
+wrangler d1 execute acme-global-email-suppressions --remote \
+  --command "select count(*) from pithy_email_suppressions"
+```
+
+**Run them from the Worker's own directory.** A Pithy project has no `wrangler.jsonc` at its root — every Worker owns one, under `apps/<name>/` — and `wrangler` reads the config beside it. Run from the project root, where `pithy doctor` printed the link, every command here exits 1 before it reaches Cloudflare. `-c apps/<name>/wrangler.jsonc` on each is the same thing said longer.
+
+`--remote` on every command, every time. `--table` and `--no-schema` keep the migration ledger and the `CREATE TABLE` out of the dump, so the destination's own schema and applied-migration rows survive. Dropping `id` lets SQLite allocate a fresh one per row, which is what makes a second environment's rows land beside the first's instead of colliding with them. The `ON CONFLICT` clause is what makes the whole thing re-runnable, and what handles the one genuine conflict left — the unique `email`.
+
+**Which row wins, when two environments suppressed one address.** `email` is `not null unique`, so those two rows merge into one, and they may disagree about `reason` and about `expires_at`. "Do not email this person again" is not a field to lose a coin toss over, so the clause above decides it, in this order:
+
+1. **A permanent suppression beats a temporary one.** A null `expires_at` replaces any non-null one and is never replaced by one.
+2. **Between two temporary ones, the later expiry wins.** The address stays suppressed for as long as any environment asked.
+3. **Otherwise the earlier `created_at` wins**, so the merged row dates from the first time anybody said it.
+
+**In practice it is nearly always the third.** Every suppression the kit itself writes is permanent — `send/runSend.ts` on a hard failure, the unsubscribe callback, the bounce handler, none of which pass an `expiresAt` — so two rows you actually find in two environments agree on the first test and the decision falls to the date. The expiry rules exist for the one row that can carry one: a `manual` block written through the control-plane route.
+
+The whole row moves together — `reason`, `environment` and `detail` come from the row that won, never from a mix — so `environment` still names where the surviving suppression originated. The result does not depend on the order you run the environments in, and re-running a file changes nothing: this is what the previous `INSERT OR IGNORE` could not do, since it kept whichever row arrived first and would have let staging's temporary `unsubscribe` outrank prod's earlier permanent `hard_bounce`. The precedence was checked against SQLite 3.45.1 — the engine D1 runs — with each of the three cases applied in both orders and every file applied twice.
+
+### When two databases answer to one name
+
+The sequence above addresses each database by name, which is right for the split the `shared:` section usually reports — the stanzas name *different* databases, and each name resolves. It is wrong for the other shape. Two stanzas carrying the project's one name and two different `database_id`s are two databases answering to one name, and against wrangler 4.130.0 that name resolves to neither:
+
+```
+wrangler d1 export acme-global-email-suppressions --remote …
+  ✘ Couldn't find a D1 DB with the name or binding 'acme-global-email-suppressions'
+
+wrangler d1 export 8f1c0e2a-… --remote …
+  ✘ Couldn't find a D1 DB with the name or binding '8f1c0e2a-…'
+
+wrangler d1 export EMAIL_SUPPRESSIONS -e prod --remote …
+  🌀 Executing on remote database EMAIL_SUPPRESSIONS (8f1c0e2a-…)
+```
+
+`wrangler d1 export --help` says the positional is "the name of the D1 database to export", and a uuid in its place is refused the same way. The third form is the only one that reaches either database, and it is not a quirk of `export`: `getDatabaseByNameOrBinding` matches the argument against the `database_name` *and* the binding of every entry in the selected environment's stanza, and returns that entry's `database_id` without ever consulting the account. Both `export` and `execute` resolve through it, remote and local alike, so the stanza is the address and the shared name never comes up.
+
+So run the same three steps with the same edit, and address both ends by binding and environment — the losing environment as the source, the surviving one as the destination:
+
+```
+cd apps/<worker>
+
+wrangler d1 export EMAIL_SUPPRESSIONS -e staging --remote \
+  --table pithy_email_suppressions --no-schema --output staging.sql
+
+wrangler d1 execute EMAIL_SUPPRESSIONS -e prod --remote --file staging.sql
+
+wrangler d1 execute EMAIL_SUPPRESSIONS -e prod --remote \
+  --command "select count(*) from pithy_email_suppressions"
+```
+
+The Worker's own directory again, and here it is load-bearing rather than merely required: the address *is* the stanza, so the config wrangler reads decides which database `EMAIL_SUPPRESSIONS -e prod` resolves to. **Two Workers that each declare the binding are addressed one at a time**, from each one's own directory — `-e` names an environment, and it cannot tell two Workers' stanzas apart.
+
+Which environment is which is the decision the report leaves you: `pithy provision` resolves the expected *name* on your account and writes whatever that resolves to into every stanza, having never read the ids. Work out which id that is first, make it the destination, and run the repoint only once the rows are in it.
+
+### For R2 there is no equivalent to write down
+
+Syncing a bucket is an S3-protocol job, so it is `rclone`, `aws s3 sync`, or anything else that speaks S3, pointed at R2's S3 endpoint with a key pair from **R2 → Manage API tokens**. A Cloudflare API token cannot do it, which is why `pithy` does not offer to. Object keys are unique per bucket, so there is no merge question. There is still the credential, though, and that one is not optional: it is step 4 of the order under [What it does](#what-it-does) — not a step of either sequence above.
 
 ## `--json`
 

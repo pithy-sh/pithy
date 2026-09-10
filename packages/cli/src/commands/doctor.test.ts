@@ -272,6 +272,7 @@ describe("renderDoctorText", () => {
             binding: "EMAIL_SUPPRESSIONS",
             kind: "d1",
             expected: "acme-global-email-suppressions",
+            credential: null,
             stale: [{ worker: "api", env: "dev", name: "acme-dev-email-suppressions" }],
             repointable: true,
           },
@@ -327,6 +328,7 @@ describe("renderDoctorText", () => {
             binding: "EMAIL_SUPPRESSIONS",
             kind: "d1",
             expected: "acme-global-email-suppressions",
+            credential: null,
             stale: [{ worker: "api", env: "staging", name: "acme-staging-email-suppressions" }],
             repointable: true,
           },
@@ -337,13 +339,56 @@ describe("renderDoctorText", () => {
 
     expect(text).toContain("Copy the rows across first.");
     expect(text).toContain("every unsubscribe recorded above stops being honored, and nothing moves it for you.");
-    expect(text).toContain("wrangler d1 export each old database, then wrangler d1 execute it against");
     // The order is the instruction. A `Run:` line above the copy would be the sentence read first.
     expect(text.indexOf("Copy the rows across first.")).toBeLessThan(
       text.indexOf("Then run: pithy provision --env staging"),
     );
     // And the sentence that was the wrong end of it is gone rather than merely joined.
     expect(text).not.toContain("Check them for rows before deleting.");
+
+    // **The destination may not exist, and doctor cannot know.** It reads files and never reaches the
+    // account, so `pithy email provision` may never have run — and where it has not, the only runnable
+    // line left on screen is the repoint, which creates the project-global database itself and leaves the
+    // operator live on something created empty seconds earlier. The command that makes it comes first.
+    expect(text).toContain("Make the destination if it is not there yet: pithy email provision");
+    expect(text.indexOf("pithy email provision")).toBeLessThan(text.indexOf("Then run: pithy provision"));
+
+    // **The pair that used to be printed here is gone, and nothing replaced it with another one.**
+    // `wrangler d1 export <db>` with no flag reports `Resource location: local`, exports
+    // `.wrangler/state`, and exits 0 — so the operator ran the repoint underneath believing production
+    // had been copied. With `--remote` it still cannot work: the dump carries `pithy_migrations` and
+    // explicit row ids, and the execute aborts transactionally having written nothing.
+    expect(text).not.toContain("wrangler d1 export each old database");
+    expect(text).toContain("The copy is not an export and an import.");
+    // **And the pointer is a URL, because the published package has no `docs/` in it (#513 review, round
+    // three).** `packages/cli/package.json` `files` ships `dist`, `src`, `scripts` and `templates`, so
+    // `docs/commands/doctor.md §…` named a file no adopter who installed the CLI has — the same defect as
+    // a command that does not run, one indirection along. `doctorDocs.test.ts` holds the URL to the page
+    // it renders at and to a heading that page has; here it is only required to be a URL and not a path.
+    expect(text).toContain(
+      "The sequence that works: https://pithy.sh/docs/cli/commands/doctor#carrying-the-data-across",
+    );
+    expect(text).not.toContain("docs/commands/doctor.md");
+
+    // The invariant behind that, stated so it holds against whatever gets added here later: this section
+    // never prints a `wrangler d1` line without `--remote`, because the default is the local database.
+    expect(text.split("\n").filter((line) => /\bwrangler d1\b/.test(line) && !line.includes("--remote"))).toEqual([]);
+
+    // **And which row wins — stated as what the sequence does, never as homework (#513 review, round
+    // three).** `email` is unique, so two environments make two rows of one address. The sentence used to
+    // tell the operator to "keep the stricter", above a sequence whose `INSERT OR IGNORE` kept whichever
+    // row arrived first: on this page's own worked example the weaker row won on both criteria. The
+    // sequence carries an `ON CONFLICT(email) DO UPDATE … WHERE` clause now, so the rule is applied
+    // rather than remembered, and the line says which rule that is.
+    expect(text).toContain("One address suppressed in two of them is two rows that merge into one.");
+    // **Led by the clause that actually fires.** Reading the precedence top to bottom put
+    // permanent-beats-temporary first, which is the test two observed rows never fail: every suppression
+    // the kit writes is permanent, so the decision reaches `created_at` every time. A sentence that leads
+    // on a branch real data cannot take is accurate about the SQL and wrong as advice.
+    expect(text).toContain("The sequence keeps the");
+    expect(text).toContain("earlier row, unless one of them expires and the other does not");
+    expect(text).toContain("Everything the kit writes is permanent, so it is usually the date.");
+    expect(text).not.toContain("That call is yours.");
   });
 
   test("an r2 binding gets the objects sentence, not the rows one", async () => {
@@ -373,6 +418,7 @@ describe("renderDoctorText", () => {
             binding: "SUPPORT_BUCKET",
             kind: "r2",
             expected: "acme-global-support",
+            credential: "support-r2-credentials",
             stale: [{ worker: "api", env: "staging", name: "acme-staging-support-bucket" }],
             repointable: true,
           },
@@ -382,10 +428,45 @@ describe("renderDoctorText", () => {
     const text = renderDoctorText(report, "/home/u");
 
     expect(text).toContain("Copy the objects across first.");
-    expect(text).toContain("every attachment and raw message in the old ones becomes unreachable");
+    // **The repoint moves the writes, and only the writes (#513 review, round three).** For support the
+    // binding is write-only — `attachment/store.ts` and `inbound/ingest.ts` both `put`, nothing under
+    // `packages/support/src` ever calls `get` or `head`, and the one read is `store.presignGet` signed
+    // against `credentials.bucket`. So "every attachment in the old ones becomes unreachable" was false
+    // on the repoint alone, and the same screen said so three lines below in the credential sentence.
+    expect(text).toContain("The repoint changes which bucket the binding names, not what");
+    expect(text).not.toContain("every attachment and raw message in the old ones becomes unreachable");
     expect(text).toContain("Sync each old bucket into acme-global-support over R2's S3 endpoint");
     expect(text).toContain("The old buckets are left where they are.");
     expect(text).not.toContain("wrangler d1 export");
+    expect(text).toContain("Make the destination if it is not there yet: pithy support provision");
+
+    // **The binding is not the only place the bucket is named (#513 review).** Attachments are written
+    // through `env.SUPPORT_BUCKET`, and every presigned URL is signed against the `bucket` field inside
+    // `support-r2-credentials` — a second string the repoint does not touch, and one nothing in the kit
+    // writes. Move one without the other and writes go to the project-global bucket while signed reads
+    // keep addressing the per-environment one, so everything stored after the repoint 404s.
+    expect(text).toContain("support-r2-credentials names the bucket every presigned URL is signed against");
+    // Both directions of the split, because each costs something different and the operator picks an order.
+    expect(text).toContain("leave the secret and everything stored after the repoint");
+    expect(text).toContain("update it and everything you did not copy is unreachable.");
+    expect(text).toContain("pithy secrets update support-r2-credentials --env staging");
+    // Beside the repoint, in the runnable half, and after it: the credential is updated to match a
+    // binding that has already moved.
+    expect(text.indexOf("Then run: pithy provision --env staging")).toBeLessThan(
+      text.indexOf("pithy secrets update support-r2-credentials --env staging"),
+    );
+    // `set` is not a subcommand of `pithy secrets`, and a remedy naming one would be #517 again.
+    expect(text).not.toContain("pithy secrets set");
+
+    // **And `update` is not the command on every project (#513 review, round three).** `pithy secrets
+    // update` refuses a secret that does not exist, and nothing in the kit ever writes this one — `pithy
+    // support provision` writes none — so a project whose attachments were written but never signed-read
+    // has none, and the printed line would exit 1 on exactly the project that has this finding. The
+    // alternative is named once, after the runs: it is the same act with the same arguments, and which
+    // verb applies is a fact about the project rather than about the environment.
+    expect(text).toContain("A project that has never signed a read has no support-r2-credentials to update.");
+    expect(text).toContain("command is pithy secrets create, with the same arguments.");
+    expect(text.split("\n").filter((line) => line.includes("pithy secrets create"))).toHaveLength(1);
   });
 
   /**
@@ -422,6 +503,7 @@ describe("renderDoctorText", () => {
             binding: "EMAIL_SUPPRESSIONS",
             kind: "d1",
             expected: "acme-global-email-suppressions",
+            credential: null,
             stale: [{ worker: "api", env: "staging", name: "acme-staging-email-suppressions" }],
             repointable: false,
           },
@@ -471,6 +553,7 @@ describe("renderDoctorText", () => {
             binding: "EMAIL_SUPPRESSIONS",
             kind: "d1",
             expected: "acme-global-email-suppressions",
+            credential: null,
             ids: [
               { id: "sup-1", at: [{ worker: "api", env: "staging" }] },
               { id: "sup-2", at: [{ worker: "api", env: "prod" }] },
@@ -485,10 +568,210 @@ describe("renderDoctorText", () => {
     expect(text).toContain("EMAIL_SUPPRESSIONS is bound to 2 different resources");
     expect(text).toContain("sup-1: api env.staging");
     expect(text).toContain("It must be bound identically in every environment.");
-    expect(text).toContain("Copy the rows across first.");
-    expect(text.indexOf("Copy the rows across first.")).toBeLessThan(
-      text.indexOf("Then run: pithy provision --env <env>"),
+
+    // **Its own remedy, not the split branch's (#513 review).** Both stanzas here already carry the
+    // expected *name*, so "export each old database, then execute it against acme-global-email-
+    // suppressions" named one string as both source and destination — a database exporting into itself,
+    // and `wrangler d1 export` addresses a database by name or binding and never by id anyway.
+    expect(text).toContain("Two databases are open and one survives.");
+    expect(text).toContain("Decide from the ids which one that is, and copy the other's rows into it first.");
+    expect(text).not.toContain("Copy the rows across first.");
+    expect(text).not.toContain("The old databases are left where they are.");
+
+    // **The environments are enumerated, because the entry has them.** `ids[].at[].env` is the same data
+    // the split branch enumerates from, and this branch was degrading it to a placeholder nobody can
+    // paste — on the screen where the decision is actually made.
+    expect(text).toContain("Then run: pithy provision --env staging");
+    expect(text).toContain("Then run: pithy provision --env prod");
+    expect(text).not.toContain("pithy provision --env <env>");
+
+    // The decision is named, and so is the fact that the command does not make it.
+    expect(text).toContain("pithy provision picks it by name, not from the ids");
+    expect(text.indexOf("Two databases are open and one survives.")).toBeLessThan(
+      text.indexOf("Then run: pithy provision --env staging"),
     );
+  });
+
+  /**
+   * **A divergence cannot be addressed by the name the two databases share (#513 review, round three).**
+   *
+   * Every command in the sequence the split branch points at is `wrangler d1 <verb> <resource-name>`, and
+   * that is right there: the stanzas name *different* databases and each name resolves. A pure divergence
+   * is the opposite state — two databases answering to one name — and against wrangler 4.130.0 the shared
+   * name resolves to neither, a uuid in its place is refused the same way, and `-e <env>` plus the binding
+   * is the only form that reaches one. So the branch says so, names the binding, and points at the
+   * subsection that carries that sequence rather than at the one written for names that resolve.
+   */
+  test("the divergent branch names the addressing that reaches a shared name, and its own section", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        installedVersion: "1.3.0",
+        fetch: registryFetch({ cli: "1.3.0" }),
+        installedCapabilities: async () => [],
+        resolveWorkers: async () => workerSet("api"),
+        buildPlan: planStub(cleanPlanFor("api")),
+      }),
+    );
+    if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere to sit.");
+    report.project.health = {
+      ...report.project.health,
+      ok: false,
+      bindingScope: {
+        ok: false,
+        partial: false,
+        split: [],
+        divergent: [
+          {
+            capability: "email",
+            package: "@pithy-sh/email",
+            binding: "EMAIL_SUPPRESSIONS",
+            kind: "d1",
+            expected: "acme-global-email-suppressions",
+            credential: null,
+            ids: [
+              { id: "sup-1", at: [{ worker: "api", env: "staging" }] },
+              { id: "sup-2", at: [{ worker: "api", env: "prod" }] },
+            ],
+            repointable: true,
+          },
+        ],
+      },
+    };
+    const text = renderDoctorText(report, "/home/u");
+
+    expect(text).toContain("They answer to one name, so no wrangler command can tell them apart by it.");
+    expect(text).toContain("only through its own stanza — the EMAIL_SUPPRESSIONS binding under -e <env>");
+    // Its own anchor, never the split branch's: that section's commands all address a database by name.
+    expect(text).toContain(
+      "The sequence that works: https://pithy.sh/docs/cli/commands/doctor#when-two-databases-answer-to-one-name",
+    );
+    expect(text).not.toContain("doctor#carrying-the-data-across");
+    // And the addressing sentence comes before the link, so the reason is read before the destination.
+    expect(text.indexOf("They answer to one name")).toBeLessThan(text.indexOf("The sequence that works:"));
+  });
+
+  /**
+   * **A divergence only `dev` is part of is reported, explained, and green (#513 review, round three).**
+   *
+   * `pithy provision` writes `config.env[<stanza>]`, so nothing rewrites the top-level one — which the
+   * split branch has said since #513 and the divergent branch did not. There a `dev` id beside one
+   * managed id failed the exit unconditionally: every printed line ran, `doctor` still exited 1, and the
+   * same screen said nothing would ever rewrite the dev id. There is also no choice to make between two
+   * live databases here, so the remedy that describes one is not printed at all.
+   */
+  test("a divergence the dev stanza alone is part of prints the dev line and no choice to make", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        installedVersion: "1.3.0",
+        fetch: registryFetch({ cli: "1.3.0" }),
+        installedCapabilities: async () => [],
+        resolveWorkers: async () => workerSet("api"),
+        buildPlan: planStub(cleanPlanFor("api")),
+      }),
+    );
+    if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere to sit.");
+    report.project.health = {
+      ...report.project.health,
+      ok: true,
+      bindingScope: {
+        ok: true,
+        partial: false,
+        split: [],
+        divergent: [
+          {
+            capability: "email",
+            package: "@pithy-sh/email",
+            binding: "EMAIL_SUPPRESSIONS",
+            kind: "d1",
+            expected: "acme-global-email-suppressions",
+            credential: null,
+            ids: [
+              { id: "sup-local", at: [{ worker: "api", env: "dev" }] },
+              { id: "sup-1", at: [{ worker: "api", env: "prod" }] },
+            ],
+            repointable: true,
+          },
+        ],
+      },
+    };
+    const text = renderDoctorText(report, "/home/u");
+
+    expect(text).toContain("EMAIL_SUPPRESSIONS is bound to 2 different resources");
+    expect(text).toContain("sup-local: api env.dev");
+    expect(text).toContain(
+      "No command rewrites env dev, and locally the binding is the address — edit it or leave it.",
+    );
+    // No remedy, because there is nothing to choose between and nothing for a run to change.
+    expect(text).not.toContain("Two databases are open and one survives.");
+    expect(text).not.toContain("Then run: pithy provision --env prod");
+  });
+
+  /**
+   * **The split branch's wording must not reappear on the divergent one, and the reverse (#513 review).**
+   *
+   * The two shapes shared one remedy for a round, which is how a sentence written for a stale *name*
+   * came to be printed under two live *ids* — where it named the same string as both ends of the copy.
+   * They are separate functions now, so this is the assertion that keeps them separate: each branch's
+   * opening sentence appears under its own finding and under no other.
+   */
+  test("neither branch prints the other's copy sentence", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        installedVersion: "1.3.0",
+        fetch: registryFetch({ cli: "1.3.0" }),
+        installedCapabilities: async () => [],
+        resolveWorkers: async () => workerSet("api"),
+        buildPlan: planStub(cleanPlanFor("api")),
+      }),
+    );
+    if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere to sit.");
+    report.project.health = {
+      ...report.project.health,
+      ok: false,
+      bindingScope: {
+        ok: false,
+        partial: false,
+        split: [
+          {
+            capability: "email",
+            package: "@pithy-sh/email",
+            binding: "EMAIL_SUPPRESSIONS",
+            kind: "d1",
+            expected: "acme-global-email-suppressions",
+            credential: null,
+            stale: [{ worker: "api", env: "staging", name: "acme-staging-email-suppressions" }],
+            repointable: true,
+          },
+        ],
+        divergent: [
+          {
+            capability: "support",
+            package: "@pithy-sh/support",
+            binding: "SUPPORT_BUCKET",
+            kind: "r2",
+            expected: "acme-global-support",
+            credential: "support-r2-credentials",
+            repointable: true,
+            ids: [
+              { id: "b-1", at: [{ worker: "api", env: "staging" }] },
+              { id: "b-2", at: [{ worker: "api", env: "prod" }] },
+            ],
+          },
+        ],
+      },
+    };
+    const text = renderDoctorText(report, "/home/u");
+
+    // One of each, and each says its own thing. The r2 divergence is unreachable from a real
+    // `wrangler.jsonc` — a bucket's name is its address, so nothing fills an id for one — but the kind is
+    // carried rather than assumed, and a remedy that talked about rows there would be a lie by default.
+    expect(text).toContain("Copy the rows across first.");
+    expect(text).toContain("Two buckets are open and one survives.");
+    expect(text).not.toContain("Two databases are open");
+    expect(text).not.toContain("Copy the objects across first.");
+    // The credential belongs to the bucket, not to the database, in both branches.
+    expect(text).toContain("pithy secrets update support-r2-credentials --env prod");
+    expect(text.split("\n").filter((line) => line.includes("pithy secrets update"))).toHaveLength(2);
   });
 
   /**

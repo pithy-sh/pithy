@@ -97,6 +97,9 @@ describe("bindingScopeHealth", () => {
         binding: "EMAIL_SUPPRESSIONS",
         kind: "d1",
         expected: SUPPRESSIONS,
+        // A D1 database is addressed through the binding and through nothing else, so there is no second
+        // string carrying its name for a repoint to leave behind (#513 review).
+        credential: null,
         stale: [
           { worker: "api", env: "dev", name: "acme-dev-email-suppressions" },
           { worker: "api", env: "staging", name: "acme-staging-email-suppressions" },
@@ -146,6 +149,7 @@ describe("bindingScopeHealth", () => {
         binding: "EMAIL_SUPPRESSIONS",
         kind: "d1",
         expected: SUPPRESSIONS,
+        credential: null,
         ids: [
           { id: "sup-1", at: [{ worker: "api", env: "staging" }] },
           { id: "sup-2", at: [{ worker: "api", env: "prod" }] },
@@ -266,6 +270,9 @@ describe("bindingScopeHealth", () => {
         binding: "SUPPORT_BUCKET",
         kind: "r2",
         expected: "acme-global-support",
+        // The bucket is named twice: once by the binding the repoint moves, and once inside the credential
+        // every presigned URL is signed against, which nothing in the kit writes (#513 review).
+        credential: "support-r2-credentials",
         stale: [{ worker: "api", env: "staging", name: "acme-staging-support-bucket" }],
         repointable: true,
       },
@@ -273,6 +280,86 @@ describe("bindingScopeHealth", () => {
     // No `id` is ever read off an `r2_buckets` entry, so the divergence half has nothing to say about a
     // bucket — the name comparison above covers it whole.
     expect(health.divergent).toEqual([]);
+  });
+
+  /**
+   * **A `<database_id>` stub is the state a scaffold leaves behind, not a second database (#513 review).**
+   *
+   * `docs/commands/env.md` states the rule for the whole toolchain — an empty value, a `<database_id>`
+   * stub, or anything containing `placeholder` reads as not provisioned — and `project/envInventory.ts`
+   * has implemented it all along. This check consulted nothing of the sort and took any non-empty
+   * `database_id` as an address, so a freshly scaffolded `env.staging` beside a provisioned `env.prod`
+   * was reported as "2 different resources" and the operator was told to copy its rows across. There is
+   * nothing there to copy.
+   */
+  test("a placeholder database_id is not an address — a scaffolded stanza is not a second resource", async () => {
+    await CURRENT_EMAIL();
+    await writeWorker("api", {
+      env: {
+        staging: {
+          d1_databases: [{ binding: "EMAIL_SUPPRESSIONS", database_name: SUPPRESSIONS, database_id: "<database_id>" }],
+        },
+        prod: { d1_databases: [{ binding: "EMAIL_SUPPRESSIONS", database_name: SUPPRESSIONS, database_id: "sup-1" }] },
+      },
+    });
+
+    expect(await bindingScopeHealth(dir)).toEqual({ ok: true, split: [], divergent: [], partial: false });
+  });
+
+  test("a placeholder name is not a claim either — the same predicate, on the other field", async () => {
+    // The name half of the same rule. A stanza still carrying `<database_name>` has not been pointed at
+    // anything, so calling it "stale" would send the operator to export rows out of nothing.
+    await CURRENT_EMAIL();
+    await writeWorker("api", {
+      env: {
+        staging: { d1_databases: [{ binding: "EMAIL_SUPPRESSIONS", database_name: "<database_name>" }] },
+        prod: { d1_databases: [{ binding: "EMAIL_SUPPRESSIONS", database_name: "placeholder-suppressions" }] },
+      },
+    });
+
+    expect(await bindingScopeHealth(dir)).toEqual({ ok: true, split: [], divergent: [], partial: false });
+  });
+
+  /**
+   * **The `dev` exemption covers the divergence half too (#513 review).**
+   *
+   * The split branch has exempted `dev` from the start: `pithy provision` writes `config.env[…]` and
+   * `dev` is never a declared environment, so a red there is a red nothing clears. The divergence half
+   * had no such exemption, so a top-level stanza carrying its own `database_id` beside a managed one
+   * carrying another failed the exit forever — the operator ran every printed line, `doctor` still exited
+   * 1, and the same screen told them nothing would ever rewrite the dev id.
+   */
+  test("a divergence only the dev stanza is part of is reported and does not fail the check", async () => {
+    await CURRENT_EMAIL();
+    await writeWorker("api", {
+      d1_databases: [{ binding: "EMAIL_SUPPRESSIONS", database_name: SUPPRESSIONS, database_id: "sup-local" }],
+      env: {
+        prod: { d1_databases: [{ binding: "EMAIL_SUPPRESSIONS", database_name: SUPPRESSIONS, database_id: "sup-1" }] },
+      },
+    });
+
+    const health = await bindingScopeHealth(dir);
+    // Reported — the two ids are a real fact and the report says so — and green, because the only command
+    // that could act reaches neither of them.
+    expect(health.ok).toBe(true);
+    expect(health.divergent[0]?.ids.map(({ id }) => id)).toEqual(["sup-local", "sup-1"]);
+  });
+
+  test("two managed stanzas diverging still fails, dev stanza or no dev stanza", async () => {
+    // The other side of the same rule: the exemption is about which stanzas a command can rewrite, never
+    // about how many there are. Two managed ids is a red that `pithy provision` clears.
+    await CURRENT_EMAIL();
+    await writeWorker("api", {
+      d1_databases: [{ binding: "EMAIL_SUPPRESSIONS", database_name: SUPPRESSIONS, database_id: "sup-local" }],
+      env: {
+        staging: {
+          d1_databases: [{ binding: "EMAIL_SUPPRESSIONS", database_name: SUPPRESSIONS, database_id: "sup-1" }],
+        },
+        prod: { d1_databases: [{ binding: "EMAIL_SUPPRESSIONS", database_name: SUPPRESSIONS, database_id: "sup-2" }] },
+      },
+    });
+
+    expect((await bindingScopeHealth(dir)).ok).toBe(false);
   });
 
   test("an entry with no name yet is not a claim — a binding provisioning completes later is not a split", async () => {

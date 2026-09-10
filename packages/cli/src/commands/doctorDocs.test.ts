@@ -106,6 +106,15 @@ const WHERE = "docs/commands/doctor.md";
 const WHAT_IT_DOES = section(PAGE, "## What it does", WHERE);
 const JSON_SECTION = section(PAGE, "## `--json`", WHERE);
 const EXAMPLES = section(PAGE, "## Examples", WHERE);
+/**
+ * The section the `shared:` remedy sends an operator to by name (#513 review).
+ *
+ * The terminal prints the URL this page renders at instead of a `wrangler` pair, because the pair it used
+ * to print defaulted to the local database and, with `--remote`, aborted having copied nothing. A pointer
+ * is only better than a broken command while the thing it points at exists — so both the page and the
+ * anchor are asserted from the renderer's own line below, not merely assumed here.
+ */
+const CARRY_OVER = section(PAGE, "## Carrying the data across", WHERE);
 
 /**
  * The page's fenced blocks, split by the section that holds them, because each class is pinned differently.
@@ -122,6 +131,8 @@ const EXAMPLES = section(PAGE, "## Examples", WHERE);
 const WHAT_BLOCKS = fencedBlocks(WHAT_IT_DOES);
 const JSON_SAMPLES = fencedBlocks(JSON_SECTION);
 const EXAMPLE_BLOCKS = fencedBlocks(EXAMPLES);
+/** The carry-over section's fenced blocks: the statement rewrite, and each shape's `wrangler` commands. */
+const CARRY_BLOCKS = fencedBlocks(CARRY_OVER);
 const FRAGMENTS = WHAT_BLOCKS.slice(1);
 
 /**
@@ -245,10 +256,20 @@ describe("docs/commands/doctor.md", () => {
     //
     // Sixteen since #513 added the `shared:` fragment — a project-global resource its Workers do not all
     // point at, which is the first finding here that belongs to no single Worker but the manifest read.
-    expect(WHAT_BLOCKS).toHaveLength(16);
+    // Seventeen since its review split that section's two shapes apart: a stale *name* and two live *ids*
+    // are two different jobs, and the second's remedy was a line naming one string as both its source and
+    // its destination. Each shape prints its own block, so each has to be pinned against its own report.
+    expect(WHAT_BLOCKS).toHaveLength(17);
     expect(EXAMPLE_BLOCKS).toHaveLength(2);
     expect(JSON_SAMPLES).toHaveLength(1);
-    expect(fencedBlocks(PAGE)).toHaveLength(WHAT_BLOCKS.length + EXAMPLE_BLOCKS.length + JSON_SAMPLES.length + 1);
+    // The carry-over sequence is prose and shell rather than a rendered report, so it is its own class:
+    // nothing in the CLI prints it, and a pin against the renderer would be a pin against nothing. Four
+    // since #513's third round: the statement rewrite and the `wrangler` commands around it, plus what
+    // wrangler answers when two databases share one name and the `-e <env>` sequence that reaches them.
+    expect(CARRY_BLOCKS).toHaveLength(4);
+    expect(fencedBlocks(PAGE)).toHaveLength(
+      WHAT_BLOCKS.length + EXAMPLE_BLOCKS.length + JSON_SAMPLES.length + CARRY_BLOCKS.length + 1,
+    );
   });
 
   /**
@@ -628,6 +649,7 @@ describe("docs/commands/doctor.md", () => {
             binding: "EMAIL_SUPPRESSIONS",
             kind: "d1",
             expected: "acme-global-email-suppressions",
+            credential: null,
             repointable: true,
             stale: [
               { worker: "api", env: "dev", name: "acme-dev-email-suppressions" },
@@ -640,6 +662,164 @@ describe("docs/commands/doctor.md", () => {
     const fragment = FRAGMENTS[9];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the shared-binding fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  /**
+   * The `shared:` section's **other** shape (#513 review), pinned against two stanzas that already carry
+   * the project's name and are bound to two different `database_id`s.
+   *
+   * It is a second block rather than a second reading of the first because it is a different job. In a
+   * pure divergence nothing is stale by name, so there is no "old database" to export *from* — there are
+   * two live ones and a choice about which survives, and `pithy provision` makes that choice by resolving
+   * the name on the account rather than by reading the ids. The block the page pastes has to say that,
+   * and it has to enumerate the run per environment from `ids[].at[].env`, because the split branch's
+   * `<env>` placeholder is not a command anybody can paste.
+   */
+  test("the divergent fragment is what the renderer prints for one binding bound to two resources", async () => {
+    const report = await buildDoctorReport(
+      docOptions(
+        harness.baseOptions({ resolveWorkers: async () => workerSet("api"), buildPlan: planStub(cleanPlanFor("api")) }),
+      ),
+    );
+    if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere else to sit.");
+    report.project.health = {
+      ok: false,
+      workers: report.project.health.workers,
+      manifests: { ok: true, faults: [] },
+      bindingScope: {
+        ok: false,
+        partial: false,
+        split: [],
+        divergent: [
+          {
+            capability: "email",
+            package: "@pithy-sh/email",
+            binding: "EMAIL_SUPPRESSIONS",
+            kind: "d1",
+            expected: "acme-global-email-suppressions",
+            credential: null,
+            repointable: true,
+            ids: [
+              { id: "sup-1", at: [{ worker: "api", env: "staging" }] },
+              { id: "sup-2", at: [{ worker: "api", env: "prod" }] },
+            ],
+          },
+        ],
+      },
+    };
+    const fragment = FRAGMENTS[10];
+    if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the divergent-binding fragment.`);
+    expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  /**
+   * **The pointer resolves, and it is a URL rather than a repository path (#513 review, rounds two and
+   * three).**
+   *
+   * The D1 carry-over prints a link where it used to print a `wrangler` pair, because the pair defaulted
+   * to the local database and, with `--remote`, aborted having copied nothing. Round two made it
+   * `docs/commands/doctor.md §Carrying the data across`, and for everyone who installed the CLI that
+   * pointed at nothing: `packages/cli/package.json` `files` ships `dist`, `src`, `scripts` and
+   * `templates`, so an `npm pack` carries no `docs/` at all. A path into a directory the adopter does not
+   * have is the same defect as a command that does not run, one indirection along — which is why the
+   * assertion below reads the manifest rather than trusting the sentence.
+   *
+   * So the line names the URL the page renders at, and all three halves of that are checked against
+   * something rather than written down here: the origin comes out of this page's own header line, the
+   * anchor out of what the renderer printed, and the heading set out of the page. A renamed section, a
+   * moved page, or a `docs/` path creeping back fails here rather than in somebody's afternoon.
+   *
+   * Both shapes are rendered, because they point at two different anchors: a split addresses each
+   * database by name, and a divergence is two databases one name cannot tell apart.
+   */
+  test("each carry-over names a URL this page renders at, at an anchor this page has", async () => {
+    const report = await buildDoctorReport(
+      docOptions(
+        harness.baseOptions({ resolveWorkers: async () => workerSet("api"), buildPlan: planStub(cleanPlanFor("api")) }),
+      ),
+    );
+    if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere else to sit.");
+    report.project.health = {
+      ok: false,
+      workers: report.project.health.workers,
+      manifests: { ok: true, faults: [] },
+      bindingScope: {
+        ok: false,
+        partial: false,
+        split: [
+          {
+            capability: "email",
+            package: "@pithy-sh/email",
+            binding: "EMAIL_SUPPRESSIONS",
+            kind: "d1",
+            expected: "acme-global-email-suppressions",
+            credential: null,
+            repointable: true,
+            stale: [{ worker: "api", env: "staging", name: "acme-staging-email-suppressions" }],
+          },
+        ],
+        divergent: [
+          {
+            capability: "email",
+            package: "@pithy-sh/email",
+            binding: "EMAIL_SUPPRESSIONS",
+            kind: "d1",
+            expected: "acme-global-email-suppressions",
+            credential: null,
+            repointable: true,
+            ids: [
+              { id: "sup-1", at: [{ worker: "api", env: "staging" }] },
+              { id: "sup-2", at: [{ worker: "api", env: "prod" }] },
+            ],
+          },
+        ],
+      },
+    };
+    const text = renderDoctorText(report, harness.dir);
+
+    // The published package carries no `docs/`, so a repository path is unreachable for every adopter who
+    // installed the CLI — which is the whole reason this is a URL. Read, never assumed.
+    const files = JSON.parse(readFileSync(join(HERE, "..", "..", "package.json"), "utf8")).files as string[];
+    expect(files.some((entry) => entry.replace(/^\.\//, "").startsWith("docs"))).toBe(false);
+    expect(text).not.toContain("docs/commands/doctor.md");
+
+    // This page's own header line names where the site renders it. Both printed links must be that page.
+    const canonical = /\((https:\/\/pithy\.sh\/docs\/cli\/commands\/doctor)\)/.exec(PAGE)?.[1];
+    expect(canonical, `${WHERE} no longer names the URL the site renders it at.`).toBeDefined();
+
+    const printed = [...text.matchAll(/The sequence that works: (\S+)/g)].map((match) => match[1] ?? "");
+    // One per shape, and they are not the same link: the divergence needs its own addressing.
+    expect(printed).toHaveLength(2);
+    expect(new Set(printed).size).toBe(2);
+
+    const headings = new Set(
+      [...PAGE.matchAll(/^#{2,3} (.+)$/gm)].map((match) =>
+        (match[1] ?? "")
+          .trim()
+          .toLowerCase()
+          .replace(/[^\w\- ]/g, "")
+          .replace(/ /g, "-"),
+      ),
+    );
+    for (const url of printed) {
+      const [base, anchor] = url.split("#");
+      expect(base, `${url} is not the page this document renders at.`).toBe(canonical);
+      expect(anchor, `${url} names no heading on ${WHERE}.`).toBeDefined();
+      expect(headings.has(anchor ?? ""), `${url} names no heading on ${WHERE}.`).toBe(true);
+    }
+
+    // And neither section is an empty heading: the sequence itself is what the operator was sent for.
+    // `--remote` on every `wrangler d1` line, the upsert clause that decides a merge, and the `-e <env>`
+    // form that is the only one reaching a database whose name it shares.
+    const sequences = CARRY_BLOCKS.join("\n");
+    expect(sequences).toContain("--remote");
+    expect(sequences).toContain("ON CONFLICT(email) DO UPDATE SET");
+    expect(sequences).toContain("wrangler d1 export EMAIL_SUPPRESSIONS -e staging --remote");
+    expect(sequences).toContain("wrangler d1 execute EMAIL_SUPPRESSIONS -e prod --remote");
+    // The rule the whole section is written to: nothing here reads the local database by default.
+    expect(sequences.split("\n").filter((line) => /\bwrangler d1\b/.test(line) && !line.includes("--remote"))).toEqual(
+      [],
+    );
   });
 
   /**
@@ -663,7 +843,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[10];
+    const fragment = FRAGMENTS[11];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the unknown-alias fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -689,7 +869,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[11];
+    const fragment = FRAGMENTS[12];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the offline fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -737,7 +917,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[12];
+    const fragment = FRAGMENTS[13];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the settings fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -761,7 +941,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[13];
+    const fragment = FRAGMENTS[14];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the local delivery fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });

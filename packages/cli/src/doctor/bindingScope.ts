@@ -7,6 +7,7 @@ import { bindingResourceName, type ProjectGlobalNaming } from "@pithy-sh/core/sr
 import { composedManifests } from "../capabilities/manifests";
 import { supportBucketName } from "../capabilities/supportProvisioner";
 import { loadProject, requireProjectName } from "../project/config";
+import { isPlaceholder } from "../project/envInventory";
 import { discoverWorkers } from "../project/workers";
 import { readWranglerConfig } from "../project/wrangler";
 
@@ -78,6 +79,21 @@ export interface GlobalBinding {
    * than a clean bill.
    */
   name(project: string): Promise<string | null>;
+  /**
+   * **The secret carrying the bucket name every presigned URL is signed against, or `null` where nothing
+   * signs against this resource (#513 review).**
+   *
+   * A binding is not the only place a resource is addressed from. `objectStore({ bucket:
+   * env.SUPPORT_BUCKET, … })` writes through the binding, and `CloudflareR2Manager` presigns against
+   * `bucketName: credentials.bucket` — a second string, inside `support-r2-credentials`, that the repoint
+   * does not touch. Move one without the other and writes land in the project-global bucket while signed
+   * reads keep addressing the per-environment one, so every attachment stored after the repoint 404s.
+   *
+   * Nothing in the kit writes support's bundle — `pithy support provision` writes no secret, and only
+   * `storage` and `media` have provisioners that write theirs — so the remedy has to name the command
+   * that does. `null` for D1, which is read through the binding and nothing else.
+   */
+  credential: string | null;
 }
 
 /**
@@ -99,6 +115,9 @@ export const GLOBAL_BINDINGS: readonly GlobalBinding[] = [
     package: "@pithy-sh/email",
     binding: "EMAIL_SUPPRESSIONS",
     kind: "d1",
+    // A D1 database is reached through the binding and through nothing else — no signature is built
+    // against its name, so there is no second place holding a copy of it.
+    credential: null,
     async name(project) {
       try {
         const { suppressionDatabaseName } = await import("@pithy-sh/email/src/provision/provisionEmail");
@@ -113,6 +132,10 @@ export const GLOBAL_BINDINGS: readonly GlobalBinding[] = [
     package: "@pithy-sh/support",
     binding: "SUPPORT_BUCKET",
     kind: "r2",
+    // `@pithy-sh/support`'s `SUPPORT_R2_SECRET`, restated here for the same reason the row itself is
+    // hand-written: this check has to answer under version skew, and importing the constant would make
+    // it depend on the package it is reporting about. `ci/globalBindings.test.ts` holds the two together.
+    credential: "support-r2-credentials",
     // No import to guard: this namer lives in the CLI, because `pithy support provision` is a CLI command
     // and the bucket is created before `@pithy-sh/support` is reached for anything.
     async name(project) {
@@ -181,6 +204,8 @@ export interface SplitGlobalBinding extends Repointable {
   kind: "d1" | "r2";
   /** The one name the capability's own provisioner creates, and the one every stanza must carry. */
   expected: string;
+  /** See {@link GlobalBinding.credential} — the second address the repoint does not move, or `null`. */
+  credential: string | null;
   /** Every stanza naming something else, in read order. */
   stale: StaleGlobalStanza[];
 }
@@ -202,6 +227,8 @@ export interface DivergentGlobalBinding extends Repointable {
    * the remedy names the resource the operator has to move the surviving data *into*.
    */
   expected: string;
+  /** See {@link GlobalBinding.credential} — the second address the repoint does not move, or `null`. */
+  credential: string | null;
   /** Each distinct id, and the stanzas carrying it. Always two or more entries. */
   ids: { id: string; at: { worker: string; env: string }[] }[];
 }
@@ -256,17 +283,41 @@ function stanzaResources(stanza: ScopedBindings, worker: string, env: string): B
       worker,
       env,
       binding: entry.binding,
-      ...(entry.database_name ? { name: entry.database_name } : {}),
-      ...(entry.database_id ? { id: entry.database_id } : {}),
+      ...(declared(entry.database_name) ? { name: entry.database_name } : {}),
+      ...(declared(entry.database_id) ? { id: entry.database_id } : {}),
     });
   }
   for (const entry of stanza.r2_buckets ?? []) {
     // An R2 bucket has no id beside its name — the name *is* the address — so nothing fills `id` here and
     // the divergence check below has nothing to say about a bucket. The name comparison covers it whole.
     if (entry.binding)
-      found.push({ worker, env, binding: entry.binding, ...(entry.bucket_name ? { name: entry.bucket_name } : {}) });
+      found.push({
+        worker,
+        env,
+        binding: entry.binding,
+        ...(declared(entry.bucket_name) ? { name: entry.bucket_name } : {}),
+      });
   }
   return found;
+}
+
+/**
+ * **Whether a stanza's value is a claim about a resource, or the placeholder a scaffold left behind
+ * (#513 review).**
+ *
+ * `docs/commands/env.md` states the rule for the whole toolchain — "an empty value, a `<database_id>`
+ * stub, or anything containing 'placeholder' reads as not provisioned, which is exactly the state a
+ * freshly scaffolded project is in" — and `project/envInventory.ts` is where it is implemented. This
+ * check consulted nothing of the sort and accepted any non-empty `database_id`, so a project whose
+ * `env.staging` still carried the literal `<database_id>` was reported as one of "2 different resources"
+ * and the operator was told to copy its rows across. There is nothing there to copy.
+ *
+ * It is the same predicate rather than a second one, imported from the reader that already owns it, on
+ * the same rule the rest of this file follows: a restatement is a second source of truth, and this whole
+ * check exists because of one.
+ */
+function declared(value: string | undefined): value is string {
+  return value !== undefined && !isPlaceholder(value);
 }
 
 /** What a project's own `node_modules` declares about naming one binding's resource, by binding name. */
@@ -381,6 +432,27 @@ function isFixable(stale: StaleGlobalStanza): boolean {
 }
 
 /**
+ * **The distinct resources a command can actually reach — the divergence half of the `dev` exemption
+ * (#513 review).**
+ *
+ * The split branch has exempted `dev` from the start, because `pithy provision` writes `config.env[…]`
+ * and `dev` is never a declared environment, so a red there is a red nothing clears. The divergence half
+ * got no such exemption for a round, and it is the same fact: a top-level stanza carrying its own
+ * `database_id` beside a managed one that carries another leaves two ids forever. The operator ran every
+ * printed line, `doctor` still exited 1, and the very same screen told them nothing would ever rewrite
+ * the dev id.
+ *
+ * So `ok` counts only the ids some **managed** stanza carries. Two of those disagreeing is a real red
+ * that provisioning clears; one, beside a different id in `dev`, is reported, explained, and green — the
+ * split branch's behavior exactly, and for the same reason.
+ */
+export function repointableIds(entry: DivergentGlobalBinding): string[] {
+  return [
+    ...new Set(entry.ids.filter(({ at }) => at.some((where) => where.env !== LOCAL_ENVIRONMENT)).map(({ id }) => id)),
+  ];
+}
+
+/**
  * Compare every project-global binding this project declares against the one name its capability creates.
  *
  * **The `dev` stanza is reported and does not fail the check**, and that asymmetry is deliberate rather
@@ -390,6 +462,13 @@ function isFixable(stale: StaleGlobalStanza): boolean {
  * `getRemoteId(database_id) ?? binding`, and the dev entry carries no `database_id`, so locally the
  * binding name is the address and the stale `database_name` is decoration. The line says so and leaves
  * the edit to the adopter.
+ *
+ * **Both shapes are exempt, which for a round only the first one was.** A `dev` stanza that *does* carry
+ * its own `database_id` beside a managed one carrying another is two ids no run can reconcile, so
+ * counting it failed the exit forever: the operator ran every printed line, `doctor` still exited 1, and
+ * the same screen told them nothing would ever rewrite the dev id. `ok` counts only the ids some managed
+ * stanza carries — see {@link repointableIds} — and the renderer suppresses the choose-one remedy on the
+ * same predicate, so the screen and the exit code cannot disagree.
  */
 export async function bindingScopeHealth(projectDir: string): Promise<BindingScopeHealth> {
   const project = await projectNameFor(projectDir);
@@ -427,6 +506,7 @@ export async function bindingScopeHealth(projectDir: string): Promise<BindingSco
         binding: global.binding,
         kind: global.kind,
         expected,
+        credential: global.credential,
         stale,
         repointable,
       });
@@ -448,6 +528,7 @@ export async function bindingScopeHealth(projectDir: string): Promise<BindingSco
         binding: global.binding,
         kind: global.kind,
         expected,
+        credential: global.credential,
         ids: [...byId].map(([id, at]) => ({ id, at })),
         repointable,
       });
@@ -455,5 +536,6 @@ export async function bindingScopeHealth(projectDir: string): Promise<BindingSco
   }
 
   const fixable = split.some((entry) => entry.stale.some(isFixable));
-  return { ok: !partial && !fixable && divergent.length === 0, split, divergent, partial };
+  const opened = divergent.some((entry) => repointableIds(entry).length > 1);
+  return { ok: !partial && !fixable && !opened, split, divergent, partial };
 }

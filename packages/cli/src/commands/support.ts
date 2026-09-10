@@ -39,9 +39,12 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
  * behalf, so the zone, the address, and the target worker are each named or the rule is not created —
  * everything else provisions, and the rule is added when the operator has decided.
  *
- * No secret is written. The classification worker reads a message and writes a label over the `AI`
- * binding, so it carries no credential; the R2 key pair support presigns attachments with belongs to
- * `@pithy-sh/storage` and is written by `pithy storage provision`.
+ * **No secret is written, and nothing else writes the one support needs either.** The classification
+ * worker reads a message and writes a label over the `AI` binding, so it carries no credential. The R2
+ * key pair support presigns attachments with is `support-r2-credentials` — its own entry, read by
+ * `support/src/http/resolve.ts` — and no command in the kit creates it: `pithy storage provision` writes
+ * `storage-r2-credentials`, which is a different secret for a different bucket. So the operator writes
+ * support's, and `pithy doctor`'s `shared:` section is where that is said out loud when the bucket moves.
  */
 
 /**

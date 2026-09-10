@@ -397,6 +397,7 @@ describe("buildProjectHealth — project-global bindings", () => {
         binding: "EMAIL_SUPPRESSIONS",
         kind: "d1" as const,
         expected: "acme-global-email-suppressions",
+        credential: null,
         stale: [{ worker: "api", env: "staging", name: "acme-staging-email-suppressions" }],
         repointable: true,
       },

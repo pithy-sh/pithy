@@ -3,6 +3,7 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -38,6 +39,23 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 /** `packages/cli/src/capabilities` → the repository's own sources, which the harness imports directly. */
 const CLI_SRC = resolve(import.meta.dirname, "..");
 
+/**
+ * `zod`, as an absolute path, resolved from **this file** rather than from wherever the harness lands.
+ *
+ * The harness is written to a temp directory outside every `node_modules`, so a bare `import { z } from
+ * "zod"` in it has nothing to walk up to and falls through to whatever Bun finds ambiently. On this
+ * repository's own CI that is nothing — `ENOENT while resolving package 'zod'`, the harness writes no
+ * file, and all five cases fail as `the harness wrote no answer`, which is how the first push of #516
+ * failed. On a developer machine it is a **globally installed** copy: `bun add -g zod` put 4.5.4 under
+ * `~/.bun/install/global`, and `packages/cli` pins 4.4.3. So the green run was the worse outcome of the
+ * two. This file exists to establish what a masked prompt and a schema walk actually do, and it was
+ * establishing it against a zod the CLI does not ship — the same class of mistake as measuring a plant in
+ * `src` against a gate that reads `dist`.
+ *
+ * The CLI source is already imported by absolute path. This was the one specifier that was not.
+ */
+const ZOD = createRequire(import.meta.url).resolve("zod");
+
 /** Where `bun` is, or `null` — the harness is TypeScript importing `.ts` deep paths, which only Bun runs. */
 function bunPath(): string | null {
   try {
@@ -72,7 +90,7 @@ const PTY = BUN !== null && hasScript();
  */
 const HARNESS = `
 import { writeFileSync } from "node:fs";
-import { z } from "zod";
+import { z } from ${JSON.stringify(ZOD)};
 import { readSecretValue } from ${JSON.stringify(join(CLI_SRC, "capabilities", "secretValue.ts"))};
 
 const out = process.argv[2] as string;

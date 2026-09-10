@@ -32,8 +32,12 @@ import { deleteR2BucketWithContents } from "./r2Bucket";
  * **No secret is written here, and that is the whole shape of this file.** The classification worker reads
  * a message and writes a label over the `AI` binding, so it holds no credential at all — which is why
  * provisioning support is three steps (a bucket, a worker per environment, a routing rule) where media is
- * five. The one credential support does use, the R2 key pair its attachment presigning needs, belongs to
- * `@pithy-sh/storage`'s `ObjectStore` and is written by `pithy storage provision`.
+ * five. The one credential support does use, the R2 key pair its attachment presigning needs, is read
+ * through `@pithy-sh/storage`'s `ObjectStore` under support's **own** secret name — `support-r2-credentials`,
+ * per `support/src/http/resolve.ts` — and no command in the kit writes it. `pithy storage provision` writes
+ * `storage-r2-credentials`, a different secret naming a different bucket, so it is not the answer here
+ * (#513 review). The operator writes support's, and `pithy doctor`'s `shared:` section says so when the
+ * bucket the signature addresses has to move.
  */
 
 /** The support runtime surface provisioning needs, loaded from the project's own install. */

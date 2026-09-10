@@ -140,6 +140,36 @@ describe("doctor knows every project-global binding the kit ships", () => {
     expect(wrong).toEqual([]);
   });
 
+  /**
+   * **The second place a resource's name is written down, held to the package that owns it (#513 review).**
+   *
+   * A binding is not the only address. `@pithy-sh/support` writes attachments through
+   * `env.SUPPORT_BUCKET` and signs every presigned URL against the `bucket` field inside
+   * `support-r2-credentials`, so repointing the binding without updating the secret sends writes to the
+   * project-global bucket while signed reads keep addressing the per-environment one — every attachment
+   * stored after the repoint 404s. The remedy has to name that secret, and nothing in the kit writes it:
+   * `pithy support provision` writes none, so an operator typed it in and an operator has to retype it.
+   *
+   * The row carries the name as a literal for the same reason the row itself is hand-written — this check
+   * has to answer under version skew, and importing the constant would tie it to the package it reports
+   * about. So the literal is held here instead, against the package's own export, exactly as the kind and
+   * the package are held against the manifest above.
+   */
+  test("the r2 row names the credential its capability actually declares", async () => {
+    const { SUPPORT_R2_SECRET } = await import("@pithy-sh/support/src/secret/registry");
+    const support = GLOBAL_BINDINGS.find((row) => row.binding === "SUPPORT_BUCKET");
+    expect(support?.credential).toBe(SUPPORT_R2_SECRET);
+  });
+
+  test("a d1 row names no credential, because nothing signs against a database name", () => {
+    // The field is not decoration on the r2 row: it decides whether a second command is printed beside
+    // the repoint. A `d1` row that filled it would print `pithy secrets update` for a secret that does
+    // not exist, which is #517's defect wearing this round's clothes.
+    expect(GLOBAL_BINDINGS.filter((row) => row.kind === "d1").map((row) => row.credential)).toEqual(
+      GLOBAL_BINDINGS.filter((row) => row.kind === "d1").map(() => null),
+    );
+  });
+
   test("each row's namer answers, and puts `global` where the environment goes", () => {
     // The row is only useful if the function on it answers. A capability package that will not import
     // answers `null`, which `bindingScopeHealth` reads as *partial* rather than as a clean bill — correct
