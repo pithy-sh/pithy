@@ -1,6 +1,6 @@
 {
   "name": "@pithy-sh/turnstile",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -34,8 +34,8 @@
     "reset": "bun run clean && rm -rf node_modules"
   },
   "dependencies": {
-    "@pithy-sh/core": "^0.3.0",
-    "@pithy-sh/secrets": "^0.1.6"
+    "@pithy-sh/core": "^0.3.1",
+    "@pithy-sh/secrets": "^0.1.7"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.0.0",

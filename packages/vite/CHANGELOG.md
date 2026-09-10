@@ -1,5 +1,12 @@
 # @pithy-sh/vite
 
+## 0.3.1
+
+### Patch Changes
+
+- Updated dependencies [[`231b726`](https://github.com/pithy-sh/pithy/commit/231b72603b284c139e00eab92a52af34a7e86bd3)]:
+  - @pithy-sh/core@0.3.1
+
 ## 0.3.0
 
 ### Patch Changes

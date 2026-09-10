@@ -1,6 +1,6 @@
 {
   "name": "@pithy-sh/vite",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -36,7 +36,7 @@
     "vite": "^6.1.0 || ^7.0.0 || ^8.0.0"
   },
   "dependencies": {
-    "@pithy-sh/core": "^0.3.0"
+    "@pithy-sh/core": "^0.3.1"
   },
   "devDependencies": {
     "@pithy-sh/auth": "workspace:*",
