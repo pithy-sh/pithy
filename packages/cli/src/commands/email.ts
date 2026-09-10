@@ -1,8 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
@@ -13,7 +11,6 @@ import { samplePayloads } from "@pithy-sh/email/src/templates/samples";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
-import { parse } from "comment-json";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import {
   CloudflareEmailDeprovisioner,
@@ -31,6 +28,14 @@ import {
   projectCloudflareAccount,
   requireProjectName,
 } from "../project/config";
+import {
+  type EnvironmentReadiness,
+  environmentOutcomes,
+  environmentReadiness,
+  formatEnvironmentOutcomes,
+  readyStanza,
+  requireReadyEnvironments,
+} from "../project/environmentReadiness";
 import { resolveWorkerAddress } from "../project/workerAddress";
 import {
   composedProjectCapabilities,
@@ -127,17 +132,15 @@ function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
   return { account: { accountId, confirmation }, accountId, apiToken, storeId };
 }
 
-/** A wrangler env stanza — only the fields the email worker deploy reads from the project's config. */
-interface WranglerStanza {
-  d1_databases?: { binding: string; database_id?: string }[];
-  vars?: Record<string, string>;
-  env?: Record<string, WranglerStanza | undefined>;
-}
-
 /**
- * Resolve the per-environment resources the email worker binds, from the **app Worker's** `wrangler.jsonc`
- * (the app `DB` id and `BASE_URL` per env) and a live lookup of the env's secrets database. Each missing
+ * Resolve the per-environment resources the email worker binds: the app `DB` id and public address from
+ * the **app Worker's** `wrangler.jsonc`, and a live lookup of the env's secrets database. Each missing
  * value throws an actionable error rather than deploying a half-wired worker.
+ *
+ * The stanza arrives already read and already judged ready — {@link environmentReadiness} partitioned the
+ * declared environments before anything was created, so this only ever runs for an environment whose app
+ * database exists. That is what turned the old `no DB database_id` throw from a mid-fan-out failure into a
+ * skip the report names (#512), and it is why this reads no file of its own.
  *
  * Which Worker is the app Worker? Every Worker owns its own `wrangler.jsonc`, so a project with several
  * names one with `--worker`; one Worker needs no ceremony. `BASE_URL` in particular is that Worker's public
@@ -145,6 +148,8 @@ interface WranglerStanza {
  */
 function buildResolveEnv(
   worker: ResolvedWorker,
+  /** The partition this run acts on; the stanza per ready environment comes out of it. */
+  readiness: EnvironmentReadiness,
   cf: CloudflareClients,
   /**
    * The project name the secrets database is found by — `<project>-<env>-secrets`. Resolved once by the
@@ -162,22 +167,7 @@ function buildResolveEnv(
   account: ConfirmedAccount,
 ): (env: ManagedEnvironment) => Promise<EmailEnvResources> {
   return async (env) => {
-    const path = join(worker.dir, "wrangler.jsonc");
-    const config = parse(await readFile(path, "utf8")) as unknown as WranglerStanza;
-    const stanza = config.env?.[env];
-    if (!stanza) {
-      throw new ValidationError({
-        message: `${worker.name}'s wrangler.jsonc has no env.${env} stanza.`,
-        action: `Add the ${env} environment to ${path} with its DB binding and a BASE_URL var.`,
-      });
-    }
-    const appDatabaseId = stanza.d1_databases?.find((db) => db.binding === "DB")?.database_id;
-    if (!appDatabaseId) {
-      throw new ValidationError({
-        message: `${worker.name}'s wrangler.jsonc env.${env} has no DB database_id.`,
-        action: `Provision the ${env} app database and set its id on the DB binding.`,
-      });
-    }
+    const { appDatabaseId, stanza } = readyStanza(readiness, env);
     // Through the one resolver, which prefers the `domains` declaration and falls back to the route and
     // then to this same var — so an adopter who set it by hand still works, and one who declared a domain
     // is not told to set a var that would only duplicate it. This used to read `vars.BASE_URL` directly
@@ -195,7 +185,7 @@ function buildResolveEnv(
       throw new ValidationError({
         message: `${worker.name} has no ${env} address.`,
         action: `Declare it in the Worker's pithy.config.ts — \`domains: { ${env}: { pattern: "…", zone: "…" } }\`. Tracking and unsubscribe links are built against it.`,
-        detail: `no domains declaration, route, or vars.BASE_URL resolved for env.${env} in ${path}`,
+        detail: `no domains declaration, route, or vars.BASE_URL resolved for env.${env} in ${readiness.path}`,
       });
     }
     const baseUrl = address.url;
@@ -294,6 +284,14 @@ const provision = defineCommand({
         projectDir,
         ...(args.worker !== undefined ? { worker: args.worker } : {}),
       });
+      // Which environments this run can act on, decided once and before anything is created. An
+      // environment whose app database does not exist yet is skipped and reported, never fatal: standing
+      // staging up and proving it before production exists is the ordinary bring-up (#512).
+      const readiness = await environmentReadiness({
+        workerDir: appWorker.dir,
+        label: `${appWorker.name}'s wrangler.jsonc`,
+        environments,
+      });
       const cf = await cloudflareClients({ accountId, apiToken });
       const provisioner = new CloudflareEmailProvisioner({
         cf,
@@ -306,18 +304,28 @@ const provision = defineCommand({
         // overrides and the kit's translations, flattened for the standalone host. Read before that,
         // this is `{}` and the host is deployed English-only.
         messages: emailCapability.hostCatalogs(),
-        resolveEnv: buildResolveEnv(appWorker, cf, project, account),
+        resolveEnv: buildResolveEnv(appWorker, readiness, cf, project, account),
         routing,
         audit: await buildAudit(projectDir, accountId, apiToken),
       });
 
-      const result = await provisionEmail(provisioner, environments);
+      // The ready list, not the declaration. The suppression database is project-global and is created
+      // whatever else skips — it must not wait for prod — and every skipped environment simply never
+      // reaches `deployWorker`, so the orchestrator needs no notion of a skip.
+      const result = await provisionEmail(provisioner, readiness.ready);
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "email provision", ...result })}\n`);
+        // Written before the refusal below, so a run in which everything skipped still carries the
+        // per-environment structure on stdout beside the `{"error":…}` line on stderr.
+        process.stdout.write(
+          `${formatJsonLine({ command: "email provision", ...result, skippedEnvironments: readiness.skipped })}\n`,
+        );
+        requireReadyEnvironments(readiness, "pithy email provision");
         return;
       }
-      process.stdout.write(`Suppression database and ${result.environments.length} email workers ready.\n`);
+      process.stdout.write("Suppression database ready.\n");
+      process.stdout.write(formatEnvironmentOutcomes(environmentOutcomes(readiness, () => "email worker deployed")));
+      requireReadyEnvironments(readiness, "pithy email provision");
       process.stdout.write(`${formatDone()}\n`);
     }),
 });

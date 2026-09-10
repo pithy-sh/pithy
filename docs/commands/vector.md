@@ -7,9 +7,9 @@ Stand up an environment's search indexes, rebuild them from the corpus, and re-e
 ## Synopsis
 
 ```
-pithy vector provision [--env <environment>] [--json]
-pithy vector reset [--env <environment>] [--confirm-reset <phrase>] [--json]
-pithy vector reprocess [--env <environment>] [--index <name>] [--all] [--filter <json>] [--json]
+pithy vector provision [--env <environment>] [--worker <name>] [--json]
+pithy vector reset [--env <environment>] [--worker <name>] [--confirm-reset <phrase>] [--json]
+pithy vector reprocess [--env <environment>] [--worker <name>] [--index <name>] [--all] [--filter <json>] [--json]
 ```
 
 **All three subcommands need a Cloudflare account, `--env dev` included.** Cloudflare ships no local emulation for Vectorize, so a dev search reaches a real remote index — which is also why the capability's bindings are declared `remote`. `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are checked before anything is created.
@@ -19,6 +19,7 @@ pithy vector reprocess [--env <environment>] [--index <name>] [--all] [--filter 
 | Flag | Applies to | Default | Purpose |
 |---|---|---|---|
 | `--env <environment>` | all three | `dev` | The environment to act on: `dev`, `staging`, `prod`, or a custom one. `dev` is a real remote index here, not a local store |
+| `--worker <name>` | all three | the project's only Worker | The app Worker whose `wrangler.jsonc` carries the per-environment `DB` binding, receives the `vectorize` and `workflows` bindings, and holds the `VECTOR_PROVISIONED` record. Required when a project has several |
 | `--confirm-reset <phrase>` | `reset` | — | Unlock a non-`dev` reset non-interactively. The exact, environment-named phrase: `yes, i really want to reset <env>` |
 | `--index <name>` | `reprocess` | every configured index | The index to re-embed, as named in `pithy.config.ts` |
 | `--all` | `reprocess` | `false` | Re-embed every document, not only the ones whose model differs from config |
@@ -119,7 +120,11 @@ Cloudflare credentials are missing.
 Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.
 ```
 
-**No `DB` id for this environment.** The document corpus lives in the app database, so provisioning refuses rather than standing up an index with nothing to fill it: `wrangler.jsonc has no DB database_id for <env>.`
+**No `DB` id for this environment.** The document corpus lives in the app database, so provisioning refuses rather than standing up an index with nothing to fill it: `<worker>'s wrangler.jsonc has no DB database_id for <env>.`
+
+This stays a refusal rather than becoming the skip the capability provisioning commands took on in #512. Those fan out across every declared environment, so *which environments did you mean* has to be answered for them; every `pithy vector` subcommand takes a required `--env`, so there is exactly one environment for the refusal to be about and nothing to skip past.
+
+**The project has several Workers and none was named.** Every file this command reads and writes is one app Worker's `wrangler.jsonc`, and there is no root one, so the Worker is resolved before anything is created: `This project has several workers, so which one to wire is ambiguous.` Pass `--worker <name>`.
 
 **An illegal `--env`.** Checked at the flag, before any config is loaded or any Cloudflare call is made.
 

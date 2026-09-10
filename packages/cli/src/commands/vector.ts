@@ -1,11 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
-import { parse } from "comment-json";
 import { createRemoteCliAudit } from "../audit/cliAudit";
 import { CloudflareVectorProvisioner, loadVector, type VectorModule } from "../capabilities/vectorProvisioner";
 import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
@@ -13,7 +10,7 @@ import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/co
 import { type AppVectorizeBinding, applyAppBindings, appWorkflowBindings } from "../project/appBindings";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
-import { projectCapabilities, resolveWorkers } from "../project/workerScope";
+import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { assertResetConfirmed, resetConfirmPhrase } from "../seed/safety";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
@@ -72,17 +69,28 @@ interface WranglerAppConfig {
 }
 
 /**
- * Resolve the app database id for an environment. `dev` reads the top-level bindings; every other
- * environment reads its own `env.<name>` stanza — the same rule the audit target resolver uses.
+ * Resolve the app database id for an environment, from **the app Worker's** `wrangler.jsonc`. `dev` reads
+ * the top-level bindings; every other environment reads its own `env.<name>` stanza — the same rule the
+ * audit target resolver uses.
+ *
+ * Which file, and why it is the Worker's: every deployable Worker lives in `apps/<name>/` with its own
+ * config and **there is no root Worker** (CLAUDE.md §CLI). This read was `join(projectDir, "wrangler.jsonc")`
+ * — one of three root-file reads in a command that had no root file to read — so `pithy vector` was
+ * unusable in every scaffolded project, and it died on a raw `ENOENT` stack rather than on a `PithyError`
+ * naming the remedy. `readWranglerConfig` is what supplies the refusal (#512).
+ *
+ * `vector` stays outside {@link environmentReadiness}'s skip-and-report set deliberately: every subcommand
+ * here takes a required `--env`, so nothing about it fans out and a refusal has exactly one environment to
+ * be about. The routing correction applies; the skip does not.
  */
-function buildResolveEnv(projectDir: string): (env: string) => Promise<{ appDatabaseId: string }> {
+function buildResolveEnv(appWorker: ResolvedWorker): (env: string) => Promise<{ appDatabaseId: string }> {
   return async (env) => {
-    const config = parse(await readFile(join(projectDir, "wrangler.jsonc"), "utf8")) as unknown as WranglerAppConfig;
+    const config = (await readWranglerConfig(appWorker.dir)) as WranglerAppConfig;
     const stanza = env === "dev" ? config : config.env?.[env];
     const appDatabaseId = stanza?.d1_databases?.find((database) => database.binding === "DB")?.database_id;
     if (!appDatabaseId) {
       throw new ValidationError({
-        message: `wrangler.jsonc has no DB database_id for ${env}.`,
+        message: `${appWorker.name}'s wrangler.jsonc has no DB database_id for ${env}.`,
         action: `Provision the ${env} app database and set its id on the DB binding — the corpus lives there.`,
       });
     }
@@ -94,24 +102,31 @@ function buildResolveEnv(projectDir: string): (env: string) => Promise<{ appData
  * Build the live provisioner for one environment, and resolve the project name every one of these
  * commands needs. An index is *found by name and reused*, so the name must be the same on every run:
  * `requireProjectName` refuses to guess where `resolveProjectName` would differ between checkouts.
+ *
+ * The app Worker is resolved here, once, and every file this command reads or writes is reached through
+ * it — the database id, the `VECTOR_PROVISIONED` record, and the `vectorize`/`workflows` bindings all live
+ * in one `apps/<name>/wrangler.jsonc`. `--worker` names it in a project holding several; a project with one
+ * needs no ceremony.
  */
-async function buildProvisioner(projectDir: string, env: string) {
+async function buildProvisioner(projectDir: string, env: string, worker: string | undefined) {
   // The name first, before the credentials: both are local checks, and a config that cannot name the
   // project is not a Cloudflare problem to report as one.
   const project = requireProjectName(await loadProject(projectDir));
   const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
   const config = await loadVectorConfig(projectDir);
+  const appWorker = await resolveSingleWorker({ projectDir, ...(worker !== undefined ? { worker } : {}) });
   return {
     project,
     config,
     env,
+    appWorker,
     provisioner: new CloudflareVectorProvisioner({
       cf: await cloudflareClients({ accountId, apiToken }),
       project,
       accountId,
       apiToken,
       config,
-      resolveEnv: buildResolveEnv(projectDir),
+      resolveEnv: buildResolveEnv(appWorker),
       workflows: await cloudflareWorkflows({ accountId, apiToken }),
     }),
     accountId,
@@ -134,16 +149,20 @@ interface WranglerVarsConfig {
  * `dev` writes the top-level `vars`; every other environment writes its own `env.<name>` stanza — the same
  * rule the app database id is read by, above. The write is comment-preserving and idempotent: re-running
  * provision with nothing changed rewrites the identical string.
+ *
+ * Into the app Worker's own `wrangler.jsonc` — the file the Worker deploys from, and the same one readiness
+ * was read from. Written at the project root it landed in a file nothing loads, so the drift guard this
+ * record exists to feed never saw a value at all (#512).
  */
 async function recordProvisioned(
-  projectDir: string,
+  workerDir: string,
   env: string,
   result: Awaited<ReturnType<VectorModule["provisionVector"]>>,
 ): Promise<void> {
   const { toProvisionRecord, VECTOR_PROVISIONED_VAR } = await loadVector();
   const value = JSON.stringify(toProvisionRecord(result));
 
-  const config = (await readWranglerConfig(projectDir)) as WranglerVarsConfig;
+  const config = (await readWranglerConfig(workerDir)) as WranglerVarsConfig;
   if (env === "dev") {
     config.vars ??= {};
     config.vars[VECTOR_PROVISIONED_VAR] = value;
@@ -156,7 +175,7 @@ async function recordProvisioned(
       stanza.vars[VECTOR_PROVISIONED_VAR] = value;
     }
   }
-  await writeWranglerConfig(projectDir, config);
+  await writeWranglerConfig(workerDir, config);
 }
 
 /**
@@ -166,9 +185,12 @@ async function recordProvisioned(
  * and a `name` + `class_name` on a `workflows` entry, and both values are provisioning outputs. So the
  * entries arrive here, complete, once the index exists and the reprocess worker is deployed —
  * `capabilities/add.ts` documents the other half of the contract.
+ *
+ * Into the app Worker's `wrangler.jsonc`, for the reason above: a binding written to the project root is a
+ * binding the deployed Worker never gets.
  */
 async function recordBindings(
-  projectDir: string,
+  workerDir: string,
   project: string,
   env: string,
   config: Awaited<ReturnType<typeof loadVectorConfig>>,
@@ -181,7 +203,7 @@ async function recordBindings(
     return binding ? [{ binding, index_name: entry.indexName, remote: true }] : [];
   });
 
-  await applyAppBindings(projectDir, env, {
+  await applyAppBindings(workerDir, env, {
     vectorize,
     workflows: appWorkflowBindings(vectorWorkflowRegistry, { project, capability: VECTOR_CAPABILITY, env }),
   });
@@ -215,6 +237,11 @@ const provision = defineCommand({
   },
   args: {
     env: ENV_ARG,
+    worker: {
+      type: "string",
+      description:
+        "The app worker whose wrangler.jsonc carries the per-environment DB binding and receives the vectorize bindings (default: the project's only worker)",
+    },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
@@ -222,13 +249,13 @@ const provision = defineCommand({
       const env = requireEnvironment(args.env);
       const projectDir = process.cwd();
       const { provisionVector } = await loadVector();
-      const { provisioner, project, config } = await buildProvisioner(projectDir, env);
+      const { provisioner, project, config, appWorker } = await buildProvisioner(projectDir, env, args.worker);
 
       const result = await provisionVector(provisioner, { project, config, env });
       // Last, and only on success: the record is the Worker's evidence that these metadata indexes exist,
       // so it must never claim more than provisioning actually got done.
-      await recordProvisioned(projectDir, env, result);
-      await recordBindings(projectDir, project, env, config, result);
+      await recordProvisioned(appWorker.dir, env, result);
+      await recordBindings(appWorker.dir, project, env, config, result);
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "vector provision", ...result })}\n`);
@@ -252,6 +279,11 @@ const reset = defineCommand({
   },
   args: {
     env: ENV_ARG,
+    worker: {
+      type: "string",
+      description:
+        "The app worker whose wrangler.jsonc carries the per-environment DB binding (default: the project's only worker)",
+    },
     "confirm-reset": {
       type: "string",
       description: 'Unlock a non-dev reset non-interactively: "yes, i really want to reset <env>"',
@@ -273,7 +305,11 @@ const reset = defineCommand({
       });
 
       const { resetVector } = await loadVector();
-      const { provisioner, project, config, accountId, apiToken } = await buildProvisioner(projectDir, env);
+      const { provisioner, project, config, appWorker, accountId, apiToken } = await buildProvisioner(
+        projectDir,
+        env,
+        args.worker,
+      );
 
       // A reset destroys an environment's entire search index, so it is audited at `critical` — and on `dev`
       // it is audited not at all, because a dev reset changes nothing shared.
@@ -302,7 +338,7 @@ const reset = defineCommand({
       }
       await audit({ ...event, outcome: "success" });
       // A reset rebuilds every index, so the record it left behind is stale by definition. Rewrite it.
-      await recordProvisioned(projectDir, env, result);
+      await recordProvisioned(appWorker.dir, env, result);
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "vector reset", ...result })}\n`);
@@ -320,6 +356,11 @@ const reprocess = defineCommand({
   meta: { name: "reprocess", description: "Re-embed an index's documents through the reprocess Workflow" },
   args: {
     env: ENV_ARG,
+    worker: {
+      type: "string",
+      description:
+        "The app worker whose wrangler.jsonc carries the per-environment DB binding (default: the project's only worker)",
+    },
     index: { type: "string", description: "The index to re-embed, as named in pithy.config.ts" },
     all: {
       type: "boolean",
@@ -333,7 +374,7 @@ const reprocess = defineCommand({
     withErrorReporting(args.json, async () => {
       const env = requireEnvironment(args.env);
       const projectDir = process.cwd();
-      const { provisioner, config } = await buildProvisioner(projectDir, env);
+      const { provisioner, config } = await buildProvisioner(projectDir, env, args.worker);
       const filter = parseFilter(args.filter);
 
       // No `--index` means every configured index, which is what "re-embed after a model change" usually is.

@@ -7,7 +7,7 @@ Stands up what `pithy add media` only wired: the per-environment R2 bucket, the 
 ## Synopsis
 
 ```
-pithy media provision [--api-token <token>] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--r2-api-token <token>] [--json]
+pithy media provision [--worker <name>] [--api-token <token>] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--r2-api-token <token>] [--json]
 pithy media deprovision [--storage] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--json]
 ```
 
@@ -19,6 +19,7 @@ pithy media deprovision [--storage] [--r2-access-key-id <id>] [--r2-secret-acces
 
 | Flag | Default | Purpose |
 |---|---|---|
+| `--worker <name>` | the project's only Worker | The app Worker whose `wrangler.jsonc` carries the per-environment `DB` binding. Required when a project has several |
 | `--api-token <token>` | `CLOUDFLARE_API_TOKEN` | The token the media Worker mints Images and Stream direct-upload URLs with. The default is a broad token; supply a scoped Images + Stream one for production |
 | `--r2-access-key-id <id>` | `R2_CREDENTIALS` | R2 S3 access key id the Worker presigns uploads and downloads with. Made under R2 → Manage API tokens |
 | `--r2-secret-access-key <key>` | `R2_CREDENTIALS` | The secret half of the pair. Passing one of the two without the other is refused |
@@ -43,9 +44,13 @@ pithy media deprovision [--storage] [--r2-access-key-id <id>] [--r2-secret-acces
 1. **Preflight.** Verify the account can host a Workflow at all — most importantly a registered `workers.dev` subdomain.
 2. **Resources.** Create or reuse each environment's R2 bucket, and its `MEDIA` KV namespace when the capability's `recordStore` is `kv`. In D1 record mode no namespace is created and the binding is dropped rather than pointed at a namespace that never existed.
 3. **Credentials.** Write each environment's two secrets. Two, because there are two owners: `media-storage-credentials` is media's Images + Stream token, and `media-r2-credentials` belongs to `@pithy-sh/storage`'s `ObjectStore`, which media presigns through and whose key pair media never sees.
-4. **Workers.** Deploy the prebuilt media worker per environment, wired to the resources the secrets already name.
+4. **Workers.** Deploy the prebuilt media worker per ready environment, wired to the resources the secrets already name.
 
-Each environment's deploy needs two things resolved first, and each missing one is refused rather than deployed around: the app `DB` id from that environment's stanza in the project's `wrangler.jsonc`, and the environment's secrets database — `<project>-<env>-secrets`, looked up live, which `pithy secrets provision` creates.
+An environment is **ready** when its stanza in the app worker's `wrangler.jsonc` carries a `DB` binding with a `database_id` — that is, when `pithy provision --env <name>` has run for it. One that is not is **skipped and reported**, never fatal: standing staging up and proving it before production resources exist is the ordinary bring-up, and this command used to refuse it part way through, naming production, after every environment's bucket, namespace and credentials already existed. The decision is made once, from one read, before anything is created. A declared environment with no stanza at all is a different thing and stays a refusal — that is config drift, and `pithy provision --env <name>` does not write a stanza.
+
+If **every** environment is skipped the run exits 1 rather than reporting a success for a run that did nothing, naming each environment and the command that resolves the first.
+
+Each ready environment's deploy still needs its secrets database resolved — `<project>-<env>-secrets`, looked up live, which `pithy secrets provision` creates — and that stays a refusal, because by the time an environment is ready a missing one is a genuine failure rather than a not-yet.
 
 `deprovision` removes the media workers. The bucket, its objects, and the namespace stay unless `--storage` is passed. With `--storage`, the key pair is resolved **before** the first worker comes down: discovering it missing at the bucket step would leave the workers gone and the bucket standing.
 
@@ -64,6 +69,12 @@ One line, one object. The `command` field is the space-separated subcommand name
 | `environments[].env` | `"staging" \| "prod"` | The environment this entry describes |
 | `environments[].bucketName` | string | The R2 bucket media objects live in for this environment |
 | `environments[].kvNamespaceId` | string \| null | The `MEDIA` KV namespace id, or `null` when records live in D1 and the binding is dropped |
+| `skippedEnvironments` | `object[]` | One entry per environment nothing was provisioned for |
+| `skippedEnvironments[].env` | `string` | The environment that was skipped |
+| `skippedEnvironments[].reason` | `string` | Why — `env.<name> has no DB database_id.` |
+| `skippedEnvironments[].action` | `string` | The command that resolves it |
+
+When **every** environment was skipped the line above is still written to stdout — the per-environment structure is the answer, and losing it to the error line would make `--json` less use than the text — and an `{"error":…}` line follows on stderr with exit 1.
 
 `pithy media deprovision`
 
@@ -119,11 +130,18 @@ Pass --r2-access-key-id and --r2-secret-access-key, or set R2_CREDENTIALS in .de
 pithy.config.ts has no `name`.
 ```
 
-**The environment is not in `wrangler.jsonc`**, or its `DB` binding has no id.
+**No environment is ready.** Every declared environment was skipped, so nothing was provisioned.
 
 ```
-wrangler.jsonc has no env.prod stanza.
-Add the prod environment to wrangler.jsonc with its DB binding.
+No environment is ready — staging and prod have no DB database_id.
+Run pithy provision --env staging to create its app database, then run pithy media provision again.
+```
+
+**The app Worker declares an environment it has no stanza for.** Config drift rather than provisioning state, so it is refused rather than skipped.
+
+```
+api's wrangler.jsonc has no env.prod stanza.
+Add the prod environment to apps/api/wrangler.jsonc with its DB binding.
 ```
 
 **The secrets database does not exist.**
@@ -139,8 +157,8 @@ Provision every environment with a scoped Images + Stream token:
 
 ```
 $ pithy media provision --api-token $MEDIA_TOKEN
-staging: bucket acme-staging-media and its MEDIA namespace ready, worker deployed.
-prod: bucket acme-prod-media and its MEDIA namespace ready, worker deployed.
+  staging  bucket acme-staging-media and its MEDIA namespace ready, worker deployed
+  prod     bucket acme-prod-media and its MEDIA namespace ready, worker deployed
 Done.
 ```
 
@@ -148,7 +166,7 @@ The same run, machine-readable, in D1 record mode:
 
 ```
 $ pithy media provision --json
-{"command":"media provision","environments":[{"env":"staging","bucketName":"acme-staging-media","kvNamespaceId":null},{"env":"prod","bucketName":"acme-prod-media","kvNamespaceId":null}]}
+{"command":"media provision","environments":[{"env":"staging","bucketName":"acme-staging-media","kvNamespaceId":null}],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"Run pithy provision --env prod."}]}
 ```
 
 Take the workers down and leave the objects alone:

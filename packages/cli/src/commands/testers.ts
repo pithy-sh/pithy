@@ -1,8 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
@@ -13,7 +11,6 @@ import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provision
 import type { EmailMessageLayers } from "@pithy-sh/email/src/templates/messages";
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
-import { parse } from "comment-json";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import { classifyCapabilityLoadFailure } from "../capabilities/loadFailure";
 import { loadTesters } from "../capabilities/testersLoader";
@@ -24,7 +21,22 @@ import { cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/conf
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment, requireManagedEnvironment } from "../project/environment";
-import { composedProjectCapabilities, projectCapabilities, resolveWorkers } from "../project/workerScope";
+import {
+  type EnvironmentReadiness,
+  environmentOutcomes,
+  environmentReadiness,
+  formatEnvironmentOutcomes,
+  narrowReadiness,
+  readyStanza,
+  requireReadyEnvironments,
+} from "../project/environmentReadiness";
+import {
+  composedProjectCapabilities,
+  projectCapabilities,
+  type ResolvedWorker,
+  resolveSingleWorker,
+  resolveWorkers,
+} from "../project/workerScope";
 import { openSeedDriver } from "../seed/drivers";
 import { createCliLogger } from "../terminal/logger";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
@@ -328,7 +340,7 @@ export async function buildEnqueue(workers: Awaited<ReturnType<typeof resolveWor
  * host name and the suppression database this looks up, and both have to be the same names the other
  * commands compute (docs/NAMING.md).
  */
-async function buildProvisioner(projectDir: string) {
+async function buildProvisioner(projectDir: string, worker?: string) {
   // The name first, before the credentials: both are local checks, and a config that cannot name the
   // project is not a Cloudflare problem to report as one.
   const config = await loadProject(projectDir);
@@ -383,10 +395,38 @@ async function buildProvisioner(projectDir: string) {
     : undefined;
 
   const cf = await cloudflareClients({ accountId, apiToken });
+  // Which environments can be acted on, read once per run and memoized. A thunk rather than an eager read
+  // because `deprovision` shares this builder and deletes a Worker whether or not the app Worker's
+  // `wrangler.jsonc` still describes the environment — making it read one would be a new way to fail. The
+  // Worker is resolved **inside** the thunk for the same reason: `resolveSingleWorker` genuinely can fail
+  // (a project with several Workers and no `--worker`), and a teardown must not acquire that failure.
+  //
+  // The file is the **app Worker's**, under `apps/<name>/`, because there is no root Worker (CLAUDE.md
+  // §CLI). This read `<root>/wrangler.jsonc`, which no scaffolded project has, so every run died on a
+  // missing file before it reached the partition, the skip, the report or the exit code (#512).
+  let readiness: Promise<{ appWorker: ResolvedWorker; readiness: EnvironmentReadiness }> | undefined;
+  const appReadiness = () => {
+    readiness ??= (async () => {
+      const appWorker = await resolveSingleWorker({
+        projectDir,
+        ...(worker !== undefined ? { worker } : {}),
+      });
+      return {
+        appWorker,
+        readiness: await environmentReadiness({
+          workerDir: appWorker.dir,
+          label: `${appWorker.name}'s wrangler.jsonc`,
+          environments,
+        }),
+      };
+    })();
+    return readiness;
+  };
   return {
     email,
     project,
     environments,
+    appReadiness,
     provisioner: new CloudflareTestersProvisioner({
       cf,
       project,
@@ -394,7 +434,7 @@ async function buildProvisioner(projectDir: string) {
       apiToken,
       testersConfig: testers.testersConfig,
       email,
-      resolveEnv: buildResolveEnv(projectDir, project, cf, account),
+      resolveEnv: buildResolveEnv(appReadiness, project, cf, account),
       audit: await buildAudit(projectDir, accountId, apiToken),
     }),
   };
@@ -407,30 +447,24 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
   return createProjectCliAudit({ projectDir, accountId, apiToken });
 }
 
-/** A wrangler env stanza — only the fields the host deploy reads from the project's own config. */
-interface WranglerStanza {
-  d1_databases?: { binding: string; database_id?: string }[];
-  env?: Record<string, WranglerStanza | undefined>;
-}
-
-/** Resolve the per-environment database ids the host binds, from the project's `wrangler.jsonc`. */
-function buildResolveEnv(projectDir: string, project: string, cf: CloudflareClients, account: ConfirmedAccount) {
+/**
+ * Resolve the per-environment database ids the host binds.
+ *
+ * The app `DB` id comes out of {@link EnvironmentReadiness}, which read the project's `wrangler.jsonc` once
+ * and partitioned the declared environments before anything was deployed — an environment with no app
+ * database is skipped and reported rather than failing the run part way through (#512). The suppression
+ * database is still a live refusal, because it is project-global and its absence means `pithy email
+ * provision` has not run at all, which no per-environment skip could express.
+ */
+function buildResolveEnv(
+  /** Memoized, so `deprovision` — which shares this builder and never resolves an environment — reads no file. */
+  appReadiness: () => Promise<{ readiness: EnvironmentReadiness }>,
+  project: string,
+  cf: CloudflareClients,
+  account: ConfirmedAccount,
+) {
   return async (env: ManagedEnvironment) => {
-    const config = parse(await readFile(join(projectDir, "wrangler.jsonc"), "utf8")) as unknown as WranglerStanza;
-    const stanza = config.env?.[env];
-    if (!stanza) {
-      throw new ValidationError({
-        message: `wrangler.jsonc has no env.${env} stanza.`,
-        action: `Add the ${env} environment to wrangler.jsonc with its DB binding.`,
-      });
-    }
-    const appDatabaseId = stanza.d1_databases?.find((database) => database.binding === "DB")?.database_id;
-    if (!appDatabaseId) {
-      throw new ValidationError({
-        message: `wrangler.jsonc env.${env} has no DB database_id.`,
-        action: `Provision the ${env} app database and set its id on the DB binding — the roster lives there.`,
-      });
-    }
+    const { appDatabaseId } = readyStanza((await appReadiness()).readiness, env);
 
     // One suppression database per project, shared across that project's environments, matching how
     // `@pithy-sh/email` provisions it: an unsubscribe in production has to stop staging too. So it is
@@ -459,40 +493,66 @@ const provision = defineCommand({
       type: "string",
       description: `Provision one environment only, from the set pithy.config.ts declares (default ${DEFAULT_ENVIRONMENTS.join(", ")}). Omit for every one.`,
     },
+    worker: {
+      type: "string",
+      description:
+        "The app worker whose wrangler.jsonc carries the per-environment DB binding and receives the TESTERS_DAILY binding (default: the project's only worker)",
+    },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const { provisioner, project, email, environments: declared } = await buildProvisioner(projectDir);
+      const {
+        provisioner,
+        project,
+        email,
+        environments: declared,
+        appReadiness,
+      } = await buildProvisioner(projectDir, args.worker);
       const { testersWorkflowRegistry, TESTERS_CAPABILITY, provisionTesters } = await loadTestersProvisioning();
 
       // Parsed, not cast. `--env dev` is a real thing to type, and dev is local-only — the cast turned a
       // one-line answer into a raw Cloudflare error from a worker that was never deployed.
-      const environments: ManagedEnvironment[] = args.env
+      const selected: ManagedEnvironment[] = args.env
         ? [requireManagedEnvironment(args.env, declared)]
         : managedEnvironments(declared);
+      // Two narrowings, and they answer different questions. `--env` is which environments the operator
+      // meant; readiness is which of those have an app database yet. Skip-and-report layers onto the flag
+      // rather than replacing it (#512).
+      const { appWorker, readiness: declaredReadiness } = await appReadiness();
+      const readiness = narrowReadiness(declaredReadiness, selected);
 
-      const results = await provisionTesters(provisioner, project, environments);
+      const results = await provisionTesters(provisioner, project, readiness.ready);
 
       for (const { env } of results) {
         // Only now can the Workflow binding be written. `pithy add testers` cannot: wrangler requires a
         // `name` and a `class_name` on every `workflows` entry, and the deployed name is per environment
         // (`<project>-<env>-testers-daily`). An entry short of either field fails the whole config, so `add`
         // emits none and this completes it — see capabilities/add.ts.
-        await applyAppBindings(projectDir, env, {
+        // Into the **app Worker's** `wrangler.jsonc`, the same file readiness was read from. A project
+        // root holds no wrangler config at all, so writing there wrote nothing an adopter ever loads.
+        await applyAppBindings(appWorker.dir, env, {
           workflows: appWorkflowBindings(testersWorkflowRegistry, { project, capability: TESTERS_CAPABILITY, env }),
         });
       }
 
+      const deployed = new Map(results.map((entry) => [entry.env, entry.worker]));
+
       if (args.json) {
+        // Written before the refusal below, so a run in which everything skipped still carries the
+        // per-environment structure on stdout beside the `{"error":…}` line on stderr.
         process.stdout.write(
-          `${formatJsonLine({ command: "testers provision", results, sends: email !== undefined })}\n`,
+          `${formatJsonLine({ command: "testers provision", results, skippedEnvironments: readiness.skipped, sends: email !== undefined })}\n`,
         );
+        requireReadyEnvironments(readiness, "pithy testers provision");
         return;
       }
-      for (const { env, worker } of results) {
-        process.stdout.write(`${env}: ${worker} deployed, TESTERS_DAILY bound.\n`);
-      }
+      process.stdout.write(
+        formatEnvironmentOutcomes(
+          environmentOutcomes(readiness, (env) => `${deployed.get(env)} deployed, TESTERS_DAILY bound`),
+        ),
+      );
+      requireReadyEnvironments(readiness, "pithy testers provision");
       process.stdout.write(dim("The pass runs daily at 05:00 UTC. `pithy testers run` runs one now.\n"));
       if (!email) {
         // Said here rather than discovered on the first silent morning.

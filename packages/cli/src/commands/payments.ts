@@ -1,14 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
-import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
+import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
-import { parse } from "comment-json";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import {
   CloudflarePaymentsProvisioner,
@@ -21,7 +18,15 @@ import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudfl
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { envArg, requireManagedEnvironment } from "../project/environment";
-import { projectCapabilities, resolveWorkers } from "../project/workerScope";
+import {
+  type EnvironmentReadiness,
+  environmentOutcomes,
+  environmentReadiness,
+  formatEnvironmentOutcomes,
+  readyStanza,
+  requireReadyEnvironments,
+} from "../project/environmentReadiness";
+import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -105,19 +110,26 @@ function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
   return { account: { accountId, confirmation }, accountId, apiToken, storeId };
 }
 
-/** A wrangler env stanza — only the fields the reconcile worker deploy reads from the project's config. */
-interface WranglerStanza {
-  d1_databases?: { binding: string; database_id?: string }[];
-  env?: Record<string, WranglerStanza | undefined>;
-}
-
 /**
- * Resolve the per-environment resources the reconcile worker binds, from the project's `wrangler.jsonc` (the
- * app `DB` id per env) and a live lookup of the env's secrets database. Each missing value throws an
- * actionable error rather than deploying a half-wired worker.
+ * Resolve the per-environment resources the reconcile worker binds: the app `DB` id, already read and
+ * judged ready by {@link environmentReadiness}, and a live lookup of the env's secrets database — which
+ * does still throw, because by the time an environment is ready a missing secrets store is a genuine
+ * failure rather than a not-yet.
+ *
+ * The app database id is a lookup rather than a file read because the decision it used to make is now made
+ * once, before anything is deployed: an environment with no app database is skipped and reported instead
+ * of failing the run part way through (#512).
+ *
+ * Which Worker is the app Worker? Every Worker owns its own `wrangler.jsonc` under `apps/<name>/` and
+ * **there is no root Worker** (CLAUDE.md §CLI), so a project with several names one with `--worker` and one
+ * Worker needs no ceremony — the shape `pithy email` and `pithy support` already had. This command read
+ * `<root>/wrangler.jsonc` instead, a file no scaffolded project has, so every run died on a missing file
+ * before it reached the partition, the skip, the report or the exit code: #512 claimed six commands and
+ * delivered two.
  */
 function buildResolveEnv(
-  projectDir: string,
+  /** The partition this run acts on, memoized — `reconcile` shares the builder and never resolves one. */
+  appReadiness: () => Promise<{ readiness: EnvironmentReadiness }>,
   cf: CloudflareClients,
   /**
    * The project name the secrets database is found by — `<project>-<env>-secrets`. Resolved once by the
@@ -135,21 +147,7 @@ function buildResolveEnv(
   account: ConfirmedAccount,
 ): (env: ManagedEnvironment) => Promise<PaymentsEnvResources> {
   return async (env) => {
-    const config = parse(await readFile(join(projectDir, "wrangler.jsonc"), "utf8")) as unknown as WranglerStanza;
-    const stanza = config.env?.[env];
-    if (!stanza) {
-      throw new ValidationError({
-        message: `wrangler.jsonc has no env.${env} stanza.`,
-        action: `Add the ${env} environment to wrangler.jsonc with its DB binding.`,
-      });
-    }
-    const appDatabaseId = stanza.d1_databases?.find((database) => database.binding === "DB")?.database_id;
-    if (!appDatabaseId) {
-      throw new ValidationError({
-        message: `wrangler.jsonc env.${env} has no DB database_id.`,
-        action: `Provision the ${env} app database and set its id on the DB binding — the purchase rows live there.`,
-      });
-    }
+    const { appDatabaseId } = readyStanza((await appReadiness()).readiness, env);
     const secretsDb = await findOnConfirmedAccount({
       ...account,
       what: `the ${managerWorkerName(project, env)} database`,
@@ -170,7 +168,7 @@ function buildResolveEnv(
  * lead with. `requireProjectName` refuses to guess: the deployed script name has to be the same one the
  * app's `script_name` binding points at, and a guess would bind a Worker that does not exist.
  */
-async function buildProvisioner(projectDir: string) {
+async function buildProvisioner(projectDir: string, worker?: string) {
   // The name first, before the credentials: both are local checks, and a config that cannot name the
   // project is not a Cloudflare problem to report as one.
   const config = await loadProject(projectDir);
@@ -179,10 +177,35 @@ async function buildProvisioner(projectDir: string) {
   const environments = loadProjectEnvironments(config);
   const { account, accountId, apiToken, storeId } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
   const paymentsConfig = await loadPaymentsConfig(projectDir);
+  // Which environments a run can act on, read once per run and memoized. An environment whose app database
+  // is not provisioned yet is skipped and reported, never fatal (#512). A thunk rather than an eager read
+  // because `reconcile` shares this builder and dispatches into an already-deployed Workflow — making it
+  // resolve a Worker and read that Worker's `wrangler.jsonc` would be a new way for a support query to
+  // fail, and `resolveSingleWorker` genuinely can fail (a project with several Workers and no `--worker`).
+  // So the Worker is resolved **inside** the thunk, not beside it.
+  let readiness: Promise<{ appWorker: ResolvedWorker; readiness: EnvironmentReadiness }> | undefined;
+  const appReadiness = () => {
+    readiness ??= (async () => {
+      const appWorker = await resolveSingleWorker({
+        projectDir,
+        ...(worker !== undefined ? { worker } : {}),
+      });
+      return {
+        appWorker,
+        readiness: await environmentReadiness({
+          workerDir: appWorker.dir,
+          label: `${appWorker.name}'s wrangler.jsonc`,
+          environments,
+        }),
+      };
+    })();
+    return readiness;
+  };
   const cf = await cloudflareClients({ accountId, apiToken });
   return {
     project,
     environments,
+    appReadiness,
     paymentsConfig,
     provisioner: new CloudflarePaymentsProvisioner({
       cf,
@@ -191,7 +214,7 @@ async function buildProvisioner(projectDir: string) {
       apiToken,
       storeId,
       paymentsConfig,
-      resolveEnv: buildResolveEnv(projectDir, cf, project, account),
+      resolveEnv: buildResolveEnv(appReadiness, cf, project, account),
       workflows: await cloudflareWorkflows({ accountId, apiToken }),
       audit: await buildAudit(projectDir, accountId, apiToken),
     }),
@@ -202,36 +225,54 @@ const provision = defineCommand({
   meta: { name: "provision", description: "Deploy the reconciliation Workflow worker and write its bindings" },
   args: {
     json: { type: "boolean", default: false, description: "Machine-readable output" },
+    worker: {
+      type: "string",
+      description:
+        "The app worker whose wrangler.jsonc carries the per-environment DB binding and receives the PAYMENTS_RECONCILE binding (default: the project's only worker)",
+    },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const { provisioner, project, environments: declared } = await buildProvisioner(projectDir);
+      const { provisioner, project, appReadiness } = await buildProvisioner(projectDir, args.worker);
       const { paymentsWorkflowRegistry, PAYMENTS_CAPABILITY } = await loadPayments();
 
       // The account check first, before a single deploy. Failing here means failing before one environment is
       // half provisioned rather than part way through the fan-out.
       await provisioner.preflight();
 
-      const environments: ManagedEnvironment[] = managedEnvironments(declared);
+      const { appWorker, readiness } = await appReadiness();
+      // The ready list, not the declaration: a staging-only bring-up deploys staging's reconcile worker and
+      // leaves production with nothing, rather than failing after staging's is already up.
+      const environments: ManagedEnvironment[] = readiness.ready;
       for (const env of environments) {
         await provisioner.deployWorker(env);
         // Only now can the Workflow binding be written. `pithy add payments` cannot: wrangler requires a
         // `name` and a `class_name` on every `workflows` entry, and the deployed name is per environment
         // (`<project>-<env>-payments-reconcile`). An entry short of either field fails the whole config, so `add`
         // emits none and this completes it — see capabilities/add.ts.
-        await applyAppBindings(projectDir, env, {
+        // Into the **app Worker's** `wrangler.jsonc`, the same file readiness was read from. A project
+        // root holds no wrangler config at all, so writing there wrote nothing an adopter ever loads.
+        await applyAppBindings(appWorker.dir, env, {
           workflows: appWorkflowBindings(paymentsWorkflowRegistry, { project, capability: PAYMENTS_CAPABILITY, env }),
         });
       }
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "payments provision", environments })}\n`);
+        // Written before the refusal below, so a run in which everything skipped still carries the
+        // per-environment structure on stdout beside the `{"error":…}` line on stderr.
+        process.stdout.write(
+          `${formatJsonLine({ command: "payments provision", environments, skippedEnvironments: readiness.skipped })}\n`,
+        );
+        requireReadyEnvironments(readiness, "pithy payments provision");
         return;
       }
-      for (const env of environments) {
-        process.stdout.write(`${env}: reconcile worker deployed, PAYMENTS_RECONCILE bound.\n`);
-      }
+      process.stdout.write(
+        formatEnvironmentOutcomes(
+          environmentOutcomes(readiness, () => "reconcile worker deployed, PAYMENTS_RECONCILE bound"),
+        ),
+      );
+      requireReadyEnvironments(readiness, "pithy payments provision");
       process.stdout.write(
         "Set each rail's credentials with `pithy secrets set payments-provider-credentials` — nothing can mint them.\n",
       );

@@ -124,6 +124,29 @@ describe("provisionSupport", () => {
     });
   });
 
+  /**
+   * The narrowed list is how skip-and-report reaches this orchestrator (pithy-sh/pithy#512). The bucket is
+   * project-global and must not wait for the last environment to be provisioned; the routing rule must
+   * wait for the first, because it is the step that starts delivering real customer mail.
+   */
+  test("a narrowed environment list deploys only those workers, and the bucket is still created", async () => {
+    const { provisioner, calls } = recorder();
+    const result = await provisionSupport(provisioner, ["staging"]);
+
+    expect(calls).toEqual(["preflight", "bucket", "worker:staging", "search:staging", "routing"]);
+    expect(result.environments).toEqual(["staging"]);
+    expect(result.bucket.bucket).toBe("acme-global-support");
+  });
+
+  test("no environment at all still creates the bucket, and makes no routing rule", async () => {
+    const { provisioner, calls } = recorder();
+    const result = await provisionSupport(provisioner, []);
+
+    expect(calls).toEqual(["preflight", "bucket"]);
+    expect(result.routing).toEqual({ created: false, skipped: true });
+    expect(result.environments).toEqual([]);
+  });
+
   test("a failing step stops the run rather than continuing past it", async () => {
     const { provisioner, calls } = recorder({
       ensureBucket: async () => {

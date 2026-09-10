@@ -7,7 +7,7 @@ Deploy the reconciliation Workflow that keeps stored purchases agreeing with the
 ## Synopsis
 
 ```
-pithy payments provision [--json]
+pithy payments provision [--worker <name>] [--json]
 pithy payments reconcile [--env <environment>] [--subject <holder>] [--rail <rail>] [--dry-run] [--json]
 ```
 
@@ -20,14 +20,17 @@ pithy payments reconcile [--env <environment>] [--subject <holder>] [--rail <rai
 | `--env <environment>` | `reconcile` | `staging` | Which deployed environment to run the pass in. `staging` or `prod` — `dev` is local-only and is refused by name |
 | `--subject <holder>` | `reconcile` | every holder | Reconcile one holder's purchases, as `user:<id>` or `organization:<id>`. The support path: the same steps the cron runs, narrowed. An id on its own is refused — it names whichever user *or* organization carries it |
 | `--rail <rail>` | `reconcile` | every rail | Reconcile one rail: `apple`, `google`, `stripe`, `lemonSqueezy`, or `paddle`. Parsed here, so a mistyped rail is a sentence in this terminal rather than a Workflow that burns its retry budget unwatched |
+| `--worker <name>` | `provision` | the project's only Worker | The app Worker whose `wrangler.jsonc` carries the per-environment `DB` binding and receives the `PAYMENTS_RECONCILE` binding. Required when a project has several |
 | `--dry-run` | `reconcile` | `false` | Report the drift and write nothing |
 | `--json` | both | `false` | One line of machine-readable output |
 
-`provision` takes no `--env`. It spans every managed environment in one run, deliberately: the reconcile worker is per environment, and a half-provisioned pair is the state nobody wants to reason about.
+`provision` takes no `--env`. It spans every managed environment in one run, and **skips the ones whose app database does not exist yet** rather than refusing: the answer to "which environments did you mean" is always *the ones that are ready*, so there is nothing to state on the command line.
 
 ## What it does
 
-`pithy add payments` writes bindings and touches no Cloudflare account. `provision` stands up the one thing those bindings point at: the prebuilt reconcile Worker that hosts the nightly pass. For each of `staging` and `prod` it checks the account once up front, deploys the Worker, and then writes that environment's `workflows` binding into the app's `wrangler.jsonc`. The binding cannot be written by `add` — wrangler requires a `name` and a `class_name` on every entry, and the deployed name is per environment (`<project>-<env>-payments-reconcile`), so `add` emits none and this completes it.
+`pithy add payments` writes bindings and touches no Cloudflare account. `provision` stands up the one thing those bindings point at: the prebuilt reconcile Worker that hosts the nightly pass. For each **ready** environment it checks the account once up front, deploys the Worker, and then writes that environment's `workflows` binding into the app's `wrangler.jsonc`.
+
+An environment is **ready** when its stanza in the app's `wrangler.jsonc` carries a `DB` binding with a `database_id` — that is, when `pithy provision --env <name>` has run for it. One that is not is **skipped and reported**, never fatal: standing staging up and proving it before production resources exist is the ordinary bring-up, and this command used to refuse it part way through, naming production. The decision is made once, from one read, before a single deploy. The binding cannot be written by `add` — wrangler requires a `name` and a `class_name` on every entry, and the deployed name is per environment (`<project>-<env>-payments-reconcile`), so `add` emits none and this completes it.
 
 **No credential is written here, and that is not an omission.** Apple's `.p8`, Google's service-account key, Stripe's key pair, and Lemon Squeezy's and Paddle's API keys are taken by a human from five consoles; nothing can mint them. They go in through `pithy secrets create payments-provider-credentials`, and this command deploys the Worker that reads them. A `provision` run before the secrets are set still succeeds — the first pass is what reports the missing rail.
 
@@ -55,13 +58,19 @@ One line, one object, one shape per subcommand. The `command` field carries the 
 
 ```
 $ pithy payments provision --json
-{"command":"payments provision","environments":["staging","prod"]}
+{"command":"payments provision","environments":["staging"],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"Run pithy provision --env prod."}]}
 ```
 
 | key | type | meaning |
 |---|---|---|
 | `command` | `"payments provision"` | The subcommand that produced the line |
-| `environments` | `string[]` | Every managed environment provisioned, in order. Today `["staging","prod"]` — `dev` is local-only and never a deploy target |
+| `environments` | `string[]` | Every environment a reconcile worker was deployed for, in order. `dev` is local-only and never a deploy target |
+| `skippedEnvironments` | `object[]` | One entry per environment nothing was provisioned for |
+| `skippedEnvironments[].env` | `string` | The environment that was skipped |
+| `skippedEnvironments[].reason` | `string` | Why — `env.<name> has no DB database_id.` |
+| `skippedEnvironments[].action` | `string` | The command that resolves it |
+
+When **every** environment was skipped the line above is still written to stdout — the per-environment structure is the answer, and losing it to the error line would make `--json` less use than the text — and an `{"error":…}` line follows on stderr with exit 1.
 
 ```
 $ pithy payments reconcile --env staging --json
@@ -120,7 +129,9 @@ Run pithy add secrets to record SECRETS_STORE_ID (the reconcile worker decrypts 
 This deploys to a Cloudflare account, and dev is local-only. Run `pithy dev` instead.
 ```
 
-**The environment has no wrangler stanza, or no `DB` id.** Each missing value is refused rather than deploying a half-wired Worker: `wrangler.jsonc has no env.<env> stanza.` and `wrangler.jsonc env.<env> has no DB database_id.` — the purchase rows live in that database.
+**No environment is ready.** Every declared environment was skipped, so nothing was deployed and the run exits 1: `No environment is ready — staging and prod have no DB database_id.` A run where some environment was ready exits 0 and reports the rest as skipped.
+
+**The environment has no wrangler stanza at all.** `api's wrangler.jsonc has no env.<env> stanza.` — config drift rather than provisioning state, so it is refused rather than skipped; `pithy provision --env <name>` does not write a stanza.
 
 **The environment's secrets database does not exist.** `The <env> secrets database (<name>) does not exist.` Run `pithy secrets provision` first.
 
@@ -134,8 +145,8 @@ Stand the reconcile Worker up across every managed environment.
 
 ```
 $ pithy payments provision
-staging: reconcile worker deployed, PAYMENTS_RECONCILE bound.
-prod: reconcile worker deployed, PAYMENTS_RECONCILE bound.
+  staging  reconcile worker deployed, PAYMENTS_RECONCILE bound
+  prod     skipped — env.prod has no DB database_id. Run pithy provision --env prod.
 Set each rail's credentials with `pithy secrets create payments-provider-credentials` — nothing can mint them.
 Done.
 ```

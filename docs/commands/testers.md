@@ -9,7 +9,7 @@ Runs a closed test from the terminal: create a cohort, invite people, see where 
 ## Synopsis
 
 ```
-pithy testers provision [--env <env>] [--json]
+pithy testers provision [--env <env>] [--worker <name>] [--json]
 pithy testers deprovision [--env <env>] [--json]
 pithy testers create <name> [--env <env>] [--target-size <n>] [--window-days <n>] [--max-roster <n>] [--platform <android|ios>] [--store-url <url>] [--json]
 pithy testers list [--env <env>] [--json]
@@ -37,6 +37,7 @@ pithy testers run [--cohort <cohort>] [--env <env>] [--skip-nudges] [--json]
 | Flag | Default | Purpose |
 |---|---|---|
 | `--env <env>` | every managed environment | Act on one environment only: `staging` or `prod`. `--env dev` is refused with the reason |
+| `--worker <name>` | the project's only Worker | `provision` only. The app Worker whose `wrangler.jsonc` carries the per-environment `DB` binding and receives the `TESTERS_DAILY` binding. Required when a project has several |
 | `--json` | `false` | Machine-readable output — one line, one object |
 
 `pithy testers create <name>`
@@ -111,9 +112,11 @@ The three numeric flags must each be a whole number above zero, and `--platform`
 
 ## What it does
 
-**`provision`** deploys the daily-pass Workflow worker — `<project>-<env>-testers-daily` — for each requested environment and then writes its `TESTERS_DAILY` Workflow binding into the project's `wrangler.jsonc`. `pithy add testers` cannot write that binding: wrangler requires both a `name` and a `class_name` on every `workflows` entry, and the deployed name is per environment, so `add` emits none and this run completes it. Preflight runs once before the first deploy, so failing means failing before one environment is half provisioned.
+**`provision`** deploys the daily-pass Workflow worker — `<project>-<env>-testers-daily` — for each requested environment and then writes its `TESTERS_DAILY` Workflow binding into the app worker's `wrangler.jsonc`. `pithy add testers` cannot write that binding: wrangler requires both a `name` and a `class_name` on every `workflows` entry, and the deployed name is per environment, so `add` emits none and this run completes it. Preflight runs once before the first deploy, so failing means failing before one environment is half provisioned.
 
-Each environment's deploy resolves two ids first: the app `DB` id from that environment's stanza in the project's `wrangler.jsonc`, and this project's shared email-suppression database, looked up by name — the daily pass reads it to reconcile bounced addresses, so `pithy email provision` has to have run.
+Each environment's deploy resolves two ids first: the app `DB` id from that environment's stanza in the app worker's `wrangler.jsonc`, and this project's shared email-suppression database, looked up by name — the daily pass reads it to reconcile bounced addresses, so `pithy email provision` has to have run.
+
+An environment is **ready** when its stanza carries a `DB` binding with a `database_id` — that is, when `pithy provision --env <name>` has run for it. One that is not is **skipped and reported**, never fatal: standing staging up and proving it before production resources exist is the ordinary bring-up. `--env` and readiness are two different narrowings and both are reported: the flag says which environments you meant, readiness says which of those can be acted on. If every environment in the selection is skipped the run exits 1 rather than reporting a success for a run that did nothing. The suppression database stays a refusal — it is project-global, and its absence means `pithy email provision` has not run at all, which no per-environment skip could express.
 
 The sending identity is read off the composed `email` capability rather than asked for. When no email capability is composed, the host is still deployed and the pass records the day but sends nothing — said at provision time rather than discovered on the first silent morning. The pass runs daily at 05:00 UTC.
 
@@ -143,7 +146,13 @@ One line, one object. The `command` field is the space-separated subcommand name
 | `results` | array | One entry per environment provisioned |
 | `results[].env` | `"staging" \| "prod"` | The environment this entry describes |
 | `results[].worker` | string | The deployed daily-pass worker name, `<project>-<env>-testers` |
+| `skippedEnvironments` | `object[]` | One entry per selected environment nothing was provisioned for |
+| `skippedEnvironments[].env` | `string` | The environment that was skipped |
+| `skippedEnvironments[].reason` | `string` | Why — `env.<name> has no DB database_id.` |
+| `skippedEnvironments[].action` | `string` | The command that resolves it |
 | `sends` | boolean | Whether an email capability is composed. `false` means the pass will record the day and send nothing |
+
+When **every** selected environment was skipped the line is still written to stdout — the per-environment structure is the answer — and an `{"error":…}` line follows on stderr with exit 1.
 
 ### `pithy testers deprovision`
 
@@ -549,5 +558,5 @@ Deploy the daily pass to every declared environment:
 
 ```
 $ pithy testers provision --json
-{"command":"testers provision","results":[{"env":"staging","worker":"acme-staging-testers"},{"env":"prod","worker":"acme-prod-testers"}],"sends":true}
+{"command":"testers provision","results":[{"env":"staging","worker":"acme-staging-testers"}],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"Run pithy provision --env prod."}],"sends":true}
 ```

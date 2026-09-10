@@ -46,11 +46,13 @@ The refusal exists because enabling Email Routing on a zone points its MX at Clo
 
 1. **Preflight.** Verify the account can host a Workflow at all — most importantly a registered `workers.dev` subdomain.
 2. **Bucket.** Create or reuse `<project>-global-support`. One bucket for the project, not one per environment: the `SUPPORT_BUCKET` binding hangs off the app worker that receives the mail, and each environment's `wrangler.jsonc` points at it by name. When the capability is configured with attachments off and no raw retention, no bucket is created and the step reports `skipped`.
-3. **Workers.** Deploy the prebuilt classification worker for every managed environment. It reads a message and writes a label over the `AI` binding.
+3. **Workers.** Deploy the prebuilt classification worker for every **ready** environment. It reads a message and writes a label over the `AI` binding.
 4. **Search index.** Create or drop the full-text index in each environment's app database to match `search.fts`. A provisioning step rather than a migration, because the index is derived — every row in it comes from `pithy_support_messages`. A newly created index is backfilled immediately, so the inbox never answers "no matches" for a term plainly in a body.
-5. **Routing rule.** Last, and only with all three routing flags. Creating it first would start delivering mail to a Worker whose classification host is not deployed yet — a window in which real customer messages arrive and stay uncategorized with nothing to say why.
+5. **Routing rule.** Last, only with all three routing flags, and only when at least one classification host went up. Creating it first would start delivering mail to a Worker whose classification host is not deployed yet — a window in which real customer messages arrive and stay uncategorized with nothing to say why; over a run that deployed nothing, that window is the whole project.
 
-Each environment's deploy needs the app `DB` id from that environment's stanza in the app Worker's `wrangler.jsonc`. A missing stanza or id is refused rather than deploying a worker that would write its classifications into nothing.
+An environment is **ready** when its stanza in the app Worker's `wrangler.jsonc` carries a `DB` binding with a `database_id` — that is, when `pithy provision --env <name>` has run for it. One that is not is **skipped and reported**, never fatal: standing staging up and proving it before production resources exist is the ordinary bring-up, and this command used to refuse it part way through, naming production, after the bucket and staging's worker already existed. The decision is made once, from one read, before anything is created. A declared environment with no stanza at all is a different thing and stays a refusal — that is config drift, and `pithy provision --env <name>` does not write a stanza.
+
+The bucket is created on the first run **however many environments skip**; it is one per project and must not wait for production. If **every** environment is skipped the run exits 1 rather than reporting a success for a run that did nothing.
 
 `deprovision` removes the routing rule (only with `--routing-zone`) and the classification workers. The bucket stays unless `--storage` is passed, and with it the key pair is resolved **before** the first worker comes down: discovering it missing at the bucket step would leave the workers gone and the bucket standing.
 
@@ -70,13 +72,19 @@ One line, one object. The `command` field is the space-separated subcommand name
 | `bucket.created` | boolean | True only when this run created it. False when it already existed, and false when skipped |
 | `bucket.skipped` | boolean | True when attachments are off and raw retention is off, so no bucket was wanted |
 | `environments` | array of `"staging" \| "prod"` | The environments a classification worker was deployed for |
+| `skippedEnvironments` | `object[]` | One entry per environment nothing was provisioned for |
+| `skippedEnvironments[].env` | `string` | The environment that was skipped |
+| `skippedEnvironments[].reason` | `string` | Why — `env.<name> has no DB database_id.` |
+| `skippedEnvironments[].action` | `string` | The command that resolves it |
 | `search` | array | What the full-text index did, per environment |
 | `search[].env` | `"staging" \| "prod"` | The environment this entry describes |
 | `search[].created` | boolean | The index was created and backfilled in this run |
 | `search[].dropped` | boolean | The index was dropped in this run. Both false means it already matched the config |
 | `routing` | object | What happened to the inbound Email Routing rule |
 | `routing.created` | boolean | True only when this run created the rule. False when it already existed |
-| `routing.skipped` | boolean | True when no routing flags were supplied, so no rule was made |
+| `routing.skipped` | boolean | True when no routing flags were supplied, or when no environment was ready, so no rule was made |
+
+When **every** environment was skipped the line above is still written to stdout — the per-environment structure is the answer, and losing it to the error line would make `--json` less use than the text — and an `{"error":…}` line follows on stderr with exit 1.
 
 `pithy support deprovision`
 
@@ -121,7 +129,14 @@ Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or expo
 pithy.config.ts has no `name`.
 ```
 
-**The app Worker's environment is not wired.**
+**No environment is ready.** Every declared environment was skipped, so nothing was provisioned.
+
+```
+No environment is ready — staging and prod have no DB database_id.
+Run pithy provision --env staging to create its app database, then run pithy support provision again.
+```
+
+**The app Worker declares an environment it has no stanza for.** Config drift rather than provisioning state, so it is refused rather than skipped.
 
 ```
 api's wrangler.jsonc has no env.prod stanza.
@@ -139,8 +154,8 @@ Provision everything but the rule, then add it once the zone is decided:
 ```
 $ pithy support provision
 Bucket acme-global-support ready.
-2 classification workers deployed.
-Search index created in staging, prod.
+  staging  classification worker deployed, search index created
+  prod     skipped — env.prod has no DB database_id. Run pithy provision --env prod.
 No routing rule. Pass --routing-zone, --inbound-address, and --app-worker to create one.
 Done.
 ```
@@ -149,7 +164,7 @@ With routing, machine-readable:
 
 ```
 $ pithy support provision --routing-zone 0a1b2c3d --inbound-address support@help.example.com --app-worker acme-prod --json
-{"command":"support provision","bucket":{"bucket":"acme-global-support","created":false,"skipped":false},"environments":["staging","prod"],"routing":{"created":true,"skipped":false},"search":[{"env":"staging","created":false,"dropped":false},{"env":"prod","created":false,"dropped":false}]}
+{"command":"support provision","bucket":{"bucket":"acme-global-support","created":false,"skipped":false},"environments":["staging","prod"],"routing":{"created":true,"skipped":false},"search":[{"env":"staging","created":false,"dropped":false},{"env":"prod","created":false,"dropped":false}],"skippedEnvironments":[]}
 ```
 
 Take the workers down but keep the history and the rule:

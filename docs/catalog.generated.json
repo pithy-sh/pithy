@@ -321,6 +321,7 @@
     {
       "path": "media provision",
       "flags": [
+        "--worker",
         "--api-token",
         "--apiToken",
         "--r2-access-key-id",
@@ -352,7 +353,8 @@
       "path": "payments provision",
       "flags": [
         "--json",
-        "--no-json"
+        "--no-json",
+        "--worker"
       ]
     },
     {
@@ -503,6 +505,7 @@
     {
       "path": "storage provision",
       "flags": [
+        "--worker",
         "--api-token",
         "--apiToken",
         "--r2-access-key-id",
@@ -615,7 +618,8 @@
       "flags": [
         "--json",
         "--no-json",
-        "--env"
+        "--env",
+        "--worker"
       ]
     },
     {
@@ -779,6 +783,7 @@
       "path": "vector provision",
       "flags": [
         "--env",
+        "--worker",
         "--json",
         "--no-json"
       ]
@@ -787,6 +792,7 @@
       "path": "vector reprocess",
       "flags": [
         "--env",
+        "--worker",
         "--index",
         "--all",
         "--no-all",
@@ -799,6 +805,7 @@
       "path": "vector reset",
       "flags": [
         "--env",
+        "--worker",
         "--confirm-reset",
         "--confirmReset",
         "--json",

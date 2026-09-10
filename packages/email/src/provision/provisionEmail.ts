@@ -118,12 +118,17 @@ export interface EmailProvisionResult {
 
 /**
  * Provision the email infrastructure: create + migrate the shared suppression DB once, then deploy the
- * email worker for every managed environment. The order matters — the suppression DB exists and is
+ * email worker for every environment given. The order matters — the suppression DB exists and is
  * migrated before any worker that binds it is deployed. Idempotent end to end (each step is).
  *
- * `environments` is the project's declaration from the root `pithy.config.ts` (#241). Every declared
- * environment is provisioned; an environment this skipped would be one the project deploys to with no
- * resources behind it — the silence the closed `ManagedEnvironment` enum used to produce.
+ * `environments` is **what the caller determined it can act on**, which the CLI narrows from the project's
+ * declaration (#241) to the environments whose app database exists (pithy-sh/pithy#512). Nothing is
+ * skipped here and nothing decides here: an environment reaching this list is provisioned, and one that
+ * did not was already reported to the operator by name, with why and with the command that fixes it.
+ *
+ * The suppression database is created **whatever the list holds, including nothing**. It is one per
+ * project, shared across every environment, and making it wait for the last environment to be provisioned
+ * is exactly the ordering this change exists to undo.
  */
 export async function provisionEmail(
   provisioner: EmailProvisioner,
@@ -132,12 +137,16 @@ export async function provisionEmail(
   await provisioner.preflight();
   const { databaseId } = await provisioner.ensureSuppressionDatabase();
   await provisioner.migrateSuppression(databaseId);
-  for (const env of managedEnvironments(environments)) {
+  const deployed = managedEnvironments(environments);
+  for (const env of deployed) {
     await provisioner.deployWorker(env, databaseId);
   }
-  // One inbound routing rule per domain (production app worker), after the workers are up.
-  const routing = await provisioner.ensureRoutingRule();
-  return { suppressionDatabaseId: databaseId, environments: managedEnvironments(environments), routing };
+  // One inbound routing rule per domain (production app worker), after the workers are up — and only when
+  // at least one is. A rule created over an empty run starts delivering real bounce mail to a handler that
+  // was never deployed, which is the window this ordering exists to close.
+  const routing =
+    deployed.length > 0 ? await provisioner.ensureRoutingRule() : { created: false, skipped: true as const };
+  return { suppressionDatabaseId: databaseId, environments: deployed, routing };
 }
 
 /** The teardown seam — the inverse of {@link EmailProvisioner}. Every step idempotent (a missing resource is a no-op). */
