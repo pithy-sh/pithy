@@ -125,7 +125,11 @@ gh workflow run release.yml                    # ship it
 
 That is the whole loop. The job runs the full gates (Biome, license headers, docs catalog, CLI pack, typecheck, tests, build), versions, publishes, tags, pushes the version commit to `main`, and reports the release.
 
-Anything already on the registry is skipped, so a re-run after a partial failure publishes only what is missing.
+Anything already on the registry is skipped, so a re-run publishes only what is missing — in principle. In practice a plain re-run cannot reach that step: `changeset version` runs first and exits 1 with no changesets to apply, which is exactly what a completed release leaves behind. Nothing has needed the recovery yet; when something does, the workflow will need a way to skip versioning and publish alone.
+
+**A publish is accepted and readable at different moments, and the gap is longer than it looks.** On 2026-09-10 twenty packages were readable within a minute of `changeset publish` reporting them and `@pithy-sh/core` took six. For those six minutes its packument showed the *previous* `latest`, the *previous* `modified` — three days old, beside siblings minutes old — and no `time` entry for the new version. **None of that is evidence the publish failed.** A write that has not committed leaves the old record entirely in place; it never appears partially or at an intermediate timestamp, and the `time` key arrives with the commit rather than before it. npm also keeps a `time` entry after an unpublish, so an absent key is not proof a version was never accepted either.
+
+That combination is convincing and wrong, and it has now produced four separate conclusions that a publish failed when it had not. The job's own report is the more reliable signal. If the registry disagrees with it, wait several minutes and ask again before concluding anything — and before re-publishing anything, which is the one action that cannot be taken back.
 
 A release with no changesets **fails** rather than passing quietly — `@changesets/cli` 3.0.0 exits 1 with nothing to apply. A release that released nothing should say so.
 
