@@ -73,20 +73,44 @@ function fromHttpException(error: HTTPException): PithyError | null {
 }
 
 /**
- * Hono `onError` handler. Register once on the root app (`app.onError(pithyErrorHandler)`): any
- * `PithyError` becomes `{ error: <public payload> }` at its declared status; a Hono `HTTPException`
- * 400 becomes `validation/invalid_input`; any other throw is wrapped as a `core/internal` 500
- * carrying the original as `cause` (kept internal) and a generic public message — mirroring the
- * CLI's "unexpected crash" path.
+ * Whatever was thrown, as the `PithyError` the response will be rendered from.
+ *
+ * A `PithyError` is itself; a Hono `HTTPException` 400 becomes `validation/invalid_input`; anything
+ * else is wrapped as a `core/internal` 500 carrying the original as `cause` (kept internal) and a
+ * generic public message — mirroring the CLI's "unexpected crash" path.
+ *
+ * Split out from {@link pithyErrorHandler} so a caller that wants to **read** the fault before it is
+ * encoded — the logging handler in `logger/errorHandler.ts` — works from the same object the response
+ * is built from, rather than translating a second time and logging a different instance of it. The
+ * split is what keeps this module free of the logger: the translation is exported, the log is written
+ * on the other side of the boundary. See `logger/boundary.test.ts`.
  */
-export function pithyErrorHandler(err: Error, c: Context): Response {
+export function toPithyError(err: Error): PithyError {
+  if (err instanceof PithyError) return err;
   const translated = err instanceof HTTPException ? fromHttpException(err) : null;
-  const pithy =
-    err instanceof PithyError
-      ? err
-      : (translated ?? new InternalError({ detail: err instanceof Error ? err.message : String(err) }, { cause: err }));
+  return translated ?? new InternalError({ detail: err instanceof Error ? err.message : String(err) }, { cause: err });
+}
+
+/** Render an already-translated fault as its HTTP response — the client half, and only that. */
+export function renderPithyError(pithy: PithyError, c: Context): Response {
   // A kit member pins a literal status; an adopter's carries a `number` the schema has already
   // bounded to 400–599. Hono types the argument as its own literal union, and that is the one gap
   // between the two — the value is validated, so the assertion narrows rather than trusts.
   return c.json({ error: HttpError.encode(pithy.payload) }, pithy.payload.status as ContentfulStatusCode);
+}
+
+/**
+ * Hono `onError` handler — the **encoder**, with no log of its own.
+ *
+ * Any `PithyError` becomes `{ error: <public payload> }` at its declared status; a Hono
+ * `HTTPException` 400 becomes `validation/invalid_input`; any other throw is wrapped as a
+ * `core/internal` 500.
+ *
+ * **Prefer `loggingErrorHandler` from `logger/errorHandler.ts`** — `createBackend` registers that one,
+ * and it is what makes a misconfiguration's `action` reach an operator instead of dying at the wire
+ * (#521). This one stays exported for an app assembled without the logger seam, and it stays here,
+ * logger-free, because this module is on the client side of the logger boundary.
+ */
+export function pithyErrorHandler(err: Error, c: Context): Response {
+  return renderPithyError(toPithyError(err), c);
 }

@@ -51,10 +51,14 @@ pithy email test --to <address> [--template <id>] [--from <address>] [--json]
 1. **Preflight.** Verify the account can host a Workflow at all — most importantly a registered `workers.dev` subdomain.
 2. **Suppression database.** Create or reuse `<project>-global-email-suppressions`, one per project rather than one per environment: an unsubscribe in production has to stop staging too.
 3. **Migrate it.** Run `email_0001_suppressions` against that database. Applied migrations skip.
-4. **Workers.** Deploy the prebuilt email worker for every managed environment, each bound to the shared suppression database and to its own environment's resources.
-5. **Routing rule.** Last, and only with all three routing flags.
+4. **Workers.** Deploy the prebuilt email worker for every **ready** environment, each bound to the shared suppression database and to its own environment's resources.
+5. **Routing rule.** Last, only with all three routing flags, and only when at least one worker went up — a rule made over a run that deployed nothing starts delivering real bounce mail to a handler that is not there.
 
-Each environment's deploy needs three things resolved first, and each missing one is refused rather than deployed around: the app `DB` id from that environment's stanza in the app Worker's `wrangler.jsonc`; that Worker's public address for the environment; and the environment's secrets database — `<project>-<env>-secrets`, looked up live, which `pithy secrets provision` creates.
+An environment is **ready** when its stanza in the app Worker's `wrangler.jsonc` carries a `DB` binding with a `database_id` — that is, when `pithy provision --env <name>` has run for it. One that is not is **skipped and reported**, never fatal: standing staging up and proving it before production resources exist is the ordinary bring-up, and this command used to refuse it part way through, naming production, after the suppression database and staging's worker already existed. The decision is made once, from one read, before anything is created.
+
+The suppression database is created on the first run **however many environments skip**. It is one per project and shared across every environment, so making it wait for production is the ordering this exists to undo.
+
+Each ready environment's deploy needs two more things resolved, and each missing one is refused rather than deployed around: that Worker's public address for the environment, and the environment's secrets database — `<project>-<env>-secrets`, looked up live, which `pithy secrets provision` creates. Those stay refusals because by the time an environment is ready, a missing one is a genuine failure rather than a not-yet.
 
 The address is resolved through one resolver that prefers the Worker's `domains` declaration, falls back to its route, and then to `vars.BASE_URL`. Tracking and unsubscribe links are built against whatever it returns, so a Worker with none of the three is refused rather than deployed against a guess. A malformed `domains` declaration does not block provisioning off a good route or var — `pithy env` and `pithy deploy` are where that gets reported.
 
@@ -75,9 +79,15 @@ One line, one object. The `command` field is the space-separated subcommand name
 | `command` | `"email provision"` | The subcommand that produced this line |
 | `suppressionDatabaseId` | string | The D1 id of the project's shared suppression database, created or reused |
 | `environments` | array of `"staging" \| "prod"` | The environments an email worker was deployed for |
+| `skippedEnvironments` | `object[]` | One entry per environment nothing was provisioned for |
+| `skippedEnvironments[].env` | `string` | The environment that was skipped |
+| `skippedEnvironments[].reason` | `string` | Why — `env.<name> has no DB database_id.` |
+| `skippedEnvironments[].action` | `string` | The command that resolves it |
 | `routing` | object | What happened to the inbound Email Routing rule |
 | `routing.created` | boolean | True only when this run created the rule. False when it already existed |
-| `routing.skipped` | boolean | True when the routing flags were absent or incomplete, so no rule was made |
+| `routing.skipped` | boolean | True when the routing flags were absent or incomplete, or when no environment was ready, so no rule was made |
+
+When **every** environment was skipped the line above is still written to stdout — the per-environment structure is the answer, and losing it to the error line would make `--json` less use than the text — and an `{"error":…}` line follows on stderr with exit 1.
 
 `pithy email deprovision`
 
@@ -129,12 +139,21 @@ Run pithy add secrets to record SECRETS_STORE_ID (the email worker decrypts its 
 pithy.config.ts has no `name`.
 ```
 
-**The app Worker's environment is not wired**, or has no address for it:
+**No environment is ready.** Nothing was provisioned, so this exits 1 rather than reporting a success for a run that did nothing. A run where *some* environment was ready exits 0 and reports the rest as skipped.
 
 ```
-api's wrangler.jsonc env.prod has no DB database_id.
-Provision the prod app database and set its id on the DB binding.
+No environment is ready — staging and prod have no DB database_id.
+Run pithy provision --env staging to create its app database, then run pithy email provision again.
 ```
+
+**The app Worker declares an environment it has no stanza for.** This is config drift rather than provisioning state — `pithy provision --env <name>` does not write the stanza — so it is refused rather than skipped, the same drift `pithy doctor` reports.
+
+```
+api's wrangler.jsonc has no env.prod stanza.
+Add the prod environment to apps/api/wrangler.jsonc with its DB binding.
+```
+
+**A ready environment has no address:**
 
 ```
 api has no prod address.
@@ -163,13 +182,17 @@ Provision without routing, then add the rule once the bounce subdomain exists:
 
 ```
 $ pithy email provision
-Suppression database and 2 email workers ready.
+Suppression database ready.
+  staging  email worker deployed
+  prod     skipped — env.prod has no DB database_id. Run pithy provision --env prod.
 Done.
 ```
 
+Production is untouched — no worker, no resources, exit 0. Run `pithy provision --env prod` and this again, and prod completes while staging stays as it is.
+
 ```
 $ pithy email provision --routing-zone 0a1b2c3d --inbound-address bounce@bounce.example.com --app-worker acme-prod --json
-{"command":"email provision","suppressionDatabaseId":"3f7c…","environments":["staging","prod"],"routing":{"created":true,"skipped":false}}
+{"command":"email provision","suppressionDatabaseId":"3f7c…","environments":["staging"],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"Run pithy provision --env prod."}],"routing":{"created":true,"skipped":false}}
 ```
 
 Send yourself the magic-link template as your project renders it:

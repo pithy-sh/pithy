@@ -1,12 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
-import { parse } from "comment-json";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import { resolveR2Credentials } from "../capabilities/r2Bucket";
 import {
@@ -19,7 +16,15 @@ import type { ConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
-import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
+import {
+  type EnvironmentReadiness,
+  environmentOutcomes,
+  environmentReadiness,
+  formatEnvironmentOutcomes,
+  readyStanza,
+  requireReadyEnvironments,
+} from "../project/environmentReadiness";
+import { projectCapabilities, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -34,9 +39,12 @@ import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/outp
  * behalf, so the zone, the address, and the target worker are each named or the rule is not created —
  * everything else provisions, and the rule is added when the operator has decided.
  *
- * No secret is written. The classification worker reads a message and writes a label over the `AI`
- * binding, so it carries no credential; the R2 key pair support presigns attachments with belongs to
- * `@pithy-sh/storage` and is written by `pithy storage provision`.
+ * **No secret is written, and nothing else writes the one support needs either.** The classification
+ * worker reads a message and writes a label over the `AI` binding, so it carries no credential. The R2
+ * key pair support presigns attachments with is `support-r2-credentials` — its own entry, read by
+ * `support/src/http/resolve.ts` — and no command in the kit creates it: `pithy storage provision` writes
+ * `storage-r2-credentials`, which is a different secret for a different bucket. So the operator writes
+ * support's, and `pithy doctor`'s `shared:` section is where that is said out loud when the bucket moves.
  */
 
 /**
@@ -97,41 +105,22 @@ function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
   return { account: { accountId, confirmation }, accountId, apiToken, r2Raw: vars.R2_CREDENTIALS };
 }
 
-/** A wrangler env stanza — only the field the support worker deploy reads from a Worker's config. */
-interface WranglerStanza {
-  d1_databases?: { binding: string; database_id?: string }[];
-  env?: Record<string, WranglerStanza | undefined>;
-}
-
 /**
  * Resolve the per-environment app database the classification worker binds, from the **app Worker's**
- * `wrangler.jsonc`. A missing stanza or id throws an actionable error rather than deploying a worker that
- * would write its classifications into nothing.
+ * `wrangler.jsonc`.
+ *
+ * The read and the judgment both happened once already, in {@link environmentReadiness}, before anything
+ * was created — so this is a lookup rather than a file read, and an environment with no app database was
+ * skipped and reported instead of failing the run part way through (#512). It used to re-read and re-parse
+ * that file once per environment per phase, because the provisioner calls this from both `deployWorker`
+ * and `ensureSearchIndex`.
  *
  * Which Worker is the app Worker? Every Worker owns its own `wrangler.jsonc`, so a project with several
  * names one with `--worker`; one Worker needs no ceremony. Workers sharing a database share the `DB`
  * binding name, so any Worker carrying the support tables answers the same id.
  */
-function buildResolveEnv(worker: ResolvedWorker): (env: ManagedEnvironment) => Promise<SupportEnvResources> {
-  return async (env) => {
-    const path = join(worker.dir, "wrangler.jsonc");
-    const config = parse(await readFile(path, "utf8")) as unknown as WranglerStanza;
-    const stanza = config.env?.[env];
-    if (!stanza) {
-      throw new ValidationError({
-        message: `${worker.name}'s wrangler.jsonc has no env.${env} stanza.`,
-        action: `Add the ${env} environment to ${path} with its DB binding.`,
-      });
-    }
-    const appDatabaseId = stanza.d1_databases?.find((db) => db.binding === "DB")?.database_id;
-    if (!appDatabaseId) {
-      throw new ValidationError({
-        message: `${worker.name}'s wrangler.jsonc env.${env} has no DB database_id.`,
-        action: `Provision the ${env} app database and set its id on the DB binding.`,
-      });
-    }
-    return { appDatabaseId };
-  };
+function buildResolveEnv(readiness: EnvironmentReadiness): (env: ManagedEnvironment) => Promise<SupportEnvResources> {
+  return async (env) => ({ appDatabaseId: readyStanza(readiness, env).appDatabaseId });
 }
 
 /**
@@ -201,35 +190,58 @@ const provision = defineCommand({
         ...(args.worker !== undefined ? { worker: args.worker } : {}),
       });
       const routing = resolveRouting(args["routing-zone"], args["inbound-address"], args["app-worker"]);
+      // Which environments this run can act on, decided once and before the bucket exists. An environment
+      // whose app database is not provisioned yet is skipped and reported, never fatal (#512).
+      const readiness = await environmentReadiness({
+        workerDir: appWorker.dir,
+        label: `${appWorker.name}'s wrangler.jsonc`,
+        environments,
+      });
       const provisioner = new CloudflareSupportProvisioner({
         cf: await cloudflareClients({ accountId, apiToken }),
         project,
         account,
         apiToken,
         supportConfig,
-        resolveEnv: buildResolveEnv(appWorker),
+        resolveEnv: buildResolveEnv(readiness),
         ...(routing !== undefined ? { routing } : {}),
         audit: await buildAudit(projectDir, accountId, apiToken, args.worker),
       });
 
-      const result = await provisionSupport(provisioner, environments);
+      // The ready list, not the declaration. The bucket and the routing rule are project-global and are
+      // created whatever else skips; a skipped environment simply never reaches `deployWorker`.
+      const result = await provisionSupport(provisioner, readiness.ready);
+      const search = new Map(result.search.map((entry) => [entry.env, entry]));
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "support provision", ...result })}\n`);
+        // Written before the refusal below, so a run in which everything skipped still carries the
+        // per-environment structure on stdout beside the `{"error":…}` line on stderr.
+        process.stdout.write(
+          `${formatJsonLine({ command: "support provision", ...result, skippedEnvironments: readiness.skipped })}\n`,
+        );
+        requireReadyEnvironments(readiness, "pithy support provision");
         return;
       }
       process.stdout.write(
         result.bucket.skipped ? "Attachments are off. No bucket created.\n" : `Bucket ${result.bucket.bucket} ready.\n`,
       );
-      process.stdout.write(`${result.environments.length} classification workers deployed.\n`);
+      // One line per declared environment, so a skip reads as a skip. An aggregate count cannot answer
+      // "did production get its classification worker", which is the only question this report is for.
+      process.stdout.write(
+        formatEnvironmentOutcomes(
+          environmentOutcomes(readiness, (env) => {
+            const entry = search.get(env);
+            const index = entry?.created ? ", search index created" : entry?.dropped ? ", search index dropped" : "";
+            return `classification worker deployed${index}`;
+          }),
+        ),
+      );
+      requireReadyEnvironments(readiness, "pithy support provision");
       // Say what happened to the index. It is DDL on the adopter's app database, and a provisioning
       // command that silently creates or drops a table is one an operator cannot audit by reading its
-      // output. Silence here means it already matched the config, which is also worth saying.
-      const created = result.search.filter((entry) => entry.created).map((entry) => entry.env);
-      const dropped = result.search.filter((entry) => entry.dropped).map((entry) => entry.env);
-      if (created.length > 0) process.stdout.write(`Search index created in ${created.join(", ")}.\n`);
-      if (dropped.length > 0) process.stdout.write(`Search index dropped in ${dropped.join(", ")}.\n`);
-      if (created.length === 0 && dropped.length === 0) {
+      // output. The per-environment lines above carry a create or a drop; silence there means it already
+      // matched the config, which is also worth saying out loud.
+      if (result.search.every((entry) => !entry.created && !entry.dropped)) {
         process.stdout.write("Search index already matches your config.\n");
       }
       // Say plainly when no rule was made. Everything else can be right and the inbox still receive

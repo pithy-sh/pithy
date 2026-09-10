@@ -100,23 +100,33 @@ export const PaymentsAppleCredentials = z
     bundleId: z
       .string()
       .min(1)
+      .meta({ multiline: false })
       .describe(
         "The app's bundle id. Not a secret, but part of the app's identity at Apple: every notification and receipt is checked against it, because an Apple signature proves Apple signed the payload and never that it is about this app.",
       ),
     keyId: z
       .string()
       .min(1)
+      .meta({ multiline: false })
       .describe("The App Store Connect API key id — the `kid` of the token that calls the App Store Server API."),
     issuerId: z
       .string()
       .min(1)
+      .meta({ multiline: false })
       .describe("The App Store Connect issuer id, from the Keys page. The `iss` of that same token."),
     privateKey: z
       .string()
       .min(1)
       .describe(
         "The App Store Connect private key, the `.p8` file's contents including its PEM header and footer. Downloadable exactly once from App Store Connect, so it is supplied rather than minted.",
-      ),
+      )
+      // **A PEM spans lines, and that is a fact about how it can be asked for.** `pithy secrets create`
+      // prompts a `json` secret one field at a time (#516) through a masked, single-line prompt, which
+      // submits at the first newline and feeds the rest of the paste to the questions after it — every
+      // fragment satisfying `min(1)`, so the corrupt bundle *validates* and surfaces as a failed
+      // signature months later. The marker is what makes this whole secret fall back to one prompt for
+      // one JSON document, where the newline is escaped and nothing splits.
+      .meta({ multiline: true }),
   })
   .describe("Apple's credentials: the app's identity, and the App Store Connect key that signs server-API calls.");
 export type PaymentsAppleCredentials = z.infer<typeof PaymentsAppleCredentials>;
@@ -126,12 +136,14 @@ export const PaymentsGoogleCredentials = z
     packageName: z
       .string()
       .min(1)
+      .meta({ multiline: false })
       .describe(
         "The Android application id. What a Play purchase token is looked up against, and the equivalent of Apple's bundle id.",
       ),
     serviceAccountEmail: z
       .string()
       .min(1)
+      .meta({ multiline: false })
       .describe(
         "The Google Cloud service account that reads the Play Developer API and is the audience of the Pub/Sub push token.",
       ),
@@ -140,10 +152,13 @@ export const PaymentsGoogleCredentials = z
       .min(1)
       .describe(
         "The service account's private key, as the downloaded JSON's `private_key` field. Supplied, never minted.",
-      ),
+      )
+      // A PEM again, and marked for the reason Apple's `privateKey` is: see the comment there.
+      .meta({ multiline: true }),
     pubsubAudience: z
       .string()
       .min(1)
+      .meta({ multiline: false })
       .describe(
         "The audience the Pub/Sub push OIDC token must claim. Checked on every notification: a token with the right signature and the wrong audience is one issued for somebody else's endpoint.",
       ),
@@ -156,12 +171,14 @@ export const PaymentsStripeCredentials = z
     secretKey: z
       .string()
       .min(1)
+      .meta({ multiline: false })
       .describe(
         "The Stripe secret API key — `sk_live_…` or `sk_test_…`. Creates Checkout and Billing Portal sessions.",
       ),
     webhookSecret: z
       .string()
       .min(1)
+      .meta({ multiline: false })
       .describe(
         "The webhook endpoint's signing secret — `whsec_…`. What the `Stripe-Signature` HMAC is checked against, and the one Stripe rotates.",
       ),
@@ -174,18 +191,21 @@ export const PaymentsLemonSqueezyCredentials = z
     apiKey: z
       .string()
       .min(1)
+      .meta({ multiline: false })
       .describe(
         "The Lemon Squeezy API key. Creates hosted checkouts, reads orders and subscriptions, and mints customer-portal links. Account-wide: it returns test-mode objects to a production deployment too, which is why `test_mode` on the object — never the key — decides a purchase's environment.",
       ),
     webhookSecret: z
       .string()
       .min(1)
+      .meta({ multiline: false })
       .describe(
         "The webhook's signing secret, set when the webhook is created. What the `X-Signature` HMAC-SHA256 over the exact received body is checked against.",
       ),
     storeId: z
       .string()
       .min(1)
+      .meta({ multiline: false })
       .describe(
         "The Lemon Squeezy store id this deployment sells through. Account-level identity, the way Apple's `bundleId` is, which is why it sits with the credentials rather than in config.",
       ),
@@ -198,12 +218,14 @@ export const PaymentsPaddleCredentials = z
     apiKey: z
       .string()
       .min(1)
+      .meta({ multiline: false })
       .describe(
         "The Paddle API key — `pdl_live_apikey_…` or `pdl_sdbx_apikey_…`. Creates transactions and discounts, reads subscriptions and the event stream, and mints customer-portal sessions. It needs `customer_portal_session.write`, or Paddle returns a portal session with no authenticated URLs and the buyer lands on a sign-in page.",
       ),
     webhookSecret: z
       .string()
       .min(1)
+      .meta({ multiline: false })
       .describe(
         "The notification destination's signing secret — `pdl_ntfset_…`. What the `Paddle-Signature` HMAC-SHA256 over `ts:body` is checked against, and the key the checkout's ownership proof is domain-separated under.",
       ),

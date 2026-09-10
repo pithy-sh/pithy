@@ -67,14 +67,20 @@ describe("the write-target rule has one owner", () => {
       .map((file) => relative(PACKAGES, file.path))
       .sort();
 
-    // Three today: the shared dispatch path, the minting path that owns its own delivery loop, and — since
-    // #367 — the rotation path, which owns its own for the same reason and one further one. A rotation
-    // decides where the value goes *before* it produces one, because a `global` secret narrowed with
-    // `--env` must be refused while a credential at somebody else's issuer is still the live one.
+    // Four today: the shared dispatch path, the minting path that owns its own delivery loop, the
+    // rotation path, which owns its own for the same reason and one further one — a rotation decides
+    // where the value goes *before* it produces one, because a `global` secret narrowed with `--env`
+    // must be refused while a credential at somebody else's issuer is still the live one — and, since
+    // #517, the command file, which composes the per-backend writers and forwards to them. That last one
+    // takes no routing decision of its own; it is here because the population is *by type*, and it
+    // satisfies the assertion below the way the others do: `checkWriteIsCoherent` asks the rule before a
+    // value is even prompted for, so an incoherent write is refused before a masked prompt takes a
+    // production credential for a command that was never going to run.
     expect(dispatchers).toEqual(
       [
         join("cli", "src", "capabilities", "mintSecrets.ts"),
         join("cli", "src", "capabilities", "rotateSecrets.ts"),
+        join("cli", "src", "commands", "secrets.ts"),
         join("secrets", "src", "cli", "dispatch.ts"),
       ].sort(),
     );

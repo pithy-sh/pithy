@@ -89,6 +89,48 @@ describe("BindingSpec", () => {
       expect(() => BindingSpec.parse({ ...base, className: "Session", classModule })).toThrow(/classModule/);
     }
   });
+
+  test("round-trips a project-global resource, with its own <thing> segment", () => {
+    // The two fields #513 adds, on the one kind that has a provisioned resource to name. `optional` is
+    // still the only key a parse invents — `scope` and `resource` are `.optional()` rather than
+    // `.default()`, so a spec that says nothing about either stays byte-identical through a parse.
+    expect(BindingSpec.parse({ type: "r2", name: "SUPPORT_BUCKET", scope: "global", resource: "support" })).toEqual({
+      type: "r2",
+      name: "SUPPORT_BUCKET",
+      optional: false,
+      scope: "global",
+      resource: "support",
+    });
+  });
+
+  test("rejects a scope or a resource on a kind with no provisioned resource to name", () => {
+    // A Workflow's name is `<project>-<env>-<capability>-<job>` and has no `<thing>` slot; a secret
+    // states its scope in `defineSecretRegistry`. Either field here describes a name nothing composes, so
+    // it is refused at parse — attributed to the binding — rather than dropped by a writer that would
+    // leave the manifest reading like the declaration was honored.
+    const workflow = { type: "workflow", name: "EMAIL_SENDER", job: "send", className: "EmailSendWorkflow" };
+    expect(() => BindingSpec.parse({ ...workflow, scope: "global" })).toThrow(/EMAIL_SENDER/);
+    expect(() => BindingSpec.parse({ ...workflow, resource: "sender" })).toThrow(/EMAIL_SENDER/);
+  });
+
+  test("rejects a resource segment a composed name could not carry", () => {
+    // Same argument as `job`: a manifest is third-party data out of `node_modules` and this string lands
+    // in a Cloudflare resource name, so the segment rule is asserted at parse rather than at the composer.
+    for (const resource of ["Support", "support_bucket", "-support", "support bucket"]) {
+      expect(() => BindingSpec.parse({ type: "r2", name: "SUPPORT_BUCKET", resource })).toThrow(/resource/);
+    }
+  });
+
+  test("ignores a key it has never heard of, so an older kit can still read a newer manifest", () => {
+    // A manifest ships in the capability's package and is parsed by whatever CLI the adopter has. A field
+    // a later release adds must degrade to "not stated" in an earlier one — refusing it would take a
+    // capability that installed fine and make it unreadable on the version that was already working.
+    expect(BindingSpec.parse({ type: "d1", name: "DB", futureField: "whatever it turns out to be" })).toEqual({
+      type: "d1",
+      name: "DB",
+      optional: false,
+    });
+  });
 });
 
 describe("BindingType descriptions", () => {

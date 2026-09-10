@@ -10,7 +10,7 @@ import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest"
 import { masterKeyRegistryEntry } from "@pithy-sh/secrets/src/capability";
 import { EncryptionConfig } from "@pithy-sh/secrets/src/crypto/envelope";
 import { type DevSecretsFile, initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
-import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
+import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { SECRETS_CAPABILITY } from "@pithy-sh/secrets/src/manager/dispatcher";
 import { mintSecretValue } from "@pithy-sh/secrets/src/mintValue";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";

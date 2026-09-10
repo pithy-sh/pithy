@@ -11,7 +11,7 @@ import { mediaSecretsRegistry } from "@pithy-sh/media/src/secret/registry";
 import { paymentsSecretsRegistry } from "@pithy-sh/payments/src/secret/registry";
 import { masterKeyRegistryEntry } from "@pithy-sh/secrets/src/capability";
 import type { SecretWriteRequest } from "@pithy-sh/secrets/src/cli/dispatch";
-import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
+import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { managerRegistry } from "@pithy-sh/secrets/src/manager/managerRegistry";
 import { isMintableSecret, type SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { storageSecretsRegistry } from "@pithy-sh/storage/src/secret/registry";

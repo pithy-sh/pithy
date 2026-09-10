@@ -3397,6 +3397,55 @@ describe("POST /payments/webhooks/paddle", () => {
     expect(await webhookRows()).toHaveLength(0);
   });
 
+  /**
+   * **A misconfigured window is our fault, and every surface has to say so.** Three separate defects meet on
+   * this one delivery, and the assertions below are one per defect.
+   *
+   * A freshness window wider than `SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS` is refused by
+   * `verifyPaddleSignature` — that is #521, and without it a day-old capture verifies. The refusal is
+   * `core/internal`, so it must **arrive** as `core/internal`: caught by the guard and re-rendered as a 401
+   * it becomes "check the webhook signing secret", which blames Paddle for a number we wrote and sends the
+   * operator to read Paddle's logs instead of ours. And it must not be **audited** as a forgery: a
+   * `payments/webhook_unverified` row here is a false claim that somebody attacked this endpoint, written to
+   * the one trail that exists to be read when somebody has.
+   *
+   * The config parses at all only because the ceiling is enforced by the verifier rather than by
+   * `PaymentsPaddleSettings` — a `.max()` there parses at module scope and would take the whole Worker down
+   * over one webhook knob, on a patch upgrade, for a project whose other routes were fine.
+   */
+  test("a freshness window past the ceiling is `core/internal` — not a 401, and not an audited forgery", async () => {
+    const overWide = makeApp({
+      ...PADDLE_CATALOG,
+      paddle: { ...PADDLE_CATALOG.paddle, webhookFreshnessSeconds: 86_400 } as typeof PADDLE_CATALOG.paddle,
+    });
+
+    const response = await paddleHook(overWide, await paddleSubscriptionEvent());
+
+    // Not 200: the delivery is genuinely signed and correctly dated, so only the refusal keeps it out.
+    expect(response.status).toBe(500);
+    expect(await errorCode(response)).toBe("core/internal");
+    // Nothing persisted, and — the point — nothing recorded as an attack.
+    expect(await webhookRows()).toHaveLength(0);
+    expect(actions()).toEqual([]);
+  });
+
+  test("a `core/internal` refusal still tells the sender nothing but a status", async () => {
+    // The other half of the boundary, which moving the status must not have moved: `clientError` strips
+    // `action` and `detail`, so the knob's name reaches the log and never the wire. Paddle learns that this
+    // endpoint is broken, which it has to, and nothing about how.
+    const overWide = makeApp({
+      ...PADDLE_CATALOG,
+      paddle: { ...PADDLE_CATALOG.paddle, webhookFreshnessSeconds: 86_400 } as typeof PADDLE_CATALOG.paddle,
+    });
+
+    const body = await (await paddleHook(overWide, await paddleSubscriptionEvent())).text();
+
+    expect(body).not.toContain("webhookFreshnessSeconds");
+    expect(body).not.toContain("86400");
+    expect(body).not.toContain("action");
+    expect(body).not.toContain("detail");
+  });
+
   test("an event stamped for another environment is recorded, projects nothing, and returns 200", async () => {
     // The shared-sandbox case, which is the *normal* one here: `dev` is not publicly routable, so a dev
     // buyer's webhooks land at staging. No row, no entitlement, no audit warning, and a 200 — a warning

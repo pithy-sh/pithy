@@ -78,10 +78,40 @@ function failingStep(cause: unknown): string {
   return cause instanceof PithyError ? cause.payload.code : "unknown";
 }
 
-/** The codes a rail may raise that describe our side rather than the sender's, and so keep their own status. */
+/**
+ * The codes a rail may raise that describe our side rather than the sender's, and so keep their own status.
+ *
+ * **Membership is decided by whose fault the code names, not by its status.** `payments/rail_not_configured`
+ * is a 404 and `core/internal` is a 500; what they share is that neither is a statement about the caller, so
+ * re-coding either as `payments/webhook_unverified` would be a lie in the one direction that costs the most —
+ * it names a culprit, and the culprit is us.
+ *
+ * The three `core/*` members are what #521 added, and they are the reason this set exists as a set. The
+ * signed-webhook verifiers now refuse a freshness window that is not a window — a `NaN` from
+ * `Number(env.STRIPE_WEBHOOK_TOLERANCE)` on a variable nobody set — as `core/internal`, because a comparison
+ * against `NaN` deletes the replay window rather than widening it. Caught here and re-rendered as a 401, that
+ * refusal arrived at the operator as *"check the webhook signing secret"*: it blamed the sender for our
+ * configuration, sent whoever was debugging to the one place the answer is not, and wrote an audit row saying
+ * a forgery had arrived when none had. CLAUDE.md §Errors gives a 500-class code exactly one job — *read **our**
+ * logs* — and laundering it into a 401 destroys that job entirely.
+ *
+ * `core/upstream_failed` and `core/upstream_timeout` ride along for the same reason `payments/provider_unavailable`
+ * already does: they are the shared-client spelling of a hop into something we do not control, and
+ * `workflows/retryPolicy.ts` already classifies the three together. Nothing on the verification path raises
+ * them today; the set is the place that would have to be edited if one ever did, and forgetting is what this
+ * comment exists to prevent.
+ *
+ * **The client boundary is untouched by any of this.** Every one of these still leaves through `clientError`,
+ * which strips `action` and `detail` — so the sender learns a status and a bland `message`, and the knob's
+ * name reaches the terminal, the `--json` line and the log alone. What changed is that the operator's surface
+ * and the status code stop saying *bad signature* when the truth is *this endpoint is misconfigured*.
+ */
 const PASS_THROUGH_CODES: ReadonlySet<string> = new Set([
   "payments/provider_unavailable",
   "payments/rail_not_configured",
+  "core/internal",
+  "core/upstream_failed",
+  "core/upstream_timeout",
 ]);
 
 /** A verified delivery, as the handler receives it: the notification, and the row recording it. */
@@ -145,12 +175,15 @@ function database(c: Context<PithyHonoEnv>): D1Database {
  * distinction helps a developer; on a webhook it would only tell a forger how close it got. The original code
  * rides in `detail`, which the HTTP codec strips.
  *
- * **Two codes pass through unchanged, because they are not the caller's failure.** A rail that cannot reach its
- * store (`payments/provider_unavailable`) or cannot use its own credentials (`payments/rail_not_configured`) has
- * not judged the delivery at all — Google's rail must call the Play Developer API to resolve a notification, and
- * an outage there is ours, not the sender's. Reporting either as a failed signature would send an operator
- * hunting for a rotated key while the real answer is in a status page, and would tell the audit trail a forgery
- * arrived when none did. Both remain non-2xx, so the provider still redelivers.
+ * **{@link PASS_THROUGH_CODES} pass through unchanged, because they are not the caller's failure.** A rail that
+ * cannot reach its store (`payments/provider_unavailable`) or cannot use its own credentials
+ * (`payments/rail_not_configured`) has not judged the delivery at all — Google's rail must call the Play
+ * Developer API to resolve a notification, and an outage there is ours, not the sender's. A rail handed a
+ * freshness window that is not a number (`core/internal`) has not judged it either, and that one is our
+ * configuration rather than our dependency's weather. Reporting any of them as a failed signature would send an
+ * operator hunting for a rotated key while the real answer is in a status page or in one line of
+ * `wrangler.jsonc`, and would tell the audit trail a forgery arrived when none did. All remain non-2xx, so the
+ * provider still redelivers.
  */
 export function requireSignedWebhook(
   rail: PaymentsRail,

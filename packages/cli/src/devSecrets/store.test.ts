@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { secretsTables } from "@pithy-sh/secrets/src/data/tables";
-import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
+import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { secrets_0001_init } from "@pithy-sh/secrets/src/migrations/0001_init";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { Miniflare } from "miniflare";

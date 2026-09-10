@@ -3,6 +3,7 @@
 
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import type { DatabaseSchema } from "@pithy-sh/core/src/data/db";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { Kysely } from "kysely";
 import { decryptValue, type EncryptionConfig, encryptValue } from "../crypto/envelope";
 import type { SecretsTables } from "../data/tables";
@@ -123,8 +124,26 @@ const MS_PER_DAY = 86_400_000;
 /**
  * Whether an at-rest rotation is due: the configured interval has elapsed since `lastRotatedAt`.
  * The cron fires on a fixed schedule and calls this so it only rotates when due, not every tick.
+ *
+ * The interval is refused before it is compared, and the failure it prevents is the quiet kind. The cron
+ * computes it as `Number(env.ROTATION_INTERVAL_DAYS ?? 30)` over a var an operator hand-edits in
+ * `manager/wrangler.jsonc`, so `"30 days"`, `"thirty"` or `"30d"` all yield `NaN` — and `now >= NaN` is false.
+ * At-rest rotation of the master key then never becomes due, on every tick, forever, with no error and no line
+ * in the log. `@pithy-sh/email`'s scheduler shipped exactly this bug against `SCHEDULER_BATCH_SIZE` and refuses
+ * it the same way; the secrets manager is the same template pattern and never got the treatment.
+ *
+ * A zero or negative interval is refused too, for the opposite reason: it makes a rotation due on every tick,
+ * which is a Workflow started every minute against the key that decrypts the store. There is no safe number to
+ * clamp a typo to, so it is named and refused.
  */
 export function isRotationDue(lastRotatedAt: string, intervalDays: number, now: Date = new Date()): boolean {
+  if (!Number.isFinite(intervalDays) || intervalDays <= 0) {
+    throw new InternalError({
+      message: "The secrets manager is misconfigured.",
+      action: "Set ROTATION_INTERVAL_DAYS to a positive number of days, or unset it for the default of 30.",
+      detail: `ROTATION_INTERVAL_DAYS resolved to ${String(intervalDays)}; it must be a finite number greater than zero, or at-rest rotation silently never comes due.`,
+    });
+  }
   return now.getTime() >= new Date(lastRotatedAt).getTime() + intervalDays * MS_PER_DAY;
 }
 

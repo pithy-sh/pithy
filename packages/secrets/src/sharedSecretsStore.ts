@@ -31,6 +31,23 @@ import { d1KeyedIO, type SecretsAccessor, secretsStore } from "./secretsStore";
 /** Default cache lifetime when the secrets capability does not override it. */
 export const DEFAULT_SECRETS_CACHE_TTL_SECONDS = 60;
 
+/**
+ * The longest cache lifetime this accessor accepts — an hour, and it refuses above rather than clamping.
+ *
+ * The ceiling exists because `Number.isFinite` is not the whole of the failure it guards. `Infinity` is the
+ * loud version of *this cache never expires*; `3_600_000` — an hour written in the milliseconds this option
+ * is not measured in — is the quiet version, and it pins a secret for longer than any isolate lives, which
+ * makes the two indistinguishable in production. A rotation's overlap window is what a cache lifetime has to
+ * fit inside: past it, `secretsStore` keeps handing out a value the rotation has already retired, and every
+ * read that would have noticed is served from memory instead.
+ *
+ * An hour is chosen against the shortest overlap the rotator supports rather than against the 60-second
+ * default, so an adopter who genuinely wants a long-lived cache has room and an adopter who typed the wrong
+ * unit does not. Refused rather than clamped, on the same argument as every other bound here: clamped, the
+ * worker runs and nobody reads the line again.
+ */
+export const MAX_SECRETS_CACHE_TTL_SECONDS = 3600;
+
 /** Resolves the combined registry against `env` — the real path calls {@link secretsStore}; tests inject a fake. */
 type Resolver = (env: SecretsStoreEnv, registry: SecretRegistry) => Promise<SecretsAccessor<SecretRegistry>>;
 
@@ -41,7 +58,11 @@ type Clock = () => number;
 export interface ConfigureSharedSecretsOptions {
   /** The combined registry to resolve — every capability's slice merged. */
   registry: SecretRegistry;
-  /** Cache lifetime in seconds. Defaults to {@link DEFAULT_SECRETS_CACHE_TTL_SECONDS}. */
+  /**
+   * Cache lifetime in seconds. Defaults to {@link DEFAULT_SECRETS_CACHE_TTL_SECONDS}, and must be a finite
+   * number from 0 to {@link MAX_SECRETS_CACHE_TTL_SECONDS} — anything else is `core/internal`, because it
+   * decides when a rotated-out secret stops being served.
+   */
   ttlSeconds?: number;
   /** Override the resolver (testing). Defaults to a real {@link secretsStore} call. */
   resolve?: Resolver;
@@ -72,6 +93,25 @@ let inflight: Promise<SecretsAccessor<SecretRegistry>> | null = null;
  */
 export function configureSharedSecrets(options: ConfigureSharedSecretsOptions): void {
   const ttlSeconds = options.ttlSeconds ?? DEFAULT_SECRETS_CACHE_TTL_SECONDS;
+  // The direction here is inverted from the usual non-finite fail-open, and that is the reason the check is
+  // `Number.isFinite` and not a `NaN` test. `Infinity` makes `expiresAt` infinite, `now < Infinity` is true
+  // forever, and the process-global cache never expires — so a secret that has since been rotated out keeps
+  // being served for the life of the isolate. That is a key pin nobody chose, not a fast cache. `NaN` and a
+  // negative both fail *closed* (they expire immediately and cost a round-trip), which is exactly why a check
+  // that only looked for `NaN` would miss the one value that matters. `secretsCacheTtlSeconds` reaches here
+  // from `SecretsConfig`, which is a plain TypeScript interface and the one capability config in the kit that
+  // is not Zod-parsed at boot — so there is no `.parse()` upstream doing this for us.
+  //
+  // The upper bound is the third clause and not an optional flourish: `Infinity` and a large finite number are
+  // the same defect with different volume — see {@link MAX_SECRETS_CACHE_TTL_SECONDS}. Checking finiteness
+  // alone catches the spelling nobody writes and misses the one somebody does.
+  if (!Number.isFinite(ttlSeconds) || ttlSeconds < 0 || ttlSeconds > MAX_SECRETS_CACHE_TTL_SECONDS) {
+    throw new InternalError({
+      message: "The shared secrets accessor is not configured.",
+      action: `Set \`secretsCacheTtlSeconds\` to a finite number of seconds, from 0 to ${MAX_SECRETS_CACHE_TTL_SECONDS}.`,
+      detail: `configureSharedSecrets was given a cache lifetime of ${String(ttlSeconds)} seconds; a non-finite or over-long one never expires in practice, which pins a secret past its rotation.`,
+    });
+  }
   config = {
     registry: options.registry,
     ttlMs: ttlSeconds * 1000,

@@ -13,10 +13,10 @@ import {
   parseSignedWebhookHeader,
   requireSignedWebhook,
   SIGNED_WEBHOOK_MAX_CANDIDATES,
-  SIGNED_WEBHOOK_TOLERANCE_SECONDS,
   verifySignedWebhook,
 } from "./signedWebhook";
 import { validationHook } from "./validation";
+import { SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS, SIGNED_WEBHOOK_TOLERANCE_SECONDS } from "./webhookWindow";
 
 const SECRET = "whsec_a_secret_nobody_should_ever_read_back";
 const HEADER = "x-pithy-signature";
@@ -119,11 +119,67 @@ describe("verifySignedWebhook — the freshness window, in both directions", () 
   });
 });
 
+describe("verifySignedWebhook — a tolerance that is not a window", () => {
+  /** A correctly signed delivery from a decade ago. Outside every honest window, so only a broken one passes it. */
+  const decadeOld = () => header(BODY, at(-10 * 365 * 24 * 3600));
+
+  test.each([
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["-Infinity", Number.NEGATIVE_INFINITY],
+    ["a negative window", -1],
+    ["wider than the maximum", SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS + 1],
+  ])(
+    "refuses a decade-old delivery when the tolerance is %s, as our fault rather than the sender's",
+    async (_label, toleranceSeconds) => {
+      // `skew > NaN` is false, so a non-finite tolerance does not widen the window — it deletes it, and this
+      // exact delivery verifies. The realistic source is `Number(env.WEBHOOK_TOLERANCE)` on a variable nobody
+      // set. A configuration fault takes our code, never a 401: the sender did nothing wrong.
+      const payload = await refusal(verify(BODY, await decadeOld(), { toleranceSeconds }));
+      expect(payload.code).toBe("core/internal");
+      expect(payload.status).toBe(500);
+      expect(payload.action).toContain(String(SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS));
+    },
+  );
+
+  test("a decade-old delivery is refused under the default, so the cases above are about the tolerance", async () => {
+    expect((await refusal(verify(BODY, await decadeOld()))).code).toBe("core/webhook_unverified");
+  });
+
+  test("a finite tolerance inside the bound still widens the window it is given", async () => {
+    const hourOld = await header(BODY, at(-3000));
+    expect((await refusal(verify(BODY, hourOld))).code).toBe("core/webhook_unverified");
+    await expect(verify(BODY, hourOld, { toleranceSeconds: 3000 })).resolves.toBeUndefined();
+    await expect(
+      verify(BODY, hourOld, { toleranceSeconds: SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS }),
+    ).resolves.toBeUndefined();
+    await expect(verify(BODY, await header(BODY, NOW), { toleranceSeconds: 0 })).resolves.toBeUndefined();
+  });
+
+  test("the maximum leaves the default room to be widened, or it would be a maximum of nothing", () => {
+    expect(SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS).toBeGreaterThan(SIGNED_WEBHOOK_TOLERANCE_SECONDS);
+  });
+
+  test("the refusal names the knob and never the delivery", async () => {
+    const payload = await refusal(
+      verifySignedWebhook(BODY, await decadeOld(), {
+        header: HEADER,
+        secret: SECRET,
+        now: NOW,
+        toleranceSeconds: Number.NaN,
+      }),
+    );
+    expect(payload.action).toContain(HEADER);
+    expect(payload.detail).not.toContain(SECRET);
+    expect(payload.detail).not.toContain(BODY);
+  });
+});
+
 describe("verifySignedWebhook — a clock that is not a clock", () => {
   test("an unreadable clock fails closed, and as our fault rather than the sender's", async () => {
     // `Math.abs(NaN - t) > tolerance` is false, so an invalid Date would slip a delivery of any age through
-    // the one window in this file — the single check that could fail open. Only a caller-supplied clock can
-    // be one: the header's timestamp is regex-checked before it is a number.
+    // the window — the same fault as a non-finite tolerance, one operand over. Only a caller-supplied clock
+    // can be one: the header's timestamp is regex-checked before it is a number.
     const payload = await refusal(verify(BODY, await header(BODY, NOW), { now: new Date("not a date") }));
     expect(payload.code).toBe("core/internal");
     expect(payload.status).toBe(500);

@@ -148,8 +148,14 @@ export const EnvInventory = z
   );
 export type EnvInventory = z.output<typeof EnvInventory>;
 
-/** A value is not provisioned if it is empty or a placeholder token like `<database_id>`. */
-function isPlaceholder(value: string): boolean {
+/**
+ * A value is not provisioned if it is empty or a placeholder token like `<database_id>`.
+ *
+ * Exported because `doctor/bindingScope.ts` asks the same question of the same files (#513 review): a
+ * stanza still carrying the scaffold's `<database_id>` is not a second resource, and reporting it as one
+ * tells an operator to copy rows out of nothing.
+ */
+export function isPlaceholder(value: string): boolean {
   const trimmed = value.trim();
   return trimmed === "" || /^<.+>$/.test(trimmed) || /placeholder/i.test(trimmed);
 }

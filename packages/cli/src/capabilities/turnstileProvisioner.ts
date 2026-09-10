@@ -48,8 +48,18 @@ function ourWidgetNames(project: string): Set<string> {
   return new Set(TurnstileMode.options.map((mode) => productionWidgetName(project, mode)));
 }
 
-/** The routing facts the turnstile secret carries — a `d1`, per-environment, rotatable JSON value. */
-const SECRET_FACTS = { backend: "d1", scope: "environment", rotatable: true, valueType: "json" } as const;
+/**
+ * The routing facts the turnstile secret carries — a `d1`, per-environment, rotatable JSON value, and
+ * not a `bootstrap` one: its value is an envelope every reader decodes rather than something read
+ * straight off a binding before the store is open. Stated because a request states it (#517).
+ */
+const SECRET_FACTS = {
+  backend: "d1",
+  scope: "environment",
+  bootstrap: false,
+  rotatable: true,
+  valueType: "json",
+} as const;
 
 export interface CloudflareTurnstileProvisionerOptions {
   cf: CloudflareClients;

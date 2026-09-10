@@ -6,6 +6,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { platform as osPlatform, release as osRelease } from "node:os";
 import { join } from "node:path";
 import { PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
 import {
   type BindingDeclines,
@@ -16,6 +17,7 @@ import {
   undeclinableReason,
 } from "../capabilities/reconcile";
 import { pithyOffline } from "../cloudflare/config";
+import { type BindingScopeHealth, repointableIds, type SplitGlobalBinding } from "../doctor/bindingScope";
 import { type CloudflareAccess, checkCloudflareAccess, describeCloudflareAccess } from "../doctor/cloudflare";
 import { checkDevPreferences, type DevPreferencesCheck, describeDevPreferences } from "../doctor/devPreferences";
 import {
@@ -443,6 +445,9 @@ function jsonDevSecrets(value: Checked<DevSecretsCheck> | null): Record<string, 
     // consumer could not see the fault class that wave added — and `malformed` is the one that flips
     // the exit, so a script read a value the next seed refuses as a healthy project.
     bootstrapMissing: check.bootstrapMissing,
+    // Beside it since #517: a bootstrap secret `pithy add secrets` does not mint is a different finding
+    // with a different remedy, and folding the two lost the distinction a script would branch on.
+    bootstrapUnmintable: check.bootstrapUnmintable,
     malformed: check.malformed,
     undeclared: check.undeclared,
     mode: check.mode === null ? null : check.mode.toString(8),
@@ -1227,6 +1232,11 @@ function migrationLines(health: MigrationHealth): string[] {
  * uncollapsed, and neither fails the exit.
  */
 function projectHasBindingNotes(health: ProjectHealth): boolean {
+  // The project-global comparison joins them on the same rule: a stale `env dev` name never fails `ok`
+  // (no command rewrites that stanza), so gating the block on `ok` alone would print the finding on every
+  // report except the ones it is for.
+  const scope = health.bindingScope;
+  if (scope.split.length > 0 || scope.divergent.length > 0 || scope.partial) return true;
   return health.workers.some((worker) => worker.state !== "unavailable" && hasBindingNotes(worker));
 }
 
@@ -1425,6 +1435,381 @@ function workerHealthLines(health: WorkerChecks): string[] {
  * The `Project health` lines — shown only when some Worker is failing a check, grouped one block per Worker.
  * A healthy Worker collapses to a single line: it was checked, and there is nothing to say about it.
  */
+/**
+ * The `shared:` lines — a resource the whole project shares that its Workers do not all point at (#513).
+ *
+ * Above the Workers, beside `manifests:`, because no Worker owns it: the finding *is* that two stanzas
+ * disagree, so attributing it to one of them would hide the half that makes it a finding. Every line names
+ * the environment and the Worker it came from, which is what turns a report into an edit.
+ */
+function bindingScopeLines(scope: BindingScopeHealth): string[] {
+  const lines: string[] = [];
+  for (const entry of scope.split) {
+    lines.push(
+      `${HEALTH_INDENT}${entry.binding} (${entry.kind}) is one resource for the whole project: ${entry.expected}`,
+    );
+    for (const stale of entry.stale) {
+      lines.push(`${HEALTH_INDENT}  ${stale.worker} env.${stale.env} points at ${stale.name}`);
+    }
+    const fixable = [
+      ...new Set(entry.stale.filter((stale) => stale.env !== LOCAL_ENVIRONMENT).map((stale) => stale.env)),
+    ];
+    if (fixable.length > 0) {
+      lines.push(...carryOverLines(entry));
+      lines.push(...upgradeFirstLines(entry));
+      lines.push(...repointLines(entry, fixable));
+    }
+
+    // `provision` writes `config.env[<stanza>]` and `dev` is never a declared environment, so no command
+    // reaches the top-level stanza. It is also inert: wrangler keys a local D1 on the binding when the
+    // entry carries no `database_id`. Said out loud so the line is not read as work left undone.
+    if (entry.stale.some((stale) => stale.env === LOCAL_ENVIRONMENT)) {
+      lines.push(
+        `${HEALTH_INDENT}  No command rewrites env dev, and locally the binding is the address — edit it or leave it.`,
+      );
+    }
+  }
+  for (const entry of scope.divergent) {
+    lines.push(`${HEALTH_INDENT}${entry.binding} is bound to ${entry.ids.length} different resources`);
+    for (const { id, at } of entry.ids) {
+      lines.push(`${HEALTH_INDENT}  ${id}: ${at.map((where) => `${where.worker} env.${where.env}`).join(", ")}`);
+    }
+    lines.push(`${HEALTH_INDENT}  It must be bound identically in every environment.`);
+    // The environments the ids were read in, which is the whole difference between this remedy and the
+    // split one above. A divergent entry carries `at[].env` for every stanza, so the run lines below are
+    // enumerated from data rather than degraded to a `<env>` placeholder nobody can paste (#513 review).
+    const fixable = [
+      ...new Set(
+        entry.ids.flatMap(({ at }) => at.map((where) => where.env)).filter((env) => env !== LOCAL_ENVIRONMENT),
+      ),
+    ];
+    // …and the remedy is printed only where there is a choice to make. A managed stanza disagreeing with
+    // `dev` alone is not "two databases are open and one survives" — it is one database and a local
+    // stanza no command rewrites, which the `dev` line below already says. `repointableIds` is the same
+    // predicate `bindingScopeHealth` fails the exit on, so the screen and the exit code cannot disagree.
+    if (fixable.length > 0 && repointableIds(entry).length > 1) {
+      lines.push(...chooseOneLines(entry));
+      lines.push(...upgradeFirstLines(entry));
+      lines.push(...repointLines(entry, fixable));
+    }
+    if (entry.ids.some(({ at }) => at.some((where) => where.env === LOCAL_ENVIRONMENT))) {
+      lines.push(
+        `${HEALTH_INDENT}  No command rewrites env dev, and locally the binding is the address — edit it or leave it.`,
+      );
+    }
+  }
+  if (scope.partial) {
+    lines.push(`${HEALTH_INDENT}Some wiring would not read, so this comparison is partial.`);
+  }
+  return lines;
+}
+
+/**
+ * The five facts every remedy below is written from, and the only ones either finding shape carries in
+ * common: which namespace the resource lives in, the capability whose `provision` makes it, the one name
+ * it is meant to have, the credential a presigned URL is signed against when there is one, and the
+ * binding itself.
+ *
+ * `binding` is the fifth, added in #513's third review round and named here rather than reached for
+ * quietly: a divergence is two databases sharing one name, so the only thing that addresses either of
+ * them is the binding inside one environment's stanza, and {@link chooseOneLines} has to say which
+ * binding that is.
+ *
+ * Taken structurally off `SplitGlobalBinding` rather than declared a second time — `DivergentGlobalBinding`
+ * carries the same five, and a remedy that reads a sixth field has to say so at the seam rather than
+ * quietly widen.
+ */
+type GlobalRemedy = Pick<SplitGlobalBinding, "kind" | "capability" | "expected" | "credential" | "binding">;
+
+/** Indent a remedy's sentences to the depth every line under a `shared:` finding sits at. */
+function remedy(copy: string[]): string[] {
+  return copy.map((line) => `${HEALTH_INDENT}  ${line}`);
+}
+
+/**
+ * **The page these remedies send an operator to, as a URL and never as a repository path (#513 review).**
+ *
+ * The section printed `docs/commands/doctor.md §Carrying the data across`, and for everyone who installed
+ * the CLI that pointed at nothing: `packages/cli/package.json` `files` ships `dist`, `src`, `scripts` and
+ * `templates`, so `npm pack` carries 918 files and not one of them is under `docs/`. A path into a
+ * directory the adopter does not have is the same defect as a command that does not run — it is BLOCKER
+ * 1's shape, one indirection along — and the rest of the kit already knew the answer: the notifier prints
+ * `Changelog: https://pithy.sh/changelog/<major>.0`, and every `docs/` page carries the site URL it
+ * renders at in its own second line. So does this one, and this is that URL.
+ *
+ * `doctorDocs.test.ts` takes the origin out of `doctor.md`'s own header line and the anchor out of what is
+ * printed here, then requires the page to carry a heading that slugifies to it — so a renamed section or a
+ * moved page fails CI rather than an adopter's afternoon.
+ */
+const DOCTOR_PAGE = "https://pithy.sh/docs/cli/commands/doctor";
+
+/** The whole carry-over sequence — the split shape's remedy, where the source is addressed by name. */
+const CARRY_OVER_URL = `${DOCTOR_PAGE}#carrying-the-data-across`;
+
+/**
+ * The subsection for the divergent shape, where the two databases share one name.
+ *
+ * A separate anchor rather than the same one, because the addressing is the whole difference: verified
+ * against wrangler 4.130.0, `wrangler d1 export <shared-name>` cannot say which of the two is meant and a
+ * uuid is refused outright, so `-e <env>` plus the binding is the only form that reaches either.
+ */
+const ONE_NAME_URL = `${DOCTOR_PAGE}#when-two-databases-answer-to-one-name`;
+
+/**
+ * **Why a D1 carry-over is not `export` piped into `execute`, said in the two places it has to be said.**
+ *
+ * The section used to print `wrangler d1 export each old database, then wrangler d1 execute it against
+ * <expected>`, and executed verbatim that is destructive twice over. `wrangler d1` defaults to **local**:
+ * with no `--remote` the export reads `.wrangler/state`, reports `Done!`, exits 0, and the operator runs
+ * the repoint underneath it believing production was copied. And with `--remote` the pair still cannot
+ * succeed — an export dumps the whole database, `pithy_migrations` and `sqlite_sequence` and explicit row
+ * ids included, and the destination already holds every one of those because `pithy email provision`
+ * created and migrated it. The execute aborts transactionally on the first `UNIQUE constraint failed`, so
+ * the operator's `select count(*)` reads 0 and the whole file rolled back.
+ *
+ * The form that works is narrow — a table-scoped, schema-less export whose `id` column is dropped and
+ * whose `INSERT` carries an upsert clause — and it is a text edit rather than a command. So the terminal
+ * says what the job is and sends the operator to the page that carries the sequence, and prints no command
+ * it cannot stand behind. #517's rule, one level on: a line that names a command must name one that runs,
+ * so a job that is not a command does not get to look like one.
+ *
+ * The URL is a parameter because the two finding shapes send an operator to two different parts of that
+ * page — see {@link ONE_NAME_URL}.
+ */
+function d1CopyIsNotADump(url: string): string[] {
+  return [
+    `The copy is not an export and an import. A whole dump carries the migration ledger and its`,
+    `own row ids, and it aborts against the destination having copied nothing.`,
+    `The sequence that works: ${url}`,
+  ];
+}
+
+/**
+ * **Which row wins when two environments suppressed one address (#513 review, round three).**
+ *
+ * `email` is `not null unique`, so two environments suppressing one person are two rows that merge into
+ * one, and they may disagree about `reason` and about `expiresAt`. "Do not email this person again" is
+ * precisely the fact whose strongest form must survive a merge.
+ *
+ * **This used to state a rule the sequence could not carry out, which is worse than stating none.** The
+ * copy was `INSERT OR IGNORE`, which keeps whichever row arrived first — an ordering accident — while the
+ * sentence told the operator to keep "the earlier suppression, and no expiry over any expiry". Run
+ * verbatim on this page's own worked example the weaker row won on both counts: staging's temporary
+ * `unsubscribe` beat prod's earlier permanent `hard_bounce`, and `email/src/send/suppression.ts` then
+ * lifts the suppression at the inherited expiry. Export order cannot satisfy two criteria across many
+ * addresses, and nothing on screen let the operator find the conflicts they were being told to reconcile.
+ *
+ * So the sequence implements the rule instead: each statement carries `ON CONFLICT(email) DO UPDATE …
+ * WHERE`, whose predicate is exactly the precedence below, and the copy is order-independent and
+ * re-runnable. This sentence now states what that clause does rather than what the operator should
+ * remember to do — the decision is still named, because a merge is a decision, but it is no longer theirs
+ * to carry out by hand.
+ *
+ * **It leads with the date because that is the clause that fires.** An earlier wording led with
+ * permanent-beats-temporary and ended on the date, which is the clause read top to bottom and is
+ * backwards as advice: every suppression the kit writes is permanent — `send/runSend.ts`, the unsubscribe
+ * callback and the bounce handler all record one with no `expiresAt` — so two *observed* rows agree on
+ * that first test and the decision reaches `created_at` every time. Only a `manual` block from the
+ * control-plane route carries an expiry, which is why the expiry rule is stated second and stated at all.
+ */
+const D1_STRICTER_ROW_WINS = [
+  `One address suppressed in two of them is two rows that merge into one. The sequence keeps the`,
+  `earlier row, unless one of them expires and the other does not — a permanent suppression is never`,
+  `replaced by a temporary one. Everything the kit writes is permanent, so it is usually the date.`,
+];
+
+/**
+ * **The secret that carries the bucket name, and the reads that 404 without it (#513 review).**
+ *
+ * `objectStore({ bucket: env.SUPPORT_BUCKET, … })` writes through the binding, and every **presigned**
+ * URL is built from the `bucket` field inside the credential bundle instead — `CloudflareR2Manager` takes
+ * `bucketName: credentials.bucket`. The two are separate strings, and the repoint moves only the first.
+ *
+ * **For support the binding is write-only, and that is what these lines have to say (#513 review, round
+ * three).** `attachment/store.ts` and `inbound/ingest.ts` both `bucket.put`; nothing under
+ * `packages/support/src` ever calls `bucket.get` or `bucket.head`, and the one read is
+ * `store.presignGet`, signed against `credentials.bucket`. So the two halves move independently and each
+ * costs something different: leave the secret and every attachment stored *after* the repoint 404s,
+ * because it was written to one bucket and is being read from another; update the secret and everything
+ * that was never copied is unreachable, because the signature now addresses a bucket it is not in.
+ * `media` and `storage` are the same shape read from the other end — both presign against a credential
+ * *and* read through the binding — so the general sentence is about which address moves, not about what
+ * becomes unreachable.
+ *
+ * Nothing in the kit writes `support-r2-credentials` — `pithy support provision` explicitly writes no
+ * secret, and only `storage` and `media` have provisioners that write theirs — so the operator typed it
+ * in and the operator has to retype it. This is the same split #519 closed for `media`, and it is not
+ * closed here: `media`'s bucket converged *onto* the name its secret already carried, where support's
+ * secret has to move.
+ */
+function credentialLines(credential: string): string[] {
+  return [
+    `${credential} names the bucket every presigned URL is signed against, and nothing in the`,
+    `kit writes it. An attachment is written through the binding and read back through a signature,`,
+    `so the two addresses move separately — leave the secret and everything stored after the repoint`,
+    `404s, update it and everything you did not copy is unreachable.`,
+  ];
+}
+
+/**
+ * **What has to happen before the repoint, because the repoint does not do it (#513 review).**
+ *
+ * `pithy provision` changes which resource the binding names. It does not move a byte or a row, and the
+ * resource it is moving *away from* is the one the app Worker has been reading and writing all along —
+ * `EMAIL_SUPPRESSIONS` is bound in the app's env, so the unsubscribe callback wrote every suppression
+ * into the per-environment database, and `SUPPORT_BUCKET` is bound there too, so every attachment and
+ * every raw message went into the per-environment bucket. The project-global one is the empty side.
+ *
+ * So the old advice — "check them for rows before deleting" — was the wrong end of it twice over. The
+ * loss is not at the delete, it is at the repoint: an unsubscribed recipient starts receiving mail again
+ * the moment the app reads a database that never heard about them. Nothing is deleted and nothing is
+ * recoverable by re-running anything.
+ *
+ * **The bucket half of that sentence used to overstate it, and its own screen said so three lines below
+ * (#513 review, round three).** "Every attachment in the old ones becomes unreachable" is what a repoint
+ * would do if the binding were the address, and for support it is not: the binding takes every `put` and
+ * every read is a presigned URL signed against `credentials.bucket`. The repoint moves the writes; the
+ * old attachments stay readable until the secret moves, which is exactly what {@link credentialLines}
+ * says. So the r2 sentence names which address moved, and the loss is stated where the second address is.
+ *
+ * There is no safe automatic path, so this says so and gives the manual one. Pithy will not copy the data:
+ * a cross-resource copy under an adopter's own credentials, from a diagnostic, is not a thing `doctor`
+ * gets to do on somebody's behalf — and for R2 it is an S3-protocol job the API token cannot even reach.
+ *
+ * **And the destination may not be there to copy into.** `doctor` reads files and never reaches the
+ * account, so it cannot know whether `pithy <capability> provision` has ever run. Where it has not, step
+ * one is impossible, the only runnable line left on screen is the repoint — and `pithy provision --env`
+ * then creates the project-global resource itself, so the operator lands live on a resource created empty
+ * seconds earlier. The command that makes it is named first, for that reason.
+ */
+function carryOverLines(entry: GlobalRemedy): string[] {
+  if (entry.kind === "d1") {
+    return remedy([
+      `Copy the rows across first. The repoint changes which database is read, not what is in it:`,
+      `every unsubscribe recorded above stops being honored, and nothing moves it for you.`,
+      `Make the destination if it is not there yet: pithy ${entry.capability} provision`,
+      ...d1CopyIsNotADump(CARRY_OVER_URL),
+      ...D1_STRICTER_ROW_WINS,
+      `The old databases are left where they are.`,
+    ]);
+  }
+  return remedy([
+    ...(entry.credential === null
+      ? [
+          `Copy the objects across first. The repoint changes which bucket is read, not what is in it:`,
+          `every object in the old ones becomes unreachable, and nothing moves it for you.`,
+        ]
+      : [
+          `Copy the objects across first. The repoint changes which bucket the binding names, not what`,
+          `is in it, and nothing moves the objects for you.`,
+        ]),
+    `Make the destination if it is not there yet: pithy ${entry.capability} provision`,
+    `Sync each old bucket into ${entry.expected} over R2's S3 endpoint — the API token cannot do it.`,
+    ...(entry.credential === null ? [] : credentialLines(entry.credential)),
+    `The old buckets are left where they are.`,
+  ]);
+}
+
+/**
+ * **The divergent branch's own remedy, because it is a different job (#513 review).**
+ *
+ * A pure divergence is two stanzas already carrying the expected *name* and differing only by
+ * `database_id`. The split branch's sentence — export "each old database" and import "against
+ * `<expected>`" — names the same string as both source and destination there, and `wrangler d1 export`
+ * addresses a database by name or binding and never by id, so as printed it was a database exporting into
+ * itself. And its run line degraded to a literal `<env>` placeholder while the entry was carrying
+ * `ids[].at[].env` all along.
+ *
+ * So this says what is actually true of the state: two resources are open, one survives, and **`pithy
+ * provision` does not read the ids** — it resolves the expected name on the account and writes whatever
+ * that resolves to into every stanza. Which resource that is, is decided by the account rather than by
+ * the report, so the operator has to look at the ids, work out which one the name resolves to, and move
+ * the other one's contents in before running anything.
+ *
+ * **And it says how to address them, because a shared name cannot (#513 review, round three).** Every
+ * command in the sequence the split branch points at is `wrangler d1 <verb> <resource-name>`, and a pure
+ * divergence is two databases answering to one name. Verified against wrangler 4.130.0: the shared name
+ * resolves to neither (`Couldn't find a D1 DB with the name or binding …`), a uuid in its place is refused
+ * the same way, and `-e <env>` plus the binding is the only form that reaches one — `getDatabaseByNameOrBinding`
+ * matches the binding inside that environment's stanza and uses the `database_id` it finds there. So the
+ * branch names that form and sends the operator to the subsection that spells it out.
+ */
+function chooseOneLines(entry: GlobalRemedy): string[] {
+  if (entry.kind === "d1") {
+    return remedy([
+      `Two databases are open and one survives. pithy provision picks it by name, not from the ids`,
+      `above: it resolves ${entry.expected} on the account and writes that id into every stanza.`,
+      `Decide from the ids which one that is, and copy the other's rows into it first.`,
+      `They answer to one name, so no wrangler command can tell them apart by it. Each is reachable`,
+      `only through its own stanza — the ${entry.binding} binding under -e <env>, never the shared name.`,
+      ...d1CopyIsNotADump(ONE_NAME_URL),
+      ...D1_STRICTER_ROW_WINS,
+      `The database that loses is left where it is.`,
+    ]);
+  }
+  return remedy([
+    `Two buckets are open and one survives. pithy provision picks it by name, not from the ids`,
+    `above: it resolves ${entry.expected} on the account and writes that name into every stanza.`,
+    `Decide from the ids which one that is, and sync the other's objects into it first, over R2's`,
+    `S3 endpoint — the API token cannot do it.`,
+    ...(entry.credential === null ? [] : credentialLines(entry.credential)),
+    `The bucket that loses is left where it is.`,
+  ]);
+}
+
+/**
+ * The runnable half, one line per environment — and, where the resource is reached through a presigned
+ * URL, the second command that has to run beside it.
+ *
+ * `pithy provision --env <env>` moves the binding; it does not touch the credential bundle that names the
+ * bucket a signature is built against, and nothing else does either. Two commands per environment, both
+ * runnable as printed, rather than one command and a footnote.
+ *
+ * **`update` is the command for the project that has one, and it is not every project (#513 review, round
+ * three).** `pithy secrets update` refuses a secret that does not exist — `writeSecret` throws
+ * `SecretNotFoundError` on a missing entry — and nothing in the kit ever writes `support-r2-credentials`:
+ * `pithy support provision` writes no secret, and the name appears in no other command. A project whose
+ * attachments were written but never signed-read therefore has none, and the printed line would exit 1 on
+ * exactly the project that has the finding. So the alternative is named once, after the runs rather than
+ * per environment: it is the same act with the same arguments, and which of the two verbs applies is a
+ * fact about the project rather than about the environment.
+ */
+function repointLines(entry: GlobalRemedy, environments: string[]): string[] {
+  const runs = environments.flatMap((env) => [
+    `${HEALTH_INDENT}  Then run: pithy provision --env ${env}`,
+    ...(entry.credential === null
+      ? []
+      : [`${HEALTH_INDENT}            pithy secrets update ${entry.credential} --env ${env}`]),
+  ]);
+  if (entry.credential === null) return runs;
+  return [
+    ...runs,
+    ...remedy([
+      `A project that has never signed a read has no ${entry.credential} to update. There the`,
+      `command is pithy secrets create, with the same arguments.`,
+    ]),
+  ];
+}
+
+/**
+ * **The step the remedy needs under version skew, and nothing when there is none (#513 review).**
+ *
+ * `pithy provision` composes the resource name from the *installed manifest*, and this whole check is
+ * keyed on the capability's own namer precisely so it still answers when the two disagree — a newer CLI
+ * beside an older `@pithy-sh/email` is the ordinary skew, and it is the install most likely to be split.
+ * There, `pithy provision --env staging` writes the per-environment name straight back and the next
+ * `doctor` reports the same finding. Printing a command that cannot clear the thing it is printed under
+ * is #517's defect, which took four rounds; the package moves first, and the line says so.
+ */
+function upgradeFirstLines(entry: { repointable: boolean; package: string }): string[] {
+  if (entry.repointable) return [];
+  return [
+    `Nothing installed declares this binding project-wide, so pithy provision would compose`,
+    `the per-environment name again. Upgrade ${entry.package} first — its pithy.manifest.json is what`,
+    `the writer reads, and this finding is keyed on the capability's own namer instead.`,
+  ].map((line) => `${HEALTH_INDENT}  ${line}`);
+}
+
 function healthBlock(health: ProjectHealth): string {
   const lines = ["Project health:"];
   // First, and above the Workers, because it explains a hole in every one of their blocks: a capability
@@ -1441,6 +1826,12 @@ function healthBlock(health: ProjectHealth): string {
       );
       for (const line of fault.reason.split("\n")) lines.push(`${HEALTH_INDENT}  ${line}`);
     }
+  }
+  // Beside the manifest hole and for the same reason: it belongs to the project rather than to a Worker,
+  // and it explains a disagreement that only exists *between* two of the blocks below.
+  if (!health.bindingScope.ok || health.bindingScope.split.length > 0 || health.bindingScope.divergent.length > 0) {
+    lines.push("  shared:");
+    lines.push(...bindingScopeLines(health.bindingScope));
   }
   for (const worker of health.workers) {
     // Not "healthy", and not five empty checks either. Nothing was read about this Worker, so the block

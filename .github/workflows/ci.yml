@@ -264,6 +264,18 @@ jobs:
         working-directory: packages/cli
         run: bunx vitest run src/migrations/orders.test.ts
 
+      # After `Build`, because there is nothing to read before `dist` exists — and whole-repo, because a
+      # degraded declaration is invisible to the package that owns it. Every suite in this repository
+      # imports modules and asserts about VALUES, and a value carries no evidence of the type written down
+      # beside it: a `dist` that has silently lost its types compiles, parses, migrates and passes, and the
+      # only remaining detector was an adopter's `tsc` (#523). This is that adopter — one minimal row per
+      # shipped table, generated from the table list and compiled against `packages/*/dist`.
+      #
+      # It is not narrowed by `plan` and could not be: the fault is in the artifact rather than in any
+      # source file, so nothing about which packages a pull request touched says whether the answer moved.
+      - name: Shipped declarations
+        run: bun run dist-types
+
       - name: Typecheck
         run: bun run typecheck
 

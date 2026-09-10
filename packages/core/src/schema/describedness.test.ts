@@ -5,7 +5,14 @@ import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import { refusesVanishingKey } from "../capability/vanishingKey";
 import { PithyError } from "../error/pithyError";
-import { childSchemas, describedInChain, undescribed, undescribedExports } from "./describedness";
+import {
+  childSchemas,
+  describedInChain,
+  descriptionInChain,
+  undescribed,
+  undescribedExports,
+  unwrapField,
+} from "./describedness";
 
 /**
  * The gate over the nineteen gates. Every package's `schema-descriptions.test.ts` is now a glob, three
@@ -130,5 +137,41 @@ describe("the walk counts what it looked at", () => {
   test("a schema reached twice is walked once, and its fields counted once", () => {
     const shared = z.object({ a: z.string().describe("d") }).describe("d");
     expect(undescribedExports({ "./one.ts": { A: shared, B: shared } }).fields).toBe(1);
+  });
+});
+
+/**
+ * The reading half. `descriptionInChain` and `unwrapField` exist because a surface that *shows* these
+ * descriptions to a human — `pithy secrets create` asking for one field at a time (#516) — walks the
+ * same chain the gate walks, and a second copy of that walk is what this module was written to end.
+ */
+describe("reading a field rather than judging it", () => {
+  test("the description comes back from either side of a wrapper", () => {
+    expect(descriptionInChain(z.string().describe("inner").optional())).toBe("inner");
+    expect(descriptionInChain(z.string().optional().describe("outer"))).toBe("outer");
+    expect(descriptionInChain(z.string())).toBeUndefined();
+    // The predicate is the same walk, so the two can never disagree about one field.
+    expect(describedInChain(z.string().optional().describe("outer"))).toBe(true);
+    expect(describedInChain(z.string().optional())).toBe(false);
+  });
+
+  test("a field unwraps to what it is, and says whether it may be left out", () => {
+    const optional = unwrapField(z.string().describe("d").optional());
+    expect(optional.optional).toBe(true);
+    expect(optional.description).toBe("d");
+    expect(optional.schema).toBeInstanceOf(z.ZodString);
+
+    expect(unwrapField(z.string().describe("d")).optional).toBe(false);
+    expect(unwrapField(z.string().default("x")).optional).toBe(true);
+    // `null` is a value a caller states, so the key is still required.
+    expect(unwrapField(z.string().nullable()).optional).toBe(false);
+  });
+
+  test("an object arrives as an object, through the wrappers", () => {
+    const block = z.object({ key: z.string().describe("k") }).describe("block");
+    const unwrapped = unwrapField(block.optional());
+    expect(unwrapped.optional).toBe(true);
+    expect(unwrapped.description).toBe("block");
+    expect(Object.keys((unwrapped.schema as z.ZodObject).shape)).toEqual(["key"]);
   });
 });

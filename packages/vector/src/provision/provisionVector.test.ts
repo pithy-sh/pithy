@@ -225,4 +225,25 @@ describe("resetVector", () => {
     );
     expect(provisioner.calls.filter((call) => call.startsWith("delete:"))).toEqual([]);
   });
+
+  /**
+   * The other refusal a reset can walk into, and it used to walk into it mid-loop. An index name is refused
+   * rather than truncated — a shortened name is a *different, empty* index — and config cannot catch it,
+   * because config validates the configured key without knowing what the project and environment will spend
+   * of the 64 (see `vectorIndexName`). Computed inside the delete loop, that refusal arrives after every
+   * earlier index has been destroyed and none of them is coming back.
+   */
+  it("names every index before the first delete, so an unnameable one costs no vectors", async () => {
+    const unnameable = VectorConfig.parse({
+      indexes: {
+        docs: { model: "current-model", dimensions: 768, metadata },
+        // Inside config's own limit, past what `acme-staging-vector-` leaves of Vectorize's 64.
+        [`${"d".repeat(45)}`]: { model: "other-model", dimensions: 384, binding: "VECTORIZE_LONG" },
+      },
+    });
+    const provisioner = fakeProvisioner();
+
+    await expect(resetVector(provisioner, { project, config: unnameable, env: "staging" })).rejects.toThrow(PithyError);
+    expect(provisioner.calls).toEqual([]);
+  });
 });

@@ -114,9 +114,13 @@ export interface SupportProvisionResult {
  * Worker whose classification host is not deployed yet, which is a window where real customer
  * messages arrive and stay `uncategorized` with nothing to say why.
  *
- * `environments` is the project's declaration from the root `pithy.config.ts` (#241). Every declared
- * environment is provisioned; an environment this skipped would be one the project deploys to with no
- * resources behind it — the silence the closed `ManagedEnvironment` enum used to produce.
+ * `environments` is **what the caller determined it can act on**, which the CLI narrows from the project's
+ * declaration (#241) to the environments whose app database exists (pithy-sh/pithy#512). Nothing is
+ * skipped here and nothing decides here: an environment reaching this list is provisioned, and one that
+ * did not was already reported to the operator by name, with why and with the command that fixes it.
+ *
+ * The bucket is created **whatever the list holds, including nothing** — it is one per project, and making
+ * it wait for the last environment to be provisioned is the ordering this change exists to undo.
  */
 export async function provisionSupport(
   provisioner: SupportProvisioner,
@@ -125,14 +129,19 @@ export async function provisionSupport(
   await provisioner.preflight();
   const bucket = await provisioner.ensureBucket();
   const search: SupportProvisionResult["search"] = [];
-  for (const env of managedEnvironments(environments)) {
+  const deployed = managedEnvironments(environments);
+  for (const env of deployed) {
     await provisioner.deployWorker(env);
     // Per environment, because each has its own app database — and after the worker, so a database
     // that gains the index always has something able to write to it.
     search.push({ env, ...(await provisioner.ensureSearchIndex(env)) });
   }
-  const routing = await provisioner.ensureRoutingRule();
-  return { bucket, environments: managedEnvironments(environments), routing, search };
+  // Only when at least one classification host is up. The rule is what starts delivering real customer
+  // mail, so making it over a run that deployed nothing is the same window the ordering above closes,
+  // widened to the whole project.
+  const routing =
+    deployed.length > 0 ? await provisioner.ensureRoutingRule() : { created: false, skipped: true as const };
+  return { bucket, environments: deployed, routing, search };
 }
 
 /** The teardown seam — the inverse of {@link SupportProvisioner}. Every step idempotent. */

@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
+import { secretPromptPlan, unaskableSecretFields, undeclaredLineFields } from "@pithy-sh/secrets/src/cli/promptPlan";
 import { resolveWriteTargets } from "@pithy-sh/secrets/src/scope";
 import { describe, expect, test } from "vitest";
 import { PAYMENTS_RAILS } from "../data/rail";
@@ -194,5 +195,62 @@ describe("railCredentials", () => {
       expect(rendered).not.toContain(STRIPE.secretKey);
       expect(rendered).not.toContain(STRIPE.webhookSecret);
     }
+  });
+});
+
+/**
+ * **The two PEMs in this bundle are declared as PEMs, and the CLI's per-field prompting refuses them.**
+ *
+ * `pithy secrets create payments-provider-credentials` walks a `json` schema and asks per field through a
+ * masked, single-line prompt (#516). That prompt truncates a pasted `.p8` to one line — the header under a
+ * CR-delimited paste, the footer under an LF-delimited one, measured under a real pty in
+ * `@pithy-sh/cli`'s `capabilities/secretPrompt.pty.test.ts` — and the fragment satisfies
+ * `z.string().min(1)`, so the corrupt bundle passes validation and surfaces months later as a signature
+ * that never verifies. The marker is what makes the plan refuse and fall back to one prompt for one JSON
+ * document, where a newline is escaped rather than typed.
+ *
+ * Held here rather than only in `@pithy-sh/secrets`, because the property that matters is about *these*
+ * two shipped rails: the mechanism has a unit test, and this is the one that fails if somebody drops the
+ * marker from the field that actually holds a key.
+ */
+describe("the multi-line credentials", () => {
+  test("Apple's `.p8` and Google's service-account key are marked, and nothing else is", () => {
+    const entry = paymentsSecretsRegistry[PAYMENTS_PROVIDER_SECRET];
+    expect(unaskableSecretFields(entry)).toEqual([
+      { key: "apple.privateKey", reason: "spans lines" },
+      { key: "google.privateKey", reason: "spans lines" },
+    ]);
+  });
+
+  /**
+   * And **every other leaf has said it fits on a line**, which is what makes the list above the whole
+   * truth rather than a list of the ones somebody remembered. A leaf that said nothing would be reported
+   * beside them here, refuse the plan just the same, and fail `@pithy-sh/cli`'s repo-wide
+   * `ci/secretFieldLines.test.ts` by name.
+   */
+  test("and every other leaf of the bundle has declared itself single-line", () => {
+    const entry = paymentsSecretsRegistry[PAYMENTS_PROVIDER_SECRET];
+    if (entry.valueType !== "json") throw new Error("payments-provider-credentials is a json secret");
+    expect(undeclaredLineFields(entry.schema, PAYMENTS_PROVIDER_SECRET)).toEqual([]);
+  });
+
+  test("a rail whose credentials include one is never asked for a field at a time", () => {
+    const entry = paymentsSecretsRegistry[PAYMENTS_PROVIDER_SECRET];
+    expect(secretPromptPlan(entry, ["apple", "google"])).toBeNull();
+    expect(secretPromptPlan(entry, ["stripe", "apple"])).toBeNull();
+  });
+
+  test("and refuses on behalf of no rail but its own", () => {
+    // The refusal is per configured block. A project selling through Stripe and Paddle still gets its
+    // questions, even though Apple's PEM sits in the same schema.
+    const entry = paymentsSecretsRegistry[PAYMENTS_PROVIDER_SECRET];
+    const plan = secretPromptPlan(entry, ["stripe", "paddle"]);
+    expect(plan?.branches.map((branch) => branch.key)).toEqual(["stripe", "paddle"]);
+  });
+
+  test("the marker does not cost the field its description", () => {
+    // `.meta()` merges through the clone chain, so the words the prompt would ask with survive it — and
+    // `describedness` still counts the field as documented.
+    expect(PaymentsProviderCredentials.shape.apple.unwrap().shape.privateKey.description).toContain(".p8");
   });
 });

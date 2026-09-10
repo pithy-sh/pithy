@@ -322,7 +322,12 @@ describe("buildProjectHealth — per Worker", () => {
       workers: [],
       buildPlan: planStub({}),
     });
-    expect(health).toEqual({ ok: true, workers: [], manifests: { ok: true, faults: [] } });
+    expect(health).toEqual({
+      ok: true,
+      workers: [],
+      manifests: { ok: true, faults: [] },
+      bindingScope: { ok: true, split: [], divergent: [], partial: false },
+    });
   });
 });
 
@@ -376,5 +381,72 @@ describe("buildProjectHealth — manifests", () => {
     });
     expect(scan).toHaveBeenCalledTimes(1);
     expect(health.manifests.faults).toEqual([fault]);
+  });
+});
+
+describe("buildProjectHealth — project-global bindings", () => {
+  /** A `split` finding, shaped the way `bindingScopeHealth` returns one. */
+  const split = {
+    ok: false,
+    partial: false,
+    divergent: [],
+    split: [
+      {
+        capability: "email",
+        package: "@pithy-sh/email",
+        binding: "EMAIL_SUPPRESSIONS",
+        kind: "d1" as const,
+        expected: "acme-global-email-suppressions",
+        credential: null,
+        stale: [{ worker: "api", env: "staging", name: "acme-staging-email-suppressions" }],
+        repointable: true,
+      },
+    ],
+  };
+
+  test("a project whose Workers all point at the one shared resource stays ok", async () => {
+    const health = await buildProjectHealth({
+      account: null,
+      projectDir: "/p",
+      env: "dev",
+      workers: [api],
+      buildPlan: planStub({ api: clean("api") }),
+      readManifests: async () => ({ manifests: [], faults: [] }),
+      readBindingScope: async () => ({ ok: true, split: [], divergent: [], partial: false }),
+    });
+    expect(health.bindingScope).toEqual({ ok: true, split: [], divergent: [], partial: false });
+    expect(health.ok).toBe(true);
+  });
+
+  test("a shared resource bound per environment fails the project, though every Worker passes", async () => {
+    // The reason it is project-wide: each Worker's own five checks are green, because a binding that is
+    // *present* is all any of them asks about. The finding is that two stanzas disagree.
+    const health = await buildProjectHealth({
+      account: null,
+      projectDir: "/p",
+      env: "dev",
+      workers: [api, collab],
+      buildPlan: planStub({ api: clean("api"), collab: clean("collab") }),
+      readManifests: async () => ({ manifests: [], faults: [] }),
+      readBindingScope: async () => split,
+    });
+    expect(health.workers.every((worker) => worker.state === "checked" && worker.ok)).toBe(true);
+    expect(health.bindingScope).toEqual(split);
+    expect(health.ok).toBe(false);
+  });
+
+  test("it is read once, at the project, not once per Worker", async () => {
+    const read = vi.fn(async () => ({ ok: true, split: [], divergent: [], partial: false }));
+    await buildProjectHealth({
+      account: null,
+      projectDir: "/p",
+      env: "dev",
+      workers: [api, collab],
+      buildPlan: planStub({ api: clean("api"), collab: clean("collab") }),
+      readManifests: async () => ({ manifests: [], faults: [] }),
+      readBindingScope: read,
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledWith("/p");
   });
 });

@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS } from "@pithy-sh/core/src/http/webhookWindow";
 import { PaymentsVerificationFailedError } from "../../error/errors";
 
 /**
@@ -41,7 +43,9 @@ import { PaymentsVerificationFailedError } from "../../error/errors";
  * The window still earns its place, in both directions. It bounds how long a captured-but-never-delivered
  * signature stays usable, and it refuses a far-future timestamp — either a broken clock or somebody trying
  * to mint a delivery that never goes stale. Configurable, so an adopter who wants Paddle's number can set
- * it.
+ * it — bounded, and checked before it is used, because a window is only a boundary while it is a number. A
+ * non-finite tolerance makes `drift > tolerance` false for every delivery ever signed, which is not a wider
+ * window but no window at all.
  *
  * Paddle re-signs each retry attempt with a fresh `ts`, which is the only way a three-day retry window and
  * a five-second SDK tolerance could both be coherent — so the window does not silently reject retries.
@@ -82,7 +86,11 @@ export interface VerifyPaddleSignatureOptions {
   secret: string;
   /** The clock, for the freshness window. Injected so verification is deterministic. */
   now: Date;
-  /** How many seconds either side of `now` a delivery may be dated. Undefined uses the default. */
+  /**
+   * How many seconds either side of `now` a delivery may be dated. Undefined uses the default, and anything
+   * present must be a finite number from 0 to {@link SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS} — anything else is
+   * `core/internal`, because a `NaN` here does not widen the window, it removes it.
+   */
   toleranceSeconds?: number;
 }
 
@@ -192,8 +200,36 @@ export async function verifyPaddleSignature(
   const parsed = header === null ? undefined : parse(header.trim());
   if (parsed === undefined) throw new PaymentsVerificationFailedError({ detail: refusal("unreadable") });
 
+  // Both operands of the window comparison, checked before it runs. This is the one thing this module does
+  // import from the core primitive, and it imports the *policy* rather than the format: `drift > tolerance` is
+  // false when either side is `NaN`, so a non-finite number here does not widen the window — it deletes it, and
+  // a captured `subscription.canceled` verifies forever. The realistic source is `Number(env.PADDLE_FRESHNESS)`
+  // on a variable nobody set, threaded down through two layers of `??` that each catch `undefined` and never
+  // `NaN`. Refused as our fault with our code, because the sender did nothing wrong.
+  //
+  // **This is the only place the bound is applied, including for the config path.** `PaymentsPaddleSettings`
+  // could carry a `.max()` and deliberately does not: it parses at module scope, so refusing there refuses the
+  // Worker — every route, over one webhook knob. Here the blast radius is the Paddle webhook endpoint, which is
+  // the endpoint the number is about, and Paddle redelivers for three days while it is fixed. The refusal is no
+  // weaker for moving: there is no way to reach the comparison below without coming through this function.
   const tolerance = options.toleranceSeconds ?? PADDLE_DEFAULT_FRESHNESS_SECONDS;
-  const drift = Math.abs(Math.floor(options.now.getTime() / 1000) - parsed.timestamp);
+  if (!Number.isFinite(tolerance) || tolerance < 0 || tolerance > SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS) {
+    throw new InternalError({
+      message: "This webhook endpoint is not configured.",
+      action: `Give the Paddle webhook a freshness window between 0 and ${SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS} seconds.`,
+      detail: `Paddle: the signature check was given a freshness window of ${String(tolerance)} seconds, and a window must be a number from 0 to ${SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS}.`,
+    });
+  }
+  const nowSeconds = Math.floor(options.now.getTime() / 1000);
+  if (!Number.isFinite(nowSeconds)) {
+    throw new InternalError({
+      message: "This webhook endpoint is not configured.",
+      action: "Give the Paddle webhook a valid clock.",
+      detail:
+        "Paddle: the signature check was handed a clock that is not a valid Date, so no delivery's freshness can be judged.",
+    });
+  }
+  const drift = Math.abs(nowSeconds - parsed.timestamp);
   if (drift > tolerance) throw new PaymentsVerificationFailedError({ detail: refusal("stale") });
 
   // The timestamp is inside the signed message, so a captured signature cannot be re-dated to slip

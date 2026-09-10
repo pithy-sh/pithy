@@ -8,6 +8,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import { EMAIL_SUPPRESSIONS_MIGRATION_ORDER } from "@pithy-sh/email/src/capability";
 import { email_0001_suppressions } from "@pithy-sh/email/src/migrations/0001_suppressions";
 import {
   bounceRoutingRuleName,
@@ -32,7 +33,11 @@ function suppressionMigrationProvider(): MigrationProvider {
     {
       database: "emailSuppressions",
       namespace: "email",
-      order: 100,
+      // The capability's own constant, never a second copy of the number. `order` is half of a composed
+      // migration key (`0100_email_0001_suppressions`), so a literal here that drifted from the one
+      // `@pithy-sh/email` declares would make this provisioner read every applied migration as unapplied
+      // and re-run the chain.
+      order: EMAIL_SUPPRESSIONS_MIGRATION_ORDER,
       migrations: { "0001_suppressions": email_0001_suppressions },
     },
   ]);

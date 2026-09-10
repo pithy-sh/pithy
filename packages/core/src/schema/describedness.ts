@@ -40,7 +40,7 @@ interface Def {
 }
 
 /** The kind tag Zod puts on a schema's definition. */
-function kindOf(schema: z.ZodType): string {
+export function kindOf(schema: z.ZodType): string {
   return (schema as unknown as { def: Def }).def.type;
 }
 
@@ -150,22 +150,67 @@ export function childSchemas(schema: z.ZodType, path: string): z.ZodType[] {
 }
 
 /**
- * Whether a description sits anywhere in a field's transparent-wrapper chain.
+ * The description documenting a field, from anywhere in its transparent-wrapper chain.
  *
  * `.describe("…").optional()` puts it on the inner type and `.optional().describe("…")` puts it on the
  * wrapper. Both are one described field. Only {@link TRANSPARENT} wrappers are followed — an `array`
  * or a `pipe` describes something other than what it holds.
+ *
+ * The **words**, and not only whether there are any, because the descriptions are the object model's
+ * documentation (CLAUDE.md §Zod) and a surface that shows them to a human — `pithy secrets create`
+ * asking for one field at a time — needs the same chain the gate walks. Two walks of one chain is how
+ * a field renders undocumented in a prompt while the meta-test calls it described.
  */
-export function describedInChain(schema: z.ZodType): boolean {
+export function descriptionInChain(schema: z.ZodType): string | undefined {
   let current: z.ZodType | undefined = schema;
   const seen = new Set<z.ZodType>();
   while (current && !seen.has(current)) {
-    if (current.description) return true;
-    if (!TRANSPARENT.has(kindOf(current))) return false;
+    if (current.description) return current.description;
+    if (!TRANSPARENT.has(kindOf(current))) return undefined;
     seen.add(current);
     current = (current as unknown as { def?: { innerType?: z.ZodType } }).def?.innerType;
   }
-  return false;
+  return undefined;
+}
+
+/** Whether a description sits anywhere in a field's transparent-wrapper chain. See {@link descriptionInChain}. */
+export function describedInChain(schema: z.ZodType): boolean {
+  return descriptionInChain(schema) !== undefined;
+}
+
+/** One field of an object, with its transparent wrappers taken off. See {@link unwrapField}. */
+export interface UnwrappedField {
+  /** What the field actually is, once `.optional()` and the rest of {@link TRANSPARENT} are removed. */
+  schema: z.ZodType;
+  /** Whether the field may be left out of the object entirely — an `optional`, `default` or `prefault`. */
+  optional: boolean;
+  /** The description documenting it, from anywhere in the chain. See {@link descriptionInChain}. */
+  description?: string;
+}
+
+/**
+ * One field, unwrapped: what it is, whether it may be omitted, and the words that document it.
+ *
+ * **The unwrapping half of this walk, exported rather than copied.** `collectMissing` already steps
+ * through {@link TRANSPARENT} on its way down, and a caller asking *what is this field* asks exactly
+ * that question — so it asks it here. The nineteen private copies this module replaced all started as
+ * one function that looked too small to share.
+ *
+ * `nullable` is not omissible: `null` is a value a caller states, and the key is still required.
+ */
+export function unwrapField(schema: z.ZodType, path = "schema"): UnwrappedField {
+  const description = descriptionInChain(schema);
+  let current = schema;
+  let optional = false;
+  const seen = new Set<z.ZodType>();
+  while (TRANSPARENT.has(kindOf(current)) && !seen.has(current)) {
+    if (kindOf(current) !== "nullable" && kindOf(current) !== "readonly") optional = true;
+    seen.add(current);
+    const inner = childSchemas(current, path)[0];
+    if (!inner) break;
+    current = inner;
+  }
+  return { schema: current, optional, ...(description === undefined ? {} : { description }) };
 }
 
 /** What one walk found: the complaints, and how much it actually looked at. */

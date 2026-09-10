@@ -6,9 +6,9 @@ import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { afterEach, describe, expect, test } from "vitest";
 import { isSecretsCapability, masterKeyRegistryEntry, secrets, secretsTokenProfile } from "./capability";
-import { MASTER_KEY_BINDING } from "./env/bindings";
+import { MASTER_KEY_BINDING } from "./env/masterKeyBinding";
 import { managerRegistry } from "./manager/managerRegistry";
-import { defineSecretRegistry, isMintableSecret, type SecretRegistryEntry } from "./registry";
+import { defineSecretRegistry, isMintableSecret, isProvisionableSecret, type SecretRegistryEntry } from "./registry";
 import { resetSharedSecrets, sharedSecretsStore } from "./sharedSecretsStore";
 
 const registry = defineSecretRegistry({
@@ -196,6 +196,10 @@ describe("pithy.manifest.json", () => {
     // recipe union exists to hold. `defineSecretRegistry` refuses the pair that would claim otherwise.
     expect(manifest.devSecrets).toEqual([]);
     expect(isMintableSecret(masterKeyRegistryEntry)).toBe(false);
+    // And provisioning creates it regardless, in `ensureMasterKey`. The two predicates disagree here and
+    // nowhere else, which is why anything naming a remedy asks the second one (#517) — under the binding
+    // name every Worker reads this value through, which is what `ensureMasterKey` actually creates.
+    expect(isProvisionableSecret(MASTER_KEY_BINDING, masterKeyRegistryEntry)).toBe(true);
   });
 });
 

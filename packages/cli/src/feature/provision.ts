@@ -8,13 +8,14 @@ import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { type FeatureIdentity, type FeatureResourceKind, featureResourceName } from "@pithy-sh/core/src/naming/feature";
 import { featureScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { partialWriteReport } from "@pithy-sh/secrets/src/cli/partialWrite";
-import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/bindings";
+import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { initialMasterKeyConfig } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { storeSecretMinter } from "../capabilities/mintSecrets";
 import {
   type BackendRunner,
+  type ProvisionProgress,
   type ProvisionReport,
   type ProvisionWorker,
   provisionEnvironment,
@@ -94,6 +95,8 @@ export interface ProvisionFeatureOptions {
   seed?: BackendRunner;
   /** Worker-resolution seam (default: the real `apps/` resolver), so tests fix the worker set. */
   resolveWorkers?: (projectDir: string) => Promise<ProvisionWorker[]>;
+  /** Where each step is narrated as it happens. Forwarded verbatim; omitted means a silent run (#515). */
+  onProgress?: ProvisionProgress;
   /**
    * The account's Secrets Store, when one is reachable. Given it, the feature gets its **own** master
    * key and its Workers get their `secrets_store_secrets` stanza; without it the feature is provisioned
@@ -171,6 +174,7 @@ export async function provisionFeature(options: ProvisionFeatureOptions): Promis
     ...(options.migrate !== undefined ? { migrate: options.migrate } : {}),
     ...(options.seed !== undefined ? { seed: options.seed } : {}),
     ...(options.resolveWorkers !== undefined ? { resolveWorkers: options.resolveWorkers } : {}),
+    ...(options.onProgress !== undefined ? { onProgress: options.onProgress } : {}),
     ...(store
       ? {
           secretBindings: async (capabilities) =>

@@ -7,7 +7,7 @@ Stands up what `pithy add storage` only wired: the per-environment R2 bucket, th
 ## Synopsis
 
 ```
-pithy storage provision [--api-token <token>] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--json]
+pithy storage provision [--worker <name>] [--api-token <token>] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--json]
 pithy storage deprovision [--storage] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--json]
 ```
 
@@ -19,6 +19,7 @@ pithy storage deprovision [--storage] [--r2-access-key-id <id>] [--r2-secret-acc
 
 | Flag | Default | Purpose |
 |---|---|---|
+| `--worker <name>` | the project's only Worker | The app Worker whose `wrangler.jsonc` carries the per-environment `DB` binding and receives the sweep Workflow binding. Required when a project has several |
 | `--api-token <token>` | `CLOUDFLARE_API_TOKEN` | The token carried beside the R2 key pair, so the object store can prove bucket access. The default is a broad token; supply an R2-scoped one for production |
 | `--r2-access-key-id <id>` | `R2_CREDENTIALS` | R2 S3 access key id the Worker presigns uploads and downloads with. Made under R2 → Manage API tokens |
 | `--r2-secret-access-key <key>` | `R2_CREDENTIALS` | The secret half of the pair. Passing one of the two without the other is refused |
@@ -43,9 +44,13 @@ pithy storage deprovision [--storage] [--r2-access-key-id <id>] [--r2-secret-acc
 2. **Buckets.** Create or reuse each environment's R2 bucket.
 3. **Credentials.** Write each environment's `storage-r2-credentials` secret: the account id, the S3 key pair, the scoped token, and the bucket name the object store presigns with. Before the worker, because a worker that boots without its credentials fails on its first multipart abort.
 4. **Workers.** Deploy the prebuilt sweep worker per environment, wired to the provisioned bucket.
-5. **Bindings.** Write the sweep Workflow binding into the project's `wrangler.jsonc`, per environment. `pithy add storage` cannot: wrangler requires both a `name` and a `class_name` on every `workflows` entry, and the deployed name is per project and environment (`<project>-<env>-storage-sweep`). An entry short of either field fails the whole config, so `add` emits none and this run completes it.
+5. **Bindings.** Write the sweep Workflow binding into the app worker's `wrangler.jsonc`, per environment. `pithy add storage` cannot: wrangler requires both a `name` and a `class_name` on every `workflows` entry, and the deployed name is per project and environment (`<project>-<env>-storage-sweep`). An entry short of either field fails the whole config, so `add` emits none and this run completes it.
 
-Each environment's deploy needs two things resolved first, and each missing one is refused rather than deployed around: the app `DB` id from that environment's stanza in the project's `wrangler.jsonc`, and the environment's secrets database — `<project>-<env>-secrets`, looked up live, which `pithy secrets provision` creates.
+An environment is **ready** when its stanza in the app worker's `wrangler.jsonc` carries a `DB` binding with a `database_id` — that is, when `pithy provision --env <name>` has run for it. One that is not is **skipped and reported**, never fatal: standing staging up and proving it before production resources exist is the ordinary bring-up, and this command used to refuse it part way through, naming production, after every environment's bucket and credentials already existed. The decision is made once, from one read, before anything is created. A declared environment with no stanza at all is a different thing and stays a refusal — that is config drift, and `pithy provision --env <name>` does not write a stanza.
+
+If **every** environment is skipped the run exits 1 rather than reporting a success for a run that did nothing, naming each environment and the command that resolves the first.
+
+Each ready environment's deploy still needs its secrets database resolved — `<project>-<env>-secrets`, looked up live, which `pithy secrets provision` creates — and that stays a refusal, because by the time an environment is ready a missing one is a genuine failure rather than a not-yet.
 
 `deprovision` removes the sweep workers. The buckets and their files stay unless `--storage` is passed. With `--storage`, the key pair is resolved **before** the first worker comes down: discovering it missing at the bucket step would leave the workers gone and the buckets standing.
 
@@ -63,6 +68,12 @@ One line, one object. The `command` field is the space-separated subcommand name
 | `environments` | array | One entry per environment provisioned, in managed-environment order |
 | `environments[].env` | `"staging" \| "prod"` | The environment this entry describes |
 | `environments[].bucketName` | string | The R2 bucket objects live in for this environment |
+| `skippedEnvironments` | `object[]` | One entry per environment nothing was provisioned for |
+| `skippedEnvironments[].env` | `string` | The environment that was skipped |
+| `skippedEnvironments[].reason` | `string` | Why — `env.<name> has no DB database_id.` |
+| `skippedEnvironments[].action` | `string` | The command that resolves it |
+
+When **every** environment was skipped the line above is still written to stdout — the per-environment structure is the answer, and losing it to the error line would make `--json` less use than the text — and an `{"error":…}` line follows on stderr with exit 1.
 
 `pithy storage deprovision`
 
@@ -120,11 +131,18 @@ A malformed `R2_CREDENTIALS` is its own refusal — `R2_CREDENTIALS is not valid
 pithy.config.ts has no `name`.
 ```
 
-**The environment is not in `wrangler.jsonc`**, or its `DB` binding has no id.
+**No environment is ready.** Every declared environment was skipped, so nothing was provisioned.
 
 ```
-wrangler.jsonc env.staging has no DB database_id.
-Provision the staging app database and set its id on the DB binding.
+No environment is ready — staging and prod have no DB database_id.
+Run pithy provision --env staging to create its app database, then run pithy storage provision again.
+```
+
+**The app Worker declares an environment it has no stanza for.** Config drift rather than provisioning state, so it is refused rather than skipped.
+
+```
+api's wrangler.jsonc has no env.staging stanza.
+Add the staging environment to apps/api/wrangler.jsonc with its DB binding.
 ```
 
 **The secrets database does not exist.**
@@ -140,8 +158,8 @@ Provision every environment from `R2_CREDENTIALS` in the account config:
 
 ```
 $ pithy storage provision
-staging: bucket acme-staging-storage ready, sweep worker deployed.
-prod: bucket acme-prod-storage ready, sweep worker deployed.
+  staging  bucket acme-staging-storage ready, sweep worker deployed
+  prod     skipped — env.prod has no DB database_id. Run pithy provision --env prod.
 Done.
 ```
 
@@ -149,7 +167,7 @@ The same run, machine-readable:
 
 ```
 $ pithy storage provision --json
-{"command":"storage provision","environments":[{"env":"staging","bucketName":"acme-staging-storage"},{"env":"prod","bucketName":"acme-prod-storage"}]}
+{"command":"storage provision","environments":[{"env":"staging","bucketName":"acme-staging-storage"}],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"Run pithy provision --env prod."}]}
 ```
 
 Take the sweep workers down and leave the files alone:

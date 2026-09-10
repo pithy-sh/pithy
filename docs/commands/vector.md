@@ -7,9 +7,9 @@ Stand up an environment's search indexes, rebuild them from the corpus, and re-e
 ## Synopsis
 
 ```
-pithy vector provision [--env <environment>] [--json]
-pithy vector reset [--env <environment>] [--confirm-reset <phrase>] [--json]
-pithy vector reprocess [--env <environment>] [--index <name>] [--all] [--filter <json>] [--json]
+pithy vector provision [--env <environment>] [--worker <name>] [--json]
+pithy vector reset [--env <environment>] [--worker <name>] [--confirm-reset <phrase>] [--json]
+pithy vector reprocess [--env <environment>] [--worker <name>] [--index <name>] [--all] [--filter <json>] [--json]
 ```
 
 **All three subcommands need a Cloudflare account, `--env dev` included.** Cloudflare ships no local emulation for Vectorize, so a dev search reaches a real remote index — which is also why the capability's bindings are declared `remote`. `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are checked before anything is created.
@@ -19,6 +19,7 @@ pithy vector reprocess [--env <environment>] [--index <name>] [--all] [--filter 
 | Flag | Applies to | Default | Purpose |
 |---|---|---|---|
 | `--env <environment>` | all three | `dev` | The environment to act on: `dev`, `staging`, `prod`, or a custom one. `dev` is a real remote index here, not a local store |
+| `--worker <name>` | all three | the project's only Worker | The app Worker whose `wrangler.jsonc` carries the per-environment `DB` binding, receives the `vectorize` and `workflows` bindings, and holds the `VECTOR_PROVISIONED` record. Required when a project has several |
 | `--confirm-reset <phrase>` | `reset` | — | Unlock a non-`dev` reset non-interactively. The exact, environment-named phrase: `yes, i really want to reset <env>` |
 | `--index <name>` | `reprocess` | every configured index | The index to re-embed, as named in `pithy.config.ts` |
 | `--all` | `reprocess` | `false` | Re-embed every document, not only the ones whose model differs from config |
@@ -43,7 +44,7 @@ One line, one object, one shape per subcommand. The `command` field carries the 
 
 ```
 $ pithy vector provision --env staging --json
-{"command":"vector provision","env":"staging","indexes":[{"index":"docs","indexName":"acme-staging-docs","created":[{"propertyName":"ownerId","indexType":"string"}],"extra":[],"observed":[{"propertyName":"ownerId","indexType":"string"}]}]}
+{"command":"vector provision","env":"staging","indexes":[{"index":"docs","indexName":"acme-staging-vector-docs","created":[{"propertyName":"ownerId","indexType":"string"}],"extra":[],"observed":[{"propertyName":"ownerId","indexType":"string"}]}]}
 ```
 
 | key | type | meaning |
@@ -65,7 +66,7 @@ $ pithy vector provision --env staging --json
 
 ```
 $ pithy vector reset --env staging --confirm-reset "yes, i really want to reset staging" --json
-{"command":"vector reset","env":"staging","indexes":[…],"deleted":["acme-staging-docs"],"reprocessed":["docs"]}
+{"command":"vector reset","env":"staging","indexes":[…],"deleted":["acme-staging-vector-docs"],"reprocessed":["docs"]}
 ```
 
 `reset` emits everything `provision` does — it rebuilds through the same path — plus two fields.
@@ -80,7 +81,7 @@ $ pithy vector reset --env staging --confirm-reset "yes, i really want to reset 
 
 ```
 $ pithy vector reprocess --env staging --index docs --json
-{"command":"vector reprocess","env":"staging","runs":[{"index":"docs","report":{"indexName":"acme-staging-docs","pages":2,"scanned":140,"reembedded":140,"skipped":0}}]}
+{"command":"vector reprocess","env":"staging","runs":[{"index":"docs","report":{"indexName":"acme-staging-vector-docs","pages":2,"scanned":140,"reembedded":140,"skipped":0}}]}
 ```
 
 | key | type | meaning |
@@ -119,7 +120,22 @@ Cloudflare credentials are missing.
 Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.
 ```
 
-**No `DB` id for this environment.** The document corpus lives in the app database, so provisioning refuses rather than standing up an index with nothing to fill it: `wrangler.jsonc has no DB database_id for <env>.`
+**No `DB` id for this environment.** The document corpus lives in the app database, so provisioning refuses rather than standing up an index with nothing to fill it: `<worker>'s wrangler.jsonc has no DB database_id for <env>.`
+
+**Checked before the first Cloudflare call, on all three subcommands.** It is read out of the app Worker's `wrangler.jsonc` while everything is still local — alongside the project name, the credentials, the capability's config and the Worker itself — so a refused run creates nothing, deletes nothing and starts nothing. That matters most on `reset`: the check used to run at the *last* step, so a refused `reset --env prod` had already deleted the production index and rebuilt it empty. `--confirm-reset` is no substitute for the order being right — an operator who confirms a reset has confirmed a reset, not a half of one.
+
+`reprocess` is gated on it too, though it deploys nothing. It costs nothing legitimate: an environment can only have a reprocess Workflow to dispatch because a provision run deployed one, and that run required the id. So the environments it refuses are the ones where the dispatch would have failed anyway, and they now hear the Worker's name and the remedy instead of a Cloudflare 404.
+
+This stays a refusal rather than becoming the skip the capability provisioning commands took on in #512. Those fan out across every declared environment, so *which environments did you mean* has to be answered for them; every `pithy vector` subcommand takes a required `--env`, so there is exactly one environment for the refusal to be about and nothing to skip past.
+
+**An index that cannot be named.** Vectorize's index names stop at 64 bytes and a name is refused rather than truncated, because a shortened name is a *different, empty* index. `pithy.config.ts` validates the configured key without knowing what the project and environment will spend of that budget, so the refusal lands here — and it lands before the first index is created or deleted, so one unnameable index in a config never costs the ones beside it their vectors.
+
+```
+The `<key>` index cannot be named: …
+Shorten the `<key>` index's key in pithy.config.ts, or the project name — the deployed name is <project>-<env>-vector-<index>.
+```
+
+**The project has several Workers and none was named.** Every file this command reads and writes is one app Worker's `wrangler.jsonc`, and there is no root one, so the Worker is resolved before anything is created: `This project has several workers, so which one to wire is ambiguous.` Pass `--worker <name>`.
 
 **An illegal `--env`.** Checked at the flag, before any config is loaded or any Cloudflare call is made.
 
@@ -151,7 +167,7 @@ Provision an environment's indexes.
 
 ```
 $ pithy vector provision --env staging
-docs: acme-staging-docs ready, 1 metadata index(es) created.
+docs: acme-staging-vector-docs ready, 1 metadata index(es) created.
 Done.
 ```
 
@@ -159,7 +175,7 @@ An index carrying a metadata index the config no longer declares says so, and do
 
 ```
 $ pithy vector provision --env staging
-docs: acme-staging-docs ready.
+docs: acme-staging-vector-docs ready.
   legacyTag is indexed but not declared. It still costs a slot.
 Done.
 ```
@@ -181,6 +197,6 @@ Rebuild a staging index after adding a filterable field, headlessly.
 ```
 $ pithy vector reset --env staging --confirm-reset "yes, i really want to reset staging"
 DESTRUCTIVE. Every vector in staging was deleted and rebuilt from the corpus.
-docs: acme-staging-docs rebuilt and re-embedded.
+docs: acme-staging-vector-docs rebuilt and re-embedded.
 Done.
 ```

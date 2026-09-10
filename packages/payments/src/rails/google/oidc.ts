@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { OIDC_MAX_CLOCK_SKEW_SECONDS } from "@pithy-sh/core/src/http/oidcWebhook";
 import { z } from "zod";
 import { PaymentsInvalidReceiptError, PaymentsVerificationFailedError } from "../../error/errors";
 import { type GoogleHttpFetch, googleHttpFetch, googleJson } from "./http";
@@ -150,7 +152,11 @@ export interface VerifyGoogleOidcOptions {
    * is exercised for real, and a local Pub/Sub emulator, whose tokens are signed by a key Google never saw.
    */
   trustedKeys?: readonly GoogleJwk[];
-  /** Tolerance on `exp` and `iat`, in seconds. Defaults to a minute. */
+  /**
+   * Tolerance on `exp` and `iat`, in seconds. Defaults to a minute, and must be a finite number from 0 to
+   * {@link OIDC_MAX_CLOCK_SKEW_SECONDS}; anything else is `core/internal`, because this is the second operand
+   * of both freshness comparisons and one `NaN` turns the pair into no-ops together.
+   */
   clockSkewSeconds?: number;
 }
 
@@ -269,8 +275,29 @@ export async function verifyGoogleOidcToken(
     });
   }
   const claims = parsed.data;
+  // Both operands of both time checks, and both fail open unguarded: `exp + NaN < seconds` and
+  // `iat - NaN > seconds` are false alike, so one unchecked number does not widen the window — it deletes it,
+  // and a captured Play RTDN push replays forever under a signature that is genuinely Google's. Everything
+  // above still holds; freshness is precisely what is lost, which is the half nothing else here recovers.
+  // Our fault, our code: a 401 would send an operator hunting a forger who is not there. The ceiling is the
+  // kit's, imported rather than restated, because a skew is a replay window in the plainest possible units.
   const skew = options.clockSkewSeconds ?? DEFAULT_CLOCK_SKEW_SECONDS;
+  if (!Number.isFinite(skew) || skew < 0 || skew > OIDC_MAX_CLOCK_SKEW_SECONDS) {
+    throw new InternalError({
+      message: "This webhook endpoint is not configured.",
+      action: `Give the Google Pub/Sub webhook a clock skew between 0 and ${OIDC_MAX_CLOCK_SKEW_SECONDS} seconds.`,
+      detail: `Google: the push-token check was given a clock skew of ${String(skew)} seconds, and a tolerance must be a number from 0 to ${OIDC_MAX_CLOCK_SKEW_SECONDS}.`,
+    });
+  }
   const seconds = Math.floor(options.now.getTime() / 1000);
+  if (!Number.isFinite(seconds)) {
+    throw new InternalError({
+      message: "This webhook endpoint is not configured.",
+      action: "Give the Google Pub/Sub webhook a valid clock.",
+      detail:
+        "Google: the push-token check was handed a clock that is not a valid Date, so no token's freshness can be judged.",
+    });
+  }
 
   if (!GOOGLE_OIDC_ISSUERS.includes(claims.iss)) {
     throw failed(`the token issuer is "${claims.iss}", not one of Google's.`);

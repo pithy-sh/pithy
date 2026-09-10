@@ -87,6 +87,9 @@ function errorMessage(error: unknown): string {
 const SECRET_FACTS = {
   backend: "d1",
   scope: "environment",
+  // Not a `bootstrap` secret: its value is an envelope every reader decodes, not something read straight
+  // off a binding before the store is open. Stated because a request states it (#517).
+  bootstrap: false,
   rotatable: false,
   valueType: "json",
 } as const;

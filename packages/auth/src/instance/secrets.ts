@@ -36,11 +36,13 @@ export const GoogleOAuthCredentials = z
   .object({
     clientId: z
       .string()
+      .meta({ multiline: false })
       .describe(
         "The Google OAuth client id for this environment. Not secret on its own, but stored with the secret so the pair is atomic.",
       ),
     clientSecret: z
       .string()
+      .meta({ multiline: false })
       .describe("The Google OAuth client secret for this environment. Never committed, never an env literal."),
   })
   .describe("A Google OAuth client credential pair (`clientId` + `clientSecret`) for one environment.");
@@ -49,15 +51,20 @@ export type GoogleOAuthCredentials = z.infer<typeof GoogleOAuthCredentials>;
 /** The Apple Sign-In credentials, stored as one typed JSON secret. */
 export const AppleOAuthCredentials = z
   .object({
-    clientId: z.string().describe("The Apple Sign-In Services id (the web OAuth client id) for this environment."),
+    clientId: z
+      .string()
+      .meta({ multiline: false })
+      .describe("The Apple Sign-In Services id (the web OAuth client id) for this environment."),
     clientSecret: z
       .string()
+      .meta({ multiline: false })
       .describe(
         "The Apple client secret — an ES256 JWT minted from the `.p8` key. Expires (max 6 months), so rotate it on schedule.",
       ),
     appBundleIdentifier: z
       .string()
       .optional()
+      .meta({ multiline: false })
       .describe(
         "The native iOS app bundle id, used as the id-token audience for the native Sign-in-with-Apple flow. Optional.",
       ),
@@ -72,11 +79,13 @@ export const FacebookOAuthCredentials = z
   .object({
     clientId: z
       .string()
+      .meta({ multiline: false })
       .describe(
         "The Facebook Login app id for this environment. Not secret on its own, but stored with the secret so the pair is atomic.",
       ),
     clientSecret: z
       .string()
+      .meta({ multiline: false })
       .describe("The Facebook Login app secret for this environment. Never committed, never an env literal."),
   })
   .describe("A Facebook Login credential pair (`clientId` + `clientSecret`) for one environment.");
@@ -87,11 +96,13 @@ export const GithubOAuthCredentials = z
   .object({
     clientId: z
       .string()
+      .meta({ multiline: false })
       .describe(
         "The GitHub OAuth app client id for this environment. Not secret on its own, but stored with the secret so the pair is atomic.",
       ),
     clientSecret: z
       .string()
+      .meta({ multiline: false })
       .describe("The GitHub OAuth app client secret for this environment. Never committed, never an env literal."),
   })
   .describe("A GitHub OAuth credential pair (`clientId` + `clientSecret`) for one environment.");

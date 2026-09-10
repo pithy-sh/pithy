@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { initialVersionedValue } from "./crypto/versionedValue";
 import type { SecretsStoreEnv } from "./env/bindings";
@@ -12,9 +13,21 @@ import {
   aggregateSecretRegistries,
   configureSharedSecrets,
   DEFAULT_SECRETS_CACHE_TTL_SECONDS,
+  MAX_SECRETS_CACHE_TTL_SECONDS,
   resetSharedSecrets,
   sharedSecretsStore,
 } from "./sharedSecretsStore";
+
+/** The `PithyError` a call threw, or a failure when it did not throw. */
+function catchPithy(run: () => void): PithyError {
+  try {
+    run();
+  } catch (error) {
+    if (error instanceof PithyError) return error;
+    throw error;
+  }
+  throw new Error("expected a refusal, got a pass");
+}
 
 /** A bare env — the fake resolver never touches it, so its shape is irrelevant here. */
 const env = {} as Parameters<typeof sharedSecretsStore>[0];
@@ -129,6 +142,57 @@ describe("sharedSecretsStore", () => {
 
   test("defaults the TTL to 60 seconds", () => {
     expect(DEFAULT_SECRETS_CACHE_TTL_SECONDS).toBe(60);
+  });
+
+  test("refuses an infinite lifetime — a cache that never expires is a key pin nobody chose", () => {
+    // The one value here that fails *open*: `expiresAt` is Infinity, `now < Infinity` is true forever, and a
+    // rotated-out secret keeps being served for the life of the isolate. It reaches this call from
+    // `secrets({ secretsCacheTtlSeconds })`, whose config is a plain interface with no `.parse()` above it.
+    const thrown = catchPithy(() =>
+      configureSharedSecrets({ registry: apiToken, ttlSeconds: Number.POSITIVE_INFINITY, now: () => 0 }),
+    );
+    expect(thrown.payload.code).toBe("core/internal");
+    expect(thrown.payload.detail).toContain("never expires");
+  });
+
+  test("refuses a lifetime that is not a number, and a negative one", () => {
+    for (const ttlSeconds of [Number.NaN, Number.NEGATIVE_INFINITY, -1]) {
+      const thrown = catchPithy(() => configureSharedSecrets({ registry: apiToken, ttlSeconds, now: () => 0 }));
+      expect(thrown.payload.detail).toContain("cache lifetime");
+    }
+  });
+
+  test("refuses a lifetime past the ceiling — `Infinity` is the loud spelling of a pin, not the only one", () => {
+    // `Number.isFinite` alone would pass every one of these. An hour written in the milliseconds this option
+    // is not measured in outlives any isolate, so it pins a secret exactly as `Infinity` does while looking
+    // like an ordinary number in a config file.
+    for (const ttlSeconds of [MAX_SECRETS_CACHE_TTL_SECONDS + 1, 3_600_000, 86_400]) {
+      const thrown = catchPithy(() => configureSharedSecrets({ registry: apiToken, ttlSeconds, now: () => 0 }));
+      expect(thrown.payload.code).toBe("core/internal");
+      // The operator's half names the knob and the range. The client never sees it — `clientError` strips
+      // `action`, and nothing routes this to a client anyway.
+      expect(thrown.payload.action).toContain("secretsCacheTtlSeconds");
+      expect(thrown.payload.action).toContain(String(MAX_SECRETS_CACHE_TTL_SECONDS));
+    }
+  });
+
+  test("accepts the ceiling itself, and zero", () => {
+    // The bound is inclusive at both ends, so neither edge is a surprise refusal.
+    for (const ttlSeconds of [0, MAX_SECRETS_CACHE_TTL_SECONDS]) {
+      expect(() => configureSharedSecrets({ registry: apiToken, ttlSeconds, now: () => 0 })).not.toThrow();
+    }
+  });
+
+  test("an infinite lifetime would otherwise serve a rotated-out secret forever", async () => {
+    // The consequence, stated as behavior rather than as a message: with the refusal above removed, these
+    // two reads resolve once and the second is the pre-rotation value, a century later.
+    let clock = 0;
+    const resolve = vi.fn(async () => fakeAccessor(apiToken, "v"));
+    configureSharedSecrets({ registry: apiToken, ttlSeconds: 60, resolve, now: () => clock });
+    await sharedSecretsStore(env, apiToken);
+    clock = 100 * 365 * 24 * 3600 * 1000;
+    await sharedSecretsStore(env, apiToken);
+    expect(resolve).toHaveBeenCalledTimes(2);
   });
 });
 

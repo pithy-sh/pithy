@@ -7,12 +7,20 @@ import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { PAYMENTS_PROVIDER_SECRET, paymentsSecretsRegistry } from "@pithy-sh/payments/src/secret/registry";
 import { secrets } from "@pithy-sh/secrets/src/capability";
 import type { SecretDispatcher, SecretWriteRequest } from "@pithy-sh/secrets/src/cli/dispatch";
+import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import { defineSecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import type { WorkerConfig } from "../project/config";
-import { resolveSecretRegistry, runSecretsList, runSecretWrite } from "./secrets";
+import {
+  assertNotTheMasterKey,
+  resolveSecretRegistry,
+  runSecretsList,
+  runSecretWrite,
+  secretWriteEffect,
+  secretWriteReportLine,
+} from "./secrets";
 
 class StubDispatcher implements SecretDispatcher {
   readonly calls: SecretWriteRequest[] = [];
@@ -198,9 +206,9 @@ describe("runSecretWrite", () => {
       expect.objectContaining({
         action: "secrets/set",
         outcome: "failure",
-        // The environments it reached before it failed — none, because the first dispatch is what threw.
-        // Never the value, and nothing derived from one.
-        metadata: { name: "auth-signing-key", environments: [] },
+        // The environments it reached before it failed — none, because the first dispatch is what threw
+        // — and the backend it was headed for (#517). Never the value, and nothing derived from one.
+        metadata: { name: "auth-signing-key", backend: "d1", environments: [] },
       }),
     ]);
   });
@@ -239,7 +247,7 @@ describe("runSecretWrite", () => {
     expect(written).toEqual(["staging", "canary"]);
     expect(events).toHaveLength(1);
     expect(events[0]?.outcome).toBe("failure");
-    expect(events[0]?.metadata).toEqual({ name: "email-link-signing-key", environments: written });
+    expect(events[0]?.metadata).toEqual({ name: "email-link-signing-key", backend: "d1", environments: written });
   });
 
   test("never dispatches or audits an undeclared secret", async () => {
@@ -413,5 +421,96 @@ describe("keyspaces", () => {
   test("a member of an undeclared keyspace is still an orphan", () => {
     const view = runSecretsList(withKeyspace, ["auth-signing-key", "GONE_KEYSPACE/conn_a"]);
     expect(view.audit.orphan).toEqual(["GONE_KEYSPACE/conn_a"]);
+  });
+});
+
+/**
+ * **One owner for the master-key refusal, asked twice** (#517).
+ *
+ * `runSecretWrite` raises it, which is the guarantee: nothing reaches a store without passing through
+ * there. `pithy secrets` asks it again *before* reading a value, because a refusal that arrives after a
+ * masked prompt has already taken a production credential is a refusal that cost the operator the thing
+ * it was protecting. Two call sites, one function — so the two cannot come to two rules.
+ */
+describe("assertNotTheMasterKey", () => {
+  test.each(["create", "update", "delete"] as const)("%s of the master key is refused", (mode) => {
+    expect(() => assertNotTheMasterKey(mode, MASTER_KEY_BINDING)).toThrow(
+      /master key every other secret is sealed under/,
+    );
+  });
+
+  test("every other name passes straight through", () => {
+    expect(() => assertNotTheMasterKey("create", "auth-signing-key")).not.toThrow();
+  });
+});
+
+/**
+ * # What a write changed, which is not always where it was dispatched (#517)
+ *
+ * `secretWriteTargets` answers *where does this write go*, and for a `global` + `cf-secrets-store` secret
+ * the answer is one environment — the canonical one, whose manager performs the single account-level
+ * write. That is the right dispatch answer and the wrong report: the entry is `<project>-global-<secret>`,
+ * flat and account-wide, and **every** environment's stanza binds it. So `pithy secrets update npm-token`
+ * printed `written to prod` over a change that replaced the credential staging reads too, and an operator
+ * who then went to update staging separately was acting on a report of work already done.
+ *
+ * One producer for the sentence and the `--json` line, because a report of one act said in two places is
+ * a report that eventually says two things.
+ */
+describe("secretWriteEffect", () => {
+  const declared = ["staging", "prod"] as const;
+
+  test("a global store secret changed one entry, and every environment reads it", () => {
+    const effect = secretWriteEffect(registry["npm-token"], ["prod"], declared);
+    expect(effect).toEqual({ environments: ["staging", "prod"], accountEntry: true });
+    expect(secretWriteReportLine("npm-token", "update", effect)).toBe(
+      "npm-token written to one account entry, read by staging, prod.",
+    );
+  });
+
+  /** And the revocation says the same thing, so `rm` cannot understate what it removed either. */
+  test("the same is true of a delete", () => {
+    expect(
+      secretWriteReportLine("npm-token", "delete", secretWriteEffect(registry["npm-token"], ["prod"], declared)),
+    ).toBe("npm-token removed from one account entry, read by staging, prod.");
+  });
+
+  /**
+   * The three cells where the dispatch answer *is* the effect: a per-environment secret has one entry or
+   * one row per environment, and a `global` + `d1` secret is a real fan-out that writes each database.
+   */
+  test("an environment-scoped secret reports exactly where it went", () => {
+    const effect = secretWriteEffect(registry["auth-signing-key"], ["staging"], declared);
+    expect(effect).toEqual({ environments: ["staging"], accountEntry: false });
+    expect(secretWriteReportLine("auth-signing-key", "create", effect)).toBe("auth-signing-key written to staging.");
+  });
+
+  test("a global d1 secret reports the fan-out it actually performed", () => {
+    const fanned = defineSecretRegistry({
+      "email-link-signing-key": { backend: "d1", scope: "global", rotatable: true, valueType: "text" },
+    });
+    const effect = secretWriteEffect(fanned["email-link-signing-key"], ["staging", "prod"], declared);
+    expect(effect).toEqual({ environments: ["staging", "prod"], accountEntry: false });
+    expect(secretWriteReportLine("email-link-signing-key", "update", effect)).toBe(
+      "email-link-signing-key written to staging, prod.",
+    );
+  });
+
+  /**
+   * A partial fan-out still reports what landed, not the declared set — the widening is a fact about a
+   * `global` store entry, and a `d1` split is the one thing the report must never smooth over (#324).
+   */
+  test("an interrupted d1 fan-out is not widened", () => {
+    const fanned = defineSecretRegistry({
+      "email-link-signing-key": { backend: "d1", scope: "global", rotatable: true, valueType: "text" },
+    });
+    expect(secretWriteEffect(fanned["email-link-signing-key"], ["staging"], declared).environments).toEqual([
+      "staging",
+    ]);
+  });
+
+  /** An undeclared name is refused before anything is dispatched, so there is nothing to widen. */
+  test("an unknown name reports the targets verbatim", () => {
+    expect(secretWriteEffect(undefined, ["prod"], declared)).toEqual({ environments: ["prod"], accountEntry: false });
   });
 });

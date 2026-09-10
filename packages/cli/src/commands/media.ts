@@ -1,14 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
-import { parse } from "comment-json";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import {
   CloudflareMediaDeprovisioner,
@@ -22,7 +19,15 @@ import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/acc
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
-import { projectCapabilities, resolveWorkers } from "../project/workerScope";
+import {
+  type EnvironmentReadiness,
+  environmentOutcomes,
+  environmentReadiness,
+  formatEnvironmentOutcomes,
+  readyStanza,
+  requireReadyEnvironments,
+} from "../project/environmentReadiness";
+import { projectCapabilities, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -102,19 +107,26 @@ function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
   return { account: { accountId, confirmation }, accountId, apiToken, storeId, r2Raw: vars.R2_CREDENTIALS };
 }
 
-/** A wrangler env stanza — only the fields the media worker deploy reads from the project's config. */
-interface WranglerStanza {
-  d1_databases?: { binding: string; database_id?: string }[];
-  env?: Record<string, WranglerStanza | undefined>;
-}
-
 /**
- * Resolve the per-environment resources the media worker binds, from the project's `wrangler.jsonc` (the
- * app `DB` id per env) and a live lookup of the env's secrets database. Each missing value throws an
- * actionable error rather than deploying a half-wired worker.
+ * Resolve the per-environment resources the media worker binds: the app `DB` id, already read and judged
+ * ready by {@link environmentReadiness}, and a live lookup of the env's secrets database — which does
+ * still throw, because by the time an environment is ready a missing secrets store is a genuine failure
+ * rather than a not-yet.
+ *
+ * The app database id is a lookup rather than a file read because the decision it used to make is now made
+ * once, before anything is created: an environment with no app database is skipped and reported instead of
+ * failing the run part way through, after other environments' buckets already exist (#512).
+ *
+ * Which Worker is the app Worker? Every Worker owns its own `wrangler.jsonc` under `apps/<name>/` and
+ * **there is no root Worker** (CLAUDE.md §CLI), so a project with several names one with `--worker` and one
+ * Worker needs no ceremony — the shape `pithy email` and `pithy support` already had. This command read
+ * `<root>/wrangler.jsonc` instead, a file no scaffolded project has, so every run died on a missing file
+ * before it reached the partition, the skip, the report or the exit code: #512 claimed six commands and
+ * delivered two.
  */
 function buildResolveEnv(
-  projectDir: string,
+  /** The partition this run acts on; the app database id per ready environment comes out of it. */
+  readiness: EnvironmentReadiness,
   cf: CloudflareClients,
   /**
    * The project name the secrets database is found by — `<project>-<env>-secrets`. Resolved once by the
@@ -132,21 +144,7 @@ function buildResolveEnv(
   account: ConfirmedAccount,
 ): (env: ManagedEnvironment) => Promise<MediaEnvResources> {
   return async (env) => {
-    const config = parse(await readFile(join(projectDir, "wrangler.jsonc"), "utf8")) as unknown as WranglerStanza;
-    const stanza = config.env?.[env];
-    if (!stanza) {
-      throw new ValidationError({
-        message: `wrangler.jsonc has no env.${env} stanza.`,
-        action: `Add the ${env} environment to wrangler.jsonc with its DB binding.`,
-      });
-    }
-    const appDatabaseId = stanza.d1_databases?.find((db) => db.binding === "DB")?.database_id;
-    if (!appDatabaseId) {
-      throw new ValidationError({
-        message: `wrangler.jsonc env.${env} has no DB database_id.`,
-        action: `Provision the ${env} app database and set its id on the DB binding.`,
-      });
-    }
+    const { appDatabaseId } = readyStanza(readiness, env);
     const secretsDb = await findOnConfirmedAccount({
       ...account,
       what: `the ${managerWorkerName(project, env)} database`,
@@ -168,6 +166,11 @@ const provision = defineCommand({
     description: "Create the media bucket and namespace, write the credentials, and deploy the enrichment workers",
   },
   args: {
+    worker: {
+      type: "string",
+      description:
+        "The app worker whose wrangler.jsonc carries the per-environment DB binding (default: the project's only worker)",
+    },
     "api-token": {
       type: "string",
       description:
@@ -207,10 +210,25 @@ const provision = defineCommand({
       );
       const mediaConfig = await loadMediaConfig(projectDir);
       const r2Credentials = resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw);
+      const appWorker = await resolveSingleWorker({
+        projectDir,
+        ...(args.worker !== undefined ? { worker: args.worker } : {}),
+      });
+      // Which environments this run can act on, decided once and before a single bucket exists. An
+      // environment whose app database is not provisioned yet is skipped and reported, never fatal — the
+      // old refusal fired from inside the fan-out, after every environment's bucket and secret (#512).
+      const readiness = await environmentReadiness({
+        workerDir: appWorker.dir,
+        label: `${appWorker.name}'s wrangler.jsonc`,
+        environments,
+      });
       const cf = await cloudflareClients({ accountId, apiToken });
       const provisioner = new CloudflareMediaProvisioner({
         cf,
         project,
+        // The **declaration**, not the ready set. This is what a `global` secret write fans out across and
+        // what `canonicalGlobalEnvironment` picks from — narrowing it would move which manager a global
+        // credential is canonically written through, which is a way to misplace one quietly (#512).
         environments,
         account,
         apiToken,
@@ -220,20 +238,34 @@ const provision = defineCommand({
         r2ApiToken: args["r2-api-token"] ?? apiToken,
         mediaConfig,
         dispatcher: await buildSecretDispatcher(accountId, apiToken, project),
-        resolveEnv: buildResolveEnv(projectDir, cf, project, account),
+        resolveEnv: buildResolveEnv(readiness, cf, project, account),
         audit: await buildAudit(projectDir, accountId, apiToken),
       });
 
-      const result = await provisionMedia(provisioner, environments);
+      // The ready list, not the declaration — every skipped environment is left with nothing created for
+      // it at all, which is the point: a staging-only bring-up must not make a production bucket.
+      const result = await provisionMedia(provisioner, readiness.ready);
+      const provisioned = new Map(result.environments.map((entry) => [entry.env, entry]));
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "media provision", ...result })}\n`);
+        // Written before the refusal below, so a run in which everything skipped still carries the
+        // per-environment structure on stdout beside the `{"error":…}` line on stderr.
+        process.stdout.write(
+          `${formatJsonLine({ command: "media provision", ...result, skippedEnvironments: readiness.skipped })}\n`,
+        );
+        requireReadyEnvironments(readiness, "pithy media provision");
         return;
       }
-      for (const entry of result.environments) {
-        const namespace = entry.kvNamespaceId ? " and its MEDIA namespace" : "";
-        process.stdout.write(`${entry.env}: bucket ${entry.bucketName}${namespace} ready, worker deployed.\n`);
-      }
+      process.stdout.write(
+        formatEnvironmentOutcomes(
+          environmentOutcomes(readiness, (env) => {
+            const entry = provisioned.get(env);
+            const namespace = entry?.kvNamespaceId ? " and its MEDIA namespace" : "";
+            return `bucket ${entry?.bucketName}${namespace} ready, worker deployed`;
+          }),
+        ),
+      );
+      requireReadyEnvironments(readiness, "pithy media provision");
       process.stdout.write(`${formatDone()}\n`);
     }),
 });

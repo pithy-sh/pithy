@@ -6,7 +6,8 @@ import { dirname, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
+import { GLOBAL_SCOPE } from "@pithy-sh/core/src/naming/environment";
+import { bindingResourceName, type ProjectGlobalNaming } from "@pithy-sh/core/src/naming/provisionScope";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
@@ -31,8 +32,12 @@ import { deleteR2BucketWithContents } from "./r2Bucket";
  * **No secret is written here, and that is the whole shape of this file.** The classification worker reads
  * a message and writes a label over the `AI` binding, so it holds no credential at all — which is why
  * provisioning support is three steps (a bucket, a worker per environment, a routing rule) where media is
- * five. The one credential support does use, the R2 key pair its attachment presigning needs, belongs to
- * `@pithy-sh/storage`'s `ObjectStore` and is written by `pithy storage provision`.
+ * five. The one credential support does use, the R2 key pair its attachment presigning needs, is read
+ * through `@pithy-sh/storage`'s `ObjectStore` under support's **own** secret name — `support-r2-credentials`,
+ * per `support/src/http/resolve.ts` — and no command in the kit writes it. `pithy storage provision` writes
+ * `storage-r2-credentials`, a different secret naming a different bucket, so it is not the answer here
+ * (#513 review). The operator writes support's, and `pithy doctor`'s `shared:` section says so when the
+ * bucket the signature addresses has to move.
  */
 
 /** The support runtime surface provisioning needs, loaded from the project's own install. */
@@ -97,6 +102,16 @@ async function loadSupportSearch(): Promise<
   }
 }
 
+/** The R2 binding the bucket is bound to, in every Worker and every environment. */
+const SUPPORT_BUCKET_BINDING = "SUPPORT_BUCKET";
+
+/**
+ * What `packages/support/pithy.manifest.json` declares about naming {@link SUPPORT_BUCKET_BINDING} —
+ * restated here because this file resolves through the CLI rather than through that package, and **pinned
+ * to it by `ci/bindingResourceNames.test.ts`**, which fails the moment the two answers differ.
+ */
+const SUPPORT_BUCKET_NAMING: ProjectGlobalNaming = { scope: GLOBAL_SCOPE, resource: "support" };
+
 /**
  * The R2 bucket attachments and raw messages live in — `<project>-global-support`.
  *
@@ -112,9 +127,23 @@ async function loadSupportSearch(): Promise<
  * `ensureBucket`'s find-then-create safe. R2's namespace is flat and account-wide, so the old fixed
  * `pithy-support` meant a second Pithy project in the same account adopted this one's bucket: two products'
  * customer correspondence in one place, and either teardown deleting both.
+ *
+ * **Through {@link bindingResourceName}, the one expression `pithy add` and `pithy provision` also compose
+ * with (#513).** They composed `<project>-<env>-support-bucket` from the binding alone, created it, and
+ * wrote it into the stanza — so on a split project the **per-environment** bucket is the one holding the
+ * correspondence and this one is empty, and `pithy support deprovision --storage` has been deleting the
+ * empty one while the customer mail it was meant to remove stayed on the account. That is also why the
+ * repoint is not the first step of the upgrade: it changes which bucket the binding names and moves no
+ * object, so the objects have to be synced here over R2's S3 endpoint before `pithy provision` runs
+ * (`docs/commands/support.md`). The manifest declares both halves of the difference now — `scope:
+ * "global"` and `resource: "support"` — and this reads the same two, so there is one name rather than two
+ * writers of it.
+ *
+ * The binding keeps `_BUCKET` and the resource drops `-bucket`: `env.SUPPORT_BUCKET` is read in a Worker
+ * and should say what kind of thing it is, while `r2` is already the composed name's own kind (#519).
  */
 export function supportBucketName(project: string): string {
-  return resourceNames(project).global.r2("support");
+  return bindingResourceName(project, SUPPORT_BUCKET_BINDING, "r2", SUPPORT_BUCKET_NAMING);
 }
 
 /** The per-environment resource ids the support classification worker binds, resolved by the caller. */

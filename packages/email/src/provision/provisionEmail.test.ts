@@ -60,6 +60,42 @@ describe("provisionEmail", () => {
       routing: { created: true, skipped: false },
     });
   });
+
+  /**
+   * The narrowed list is how skip-and-report reaches this orchestrator (pithy-sh/pithy#512): the CLI hands
+   * it the environments whose app database exists, and this stays the same fan-out over whatever it is
+   * given. What must not narrow with it is the suppression database — one per project, shared across every
+   * environment, and the whole point of the change is that it does not wait for production.
+   */
+  test("a narrowed environment list deploys only those workers, and the suppression DB is still created", async () => {
+    const { provisioner, calls } = fakeProvisioner();
+    const result = await provisionEmail(provisioner, ["staging"]);
+
+    expect(calls).toEqual([
+      "preflight",
+      "ensureSuppressionDatabase",
+      "migrate:sup-db",
+      "deploy:staging:sup-db",
+      "ensureRoutingRule",
+    ]);
+    expect(result.environments).toEqual(["staging"]);
+    expect(result.suppressionDatabaseId).toBe("sup-db");
+  });
+
+  test("no environment at all still creates the suppression DB, and makes no routing rule", async () => {
+    const { provisioner, calls } = fakeProvisioner();
+    const result = await provisionEmail(provisioner, []);
+
+    // The database is a project-global resource and is created on the first run however many environments
+    // skip. The rule is not: creating one over a run that deployed no handler starts delivering real bounce
+    // mail to a Worker that is not there.
+    expect(calls).toEqual(["preflight", "ensureSuppressionDatabase", "migrate:sup-db"]);
+    expect(result).toEqual({
+      suppressionDatabaseId: "sup-db",
+      environments: [],
+      routing: { created: false, skipped: true },
+    });
+  });
 });
 
 describe("names", () => {

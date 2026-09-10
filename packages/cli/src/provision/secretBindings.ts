@@ -91,6 +91,23 @@ export interface MintTarget {
 export type MintStoreSecret = (target: MintTarget) => Promise<void>;
 
 /**
+ * A declared secret whose Secrets Store entry is not there — the binding, and **the entry name it would
+ * have been bound at**.
+ *
+ * The name is carried rather than recomposed. `secretEntry` takes the scope, so a caller that has only
+ * the binding has to supply one, and the only one it can supply is a guess: `pithy provision --json`
+ * guessed `"environment"` for every missing secret, which is a wrong entry name for every `global` one —
+ * pointing an operator at an address they could create and still not be bound to. The scope is a fact of
+ * the registry entry, known here, so the answer travels instead of being derived twice.
+ */
+export interface MissingSecretBinding {
+  /** The binding the Worker declares. */
+  binding: string;
+  /** The Secrets Store entry that binding resolves to in this environment. */
+  entry: string;
+}
+
+/**
  * Every `cf-secrets-store` secret a registry declares, as a complete binding named for `scope`.
  *
  * Which secrets those are is {@link boundSecretNames}' answer, shared with the reader that reports a
@@ -126,9 +143,9 @@ export async function secretsStoreBindings(options: {
   exists: (name: string) => Promise<boolean>;
   /** Creates a declared-but-absent mintable secret. Omitted means create nothing, and report as before. */
   mint?: MintStoreSecret;
-}): Promise<{ bound: SecretStoreBinding[]; missing: string[]; minted: string[] }> {
+}): Promise<{ bound: SecretStoreBinding[]; missing: MissingSecretBinding[]; minted: string[] }> {
   const bound: SecretStoreBinding[] = [];
-  const missing: string[] = [];
+  const missing: MissingSecretBinding[] = [];
   const minted: string[] = [];
   for (const binding of boundSecretNames(options.registry)) {
     const entry = options.registry[binding] as SecretRegistry[string];
@@ -142,7 +159,7 @@ export async function secretsStoreBindings(options: {
     if (present) {
       bound.push({ binding, store_id: options.storeId, secret_name: secretName });
     } else {
-      missing.push(binding);
+      missing.push({ binding, entry: secretName });
     }
   }
   return { bound, missing, minted };

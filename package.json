@@ -24,6 +24,7 @@
     "clean": "turbo run clean",
     "stamp-versions": "bun scripts/stampVersions.ts",
     "docs-catalog": "bun packages/cli/src/docs/writeCatalog.ts",
+    "dist-types": "bun packages/cli/src/ci/checkDistTypes.ts",
     "worktree": "bun scripts/worktree.ts",
     "reset": "turbo run reset && rm -rf node_modules && bun install",
     "file-modes": "bun scripts/fileModes.ts",

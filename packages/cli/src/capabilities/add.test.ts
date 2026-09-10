@@ -8,6 +8,7 @@ import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { NAMESPACE_LIMITS } from "@pithy-sh/core/src/naming/limits";
 import { MAX_PROJECT_NAME } from "@pithy-sh/core/src/naming/resource";
+import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { incompleteBindings } from "../project/appBindings";
@@ -452,6 +453,59 @@ describe("addCapability", () => {
       expect(wrangler.d1_databases).toEqual([{ binding: "DB", database_name: "acme-dev-db" }]);
       expect(wrangler.env.staging?.d1_databases).toEqual([{ binding: "DB", database_name: "acme-staging-db" }]);
       expect(wrangler.env.prod?.d1_databases).toEqual([{ binding: "DB", database_name: "acme-prod-db" }]);
+    });
+
+    test("a project-global database is one name, identical in every environment (#513)", async () => {
+      // **The defect this field exists for.** `EMAIL_SUPPRESSIONS` is one database "bound identically in
+      // every environment" (`email/src/workflows/hostEnv.ts`), and this writer had no way to hear that: it
+      // wrote `<p>-dev-`, `<p>-staging-` and `<p>-prod-email-suppressions` while `pithy email provision`
+      // created `<p>-global-email-suppressions`, so the app Worker and the email Worker read different
+      // suppression lists and an unsubscribe recorded through either was invisible to the other.
+      //
+      // The manifest is synthetic rather than `@pithy-sh/email`'s own, which is still to declare it — that
+      // edit is what `ci/bindingResourceNames.test.ts` is red on. What is asserted here is the **writer**:
+      // given the declaration, it composes the capability's own name, byte for byte.
+      const emailManifest = CapabilityManifest.parse({
+        name: "email",
+        package: "@pithy-sh/email",
+        requiredBindings: [
+          { type: "d1", name: "DB" },
+          { type: "d1", name: "EMAIL_SUPPRESSIONS", scope: "global" },
+        ],
+      });
+      await addCapability({ workerDir: worker, manifest: emailManifest, project: "acme" });
+
+      const wrangler = await read();
+      const stanzas = [wrangler, wrangler.env.staging, wrangler.env.prod];
+      const named = (stanza: NamedWrangler | undefined, binding: string): string | undefined =>
+        stanza?.d1_databases?.find((entry) => entry.binding === binding)?.database_name;
+
+      const suppressions = stanzas.map((stanza) => named(stanza, "EMAIL_SUPPRESSIONS"));
+      expect(suppressions).toEqual(Array(3).fill(suppressionDatabaseName("acme")));
+      expect(suppressions[0]).toBe("acme-global-email-suppressions");
+
+      // **And `DB` beside it, in the same manifest and the same run, still one database per environment.**
+      // Without this the fix passes by making everything global, which is the same bug pointed the other
+      // way: every environment would share the app database, and staging would write production's rows.
+      expect(stanzas.map((stanza) => named(stanza, "DB"))).toEqual(["acme-dev-db", "acme-staging-db", "acme-prod-db"]);
+    });
+
+    test("a KV namespace is proposed under the `<thing>` its manifest declares, not its binding", async () => {
+      // The other half of the pair: `resource` moves the last segment and leaves the scope alone. R2 is
+      // where it actually ships (#519), and R2 has no name in a wrangler entry at all, so KV is where the
+      // writer's answer is observable.
+      const named = CapabilityManifest.parse({
+        name: "media",
+        package: "@pithy-sh/media",
+        requiredBindings: [{ type: "kv", name: "MEDIA_CACHE", resource: "media" }],
+      });
+      const result = await addCapability({ workerDir: worker, manifest: named, project: "acme" });
+
+      expect(result.kvNamespaces.map((entry) => entry.name)).toEqual([
+        "acme-dev-media",
+        "acme-staging-media",
+        "acme-prod-media",
+      ]);
     });
 
     test("reports the KV title instead of writing one — a kv_namespaces entry has no name field", async () => {

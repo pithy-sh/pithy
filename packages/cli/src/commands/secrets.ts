@@ -5,14 +5,15 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS, type DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import {
+  backendRoutedDispatcher,
   environmentsWrittenBeforeFailure,
-  type SecretDispatcher,
+  type PreflightSecretDispatcher,
   type SecretProbe,
   type SecretRotationRecorder,
 } from "@pithy-sh/secrets/src/cli/dispatch";
 import { secretWriteTargets } from "@pithy-sh/secrets/src/cli/writeTargets";
 import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
-import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
+import type { SecretBackend, SecretRegistry, SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { canonicalGlobalEnvironment, type ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { createProjectCliAudit } from "../audit/cliAudit";
@@ -27,15 +28,25 @@ import {
   EXIT_ROLLED_NOT_RECORDED,
   rotationReportLines,
   runSecretRotation,
+  type SecretRotationDispatcher,
   unrecordedFailure,
 } from "../capabilities/rotateSecrets";
-import { resolveSecretRegistry, runSecretWrite } from "../capabilities/secrets";
+import { mergeSecretBranches, type SecretBranches, secretBranchDeclarations } from "../capabilities/secretBranches";
+import {
+  assertNotTheMasterKey,
+  resolveSecretRegistry,
+  runSecretWrite,
+  secretWriteEffect,
+  secretWriteReportLine,
+} from "../capabilities/secrets";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import {
   buildManagerDeploy,
   CloudflareSecretsDeprovisioner,
   CloudflareSecretsProvisioner,
 } from "../capabilities/secretsProvisioner";
+import { readSecretValue } from "../capabilities/secretValue";
+import { storeSecretWriter } from "../capabilities/storeSecretWrites";
 import type { ConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
@@ -46,6 +57,7 @@ import { loadProject, projectCloudflareAccount, projectEnvironments, requireProj
 import { requireManagedEnvironment } from "../project/environment";
 import { resolveWorkers } from "../project/workerScope";
 import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
+import { removedStoreEntryNote } from "../provision/secretEntryRemedy";
 import { cloudflareSecretsStore } from "../provision/store";
 import { applySecretBindings } from "../provision/wranglerEnv";
 import {
@@ -65,20 +77,34 @@ import {
  * name, not just the alphabetically-first Worker's. A Worker that does not compose `secrets` simply
  * contributes nothing; when no Worker does, the capability's own actionable error is what surfaces.
  */
-async function projectSecretRegistry(projectDir: string): Promise<SecretRegistry> {
+async function projectSecrets(projectDir: string): Promise<{ registry: SecretRegistry; branches: SecretBranches }> {
   const workers = await resolveWorkers({ projectDir });
   const registries: SecretRegistry[] = [];
+  let branches: SecretBranches = {};
   let absent: unknown;
   for (const worker of workers) {
     try {
       registries.push(resolveSecretRegistry(worker.config));
     } catch (error) {
       absent = error;
+      continue;
     }
+    // Only from a Worker whose registry resolved: a capability's branch declaration is about the secret
+    // that Worker actually composes, and reading it from one with no secrets store would offer blocks
+    // for a bundle that Worker has nowhere to put.
+    branches = mergeSecretBranches(branches, secretBranchDeclarations(worker.capabilities));
   }
   const first = registries[0];
   if (!first) throw absent;
-  return registries.length === 1 ? first : (Object.assign({}, ...registries) as SecretRegistry);
+  return {
+    registry: registries.length === 1 ? first : (Object.assign({}, ...registries) as SecretRegistry),
+    branches,
+  };
+}
+
+/** The project's merged secret registry. See {@link projectSecrets}. */
+async function projectSecretRegistry(projectDir: string): Promise<SecretRegistry> {
+  return (await projectSecrets(projectDir)).registry;
 }
 
 /**
@@ -107,8 +133,17 @@ async function buildAudit(projectDir: string, env: string) {
  * `openRotation` here is unreachable rather than merely unused; it throws instead of returning a plausible
  * id, because a dry run that quietly recorded a rotation would be the one thing it promises never to do.
  */
-const DRY_RUN_DISPATCHER: SecretDispatcher & SecretRotationRecorder = {
+const DRY_RUN_DISPATCHER: SecretRotationDispatcher = {
   dispatch: async () => {},
+  // Unreachable for the same reason `openRotation` is: `rotateSecretValue` answers `unchanged` for a dry
+  // run before it asks either. It throws rather than resolving, because a dry run that quietly reached an
+  // account would break the one promise it makes — and a pre-flight is a round trip to a manager.
+  preflight: async () => {
+    throw new ValidationError({
+      message: "A dry run does not reach a secret's store.",
+      detail: "DRY_RUN_DISPATCHER.preflight was reached, which means a dry run passed the refusals",
+    });
+  },
   openRotation: async () => {
     throw new ValidationError({
       message: "A dry run does not record a rotation.",
@@ -125,10 +160,84 @@ const DRY_RUN_DISPATCHER: SecretDispatcher & SecretRotationRecorder = {
  * and Workflow names are account-scoped, so a fallback-derived name would either dispatch nowhere or
  * dispatch this project's values into another project's manager.
  */
-async function buildDispatcher(projectDir: string): Promise<SecretDispatcher & SecretProbe & SecretRotationRecorder> {
+async function buildDispatcher(
+  projectDir: string,
+): Promise<PreflightSecretDispatcher & SecretProbe & SecretRotationRecorder> {
   const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
   const project = requireProjectName(await loadProject(projectDir));
   return buildSecretDispatcher(accountId, apiToken, project);
+}
+
+/**
+ * **The dispatcher a value-touching command writes through: one per backend, chosen by the request** (#517).
+ *
+ * Every write used to reach {@link buildDispatcher} alone — the manager write-Workflow, which reaches one
+ * environment's D1 and nothing else. A `cf-secrets-store` secret went there too, because the request said
+ * nothing about where its value belonged: `pithy secrets create` wrote an encrypted row no reader looks
+ * for and exited 0, and `pithy secrets rm` deleted that row and reported a revocation while the live
+ * Secrets Store entry stayed present and stayed bound.
+ *
+ * So both writers are composed and `backendRoutedDispatcher` picks between them per request. **Every
+ * value-touching command goes through it, `rotate` included** — it was left on {@link buildDispatcher}
+ * for one round because a rotation also needs the ledger, which is the manager's alone, and a
+ * `cf-secrets-store` rotation therefore ended in a 500 `InternalError` raised at the store write. With a
+ * `provider` rotator that write is *after* the issuer has rolled the credential, so the kit asked a
+ * provider for a new secret, received it, and threw before storing it — the worst possible ordering, and
+ * the reason {@link buildRotationDispatcher} exists rather than a second router.
+ *
+ * **The store half is lazy, and that is what keeps a `d1`-only project working.** Reaching the account's
+ * Secrets Store needs `SECRETS_STORE_ID`; resolving it eagerly would refuse
+ * `pithy secrets create auth-session-secret` in a project that has no store and needs none — a refusal
+ * earned by a value that was never going there. Nothing is resolved until a store write is dispatched,
+ * or until a rotation asks for it in front of the issuer (`PreflightSecretDispatcher.preflight`).
+ */
+async function buildWriteDispatcher(projectDir: string): Promise<PreflightSecretDispatcher> {
+  return backendRoutedDispatcher(await writeRoutes(projectDir, await buildDispatcher(projectDir)));
+}
+
+/**
+ * **The dispatcher `pithy secrets rotate` writes through: the same router, plus the manager's ledger.**
+ *
+ * A rotation is two contracts on one object — the write, and the `pithy_secrets_rotations` row around it
+ * (`#379`) — and only one of them is per backend. The row always lives in the environment's secrets D1,
+ * which is the manager's alone; the write goes wherever the registry says. Composing them here rather
+ * than widening `backendRoutedDispatcher` keeps the router a router: a `cf-secrets-store` writer has no
+ * ledger to offer and never should.
+ *
+ * `preflight` rides along from the router, so the refusals a store write owns are asked by
+ * `rotateSecretValue` **above the irreversible line** — including the one that used to be the whole
+ * defect, an unreachable Secrets Store discovered at the write.
+ */
+async function buildRotationDispatcher(projectDir: string): Promise<SecretRotationDispatcher> {
+  const manager = await buildDispatcher(projectDir);
+  const routed = backendRoutedDispatcher(await writeRoutes(projectDir, manager));
+  return {
+    dispatch: (request) => routed.dispatch(request),
+    preflight: (request) => routed.preflight(request),
+    openRotation: (request) => manager.openRotation(request),
+    closeRotation: (request) => manager.closeRotation(request),
+  };
+}
+
+/** The per-backend writers, over one project resolution — the routing table both dispatchers share. */
+async function writeRoutes(
+  projectDir: string,
+  manager: PreflightSecretDispatcher,
+): Promise<Record<SecretBackend, PreflightSecretDispatcher>> {
+  const account = await projectCloudflareAccount(projectDir);
+  const project = requireProjectName(await loadProject(projectDir));
+  return {
+    d1: manager,
+    "cf-secrets-store": storeSecretWriter({
+      store: async () => {
+        const { accountId, apiToken, storeId } = loadCloudflareCreds(account, { requireStore: true });
+        return cloudflareSecretsStore(await cloudflareClients({ accountId, apiToken }), storeId);
+      },
+      // Provisioning's own namer, so an operator's value lands at the address `secretsStoreBindings` will
+      // ask the store for. A second namer here is a write that succeeds and a binding that stays missing.
+      scope: (env) => environmentScope(project, env),
+    }),
+  };
 }
 
 /** The CF credentials and Secrets Store id provisioning needs, from `.dev.vars` then `process.env`. */
@@ -162,22 +271,59 @@ function loadCloudflareCreds(
 }
 
 /**
- * Read the secret value: from stdin when it is piped (agent/non-interactive use), otherwise from a
- * masked prompt. Never from a flag — a value there would persist in shell history and process lists.
+ * **May a prompt be drawn — one of the two questions this command asks, and never the other one.**
+ *
+ * `--json` because a machine-readable run has a caller that parses one line and a prompt is not it, and
+ * **stdout** because that is where the question would go: a prompt written into a file or a pipe is a
+ * question nobody sees in front of a process that never returns. Both terms are about *output*, which is
+ * what a prompt is.
+ *
+ * **stdin is deliberately absent, and its absence is the fix rather than an omission.** Every other
+ * command in this CLI gates on all three, correctly, because none of them reads a document: for `add` or
+ * `seed`, a pipe on stdin means only *no human*, so folding it into one gate loses nothing. `secrets`
+ * does read a document, so for it stdin answers a different question — *is one on its way* — and
+ * `readSecretValue` asks that of the stream it is handed (`capabilities/secretValue.ts`). One boolean
+ * standing for both is what made `--json` on a terminal, and any run with output redirected to a file,
+ * silently read the operator's terminal for a credential with no prompt and no masking. Two questions,
+ * two answers, and neither derivable from the other.
+ *
+ * `ci/interactiveGate.test.ts` holds the three-term gate for every command that writes one, and records
+ * why this file no longer appears in its scan.
  */
-async function readValue(name: string): Promise<string> {
-  if (!process.stdin.isTTY) {
-    const chunks: Buffer[] = [];
-    for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-    return Buffer.concat(chunks).toString("utf8").replace(/\n$/, "");
-  }
-  const { isCancel, password } = await import("@clack/prompts");
-  const answer = await password({ message: `Value for '${name}'` });
-  if (isCancel(answer)) {
+export function canPrompt(json: boolean): boolean {
+  return !json && Boolean(process.stdout.isTTY);
+}
+
+/**
+ * Read the secret value: from stdin when a document is piped (agent/non-interactive use), from masked
+ * prompts when one can be drawn, and neither silently. Never from a flag — a value there would persist
+ * in shell history and process lists.
+ *
+ * A `json` secret is asked for one field at a time, using each field's own `.describe()` (#516); see
+ * `capabilities/secretValue.ts` for what that path does and, more often, declines to do.
+ */
+async function readValue(
+  name: string,
+  mode: "create" | "update",
+  entry: SecretRegistryEntry | undefined,
+  branches: readonly string[] | undefined,
+  json: boolean,
+): Promise<string> {
+  const value = await readSecretValue({
+    name,
+    mode,
+    entry,
+    branches,
+    canPrompt: canPrompt(json),
+    // The stream, not a verdict about it: whether a document is coming is `process.stdin`'s own `isTTY`,
+    // asked where the document would be read.
+    stdin: process.stdin,
+  });
+  if (value === null) {
     process.stderr.write("Canceled.\n");
     process.exit(1);
   }
-  return answer;
+  return value;
 }
 
 /**
@@ -198,6 +344,10 @@ function checkWriteIsCoherent(
   requested: ManagedEnvironment | undefined,
   declared: DeclaredEnvironments,
 ): void {
+  // Before the value is asked for, and through the one owner of the rule. `runSecretWrite` raises it too;
+  // this is what keeps an operator from being prompted, masked, for a value the command was never going
+  // to write (#517).
+  assertNotTheMasterKey(mode, name);
   const entry = registry[name];
   if (!entry || entry.keyed) return;
   secretWriteTargets({ name, backend: entry.backend, scope: entry.scope, mode, requested, declared });
@@ -222,14 +372,17 @@ async function write(
   args: { name: string; env?: string; json: boolean },
 ): Promise<void> {
   const projectDir = process.cwd();
-  const registry = await projectSecretRegistry(projectDir);
+  const { registry, branches } = await projectSecrets(projectDir);
   const environments = await projectEnvironments(projectDir);
   // `--env` as the operator gave it, or nothing. Not resolved to a default: the absence is the whole
   // difference between *narrow this write* and *say nothing*, and it is what the rule turns on.
   const env = args.env ? requireManagedEnvironment(args.env, environments) : undefined;
   checkWriteIsCoherent(registry, mode, args.name, env, environments);
-  const value = mode === "delete" ? undefined : await readValue(args.name);
-  const dispatcher = await buildDispatcher(projectDir);
+  const value =
+    mode === "delete"
+      ? undefined
+      : await readValue(args.name, mode, registry[args.name], branches[args.name], args.json);
+  const dispatcher = await buildWriteDispatcher(projectDir);
   const audit = await buildAudit(projectDir, auditOrigin(env, environments));
 
   let targets: ManagedEnvironment[];
@@ -252,11 +405,34 @@ async function write(
     throw error;
   }
 
+  // **What changed, which is not always where it was dispatched** (#517). A `global` store secret is one
+  // account-level entry every environment binds, so a write that reached the canonical environment's
+  // manager changed the value all of them read — and reporting the dispatch target alone understated it
+  // by every environment but one. `secretWriteEffect` owns the widening; both streams read it.
+  const effect = secretWriteEffect(registry[args.name], targets, environments);
   if (args.json) {
-    process.stdout.write(`${formatJsonLine({ command: `secrets ${mode}`, name: args.name, environments: targets })}\n`);
+    process.stdout.write(
+      `${formatJsonLine({
+        command: `secrets ${mode}`,
+        name: args.name,
+        environments: effect.environments,
+        // Only when it is true, and it is the fact a machine reader needs to not treat the list above as
+        // one value per environment: there is one entry, and these are the stanzas that bind it.
+        ...(effect.accountEntry ? { accountEntry: true } : {}),
+      })}\n`,
+    );
     return;
   }
-  process.stdout.write(`${args.name} ${mode === "delete" ? "removed from" : "written to"} ${targets.join(", ")}.\n`);
+  process.stdout.write(`${secretWriteReportLine(args.name, mode, effect)}\n`);
+  // **What a revocation of a store-backed secret leaves behind, said in the same breath** (#517). The
+  // entry is gone, which is the act; the Worker's `wrangler.jsonc` still binds the name, and
+  // `applySecretBindings` only ever adds — so nothing in the kit will take that line out and the next
+  // deploy of that Worker fails on it. A `global` secret is bound by every stanza, an `environment` one
+  // by the stanza this write reached — which is what the effect above already resolved.
+  const removed = registry[args.name];
+  if (mode === "delete" && removed?.backend === "cf-secrets-store") {
+    process.stdout.write(`${removedStoreEntryNote(args.name, effect.environments)}\n`);
+  }
   process.stdout.write(`${formatDone()}\n`);
 }
 
@@ -337,7 +513,11 @@ const rotate = defineCommand({
       // than tidy. Missing credentials raise here, with the previous value untouched; built after the
       // roll, the same missing credentials would strand a live one behind a message about `pithy init`.
       // A dry run reaches no account at all, which is what makes it usable before the credentials exist.
-      const dispatcher = dryRun ? DRY_RUN_DISPATCHER : await buildDispatcher(projectDir);
+      //
+      // **Routed by backend, like every other write** (#517). It was the manager's alone, which reaches
+      // one environment's D1 — so rotating a `cf-secrets-store` secret ended in a 500 raised at the
+      // store write, after a `provider` rotator had already rolled the credential at its issuer.
+      const dispatcher = dryRun ? DRY_RUN_DISPATCHER : await buildRotationDispatcher(projectDir);
       const audit = dryRun ? async () => {} : await buildAudit(projectDir, auditOrigin(env, environments));
 
       const outcome = await runSecretRotation(

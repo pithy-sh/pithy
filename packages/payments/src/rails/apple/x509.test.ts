@@ -152,6 +152,38 @@ describe("verifyCertificateChain", () => {
     ).rejects.toThrow(PaymentsVerificationFailedError);
   });
 
+  /**
+   * The instance the #521 sweep missed, in the package the sweep was written from. `at` is one operand of
+   * both window comparisons, and `NaN` on either side of `<` or `>` is false — so an invalid clock does not
+   * widen the validity window, it deletes it, and every certificate passes the one check that says a
+   * certificate is still in date. The pair below is deliberately the two cases directly above this one:
+   * with the guard removed, both of those chains verify.
+   */
+  test.each([
+    ["an expired leaf", { leafNotBefore: new Date(0), leafNotAfter: new Date(1000) }],
+    [
+      "a leaf that is not yet valid",
+      { leafNotBefore: new Date(Date.now() + 86_400_000), leafNotAfter: new Date(Date.now() + 172_800_000) },
+    ],
+  ])("refuses an invalid clock rather than letting %s through it", async (_label, dates) => {
+    const chain = await mintChain(dates);
+    const verifying = verifyCertificateChain(chain.x5c.map(decodeBase64), {
+      roots: [chain.root],
+      now: new Date(Number.NaN),
+    });
+    // `core/internal`, not `payments/verification_failed`: only a caller-supplied clock reaches here, so this
+    // is our configuration, and a 400 would tell a buyer their purchase is invalid over our broken clock.
+    await expect(verifying).rejects.toMatchObject({ payload: { code: "core/internal", status: 500 } });
+  });
+
+  test("a valid clock still lets a chain through — the guard above is about the clock, not the chain", async () => {
+    // The half that keeps the cases above from passing for the wrong reason.
+    const chain = await mintChain();
+    await expect(
+      verifyCertificateChain(chain.x5c.map(decodeBase64), { roots: [chain.root], now: new Date() }),
+    ).resolves.toMatchObject({ curve: "P-256" });
+  });
+
   test("refuses an empty chain", async () => {
     await expect(verifyCertificateChain([], { roots: APPLE_ROOT_CERTIFICATES, now: new Date() })).rejects.toThrow(
       PaymentsVerificationFailedError,

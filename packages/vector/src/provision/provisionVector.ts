@@ -151,6 +151,23 @@ function declaredIndexes(config: VectorConfig, index: string): MetadataIndexDesc
 }
 
 /**
+ * Every configured index's Vectorize name, computed in one pass before anything is created or deleted.
+ *
+ * The naming is where a *refusal* still lives: {@link vectorIndexName} refuses a name that will not fit
+ * Vectorize's 64 bytes rather than truncating it, because a shortened name is a different, empty index.
+ * Computed inside the loop that acts, that refusal arrives after the indexes before it in the config were
+ * already created — or, in {@link resetVector}, already deleted. It is a pure function of config, so there
+ * is nothing to weigh: doing it first costs nothing and makes the refusal a preflight.
+ */
+function plannedIndexNames(options: VectorProvisionOptions) {
+  return Object.entries(options.config.indexes).map(([index, indexConfig]) => ({
+    index,
+    indexConfig,
+    indexName: vectorIndexName(options.project, index, options.env),
+  }));
+}
+
+/**
  * Provision every configured index for one environment: the index, then its metadata indexes, then the
  * worker that will write to it. Idempotent end to end.
  */
@@ -158,13 +175,14 @@ export async function provisionVector(
   provisioner: VectorProvisioner,
   options: VectorProvisionOptions,
 ): Promise<VectorProvisionResult> {
+  const planned = plannedIndexNames(options);
+
   await provisioner.preflight();
 
   const indexNames: Record<string, string> = {};
   const indexes: VectorIndexResult[] = [];
 
-  for (const [index, indexConfig] of Object.entries(options.config.indexes)) {
-    const indexName = vectorIndexName(options.project, index, options.env);
+  for (const { index, indexConfig, indexName } of planned) {
     await provisioner.ensureIndex(indexName, { dimensions: indexConfig.dimensions, metric: indexConfig.metric });
 
     // Immediately after the index, and before any worker that could write to it exists.
@@ -227,11 +245,14 @@ export async function resetVector(
   provisioner: VectorProvisioner,
   options: VectorProvisionOptions,
 ): Promise<VectorResetResult> {
+  // Every name first, then the account check, and only then the first delete. Both are refusals, and a
+  // refusal a reset reaches half way through has already destroyed an index it is not going to rebuild.
+  const planned = plannedIndexNames(options);
+
   await provisioner.preflight();
 
   const deleted: string[] = [];
-  for (const index of Object.keys(options.config.indexes)) {
-    const indexName = vectorIndexName(options.project, index, options.env);
+  for (const { indexName } of planned) {
     await provisioner.deleteIndex(indexName);
     deleted.push(indexName);
   }

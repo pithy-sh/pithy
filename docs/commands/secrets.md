@@ -44,9 +44,48 @@ There is no `--worker`. Every subcommand reads the **project's** registry: each 
 
 The registry is the definition. `pithy secrets` never invents a name — a secret must be declared by a capability the Worker composes, and an undeclared one is refused before anything is sent. Every capability's declarations count, not just the secrets capability's own: `auth`'s session secret and OAuth credentials, `email`'s link signing key and `payments`' provider credentials are all declared by the capability that reads them, and all of them are yours to create here.
 
-**A value never comes from a flag.** `create` and `update` read the value from stdin when it is piped, and from a masked prompt otherwise. A flag would leave a live credential in shell history and in every process list on the machine. Nothing here prints a value back, on any subcommand, in either output mode.
+**A value never comes from a flag.** `create` and `update` read the value from stdin when it is piped, and from a masked prompt when one can be drawn — and refuse when neither is available, rather than reading your terminal in silence. A flag would leave a live credential in shell history and in every process list on the machine. Nothing here prints a value back, on any subcommand, in either output mode.
 
-`create`, `update` and `rm` dispatch through the environment's manager Workflow rather than writing storage directly, and each is audited (`secrets/set`, `secrets/rotated`, `secrets/removed`) recording the secret's name and the environments reached — never its value. A write that fails is audited too, with the environments it reached before it failed. Which environments a write reaches is the registry's decision, not the flag's: an `environment`-scoped secret reaches exactly the one you named; a `global` one in D1 fans out across every managed environment; a `global` one in the CF Secrets Store is written once, canonically, through the last declared environment.
+**A `json` secret is asked for one field at a time.** On a terminal, `create` and `update` walk the entry's schema and ask per field, using that field's own description as the question. Every field is masked, with no exceptions: these values arrive by paste, so masking costs nothing an operator was going to use, and a field wrongly treated as public is a credential in a screen share. An empty answer is not a value — it is left out, and a field the schema requires is then named on the problem line by the same validation that checks a piped document, so you know which of six questions to answer again. The name only, never the value.
+
+**Only the blocks this project configured are offered.** `payments-provider-credentials` holds one block per payment rail, and the schema knows five are possible where only `pithy.config.ts` knows which are on. One configured rail is named and asked for; several become a checkbox of those rails and nothing else. A rail that is off is never offered and never written, and a block you do not choose is absent from the stored value rather than stored empty.
+
+**An update replaces the whole secret, and it says so every time.** The value is sealed under a master key the CLI cannot read — the read seam answers whether a name is there, never what is under it — so it cannot merge what you type into what is stored, and it cannot show you what is stored either. Anything you are not asked about is gone: a block for a rail you switched off months ago is not in the prompts, so it is not in the value that gets written. That is stated on every interactive update, including the one-rail project that never sees a checkbox. **Pipe the whole document when you need to keep a block you are not editing.**
+
+A schema this cannot render — a union, a record, a list of objects — falls back to the single prompt for the whole document. Refusing to ask is fine; guessing a shape is not.
+
+**A field is asked for on its own line only once somebody has said it fits on one.** A masked prompt reads one line, and a longer paste is silently truncated to one: the first line if your terminal sends carriage returns, the last if it sends newlines. The rest is gone, the fragment is a non-empty string, so the bundle *passes validation* and nothing goes wrong until a signature check does, in production. So every string field of a `json` secret declares whether its value can span lines, and a field holding a PEM — Apple's App Store Connect key, Google's service-account key — says that it can. A secret with such a field among the blocks you configured is asked for as a single JSON document instead, where `\n` is escaped and nothing splits, and the CLI names the field that is the reason. **A field that has declared nothing is treated the same way**, because *undeclared* and *safe* are not the same thing: in the kit nothing is undeclared — a repo-wide test fails any field that has not said — and in your own registry the fallback is what keeps a value you have not classified out of a single-line prompt. If a field marked single-line is handed a PEM anyway, the prompt refuses it by name rather than storing one line of it.
+
+**Piped input is unchanged by any of it.** A pipe takes one whole JSON document, exactly as it always has. Per-field prompting is the interactive path only, because the non-interactive one is what CI and agents drive.
+
+**What decides which of the two you get is stdin, and only stdin.** A pipe, a heredoc, a file, `< /dev/null` — anything that is not a terminal on stdin — is a document, and it is read exactly the same way with `--json`, with output redirected to a file, and with neither. Whether a *prompt* can be drawn is a separate question with separate inputs: `--json` off, and a terminal on stdout.
+
+**So there is a third case, and it says so rather than guessing.** stdin is your terminal, so no document is coming; and the run cannot draw a prompt, because you passed `--json` or redirected the output to a file. Reading your terminal anyway would be an unmasked, unannounced request for a credential, and waiting on it would be a hang. It refuses instead, and names the way in that works from there:
+
+```
+No value was piped for 'STRIPE_SECRET_KEY', and this run cannot prompt for one — stdout is not a terminal, or --json was passed.
+  Pipe the value in: printf '%s' "$VALUE" | pithy secrets create STRIPE_SECRET_KEY
+```
+
+`create`, `update` and `rm` are audited (`secrets/set`, `secrets/rotated`, `secrets/removed`), recording the secret's name, its backend, and the environments reached — never its value. A write that fails is audited too, with the environments it reached before it failed. Which environments a write reaches is the registry's decision, not the flag's: an `environment`-scoped secret reaches exactly the one you named; a `global` one in D1 fans out across every managed environment; a `global` one in the CF Secrets Store is written once, canonically, through the last declared environment.
+
+**Where a write lands is the registry's decision too, and the same one.** A `d1` secret is dispatched through that environment's manager Workflow, which encrypts it under a master key that never leaves the Worker. A `cf-secrets-store` secret is written straight into the account's Secrets Store, at the `<project>-<env>-<secret>` entry ([docs/NAMING.md](../NAMING.md)) that Worker's stanza binds — composed by the same code `pithy secrets provision` looks it up with, so what you write is what gets bound. `create` refuses a name that is already there and `update` refuses one that is not, in both stores alike.
+
+**And what the entry holds is the registry's decision as well.** Nearly every secret is stored as a versioned envelope and read back through it, which is what makes a value rotation expressible. A `bootstrap` secret is not: it is read straight off its binding by code that runs before the store that decoder needs is open, so its entry holds the **value**, with nothing around it. The rule is the one the dev secrets file already states — the destination receives the payload, not a wrapper — and it is why `SECRETS_ENCRYPTION_KEYS` can be parsed at boot at all. If you declare a `bootstrap` secret of your own, `pithy secrets create` writes it the same way.
+
+**A `global` CF-Secrets-Store write reports the entry, not the environment it went through.** There is one account-level entry and every environment's stanza binds it, so the line names what actually changed:
+
+```
+payments-provider-credentials written to one account entry, read by staging, prod.
+```
+
+Under `--json` that is `environments` naming every environment that reads it, plus `"accountEntry": true`. The environment the write was *dispatched* through is an implementation detail — the canonical one, picked so the same manager always performs it — and reporting it alone understated the change by every environment but one.
+
+**`create` writes the entry; it does not write the stanza.** Follow it with `pithy secrets provision`, which binds on existence — an entry you supplied a moment ago is bound exactly like one it minted itself. `pithy doctor` and `pithy provision` both print that pair for a secret whose entry is missing.
+
+**`rm` on a store-backed secret deletes the entry, and says what it leaves behind.** The entry is the value the Worker reads, so deleting it is the revocation; the Worker's `wrangler.jsonc` still carries a `secrets_store_secrets` line naming it, and nothing in the kit removes one. Wrangler refuses a config naming an absent entry, so the next deploy of that Worker fails until you delete the binding or supply the value again — which the command tells you on the line under the removal.
+
+**`SECRETS_ENCRYPTION_KEYS` is refused in all three.** It is the master key every other secret in that environment is sealed under: replacing it orphans each of them and removing it loses them. `pithy secrets provision` creates it when it is absent, and that is the only thing that writes it.
 
 **A `global` D1 write is the one fan-out, and it is not a transaction.** Each environment is a separate Workflow in a separate Worker; there is no rollback across them, and a compensating write is itself a Workflow that can fail. So the guarantee the command gives is narrower than "all or nothing", and it is stated rather than implied: **no ordinary command can create a split**, because a narrowed global write is refused before anything is dispatched. A *fault* part-way through the fan-out still can, and when it does the command names the environments it reached before it failed — on stdout, before the error:
 
@@ -62,6 +101,8 @@ A registry entry says how its secret is replaced, and until #367 nothing acted o
 
 - **`local`** — the kit produces the value, so it produces another. Minted here, written through the same manager Workflow every other write goes through.
 - **`provider`** — the issuer is called and returns the successor. The call is the adopter's or the capability's, attached to the registry entry as a rotator; a `provider` secret with no rotator is refused by name, with both ways out. The kit ships the tag on `turnstile-secret-keys` and no rotator for it, because rolling that widget needs a Cloudflare account token this package must never hold.
+
+  A rotation writes wherever the registry says the secret is held — the same routing `create` and `update` use — and **everything refusable is refused before the issuer is called**. That includes the destination's own refusals, on either backend: a store that cannot be reached — an account with no Secrets Store, a manager Workflow that was never deployed — and an `update` of a secret that is not there. Both are knowable in advance, and discovering one at the write is a credential rolled at the issuer whose successor is then lost.
 - **`manual`** — a human, in somebody else's console. It prints the console, the page, and the `pithy secrets update` that records the result, and calls nothing. It exits `0`, and it never prints `Done.`: nothing was done.
 
 **`--dry-run` resolves the declaration and stops.** It reaches no account, needs no credentials, and rolls nothing — which is what makes it the thing to type first at 2am, when the question is *is this one rolled at somebody else's API, or minted here?*
@@ -234,6 +275,9 @@ printf '%s' "$THE_VALUE" | pithy secrets create STRIPE_SECRET_KEY --env prod --j
 
 # Update one interactively — a masked prompt asks for the value.
 pithy secrets update STRIPE_SECRET_KEY --env prod
+
+# Create a bundle interactively — one masked prompt per field, for the rails this project runs.
+pithy secrets create payments-provider-credentials --env prod
 
 # Say what rotating would do. Reaches no account, rolls nothing.
 pithy secrets rotate TURNSTILE_SECRET --env prod --dry-run

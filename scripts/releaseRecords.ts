@@ -3,8 +3,12 @@
  *
  *   bun scripts/releaseRecords.ts snapshot   # before `changeset version` — it deletes the changesets
  *   bun scripts/releaseRecords.ts build      # after it, joining the snapshot to the new versions
- *   bun scripts/releaseRecords.ts post       # to the dashboard, or a line saying it is off
+ *   bun scripts/releaseRecords.ts post       # to every configured dashboard, or a line saying it is off
+ *   bun scripts/releaseRecords.ts post --dry-run   # a zero-record delivery to staging, to prove the claims
  *   bun scripts/releaseRecords.ts replay     # rebuild from the changelogs, to recover a failed write
+ *
+ * `post` exits **non-zero** when a destination fails, and the workflow step carries
+ * `continue-on-error: true`. The release stands and the failure is still visible.
  *
  * The logic lives in `@pithy-sh/release` rather than here, because `scripts/` sits in no vitest project
  * and nothing in it can be tested. This file is the entry point `release.yml` names: it resolves the

@@ -82,7 +82,16 @@ export interface PaddleRailOptions {
   clientToken: string;
   /** Whether checkout opens as an overlay, inline, or on Paddle's own hosted page. */
   checkout: "overlay" | "inline" | "hosted";
-  /** How many seconds either side of now a delivery may be dated. Undefined uses the rail's 300. */
+  /**
+   * How many seconds either side of now a delivery may be dated. Undefined uses the rail's 300.
+   *
+   * Threaded down unchanged through `webhook.ts` and validated in one place, `signature.ts`, where the
+   * comparison is — a non-finite, negative, or over-wide window is `core/internal` there, refused before any
+   * delivery is judged. The layers between only apply defaults with `??`, which catches `undefined` and never
+   * `NaN`; one place that refuses beats three that each half-check. `paddle.webhookFreshnessSeconds` reaches
+   * this field and is deliberately **not** bounded again in `PaymentsPaddleSettings`: that schema parses at
+   * module scope, so a bound there refuses the whole Worker for one webhook route's knob.
+   */
   freshnessSeconds?: number;
   /**
    * The currency this project's Paddle catalog prices in, when the project declared one.

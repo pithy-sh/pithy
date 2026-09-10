@@ -662,8 +662,18 @@ function resolveDeclines(
     });
 }
 
+/** What {@link workerDeclines} needs: one Worker, resolved on its own. */
+export interface WorkerDeclineOptions {
+  /** Every manifest reachable from this Worker — the root's and its own, merged by {@link composedManifests}. */
+  manifests: readonly CapabilityManifest[];
+  /** That Worker's composed capabilities. */
+  capabilities: readonly Capability[];
+  /** That Worker's own `pithy.config.ts`. Absent means it declines nothing. */
+  workerConfig?: WorkerConfig | undefined;
+}
+
 /**
- * The binding names a Worker is leaving out, resolved from its config against what it composes.
+ * One Worker's whole `declinedBindings` declaration, resolved — or the fact that it could not be read.
  *
  * **The one export of this rule, for callers that hold no plan.** `pithy provision` and `pithy feature
  * create` create the resource behind each provisionable binding, and a decline that stopped `pithy
@@ -672,34 +682,49 @@ function resolveDeclines(
  * than re-deciding what "declined" means — a second expression of a four-state rule is how two commands
  * come to disagree, which is this issue one level up.
  *
+ * It hands back every entry rather than the honored names alone, because **a command that acts on a
+ * decline has to be able to say so**. {@link honoredNames} answers *what is left out*, which is all a
+ * filter needs and is exactly one bit too few for a report: the `invalid` state collapses into an empty
+ * set there, so a `declinedBindings` block with one typo in it reads as *nothing declined* and every
+ * declined resource is created in silence (#514). The reason string is required precisely so a run can
+ * print it back.
+ *
  * No stanzas, because `stillPresentIn` is a fact about a `wrangler.jsonc` and provisioning is not
- * reading one; the field is empty here and nothing consumes it. Only `honored` names come back, so a
- * refused decline changes nothing about what is provisioned — exactly as it changes nothing about what
- * is written.
+ * reading one; the field is empty here and nothing consumes it.
+ *
+ * **And no `ejected`, which is not an omission but the difference between the two callers.**
+ * `buildReconcilePlan` drops a forked capability's manifest because an upgrade *skips* a fork — it writes
+ * nothing for one, so the manifest describes nothing it is about to do. The callers of this hold no plan
+ * and skip nothing: they create a resource for every provisionable binding on every **composed
+ * instance**, and a fork is composed. Dropping its manifest here resolves the adopter's decline as
+ * `unrecognized`, creates the resource, and writes the binding back into the file they removed it from —
+ * #440 for the one capability whose code is theirs. So the option does not exist, and passing one is a
+ * compile error rather than a silent write. A fork that has drifted is still covered: {@link
+ * resolveDeclines} refuses a decline the composed instance declares non-optionally.
  */
-export function honoredDeclineNames(options: {
-  /** Every installed capability manifest, read once by the caller — this is called per Worker. */
-  manifests: readonly CapabilityManifest[];
-  /** That Worker's composed capabilities. */
-  capabilities: readonly Capability[];
-  /** That Worker's own `pithy.config.ts`. Absent means it declines nothing. */
-  workerConfig?: WorkerConfig | undefined;
-  /** Capabilities this Worker has ejected, whose manifests no longer describe its wiring. */
-  ejected?: readonly string[];
-}): ReadonlySet<string> {
+export function workerDeclines(options: WorkerDeclineOptions): BindingDeclines {
   const read = readDeclinedBindings(options.workerConfig ?? { capabilities: [] });
-  if (read.state === "invalid") return new Set();
+  if (read.state === "invalid") return { state: "invalid", problem: read.problem };
   const composed = new Set(options.capabilities.map((capability) => capability.name));
   const byName = new Map(options.capabilities.map((capability) => [capability.name, capability]));
-  const declines = resolveDeclines(read.declared, options.manifests, composed, options.ejected ?? [], [], byName);
-  return new Set(declines.filter((decline) => decline.state === "honored").map((decline) => decline.name));
+  return { state: "read", declines: resolveDeclines(read.declared, options.manifests, composed, [], [], byName) };
+}
+
+/**
+ * The honored names of a resolved declaration — the set a filter wants, from the value a report wants.
+ *
+ * **Unreadable is no names, and its caller reports that.** The collapse is correct — a declaration nobody
+ * can read leaves nothing out — and it is also the whole of #514's second half, because it is lossless
+ * only for as long as somebody upstream still holds the state it dropped. So the two are split: this is
+ * the set, {@link workerDeclines} is the value, and a caller that reports takes the value.
+ */
+export function honoredNames(declines: BindingDeclines): ReadonlySet<string> {
+  if (declines.state !== "read") return new Set();
+  return new Set(declines.declines.filter((decline) => decline.state === "honored").map((decline) => decline.name));
 }
 
 function honoredDeclines(plan: ReconcilePlan): ReadonlySet<string> {
-  if (plan.declinedBindings.state !== "read") return new Set();
-  return new Set(
-    plan.declinedBindings.declines.filter((decline) => decline.state === "honored").map((decline) => decline.name),
-  );
+  return honoredNames(plan.declinedBindings);
 }
 
 /**

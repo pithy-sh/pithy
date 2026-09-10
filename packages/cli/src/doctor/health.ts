@@ -16,6 +16,7 @@ import {
 import type { CloudflareAccountSelection } from "../cloudflare/config";
 import type { ProjectLedger, readProjectLedger } from "../migrations/run";
 import type { WorkerConfig } from "../project/config";
+import { type BindingScopeHealth, bindingScopeHealth } from "./bindingScope";
 
 /**
  * The read-only project-health engine behind `pithy doctor`'s `Project health` block — the *same*
@@ -189,6 +190,15 @@ export interface ProjectHealth {
   ok: boolean;
   workers: WorkerHealth[];
   manifests: ManifestHealth;
+  /**
+   * The `bindingScope` check: a resource the whole project shares, bound to more than one of it (#513).
+   *
+   * Project-wide rather than per Worker, because the property is: the app Worker's stanzas and every
+   * other Worker's have to name the *same* database, so a per-Worker answer cannot see the disagreement
+   * it exists to find. `pithy provision --env <env>` fixes what it reports; `pithy upgrade` cannot,
+   * because repointing a binding is not adding one.
+   */
+  bindingScope: BindingScopeHealth;
 }
 
 /** The manifest-scan seam: defaults to {@link availableManifests}, the scan every capability command reads. */
@@ -196,6 +206,9 @@ export type ReadManifests = (projectDir: string) => Promise<AvailableManifests>;
 
 /** The plan-builder seam: defaults to {@link buildReconcilePlan}, the engine `upgrade` shares. */
 export type BuildPlan = (options: BuildReconcilePlanOptions) => Promise<ReconcilePlan>;
+
+/** The project-global binding seam: defaults to {@link bindingScopeHealth}. */
+export type ReadBindingScope = (projectDir: string) => Promise<BindingScopeHealth>;
 
 /** The shared engine, exported so a test can assert doctor and upgrade use one implementation. */
 export const defaultBuildPlan: BuildPlan = buildReconcilePlan;
@@ -237,6 +250,8 @@ export interface ProjectHealthOptions {
   buildPlan?: BuildPlan;
   /** Test seam: substitute the manifest scan. Defaults to the real `node_modules/@pithy-sh` read. */
   readManifests?: ReadManifests;
+  /** Test seam: substitute the project-global binding comparison. Defaults to the real wrangler read. */
+  readBindingScope?: ReadBindingScope;
 }
 
 /** Group a plan's per-capability missing bindings into one entry per binding, listing the envs that lack it. */
@@ -324,12 +339,17 @@ function healthFromPlan(worker: string, plan: ReconcilePlan): WorkerHealth {
 export async function buildProjectHealth(options: ProjectHealthOptions): Promise<ProjectHealth> {
   const build = options.buildPlan ?? defaultBuildPlan;
   const scan = options.readManifests ?? availableManifests;
+  const readScope = options.readBindingScope ?? bindingScopeHealth;
 
   // Read once, at the project, because that is where manifests live: one install under the root's
   // `node_modules/@pithy-sh`, shared by every Worker. Every plan below is built from the same scan, so a
   // capability whose manifest will not read is missing from every Worker's checks at once — which is the
   // hole this reports, and the reason it is not a per-Worker line.
   const { faults } = await scan(options.projectDir);
+
+  // Read once, at the project, for the reason the manifest scan is: a project-global resource is shared
+  // *between* Workers, so the disagreement lives across them and no per-Worker answer can see it.
+  const bindingScope = await readScope(options.projectDir);
 
   // **One Worker at a time (#371).** The wiring is per Worker, so a failure to read it is per Worker too —
   // and this is a diagnostic, so one Worker nobody could check must never cost the report on the others.
@@ -365,5 +385,5 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
   // the under-report this whole family exists to prevent. It is also what the behavior already was —
   // the throw reached `pithy doctor`'s catch and drove a non-zero exit — so the gate does not weaken.
   const checked = workers.every((worker) => worker.state === "checked" && worker.ok);
-  return { ok: manifests.ok && checked, workers, manifests };
+  return { ok: manifests.ok && bindingScope.ok && checked, workers, manifests, bindingScope };
 }

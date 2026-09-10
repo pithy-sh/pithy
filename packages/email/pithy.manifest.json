@@ -3,7 +3,7 @@
   "package": "@pithy-sh/email",
   "requiredBindings": [
     { "type": "d1", "name": "DB" },
-    { "type": "d1", "name": "EMAIL_SUPPRESSIONS" },
+    { "type": "d1", "name": "EMAIL_SUPPRESSIONS", "scope": "global" },
     { "type": "workflow", "name": "EMAIL_SENDER", "job": "send", "className": "EmailSendWorkflow" }
   ],
   "peerCapabilities": ["secrets"],

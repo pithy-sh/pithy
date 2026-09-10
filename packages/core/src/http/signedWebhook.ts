@@ -4,6 +4,9 @@
 import type { MiddlewareHandler } from "hono";
 import type { PithyHonoEnv } from "../capability/capability";
 import { InternalError, WebhookUnverifiedError } from "../error/pithyError";
+// The bounds live in a leaf so a browser-facing config schema can quote them without reaching this
+// middleware's Worker graph (#521). See `webhookWindow.ts`.
+import { SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS, SIGNED_WEBHOOK_TOLERANCE_SECONDS } from "./webhookWindow";
 
 /**
  * The `signed-webhook` strategy, for any sender. Secret, header name, tolerance and the exact received
@@ -43,6 +46,11 @@ import { InternalError, WebhookUnverifiedError } from "../error/pithyError";
  * crafted one, and neither is a delivery to act on; accepting it would also hand a forger an unbounded replay
  * window the moment a secret leaks.
  *
+ * The window's own width is checked before any delivery is. `skew > tolerance` is false when `tolerance` is
+ * `NaN`, so a non-finite tolerance does not widen the window — it deletes it, and every capture verifies
+ * forever. A tolerance outside `0 … {@link SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS}` is therefore refused as the
+ * configuration fault it is, never honored and never clamped.
+ *
  * ## Why the comparison is `crypto.subtle.verify`
  *
  * Comparing HMACs with `===` leaks how many leading bytes matched, and that leak is enough to forge a
@@ -65,9 +73,6 @@ import { InternalError, WebhookUnverifiedError } from "../error/pithyError";
  * {@link checkSignedWebhook}, which reports rather than throws. {@link verifySignedWebhook} is that plus the
  * kit's error.
  */
-
-/** How far a delivery's own timestamp may be from now. Stripe's default, and generous against clock skew. */
-export const SIGNED_WEBHOOK_TOLERANCE_SECONDS = 300;
 
 /** The header key naming the timestamp, unless a sender names it otherwise. */
 const DEFAULT_TIMESTAMP_KEY = "t";
@@ -103,7 +108,12 @@ export interface SignedWebhookScheme {
   timestampKey?: string;
   /** The header key holding a signature. Defaults to `v1`. */
   signatureKey?: string;
-  /** The freshness window, in seconds, either side of now. Defaults to {@link SIGNED_WEBHOOK_TOLERANCE_SECONDS}. */
+  /**
+   * The freshness window, in seconds, either side of now. Defaults to {@link SIGNED_WEBHOOK_TOLERANCE_SECONDS}
+   * and must be a finite number from 0 to {@link SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS}; anything else is
+   * `core/internal`, because this is the second operand of the freshness comparison and one `NaN` does not
+   * widen the window, it removes it.
+   */
   toleranceSeconds?: number;
 }
 
@@ -225,8 +235,9 @@ export type SignedWebhookRefusal =
  * each caller keeps its vocabulary, rather than the whole verifier existing twice with two sets of comments
  * to keep in step. Most callers want {@link verifySignedWebhook}.
  *
- * It still throws for **our** failure: an endpoint holding no usable secret, or handed a clock that is not a
- * clock, is a configuration fault rather than a refusal, and every caller reports that the same way.
+ * It still throws for **our** failure: an endpoint holding no usable secret, given a tolerance that is not a
+ * window, or handed a clock that is not a clock, is a configuration fault rather than a refusal, and every
+ * caller reports that the same way. Those three are checked first, before anything the sender wrote.
  *
  * `body` must be the **exact received bytes**. A parsed-and-re-serialized object is different bytes — key
  * order alone changes it — and would never verify.
@@ -252,18 +263,29 @@ export async function checkSignedWebhook(
     });
   }
 
-  const timestampKey = options.timestampKey ?? DEFAULT_TIMESTAMP_KEY;
-  const signatureKey = options.signatureKey ?? DEFAULT_SIGNATURE_KEY;
-  const parsed = header === null ? undefined : parseSignedWebhookHeader(header, timestampKey, signatureKey);
-  if (parsed === undefined) return { reason: "unreadable" };
-
+  // The freshness window is a comparison between two numbers a caller supplies, and **either** of them
+  // non-finite does not widen it — it removes it, because `NaN > x` and `x > NaN` are both false. So both are
+  // checked here, beside the empty secret, before a byte the sender wrote is read: a configuration fault must
+  // be the same answer whatever arrived, rather than one that surfaces only on a delivery well-formed enough
+  // to reach the comparison.
   const tolerance = options.toleranceSeconds ?? SIGNED_WEBHOOK_TOLERANCE_SECONDS;
+  // The realistic source is not a hostile caller — it is a route reading `Number(env.WEBHOOK_TOLERANCE)` for a
+  // variable nobody set or somebody misspelled. TypeScript types that `number`, every layer between passes it
+  // on with `??` (which catches `undefined`, never `NaN`), and nothing downstream looks again. The upper bound
+  // is the same argument as the constant it defaults to: a tolerance is a replay window, so it is configuration
+  // that has to be small, not merely present.
+  if (!Number.isFinite(tolerance) || tolerance < 0 || tolerance > SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS) {
+    throw new InternalError({
+      message: "This webhook endpoint is not configured.",
+      action: `Give the ${options.header} guard a tolerance between 0 and ${SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS} seconds.`,
+      detail: `The signed-webhook guard on ${options.header} was given a tolerance of ${String(tolerance)} seconds, and a freshness window must be a number from 0 to ${SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS}.`,
+    });
+  }
   const nowSeconds = Math.floor((options.now ?? new Date()).getTime() / 1000);
-  // Fail closed on a clock that is not one. `Math.abs(NaN - t) > tolerance` is false, so an invalid Date would
-  // pass the window silently — the one check in this file that could fail open, in the file whose whole
-  // argument is that it fails closed. Comparing against a sentinel instead would still be a comparison against
-  // a number nobody chose. Only a caller-supplied `now` reaches here as NaN: the header's timestamp is a
-  // digit-checked string before it is a number, so this is our fault and takes our code, like the secret above.
+  // The other operand, and the same fault one field over. `Math.abs(NaN - t) > tolerance` is false, so an
+  // invalid Date passes a delivery of any age. Comparing against a sentinel instead would still be a comparison
+  // against a number nobody chose. Only a caller-supplied `now` reaches here as NaN: the header's timestamp is
+  // a digit-checked string before it is a number, so this is our fault and takes our code, like the two above.
   if (!Number.isFinite(nowSeconds)) {
     throw new InternalError({
       message: "This webhook endpoint is not configured.",
@@ -271,6 +293,12 @@ export async function checkSignedWebhook(
       detail: `The signed-webhook guard on ${options.header} was handed a clock that is not a valid Date, so no delivery's freshness can be judged.`,
     });
   }
+
+  const timestampKey = options.timestampKey ?? DEFAULT_TIMESTAMP_KEY;
+  const signatureKey = options.signatureKey ?? DEFAULT_SIGNATURE_KEY;
+  const parsed = header === null ? undefined : parseSignedWebhookHeader(header, timestampKey, signatureKey);
+  if (parsed === undefined) return { reason: "unreadable" };
+
   const skew = Math.abs(nowSeconds - parsed.timestamp);
   if (skew > tolerance) return { reason: "stale", skew, tolerance };
 

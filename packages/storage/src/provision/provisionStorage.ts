@@ -52,6 +52,14 @@ import { STORAGE_CAPABILITY } from "../workflows/specs";
  * genuinely 3–63 lowercase characters, starting and ending alphanumeric. Every other namespace Pithy
  * writes into was once held to that same 63 for no reason; asking for a bucket by name is how this one
  * keeps it on purpose.
+ *
+ * **The `<thing>` segment is `storage`, and `packages/storage/pithy.manifest.json` now says so too**,
+ * with `"resource": "storage"` on the `STORAGE_BUCKET` binding (#519). Until it did, `pithy add` and
+ * `pithy provision` composed `<project>-<env>-storage-bucket` from the binding name while this composed
+ * `<project>-<env>-storage`: two names for one bucket, which is #513's defect in the two capabilities
+ * that issue left out. The binding keeps `_BUCKET` — it is read as `env.STORAGE_BUCKET` in a Worker —
+ * and the resource drops it, because `r2` is already the composed name's own kind.
+ * `cli/src/ci/bindingResourceNames.test.ts` holds this function and that manifest line to one string.
  */
 export function storageBucketName(project: string, env: ManagedEnvironment): string {
   return resourceNames(project).env(env).r2(STORAGE_CAPABILITY);
@@ -109,9 +117,10 @@ export interface StorageProvisionResult {
  * completing one environment end to end before starting the next — means a failure creating prod's
  * bucket stops the run before staging's worker is deployed against a half-provisioned account.
  *
- * `environments` is the project's declaration from the root `pithy.config.ts` (#241). Every declared
- * environment is provisioned; an environment this skipped would be one the project deploys to with no
- * resources behind it — the silence the closed `ManagedEnvironment` enum used to produce.
+ * `environments` is **what the caller determined it can act on**, which the CLI narrows from the project's
+ * declaration (#241) to the environments whose app database exists (pithy-sh/pithy#512). Nothing is
+ * skipped here and nothing decides here: an environment reaching this list is provisioned, and one that
+ * did not was already reported to the operator by name, with why and with the command that fixes it.
  */
 export async function provisionStorage(
   provisioner: StorageProvisioner,

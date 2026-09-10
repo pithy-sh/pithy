@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import type { RotationTrigger } from "../data/secretRotations";
 import type { SecretBackend, SecretScope, SecretValueType } from "../registry";
@@ -18,6 +19,52 @@ export interface SecretWriteRequest {
   env: ManagedEnvironment;
   mode: "create" | "update" | "delete";
   name: string;
+  /**
+   * **Where the value is held, and therefore which writer performs this request** (#517).
+   *
+   * It was absent, and its absence is the whole of the defect: every request reached
+   * `WorkflowSecretDispatcher`, which reaches one environment's manager Workflow, which runs
+   * `runWriteSecret` against `SystemSecretsStore` — D1, unconditionally. So `pithy secrets create` on a
+   * `cf-secrets-store` secret wrote an encrypted D1 row nothing reads, exited 0, and left the store entry
+   * absent; `pithy secrets rm` deleted that same shadow row and reported a revocation while the live entry
+   * stayed bound in `wrangler.jsonc`. `secretWriteTargets` had the backend all along and read it only to
+   * decide *how many* environments a write reaches — never *what* performs it.
+   *
+   * A request therefore states it, and {@link backendRoutedDispatcher} is what turns it into a
+   * destination. Required rather than optional: an omitted backend would default to whichever branch was
+   * written first, which is exactly the silence this replaces.
+   */
+  backend: SecretBackend;
+  /**
+   * The secret's declared scope — carried for the same reason as {@link backend}, one step further on.
+   *
+   * A Secrets Store entry's name is `scope.secretEntry(binding, scope)`, and a `global` secret resolves to
+   * one account-level `<project>-global-<secret>` rather than to a per-environment name. So the writer
+   * cannot compose the address it is about to write without this, and a writer that guessed would put an
+   * operator's value at a name provisioning never looks at. `d1` ignores it: a row is addressed by the
+   * bare registry name inside an already-per-environment database.
+   */
+  scope: SecretScope;
+  /**
+   * **Whether this secret is read straight from its binding, and therefore carries no envelope.**
+   *
+   * The third routing fact, and the one whose absence wrote an unreadable value. Every other secret is
+   * stored as an encoded `{ currentVersion, versions }` envelope and read back through
+   * `decodeVersionedValue`; a `bootstrap` secret is read *before* the store that decoder needs is open,
+   * so its destination carries the value itself. `resolveEncryptionConfig` is that reader for the master
+   * key — it takes the binding's plaintext, `JSON.parse`s it and parses an `EncryptionConfig` — and
+   * `#323` settled the same rule for the dev secrets file in the same words: **the file states the
+   * payload the destination receives.** A store entry is a destination.
+   *
+   * So a writer that enveloped unconditionally landed, for exactly the `bootstrap` shapes, a value the
+   * boot reader cannot parse: the Worker fails at `SECRETS_ENCRYPTION_KEYS is not a valid
+   * EncryptionConfig` over a value the command reported as written. `storeEntryText` is the one place
+   * the decision is taken, and this is the fact it takes it from.
+   *
+   * Required rather than optional, for {@link backend}'s reason one axis over: an omitted flag defaults
+   * to the envelope, which is the shape that is wrong for the one secret that cannot say so.
+   */
+  bootstrap: boolean;
   /** Present for create/update; omitted for delete. Already validated + canonicalized by the CLI. */
   value?: string;
   valueType?: SecretValueType;
@@ -31,6 +78,89 @@ export interface SecretWriteRequest {
  */
 export interface SecretDispatcher {
   dispatch(request: SecretWriteRequest): Promise<void>;
+}
+
+/**
+ * **A writer that answers a pre-flight: raise now whatever {@link SecretDispatcher.dispatch} would raise
+ * before it writes anything — and answer nothing.**
+ *
+ * `refuseUnrotatable`'s shape, one seam out: *refuse everything refusable before anything is called.*
+ * A rotation calls a third party's API and then stores what comes back, so a refusal that arrives at
+ * the store is a refusal that arrives **after the irreversible line** — the credential is dead at its
+ * issuer and its successor exists only in this process. Each backend's writer has the same two refusals,
+ * over its own destination: it cannot be reached at all (no `SECRETS_STORE_ID`; no manager Workflow), and
+ * an `update` of a secret that is not there. Both are knowable before a rotator is called.
+ *
+ * **It is required, and that requirement is the fix rather than the tidying** (#517). It arrived optional,
+ * `storeSecretWriter` implemented it, `WorkflowSecretDispatcher` did not, and nothing said so: the router
+ * called it with `?.`, the `d1` half passed silently, and the identical ordering fault stayed live on the
+ * more common backend — the rotator rolled, the manager answered `Secret does not exist`, and the
+ * successor was lost. So the type carries it now. A backend that genuinely has nothing to refuse in
+ * advance says so out loud through {@link withoutPreflight}; there is no longer a way to say it by
+ * omission.
+ *
+ * It answers `void` on purpose — a preflight that returned a bit would be a check somebody gates a write
+ * on, and a check that gates a write is the write's own race. It is a *cheap pre-flight and never a
+ * second authority*: `dispatch` asks the same questions itself regardless, and the late ask is the one
+ * that decides.
+ */
+export interface PreflightSecretDispatcher extends SecretDispatcher {
+  preflight(request: SecretWriteRequest): Promise<void>;
+}
+
+/**
+ * **The one way to route a backend that refuses nothing in advance, and it has to be said in words.**
+ *
+ * Every backend the kit ships has a pre-flight, so nothing here calls this today. It exists because the
+ * alternative to an escape hatch is not "no escape hatch" — it is the escape hatch that already existed,
+ * an omitted method nobody could see. A waiver written like this is greppable, is attached to the backend
+ * it waives, and carries the reason the next reader needs; an absent method carried none of that, and cost
+ * a live credential.
+ *
+ * The reason is demanded rather than defaulted, and an empty one is refused at composition time — where a
+ * refusal costs a startup, not a rotation.
+ */
+export function withoutPreflight(dispatcher: SecretDispatcher, because: string): PreflightSecretDispatcher {
+  if (because.trim() === "") {
+    throw new InternalError({
+      message: "A secret writer that skips its pre-flight must say why.",
+      detail: "withoutPreflight was composed with an empty reason",
+    });
+  }
+  return {
+    dispatch: (request) => dispatcher.dispatch(request),
+    // Nothing to refuse in advance, stated rather than omitted. See `because`.
+    preflight: async () => {},
+  };
+}
+
+/**
+ * **One dispatcher per backend, chosen by the request rather than by the caller.**
+ *
+ * The seam stays one seam — `dispatchSecretWrite` still takes a {@link SecretDispatcher}, and
+ * `secretWriteTargets` still owns which environments a write reaches — and this is the object that reads
+ * {@link SecretWriteRequest.backend} and hands the request to the writer that can perform it. Composed
+ * once, in `pithy secrets`, so no command picks a destination and none can pick a different one.
+ *
+ * A total record over `SecretBackend`, deliberately: a third backend fails the build here rather than
+ * inheriting whichever branch happened to come first, which is precisely how every write came to be a D1
+ * write.
+ *
+ * **And every route is a {@link PreflightSecretDispatcher}, which is the second half of the same idea.**
+ * The ordering a rotation depends on is a property of *this* object rather than of whichever writer
+ * happened to be written carefully: a backend with no pre-flight is a compile error here, not a silent
+ * `?.` that resolves. One backend having the guard and the other not is exactly how #517's remaining half
+ * survived a fix aimed at it.
+ */
+export function backendRoutedDispatcher(
+  routes: Record<SecretBackend, PreflightSecretDispatcher>,
+): PreflightSecretDispatcher {
+  return {
+    dispatch: (request) => routes[request.backend].dispatch(request),
+    // The same route, so a preflight cannot ask a different writer than the one that will perform the
+    // write — and every route has one to ask.
+    preflight: (request) => routes[request.backend].preflight(request),
+  };
 }
 
 /** One presence question, asked of one environment's manager. Carries a name and nothing else. */
@@ -103,6 +233,8 @@ export interface SecretWrite {
   name: string;
   backend: SecretBackend;
   scope: SecretScope;
+  /** The third routing fact — see {@link SecretWriteRequest.bootstrap}. Forwarded, never re-derived. */
+  bootstrap: boolean;
   rotatable: boolean;
   valueType: SecretValueType;
   /** The validated value for create/update; omitted for delete. */
@@ -177,6 +309,13 @@ export async function dispatchSecretWrite(
         env,
         mode: write.mode,
         name: write.name,
+        // The registry's two routing facts, forwarded rather than re-derived. `secretWriteTargets` above
+        // read them to decide how many environments this reaches; the dispatcher reads them to decide
+        // what performs it. One resolution, two questions — and no second lookup to disagree with.
+        backend: write.backend,
+        scope: write.scope,
+        // The third, and the one that decides what the value is wrapped in rather than where it goes.
+        bootstrap: write.bootstrap,
         value: write.value,
         valueType: write.valueType,
         rotatable: write.rotatable,

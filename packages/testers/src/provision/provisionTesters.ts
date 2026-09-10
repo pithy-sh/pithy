@@ -73,11 +73,14 @@ export interface TestersProvisionResult {
 }
 
 /**
- * Provision the daily-pass host across every managed environment.
+ * Provision the daily-pass host across the environments given.
  *
  * Preflight runs once, before any deploy. Failing there means failing before one environment is half
  * provisioned rather than part way through the fan-out — the state that is hardest to reason about and
  * hardest to recover from.
+ *
+ * `environments` is what the caller determined it can act on — the CLI narrows it by `--env` and then by
+ * whether the environment's app database exists (pithy-sh/pithy#512). Nothing decides here.
  */
 export async function provisionTesters(
   provisioner: TestersProvisioner,

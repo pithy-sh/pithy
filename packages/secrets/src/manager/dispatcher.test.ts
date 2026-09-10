@@ -49,6 +49,9 @@ describe("WorkflowSecretDispatcher", () => {
       env: "staging",
       mode: "create",
       name: "x",
+      backend: "d1",
+      scope: "environment",
+      bootstrap: false,
       value: "v",
       valueType: "text",
       rotatable: false,
@@ -163,12 +166,130 @@ describe("WorkflowSecretDispatcher", () => {
   test("two projects' dispatchers never reach the same Workflow", async () => {
     const acme = stubClient();
     const globex = stubClient();
-    const request = { env: "prod", mode: "update", name: "x", value: "v" } as const;
+    const request = {
+      env: "prod",
+      mode: "update",
+      name: "x",
+      backend: "d1",
+      scope: "environment",
+      bootstrap: false,
+      value: "v",
+    } as const;
 
     await new WorkflowSecretDispatcher(acme.client, "acme").dispatch({ ...request });
     await new WorkflowSecretDispatcher(globex.client, "globex").dispatch({ ...request });
 
     expect(acme.dispatchAndPoll.mock.calls[0]?.[0]).toBe("acme-prod-secrets-write");
     expect(globex.dispatchAndPoll.mock.calls[0]?.[0]).toBe("globex-prod-secrets-write");
+  });
+});
+
+/**
+ * **This writer reaches one environment's D1 and nothing else, so it refuses anything else** (#517).
+ *
+ * `backendRoutedDispatcher` sends a store write elsewhere, which should make this unreachable — which is
+ * exactly why it is here. A write path added later that forgets to route fails at the first dispatch
+ * instead of quietly filling a database with values no reader opens.
+ */
+describe("a request for another backend never becomes a D1 row", () => {
+  const foreign = {
+    env: "staging",
+    mode: "create",
+    name: "SUPPLIED",
+    backend: "cf-secrets-store",
+    scope: "environment",
+    bootstrap: false,
+    value: "v",
+    valueType: "text",
+    rotatable: false,
+  } as const;
+
+  test("a cf-secrets-store write is refused, and nothing is dispatched", async () => {
+    const { client, dispatchAndPoll } = stubClient();
+    await expect(new WorkflowSecretDispatcher(client, "acme").dispatch({ ...foreign })).rejects.toThrow(
+      /only reaches D1/,
+    );
+    expect(dispatchAndPoll.mock.calls).toEqual([]);
+  });
+
+  /** The guard is on both entry points: a pre-flight that resolved here would answer about a store this
+   * writer cannot reach, which is worse than not asking — it would read as *nothing to refuse*. */
+  test("a cf-secrets-store pre-flight is refused too, and probes nothing", async () => {
+    const { client, dispatchAndPoll } = stubClient();
+    await expect(new WorkflowSecretDispatcher(client, "acme").preflight({ ...foreign })).rejects.toThrow(
+      /only reaches D1/,
+    );
+    expect(dispatchAndPoll.mock.calls).toEqual([]);
+  });
+});
+
+/**
+ * # The refusals a `d1` write owns, asked with nothing written (#517)
+ *
+ * `storeSecretWriter` got this seam and this dispatcher did not, and the router asked for it with `?.` —
+ * so on the more common backend `pithy secrets rotate` called the issuer first and met `Secret does not
+ * exist` afterwards, with the old credential dead and the new one nowhere. The questions are the write's
+ * own, asked through the one mode that writes nothing.
+ */
+describe("preflight", () => {
+  const update = {
+    env: "prod",
+    mode: "update",
+    name: "CF_TOKEN",
+    backend: "d1",
+    scope: "environment",
+    bootstrap: false,
+    valueType: "text",
+    rotatable: true,
+  } as const;
+
+  test("asks the environment's own manager, in the mode that writes nothing", async () => {
+    const { client, dispatchAndPoll } = stubClient();
+    dispatchAndPoll.mockResolvedValue({ outcome: "present" });
+
+    await expect(new WorkflowSecretDispatcher(client, "acme").preflight({ ...update })).resolves.toBeUndefined();
+
+    // One call, and it carries a name and nothing else — no value can be written by a question.
+    expect(dispatchAndPoll.mock.calls).toEqual([["acme-prod-secrets-write", { mode: "probe", name: "CF_TOKEN" }]]);
+  });
+
+  /** The measured defect, at its own seam: this is the answer that used to arrive after the roll. */
+  test("refuses an update of a secret the manager does not hold", async () => {
+    const { client, dispatchAndPoll } = stubClient();
+    dispatchAndPoll.mockResolvedValue({ outcome: "absent" });
+
+    await expect(new WorkflowSecretDispatcher(client, "acme").preflight({ ...update })).rejects.toThrow(
+      /does not exist/,
+    );
+  });
+
+  /** The mirror, so a typo cannot create a second secret over a live one. */
+  test("refuses a create over a secret the manager already holds", async () => {
+    const { client, dispatchAndPoll } = stubClient();
+    dispatchAndPoll.mockResolvedValue({ outcome: "present" });
+
+    await expect(
+      new WorkflowSecretDispatcher(client, "acme").preflight({ ...update, mode: "create", value: "v" }),
+    ).rejects.toThrow(/already exists/);
+  });
+
+  /** An unreachable manager is the other refusal, and it arrives as the probe's own failure. */
+  test("refuses when the manager cannot be reached at all", async () => {
+    const { client, dispatchAndPoll } = stubClient();
+    dispatchAndPoll.mockRejectedValue(new Error("no such Workflow"));
+
+    await expect(new WorkflowSecretDispatcher(client, "acme").preflight({ ...update })).rejects.toThrow(
+      /no such Workflow/,
+    );
+  });
+
+  /** `delete` refuses nothing and is idempotent — it asks only that the manager is there. */
+  test("a delete is asked nothing beyond reachability", async () => {
+    const { client, dispatchAndPoll } = stubClient();
+    dispatchAndPoll.mockResolvedValue({ outcome: "absent" });
+
+    await expect(
+      new WorkflowSecretDispatcher(client, "acme").preflight({ ...update, mode: "delete" }),
+    ).resolves.toBeUndefined();
   });
 });

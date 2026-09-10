@@ -111,8 +111,12 @@ export default {
   /** Cron entry: trigger the at-rest rotation Workflow only when the interval has elapsed. */
   async scheduled(_controller: unknown, env: SecretsManagerEnv): Promise<void> {
     const config = await resolveEncryptionConfig(env);
-    const intervalDays = Number(env.ROTATION_INTERVAL_DAYS ?? DEFAULT_ROTATION_INTERVAL_DAYS);
-    if (isRotationDue(config.lastRotatedAt, intervalDays)) {
+    // The coercion sits inside the call that checks it, rather than in a `const` above. `isRotationDue`
+    // refuses a non-finite or non-positive interval — a `"30 days"` that would otherwise make rotation
+    // never come due, silently, on every tick — and keeping the two in one expression is what
+    // `cli/src/ci/environmentNumbers.test.ts` reads to prove no raw `Number(env.…)` reaches a
+    // comparison unchecked (#521).
+    if (isRotationDue(config.lastRotatedAt, Number(env.ROTATION_INTERVAL_DAYS ?? DEFAULT_ROTATION_INTERVAL_DAYS))) {
       await env.AT_REST_ROTATION.create();
     }
   },

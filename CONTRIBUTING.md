@@ -123,6 +123,35 @@ bun packages/cli/src/docs/writeCatalog.ts --check   # what CI runs
 
 It is committed, so a consumer that neither is this repository nor installs it can read it with no build step — and committed means it can go stale, which is what the `--check` in CI's verify job is for. A stale export does not fail the site's check; it makes every page pass against a kit that has moved.
 
+### The shipped declarations
+
+A `dist` that has silently lost its types passes everything else here: the code compiles, the schemas parse, the tests pass, and the shipped `.d.ts` says `payloadRedactedAt: any` where the source says `SQLiteDate.nullish()` (#523). Every suite in this repository imports modules and asserts about *values*, and a value carries no evidence of the type written down beside it — so the only detector left was an adopter's `tsc`.
+
+```bash
+bun run dist-types             # after a build; what CI runs in the verify job
+```
+
+It generates a consumer from the shipped table list and compiles it against `packages/*/dist`, and it does the whole thing **twice per table — once for `z.input`, once for `z.output`**. `z.input` is the SQLite row a repository writes and `z.output` is the app shape it reads back; both are what an adopter compiles against, so a run that reads one of them certifies half a package. It read only `z.input` until somebody degraded `emailJob`'s `sendAt` output to `any` on purpose and watched the gate exit 0.
+
+Each side gets four assertions, and not one of them is a list anybody maintains:
+
+| Assertion | Catches | Shows up as |
+| --- | --- | --- |
+| A **minimal shape** — every key that side requires, and not one optional key more | An optional field that degraded, since `any` can no longer be read as optional | `TS2741: Property 'x' is missing` |
+| A **refused value** under `@ts-expect-error`, for every key — optional ones included | A field's type going to `any`, or widening | `TS2578: Unused '@ts-expect-error' directive` |
+| A **refused `undefined`** under `@ts-expect-error`, for every key that side requires | A required field turning optional — the mirror of the shape | `TS2578` |
+| An **accepted value with no directive** — `null` where the schema is nullable, each arm where it is an enum | A field that **narrowed**, which still refuses everything it used to | `TS2322: Type 'null' is not assignable` |
+
+The last one is the odd-looking one and it is the one that closes a whole class: the other three all say what a type must *refuse*, and a `ZodNullable<ZodString>` flattened to `ZodString`, or a `ZodEnum` shipped with one arm missing, refuses nothing new. Only an assignment that must still compile reports it.
+
+A failure names the package, the table, the side and the field — `@pithy-sh/email · pithyEmailJobs.payloadRedactedAt (input) — required by the shipped declaration's input side, optional in the schema beside it.` — with the compiler's own line kept verbatim beneath it. The diagnostic alone points at a line in a generated program under `$TMPDIR` that is gone by the time anybody reads the log, so the generator records which assertion wrote each line and the report resolves it back.
+
+**The table count is exact, in both directions.** It was a floor at 95% of the population, and a floor is not a check: dropping a whole table from a shipped `tables.js` left 45 tables in 16 packages, cleared a floor of 43 in 15, and exited 0 reporting `45 tables … 454 of 455`. So `CENSUS` in `distTypes.ts` is the measured number and any movement fails — which means **adding or removing a table is a one-line edit there, in the same commit**.
+
+**Both halves of the run read `dist`**: the walk that computes each side's keys imports `dist/*.js` and the compile reads `dist/*.d.ts`, and nothing in it opens `src/`. So it asks whether a declaration still says what the value beside it says, not whether either still says what the source says — a `dist` mis-built the same way on both sides is green. That is also what makes the last two assertions self-maintaining rather than an allowlist: a field that legitimately stops being nullable stops being walked as nullable in the same build, so the line is simply not written. Run it after a build, which is where CI runs it.
+
+**What this asks of a new capability: keep the table map in a module named `tables.ts`, beside the schemas it names, and bump `CENSUS` when you add a table.** The first is how the gate finds the tables, and a `capability.ts` that declares `tables:` from anywhere else fails by name rather than passing uncovered. `packages/cli/src/ci/distTypes.ts` states the rest, including what it does not cover — and that list is written by trying each degradation against the finished gate rather than by reasoning about it, because it has twice been wrong the other way.
+
 ## Tests do not touch your machine
 
 **No test in this repository resolves your real config directory or your real Cloudflare account.** Two defects in two weeks were the same defect, and it is worth knowing what the guards are before you write a config.

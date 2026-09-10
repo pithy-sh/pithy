@@ -68,7 +68,14 @@ export type StripeSignatureHeader = SignedWebhookHeader;
 export interface VerifyStripeSignatureOptions {
   /** The clock. Injected so the replay window is deterministic in tests rather than wall-clock dependent. */
   now: Date;
-  /** The freshness window, in seconds. Defaults to {@link STRIPE_SIGNATURE_TOLERANCE_SECONDS}. */
+  /**
+   * The freshness window, in seconds. Defaults to {@link STRIPE_SIGNATURE_TOLERANCE_SECONDS}.
+   *
+   * The `??` below applies that default and nothing more — a `NaN` passes it untouched, on purpose. The
+   * primitive owns the bound (`core/internal` for anything non-finite, negative, or over-wide) because it owns
+   * the comparison, and every caller on this path reaches it. See {@link ./rail.StripeRailOptions} for why the
+   * check is not repeated at each layer.
+   */
   toleranceSeconds?: number;
 }
 

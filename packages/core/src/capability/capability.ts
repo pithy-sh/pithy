@@ -161,6 +161,34 @@ export interface SecretRegistryEntrySeam {
 export type SecretRegistrySeam = Record<string, SecretRegistryEntrySeam>;
 
 /**
+ * **Which branches of a `json` secret's schema this Worker's configuration actually uses** — secret
+ * name → the top-level keys that apply, in the order they should be offered.
+ *
+ * A `json` secret is often a bundle of independent blocks: `payments-provider-credentials` is five
+ * optional rail blocks, `turnstile-secret-keys` is two optional widgets. The schema says which blocks
+ * are *possible*; only the composed config says which are *real*, and a credential for a rail that is
+ * off is a value nothing will ever read. So `pithy secrets create` asks per field for the blocks named
+ * here, and never offers — never writes — one that is not.
+ *
+ * **It is declared, not matched by name.** `PaymentsRailToggles.paddle` and
+ * `PaymentsProviderCredentials.paddle` happen to be spelled the same today, and a CLI that keyed off
+ * that would be right by coincidence: nothing makes a config flag and a schema key the same thing, and
+ * two of them one line apart cannot be told apart by convention (#513). The capability already knows
+ * the answer at construction — it has both halves in hand — so it states it, and the CLI reads a fact
+ * instead of inferring one.
+ *
+ * **It lives on the capability rather than on the entry** because a registry entry is plain data,
+ * shared by every Worker that declares the name and projected into `pithy.manifest.json`. This answer
+ * is per composition — the same secret, two Workers, two configs — so it belongs where the config is.
+ *
+ * An absent declaration is not an empty one. A capability that says nothing leaves the CLI with no way
+ * to know which blocks apply, and it falls back to asking for the whole document rather than guessing;
+ * an empty array says *none of them apply*, which is the same fallback for a different reason. A
+ * secret whose schema has no branches at all needs no declaration — every field is asked.
+ */
+export type SecretBranchSeam = Record<string, readonly string[]>;
+
+/**
  * The structural seam for one capability's token-profile slice — profile name → the scoped CF API
  * token that capability's code needs. Declared next to the code that uses it (alongside
  * {@link Capability.secretRegistry}), so a capability owns its token's least-privilege scope and where
@@ -298,6 +326,12 @@ export interface Capability<
    * every declared secret in one batch — and no capability needs to know another's secrets.
    */
   secretRegistry?: SecretRegistrySeam;
+  /**
+   * Which branches of this capability's `json` secrets this Worker's configuration uses — see
+   * {@link SecretBranchSeam}. Additive and optional: a capability whose secrets are flat, or which has
+   * no `json` secret at all, declares nothing.
+   */
+  secretBranches?: SecretBranchSeam;
   /**
    * The scoped CF API tokens this capability's code needs, as a token-profile slice (profile name →
    * {@link TokenProfileSeam}). Additive and optional, and declared next to {@link Capability.secretRegistry}

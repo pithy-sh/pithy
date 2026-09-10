@@ -22,6 +22,7 @@ import { paymentsManifestConfig } from "./http/manifestConfig";
 import { registerPaymentsRoutes } from "./http/routes";
 import { paymentsAdminRoutes } from "./http/scopes";
 import { payments_0001_purchases } from "./migrations/0001_purchases";
+import { paymentsSecretBranches } from "./secret/branches";
 import { paymentsSecretsRegistry } from "./secret/registry";
 import { paymentsExampleSeed } from "./seeds/example";
 import { PACKAGE_VERSION } from "./version.generated";
@@ -343,6 +344,9 @@ export function payments(options: PaymentsOptions): PaymentsCapability {
     // One secret holds every rail's credentials. Declaring the slice here is what lets `sharedSecretsStore`
     // resolve it — a read of a name no composed capability declared throws.
     secretRegistry: paymentsSecretsRegistry,
+    // Which rails' credentials `pithy secrets create payments-provider-credentials` asks for. The
+    // schema knows five are possible; only this catalog knows which are on. See `secret/branches.ts`.
+    secretBranches: paymentsSecretBranches(resolved.rails),
     // The one durable job: the nightly reconciliation pass. Declared here so `createBackend` derives its
     // binding and types `c.var.workflows.trigger("payments/reconcile", …)` precisely.
     workflows: paymentsWorkflows,

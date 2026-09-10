@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { EntitlementKey } from "@pithy-sh/core/src/entitlement/entitlement";
+import { SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS } from "@pithy-sh/core/src/http/webhookWindow";
 import { z } from "zod";
 import { PAYMENTS_RAILS, type PaymentsRail } from "../data/rail";
 import { PaymentsSubjectType } from "../data/subject";
@@ -182,13 +183,21 @@ export const PaymentsPaddleSettings = z
     cancelUrl: ReturnUrl.optional().describe(
       "Where a buyer who backs out lands, in `hosted` mode. Optional, because an overlay a buyer closes leaves them exactly where they were.",
     ),
+    // The ceiling is deliberately **not** a `.max()` here, and the reason is blast radius rather than
+    // taste. This schema is parsed at module scope — `payments()` calls `PaymentsConfig.parse` — so a
+    // refusal on this one field takes the whole Worker down: every route, including the ones that have
+    // never heard of Paddle. A project that had legitimately set a wider window would have discovered
+    // that on a patch upgrade, as a dead deployment rather than a dead endpoint. The window is enforced
+    // where it is used instead, in `verifyPaddleSignature`, which is on the only path that compares it
+    // and cannot be reached around; a bad number there costs the Paddle webhook route and nothing else,
+    // and Paddle keeps redelivering while it is fixed. Fail closed, for one route.
     webhookFreshnessSeconds: z
       .number()
       .int()
       .positive()
       .optional()
       .describe(
-        "How many seconds either side of now a delivery's `ts` may be dated. Omitted uses 300, deliberately not the 5 Paddle's own SDKs use: replay protection here is the webhook table's `UNIQUE (rail, providerEventId)`, which is absolute, and a five-second window adds nothing to that while turning ordinary clock skew into a dropped renewal.",
+        `How many seconds either side of now a delivery's \`ts\` may be dated. Omitted uses 300, deliberately not the 5 Paddle's own SDKs use: replay protection here is the webhook table's \`UNIQUE (rail, providerEventId)\`, which is absolute, and a five-second window adds nothing to that while turning ordinary clock skew into a dropped renewal. Bounded at ${SIGNED_WEBHOOK_MAX_TOLERANCE_SECONDS} because a freshness window is a replay window: every second of it is a second longer a captured delivery keeps working. That bound is enforced by the verifier rather than by this schema, so a number past it refuses the Paddle webhook route with \`core/internal\` naming this key, instead of refusing to boot the Worker.`,
       ),
     storeCurrency: z
       .string()

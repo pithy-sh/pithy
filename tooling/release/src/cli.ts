@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parseChangelog } from "./changelog";
 import { type SnapshotEntry, snapshotChangesets } from "./changesets";
-import { postReleaseRecords, releaseRecordsConfig } from "./post";
+import { actionsTokenMinter, type MintToken } from "./oidc";
+import { type Delivery, postReleaseRecords, releaseRecordsConfig } from "./post";
 import { joinRecords, type ReleaseRecord } from "./records";
 import { splitVersion } from "./version";
 import { publishedPackages, publishedVersions } from "./workspace";
@@ -24,7 +25,8 @@ import { publishedPackages, publishedVersions } from "./workspace";
  *   2. `bun run version` — Changesets bumps the manifests and writes the CHANGELOGs.
  *   3. `build` — read the versions back, join them to the snapshot, write the records.
  *   4. `changeset publish`
- *   5. `post` — write the records to the dashboard, or say it is off.
+ *   5. `post` — write the records to every configured dashboard, or say it is off. `--dry-run` posts a
+ *      zero-record delivery to staging instead, which proves the OIDC claims without a release.
  *
  * Steps 1 and 3 are separate processes because step 2 is, and nothing in a shell can hold a JavaScript
  * value across it. The snapshot file is that value.
@@ -48,6 +50,8 @@ export interface RunOptions {
   env: Record<string, string | undefined>;
   /** Transport seam for `post`, so a test needs no network. */
   fetch?: typeof fetch;
+  /** Token seam for `post`: what mints one OIDC token per audience. Defaults to the runner's endpoint. */
+  mintToken?: MintToken;
   /** Date seam for `replay`: the tag's commit date, or null when no such tag exists. */
   tagDate?: (tag: string) => Promise<string | null>;
 }
@@ -126,41 +130,104 @@ function build(root: string, now: Date): RunResult {
   };
 }
 
+/** How a `::warning::` carries a line break, a carriage return and a percent sign. GitHub's own encoding. */
+function annotationSafe(text: string): string {
+  return text.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
+}
+
 /**
- * Write the records to the dashboard.
+ * Put one line where a person will actually see it.
  *
- * **Always exits 0.** An unreachable dashboard cannot fail a release; a failure is reported here and
- * recovered by `replay`.
+ * The step summary is the run's own page, so a failed delivery is legible without opening a log. A
+ * summary that cannot be written is not worth a release — the same sentence is on stdout either way.
  */
-async function post(options: RunOptions): Promise<RunResult> {
+function summarize(options: RunOptions, line: string): void {
+  const path = options.env.GITHUB_STEP_SUMMARY?.trim() ?? "";
+  if (path === "") return;
+  try {
+    appendFileSync(path, `${line}\n`);
+  } catch {
+    // Nothing to do about it, and nothing worth failing for.
+  }
+}
+
+/**
+ * Say what happened at each destination, in one sentence per destination.
+ *
+ * **Partial outcomes stay legible.** *Posted to prod, failed to staging* is a different thing from
+ * *failed*, and the exit code cannot carry the difference — so it is spelled out rather than collapsed
+ * into a verdict.
+ */
+function describeDeliveries(deliveries: readonly Delivery[], count: number): string {
+  const posted = deliveries.filter((delivery) => delivery.status === "posted");
+  const parts: string[] = [];
+  if (posted.length > 0) {
+    parts.push(`Posted ${count} records to ${posted.map((delivery) => delivery.destination).join(", ")}.`);
+  }
+  for (const delivery of deliveries) {
+    if (delivery.status === "failed") parts.push(`Failed to ${delivery.destination}: ${delivery.reason}.`);
+  }
+  return parts.join(" ");
+}
+
+/**
+ * Write the records to every configured dashboard.
+ *
+ * **The release still stands, and the failure is still visible.** Publishing is step 5 and is long over;
+ * nothing here rolls it back, and a missed write is recovered by `replay`. But a failed delivery exits
+ * **non-zero**, and the workflow step carries `continue-on-error: true` — so GitHub renders a failed
+ * step under a green job, in the run list rather than only in a log. Returning 0 was the old behavior,
+ * and it made a rejected delivery indistinguishable from a successful one.
+ *
+ * `--dry-run` posts a **zero-record delivery to staging**: a real token, a real answer, no rows. Without
+ * it the first exercise of this path would be a real release.
+ */
+async function post(options: RunOptions, dryRun: boolean): Promise<RunResult> {
   const path = releasePath(options.root, "records.json");
   if (!existsSync(path)) {
     return { code: 1, output: `No records at ${RELEASE_DIR}/records.json. Run \`build\` first.` };
   }
-  const records = JSON.parse(readFileSync(path, "utf8")) as ReleaseRecord[];
+  const built = JSON.parse(readFileSync(path, "utf8")) as ReleaseRecord[];
 
   // A malformed endpoint throws — someone configured this and got it wrong, and that is worth a
   // failure. Being unconfigured does not, because that is the state this ships in.
-  let config: ReturnType<typeof releaseRecordsConfig>;
+  let destinations: ReturnType<typeof releaseRecordsConfig>;
   try {
-    config = releaseRecordsConfig(options.env);
+    destinations = releaseRecordsConfig(options.env);
   } catch (error) {
     return { code: 1, output: error instanceof Error ? error.message : String(error) };
   }
 
-  const outcome = await postReleaseRecords({ records, config, fetch: options.fetch });
+  // A dry run proves the claims agree with the verifier. It never writes rows: the versions it just
+  // built were not published, and a staging pane holding releases that never happened is worse than an
+  // empty one.
+  const records = dryRun ? [] : built;
+  if (dryRun) destinations = destinations.filter((destination) => destination.name === "staging");
+
+  const outcome = await postReleaseRecords({
+    records,
+    destinations,
+    mintToken: options.mintToken ?? actionsTokenMinter({ env: options.env, fetch: options.fetch }),
+    fetch: options.fetch,
+    sendEmpty: dryRun,
+  });
+
+  const prefix = dryRun ? "Dry run. " : "";
   switch (outcome.status) {
-    case "off":
-      return { code: 0, output: `Dashboard reporting is off: ${outcome.reason}. Records kept as an artifact.` };
+    case "off": {
+      const reason = dryRun ? "no staging endpoint configured" : "no endpoint configured";
+      return { code: 0, output: `${prefix}Dashboard reporting is off: ${reason}. Records kept as an artifact.` };
+    }
     case "empty":
       return { code: 0, output: "No records to report." };
-    case "posted":
-      return { code: 0, output: `Reported ${outcome.count} records to the dashboard.` };
-    case "failed":
-      return {
-        code: 0,
-        output: `Dashboard write failed: ${outcome.reason}. The release stands; recover it with \`replay\`.`,
-      };
+    case "delivered": {
+      const sentence = describeDeliveries(outcome.deliveries, records.length);
+      summarize(options, `Release reporting: ${prefix}${sentence}`);
+      const failed = outcome.deliveries.filter((delivery) => delivery.status === "failed");
+      if (failed.length === 0) return { code: 0, output: `${prefix}${sentence}` };
+      const line = `${prefix}${sentence} The release stands; recover it with \`replay\`.`;
+      return { code: 1, output: `::warning title=Release reporting::${annotationSafe(line)}\n${line}` };
+    }
   }
 }
 
@@ -262,6 +329,11 @@ function flagValue(argv: string[], flag: string): string | null {
   return index === -1 ? null : (argv[index + 1] ?? null);
 }
 
+/** Read `--dry-run`, the one flag `post` takes. */
+function hasFlag(argv: string[], flag: string): boolean {
+  return argv.includes(flag);
+}
+
 /** Run one command. Never throws for an expected condition — the entry script prints and exits. */
 export async function run(argv: string[], options: RunOptions): Promise<RunResult> {
   const [command] = argv;
@@ -271,7 +343,7 @@ export async function run(argv: string[], options: RunOptions): Promise<RunResul
     case "build":
       return build(options.root, new Date());
     case "post":
-      return await post(options);
+      return await post(options, hasFlag(argv, "--dry-run"));
     case "replay":
       return await replay(options, flagValue(argv, "--package"));
     default:

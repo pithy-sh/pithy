@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { OIDC_MAX_CLOCK_SKEW_SECONDS } from "@pithy-sh/core/src/http/oidcWebhook";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { PaymentsInvalidReceiptError, PaymentsVerificationFailedError } from "../../error/errors";
 import { type MintedOidcKey, mintOidcKey, signOidcToken, tamperClaims } from "./fixtures/push";
@@ -120,6 +121,55 @@ describe("verifyGoogleOidcToken", () => {
     await expect(verify(await signOidcToken(claims({ exp: almost }), key))).resolves.toBeDefined();
     const stale = Math.floor(NOW.getTime() / 1000) - 3600;
     await expect(verify(await signOidcToken(claims({ exp: stale }), key))).rejects.toBeInstanceOf(
+      PaymentsVerificationFailedError,
+    );
+  });
+
+  test.each([
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["-Infinity", Number.NEGATIVE_INFINITY],
+    ["a negative skew", -1],
+    ["wider than the maximum", OIDC_MAX_CLOCK_SKEW_SECONDS + 1],
+  ])(
+    "refuses a decade-expired token when the skew is %s, as our fault rather than the sender's",
+    async (_label, clockSkewSeconds) => {
+      // `exp + NaN < seconds` and `iat - NaN > seconds` are both false, so one unchecked number does not widen
+      // the window — it removes `exp` and `iat` together, and a captured push token replays forever under a
+      // signature that really is Google's. The realistic source is `Number(env.GOOGLE_SKEW)` on a variable
+      // nobody set. `core/internal`, because the sender did nothing wrong.
+      const ancient = Math.floor(NOW.getTime() / 1000) - 10 * 365 * 24 * 3600;
+      const token = await signOidcToken(claims({ exp: ancient, iat: ancient - 60 }), key);
+      const thrown = await catchError(async () => verify(token, { clockSkewSeconds }));
+      expect(thrown?.payload.code).toBe("core/internal");
+      expect(thrown?.payload.status).toBe(500);
+    },
+  );
+
+  test("that same token is refused as expired under an honest skew", async () => {
+    // The half that keeps the cases above about the skew rather than about the token.
+    const ancient = Math.floor(NOW.getTime() / 1000) - 10 * 365 * 24 * 3600;
+    const token = await signOidcToken(claims({ exp: ancient, iat: ancient - 60 }), key);
+    expect((await catchError(async () => verify(token, { clockSkewSeconds: 60 })))?.payload.detail).toContain(
+      "expired",
+    );
+    expect((await catchError(async () => verify(token)))?.payload.code).toBe("payments/verification_failed");
+  });
+
+  test("a clock that is not a clock fails closed, the same fault one operand over", async () => {
+    const thrown = await catchError(async () =>
+      verify(await signOidcToken(claims(), key), { now: new Date("not a date") }),
+    );
+    expect(thrown?.payload.code).toBe("core/internal");
+    expect(thrown?.payload.status).toBe(500);
+  });
+
+  test("a finite skew inside the bound still widens the window it is given", async () => {
+    const justPast = Math.floor(NOW.getTime() / 1000) - 120;
+    await expect(
+      verify(await signOidcToken(claims({ exp: justPast }), key), { clockSkewSeconds: 300 }),
+    ).resolves.toBeDefined();
+    await expect(verify(await signOidcToken(claims({ exp: justPast }), key))).rejects.toBeInstanceOf(
       PaymentsVerificationFailedError,
     );
   });

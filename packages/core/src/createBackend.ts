@@ -18,11 +18,11 @@ import { isControlPlaneCapability } from "./controlPlane/capability";
 import { allowedOriginSet, corsSurface, registerControlPlaneCors } from "./controlPlane/http/cors";
 import { buildDbRegistry, composeDatabases, type DbRegistry } from "./data/databases";
 import { noEntitlementProvider } from "./entitlement/entitlement";
-import { pithyErrorHandler } from "./error/http";
 import { ValidationError } from "./error/pithyError";
 import { catalogFor, composeMessages } from "./i18n/registry";
 import { bakedTranslator, DEFAULT_LOCALE } from "./i18n/translator";
 import { buildKvRegistry, composeKv, type KvRegistry } from "./kv/namespaces";
+import { loggingErrorHandler } from "./logger/errorHandler";
 import type { Logger } from "./logger/logger";
 import { bindRequestContext, createWorkerLogger } from "./logger/worker";
 import { HEALTH_PATH } from "./worker/health";
@@ -111,7 +111,8 @@ function envNameOf(env: Record<string, unknown>, fallback: string | undefined): 
  * each capability's middleware; and mounts the capability (then app) routes. On every request
  * `c.var.db` is the typed database registry — one `Kysely` per named database (`c.var.db.app`) —
  * and `c.var.kv` the typed namespace registry — one `TypedKv` per store (`c.var.kv.cms.pages`).
- * `PithyError`s become their declared HTTP status via {@link pithyErrorHandler}.
+ * `PithyError`s become their declared HTTP status via {@link loggingErrorHandler}, which also writes
+ * each fault to the request logger with its `action` and `detail` — the fields the wire body strips.
  *
  * Binding validation runs **once on the first request**, not at module load: in Workers `env` is
  * per-request, so there is no env to check until a request arrives. The result is memoized.
@@ -178,7 +179,10 @@ export function createBackend<
   // Build internally against the loose base env (db/kv are `unknown`, so `c.set` accepts the merged
   // registries); the precise types ride on the return below.
   const app = new Hono<PithyHonoEnv>();
-  app.onError(pithyErrorHandler);
+  // The logging handler, not the bare encoder: a fault's `action` names the var or command an operator
+  // must fix, `clientError` strips it on the way to the wire (correctly), and without this the remedy
+  // reached no surface at all in a deployed Worker — one access log line reading `status: 500` (#521).
+  app.onError(loggingErrorHandler);
 
   // Set once at assembly (the per-request `env` constraint holds: correlation binds per request below,
   // not here). Defaults to the CF-native Mode 2 logger — structured records to Workers Logs, zero-config.

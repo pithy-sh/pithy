@@ -46,7 +46,9 @@
     "LEADERBOARD_CONFIG": "<filled-at-provision>",
     // Optional. How long a held refresh lock stays valid before a crashed instance's lock is reclaimed,
     // in ms. Defaults to one hour — raise it only if a deployment refreshes boards that take longer than
-    // that (well past the ~1M-player shard boundary). See `rank/lock.ts`.
+    // that (well past the ~1M-player shard boundary). A whole number of milliseconds from 1 to 86400000;
+    // anything else is refused by name on the first fire rather than quietly removing the lock. See
+    // `rank/lock.ts`.
     // "LEADERBOARD_LOCK_STALE_MS": "3600000",
     "ENVIRONMENT": "<filled-at-provision>"
   }

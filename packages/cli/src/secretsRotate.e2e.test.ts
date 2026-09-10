@@ -107,6 +107,14 @@ const LINKED = ["core", "auth", "email", "secrets", "turnstile", "audit", "cloud
  * write. That is the genuine store failure, arriving through the genuine client, at the one moment that
  * matters: after the rotator has already rolled.
  *
+ * **A `probe` is answered rather than refused, and that is the shape of the scenario rather than a
+ * convenience** (#517). A rotation now asks the manager whether the secret is there before it calls the
+ * issuer, so a fake that failed every mode would refuse in front of the rotator and this file could no
+ * longer reach the state it exists for. The manager being reachable, holding the secret, and unable to
+ * *write* is one real failure — a D1 the Worker cannot commit to — and it is the only one that still
+ * produces `unrecorded`. Every refusal the pre-flight can answer for is now answered before a roll, which
+ * is the whole of the fix.
+ *
  * It also answers the **rotation ledger** modes (`#379`), because a rotation opens a row in the manager
  * before it rolls and closes it after — and `dispatched` records every payload it was sent, in order,
  * which is what lets a test read the CLI's behavior off the wire rather than off the CLI's own report.
@@ -144,6 +152,12 @@ function fakeCloudflare(refused: Set<string>): Promise<{
       if (status) {
         const workflow = status[1] ?? "";
         const instance = modes.get(status[2] ?? "");
+        // The pre-flight's question, answered even where the write is refused: this manager is reachable
+        // and holds the secret, and what it cannot do is commit the new value.
+        if (instance?.mode === "probe") {
+          reply({ status: "complete", output: { outcome: "present" } });
+          return;
+        }
         if ([...refused].some((env) => workflow.includes(`-${env}-`))) {
           reply({ status: "errored", error: { message: "the manager could not reach its database" }, steps: [] });
           return;
@@ -285,7 +299,9 @@ describe("pithy secrets rotate, with the real binary", () => {
     expect(result.code).toBe(0);
 
     const sent = staging.dispatched.slice(before);
-    expect(sent.map((instance) => instance.mode)).toEqual(["rotation-open", "update", "rotation-close"]);
+    // The probe leads, and it is the ordering #517 is about: whatever the destination can refuse is asked
+    // before the row is opened and before anything is rolled.
+    expect(sent.map((instance) => instance.mode)).toEqual(["probe", "rotation-open", "update", "rotation-close"]);
     // All three to the same environment's manager. A row opened in staging and closed in prod would record
     // a rotation that did not happen in either.
     expect(new Set(sent.map((instance) => instance.workflow))).toEqual(new Set(["replay-staging-secrets-write"]));
