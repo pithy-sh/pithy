@@ -82,20 +82,26 @@ interface WranglerAppConfig {
  * `vector` stays outside {@link environmentReadiness}'s skip-and-report set deliberately: every subcommand
  * here takes a required `--env`, so nothing about it fans out and a refusal has exactly one environment to
  * be about. The routing correction applies; the skip does not.
+ *
+ * **A plain function, called once from {@link buildProvisioner}, and no longer a closure the provisioner
+ * calls when it gets around to it.** As a closure this was invoked from `deployWorker` — the *last* step of
+ * provisioning — so the refusal `docs/commands/vector.md` describes as happening "rather than standing up an
+ * index with nothing to fill it" fired after the index and every one of its metadata indexes had been
+ * created, and on `reset --env prod` after the production index had already been deleted and rebuilt. An
+ * operator who confirms a reset has confirmed a reset, not a reset that dies halfway and leaves the index
+ * rebuilt and unfillable. Reading it up front makes the documented order the implemented one (#512).
  */
-function buildResolveEnv(appWorker: ResolvedWorker): (env: string) => Promise<{ appDatabaseId: string }> {
-  return async (env) => {
-    const config = (await readWranglerConfig(appWorker.dir)) as WranglerAppConfig;
-    const stanza = env === "dev" ? config : config.env?.[env];
-    const appDatabaseId = stanza?.d1_databases?.find((database) => database.binding === "DB")?.database_id;
-    if (!appDatabaseId) {
-      throw new ValidationError({
-        message: `${appWorker.name}'s wrangler.jsonc has no DB database_id for ${env}.`,
-        action: `Provision the ${env} app database and set its id on the DB binding — the corpus lives there.`,
-      });
-    }
-    return { appDatabaseId };
-  };
+async function requireAppDatabaseId(appWorker: ResolvedWorker, env: string): Promise<{ appDatabaseId: string }> {
+  const config = (await readWranglerConfig(appWorker.dir)) as WranglerAppConfig;
+  const stanza = env === "dev" ? config : config.env?.[env];
+  const appDatabaseId = stanza?.d1_databases?.find((database) => database.binding === "DB")?.database_id;
+  if (!appDatabaseId) {
+    throw new ValidationError({
+      message: `${appWorker.name}'s wrangler.jsonc has no DB database_id for ${env}.`,
+      action: `Provision the ${env} app database and set its id on the DB binding — the corpus lives there.`,
+    });
+  }
+  return { appDatabaseId };
 }
 
 /**
@@ -107,6 +113,17 @@ function buildResolveEnv(appWorker: ResolvedWorker): (env: string) => Promise<{ 
  * it — the database id, the `VECTOR_PROVISIONED` record, and the `vectorize`/`workflows` bindings all live
  * in one `apps/<name>/wrangler.jsonc`. `--worker` names it in a project holding several; a project with one
  * needs no ceremony.
+ *
+ * **This is the preflight, and it is the preflight for all three subcommands** — every one of them builds a
+ * provisioner before it makes a single Cloudflare call, so everything that can decide the run cannot proceed
+ * is decided here: the project name, the credentials, the capability's config, the Worker, and the app
+ * database this environment's corpus lives in. Nothing below this line is local, and nothing above it
+ * creates or destroys anything.
+ *
+ * `reprocess` is gated on the database id too, though it deploys nothing. It is not a new restriction: an
+ * environment can only have a reprocess Workflow to dispatch because a provision run deployed one, and that
+ * run required the id. So the gate refuses exactly the environments where the dispatch would have failed
+ * anyway, and it refuses them by naming the Worker and the remedy instead of by way of a Cloudflare 404.
  */
 async function buildProvisioner(projectDir: string, env: string, worker: string | undefined) {
   // The name first, before the credentials: both are local checks, and a config that cannot name the
@@ -115,6 +132,10 @@ async function buildProvisioner(projectDir: string, env: string, worker: string 
   const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
   const config = await loadVectorConfig(projectDir);
   const appWorker = await resolveSingleWorker({ projectDir, ...(worker !== undefined ? { worker } : {}) });
+  // Read now, not when `deployWorker` asks for it. The provisioner's `resolveEnv` seam stays — it is what
+  // keeps the wrangler parsing out of the provisioner — but it now serves an answer this command already
+  // has, so the refusal cannot arrive after the work.
+  const readiness = await requireAppDatabaseId(appWorker, env);
   return {
     project,
     config,
@@ -126,7 +147,7 @@ async function buildProvisioner(projectDir: string, env: string, worker: string 
       accountId,
       apiToken,
       config,
-      resolveEnv: buildResolveEnv(appWorker),
+      resolveEnv: async (requested) => (requested === env ? readiness : requireAppDatabaseId(appWorker, requested)),
       workflows: await cloudflareWorkflows({ accountId, apiToken }),
     }),
     accountId,
