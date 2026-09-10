@@ -190,6 +190,9 @@
     {
       "path": "dev",
       "flags": [
+        "--list",
+        "--no-list",
+        "--app",
         "--json",
         "--no-json"
       ]

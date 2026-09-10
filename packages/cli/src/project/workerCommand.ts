@@ -16,6 +16,7 @@ import { loadProject, loadProjectEnvironments, projectCloudflareAccount, require
 import { detectPackageManager } from "./packageManager";
 import { ensureScaffoldPath, pathExists, removeScaffoldPath, WORKER_NAME } from "./scaffold";
 import { type WorkerIdentity, workerIdentity } from "./workerIdentity";
+import { defaultWorkerDev } from "./workerManifest";
 import { scaffoldWorker } from "./workerScaffold";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
@@ -227,7 +228,10 @@ export async function listWorkers(options: WorkerContext): Promise<WorkerListing
   return workers.map((worker) => ({
     ...workerIdentity(worker),
     dir: worker.dir,
-    autostart: worker.dev?.autostart ?? true,
+    // The schema decides the default, here and everywhere: a `?? true` here was a second opinion, and it
+    // only ever fired for a target carrying no dev block at all — so a manifest that existed and omitted
+    // the key read `false` in the orchestrator and `true` in this listing.
+    autostart: (worker.dev ?? defaultWorkerDev()).autostart,
     hasWrangler: worker.hasWrangler !== false,
     // The registry's key is the deployed name, which is what `workerIdentity` reports as `deployedAs`.
     port: config?.workers[worker.name]?.port ?? null,

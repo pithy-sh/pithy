@@ -14,7 +14,7 @@ pithy worker rename <from> <to> [--force] [--json]
 pithy worker sync [--worker <name>] [--env <environment>] [--json]
 ```
 
-`apps/` *is* the registry. There is no hand-maintained list: `pithy dev`, `pithy deploy`, `pithy migrate`, and the rest enumerate `apps/*` and read each Worker's `pithy.worker.jsonc`. Add, remove, or rename a Worker here and the dev set follows automatically.
+`apps/` *is* the registry. There is no hand-maintained list: `pithy dev`, `pithy deploy`, `pithy migrate`, and the rest enumerate `apps/*` and read each Worker's `pithy.worker.jsonc`. Add, remove, or rename a Worker here and the set follows automatically. The **dev** set is larger than this registry — it is `apps/*` plus the host Worker of every capability those Workers compose — which is why `pithy dev --list` exists and this command does not answer that question.
 
 **Only `rename` reaches Cloudflare, and only to ask a question.** It asks the account which scripts are live under the old name before anything moves; it never writes there. `add`, `list`, `remove`, and `sync` touch no account at all — `sync` in particular writes config and runs no deploy, so it is safe on any branch, at any time, as often as you like. An interactive `worker add` reads the account's zones to offer a domain picker; under `--json` it asks nothing and reads nothing.
 
@@ -36,7 +36,7 @@ pithy worker sync [--worker <name>] [--env <environment>] [--json]
 
 One gap, stated rather than hidden: `add` writes the new Worker's `tsconfig.json` but does **not** add it to the root solution file. Add the reference yourself, or that Worker's source is typechecked by nothing (`docs/CLI.md` §1.3).
 
-**`list`** reports the discovered Workers with their autostart state and pinned dev port. It is the per-Worker view — which Workers exist, which autostart, which port each holds.
+**`list`** reports the discovered Workers with their autostart state and pinned dev port. It is the **registry view** — which Workers exist under `apps/`, which have opted out of the local dev set, which port each holds. For the **run view** — what `pithy dev` would actually start, capability hosts included — use `pithy dev --list` ([`commands/dev.md`](dev.md)). Two commands, two questions.
 
 **`remove`** deletes `apps/<name>/` and releases its port back to the feature's block. The target is resolved from the discovered set and restricted to `apps/*`, so nothing outside it can be addressed. Your data is untouched: this deletes a directory, not a database.
 
@@ -94,7 +94,7 @@ $ pithy worker list --json
 | `workers[].worker` | `string` | The Worker's `apps/` directory |
 | `workers[].deployedAs` | `string` | The Worker's `wrangler.jsonc` `name` — the deployed script name — or the directory basename when the file declares none |
 | `workers[].dir` | `string` | The Worker's directory |
-| `workers[].autostart` | `boolean` | Whether `pithy dev` starts it. From the Worker's `pithy.worker.jsonc` `dev.autostart`, defaulting to `true` |
+| `workers[].autostart` | `boolean` | Whether `pithy dev` starts it. From the Worker's `pithy.worker.jsonc` `dev.autostart`, which defaults to `true` — set it `false` to keep a Worker out of the local dev set |
 | `workers[].hasWrangler` | `boolean` | Whether the directory holds a `wrangler.jsonc`. `false` means a non-Worker process in the dev set, which `pithy deploy` skips |
 | `workers[].port` | `number \| null` | The port pinned in `.dev.config.json`, or `null` when none is assigned — a plain checkout, or an unassigned Worker |
 
