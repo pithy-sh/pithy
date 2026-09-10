@@ -1,5 +1,12 @@
 # @pithy-sh/ledger
 
+## 0.1.6
+
+### Patch Changes
+
+- Updated dependencies [[`a24ebff`](https://github.com/pithy-sh/pithy/commit/a24ebff4bbe18f5571344dd3f79113a809494fc5), [`a24ebff`](https://github.com/pithy-sh/pithy/commit/a24ebff4bbe18f5571344dd3f79113a809494fc5), [`a24ebff`](https://github.com/pithy-sh/pithy/commit/a24ebff4bbe18f5571344dd3f79113a809494fc5), [`a24ebff`](https://github.com/pithy-sh/pithy/commit/a24ebff4bbe18f5571344dd3f79113a809494fc5), [`a24ebff`](https://github.com/pithy-sh/pithy/commit/a24ebff4bbe18f5571344dd3f79113a809494fc5), [`a24ebff`](https://github.com/pithy-sh/pithy/commit/a24ebff4bbe18f5571344dd3f79113a809494fc5)]:
+  - @pithy-sh/core@0.3.0
+
 ## 0.1.5
 
 ### Patch Changes

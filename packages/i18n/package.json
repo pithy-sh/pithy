@@ -1,6 +1,6 @@
 {
   "name": "@pithy-sh/i18n",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -35,7 +35,7 @@
     "reset": "bun run clean && rm -rf node_modules"
   },
   "dependencies": {
-    "@pithy-sh/core": "^0.2.0"
+    "@pithy-sh/core": "^0.3.0"
   },
   "peerDependencies": {
     "hono": "^4.13.2",
