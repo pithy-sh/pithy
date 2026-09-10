@@ -168,8 +168,18 @@ function behind(files: readonly string[]): string[] {
     for (const source of expand(`${dir}/src`)) required.add(source);
     const manifest = JSON.parse(readFileSync(join(REPO_ROOT, dir, "package.json"), "utf8")) as {
       dependencies?: Record<string, string>;
+      peerDependencies?: Record<string, string>;
     };
-    for (const dependency of Object.keys(manifest.dependencies ?? {})) {
+    // **Both fields, because a runtime edge lives in either one (#542).** A shared `@pithy-sh/*` package
+    // is a `peerDependency` now — the kit saying *you and I must share one copy* rather than *I need
+    // some copy* — and the source behind that edge is read by this build exactly as before. Walking
+    // `dependencies` alone stopped at `@pithy-sh/vite` and dropped `core` out of the cache key, so a
+    // change to `core` would not have invalidated this fixture. A stale cache key is the quietest
+    // possible failure: everything passes, against the build before last.
+    for (const dependency of [
+      ...Object.keys(manifest.dependencies ?? {}),
+      ...Object.keys(manifest.peerDependencies ?? {}),
+    ]) {
       if (dirs.has(dependency)) pending.push(dependency);
     }
   }

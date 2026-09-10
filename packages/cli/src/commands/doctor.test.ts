@@ -270,6 +270,7 @@ describe("renderDoctorText", () => {
         ok: false,
         reachable: ["auth"],
         unreachable: [{ capability: "payments", package: "@pithy-sh/payments", workers: ["api"] }],
+        split: [],
       },
     };
     const text = renderDoctorText(report, "/home/u");
@@ -316,6 +317,7 @@ describe("renderDoctorText", () => {
           ok: false,
           reachable: [],
           unreachable: [{ capability: "payments", package: "@pithy-sh/payments", workers: ["api"] }],
+          split: [],
         }),
       }),
     );
@@ -350,6 +352,7 @@ describe("renderDoctorText", () => {
           ok: false,
           reachable: [],
           unreachable: [{ capability: "payments", package: "@pithy-sh/payments", workers: ["api"] }],
+          split: [],
         }),
       }),
     );
@@ -357,6 +360,77 @@ describe("renderDoctorText", () => {
     expect(text).toContain("payments is composed, and @pithy-sh/payments is not installed");
     expect(text).toContain("composed by api");
     expect(text).not.toContain("installed under");
+  });
+
+  /**
+   * **#539: one capability, two versions — printed, explained, and green.**
+   *
+   * Nothing refuses this state, so it cannot fail the exit: a project legitimately mid-upgrade, with one
+   * Worker bumped ahead of another, would be red for as long as the upgrade took. And because it never
+   * fails `ok`, the block cannot be gated on `ok` alone — that would print the finding on every report
+   * except the ones it is for, which is the same collapse #513 removed one section over.
+   */
+  test("one capability at two versions opens the health block on its own, and the exit stays 0", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        installedVersion: "1.3.0",
+        fetch: registryFetch({ cli: "1.3.0" }),
+        installedCapabilities: async () => [],
+        resolveWorkers: async () => workerSet("api"),
+        buildPlan: planStub(cleanPlanFor("api")),
+        readCapabilityReach: async () => ({
+          ok: true,
+          reachable: ["payments"],
+          unreachable: [],
+          split: [
+            {
+              capability: "payments",
+              package: "@pithy-sh/payments",
+              at: [
+                { worker: "api", version: "5.9.9" },
+                { worker: "admin", version: "5.0.0" },
+              ],
+            },
+          ],
+        }),
+      }),
+    );
+    if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere to sit.");
+    // Nothing here writes `ok`. It is the conjunction `buildProjectHealth` computed, and skew is not in it.
+    expect(report.project.health.ok).toBe(true);
+    expect(doctorExitCode(report)).toBe(0);
+
+    expect(renderDoctorText(report, "/home/u")).toContain(
+      [
+        "Project health:",
+        "  capabilities:",
+        "    payments is one package for the whole project, and its Workers hold 2 versions",
+        "      api resolves @pithy-sh/payments 5.9.9",
+        "      admin resolves @pithy-sh/payments 5.0.0",
+        "      Every pithy command for payments plans from the Worker it acts for and loads",
+        "      the first copy under apps/, so it can deploy a version it did not plan.",
+        "      Install one version: hoist it to the project root, or move every Worker onto it.",
+        "      Nothing refuses this, so it does not fail the exit. A mid-upgrade project passes through.",
+      ].join("\n"),
+    );
+    // No `pithy add` here. The package is installed — that is the sentence #533 was reported about, and
+    // re-running it rewrites a hand-built `pithy.config.ts` to work around an install.
+    expect(renderDoctorText(report, "/home/u")).not.toContain("Run: pithy add payments");
+
+    // And it rides in `--json` with the rest of the project's health, so an agent reads the same fact.
+    const json = renderDoctorJson(report) as {
+      project: { health: { capabilityReach: { split: { capability: string; at: unknown[] }[] } } };
+    };
+    expect(json.project.health.capabilityReach.split).toEqual([
+      {
+        capability: "payments",
+        package: "@pithy-sh/payments",
+        at: [
+          { worker: "api", version: "5.9.9" },
+          { worker: "admin", version: "5.0.0" },
+        ],
+      },
+    ]);
   });
 
   /**

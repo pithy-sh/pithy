@@ -361,17 +361,57 @@ describe("declareOnWorker", () => {
   });
 
   // A kit sibling peer is a *prerequisite*: the CLI refuses a composition missing one and names the
-  // command that fixes it, and once composed it is declared by its own `pithy add`.
+  // command that fixes it, and once composed it is declared by its own `pithy add`. Every kit peer of
+  // that shape carries `peerDependenciesMeta.optional` — `@pithy-sh/support` really does — which is what
+  // lets one rule (`optional`) say both this and React, rather than a second rule about the scope (#542).
   test("skips a kit sibling, which the prerequisite check owns", async () => {
     const workerDir = await project(
       { "@pithy-sh/support": "^0.1.4" },
       {},
-      { "@pithy-sh/support": { peerDependencies: { "@pithy-sh/auth": "^0.1.4", zod: "^4.4.0" } } },
+      {
+        "@pithy-sh/support": {
+          peerDependencies: { "@pithy-sh/auth": "^0.1.4", zod: "^4.4.0" },
+          peerDependenciesMeta: { "@pithy-sh/auth": { optional: true } },
+        },
+      },
     );
 
     await declareOnWorker(dir, workerDir, "@pithy-sh/support");
     expect(await workerDeps()).not.toHaveProperty("@pithy-sh/auth");
     expect(await workerDeps()).toMatchObject({ zod: "^4.4.0" });
+  });
+
+  /**
+   * **A *required* kit peer is declared like any other required peer — #542.**
+   *
+   * `@pithy-sh/core` is a peer of every capability and `@pithy-sh/secrets` a peer of the six that read a
+   * secret, because two copies of either is the defect: two `Capability` types the compiler will not name,
+   * and two module-level `config`s where `configureSharedSecrets` wrote to one and every reader holds the
+   * other. Skipping them here on the grounds that they are kit-scoped leaves the Worker declaring a
+   * capability whose own requirements nothing satisfies — 0.1.3's `ERR_MODULE_NOT_FOUND` with a
+   * `@pithy-sh/*` name in it.
+   */
+  test("declares a required kit peer, which is not a prerequisite to compose", async () => {
+    const workerDir = await project(
+      { "@pithy-sh/turnstile": "^0.1.6" },
+      {},
+      {
+        "@pithy-sh/turnstile": {
+          peerDependencies: { "@pithy-sh/core": "^0.3.0", "@pithy-sh/secrets": "^0.1.6", zod: "^4.4.0" },
+        },
+      },
+    );
+
+    expect((await declareOnWorker(dir, workerDir, "@pithy-sh/turnstile")).sort()).toEqual([
+      "@pithy-sh/core",
+      "@pithy-sh/secrets",
+      "@pithy-sh/turnstile",
+      "zod",
+    ]);
+    expect(await workerDeps()).toMatchObject({
+      "@pithy-sh/core": "^0.3.0",
+      "@pithy-sh/secrets": "^0.1.6",
+    });
   });
 
   // Merge, never replace — the same rule `pithy ui add` follows. An adopter who pinned a version keeps it.

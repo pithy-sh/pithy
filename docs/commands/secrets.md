@@ -17,6 +17,8 @@ pithy secrets provision [--json]
 pithy secrets deprovision [--keys] [--json]
 ```
 
+**Its Worker deploy is gated.** The Worker is deployed carrying a stamp naming the package version and a hash of its resolved configuration, and a run whose stamp matches both ships nothing. Anything the gate cannot establish — no Worker, no stamp, an unreachable account — deploys. `pithy deploy --env <env>` ships the same Worker without provisioning anything else, and `pithy deploy --env <env> --kit --force` re-uploads it regardless. See [`pithy deploy`](./deploy.md).
+
 ## Flags
 
 | Subcommand | Flag | Meaning |

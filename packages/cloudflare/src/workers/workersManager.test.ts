@@ -20,6 +20,7 @@ const mockScriptsDelete = vi.fn();
 const mockSubdomainCreate = vi.fn();
 const mockSubdomainGet = vi.fn();
 const mockSettingsEdit = vi.fn();
+const mockScriptAndVersionSettingsGet = vi.fn();
 const mockVersionsList = vi.fn();
 const mockVersionsGet = vi.fn();
 const mockDeploymentsList = vi.fn();
@@ -53,6 +54,7 @@ vi.mock("cloudflare", () => ({
         delete: mockScriptsDelete,
         subdomain: { create: mockSubdomainCreate },
         settings: { edit: mockSettingsEdit },
+        scriptAndVersionSettings: { get: mockScriptAndVersionSettingsGet },
         versions: { list: mockVersionsList, get: mockVersionsGet },
         deployments: { list: mockDeploymentsList, get: mockDeploymentsGet, create: mockDeploymentsCreate },
         secrets: { update: mockSecretsUpdate, delete: mockSecretsDelete, list: mockSecretsList },
@@ -283,6 +285,65 @@ describe("CloudflareWorkersManager", () => {
         account_id: "acct-1",
         observability: { enabled: true },
       });
+    });
+  });
+
+  /**
+   * The read #537's deploy gate is built on. A kit Worker's configuration is stamped into its vars at
+   * provision time — it has no request and no access to `pithy.config.ts` — so the vars are the only
+   * place a deployed Worker can say what it was deployed from.
+   */
+  describe("getWorkerVars", () => {
+    it("returns the deployed Worker's plain-text vars, keyed by binding name", async () => {
+      mockScriptAndVersionSettingsGet.mockResolvedValue({
+        bindings: [
+          { type: "plain_text", name: "BASE_URL", text: "https://acme.example" },
+          { type: "plain_text", name: "PITHY_DEPLOY_STAMP", text: "0.1.7/aaaaaaaaaaaaaaaa" },
+        ],
+      });
+      expect(await manager.getWorkerVars("acme-prod-email")).toEqual({
+        BASE_URL: "https://acme.example",
+        PITHY_DEPLOY_STAMP: "0.1.7/aaaaaaaaaaaaaaaa",
+      });
+      expect(mockScriptAndVersionSettingsGet).toHaveBeenCalledWith(
+        "acme-prod-email",
+        { account_id: "acct-1" },
+        expect.anything(),
+      );
+    });
+
+    it("keeps only plain_text — a secret's value never comes back, and a resource reference is not a var", async () => {
+      mockScriptAndVersionSettingsGet.mockResolvedValue({
+        bindings: [
+          { type: "plain_text", name: "BASE_URL", text: "https://acme.example" },
+          { type: "secret_text", name: "SIGNING_KEY" },
+          { type: "d1", name: "DB", id: "db-1" },
+          { type: "r2_bucket", name: "MEDIA", bucket_name: "acme-prod-media" },
+        ],
+      });
+      expect(await manager.getWorkerVars("acme-prod-email")).toEqual({ BASE_URL: "https://acme.example" });
+    });
+
+    it("a Worker with no bindings at all answers an empty block, not null", async () => {
+      // Distinct from `null`: this Worker is deployed and carries no stamp, which the gate reads as
+      // "deployed before the gate existed" rather than as "never deployed". Both deploy; they read
+      // differently, and a reader acts on the difference.
+      mockScriptAndVersionSettingsGet.mockResolvedValue({});
+      expect(await manager.getWorkerVars("acme-prod-email")).toEqual({});
+    });
+
+    it("answers null when the account holds no Worker of that name", async () => {
+      mockScriptAndVersionSettingsGet.mockRejectedValue(Object.assign(new Error("not found"), { status: 404 }));
+      expect(await manager.getWorkerVars("acme-prod-email")).toBeNull();
+    });
+
+    it("throws on anything but a 404, so an unreachable account is never read as an absent Worker", async () => {
+      mockScriptAndVersionSettingsGet.mockRejectedValue(Object.assign(new Error("nope"), { status: 403 }));
+      await expect(manager.getWorkerVars("acme-prod-email")).rejects.toThrowError(
+        expect.objectContaining({
+          payload: expect.objectContaining({ code: "cloudflare/request_failed", detail: "nope" }),
+        }),
+      );
     });
   });
 

@@ -739,6 +739,8 @@ describe("a gate is keyed on what it reads", () => {
         "It reads the six capability provisioning commands under `packages/cli/src/commands`, holding them to one shared readiness helper rather than six copies of a `DB`-binding check. Every file it opens is inside its own package, so turbo's default inputs are already exactly right for it.",
       "kitResolution.test.ts":
         "It sweeps `packages/cli/src` for runtime `@pithy-sh` imports, and the population really is one package's: `@pithy-sh/cli` is the only thing in this repository that resolves a capability out of an adopter's `node_modules` — every other package is bundled into a Worker. Turbo's default inputs are already exactly right for it.",
+      "kitCopies.test.ts":
+        "It is the mechanism half of the one-copy gate, and every tree it reads it builds itself under `os.tmpdir()` — this repository holds one copy of everything, so it is the only place the walker can be shown to fire. The population it exists for is swept repo-wide by `kitPeerDeps.test.ts` beside it, which the register already sees.",
       "distTypes.test.ts":
         "It is the mechanism half of the shipped-declaration gate, and the only file it opens is `distTypes.ts` beside it. Its subject looks repo-wide and is not: the population — every shipped table, read out of `packages/*/dist` — is checked by `auditCoverage` inside `bun run dist-types`, which CI runs after `Build` because there is nothing to read before `dist` exists. What it asserts about another package it asserts by *importing* it (`@pithy-sh/core`'s codecs), which turbo's dependency graph already plans on.",
     };

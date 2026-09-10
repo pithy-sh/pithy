@@ -1243,16 +1243,19 @@ function migrationLines(health: MigrationHealth): string[] {
  * only the adopter knows which they meant.
  */
 /**
- * Whether any Worker in the project has something to say about its bindings that no check failed on.
+ * Whether the project has something to report that no check failed on — the gate for every green finding.
  *
- * Two findings share this gate, because they share the property that puts them here: both are reported on
- * a project where every check passes, so both need the health block pushed and the Worker's line
- * uncollapsed, and neither fails the exit.
+ * They share it because they share the property that puts them here: each is reported on a project where
+ * every check passes, so each needs the health block pushed and the Worker's line uncollapsed, and none of
+ * them fails the exit. Gating the block on `ok` alone prints such a finding on every report except the
+ * ones it is for.
  */
-function projectHasBindingNotes(health: ProjectHealth): boolean {
+function projectHasGreenFindings(health: ProjectHealth): boolean {
+  // A capability two Workers hold at two versions (#539). Nothing refuses that state, so it never fails
+  // `ok` — and without this the one report that carries it is the one report that would not print.
+  if (health.capabilityReach.split.length > 0) return true;
   // The project-global comparison joins them on the same rule: a stale `env dev` name never fails `ok`
-  // (no command rewrites that stanza), so gating the block on `ok` alone would print the finding on every
-  // report except the ones it is for.
+  // (no command rewrites that stanza).
   const scope = health.bindingScope;
   if (scope.split.length > 0 || scope.divergent.length > 0 || scope.partial) return true;
   return health.workers.some((worker) => worker.state !== "unavailable" && hasBindingNotes(worker));
@@ -1465,6 +1468,22 @@ function workerHealthLines(health: WorkerChecks): string[] {
  * is left in this list is a capability composed and installed nowhere. That is the one state `pithy add`
  * is for, and re-running it is safe on the half that is already done: a registration already in the
  * config is left exactly as the adopter wrote it (`capabilities/add.ts`).
+ *
+ * **The section's second finding is one capability at two versions (#539)**, and it is `shared:`'s
+ * sentence one level over — *one thing that should be identical across the project is not*. It prints
+ * here rather than there because what disagrees is a package and not a resource, and because the same
+ * walk answers both halves: which copy each Worker resolves, and whether that is the same copy.
+ *
+ * **It prints and it does not fail the exit.** The unreachable half fails it because every `pithy
+ * <capability>` command for that capability refuses today; skew refuses nothing, and reddening `doctor`
+ * for a project mid-upgrade is a red on a state somebody is in the middle of leaving. The last line says
+ * so on screen, the way the `dev` stanza's does in `shared:`, so the section and the exit code cannot be
+ * read as disagreeing.
+ *
+ * **And no `pithy` command is printed, because none of them fixes it.** `pithy add` is the wrong remedy
+ * twice over here — the package is installed, and re-running it rewrites a hand-built `pithy.config.ts`
+ * to work around an install. The fix is an install, so the line names the two shapes an install can take
+ * and leaves the package manager to the adopter.
  */
 function capabilityReachLines(reach: CapabilityReachHealth): string[] {
   const lines: string[] = [];
@@ -1474,6 +1493,26 @@ function capabilityReachLines(reach: CapabilityReachHealth): string[] {
     lines.push(`${HEALTH_INDENT}  Nothing resolves it — not the project root, not any Worker's own node_modules — so`);
     lines.push(`${HEALTH_INDENT}  every command that reaches into it refuses, and every check below skips it.`);
     lines.push(`${HEALTH_INDENT}  Run: pithy add ${entry.capability}`);
+  }
+  for (const entry of reach.split) {
+    const versions = new Set(entry.at.map((where) => where.version)).size;
+    lines.push(
+      `${HEALTH_INDENT}${entry.capability} is one package for the whole project, and its Workers hold ${versions} versions`,
+    );
+    for (const where of entry.at) {
+      lines.push(`${HEALTH_INDENT}  ${where.worker} resolves ${entry.package} ${where.version}`);
+    }
+    // "Every pithy command for payments", never "a pithy payments command": the second reads as the
+    // command path `pithy payments command`, and `ci/docsCommands.test.ts` is right to fail a doc that
+    // pastes one. A line a reader could copy has to be a line that runs.
+    lines.push(
+      `${HEALTH_INDENT}  Every pithy command for ${entry.capability} plans from the Worker it acts for and loads`,
+    );
+    lines.push(`${HEALTH_INDENT}  the first copy under apps/, so it can deploy a version it did not plan.`);
+    lines.push(`${HEALTH_INDENT}  Install one version: hoist it to the project root, or move every Worker onto it.`);
+    lines.push(
+      `${HEALTH_INDENT}  Nothing refuses this, so it does not fail the exit. A mid-upgrade project passes through.`,
+    );
   }
   return lines;
 }
@@ -1873,7 +1912,9 @@ function healthBlock(health: ProjectHealth): string {
   // Beside the manifest hole and above the shared one, because it explains more than either: a capability
   // that is composed and not installed ships no manifest to any scan, contributes no drift to any Worker's
   // checks, and is the reason a `pithy <capability>` command refused a moment ago (#533).
-  if (!health.capabilityReach.ok) {
+  // The `split` half is printed on its own count rather than on `ok`, because it deliberately does not
+  // fail it (#539) — the same shape `shared:` has below, where a `dev` stanza is reported and green.
+  if (!health.capabilityReach.ok || health.capabilityReach.split.length > 0) {
     lines.push("  capabilities:");
     lines.push(...capabilityReachLines(health.capabilityReach));
   }
@@ -2332,11 +2373,12 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     blocks.push(
       ["Project: pithy.config.ts found", capabilitiesBlock(report.project.capabilities, report.offline)].join("\n"),
     );
-    // Or when a Worker declines something, or holds a generated value the kit has since changed its mind
-    // about. The block is the only place either is reported, and a project whose every check passes is
-    // exactly the project both are working on — gating the block on `ok` alone would print the feature's
-    // output on every report except the ones it is for.
-    if (!report.project.health.ok || projectHasBindingNotes(report.project.health)) {
+    // Or when the project carries a finding that is deliberately green: a declined binding, a generated
+    // value the kit has since changed its mind about, a project-global resource its Workers do not share,
+    // a capability two Workers hold at two versions. The block is the only place any of them is reported,
+    // and a project whose every check passes is exactly the project they are about — gating the block on
+    // `ok` alone would print their output on every report except the ones they are for.
+    if (!report.project.health.ok || projectHasGreenFindings(report.project.health)) {
       blocks.push(healthBlock(report.project.health));
     }
   } else {

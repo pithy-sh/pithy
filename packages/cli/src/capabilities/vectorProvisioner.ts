@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile, unlink, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
@@ -11,7 +11,7 @@ import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { parse } from "comment-json";
 import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
-import { runWrangler } from "../project/wrangler";
+import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
 import { capabilityLoadError } from "./loadFailure";
 
 /**
@@ -235,16 +235,21 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
       config: this.#config,
     });
 
-    const configPath = join(dir, `.wrangler.${env}.json`);
-    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
-    try {
-      await runWrangler(["deploy", "--config", configPath], {
-        cwd: dir,
-        env: { CLOUDFLARE_API_TOKEN: this.#apiToken, CLOUDFLARE_ACCOUNT_ID: this.#accountId },
-      });
-    } finally {
-      await unlink(configPath).catch(() => {});
-    }
+    // **The gate, inherited rather than opted into (#537).** `deployHostWorker` stamps the resolved
+    // config with this package's version and a hash of the config itself, compares that against what
+    // the deployed Worker carries, and ships only when they differ. A first provision has no stamp, so
+    // it deploys. Anything it cannot establish — no Worker, no stamp, an unreachable account — deploys
+    // too: a false redeploy costs seconds, a false skip is silent.
+    await deployHostWorker({
+      capability: "vector",
+      pkg: "@pithy-sh/vector",
+      version: await kitPackageVersion(this.#projectDir, "@pithy-sh/vector"),
+      config,
+      dir,
+      env,
+      readVars: (script) => this.#cf.workers().getWorkerVars(script),
+      credentials: { accountId: this.#accountId, apiToken: this.#apiToken },
+    });
   }
 
   /** Delete an index. Destructive, and idempotent — a missing index is a no-op. */

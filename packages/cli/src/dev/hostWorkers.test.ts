@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { email } from "@pithy-sh/email/src/capability";
 import { catalogsFromEnv } from "@pithy-sh/email/src/templates/messages";
@@ -24,6 +24,15 @@ const apps: WorkerTarget[] = [
 
 /** A composed capability, minimally what discovery matches on. */
 const capability = (name: string): Capability => ({ name }) as Capability;
+
+/**
+ * The email capability as an adopter composes it — what a host's resolver actually reads.
+ *
+ * `{ name: "email" }` is enough for *discovery*, which matches on the name, and not enough for
+ * *resolution*, which reads the adopter's configuration off the object and refuses anything that is
+ * not its package's own shape (#537). The two fixtures are therefore different on purpose.
+ */
+const composedEmail = email({ fromAddress: "noreply@acme.test", baseUrl: "https://api.acme.test" });
 
 /** Discovery driven off a stubbed composition rather than a real `pithy.config.ts`. */
 function discover(composed: Record<string, string[]>, workers = apps) {
@@ -67,6 +76,40 @@ describe("discoverHostWorkers", () => {
     expect(found.notes.join(" ")).toContain("web");
   });
 
+  /**
+   * **A dev-only process has no `pithy.config.ts` and never had one (#537).**
+   *
+   * A Vite frontend joins the set through `pithy.worker.jsonc` alone, so `loadWorkerConfig` answers
+   * `core/not_found` for it on every run of every project that has a front end. `project/workerScope.ts`
+   * has partitioned the same two cases on the same strict `hasWrangler === true` since #454, and this
+   * is where it started to matter beyond a line of output: `pithy deploy --kit` fails the command on
+   * any note, and a project must not fail a deploy for having a front end.
+   */
+  test("a process with no config and no wrangler.jsonc composes nothing and is not noted", async () => {
+    const found = await discoverHostWorkers({
+      projectDir: "/proj",
+      workers: apps,
+      capabilitiesFor: async (dir) => {
+        if (dir === "/proj/apps/web") throw new NotFoundError({ message: `No pithy.config.ts in ${dir}.` });
+        return [capability("email")];
+      },
+    });
+    expect(found.hosts.map((h) => h.worker.name)).toEqual(["email"]);
+    expect(found.notes).toEqual([]);
+  });
+
+  test("a Worker with a wrangler.jsonc and no config is a gap, and is named", async () => {
+    const found = await discoverHostWorkers({
+      projectDir: "/proj",
+      workers: apps,
+      capabilitiesFor: async (dir) => {
+        if (dir === "/proj/apps/api") throw new NotFoundError({ message: `No pithy.config.ts in ${dir}.` });
+        return [capability("email")];
+      },
+    });
+    expect(found.notes[0]).toBe("api: its capabilities could not be read, so its capability hosts will not run.");
+  });
+
   test("an apps/ Worker already holding a host's name is refused, never silently shadowed", async () => {
     await expect(
       discover({ "/proj/apps/api": ["email"] }, [
@@ -97,6 +140,7 @@ describe("materializeHostConfigs", () => {
     await linkKitPackages(projectDir, ["email"]);
     const hosts = (await discover({ "/proj/apps/api": ["email"] })).hosts.map((host) => ({
       ...host,
+      composed: composedEmail,
       worker: { ...host.worker, dir: hostWorkerDir(projectDir, host.capability) },
     }));
     const result = await materializeHostConfigs({
@@ -152,6 +196,7 @@ describe("materializeHostConfigs", () => {
     await linkKitPackages(projectDir, ["email"]);
     const hosts = (await discover({ "/proj/apps/api": ["email"] })).hosts.map((host) => ({
       ...host,
+      composed: composedEmail,
       worker: { ...host.worker, dir: hostWorkerDir(projectDir, host.capability) },
     }));
     const result = await materializeHostConfigs({

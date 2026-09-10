@@ -12,6 +12,8 @@ pithy email deprovision [--suppression] [--json]
 pithy email test --to <address> [--template <id>] [--from <address>] [--json]
 ```
 
+**Its Worker deploy is gated.** The Worker is deployed carrying a stamp naming the package version and a hash of its resolved configuration, and a run whose stamp matches both ships nothing. Anything the gate cannot establish — no Worker, no stamp, an unreachable account — deploys. `pithy deploy --env <env>` ships the same Worker without provisioning anything else, and `pithy deploy --env <env> --kit --force` re-uploads it regardless. See [`pithy deploy`](./deploy.md).
+
 **All three subcommands reach a Cloudflare account.** There is no local mode and no `--env` flag: provisioning spans every managed environment — `staging` and `prod` — in one run, and `test` sends a real message through the Cloudflare Email Sending API.
 
 ## Flags

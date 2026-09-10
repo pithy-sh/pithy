@@ -327,7 +327,7 @@ describe("buildProjectHealth — per Worker", () => {
       workers: [],
       manifests: { ok: true, faults: [] },
       bindingScope: { ok: true, split: [], divergent: [], partial: false },
-      capabilityReach: { ok: true, reachable: [], unreachable: [] },
+      capabilityReach: { ok: true, reachable: [], unreachable: [], split: [] },
     });
   });
 });
@@ -466,6 +466,7 @@ describe("buildProjectHealth — capability resolution", () => {
     ok: false,
     reachable: ["auth"],
     unreachable: [{ capability: "payments", package: "@pithy-sh/payments", workers: ["api"] }],
+    split: [],
   };
 
   test("a project whose capabilities all resolve from the root stays ok", async () => {
@@ -476,9 +477,9 @@ describe("buildProjectHealth — capability resolution", () => {
       workers: [api],
       buildPlan: planStub({ api: clean("api") }),
       readManifests: async () => ({ manifests: [], faults: [] }),
-      readCapabilityReach: async () => ({ ok: true, reachable: ["auth"], unreachable: [] }),
+      readCapabilityReach: async () => ({ ok: true, reachable: ["auth"], unreachable: [], split: [] }),
     });
-    expect(health.capabilityReach).toEqual({ ok: true, reachable: ["auth"], unreachable: [] });
+    expect(health.capabilityReach).toEqual({ ok: true, reachable: ["auth"], unreachable: [], split: [] });
     expect(health.ok).toBe(true);
   });
 
@@ -501,7 +502,7 @@ describe("buildProjectHealth — capability resolution", () => {
   });
 
   test("it is read once, at the project, and handed the Workers for what they compose", async () => {
-    const read = vi.fn(async () => ({ ok: true, reachable: [], unreachable: [] }));
+    const read = vi.fn(async () => ({ ok: true, reachable: [], unreachable: [], split: [] }));
     await buildProjectHealth({
       account: null,
       projectDir: "/p",

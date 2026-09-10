@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile, unlink, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { CloudflareWorkflowsClient } from "@pithy-sh/cloudflare/src/workflows/workflowsClient";
@@ -13,7 +13,7 @@ import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
-import { runWrangler } from "../project/wrangler";
+import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
 import { capabilityLoadError } from "./loadFailure";
 
 /**
@@ -169,21 +169,34 @@ export class CloudflarePaymentsProvisioner {
       paymentsConfig: this.#paymentsConfig,
     });
 
-    const configPath = join(dir, `.wrangler.${env}.json`);
-    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    // **The gate, inherited rather than opted into (#537).** `deployHostWorker` stamps the resolved
+    // config with this package's version and a hash of the config itself, compares that against what
+    // the deployed Worker carries, and ships only when they differ. A first provision has no stamp, so
+    // it deploys. Anything it cannot establish — no Worker, no stamp, an unreachable account — deploys
+    // too: a false redeploy costs seconds, a false skip is silent.
     try {
-      await runWrangler(["deploy", "--config", configPath], {
-        cwd: dir,
-        env: { CLOUDFLARE_API_TOKEN: this.#apiToken, CLOUDFLARE_ACCOUNT_ID: this.#accountId },
+      const { outcome } = await deployHostWorker({
+        capability: "payments",
+        pkg: "@pithy-sh/payments",
+        version: await kitPackageVersion(this.#projectDir, "@pithy-sh/payments"),
+        config,
+        dir,
+        env,
+        readVars: (script) => this.#cf.workers().getWorkerVars(script),
+        credentials: { accountId: this.#accountId, apiToken: this.#apiToken },
       });
-      await this.#audit({
-        environment: env,
-        action: "payments/worker_deployed",
-        outcome: "success",
-        severity: "info",
-        resourceType: "cf_worker",
-        resourceId: paymentsWorkerName(this.#project, env),
-      });
+      // A skipped deploy shipped nothing, so it records nothing. An audit row saying a Worker was
+      // deployed on a run where wrangler never ran is worse than a gap in the trail.
+      if (outcome === "deployed") {
+        await this.#audit({
+          environment: env,
+          action: "payments/worker_deployed",
+          outcome: "success",
+          severity: "info",
+          resourceType: "cf_worker",
+          resourceId: paymentsWorkerName(this.#project, env),
+        });
+      }
     } catch (error) {
       // Truthful: recorded as it happened, never as it was intended.
       await this.#audit({
@@ -195,8 +208,6 @@ export class CloudflarePaymentsProvisioner {
         resourceId: paymentsWorkerName(this.#project, env),
       });
       throw error;
-    } finally {
-      await unlink(configPath).catch(() => {});
     }
   }
 

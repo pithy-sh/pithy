@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile, unlink, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { TokenPermission } from "@pithy-sh/cloudflare/src/tokens/accountTokensManager";
@@ -31,7 +31,7 @@ import type { MigrationProvider } from "kysely/migration";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { kitSource } from "../project/kitSource";
-import { runWrangler } from "../project/wrangler";
+import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
 
 /** The secrets migration set, as provisioning runs it against each environment's D1. */
 function secretsMigrationProvider(): MigrationProvider {
@@ -255,22 +255,30 @@ export function buildManagerDeploy(options: {
   project: string;
   /** The project root the manager worker is resolved from — the adopter's copy, not the CLI's (#533). */
   projectDir: string;
+  /** How the deploy gate reads the manager Worker's stamp back off the account (#537). */
+  cf: CloudflareClients;
 }): DeployManager {
-  const { accountId, apiToken, project, projectDir } = options;
+  const { accountId, apiToken, cf, project, projectDir } = options;
   return async (env, resolved) => {
     const dir = managerDir(projectDir);
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as ManagerWranglerTemplate;
     const config = resolveManagerConfig(template, { env, accountId, project, ...resolved });
-    const configPath = join(dir, `.wrangler.${env}.json`);
-    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
-    try {
-      await runWrangler(["deploy", "--config", configPath], {
-        cwd: dir,
-        env: { CLOUDFLARE_API_TOKEN: apiToken, CLOUDFLARE_ACCOUNT_ID: accountId },
-      });
-    } finally {
-      await unlink(configPath).catch(() => {});
-    }
+
+    // **The gate, inherited rather than opted into (#537).** `deployHostWorker` stamps the resolved
+    // config with this package's version and a hash of the config itself, compares that against what
+    // the deployed Worker carries, and ships only when they differ. A first provision has no stamp, so
+    // it deploys. Anything it cannot establish — no Worker, no stamp, an unreachable account — deploys
+    // too: a false redeploy costs seconds, a false skip is silent.
+    await deployHostWorker({
+      capability: "secrets",
+      pkg: "@pithy-sh/secrets",
+      version: await kitPackageVersion(projectDir, "@pithy-sh/secrets"),
+      config,
+      dir,
+      env,
+      readVars: (script) => cf.workers().getWorkerVars(script),
+      credentials: { accountId, apiToken },
+    });
   };
 }
 

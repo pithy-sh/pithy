@@ -284,16 +284,27 @@ export async function promoteDependencies(
  * of a fact the manifest already states and would be one release behind the first capability to need
  * something new.
  *
- * Two kinds are skipped, and each for its own reason:
+ * **One kind is skipped, and `optional` is the whole of the rule.**
  *
  * - **An optional peer.** `@pithy-sh/payments` and `@pithy-sh/i18n` declare `react`, used only by their
  *   `client/` and `react/` modules — an adopter reaches those by importing them, and a server
  *   composition never does. `peerDependenciesMeta` says so, and installing React into a Worker to
  *   satisfy a module it will never load is a worse answer than the resolution failure it prevents.
- * - **A kit sibling.** `@pithy-sh/support` peers `@pithy-sh/auth`, which is a *prerequisite*: the CLI
- *   refuses a composition missing one and names the command that fixes it, and once composed it is
- *   declared by its own `pithy add`. Declaring it here as well would write a range for a package this
- *   Worker may compose later, on its own terms.
+ *   **A kit sibling is the same skip, arrived at from the other side.** `@pithy-sh/support` peers
+ *   `@pithy-sh/auth`, which is a *prerequisite*: the CLI refuses a composition missing one and names the
+ *   command that fixes it, and once composed it is declared by its own `pithy add`. Declaring it here as
+ *   well would write a range for a package this Worker may compose later, on its own terms. Every kit
+ *   peer of that shape carries `peerDependenciesMeta.optional`, so saying `optional` says both.
+ *
+ * **What is no longer skipped is the kit scope, and that was the half #542 was missing.** This filter
+ * read `!name.startsWith(PITHY_SCOPE) && …optional !== true`, which was two rules for one fact — and it
+ * was true only while every kit peer happened to be optional. `@pithy-sh/core` is now a **required** peer
+ * of every capability, and `@pithy-sh/secrets`, `@pithy-sh/email`, `@pithy-sh/storage`,
+ * `@pithy-sh/turnstile` and `@pithy-sh/cloudflare` are required peers of the capabilities that read them
+ * — because a second copy of `core` is a second `Capability` type, and a second copy of `secrets` is a
+ * second module-level `config` that `configureSharedSecrets` never wrote to (a 500 on every secret read).
+ * A scope filter would have dropped exactly those from the Worker that composes them, which is 0.1.3's
+ * `ERR_MODULE_NOT_FOUND` again with a kit package in the message instead of `zod`.
  */
 export async function declareOnWorker(projectDir: string, workerDir: string, pkg: string): Promise<string[]> {
   const rootRaw = await readOptionalFile(join(projectDir, "package.json"));
@@ -316,7 +327,7 @@ export async function declareOnWorker(projectDir: string, workerDir: string, pkg
   return added.map(([name]) => name);
 }
 
-/** What `pkg`, as installed, requires its consumer to provide — optional and kit peers excluded. */
+/** What `pkg`, as installed, requires its consumer to provide — optional peers excluded, kit or not. */
 async function requiredPeers(projectDir: string, pkg: string): Promise<Record<string, string>> {
   const raw = await readOptionalFile(join(projectDir, "node_modules", ...pkg.split("/"), "package.json"));
   if (raw === null) return {};
@@ -326,7 +337,7 @@ async function requiredPeers(projectDir: string, pkg: string): Promise<Record<st
   };
   return Object.fromEntries(
     Object.entries(manifest.peerDependencies ?? {}).filter(
-      ([name]) => !name.startsWith(PITHY_SCOPE) && manifest.peerDependenciesMeta?.[name]?.optional !== true,
+      ([name]) => manifest.peerDependenciesMeta?.[name]?.optional !== true,
     ),
   );
 }

@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { CATALOG } from "../capabilities/catalog";
-import { packageInstalledFrom } from "../project/kitResolve";
+import { packageDirFrom, packageInstalledFrom } from "../project/kitResolve";
 
 /**
  * **Whether a capability the project composes is one the CLI can actually reach (#533).**
@@ -40,6 +42,38 @@ import { packageInstalledFrom } from "../project/kitResolve";
  * and a table of them here would be a second copy of every loader's import list, kept true by a gate,
  * restating what the loaders already say. The package is where the answer stops being per command.
  *
+ * ## The same walk answers a second question: do the Workers agree on the version (#539)
+ *
+ * Capabilities are per Worker, so a capability can be installed hoisted at the project root **or** under
+ * `apps/<name>/node_modules` — and with no root copy, two Workers can hold their own copies at two
+ * different versions. `kitResolve` takes the first `apps/*` match in directory order and takes no Worker
+ * to resolve *for*, so `pithy payments provision` acting for `apps/api` builds its plan from api's
+ * manifest and then loads and deploys **admin's** package. Silently, and at exit 0.
+ *
+ * That state should not exist — a project's Workers should never be out of sync on a capability — but it
+ * is reachable, nothing refuses it, and until this nothing reported it. It is the same walk with one more
+ * question asked of each Worker: which copy would *you* load, and what version does it declare.
+ *
+ * **The version is read from the resolved package's own `package.json`**, never from a range in a
+ * manifest or a `dependencies` entry. A range is what somebody asked for; the file on disk is what would
+ * load, and naming the wrong one is how a report agrees with a project that is wrong.
+ *
+ * **Per Worker means a walk up from `apps/<name>`**, which is Node's own answer for that Worker's
+ * `pithy.config.ts` — its own copy first, then everything above it, ending at the root chain. So a hoisted
+ * copy beside one per-Worker install is skew too, and it is reported as what each Worker would load rather
+ * than as where the copies sit.
+ *
+ * **It reports and it does not fail `ok`.** {@link CapabilityReachHealth.unreachable} fails the exit
+ * because every `pithy <capability>` command for it refuses today. Skew refuses nothing, and a hard fail
+ * would redden `doctor` for a project legitimately mid-upgrade with one Worker bumped ahead of another —
+ * a red on a state somebody is in the middle of leaving. `bindingScope.ts`'s `dev` stanza is the same
+ * asymmetry one section over: reported, explained, and green.
+ *
+ * **A copy whose version nobody can read contributes nothing**, rather than a `null` or an `unknown` in a
+ * list of versions. A workspace link, a half-written install and a `package.json` that will not parse are
+ * all *this cannot be named*, and putting a word that is not a version beside two that are is a report
+ * inventing the fact it exists to state.
+ *
  * ## It reports the package and never the module, and there is no `partial`
  *
  * Every other check in this directory carries one, because every other check reads a file that can fail to
@@ -66,6 +100,21 @@ export interface UnreachableCapability {
   workers: string[];
 }
 
+/** One composed capability whose composing Workers do not all resolve the same version of it (#539). */
+export interface SplitCapability {
+  /** The capability, as `pithy <capability>` names it. */
+  capability: string;
+  /** The npm package that carries it — the catalog's, never `@pithy-sh/<name>` interpolated. */
+  package: string;
+  /**
+   * Every composing Worker that resolves a copy, with the version that copy declares, in report order.
+   *
+   * Always two or more distinct versions — a list that agrees with itself is not a finding. A Worker whose
+   * copy declares no readable version is absent from it rather than carried as an unnamed one.
+   */
+  at: { worker: string; version: string }[];
+}
+
 /** What `doctor` learned about reaching the capabilities this project composes. */
 export interface CapabilityReachHealth {
   /**
@@ -82,6 +131,13 @@ export interface CapabilityReachHealth {
   reachable: string[];
   /** Every composed capability it cannot, in report order. */
   unreachable: UnreachableCapability[];
+  /**
+   * Every composed capability whose Workers resolve two or more versions of it, in report order.
+   *
+   * **It does not fail `ok`** — see the `#539` section above. Nothing refuses a project in this state, and
+   * a project mid-upgrade is meant to be able to pass through it.
+   */
+  split: SplitCapability[];
 }
 
 /** The minimum this check needs to know about a Worker — what `buildProjectHealth` already holds. */
@@ -101,18 +157,59 @@ export interface ComposedWorker {
 }
 
 /** Every catalog capability this project composes, mapped to the Workers composing it, in report order. */
-function composedCapabilities(workers: readonly ComposedWorker[]): Map<string, string[]> {
+function composedCapabilities(workers: readonly ComposedWorker[]): Map<string, ComposedWorker[]> {
   const known = new Set(CATALOG.map((entry) => entry.name));
-  const composed = new Map<string, string[]>();
+  const composed = new Map<string, ComposedWorker[]>();
   for (const worker of workers) {
     for (const capability of worker.capabilities ?? []) {
       if (!known.has(capability.name)) continue;
       const at = composed.get(capability.name) ?? [];
-      if (!at.includes(worker.name)) at.push(worker.name);
+      if (!at.some((seen) => seen.name === worker.name)) at.push(worker);
       composed.set(capability.name, at);
     }
   }
   return composed;
+}
+
+/**
+ * The version the copy `base` would load declares, or `null` where nothing there declares one.
+ *
+ * {@link packageDirFrom} rather than a resolver, on the same rule the rest of this family follows: a walk
+ * asks the filesystem a question with one answer, so Node and Bun cannot differ about it, and every
+ * `@pithy-sh/*` package exports `./src/*` alone — so `require.resolve("@pithy-sh/payments")` throws on an
+ * install that is perfectly healthy.
+ *
+ * `null` covers three states that are one fact — nothing installed, a `package.json` that will not parse,
+ * and one carrying no `version` — because each is *this copy cannot be named*, and a caller that must not
+ * invent a version has nothing to do differently between them.
+ */
+function resolvedVersion(base: string, pkg: string): string | null {
+  const home = packageDirFrom(base, pkg);
+  if (home === null) return null;
+  try {
+    const manifest: unknown = JSON.parse(readFileSync(join(home, "package.json"), "utf8"));
+    const version = (manifest as { version?: unknown }).version;
+    return typeof version === "string" && version !== "" ? version : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The finding for one capability its Workers do not agree on, or `null` where they do.
+ *
+ * Keyed on the **version** and not on the resolved path, because the version is what the report names and
+ * what would actually behave differently: two copies of one release are two copies of one package, and a
+ * line saying `api has 5.0.0, admin has 5.0.0` states a fault that is not one.
+ */
+function splitAcross(capability: string, pkg: string, at: readonly ComposedWorker[]): SplitCapability | null {
+  const found: { worker: string; version: string }[] = [];
+  for (const worker of at) {
+    const version = resolvedVersion(worker.dir, pkg);
+    if (version !== null) found.push({ worker: worker.name, version });
+  }
+  if (new Set(found.map((entry) => entry.version)).size < 2) return null;
+  return { capability, package: pkg, at: found };
 }
 
 /**
@@ -128,6 +225,7 @@ export async function capabilityReachHealth(
 ): Promise<CapabilityReachHealth> {
   const reachable: string[] = [];
   const unreachable: UnreachableCapability[] = [];
+  const split: SplitCapability[] = [];
 
   for (const [capability, at] of composedCapabilities(workers)) {
     const pkg = CATALOG.find((entry) => entry.name === capability)?.package ?? "";
@@ -135,10 +233,16 @@ export async function capabilityReachHealth(
     // to keep the lookup total rather than to be reached, and an empty package name would find nothing.
     if (pkg !== "" && packageInstalledFrom(projectDir, pkg)) {
       reachable.push(capability);
+      // Only here: a capability nothing resolves has no version anywhere to disagree about, and reporting
+      // it twice would say two things about one install.
+      const skew = splitAcross(capability, pkg, at);
+      if (skew !== null) split.push(skew);
       continue;
     }
-    unreachable.push({ capability, package: pkg, workers: at });
+    unreachable.push({ capability, package: pkg, workers: at.map((worker) => worker.name) });
   }
 
-  return { ok: unreachable.length === 0, reachable, unreachable };
+  // `split` is deliberately not counted. See the `#539` section above: nothing refuses this state, and a
+  // red on it is a red on a project in the middle of leaving it.
+  return { ok: unreachable.length === 0, reachable, unreachable, split };
 }

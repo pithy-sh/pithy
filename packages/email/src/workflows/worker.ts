@@ -19,7 +19,7 @@ import { createEmailHostApp } from "./hostApp";
 import { type EmailHostEnv, emailHostEnv } from "./hostEnv";
 import { isLiveInstanceStatus } from "./instanceLiveness";
 import type { SendWorkflowInstances } from "./instances";
-import { runScheduler, type SchedulerDeps } from "./scheduler";
+import { runScheduler, type SchedulerDeps, schedulerHasWork } from "./scheduler";
 import { type BatchSendReport, runSendBatch, type SendBatchDeps } from "./sendBatch";
 
 /**
@@ -29,7 +29,7 @@ import { type BatchSendReport, runSendBatch, type SendBatchDeps } from "./sendBa
  *   - `EmailSendWorkflow` — sends a batch of jobs durably (dispatch target for immediate sends and
  *     the scheduler's fan-out).
  *   - `EmailSchedulerWorkflow` — finds due jobs and fans them out into send batches.
- *   - `scheduled()` — the every-minute cron that fires the scheduler Workflow.
+ *   - `scheduled()` — the every-minute cron that fires the scheduler Workflow when a row is due.
  *   - `fetch()` — the loopback dispatch door, served only in `dev` (see {@link createEmailHostApp}).
  *
  * The bodies (`runSendBatch`, `runScheduler`, `runSend`) are tested against Miniflare; these classes are
@@ -119,9 +119,14 @@ async function buildSendDeps(env: EmailWorkerEnv): Promise<SendBatchDeps> {
   };
 }
 
-/** Assemble the scheduler dependencies, dispatching each batch as a send Workflow. */
-function buildSchedulerDeps(env: EmailWorkerEnv): SchedulerDeps {
-  const config = hostConfig(env);
+/**
+ * Assemble the scheduler dependencies, dispatching each batch as a send Workflow.
+ *
+ * `config` is a parameter so the cron can validate the env once and hand the answer on: it reads
+ * `SCHEDULER_ENABLED` before it probes, and re-parsing the same env object a second line later would
+ * be one Zod pass per minute for nothing.
+ */
+function buildSchedulerDeps(env: EmailWorkerEnv, config: EmailHostEnv = hostConfig(env)): SchedulerDeps {
   return {
     db: emailDatabase(env.DB),
     now: new Date(),
@@ -180,11 +185,33 @@ export class EmailSchedulerWorkflow extends WorkflowEntrypoint<EmailWorkerEnv, u
 }
 
 export default {
-  /** Cron entry: fire the scheduler Workflow every minute, unless disabled. */
+  /**
+   * Cron entry: fire the scheduler Workflow every minute — when there is something to fire it for.
+   *
+   * The instance used to be created unconditionally, and the "is anything due" question was asked
+   * inside it. At `* * * * *` that spends 1,440 instance creations and 1,440 billed steps a day, per
+   * environment, discovering nothing to do; Workers Free allows 3,000 steps a day for the whole
+   * account, so a default project's staging and prod burn 96% of it sending no mail, and the sends
+   * that do happen compete for the rest (pithy-sh/pithy#538).
+   *
+   * So the question moved out in front: one indexed read on `pithy_email_jobs`, asked with the tick's
+   * own predicate rather than a second copy of it, and an instance only when it finds a row. Nothing
+   * is lost with the tick that never starts: this is not the path an immediate send takes (`enqueue`
+   * starts that Workflow itself), the work is a pure re-derivation from D1, and a lost minute is
+   * recovered by the next one exactly as a throwing `create()` has always been.
+   *
+   * What it does give up is the per-minute instance in the dashboard that proved the scheduler was
+   * alive. An idle minute now leaves no trace, by design — the trace was costing a billed step.
+   *
+   * **Through {@link schedulerHasWork}, so the tick's configuration is checked before the probe.** The
+   * batch-size check inside `runScheduler` exists to complain on the first tick rather than the first
+   * busy one, and a probe in front of the instance is in front of that check too.
+   */
   async scheduled(_controller: unknown, env: EmailWorkerEnv): Promise<void> {
-    if (hostConfig(env).SCHEDULER_ENABLED) {
-      await env.EMAIL_SCHEDULER.create();
-    }
+    const config = hostConfig(env);
+    if (!config.SCHEDULER_ENABLED) return;
+    if (!(await schedulerHasWork(buildSchedulerDeps(env, config)))) return;
+    await env.EMAIL_SCHEDULER.create();
   },
 
   /**

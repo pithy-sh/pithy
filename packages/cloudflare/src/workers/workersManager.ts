@@ -5,11 +5,12 @@ import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
 import type { Cloudflare } from "cloudflare";
 import type { RouteCreateResponse, RouteListResponse } from "cloudflare/resources/workers/routes";
 import type { Deployment } from "cloudflare/resources/workers/scripts/deployments";
+import type { ScriptAndVersionSettingGetResponse } from "cloudflare/resources/workers/scripts/script-and-version-settings";
 import type { Script } from "cloudflare/resources/workers/scripts/scripts";
 import type { SecretListResponse } from "cloudflare/resources/workers/scripts/secrets";
 import type { SettingEditParams } from "cloudflare/resources/workers/scripts/settings";
 import type { VersionGetResponse, VersionListResponse } from "cloudflare/resources/workers/scripts/versions";
-import { CloudflareInvalidResponseError, cloudflareRequest, messageOf } from "../client/errors";
+import { CloudflareInvalidResponseError, cloudflareRequest, isNotFoundError, messageOf } from "../client/errors";
 import { CloudflareManager } from "../client/manager";
 
 /** Per-call SDK timeout + retry budget for Worker management operations. */
@@ -210,6 +211,45 @@ export class CloudflareWorkersManager extends CloudflareManager {
         previews_enabled: previewsEnabled,
       }),
     );
+  }
+
+  /**
+   * A deployed Worker's **plain-text vars**, keyed by binding name — or `null` when the account holds
+   * no Worker of that name.
+   *
+   * Read through `scripts/script-and-version-settings`, which answers the *deployed* script's binding
+   * list in one call. {@link listVersions} + {@link getVersion} would answer the same question in two,
+   * off the newest *uploaded* version — which is not necessarily the deployed one under gradual
+   * rollouts, and which costs a round trip to learn a version id nobody wanted. So: settings.
+   *
+   * **Only `plain_text`.** A `secret_text` binding's value is never returned by the API, and a caller
+   * that wanted one would be asking the wrong question anyway; every other binding kind is a resource
+   * reference rather than a value. So this is the vars block a `wrangler.jsonc` declares, read back.
+   *
+   * `null` for a missing Worker rather than a throw, because "there is no such Worker" is an ordinary
+   * answer to this question — it is what a first deploy looks like. Every other failure throws, so a
+   * caller can tell *not deployed* from *the account would not answer*: {@link CloudflareWorkersManager}
+   * has no business collapsing those two into one silence, and #537's gate reports them differently.
+   */
+  async getWorkerVars(scriptName: string): Promise<Record<string, string> | null> {
+    return cloudflareRequest(`get vars for '${scriptName}'`, async () => {
+      let settings: ScriptAndVersionSettingGetResponse;
+      try {
+        settings = await this.getClient().workers.scripts.scriptAndVersionSettings.get(
+          scriptName,
+          { account_id: this.accountId },
+          requestOptions,
+        );
+      } catch (error) {
+        if (isNotFoundError(error)) return null;
+        throw error;
+      }
+      const vars: Record<string, string> = {};
+      for (const binding of settings.bindings ?? []) {
+        if (binding.type === "plain_text") vars[binding.name] = binding.text;
+      }
+      return vars;
+    });
   }
 
   /** Edit a Worker's settings (observability, logpush, tags, …). */

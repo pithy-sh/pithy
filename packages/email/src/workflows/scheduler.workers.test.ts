@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { env } from "cloudflare:test";
+import type { D1Database } from "@cloudflare/workers-types";
 import { MAX_BOUND_PARAMETERS, recordBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { beforeEach, describe, expect, test } from "vitest";
 import { emailDatabase } from "../data/tables";
 import { email_0001_init } from "../migrations/0001_init";
-import { runScheduler, type SchedulerDeps } from "./scheduler";
+import { type DueProbeDeps, hasDueJobs, runScheduler, type SchedulerDeps, schedulerHasWork } from "./scheduler";
 
 const NOW = new Date("2026-06-18T12:00:00.000Z");
 const NOW_MS = NOW.getTime();
@@ -440,5 +441,226 @@ describe("runScheduler and D1's bound-parameter ceiling", () => {
       expect(failure, `batchSize ${batchSize} was accepted`).toBeInstanceOf(PithyError);
       expect((failure as PithyError).payload.detail).toContain("SCHEDULER_BATCH_SIZE");
     }
+  });
+});
+
+/**
+ * **The check the probe must not postpone (pithy-sh/pithy#538).**
+ *
+ * {@link runScheduler} refuses a batch size that is not a count *before* its query, so a misconfigured
+ * worker says so on its first tick rather than on its first busy one. Moving the "is anything due"
+ * question out in front of the instance moved it out in front of that check too: with the probe
+ * deciding whether a tick happens at all, a broken `SCHEDULER_BATCH_SIZE` stayed silent until the
+ * first job came due — the exact postponement the check exists to prevent. So the cron asks
+ * {@link schedulerHasWork}, which validates and then probes.
+ */
+describe("schedulerHasWork — configuration first, then the question", () => {
+  test("a batch size that is not a count is refused before anything is read", async () => {
+    // A row *is* due, so the probe would have answered `true` and said nothing about the batch size.
+    await insertJob({ status: "scheduled", sendAt: NOW_MS - MINUTE });
+    let read = false;
+    // Flagged on the call rather than the lookup: a proxy that flags on `get` would report a read
+    // that never happened.
+    const d1 = new Proxy(env.DB, {
+      get(target, property, receiver) {
+        if (property === "prepare") {
+          return (sql: string) => {
+            read = true;
+            return target.prepare(sql);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    const failure = await schedulerHasWork(deps(async () => {}, { batchSize: Number.NaN, db: emailDatabase(d1) })).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(PithyError);
+    expect((failure as PithyError).payload.detail).toContain("SCHEDULER_BATCH_SIZE");
+    expect(read).toBe(false);
+  });
+
+  test("a configured scheduler still gets the probe's answer, unchanged", async () => {
+    expect(await schedulerHasWork(deps(async () => {}))).toBe(false);
+    await insertJob({ status: "scheduled", sendAt: NOW_MS - MINUTE });
+    expect(await schedulerHasWork(deps(async () => {}))).toBe(true);
+  });
+});
+
+/**
+ * The cron's probe (pithy-sh/pithy#538).
+ *
+ * `scheduled()` asks this before it creates a Workflow instance, so an idle minute costs one indexed
+ * read instead of an instance, a billed step and the same read from inside it. That makes the probe's
+ * predicate load-bearing in a way no test could see before: a probe that stops matching a branch does
+ * not fail, it just never wakes the scheduler for those rows, and they sit there with nothing logged.
+ *
+ * So every branch is asserted **against the tick that follows it** — the same fixture answers both
+ * questions in the same test, and a probe that has drifted narrower than {@link runScheduler} fails
+ * here rather than in an adopter's queue.
+ */
+describe("hasDueJobs — the question the cron asks before it creates anything", () => {
+  const probe = (overrides: Partial<DueProbeDeps> = {}): DueProbeDeps => ({
+    db: emailDatabase(env.DB),
+    now: NOW,
+    graceMs: 2 * MINUTE,
+    stuckMs: 15 * MINUTE,
+    ...overrides,
+  });
+
+  /** One row per branch of the predicate — all four statuses "due" reaches. */
+  const due: [string, Parameters<typeof insertJob>[0]][] = [
+    ["a scheduled job whose sendAt has arrived", { status: "scheduled", sendAt: NOW_MS - MINUTE }],
+    [
+      "a pending immediate job past its grace",
+      { status: "pending", sendAt: NOW_MS - 5 * MINUTE, createdAt: NOW_MS - 5 * MINUTE },
+    ],
+    [
+      "an undispatched job past its grace",
+      { status: "undispatched", sendAt: NOW_MS - 5 * MINUTE, createdAt: NOW_MS - 5 * MINUTE },
+    ],
+    [
+      "a sending job past stuckMs",
+      { status: "sending", sendAt: NOW_MS - 30 * MINUTE, updatedAt: NOW_MS - 30 * MINUTE },
+    ],
+  ];
+
+  test.each(due)("%s wakes the scheduler, and the tick it wakes claims it", async (_label, row) => {
+    await insertJob(row);
+
+    expect(await hasDueJobs(probe())).toBe(true);
+
+    const dispatched: string[][] = [];
+    const result = await runScheduler(deps(async (_batchId, ids) => void dispatched.push(ids)));
+    expect(result.due).toBe(1);
+    expect(dispatched.flat()).toHaveLength(1);
+  });
+
+  /** The other side of each branch, plus the statuses no branch reaches at all. */
+  const idle: [string, Parameters<typeof insertJob>[0]][] = [
+    ["a scheduled job whose sendAt is still ahead", { status: "scheduled", sendAt: NOW_MS + 10 * MINUTE }],
+    ["a pending job inside its grace", { status: "pending", sendAt: NOW_MS, createdAt: NOW_MS }],
+    ["an undispatched job inside its grace", { status: "undispatched", sendAt: NOW_MS, createdAt: NOW_MS }],
+    ["a sending job inside stuckMs", { status: "sending", sendAt: NOW_MS - MINUTE, updatedAt: NOW_MS - MINUTE }],
+    ["a job already sent", { status: "sent", sendAt: NOW_MS - MINUTE, updatedAt: NOW_MS - MINUTE }],
+    ["a job failed terminally", { status: "failed", sendAt: NOW_MS - MINUTE, updatedAt: NOW_MS - MINUTE }],
+  ];
+
+  test.each(idle)("%s is an idle minute — no instance, and the tick would claim nothing", async (_label, row) => {
+    await insertJob(row);
+
+    expect(await hasDueJobs(probe())).toBe(false);
+
+    let dispatched = false;
+    const result = await runScheduler(
+      deps(async () => {
+        dispatched = true;
+      }),
+    );
+    expect(result).toEqual({ due: 0, batches: 0, held: 0 });
+    expect(dispatched).toBe(false);
+  });
+
+  test("an empty table is an idle minute", async () => {
+    expect(await hasDueJobs(probe())).toBe(false);
+  });
+
+  /**
+   * The probe is deliberately the wider question. It reads rows, not batches, so a stale row whose
+   * batch is still alive wakes it and the tick then declines to re-drive it (pithy-sh/pithy#342). That
+   * costs one instance. The opposite — a probe narrower than the tick — is the silence this gate exists
+   * for, so the asymmetry is the safe one and is asserted rather than left to be rediscovered.
+   */
+  test("a stale row a live batch still holds wakes the probe, and the tick holds it anyway", async () => {
+    await insertJob({
+      status: "sending",
+      sendAt: NOW_MS - 30 * MINUTE,
+      updatedAt: NOW_MS - 30 * MINUTE,
+      batchId: "batch-live",
+    });
+
+    expect(await hasDueJobs(probe())).toBe(true);
+
+    const result = await runScheduler(deps(async () => {}, { batchIsAlive: async () => true }));
+    expect(result).toEqual({ due: 0, batches: 0, held: 1 });
+  });
+
+  test("the cutoffs are the probe's own — a wider grace sees a row a narrower one does not", async () => {
+    await insertJob({ status: "pending", sendAt: NOW_MS - 3 * MINUTE, createdAt: NOW_MS - 3 * MINUTE });
+
+    expect(await hasDueJobs(probe({ graceMs: 10 * MINUTE }))).toBe(false);
+    expect(await hasDueJobs(probe({ graceMs: MINUTE }))).toBe(true);
+  });
+});
+
+/**
+ * The drift gate itself (pithy-sh/pithy#538).
+ *
+ * Both queries are built from {@link isDue}, so the two cannot say different things — but "cannot"
+ * is a property of the source, and the source is what a later edit changes. This drives the real
+ * producers, records the SQL each one actually handed D1, and compares the where clause and the
+ * cutoffs bound into it. A retyped predicate in either place fails here, whatever it says.
+ */
+describe("the probe and the tick ask one question", () => {
+  /** Record every statement a Kysely instance prepares, with the values bound into it. */
+  function recordingD1(d1: D1Database, statements: { sql: string; params: unknown[] }[]): D1Database {
+    return new Proxy(d1, {
+      get(target, property, receiver) {
+        if (property !== "prepare") {
+          const value = Reflect.get(target, property, receiver) as unknown;
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return (sql: string) => {
+          const statement = target.prepare(sql);
+          const recorded = { sql, params: [] as unknown[] };
+          statements.push(recorded);
+          return new Proxy(statement, {
+            get(inner, key) {
+              if (key !== "bind") {
+                const value = Reflect.get(inner, key) as unknown;
+                return typeof value === "function" ? value.bind(inner) : value;
+              }
+              return (...values: unknown[]) => {
+                recorded.params = values;
+                return inner.bind(...values);
+              };
+            },
+          });
+        };
+      },
+    });
+  }
+
+  /** The where clause of a select, without the ordering and the limit that follow it. */
+  function whereOf(sql: string): string {
+    const after = sql.slice(sql.indexOf(" where ") + " where ".length);
+    const ends = [" order by ", " limit "].map((keyword) => {
+      const at = after.indexOf(keyword);
+      return at === -1 ? after.length : at;
+    });
+    return after.slice(0, Math.min(...ends));
+  }
+
+  test("the same where clause, bound to the same cutoffs", async () => {
+    const statements: { sql: string; params: unknown[] }[] = [];
+    const db = emailDatabase(recordingD1(env.DB, statements));
+
+    await hasDueJobs({ db, now: NOW, graceMs: 2 * MINUTE, stuckMs: 15 * MINUTE });
+    // Nothing is due, so the tick issues its select and stops: two statements, one from each side.
+    await runScheduler(deps(async () => {}, { db }));
+
+    expect(statements).toHaveLength(2);
+    const [probed, ticked] = statements as [{ sql: string; params: unknown[] }, { sql: string; params: unknown[] }];
+    const clause = whereOf(probed.sql);
+    expect(whereOf(ticked.sql)).toBe(clause);
+    // The parameters the where clause itself binds — the cutoffs. What follows them is each side's
+    // own limit, which is the one thing the two are meant to differ on.
+    const bound = clause.split("?").length - 1;
+    expect(bound).toBeGreaterThan(0);
+    expect(ticked.params.slice(0, bound)).toEqual(probed.params.slice(0, bound));
   });
 });
