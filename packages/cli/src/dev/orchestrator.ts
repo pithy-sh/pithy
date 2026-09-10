@@ -28,7 +28,7 @@ import {
   reclaimPortBlocks,
   registryRootFor,
 } from "../feature/ports";
-import { allCapabilities, loadProject, loadWorkerConfig, requireProjectName } from "../project/config";
+import { allCapabilities, loadWorkerConfig } from "../project/config";
 import { detectPackageManager, execArgs } from "../project/packageManager";
 import { defaultWorkerDev } from "../project/workerManifest";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "../project/workers";
@@ -37,9 +37,9 @@ import { dim, workerColor } from "../terminal/style";
 import { hasCloudflareLogin as defaultHasCloudflareLogin, deliveryFailureNote, deliveryPreflight } from "./delivery";
 import { type DevLoginTarget, devLoginKeyAction, devLoginLines, readDevLogin as readDevLoginDefault } from "./devLogin";
 import { devLoginTargets as devLoginTargetsDefault } from "./devLoginTargets";
+import { type DevSetMember, resolveDevSet, selectDevMembers } from "./devSet";
 import { buildWorkerEnv, childEnvFor, ownOriginFor, startCommand, type WranglerLauncher } from "./env";
 import {
-  discoverHostWorkers as discoverHostWorkersDefault,
   type HostMaterialization,
   type HostWorker,
   type HostWorkerDiscovery,
@@ -98,25 +98,15 @@ const defaultCheckEntitlements = async (workerDir: string): Promise<string[]> =>
   }
 };
 
-/**
- * The project name every host's derived names lead with, or `null` when the project states none.
- *
- * `requireProjectName` rather than `resolveProjectName`: a guessed name differs between checkouts,
- * and this one is stamped into a Worker script name. A project that states none gets no hosts and
- * one line saying why — the alternative is a host running under a name nothing else in the project
- * would reproduce.
- */
-const defaultProjectName = async (projectDir: string): Promise<string | null> => {
-  try {
-    return requireProjectName(await loadProject(projectDir));
-  } catch {
-    return null;
-  }
-};
-
 export interface StartDevOptions {
   projectDir: string;
   json?: boolean;
+  /**
+   * Start exactly these members — `--app`, repeatable. A name is the deployed name, the `apps/<dir>`
+   * basename, or a capability name for a host, and it starts that member whatever its `dev.autostart`
+   * says. Empty starts the autostart set. It narrows what runs; it never narrows what gets a port.
+   */
+  apps?: readonly string[];
   /** Test seam: the entitlement composition check, without loading a real `pithy.config.ts`. */
   checkEntitlements?: (workerDir: string) => Promise<string[]>;
   /** Seam: seed the dev secrets file into the local `SECRETS` store before anything spawns. */
@@ -392,38 +382,28 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   /** The machine's half: one object per line, always on stdout, only under `--json`. */
   const emitJson = (payload: Record<string, unknown>) => stdout(`${formatJsonLine(payload)}\n`);
 
-  // 1. Discover the autostart set. apps/ is the registry; no hand-kept list.
-  const discovered = await discoverWorkers(projectDir);
+  // 1. Resolve the dev set — `apps/` plus the host Worker of every capability those Workers compose
+  //    (pithy-sh/pithy#410). Through `resolveDevSet`, which is the one place membership is decided, so
+  //    `pithy dev --list` describes the run this function makes rather than a second guess at it.
+  const set = await resolveDevSet({
+    projectDir,
+    discoverWorkers,
+    ...(options.projectName ? { projectName: options.projectName } : {}),
+    ...(options.discoverHostWorkers ? { discoverHostWorkers: options.discoverHostWorkers } : {}),
+  });
+  for (const line of set.notes) emitLine(line);
+  const { project, hosts, hostNames } = set;
+  const discovered = set.members.filter((m) => m.kind === "app").map((m) => m.worker);
+  const members = set.members.map((m) => m.worker);
 
-  //    …plus the host Worker of every capability those Workers compose (pithy-sh/pithy#410). Nine
-  //    capabilities ship a prebuilt host that `pithy <capability> provision` deploys, none of them
-  //    lives in `apps/`, and until now not one had ever run under `pithy dev` — which is why every
-  //    email enqueued locally sat `pending` forever while the UI reported success. A host joins as an
-  //    ordinary member: its own pinned port, label, color, state entry, and teardown. Discovery is
-  //    through the shared registry, so the dev command names no capability.
-  //
-  //    The project name is settled first, and `requireProjectName` rather than a guess: it is stamped
-  //    into a Worker script name, and a guessed one differs between checkouts. A project that states
-  //    none gets no hosts and one line saying so, rather than hosts running under a name nothing else
-  //    in the project would reproduce.
-  const project = await (options.projectName ?? defaultProjectName)(projectDir);
-  const findHosts = options.discoverHostWorkers ?? discoverHostWorkersDefault;
-  const hostFinding =
-    project === null
-      ? {
-          hosts: [],
-          notes: [
-            "No project name in pithy.config.ts, so no capability host can be named — none will run.",
-            dim('  set: export default { name: "<project>" }'),
-          ],
-        }
-      : await findHosts({ projectDir, workers: discovered });
-  for (const line of hostFinding.notes) emitLine(line);
-  const hosts = hostFinding.hosts;
-  const hostNames = new Set(hosts.map((host) => host.worker.name));
-  const members = [...discovered, ...hosts.map((host) => host.worker)];
-  const autostart = members.filter((w) => (w.dev ?? defaultWorkerDev()).autostart);
-  if (autostart.length === 0) {
+  //    What this run starts. `--app` names members outright — whatever their `dev.autostart` says, since
+  //    naming one is the more specific act — and it is literal: no composed host comes along for the
+  //    ride. Every name is resolved here, above every write below, so an unknown one refuses the run
+  //    rather than letting half of it start and then die.
+  const named = options.apps ?? [];
+  const selected =
+    named.length > 0 ? selectDevMembers(set.members, named) : set.members.filter((member) => member.autostart);
+  if (selected.length === 0) {
     throw new ValidationError({
       message: "No autostart workers to run.",
       action: "Add one with pithy worker add, or set dev.autostart in a worker's pithy.worker.jsonc.",
@@ -478,14 +458,20 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   //    the same central registry, so ports stay assigned-then-verified rather than probed at startup.
   const ensure = options.ensureDevConfig ?? ensureDevConfig;
   const existing = await loadDevConfig(projectDir);
-  const unpinned = autostart.filter((w) => !existing?.workers[w.name]);
+  //    Over `members`, not over what this run starts. The set handed to `ensureDevConfig` and the set the
+  //    write decision is made over have to be the same set, or `--app` narrows the file: `buildDevConfig`
+  //    rebuilds its map from `{}` rather than merging into the previous one, so a narrowed call deletes
+  //    every other member's pin and hands the named Worker the block's first port — and the next full run
+  //    then renumbers the project off a `previous` holding one name. Ports survive a change in *which*
+  //    workers run, which is the whole promise `--app` must not break.
+  const unpinned = members.filter((w) => !existing?.workers[w.name]);
   const config =
     unpinned.length === 0 && existing
       ? existing
       : await ensure({ projectDir, workers: members, existing, ...(options.ensureDeps ?? {}) });
 
   const started: { worker: WorkerTarget; port: number; origin: string }[] = [];
-  for (const worker of autostart) {
+  for (const { worker } of selected) {
     const pinned = config.workers[worker.name];
     if (!pinned) {
       throw new ValidationError({
@@ -495,6 +481,12 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     }
     started.push({ worker, port: pinned.port, origin: pinned.origin });
   }
+
+  //    Which hosts this run actually starts. Materializing a host's config is a disk write for a
+  //    capability the run will not touch, so it follows the selection — while `hostPorts` below does
+  //    not, deliberately.
+  const selectedNames = new Set(selected.map((member) => member.worker.name));
+  const selectedHosts = hosts.filter((host) => selectedNames.has(host.worker.name));
 
   // 3b. Resolve and write each host's local `wrangler.jsonc`, now that the app Worker's own address
   //     is known — a message sent from here builds its callback links against it.
@@ -507,6 +499,19 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   //     of for a binding that would fail at startup — and it says so, before anyone is waiting on an
   //     inbox. The preflight is not the guarantee: `deliveryFailureNote` watches the host's own
   //     output for the failures it cannot see from here.
+  //
+  //     **`hostPorts` covers every host, not the selected ones.** `--app board` gives you board with
+  //     `EMAIL_ORIGIN` pointing at something that is not running, and that is the answer that was asked
+  //     for: a developer narrowing the dev set knows what they are narrowing, and an address nothing
+  //     answers on is a clearer failure than a binding that is silently absent.
+  //
+  //     **Not the same case as the dropped host below**, which deletes its entry for the opposite
+  //     reason. A host whose config would not resolve will not run in this project until somebody
+  //     fixes it, so falling back to the Workflow binding is the recovery — that is #410's failure,
+  //     where an enqueued message sat `pending` and nothing said so. A host that `--app` left out is
+  //     one the developer excluded on purpose, this run, and a connection error naming the port is
+  //     the honest answer to that; dispatching to the binding instead would put the run back in the
+  //     state where mail disappears.
   const hostPorts: Record<string, number> = {};
   for (const host of hosts) {
     const pinned = config.workers[host.worker.name];
@@ -519,15 +524,36 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   // The hosts that actually have a config on disk, the seam that wrote it, and the address it wrote
   // them against — all three needed after the block below: only these are started, and a delivery
   // failure at runtime rewrites one of them for its simulator.
-  let liveHosts: HostWorker[] = hosts;
+  let liveHosts: HostWorker[] = selectedHosts;
   let materializeHosts: ((options: MaterializeHostConfigsOptions) => Promise<HostMaterialization>) | undefined;
   let hostBaseUrl = "http://localhost";
   let deliveryIsLive = false;
-  if (project !== null && hosts.length > 0) {
+  if (project !== null && selectedHosts.length > 0) {
     // The app's address: the first started Worker that is not a host. Callback links point at the
     // app, never at the host — the host holds no public route of its own.
+    //
+    // Under `--app <host>` no app Worker is running at all, and the fallback used to be `started[0]`,
+    // which in that run *is* the host — so every link in a locally sent message pointed at a Worker
+    // holding no public route. An app Worker's pinned address is the right answer whether or not this
+    // run starts it: the port is pinned for the life of the feature, so it is where the app answers
+    // the moment anyone starts it.
+    //
+    // Two tiers under it, in this order. An **autostart** app first, because the line above sees only
+    // what this run started, which for a plain run is the first autostart app — so preferring any pinned
+    // app would answer differently for `pithy dev` and for `pithy dev --app email` in a project holding
+    // an opted-out Worker that sorts earlier. Then **any** pinned app, for the project whose Workers have
+    // all opted out: there is no autostart app to agree with, and an opted-out Worker's pinned address is
+    // still where the app answers when somebody starts it.
+    //
+    // And nothing after them. The old last resort was `started[0]`, which cannot help here: this branch
+    // reaches its fallbacks only when `app` found no started non-host, so every started member is a host
+    // and `started[0]` *is* one — a Worker holding no public route, which is the failure being fixed.
     const app = started.find((s) => !hostNames.has(s.worker.name));
-    const identity = await hostDeliveryIdentity(options.projectDir, hosts);
+    const pinnedOrigin = (member: DevSetMember | undefined): string | undefined =>
+      member && config.workers[member.worker.name]?.origin;
+    const isPinnedApp = (member: DevSetMember): boolean =>
+      member.kind === "app" && config.workers[member.worker.name] !== undefined;
+    const identity = await hostDeliveryIdentity(options.projectDir, selectedHosts);
     const preflight = deliveryPreflight({
       composed: identity !== undefined,
       requested: identity?.requested ?? "remote",
@@ -540,14 +566,18 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     deliveryLines = preflight.lines;
     deliveryIsLive = preflight.live;
     if (options.json) for (const line of preflight.lines) emitLine(line);
-    hostBaseUrl = app?.origin ?? started[0]?.origin ?? "http://localhost";
+    hostBaseUrl =
+      app?.origin ??
+      pinnedOrigin(set.members.find((member) => isPinnedApp(member) && member.autostart)) ??
+      pinnedOrigin(set.members.find(isPinnedApp)) ??
+      "http://localhost";
     const materialize = options.materializeHostConfigs ?? materializeHostConfigsDefault;
     materializeHosts = materialize;
     const materialized = await materialize({
       projectDir,
       project,
       baseUrl: hostBaseUrl,
-      hosts,
+      hosts: selectedHosts,
       simulateDelivery: !preflight.live,
     });
     for (const line of materialized.notes) emitLine(line);
@@ -564,7 +594,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       }
       for (const name of dropped) delete hostPorts[name];
     }
-    liveHosts = hosts.filter((host) => !dropped.has(host.worker.name));
+    liveHosts = selectedHosts.filter((host) => !dropped.has(host.worker.name));
     // A host's `.dev.vars` is generated once its directory exists, from the same project-wide
     // bootstrap set every Worker gets — the master key above all, since a local host has no Secrets
     // Store for the resolved template's entries to point at (which is why that block is dropped).

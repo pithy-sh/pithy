@@ -449,11 +449,11 @@ branch + `.worktrees/<issue>-<name>/` convention:
   `git rev-parse --git-common-dir`): **`.dev-ports.json`**, a map **keyed by feature branch**
   → that feature's port block, e.g. `{ "feature/12-auth": { "backend": 8800, "frontend":
   8801 }, "feature/34-email": { "backend": 8820, … } }`.
-    The inner keys are the **autostart worker names discovered in `apps/`** (§10.26/§10.27) —
+    The inner keys are the **worker names discovered in `apps/`** (§10.26/§10.27) —
     one port per worker in the dev set.
   - `pithy feature create` takes a short **file lock**, reads the registry (so it *sees every
     block already taken*), assigns the **lowest free, non-overlapping block** sized to the
-    feature's autostart workers, writes its key, and unlocks. Reading the whole picture in one
+    feature's workers, writes its key, and unlocks. Reading the whole picture in one
     shot is what makes collision impossible; when the worker set changes, the entry is
     reconciled (add/free per-worker ports) rather than reallocated.
   - `pithy feature destroy` (and the merge-to-`main` cleanup) **deletes its key**, returning
@@ -571,13 +571,16 @@ Pithy project is several Workers (each lives in `apps/<name>/`, see §10.27), pl
 frontend; a developer should not hand-juggle terminals and ports. One supervising process
 runs them all and ports the proven CMS `dev.ts` design:
 - **Worker discovery + the dev set.** `apps/` *is* the registry — `pithy dev` discovers
-  Workers by enumerating `apps/*`, no hand-maintained list. Each worker declares whether it
-  belongs in the local dev environment via a co-located, Zod-described `dev` block in its
-  manifest: `dev.autostart` (must this run for the local env to function?), an optional
+  Workers by enumerating `apps/*`, no hand-maintained list. Each worker declares how it runs
+  in the local dev environment via a co-located, Zod-described `dev` block in its
+  manifest: `dev.autostart` (defaults to `true`; set it `false` to keep the worker out of
+  the local dev set), an optional
   `dev.readySignal` regex (what marks it "ready" in its output — defaults to
   `/Ready on https?:\/\//`; the CMS `dev.ts` hardcoded these, we make them declarative), and
-  an optional `dev.preferredPort` hint. `pithy dev` starts exactly the `autostart` workers.
-- **Port resolution.** The allocator (§10.18) assigns one port **per autostart worker** in
+  an optional `dev.preferredPort` hint. `pithy dev` starts every worker that has not opted
+  out, and `--app <name>` narrows that to what it names.
+- **Port resolution.** The allocator (§10.18) assigns one port **per discovered worker** — never per *started*
+  worker, so a port survives a change in which workers run — in
   the feature's registry entry; `pithy dev` confirms each is free on **both** `127.0.0.1`
   and `::1` (Vite binds IPv6-only, wrangler binds both) and scans forward if something
   external holds it. Resolved ports are exported as env and the cross-worker URLs baked in as
@@ -602,9 +605,9 @@ mount file, the `.dev.vars` symlink (§10.18), and the co-located `dev` manifest
 (§10.26) — and registers it in the Bun workspace. **The folder is the source of truth:** every
 Pithy command that needs the worker set (`dev`, `deploy`, the port allocator) discovers it by
 enumerating `apps/*` and reading each worker's manifest, so adding or removing a worker is
-just adding or removing its directory. When the autostart set changes, the next
+just adding or removing its directory. When the worker set changes, the next
 `feature create`/`dev` **reconciles** the feature's port-registry entry — allocating ports for
-new autostart workers and freeing ports for removed ones (§10.18). `worker remove`/`worker
+new workers and freeing ports for removed ones (§10.18). `worker remove`/`worker
 list` round out the set; all are agent-drivable (`--json`, non-interactive).
 
 ## 11. Open questions deferred to planning

@@ -29,9 +29,9 @@ export const WorkerDev = z
   .object({
     autostart: z
       .boolean()
-      .default(false)
+      .default(true)
       .describe(
-        "Must this worker run for the local dev environment to function? pithy dev starts exactly the autostart workers.",
+        "Does pithy dev start this worker? It does unless this says otherwise — set false to keep a worker out of the local dev set.",
       ),
     readySignal: z
       .string()
@@ -80,11 +80,12 @@ export type WorkerUi = z.output<typeof WorkerUi>;
 /** The `pithy.worker.jsonc` document: the dev-set descriptor beside a worker's `wrangler.jsonc`. */
 export const WorkerManifest = z
   .object({
-    // A resolved default (not `{}`): an outer `.default({})` returns the literal, bypassing WorkerDev's own
-    // field defaults, so a manifest omitting `dev` would get an empty block instead of the wrangler defaults.
-    dev: WorkerDev.default({ autostart: false, readySignal: DEFAULT_READY_SIGNAL }).describe(
-      "Local dev-orchestration block for this worker.",
-    ),
+    // A parse, not a literal, and not a bare `{}`: an outer `.default({})` returns the literal and bypasses
+    // WorkerDev's own field defaults, so a manifest omitting `dev` would get an empty block. A literal spelled
+    // out here would work, but it would be a second place the same booleans are decided — which is exactly how
+    // an absent `dev` block and a `dev` block omitting `autostart` came to mean opposite things. The function
+    // runs per parse, so the field defaults above are the one answer.
+    dev: WorkerDev.default(() => WorkerDev.parse({})).describe("Local dev-orchestration block for this worker."),
     ui: WorkerUi.optional().describe(
       "The front end this worker serves. Absent for an API-only worker; written by pithy ui add.",
     ),
@@ -129,7 +130,7 @@ export async function parseWorkerManifest(dir: string): Promise<WorkerManifest |
   return result.data;
 }
 
-/** The dev block for a worker with no manifest — its one/legacy worker, so it autostarts. */
+/** The dev block for a worker with no manifest: the schema's own defaults, decided in one place. */
 export function defaultWorkerDev(): WorkerDev {
-  return WorkerDev.parse({ autostart: true });
+  return WorkerDev.parse({});
 }

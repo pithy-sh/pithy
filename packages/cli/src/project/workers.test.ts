@@ -65,6 +65,24 @@ describe("discoverWorkers", () => {
     });
   });
 
+  // Where an adopter actually meets the opt-out. A manifest written to set a readySignal — or a command,
+  // or a preferredPort — used to drop its Worker out of the dev set, so whether a Worker started turned on
+  // whether the file existed rather than on what it said.
+  test("a manifest that omits autostart reads exactly like one that is absent", async () => {
+    await writeWorker(join(dir, "apps", "job"), "pithy-job", { readySignal: "Local:\\s+http" });
+
+    const workers = await discoverWorkers(dir);
+
+    expect(workers).toEqual([
+      {
+        name: "pithy-job",
+        dir: join(dir, "apps", "job"),
+        dev: { autostart: true, readySignal: "Local:\\s+http" },
+        hasWrangler: true,
+      },
+    ]);
+  });
+
   test("discovers a wrangler-only worker (no manifest) with a synthesized autostart dev block", async () => {
     const apiDir = join(dir, "apps", "api");
     await mkdir(apiDir, { recursive: true });

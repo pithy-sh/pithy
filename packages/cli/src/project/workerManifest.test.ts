@@ -16,9 +16,22 @@ import {
 } from "./workerManifest";
 
 describe("WorkerManifest", () => {
-  test("applies defaults for an empty dev block", () => {
+  test("an absent dev block autostarts — the key is an opt-out, not an opt-in", () => {
     const manifest = WorkerManifest.parse({});
-    expect(manifest.dev).toEqual({ autostart: false, readySignal: DEFAULT_READY_SIGNAL });
+    expect(manifest.dev).toEqual({ autostart: true, readySignal: DEFAULT_READY_SIGNAL });
+  });
+
+  // The case the outer block default used to mask: a manifest that exists and omits `autostart` must
+  // read exactly like one that is absent, or writing a readySignal silently drops a Worker from the set.
+  test("a dev block that omits autostart autostarts too", () => {
+    expect(WorkerManifest.parse({ dev: { readySignal: "Local:\\s+http" } }).dev).toEqual({
+      autostart: true,
+      readySignal: "Local:\\s+http",
+    });
+  });
+
+  test("an explicit false is the opt-out, and it still keeps a worker out", () => {
+    expect(WorkerManifest.parse({ dev: { autostart: false } }).dev.autostart).toBe(false);
   });
 
   test("keeps a declared command and preferredPort", () => {
@@ -64,7 +77,7 @@ describe("WorkerManifest", () => {
 });
 
 describe("defaultWorkerDev", () => {
-  test("autostarts with wrangler's ready signal", () => {
+  test("reports exactly the schema's own defaults", () => {
     expect(defaultWorkerDev()).toEqual({ autostart: true, readySignal: DEFAULT_READY_SIGNAL });
   });
 });

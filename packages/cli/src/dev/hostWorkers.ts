@@ -103,7 +103,14 @@ export interface DiscoverHostWorkersOptions {
   capabilitiesFor?: (workerDir: string) => Promise<Capability[]>;
 }
 
-/** The dev block a host Worker runs under: it must be up for the local loop to work, so it autostarts. */
+/**
+ * The dev block a host Worker runs under: it must be up for the local loop to work, so it autostarts.
+ *
+ * A claim about hosts, not a reading of `WorkerDev`'s default. A host has no `pithy.worker.jsonc` and
+ * therefore no opt-out to honor — its Workflows never run if it does not, which is the whole failure this
+ * discovery exists to close. So it stays `true` whatever the schema's default becomes, and it is spelled out
+ * here rather than derived so nobody later reads it as drift.
+ */
 function hostDev(): WorkerTarget["dev"] {
   return { autostart: true, readySignal: DEFAULT_READY_SIGNAL };
 }

@@ -14,7 +14,7 @@ It scaffolds the client into `apps/api/`, beside the Worker that serves it, and 
 
 - **Writes the client.** A Vite entry document, a Vite config wired with the Cloudflare and React plugins, two tsconfigs, ambient types, an SPA entry, a router, styles, the one module that narrows every capability's client projection, Pithy's sign-in screens when the Worker composes `auth`, its paywall, pricing and subscription screens when it composes `payments`, and one screen of your own.
 - **Wires the asset routing.** An `assets` stanza in `wrangler.jsonc`: SPA fallback for anything the browser asks for, and an explicit allowlist of the API paths the Worker must answer itself.
-- **Joins the dev set.** A `dev` block in `pithy.worker.jsonc` so `pithy dev` runs Vite for this Worker instead of `wrangler dev` — one process serving the SPA and the API together.
+- **Declares how it starts.** A `dev` block in `pithy.worker.jsonc` so `pithy dev` runs Vite for this Worker instead of `wrangler dev` — one process serving the SPA and the API together.
 - **Records the build.** A `ui` block so `pithy deploy` builds the client before shipping the Worker.
 - **Adds the dependencies.** React, Vite, the two plugins, and `@pithy-sh/vite`, at pinned versions. A `@pithy-sh/*` package your project already provides from a linked checkout gets no range written — there is no published version to name, and writing one breaks your next install.
 

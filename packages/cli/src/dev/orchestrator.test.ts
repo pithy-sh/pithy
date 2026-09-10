@@ -12,6 +12,7 @@ import { GENERATED_MARKER, generateDevVars } from "../devSecrets/generate";
 import { type DevConfig, devConfigPath, readDevConfig } from "../feature/devConfig";
 import { BLOCK_SIZE, type PortsRegistry } from "../feature/ports";
 import type { WorkerTarget } from "../project/workers";
+import type { MaterializeHostConfigsOptions } from "./hostWorkers";
 import {
   type ChildLike,
   type EnsureDevConfigOptions,
@@ -1262,6 +1263,256 @@ describe("startDev — a Worker whose config will not import", () => {
     // Reported, never fatal. One Worker's broken config is not a reason to refuse to run the project —
     // and refusing would take away the dev loop they are using to fix it.
     expect(h.spawned.length).toBeGreaterThan(0);
+  });
+});
+
+describe("startDev — naming what starts", () => {
+  /**
+   * `--app` narrows what runs. It never narrows what gets a port, and it never narrows what the ports
+   * are computed over — `buildDevConfig` rebuilds its map from `{}` rather than merging into the
+   * previous one, so a narrowed call would delete every other member's pin and renumber the project on
+   * the next full run. These are the cases that hold that line.
+   */
+
+  /** The dev config a project with an email host gets: the two apps plus the host, all pinned. */
+  const withHost: DevConfig = {
+    ...config,
+    workers: { ...config.workers, email: { port: 8789, origin: "http://localhost:8789" } },
+  };
+
+  const emailHost = {
+    capability: "email",
+    sourceDir: "/proj/apps/api",
+    spec: { capability: "email", entry: "@pithy-sh/email/src/workflows/worker", package: "@pithy-sh/email" },
+    worker: {
+      name: "email",
+      dir: "/proj/.wrangler/pithy/hosts/email",
+      hasWrangler: true,
+      dev: { autostart: true, readySignal: "Ready on https?://" },
+    },
+  };
+
+  function hosted(overrides: Partial<StartDevOptions> = {}) {
+    return harness({
+      loadDevConfig: async () => withHost,
+      discoverHostWorkers: async () => ({ hosts: [emailHost as never], notes: [] }),
+      ...overrides,
+    });
+  }
+
+  test("starts exactly the workers it names", async () => {
+    const h = harness();
+    const handle = await startDev({ ...h.options, apps: ["web"] });
+
+    expect(handle.workers).toEqual([{ name: "web", port: 8788, origin: "http://localhost:8788" }]);
+    expect(h.spawned.map((s) => s.opts.cwd)).toEqual(["/proj/apps/web"]);
+  });
+
+  test("starts a named worker whatever its dev.autostart says", async () => {
+    const manual: WorkerTarget[] = [
+      workers[0] as WorkerTarget,
+      { ...(workers[1] as WorkerTarget), dev: { autostart: false, readySignal: "ready in \\d+", command: ["vite"] } },
+    ];
+    const h = harness({ discoverWorkers: async () => manual });
+
+    const handle = await startDev({ ...h.options, apps: ["web"] });
+
+    expect(handle.workers.map((w) => w.name)).toEqual(["web"]);
+  });
+
+  test("an unknown name refuses the whole run, above every write", async () => {
+    const ensure = vi.fn();
+    const openLog = vi.fn();
+    const h = harness({ ensureDevConfig: ensure, loadDevConfig: async () => null });
+
+    await expect(startDev({ ...h.options, openLog, apps: ["nope"] })).rejects.toMatchObject({
+      payload: { code: "core/not_found" },
+    });
+    expect(h.spawned).toHaveLength(0);
+    expect(ensure).not.toHaveBeenCalled();
+    expect(openLog).not.toHaveBeenCalled();
+  });
+
+  test("never narrows what gets a port — the bootstrap seam still sees every member", async () => {
+    const seen: EnsureDevConfigOptions[] = [];
+    const h = hosted({
+      loadDevConfig: async () => null,
+      ensureDevConfig: async (o) => {
+        seen.push(o);
+        return withHost;
+      },
+    });
+
+    await startDev({ ...h.options, apps: ["web"] });
+
+    expect(seen[0]?.workers.map((w) => w.name)).toEqual(["api", "web", "email"]);
+  });
+
+  /**
+   * The acceptance criterion's own test, against real disk and a real `ensureDevConfig`.
+   *
+   * A run of one hands that one worker exactly the port a run of all of them would, and leaves the file
+   * byte-identical. It breaks silently if the member set ever narrows: `feature/devConfig.ts` rebuilds
+   * `workers` from `{}`, so the file would stay valid, atomic and Zod-clean while holding one name.
+   */
+  test("a worker's port is the same every run, whatever else is running", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pithy-dev-app-"));
+    try {
+      const registryPath = join(dir, "config", "dev-ports.json");
+      const ensureDeps = {
+        registryPathFor: async () => registryPath,
+        rootFor: async () => dir,
+        branchFor: async () => "main",
+      };
+      const run = async (apps?: string[], set: WorkerTarget[] = workers) => {
+        const h = harness({
+          projectDir: dir,
+          discoverWorkers: async () => set,
+          loadDevConfig: (at: string) => readDevConfig(devConfigPath(at)),
+          ensureDeps,
+        });
+        return startDev({ ...h.options, ...(apps ? { apps } : {}) });
+      };
+
+      const all = await run();
+      const afterAll = await readDevConfig(devConfigPath(dir));
+
+      // The case that actually discriminates: a worker added since the last run, named on its own. A
+      // narrowed member set would hand `zeta` the block's first port — the one `api` already holds —
+      // and write a file holding one name, so the next full run renumbers everything around it.
+      const withZeta = [...workers, { name: "zeta", dir: "/proj/apps/zeta", hasWrangler: true }];
+      const narrowed = await run(["zeta"], withZeta);
+      const afterNarrowed = await readDevConfig(devConfigPath(dir));
+      const again = await run(undefined, withZeta);
+
+      expect(Object.keys(afterNarrowed?.workers ?? {}).sort()).toEqual(["api", "web", "zeta"]);
+      expect(afterNarrowed?.workers.api).toEqual(afterAll?.workers.api);
+      expect(afterNarrowed?.workers.web).toEqual(afterAll?.workers.web);
+      expect(narrowed.workers).toEqual([{ name: "zeta", port: 8789, origin: "http://localhost:8789" }]);
+      // And a full run after it hands every worker exactly what the narrowed run reported.
+      expect(await readDevConfig(devConfigPath(dir))).toEqual(afterNarrowed);
+      expect(again.workers).toEqual([
+        all.workers[0] as (typeof all.workers)[number],
+        all.workers[1] as (typeof all.workers)[number],
+        { name: "zeta", port: 8789, origin: "http://localhost:8789" },
+      ]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("names an unpinned worker that had opted out, and it gets a port rather than a refusal", async () => {
+    // `unpinned` is computed over every member, not over the autostart set — an opted-out or newly added
+    // worker is invisible to that filter, so the bootstrap is skipped, `config` stays the partial one,
+    // and the run dies on `no port in .dev.config.json`, whose action says to delete the file and
+    // renumber everything.
+    const manual: WorkerTarget[] = [
+      workers[0] as WorkerTarget,
+      { ...(workers[1] as WorkerTarget), dev: { autostart: false, readySignal: "ready in \\d+", command: ["vite"] } },
+    ];
+    const partial: DevConfig = { ...config, workers: { api: config.workers.api as DevConfig["workers"][string] } };
+    const ensure = vi.fn(async () => config);
+    const h = harness({
+      discoverWorkers: async () => manual,
+      loadDevConfig: async () => partial,
+      ensureDevConfig: ensure,
+    });
+
+    const handle = await startDev({ ...h.options, apps: ["web"] });
+
+    expect(ensure).toHaveBeenCalled();
+    expect(handle.workers).toEqual([{ name: "web", port: 8788, origin: "http://localhost:8788" }]);
+  });
+
+  test("is literal — naming an app Worker materializes no capability host", async () => {
+    const materialize = vi.fn(async () => ({ notes: [], failed: [] }));
+    const h = hosted({ materializeHostConfigs: materialize });
+
+    await startDev({ ...h.options, apps: ["api"] });
+
+    expect(materialize).not.toHaveBeenCalled();
+    expect(h.spawned.map((s) => s.opts.cwd)).toEqual(["/proj/apps/api"]);
+  });
+
+  test("names a capability host, and starts exactly that host", async () => {
+    const seen: MaterializeHostConfigsOptions[] = [];
+    const h = hosted({
+      materializeHostConfigs: async (o) => {
+        seen.push(o);
+        return { notes: [], failed: [] };
+      },
+    });
+
+    const handle = await startDev({ ...h.options, apps: ["email"] });
+
+    expect(handle.workers.map((w) => w.name)).toEqual(["email"]);
+    expect(seen[0]?.hosts.map((host) => host.worker.name)).toEqual(["email"]);
+  });
+
+  test("the app it builds links against is one a plain run would start, not merely one with a port", async () => {
+    // `admin` sorts first and is pinned, but it has opted out — so it is not where the app answers.
+    // Picking it would make `pithy dev` and `pithy dev --app email` disagree about the same project,
+    // and mail a magic link to an address nobody runs.
+    const admin: WorkerTarget = {
+      name: "admin",
+      dir: "/proj/apps/admin",
+      hasWrangler: true,
+      dev: { autostart: false, readySignal: "Ready on https?://" },
+    };
+    const seen: MaterializeHostConfigsOptions[] = [];
+    const h = hosted({
+      discoverWorkers: async () => [admin, ...workers],
+      loadDevConfig: async () => ({
+        ...withHost,
+        workers: { ...withHost.workers, admin: { port: 8790, origin: "http://localhost:8790" } },
+      }),
+      materializeHostConfigs: async (o) => {
+        seen.push(o);
+        return { notes: [], failed: [] };
+      },
+    });
+
+    await startDev({ ...h.options, apps: ["email"] });
+
+    expect(seen[0]?.baseUrl).toBe("http://localhost:8787");
+  });
+
+  test("falls back to any pinned app when no app autostarts — never to the host's own address", async () => {
+    // Every app Worker opted out (run by hand under a debugger, say), so there is no autostart app to
+    // prefer. The chain used to end at `started[0]`, which in this run is the host itself — a Worker
+    // holding no public route, and the exact failure the fallback exists to prevent.
+    const manual: WorkerTarget[] = workers.map((w) => ({
+      ...w,
+      dev: { ...(w.dev ?? { readySignal: "x" }), autostart: false },
+    }));
+    const seen: MaterializeHostConfigsOptions[] = [];
+    const h = hosted({
+      discoverWorkers: async () => manual,
+      materializeHostConfigs: async (o) => {
+        seen.push(o);
+        return { notes: [], failed: [] };
+      },
+    });
+
+    await startDev({ ...h.options, apps: ["email"] });
+
+    expect(seen[0]?.baseUrl).toBe("http://localhost:8787");
+  });
+
+  test("a host started alone still builds its links against the app's pinned address", async () => {
+    // Nothing non-host is running, and the old fallback was `started[0]` — which in this run is the
+    // host itself, a Worker holding no public route. A callback link belongs at the app's address.
+    const seen: MaterializeHostConfigsOptions[] = [];
+    const h = hosted({
+      materializeHostConfigs: async (o) => {
+        seen.push(o);
+        return { notes: [], failed: [] };
+      },
+    });
+
+    await startDev({ ...h.options, apps: ["email"] });
+
+    expect(seen[0]?.baseUrl).toBe("http://localhost:8787");
   });
 });
 

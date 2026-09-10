@@ -86,7 +86,7 @@ ${envStanzas}
   const manifest = `{
   // How \`pithy dev\` runs this worker locally. This file is yours; wrangler.jsonc stays wrangler's.
   "dev": {
-    // Must this run for the local environment to function? pithy dev starts exactly the autostart workers.
+    // Set this false to keep this worker out of the local dev set. pithy dev starts every worker by default.
     "autostart": true,
     // Regex marking "ready" in this worker's output.
     "readySignal": "Ready on https?://"

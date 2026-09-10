@@ -357,6 +357,34 @@ describe("listWorkers", () => {
       },
     ]);
   });
+
+  // The default is decided once, in the WorkerDev schema. These two cases are what stops this listing
+  // growing a second opinion: a target carrying no dev block at all reads the schema's answer, and an
+  // explicit opt-out survives it.
+  test("a worker with no dev block reads the schema's default rather than a rule of its own", async () => {
+    const workers = await listWorkers({
+      projectDir: dir,
+      discoverWorkers: async () => [{ name: "acme-app", dir: join(dir, "apps", "app"), hasWrangler: true }],
+    });
+
+    expect(workers[0]?.autostart).toBe(true);
+  });
+
+  test("an opted-out worker is reported as such", async () => {
+    const workers = await listWorkers({
+      projectDir: dir,
+      discoverWorkers: async () => [
+        {
+          name: "acme-app",
+          dir: join(dir, "apps", "app"),
+          hasWrangler: true,
+          dev: { autostart: false, readySignal: "x" },
+        },
+      ],
+    });
+
+    expect(workers[0]?.autostart).toBe(false);
+  });
 });
 
 describe("removeWorker", () => {
