@@ -735,6 +735,10 @@ describe("a gate is keyed on what it reads", () => {
     const PACKAGE_SCOPED: Record<string, string> = {
       "jsoncWriters.test.ts":
         "It sweeps `packages/cli/src` for modules that write JSONC, which is inside its own package. Turbo's default inputs are already exactly right for it.",
+      "environmentSkips.test.ts":
+        "It reads the six capability provisioning commands under `packages/cli/src/commands`, holding them to one shared readiness helper rather than six copies of a `DB`-binding check. Every file it opens is inside its own package, so turbo's default inputs are already exactly right for it.",
+      "distTypes.test.ts":
+        "It is the mechanism half of the shipped-declaration gate, and the only file it opens is `distTypes.ts` beside it. Its subject looks repo-wide and is not: the population — every shipped table, read out of `packages/*/dist` — is checked by `auditCoverage` inside `bun run dist-types`, which CI runs after `Build` because there is nothing to read before `dist` exists. What it asserts about another package it asserts by *importing* it (`@pithy-sh/core`'s codecs), which turbo's dependency graph already plans on.",
     };
 
     // Recursive, because the defect #432 is about is exactly what a flat listing cannot see: a gate at
