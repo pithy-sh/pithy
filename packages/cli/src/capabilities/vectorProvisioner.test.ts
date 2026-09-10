@@ -7,6 +7,7 @@ import { VectorConfig } from "@pithy-sh/vector/src/config/config";
 import { filterable } from "@pithy-sh/vector/src/index/filter";
 import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
+import { KIT_ROOT } from "../test-utils/kitRoot";
 import { CloudflareVectorProvisioner } from "./vectorProvisioner";
 
 /** The project every provisioned name leads with — `requireProjectName`'s answer, never a guess. */
@@ -67,6 +68,7 @@ function fakeWorkflows() {
 
 function provisioner(cf: CloudflareClients, workflows: CloudflareWorkflowsClient) {
   return new CloudflareVectorProvisioner({
+    projectDir: KIT_ROOT,
     project: PROJECT,
     cf,
     accountId: "acct-1",

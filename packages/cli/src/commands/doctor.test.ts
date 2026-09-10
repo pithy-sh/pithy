@@ -22,6 +22,7 @@ import {
   registryFetch,
   workerSet,
 } from "../test-utils/doctorHarness";
+import { linkKitPackages } from "../test-utils/linkKit";
 import doctor, {
   buildDoctorReport,
   type DoctorReport,
@@ -200,7 +201,7 @@ describe("renderDoctorText", () => {
         "    migrations   2 pending — run: pithy migrate --env dev",
         "    entitlements no gated route without a provider ✓",
         "",
-        "Cloudflare: reachable (token active)",
+        "Cloudflare: token active; checked: API tokens — no other product was reached",
         "",
         "Project name: pithy-app — every resource name matches",
         "",
@@ -236,6 +237,126 @@ describe("renderDoctorText", () => {
         "    entitlements no gated route without a provider ✓",
       ].join("\n"),
     );
+  });
+
+  /**
+   * **#533's follow-on: the command an adopter runs when something is wrong finally says this.**
+   *
+   * The Worker composes `payments` and its five checks are green — a composition that loaded is a
+   * composition that loaded. Nothing else in the report notices that the package behind it is installed
+   * nowhere: it ships no manifest to any scan, so no binding of its is checked and no config option of
+   * its is read, and the first thing to say so is whichever `pithy payments …` command refuses next.
+   *
+   * `pithy add payments` is the remedy **here**, and it is the sentence #533 was reported about being
+   * printed somewhere else: at a package the project already had, where it installs nothing and rewrites
+   * a hand-built `pithy.config.ts` for the privilege. Resolution reaches a per-Worker install now, so a
+   * capability that reaches this list is composed and installed nowhere, which is what `pithy add` is for.
+   */
+  test("a capability that is composed and installed nowhere is named, with the command that fixes it", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        installedVersion: "1.3.0",
+        fetch: registryFetch({ cli: "1.3.0" }),
+        installedCapabilities: async () => [],
+        resolveWorkers: async () => workerSet("api"),
+        buildPlan: planStub(cleanPlanFor("api")),
+      }),
+    );
+    if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere to sit.");
+    report.project.health = {
+      ...report.project.health,
+      ok: false,
+      capabilityReach: {
+        ok: false,
+        reachable: ["auth"],
+        unreachable: [{ capability: "payments", package: "@pithy-sh/payments", workers: ["api"] }],
+      },
+    };
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain(
+      [
+        "Project health:",
+        "  capabilities:",
+        "    payments is composed, and @pithy-sh/payments is not installed",
+        "      composed by api",
+        "      Nothing resolves it — not the project root, not any Worker's own node_modules — so",
+        "      every command that reaches into it refuses, and every check below skips it.",
+        "      Run: pithy add payments",
+      ].join("\n"),
+    );
+  });
+
+  /**
+   * A capability nothing can reach is a fault this project's own files establish, so it gates CI.
+   *
+   * **Through the seam, never by editing the finished report.** The first draft of this test set
+   * `health.ok = false` in the same object literal as the finding, and `doctorExitCode` reads exactly that
+   * field — so the red exit was earned by the literal and the finding it names was decoration. It passed
+   * with the whole chain from `capabilityReach.ok` to the exit code disconnected. `readCapabilityReach` is
+   * forwarded for this: the finding goes in where the real check would produce it, `buildProjectHealth`
+   * conjoins it into `health.ok` itself, and the exit follows from the finding or the test fails.
+   */
+  test("a capability the CLI cannot resolve fails the exit", async () => {
+    const options = {
+      installedVersion: "1.3.0",
+      fetch: registryFetch({ cli: "1.3.0" }),
+      installedCapabilities: async () => [],
+      resolveWorkers: async () => workerSet("api"),
+      buildPlan: planStub(cleanPlanFor("api")),
+    } as const;
+
+    const healthy = await buildDoctorReport(baseOptions({ ...options }));
+    expect(doctorExitCode(healthy)).toBe(0);
+    expect(healthy.project?.health.ok).toBe(true);
+
+    const report = await buildDoctorReport(
+      baseOptions({
+        ...options,
+        readCapabilityReach: async () => ({
+          ok: false,
+          reachable: [],
+          unreachable: [{ capability: "payments", package: "@pithy-sh/payments", workers: ["api"] }],
+        }),
+      }),
+    );
+    if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere to sit.");
+    // Nothing here writes `ok`. It is the conjunction `buildProjectHealth` computed, and the only block
+    // that changed is the reach one.
+    expect(report.project.health.capabilityReach.ok).toBe(false);
+    expect(report.project.health.ok).toBe(false);
+    expect(doctorExitCode(report)).toBe(1);
+    // And it rides in `--json` with the rest of the project's health, so an agent reads the same fact.
+    const json = renderDoctorJson(report) as { project: { health: { capabilityReach: { ok: boolean } } } };
+    expect(json.project.health.capabilityReach.ok).toBe(false);
+  });
+
+  /**
+   * **The block reports an install and never a location, because a location is no longer a fault.**
+   *
+   * Round two printed `installed under apps/api/node_modules` — the Worker directories that had the
+   * package the root chain did not — because that layout was the defect. It is a supported install now
+   * (`project/kitResolve.ts`), so the only capability that reaches this list is one no directory has, and
+   * a report still naming a directory would be naming one that does not exist.
+   */
+  test("the block never claims the package is installed somewhere", async () => {
+    const report = await buildDoctorReport(
+      baseOptions({
+        installedVersion: "1.3.0",
+        fetch: registryFetch({ cli: "1.3.0" }),
+        installedCapabilities: async () => [],
+        resolveWorkers: async () => workerSet("api"),
+        buildPlan: planStub(cleanPlanFor("api")),
+        readCapabilityReach: async () => ({
+          ok: false,
+          reachable: [],
+          unreachable: [{ capability: "payments", package: "@pithy-sh/payments", workers: ["api"] }],
+        }),
+      }),
+    );
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("payments is composed, and @pithy-sh/payments is not installed");
+    expect(text).toContain("composed by api");
+    expect(text).not.toContain("installed under");
   });
 
   /**
@@ -840,7 +961,7 @@ describe("renderDoctorText", () => {
         "Project: pithy.config.ts found",
         "Project capabilities: all up to date",
         "",
-        "Cloudflare: reachable (token active)",
+        "Cloudflare: token active; checked: API tokens — no other product was reached",
         "",
         "OS:      macOS 14.5",
         "Runtime: Node 22.10.0",
@@ -881,7 +1002,7 @@ describe("renderDoctorText", () => {
         "",
         "Project: no pithy.config.ts here — run `pithy init`, or change to a project directory",
         "",
-        "Cloudflare: reachable (token active)",
+        "Cloudflare: token active; checked: API tokens — no other product was reached",
         "",
         "OS:      macOS 14.5",
         "Runtime: Node 22.10.0",
@@ -1156,6 +1277,10 @@ describe("doctorExitCode", () => {
    * — so it prints without one, and it never gates.
    */
   test("a composed extension is named, with the tables it brought, and never fails the exit", async () => {
+    // The fixture composes `auth`, so it has to *have* `auth` — the same thing an adopter's project has
+    // to have, and what `capabilities:` reports when it does not (#533's follow-on). Before the check
+    // landed, a composition nothing could resolve was invisible and this fixture was quietly one.
+    await linkKitPackages(dir, ["auth"]);
     const report = await buildDoctorReport(
       baseOptions({
         resolveWorkers: async () =>
@@ -1483,7 +1608,7 @@ describe("cloudflare credentials", () => {
         "Project: pithy.config.ts found",
         "Project capabilities: all up to date",
         "",
-        "Cloudflare: reachable (token active); credentials come from two places — cloudflare.json sets CLOUDFLARE_API_TOKEN, the environment supplies CLOUDFLARE_ACCOUNT_ID — set the whole pair in one of them",
+        "Cloudflare: token active; checked: API tokens — no other product was reached; credentials come from two places — cloudflare.json sets CLOUDFLARE_API_TOKEN, the environment supplies CLOUDFLARE_ACCOUNT_ID — set the whole pair in one of them",
         "",
         "OS:      macOS 14.5",
         "Runtime: Node 22.10.0",
@@ -2160,7 +2285,7 @@ describe("dev secrets file", () => {
         "Project: pithy.config.ts found",
         "Project capabilities: all up to date",
         "",
-        "Cloudflare: reachable (token active)",
+        "Cloudflare: token active; checked: API tokens — no other product was reached",
         "",
         "OS:      macOS 14.5",
         "Runtime: Node 22.10.0",
@@ -2553,7 +2678,7 @@ describe("a Worker nobody could ask, in the report (#208)", () => {
     const report = await buildDoctorReport(options());
     const text = renderDoctorText(report, "/home/u");
 
-    expect(text).toContain("Cloudflare: reachable");
+    expect(text).toContain("Cloudflare: token active;");
     expect(text).toContain("Project: pithy.config.ts found");
     expect(text).toContain("OS:      macOS 14.5");
     // Reported, never gated: an unloadable Worker config is the `Project:` block's to fail the exit on.

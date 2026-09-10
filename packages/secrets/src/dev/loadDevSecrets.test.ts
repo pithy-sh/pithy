@@ -269,4 +269,45 @@ describe("initialDevSecret", () => {
       "auth-google-credentials": { currentVersion: "1", versions: { "1": { clientId: "id" } } },
     });
   });
+
+  /**
+   * The write-time half of #535. `pithy turnstile provision` composed a serialized value where the file
+   * states the structure, and every reader that would have said so runs on another day: the writer
+   * exited 0, and `pithy seed` refused the entry at `storedVersion` weeks later. These cases are that
+   * refusal moved to the write, and they are stated over a `strictObject` because that is the shape the
+   * defect actually shipped against.
+   */
+  const jsonEntry = { valueType: "json" as const, schema: z.strictObject({ key: z.string() }) };
+
+  test("a json value its own schema refuses is refused at the write, not at the next read", () => {
+    expect(() => initialDevSecret(jsonEntry, JSON.stringify({ key: "k" }))).toThrowError(
+      expect.objectContaining({ payload: expect.objectContaining({ code: "secrets/invalid_value" }) }),
+    );
+  });
+
+  test("the refusal names the field and never the value", () => {
+    let thrown: unknown;
+    try {
+      initialDevSecret(jsonEntry, { key: 1, extra: "s3cret" });
+    } catch (error) {
+      thrown = error;
+    }
+    // The one thing this file must never do: echo credential material into a terminal or a log.
+    expect(thrown).toBeInstanceOf(PithyError);
+    expect(JSON.stringify((thrown as PithyError).payload)).not.toContain("s3cret");
+    expect((thrown as PithyError).payload.message).toContain("key");
+  });
+
+  test("the structure the file states passes, and is composed as version 1", () => {
+    expect(initialDevSecret(jsonEntry, { key: "k" })).toEqual({ currentVersion: "1", versions: { "1": { key: "k" } } });
+  });
+
+  test("an entry that declares no valueType is not judged — nothing here knows the shape", () => {
+    // `{}` is what a caller holding a manifest rather than a registry passes. Silence there is the
+    // absence of a declaration, not a verdict.
+    expect(initialDevSecret({}, "any string at all")).toEqual({
+      currentVersion: "1",
+      versions: { "1": "any string at all" },
+    });
+  });
 });

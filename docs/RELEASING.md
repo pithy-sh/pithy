@@ -195,13 +195,15 @@ Staging and production both receive records — staging's release pane is otherw
 
 | Where | Name | What it is |
 |---|---|---|
-| Repository **variable** | `RELEASE_RECORDS_URL_STAGING` | Staging's ingest endpoint. Must be `https`. |
-| Repository **variable** | `RELEASE_RECORDS_URL_PROD` | Production's ingest endpoint. Must be `https`. |
+| `npm-publish` environment **variable** | `RELEASE_RECORDS_URL_STAGING` | Staging's ingest endpoint. Must be `https`. |
+| `npm-publish` environment **variable** | `RELEASE_RECORDS_URL_PROD` | Production's ingest endpoint. Must be `https`. |
 
 ```bash
-gh variable set RELEASE_RECORDS_URL_STAGING --body "https://staging.dashboard.pithy.sh/api/releases"
-gh variable set RELEASE_RECORDS_URL_PROD --body "https://dashboard.pithy.sh/api/releases"
+gh variable set RELEASE_RECORDS_URL_STAGING --env npm-publish --body "https://staging.app.pithy.sh/api/releases"
+gh variable set RELEASE_RECORDS_URL_PROD --env npm-publish --body "https://app.pithy.sh/api/releases"
 ```
+
+**On the environment, not the repository.** The release job declares `environment: npm-publish`, so `vars.` resolves an environment variable as readily as a repository one, and the narrower scope is the one that matches the trust boundary already in play: the `sub` the dashboard allowlists names that same environment. Nothing outside it has any use for the endpoint.
 
 There is **no secret to set**, on either side. The release job holds `id-token: write` for npm trusted publishing, and the same permission mints the credential the dashboard takes: a short-lived GitHub-signed OIDC token. The dashboard fetches GitHub's published keys, verifies the signature, and then checks the claims — issuer, audience, and `sub`, which for this job is `repo:pithy-sh/pithy:environment:npm-publish`. The allowlisted `sub` is configuration on the receiver, so revoking is a config edit rather than a rotation held on two sides.
 

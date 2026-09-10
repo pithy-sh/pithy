@@ -13,6 +13,7 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
 import { runWrangler } from "../project/wrangler";
 import { capabilityLoadError } from "./loadFailure";
@@ -55,18 +56,18 @@ export type StorageModule = StorageProvisionModule &
  * resolved, so a project that has not added storage gets one clear instruction instead of a module
  * error from whichever call site happened to run first.
  */
-export async function loadStorage(): Promise<StorageModule> {
+export async function loadStorage(projectDir: string): Promise<StorageModule> {
   try {
     const [provision, resolve, registry, capability, specs] = await Promise.all([
-      import("@pithy-sh/storage/src/provision/provisionStorage"),
-      import("@pithy-sh/storage/src/provision/resolveStorageConfig"),
-      import("@pithy-sh/storage/src/secret/registry"),
-      import("@pithy-sh/storage/src/capability"),
-      import("@pithy-sh/storage/src/workflows/specs"),
+      kitImport<StorageProvisionModule>(projectDir, "@pithy-sh/storage/src/provision/provisionStorage"),
+      kitImport<StorageResolveModule>(projectDir, "@pithy-sh/storage/src/provision/resolveStorageConfig"),
+      kitImport<StorageRegistryModule>(projectDir, "@pithy-sh/storage/src/secret/registry"),
+      kitImport<StorageCapabilityModule>(projectDir, "@pithy-sh/storage/src/capability"),
+      kitImport<StorageSpecsModule>(projectDir, "@pithy-sh/storage/src/workflows/specs"),
     ]);
     return { ...provision, ...resolve, ...registry, ...capability, ...specs };
   } catch (error) {
-    throw capabilityLoadError("storage", "@pithy-sh/storage", error);
+    throw capabilityLoadError("storage", "@pithy-sh/storage", error, projectDir);
   }
 }
 
@@ -106,6 +107,12 @@ export interface StorageEnvResources {
 export type ResolveStorageEnv = (env: ManagedEnvironment) => Promise<StorageEnvResources>;
 
 export interface CloudflareStorageProvisionerOptions {
+  /**
+   * The project root — the directory `pithy.config.ts` was read from, and the base every
+   * `@pithy-sh/storage` module is resolved against. Not derivable from `project`, which is a *name*;
+   * see `project/kitResolve.ts` for why a resolution may not fall back to the CLI's own copy.
+   */
+  readonly projectDir: string;
   cf: CloudflareClients;
   /**
    * The account this provisions into, and what vouches for it (#378).
@@ -150,6 +157,7 @@ export interface CloudflareStorageProvisionerOptions {
 
 /** The live {@link StorageProvisioner}. Every step is idempotent, so provisioning is safe to re-run. */
 export class CloudflareStorageProvisioner implements StorageProvisioner {
+  readonly #projectDir: string;
   readonly #cf: CloudflareClients;
   readonly #account: ConfirmedAccount;
   readonly #project: string;
@@ -168,6 +176,7 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareStorageProvisionerOptions) {
+    this.#projectDir = options.projectDir;
     this.#cf = options.cf;
     this.#account = options.account;
     this.#project = options.project;
@@ -202,7 +211,7 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
    * read who this bucket belongs to.
    */
   async ensureBucket(env: ManagedEnvironment): Promise<{ bucketName: string }> {
-    const { storageBucketName } = await loadStorage();
+    const { storageBucketName } = await loadStorage(this.#projectDir);
     const name = storageBucketName(this.#project, env);
     const existing = await this.#cf.r2Provisioner().findBucketByName(name);
     if (existing) return { bucketName: existing.name };
@@ -221,7 +230,7 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
 
   /** Write the environment's R2 credentials. Upserts, so a re-run heals rather than fails. */
   async writeCredentials(env: ManagedEnvironment, resources: StorageResources): Promise<void> {
-    const { STORAGE_R2_SECRET, R2StorageCredentials } = await loadStorage();
+    const { STORAGE_R2_SECRET, R2StorageCredentials } = await loadStorage(this.#projectDir);
     // Validate before dispatching: a malformed secret is otherwise only discovered at the Worker's
     // first presign, long after the operator has walked away from the terminal.
     const value = R2StorageCredentials.parse({
@@ -268,9 +277,9 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
 
   /** Resolve the env's wrangler config from the committed template + provisioned ids, then `wrangler deploy`. */
   async deployWorker(env: ManagedEnvironment, resources: StorageResources): Promise<void> {
-    const { storageWorkerName, resolveStorageConfig } = await loadStorage();
+    const { storageWorkerName, resolveStorageConfig } = await loadStorage(this.#projectDir);
     const { appDatabaseId, secretsDatabaseId } = await this.#resolveEnv(env);
-    const dir = await storageWorkerDir();
+    const dir = await storageWorkerDir(this.#projectDir);
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
     const config = resolveStorageConfig(template, {
       project: this.#project,
@@ -313,15 +322,21 @@ export class CloudflareStorageProvisioner implements StorageProvisioner {
 }
 
 /** The directory of the prebuilt sweep worker inside the installed `@pithy-sh/storage` package. */
-async function storageWorkerDir(): Promise<string> {
+async function storageWorkerDir(projectDir: string): Promise<string> {
   try {
-    return dirname(kitSource("@pithy-sh/storage/src/workflows/worker"));
+    return dirname(kitSource(projectDir, "@pithy-sh/storage/src/workflows/worker"));
   } catch (error) {
-    throw capabilityLoadError("storage", "@pithy-sh/storage/src/workflows/worker", error);
+    throw capabilityLoadError("storage", "@pithy-sh/storage/src/workflows/worker", error, projectDir);
   }
 }
 
 export interface CloudflareStorageDeprovisionerOptions {
+  /**
+   * The project root — the directory `pithy.config.ts` was read from, and the base every
+   * `@pithy-sh/storage` module is resolved against. Not derivable from `project`, which is a *name*;
+   * see `project/kitResolve.ts` for why a resolution may not fall back to the CLI's own copy.
+   */
+  readonly projectDir: string;
   cf: CloudflareClients;
   /** The project name, from `requireProjectName` — teardown finds resources by no other key. */
   project: string;
@@ -349,6 +364,7 @@ export interface CloudflareStorageDeprovisionerOptions {
  * idempotent.
  */
 export class CloudflareStorageDeprovisioner implements StorageDeprovisioner {
+  readonly #projectDir: string;
   readonly #cf: CloudflareClients;
   readonly #project: string;
   readonly #r2Credentials: R2Credentials | undefined;
@@ -356,6 +372,7 @@ export class CloudflareStorageDeprovisioner implements StorageDeprovisioner {
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareStorageDeprovisionerOptions) {
+    this.#projectDir = options.projectDir;
     this.#cf = options.cf;
     this.#project = options.project;
     this.#r2Credentials = options.r2Credentials;
@@ -365,7 +382,7 @@ export class CloudflareStorageDeprovisioner implements StorageDeprovisioner {
 
   /** Delete the env's sweep worker if it is deployed. */
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
-    const { storageWorkerName } = await loadStorage();
+    const { storageWorkerName } = await loadStorage(this.#projectDir);
     const name = storageWorkerName(this.#project, env);
     if (
       await findOnConfirmedAccount({
@@ -392,7 +409,7 @@ export class CloudflareStorageDeprovisioner implements StorageDeprovisioner {
    * holds an object or a dangling multipart upload. What went is audited, not just that the bucket did.
    */
   async deleteBucket(env: ManagedEnvironment): Promise<void> {
-    const { storageBucketName } = await loadStorage();
+    const { storageBucketName } = await loadStorage(this.#projectDir);
     const name = storageBucketName(this.#project, env);
     const teardown = await deleteR2BucketWithContents({
       cf: this.#cf,

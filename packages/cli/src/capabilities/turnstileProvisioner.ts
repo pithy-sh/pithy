@@ -5,6 +5,7 @@ import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients"
 import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { dispatchSecretWrite, type SecretDispatcher } from "@pithy-sh/secrets/src/cli/dispatch";
+import { validateSecretValue } from "@pithy-sh/secrets/src/cli/validate";
 import { initialDevSecret } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
@@ -16,7 +17,11 @@ import {
   type TurnstileDeprovisioner,
   type TurnstileProvisioner,
 } from "@pithy-sh/turnstile/src/provision/provisionTurnstile";
-import { TURNSTILE_SECRET_NAME, turnstileSecretsRegistry } from "@pithy-sh/turnstile/src/secret/registry";
+import {
+  TURNSTILE_SECRET_NAME,
+  type TurnstileSecrets,
+  turnstileSecretsRegistry,
+} from "@pithy-sh/turnstile/src/secret/registry";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { answerOnConfirmedAccount, type ConfirmedAccount, unconfirmedAccount } from "../cloudflare/accountAnswer";
 import { removeBootstrapVars } from "../devSecrets/bootstrapVars";
@@ -189,9 +194,12 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
    * The same defect fixed at `pithy add`'s two call sites, in the third one nobody checked — three
    * producers again, so it goes through the one renderer they share.
    */
-  async writeDev(secret: string, sitekeys: Record<string, string>): Promise<void> {
+  async writeDev(secret: TurnstileSecrets, sitekeys: Record<string, string>): Promise<void> {
     // Through the registry entry, like every other writer: the entry is what says whether this
-    // secret's destination takes an envelope or the value itself (#323).
+    // secret's destination takes an envelope or the value itself (#323), and — since #535 — whether
+    // the value inside it is validated before a byte is written. The object, never a serialization of
+    // it: a `json` secret states its own structure in this file, and the seeder serializes on the way
+    // out (`devSecretsFile.ts`).
     const entry: SecretRegistryEntry | undefined = turnstileSecretsRegistry[TURNSTILE_SECRET_NAME];
     const envelope = initialDevSecret(entry ?? {}, secret);
     const path = await resolveDevSecretsFile(this.#projectDir);
@@ -202,11 +210,28 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
     for (const note of renderDevVarsNotes(wrote)) this.#notes(note);
   }
 
-  async writeManagedSecret(env: ManagedTurnstileEnv, secret: string): Promise<void> {
+  /**
+   * The widget secret into one deployed environment's managed store, through the validator every other
+   * managed write goes through.
+   *
+   * **`validateSecretValue` is not decoration here — it is the write-time check this path had never
+   * had (#535).** A manager Workflow is a secure-but-dumb writer: it cannot hold the schema, because a
+   * brand-new secret's registry entry is not bundled into any *deployed* manager yet
+   * (`management/writeSecret.ts`). So the CLI is the authoritative validator, and `pithy secrets
+   * create` has always called this. This writer composed the string itself and skipped it, which is
+   * how one capability shipped a value its own registry refuses.
+   */
+  async writeManagedSecret(env: ManagedTurnstileEnv, secret: TurnstileSecrets): Promise<void> {
+    const entry: SecretRegistryEntry | undefined = turnstileSecretsRegistry[TURNSTILE_SECRET_NAME];
+    // The canonical serialization, from the parsed data — what the read seam's `parseValue` expects to
+    // find in the envelope, and what a hand-run `pithy secrets create` would have put there.
+    const value = entry
+      ? validateSecretValue(entry, TURNSTILE_SECRET_NAME, JSON.stringify(secret))
+      : JSON.stringify(secret);
     // Upsert: create on first provision, update on a re-run (create rejects an existing secret) — so the
     // write is idempotent. If create fails for a real reason, the update almost always fails too; surface
     // BOTH causes (create as `cause`) so the true failure isn't masked by the fallback's error.
-    const write = { name: TURNSTILE_SECRET_NAME, ...SECRET_FACTS, value: secret, requested: env as ManagedEnvironment };
+    const write = { name: TURNSTILE_SECRET_NAME, ...SECRET_FACTS, value, requested: env as ManagedEnvironment };
     try {
       await dispatchSecretWrite(this.#dispatcher, { mode: "create", ...write }, this.#environments);
     } catch (createError) {

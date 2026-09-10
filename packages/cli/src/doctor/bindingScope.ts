@@ -8,6 +8,7 @@ import { composedManifests } from "../capabilities/manifests";
 import { supportBucketName } from "../capabilities/supportProvisioner";
 import { loadProject, requireProjectName } from "../project/config";
 import { isPlaceholder } from "../project/envInventory";
+import { kitImport } from "../project/kitResolve";
 import { discoverWorkers } from "../project/workers";
 import { readWranglerConfig } from "../project/wrangler";
 
@@ -74,11 +75,17 @@ export interface GlobalBinding {
   /**
    * The capability's own name for the resource, or `null` when the package could not be loaded.
    *
+   * `projectDir` before `project` because the first is where the namer is **read from** and the second is
+   * only what it is asked about. Reading it from the CLI is what #533 made this check quietly incapable
+   * of: the skew this exists to answer under is "a newer CLI beside an older `@pithy-sh/email`", and the
+   * CLI's own copy is the newer half — so the check compared the CLI's answer against the CLI's answer
+   * and found no split on exactly the installs that have one.
+   *
    * `null` is not "no finding" — it is "this could not be checked", and {@link BindingScopeHealth.partial}
    * carries it, because a binding declared by a stanza whose package will not import is a hole rather
    * than a clean bill.
    */
-  name(project: string): Promise<string | null>;
+  name(projectDir: string, project: string): Promise<string | null>;
   /**
    * **The secret carrying the bucket name every presigned URL is signed against, or `null` where nothing
    * signs against this resource (#513 review).**
@@ -118,9 +125,11 @@ export const GLOBAL_BINDINGS: readonly GlobalBinding[] = [
     // A D1 database is reached through the binding and through nothing else — no signature is built
     // against its name, so there is no second place holding a copy of it.
     credential: null,
-    async name(project) {
+    async name(projectDir, project) {
       try {
-        const { suppressionDatabaseName } = await import("@pithy-sh/email/src/provision/provisionEmail");
+        const { suppressionDatabaseName } = await kitImport<
+          typeof import("@pithy-sh/email/src/provision/provisionEmail")
+        >(projectDir, "@pithy-sh/email/src/provision/provisionEmail");
         return suppressionDatabaseName(project);
       } catch {
         return null;
@@ -138,7 +147,7 @@ export const GLOBAL_BINDINGS: readonly GlobalBinding[] = [
     credential: "support-r2-credentials",
     // No import to guard: this namer lives in the CLI, because `pithy support provision` is a CLI command
     // and the bucket is created before `@pithy-sh/support` is reached for anything.
-    async name(project) {
+    async name(_projectDir, project) {
       return supportBucketName(project);
     },
   },
@@ -485,7 +494,7 @@ export async function bindingScopeHealth(projectDir: string): Promise<BindingSco
     // capability package this project may well not have installed.
     if (declared.length === 0) continue;
 
-    const expected = await global.name(project);
+    const expected = await global.name(projectDir, project);
     if (expected === null) {
       partial = true;
       continue;

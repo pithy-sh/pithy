@@ -527,7 +527,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     // The app's address: the first started Worker that is not a host. Callback links point at the
     // app, never at the host — the host holds no public route of its own.
     const app = started.find((s) => !hostNames.has(s.worker.name));
-    const identity = await hostDeliveryIdentity(hosts);
+    const identity = await hostDeliveryIdentity(options.projectDir, hosts);
     const preflight = deliveryPreflight({
       composed: identity !== undefined,
       requested: identity?.requested ?? "remote",

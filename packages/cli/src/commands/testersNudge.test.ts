@@ -9,6 +9,7 @@ import { emailTranslator } from "@pithy-sh/email/src/templates/messages";
 import { i18n } from "@pithy-sh/i18n/src/capability";
 import { describe, expect, test, vi } from "vitest";
 import type { ResolvedWorker } from "../project/workerScope";
+import { KIT_ROOT } from "../test-utils/kitRoot";
 import { buildEnqueue } from "./testers";
 
 /**
@@ -33,15 +34,33 @@ const captured = vi.hoisted(() => ({
   input: undefined as EnqueueInput | undefined,
 }));
 
-// The row-writing half is not what is under test — the words are. Stubbing it is also what keeps this a
-// node test: `enqueueEmail` would otherwise want a real D1 to insert into.
-vi.mock("@pithy-sh/email/src/send/enqueue", () => ({
-  enqueueEmail: async (deps: EnqueueDeps, input: EnqueueInput) => {
-    captured.deps = deps;
-    captured.input = input;
-    return { jobId: "job-1", status: "queued" };
-  },
-}));
+/**
+ * The row-writing half is not what is under test — the words are. Stubbing it is also what keeps this a
+ * node test: `enqueueEmail` would otherwise want a real D1 to insert into.
+ *
+ * **Mocked at the resolver rather than at the specifier (#533).** `buildEnqueue` no longer reaches the
+ * email package with a bare `import("@pithy-sh/email/src/send/enqueue")` — it resolves the module from
+ * the project and imports it by `file:` URL, which is the whole point and is also invisible to
+ * `vi.mock("@pithy-sh/email/…")`. So the seam intercepted is `kitImport` itself: one specifier is
+ * answered with the stub and every other is handed straight back to the real resolver, which is what
+ * keeps the rest of this file exercising the real `email()` and `i18n()` capabilities.
+ */
+vi.mock("../project/kitResolve", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../project/kitResolve")>();
+  return {
+    ...actual,
+    kitImport: async (projectDir: string, specifier: string) =>
+      specifier === "@pithy-sh/email/src/send/enqueue"
+        ? {
+            enqueueEmail: async (deps: EnqueueDeps, input: EnqueueInput) => {
+              captured.deps = deps;
+              captured.input = input;
+              return { jobId: "job-1", status: "queued" };
+            },
+          }
+        : actual.kitImport(projectDir, specifier),
+  };
+});
 
 /** One app Worker composing the given capabilities — the shape `resolveWorkers` hands back. */
 function workers(...capabilities: Capability[]): ResolvedWorker[] {
@@ -65,7 +84,7 @@ async function nudge(...capabilities: Capability[]) {
   captured.deps = undefined;
   captured.input = undefined;
   // Kysely is constructed over this and never queried — the insert is stubbed above.
-  const enqueue = await buildEnqueue(workers(...capabilities), {} as D1Database);
+  const enqueue = await buildEnqueue(KIT_ROOT, workers(...capabilities), {} as D1Database);
   expect(enqueue).toBeDefined();
   await enqueue?.({ to: "tester@example.test", template: "testerNudge", payload: {} });
   return captured;
@@ -102,6 +121,6 @@ describe("the nudge a project composing i18n() actually sends", () => {
   });
 
   test("no email capability composed means no enqueue seam, so the pass sends nothing", async () => {
-    expect(await buildEnqueue(workers(i18n()), {} as D1Database)).toBeUndefined();
+    expect(await buildEnqueue(KIT_ROOT, workers(i18n()), {} as D1Database)).toBeUndefined();
   });
 });

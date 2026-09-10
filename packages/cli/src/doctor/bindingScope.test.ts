@@ -7,12 +7,16 @@ import { join } from "node:path";
 import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { supportBucketName } from "../capabilities/supportProvisioner";
+import { linkKitPackages, materializeKitPackage } from "../test-utils/linkKit";
 import { bindingScopeHealth } from "./bindingScope";
 
 let dir: string;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "pithy-binding-scope-"));
+  // The namer this check reads is `@pithy-sh/email`'s own, resolved from the project since #533 — which
+  // is the whole point of the check: under skew the *installed* package is the one with the answer.
+  await linkKitPackages(dir, ["email"]);
   await writeFile(join(dir, "pithy.config.ts"), 'export default { name: "acme" };\n');
 });
 afterEach(async () => {
@@ -37,6 +41,11 @@ async function writeWorker(name: string, config: Record<string, unknown>): Promi
  */
 async function installManifest(name: string, bindings: Record<string, unknown>[]): Promise<void> {
   const packageDir = join(dir, "node_modules", "@pithy-sh", name);
+  // **Never a bare `writeFile` here.** `beforeEach` links `@pithy-sh/email` to the repository's own
+  // `packages/email`, so writing through that link truncated the shipped `pithy.manifest.json` to this
+  // fixture's four fields — silently, because every assertion below still passed and the damage surfaced
+  // in whatever suite next read the real file. `materializeKitPackage` swaps the link for a copy first.
+  await materializeKitPackage(dir, name);
   await mkdir(packageDir, { recursive: true });
   await writeFile(
     join(packageDir, "pithy.manifest.json"),
@@ -226,6 +235,9 @@ describe("bindingScopeHealth", () => {
       // remedy: the writer will compose a per-environment name, so the package has to move first.
       await splitProject();
       const packageDir = join(dir, "node_modules", "@pithy-sh", "email");
+      // The same hazard as `installManifest`'s, and this one would have written `{ not json` into the
+      // repository's own manifest.
+      await materializeKitPackage(dir, "email");
       await mkdir(packageDir, { recursive: true });
       await writeFile(join(packageDir, "pithy.manifest.json"), "{ not json");
 

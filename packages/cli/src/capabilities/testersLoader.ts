@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { kitImport } from "../project/kitResolve";
 import { capabilityLoadError } from "./loadFailure";
 
 /**
@@ -34,19 +35,19 @@ export type TestersModule = TestersCapabilityModule &
  * The one place the optional dependency is resolved, so a project that has not added testers gets one
  * clear instruction instead of a module error from whichever call site happened to run first.
  */
-export async function loadTesters(): Promise<TestersModule> {
+export async function loadTesters(projectDir: string): Promise<TestersModule> {
   try {
     const [capability, tables, read, write, daily, view, config] = await Promise.all([
-      import("@pithy-sh/testers/src/capability"),
-      import("@pithy-sh/testers/src/data/tables"),
-      import("@pithy-sh/testers/src/roster/read"),
-      import("@pithy-sh/testers/src/roster/write"),
-      import("@pithy-sh/testers/src/workflows/daily"),
-      import("@pithy-sh/testers/src/http/view"),
-      import("@pithy-sh/testers/src/config/config"),
+      kitImport<TestersCapabilityModule>(projectDir, "@pithy-sh/testers/src/capability"),
+      kitImport<TestersTablesModule>(projectDir, "@pithy-sh/testers/src/data/tables"),
+      kitImport<TestersReadModule>(projectDir, "@pithy-sh/testers/src/roster/read"),
+      kitImport<TestersWriteModule>(projectDir, "@pithy-sh/testers/src/roster/write"),
+      kitImport<TestersDailyModule>(projectDir, "@pithy-sh/testers/src/workflows/daily"),
+      kitImport<TestersViewModule>(projectDir, "@pithy-sh/testers/src/http/view"),
+      kitImport<TestersConfigModule>(projectDir, "@pithy-sh/testers/src/config/config"),
     ]);
     return { ...capability, ...tables, ...read, ...write, ...daily, ...view, ...config };
   } catch (error) {
-    throw capabilityLoadError("testers", "@pithy-sh/testers", error);
+    throw capabilityLoadError("testers", "@pithy-sh/testers", error, projectDir);
   }
 }

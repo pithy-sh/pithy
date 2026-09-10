@@ -13,6 +13,7 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
 import { runWrangler } from "../project/wrangler";
 import { capabilityLoadError } from "./loadFailure";
@@ -50,17 +51,17 @@ export type MediaModule = MediaProvisionModule & MediaResolveModule & MediaRegis
  * resolved, so a project that has not added media gets one clear instruction instead of a module error
  * from whichever call site happened to run first.
  */
-export async function loadMedia(): Promise<MediaModule> {
+export async function loadMedia(projectDir: string): Promise<MediaModule> {
   try {
     const [provision, resolve, registry, capability] = await Promise.all([
-      import("@pithy-sh/media/src/provision/provisionMedia"),
-      import("@pithy-sh/media/src/provision/resolveMediaConfig"),
-      import("@pithy-sh/media/src/secret/registry"),
-      import("@pithy-sh/media/src/capability"),
+      kitImport<MediaProvisionModule>(projectDir, "@pithy-sh/media/src/provision/provisionMedia"),
+      kitImport<MediaResolveModule>(projectDir, "@pithy-sh/media/src/provision/resolveMediaConfig"),
+      kitImport<MediaRegistryModule>(projectDir, "@pithy-sh/media/src/secret/registry"),
+      kitImport<MediaCapabilityModule>(projectDir, "@pithy-sh/media/src/capability"),
     ]);
     return { ...provision, ...resolve, ...registry, ...capability };
   } catch (error) {
-    throw capabilityLoadError("media", "@pithy-sh/media", error);
+    throw capabilityLoadError("media", "@pithy-sh/media", error, projectDir);
   }
 }
 
@@ -100,6 +101,12 @@ export interface MediaEnvResources {
 export type ResolveMediaEnv = (env: ManagedEnvironment) => Promise<MediaEnvResources>;
 
 export interface CloudflareMediaProvisionerOptions {
+  /**
+   * The project root — the directory `pithy.config.ts` was read from, and the base every
+   * `@pithy-sh/media` module is resolved against. Not derivable from `project`, which is a *name*;
+   * see `project/kitResolve.ts` for why a resolution may not fall back to the CLI's own copy.
+   */
+  readonly projectDir: string;
   cf: CloudflareClients;
   /**
    * The account this provisions into, and what vouches for it (#378).
@@ -150,6 +157,7 @@ export interface CloudflareMediaProvisionerOptions {
 
 /** The live {@link MediaProvisioner}. Every step is idempotent, so provisioning is safe to re-run. */
 export class CloudflareMediaProvisioner implements MediaProvisioner {
+  readonly #projectDir: string;
   readonly #cf: CloudflareClients;
   readonly #account: ConfirmedAccount;
   readonly #project: string;
@@ -169,6 +177,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareMediaProvisionerOptions) {
+    this.#projectDir = options.projectDir;
     this.#cf = options.cf;
     this.#account = options.account;
     this.#project = options.project;
@@ -203,7 +212,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
    * the audit event writes the project down beside it.
    */
   async ensureBucket(env: ManagedEnvironment): Promise<{ bucketName: string }> {
-    const { mediaBucketName } = await loadMedia();
+    const { mediaBucketName } = await loadMedia(this.#projectDir);
     const name = mediaBucketName(this.#project, env);
     const existing = await this.#cf.r2Provisioner().findBucketByName(name);
     if (existing) return { bucketName: existing.name };
@@ -223,7 +232,7 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
   /** Reuse or create this environment's `MEDIA` KV namespace — but only when records live in KV. */
   async ensureKvNamespace(env: ManagedEnvironment): Promise<{ namespaceId: string } | null> {
     if (this.#mediaConfig.recordStore !== "kv") return null;
-    const { mediaKvTitle } = await loadMedia();
+    const { mediaKvTitle } = await loadMedia(this.#projectDir);
     const title = mediaKvTitle(this.#project, env);
     const existing = await this.#cf.kvProvisioner().findNamespaceByTitle(title);
     if (existing) return { namespaceId: existing.id };
@@ -249,7 +258,9 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
    * value the `ObjectStore` re-validates on read come from one declaration and cannot drift.
    */
   async writeCredentials(env: ManagedEnvironment, resources: MediaResources): Promise<void> {
-    const { MEDIA_STORAGE_SECRET, MEDIA_R2_SECRET, MediaStorageCredentials, mediaR2Registry } = await loadMedia();
+    const { MEDIA_STORAGE_SECRET, MEDIA_R2_SECRET, MediaStorageCredentials, mediaR2Registry } = await loadMedia(
+      this.#projectDir,
+    );
     // Validate before dispatching: a malformed secret is only discovered at the Worker's first read
     // otherwise, long after the operator has walked away from the terminal.
     const storage = MediaStorageCredentials.parse({
@@ -307,9 +318,9 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
 
   /** Resolve the env's wrangler config from the committed template + provisioned ids, then `wrangler deploy`. */
   async deployWorker(env: ManagedEnvironment, resources: MediaResources): Promise<void> {
-    const { mediaWorkerName, resolveMediaConfig } = await loadMedia();
+    const { mediaWorkerName, resolveMediaConfig } = await loadMedia(this.#projectDir);
     const { appDatabaseId, secretsDatabaseId } = await this.#resolveEnv(env);
-    const dir = await mediaWorkerDir();
+    const dir = await mediaWorkerDir(this.#projectDir);
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
     const config = resolveMediaConfig(template, {
       project: this.#project,
@@ -352,15 +363,21 @@ export class CloudflareMediaProvisioner implements MediaProvisioner {
 }
 
 /** The directory of the prebuilt media worker inside the installed `@pithy-sh/media` package (holds wrangler.jsonc). */
-async function mediaWorkerDir(): Promise<string> {
+async function mediaWorkerDir(projectDir: string): Promise<string> {
   try {
-    return dirname(kitSource("@pithy-sh/media/src/workflows/worker"));
+    return dirname(kitSource(projectDir, "@pithy-sh/media/src/workflows/worker"));
   } catch (error) {
-    throw capabilityLoadError("media", "@pithy-sh/media/src/workflows/worker", error);
+    throw capabilityLoadError("media", "@pithy-sh/media/src/workflows/worker", error, projectDir);
   }
 }
 
 export interface CloudflareMediaDeprovisionerOptions {
+  /**
+   * The project root — the directory `pithy.config.ts` was read from, and the base every
+   * `@pithy-sh/media` module is resolved against. Not derivable from `project`, which is a *name*;
+   * see `project/kitResolve.ts` for why a resolution may not fall back to the CLI's own copy.
+   */
+  readonly projectDir: string;
   cf: CloudflareClients;
   /** The project name, from `requireProjectName` — teardown finds resources by no other key. */
   project: string;
@@ -388,6 +405,7 @@ export interface CloudflareMediaDeprovisionerOptions {
  * resource is a no-op: teardown is idempotent.
  */
 export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
+  readonly #projectDir: string;
   readonly #cf: CloudflareClients;
   readonly #project: string;
   readonly #r2Credentials: R2Credentials | undefined;
@@ -395,6 +413,7 @@ export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareMediaDeprovisionerOptions) {
+    this.#projectDir = options.projectDir;
     this.#cf = options.cf;
     this.#project = options.project;
     this.#r2Credentials = options.r2Credentials;
@@ -404,7 +423,7 @@ export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
 
   /** Delete the env's media worker if it is deployed. */
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
-    const { mediaWorkerName } = await loadMedia();
+    const { mediaWorkerName } = await loadMedia(this.#projectDir);
     const name = mediaWorkerName(this.#project, env);
     if (
       await findOnConfirmedAccount({
@@ -431,7 +450,7 @@ export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
    * still holds an object or a dangling multipart upload. What went is audited, not just that it went.
    */
   async deleteBucket(env: ManagedEnvironment): Promise<void> {
-    const { mediaBucketName } = await loadMedia();
+    const { mediaBucketName } = await loadMedia(this.#projectDir);
     const name = mediaBucketName(this.#project, env);
     const teardown = await deleteR2BucketWithContents({
       cf: this.#cf,
@@ -456,7 +475,7 @@ export class CloudflareMediaDeprovisioner implements MediaDeprovisioner {
 
   /** Delete this environment's `MEDIA` KV namespace if it exists — destructive, only on an explicit storage teardown. */
   async deleteKvNamespace(env: ManagedEnvironment): Promise<void> {
-    const { mediaKvTitle } = await loadMedia();
+    const { mediaKvTitle } = await loadMedia(this.#projectDir);
     const title = mediaKvTitle(this.#project, env);
     const existing = await this.#cf.kvProvisioner().findNamespaceByTitle(title);
     if (!existing) return;

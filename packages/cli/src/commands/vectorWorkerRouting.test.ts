@@ -11,6 +11,7 @@ import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { scaffoldProject } from "../project/scaffold";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
+import { linkKitPackages } from "../test-utils/linkKit";
 import vector from "./vector";
 
 /**
@@ -128,6 +129,10 @@ function vectorWorkers(dir: string): unknown[] {
 async function scaffoldedProject(prefix: string): Promise<{ dir: string; workerDir: string }> {
   const dir = await mkdtemp(join(tmpdir(), prefix));
   await scaffoldProject({ targetDir: dir, appName: PROJECT, worker: WORKER });
+  // The capabilities this fixture composes, installed the way a real project installs them. Since #533 the
+  // CLI resolves them from the project rather than from its own location, so a fixture with an empty
+  // `node_modules` is a project with nothing added.
+  await linkKitPackages(dir, ["vector"]);
   return { dir, workerDir: join(dir, "apps", WORKER) };
 }
 

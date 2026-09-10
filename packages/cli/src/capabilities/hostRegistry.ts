@@ -7,6 +7,7 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { parse } from "comment-json";
+import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
 import { capabilityLoadError } from "./loadFailure";
 
@@ -30,6 +31,12 @@ import { capabilityLoadError } from "./loadFailure";
  * `import()` at the moment the project turns out to compose it, and a package that is not installed
  * becomes {@link capabilityLoadError}'s actionable refusal rather than an unresolved-module crash.
  *
+ * **And every one of them is resolved from the project, never from the CLI (#533).** This file is the
+ * issue's own example: a globally installed `pithy` read the project's `pithy.config.ts`, learned it
+ * composes `payments`, and then asked *its own* `node_modules` for `@pithy-sh/payments` — which a global
+ * install does not have, so a composed, installed, working capability was refused as "not installed"
+ * with `pithy add` for a remedy. See `project/kitResolve.ts`.
+ *
  * ## What a dev resolution is, and what it deliberately is not
  *
  * {@link HostResolveContext} is capability-agnostic on purpose: project, environment, the app's base
@@ -47,6 +54,14 @@ import { capabilityLoadError } from "./loadFailure";
 
 /** What one host resolution needs, stated without reference to any particular capability. */
 export interface HostResolveContext {
+  /**
+   * The project root — where `pithy.config.ts` was read from, and the base every `@pithy-sh/*` module
+   * below is resolved against (#533).
+   *
+   * Distinct from {@link project}, which is a *name* and resolves nothing. And never `process.cwd()`:
+   * these resolvers run under `pithy dev`, where the cwd may be a worktree.
+   */
+  projectDir: string;
   /** The project name — the leading segment of every name the resolution derives. Never guessed. */
   project: string;
   /** The environment being resolved. `dev` for a local host; a managed name for a deploy. */
@@ -101,12 +116,12 @@ export interface HostWorkerSpec {
   /** Fill the template for one environment. Throws {@link capabilityLoadError} when the package is absent. */
   resolve(template: WorkflowHostTemplate, context: HostResolveContext): Promise<WorkflowHostTemplate>;
   /** What this host would send from a developer's machine, or `undefined` when it sends nothing. */
-  delivery?(capability: Capability | undefined): Promise<HostDeliveryIdentity | undefined>;
+  delivery?(capability: Capability | undefined, projectDir: string): Promise<HostDeliveryIdentity | undefined>;
 }
 
-/** The absolute path of the `wrangler.jsonc` committed beside a host's worker entry. */
-export function hostTemplatePath(entry: string): string {
-  return join(dirname(kitSource(entry)), "wrangler.jsonc");
+/** The absolute path of the `wrangler.jsonc` committed beside a host's worker entry, in the project's copy. */
+export function hostTemplatePath(projectDir: string, entry: string): string {
+  return join(dirname(kitSource(projectDir, entry)), "wrangler.jsonc");
 }
 
 /**
@@ -114,16 +129,21 @@ export function hostTemplatePath(entry: string): string {
  * module graph rather than a relative path, so a moved package still resolves, and parsed with
  * `comment-json` because the file is JSONC and heavily commented.
  */
-export async function readHostTemplate(entry: string): Promise<WorkflowHostTemplate> {
-  return parse(await readFile(hostTemplatePath(entry), "utf8")) as unknown as WorkflowHostTemplate;
+export async function readHostTemplate(projectDir: string, entry: string): Promise<WorkflowHostTemplate> {
+  return parse(await readFile(hostTemplatePath(projectDir, entry), "utf8")) as unknown as WorkflowHostTemplate;
 }
 
-/** Run a guarded dynamic import, turning an absent optional package into an actionable refusal. */
-async function load<T>(capability: string, pkg: string, importer: () => Promise<T>): Promise<T> {
+/**
+ * Run a guarded dynamic import, turning an absent optional package into an actionable refusal.
+ *
+ * `projectDir` is what lets the refusal be honest: {@link capabilityLoadError} checks the project's own
+ * `node_modules` before it is allowed to say "not installed" and print `pithy add` (#533).
+ */
+async function load<T>(capability: string, pkg: string, projectDir: string, importer: () => Promise<T>): Promise<T> {
   try {
     return await importer();
   } catch (error) {
-    throw capabilityLoadError(capability, pkg, error);
+    throw capabilityLoadError(capability, pkg, error, projectDir);
   }
 }
 
@@ -157,11 +177,21 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
       const [{ resolveEmailConfig }, { defaultTheme }, { isEmailCapability }] = await load(
         "email",
         "@pithy-sh/email",
+        context.projectDir,
         () =>
           Promise.all([
-            import("@pithy-sh/email/src/provision/resolveEmailConfig"),
-            import("@pithy-sh/email/src/templates/theme"),
-            import("@pithy-sh/email/src/capability"),
+            kitImport<typeof import("@pithy-sh/email/src/provision/resolveEmailConfig")>(
+              context.projectDir,
+              "@pithy-sh/email/src/provision/resolveEmailConfig",
+            ),
+            kitImport<typeof import("@pithy-sh/email/src/templates/theme")>(
+              context.projectDir,
+              "@pithy-sh/email/src/templates/theme",
+            ),
+            kitImport<typeof import("@pithy-sh/email/src/capability")>(
+              context.projectDir,
+              "@pithy-sh/email/src/capability",
+            ),
           ]),
       );
       // The one capability that already hands its resolved config to whoever composed it. The theme
@@ -189,12 +219,10 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
         devDelivery: context.simulateDelivery ? "simulator" : composed?.emailConfig.devDelivery,
       });
     },
-    async delivery(capability) {
+    async delivery(capability, projectDir) {
       if (!capability) return undefined;
-      const { isEmailCapability } = await load(
-        "email",
-        "@pithy-sh/email",
-        () => import("@pithy-sh/email/src/capability"),
+      const { isEmailCapability } = await load("email", "@pithy-sh/email", projectDir, () =>
+        kitImport<typeof import("@pithy-sh/email/src/capability")>(projectDir, "@pithy-sh/email/src/capability"),
       );
       if (!isEmailCapability(capability)) return undefined;
       return { requested: capability.emailConfig.devDelivery, fromAddress: capability.emailConfig.fromAddress };
@@ -205,10 +233,16 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     entry: "@pithy-sh/media/src/workflows/worker",
     package: "@pithy-sh/media",
     async resolve(template, context) {
-      const [{ resolveMediaConfig }, { MediaConfig }] = await load("media", "@pithy-sh/media", () =>
+      const [{ resolveMediaConfig }, { MediaConfig }] = await load("media", "@pithy-sh/media", context.projectDir, () =>
         Promise.all([
-          import("@pithy-sh/media/src/provision/resolveMediaConfig"),
-          import("@pithy-sh/media/src/config/config"),
+          kitImport<typeof import("@pithy-sh/media/src/provision/resolveMediaConfig")>(
+            context.projectDir,
+            "@pithy-sh/media/src/provision/resolveMediaConfig",
+          ),
+          kitImport<typeof import("@pithy-sh/media/src/config/config")>(
+            context.projectDir,
+            "@pithy-sh/media/src/config/config",
+          ),
         ]),
       );
       const mediaConfig = MediaConfig.parse({});
@@ -230,11 +264,21 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     entry: "@pithy-sh/storage/src/workflows/worker",
     package: "@pithy-sh/storage",
     async resolve(template, context) {
-      const [{ resolveStorageConfig }, { StorageConfig }] = await load("storage", "@pithy-sh/storage", () =>
-        Promise.all([
-          import("@pithy-sh/storage/src/provision/resolveStorageConfig"),
-          import("@pithy-sh/storage/src/config/config"),
-        ]),
+      const [{ resolveStorageConfig }, { StorageConfig }] = await load(
+        "storage",
+        "@pithy-sh/storage",
+        context.projectDir,
+        () =>
+          Promise.all([
+            kitImport<typeof import("@pithy-sh/storage/src/provision/resolveStorageConfig")>(
+              context.projectDir,
+              "@pithy-sh/storage/src/provision/resolveStorageConfig",
+            ),
+            kitImport<typeof import("@pithy-sh/storage/src/config/config")>(
+              context.projectDir,
+              "@pithy-sh/storage/src/config/config",
+            ),
+          ]),
       );
       return resolveStorageConfig(template, {
         ...shared(context),
@@ -251,11 +295,21 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
       const [{ resolvePaymentsConfig }, { PaymentsConfig }, { isPaymentsCapability }] = await load(
         "payments",
         "@pithy-sh/payments",
+        context.projectDir,
         () =>
           Promise.all([
-            import("@pithy-sh/payments/src/provision/resolvePaymentsConfig"),
-            import("@pithy-sh/payments/src/config/config"),
-            import("@pithy-sh/payments/src/capability"),
+            kitImport<typeof import("@pithy-sh/payments/src/provision/resolvePaymentsConfig")>(
+              context.projectDir,
+              "@pithy-sh/payments/src/provision/resolvePaymentsConfig",
+            ),
+            kitImport<typeof import("@pithy-sh/payments/src/config/config")>(
+              context.projectDir,
+              "@pithy-sh/payments/src/config/config",
+            ),
+            kitImport<typeof import("@pithy-sh/payments/src/capability")>(
+              context.projectDir,
+              "@pithy-sh/payments/src/capability",
+            ),
           ]),
       );
       // Payments hands its resolved config to whoever composed it, the way email does — so the local
@@ -279,11 +333,21 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     entry: "@pithy-sh/support/src/workflows/worker",
     package: "@pithy-sh/support",
     async resolve(template, context) {
-      const [{ resolveSupportConfig }, { SupportConfig }] = await load("support", "@pithy-sh/support", () =>
-        Promise.all([
-          import("@pithy-sh/support/src/provision/resolveSupportConfig"),
-          import("@pithy-sh/support/src/config/config"),
-        ]),
+      const [{ resolveSupportConfig }, { SupportConfig }] = await load(
+        "support",
+        "@pithy-sh/support",
+        context.projectDir,
+        () =>
+          Promise.all([
+            kitImport<typeof import("@pithy-sh/support/src/provision/resolveSupportConfig")>(
+              context.projectDir,
+              "@pithy-sh/support/src/provision/resolveSupportConfig",
+            ),
+            kitImport<typeof import("@pithy-sh/support/src/config/config")>(
+              context.projectDir,
+              "@pithy-sh/support/src/config/config",
+            ),
+          ]),
       );
       return resolveSupportConfig(template, {
         project: context.project,
@@ -298,11 +362,21 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     entry: "@pithy-sh/testers/src/workflows/worker",
     package: "@pithy-sh/testers",
     async resolve(template, context) {
-      const [{ resolveTestersConfig }, { TestersConfig }] = await load("testers", "@pithy-sh/testers", () =>
-        Promise.all([
-          import("@pithy-sh/testers/src/provision/resolveTestersConfig"),
-          import("@pithy-sh/testers/src/config/config"),
-        ]),
+      const [{ resolveTestersConfig }, { TestersConfig }] = await load(
+        "testers",
+        "@pithy-sh/testers",
+        context.projectDir,
+        () =>
+          Promise.all([
+            kitImport<typeof import("@pithy-sh/testers/src/provision/resolveTestersConfig")>(
+              context.projectDir,
+              "@pithy-sh/testers/src/provision/resolveTestersConfig",
+            ),
+            kitImport<typeof import("@pithy-sh/testers/src/config/config")>(
+              context.projectDir,
+              "@pithy-sh/testers/src/config/config",
+            ),
+          ]),
       );
       return resolveTestersConfig(template, {
         project: context.project,
@@ -322,11 +396,21 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     entry: "@pithy-sh/vector/src/workflows/worker",
     package: "@pithy-sh/vector",
     async resolve(template, context) {
-      const [{ resolveVectorConfig }, { VectorConfig }] = await load("vector", "@pithy-sh/vector", () =>
-        Promise.all([
-          import("@pithy-sh/vector/src/provision/resolveVectorConfig"),
-          import("@pithy-sh/vector/src/config/config"),
-        ]),
+      const [{ resolveVectorConfig }, { VectorConfig }] = await load(
+        "vector",
+        "@pithy-sh/vector",
+        context.projectDir,
+        () =>
+          Promise.all([
+            kitImport<typeof import("@pithy-sh/vector/src/provision/resolveVectorConfig")>(
+              context.projectDir,
+              "@pithy-sh/vector/src/provision/resolveVectorConfig",
+            ),
+            kitImport<typeof import("@pithy-sh/vector/src/config/config")>(
+              context.projectDir,
+              "@pithy-sh/vector/src/config/config",
+            ),
+          ]),
       );
       const config = VectorConfig.parse({});
       const names = resourceNames(context.project).env(context.env);
@@ -346,10 +430,11 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     entry: "@pithy-sh/secrets/src/manager/worker",
     package: "@pithy-sh/secrets",
     async resolve(template, context) {
-      const { resolveManagerConfig } = await load(
-        "secrets",
-        "@pithy-sh/secrets",
-        () => import("@pithy-sh/secrets/src/provision/resolveManagerConfig"),
+      const { resolveManagerConfig } = await load("secrets", "@pithy-sh/secrets", context.projectDir, () =>
+        kitImport<typeof import("@pithy-sh/secrets/src/provision/resolveManagerConfig")>(
+          context.projectDir,
+          "@pithy-sh/secrets/src/provision/resolveManagerConfig",
+        ),
       );
       return resolveManagerConfig(template as Parameters<typeof resolveManagerConfig>[0], {
         project: context.project,

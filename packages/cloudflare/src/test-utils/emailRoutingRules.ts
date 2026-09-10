@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
-import { CloudflareRequestError } from "../client/errors";
+import { cloudflareApiErrors, cloudflareRefusal } from "../client/errors";
 import type { IntegrationCreds } from "./harness";
 
 /**
@@ -95,10 +95,15 @@ export async function listEmailRoutingRules(creds: IntegrationCreds, zoneId: str
     const url = `https://api.cloudflare.com/client/v4/zones/${zoneId}/email/routing/rules?page=${page}&per_page=${RULES_PER_PAGE}`;
     const response = await fetch(url, { headers: { Authorization: `Bearer ${creds.apiToken}` } });
     if (!response.ok) {
-      throw new CloudflareRequestError({
-        message: "Could not read the zone's Email Routing rules.",
-        action: "Check the token carries Email Routing Rules: Read on this zone.",
-        detail: `Email Routing rule list returned ${response.status}.`,
+      // Composed where every Cloudflare refusal is, so a live-integration run reads the same shape a
+      // `pithy` command does — code, sentence, link — instead of a sentence this file wrote itself.
+      const body = await response.text();
+      throw cloudflareRefusal({
+        problem: "Could not read the zone's Email Routing rules.",
+        apiErrors: cloudflareApiErrors(parseEnvelope(body)),
+        status: response.status,
+        permission: "Email Routing Rules",
+        detail: `Email Routing rule list returned ${response.status}: ${body}`.slice(0, 2000),
       });
     }
 
@@ -119,4 +124,13 @@ export async function listEmailRoutingRules(creds: IntegrationCreds, zoneId: str
  */
 export function namedRules(rules: readonly EmailRoutingRule[]): EmailRoutingRule[] {
   return rules.filter((rule) => rule.name !== "");
+}
+
+/** A CF response body as an object, or `undefined` when it is not JSON — `cloudflareApiErrors` reads either. */
+function parseEnvelope(body: string): unknown {
+  try {
+    return JSON.parse(body);
+  } catch {
+    return undefined;
+  }
 }

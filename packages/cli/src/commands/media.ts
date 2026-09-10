@@ -57,7 +57,7 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
 
 /** Load the media capability's resolved config from `pithy.config.ts`. */
 async function loadMediaConfig(projectDir: string) {
-  const { isMediaCapability } = await loadMedia();
+  const { isMediaCapability } = await loadMedia(projectDir);
   // Capabilities live in each Worker's `apps/<name>/pithy.config.ts`; provisioning is one
   // project-wide decision, so the first Worker composing this capability provides it.
   const capability = (await resolveWorkers({ projectDir }).then(projectCapabilities)).find(isMediaCapability);
@@ -204,7 +204,7 @@ const provision = defineCommand({
       // The project's own environment set (#241): what this command fans out across, rather than a
       // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
       const environments = loadProjectEnvironments(config);
-      const { provisionMedia } = await loadMedia();
+      const { provisionMedia } = await loadMedia(projectDir);
       const { account, accountId, apiToken, storeId, r2Raw } = loadCloudflareCreds(
         await projectCloudflareAccount(projectDir),
       );
@@ -225,6 +225,7 @@ const provision = defineCommand({
       const cf = await cloudflareClients({ accountId, apiToken });
       const provisioner = new CloudflareMediaProvisioner({
         cf,
+        projectDir,
         project,
         // The **declaration**, not the ready set. This is what a `global` secret write fans out across and
         // what `canonicalGlobalEnvironment` picks from — narrowing it would move which manager a global
@@ -300,7 +301,7 @@ const deprovision = defineCommand({
       // The project's own environment set (#241): what this command fans out across, rather than a
       // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
       const environments = loadProjectEnvironments(config);
-      const { deprovisionMedia } = await loadMedia();
+      const { deprovisionMedia } = await loadMedia(projectDir);
       const { account, accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
       // without it, so discovering it is missing at the bucket step would leave the media workers gone
@@ -312,6 +313,7 @@ const deprovision = defineCommand({
       const deprovisioner = new CloudflareMediaDeprovisioner({
         account,
         cf,
+        projectDir,
         project,
         r2Credentials,
         audit: await buildAudit(projectDir, accountId, apiToken),

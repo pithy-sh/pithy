@@ -27,6 +27,7 @@ import { resolveVectorConfig } from "@pithy-sh/vector/src/provision/resolveVecto
 import { parse } from "comment-json";
 import { describe, expect, test } from "vitest";
 import { kitSource } from "../project/kitSource";
+import { KIT_ROOT } from "../test-utils/kitRoot";
 
 /**
  * Every capability that owns Workflows ships a committed `wrangler.jsonc` **template** beside its worker
@@ -83,7 +84,7 @@ async function readTemplate<T extends WorkflowHostTemplate>(entry: string): Prom
 
 /** The absolute path of the `wrangler.jsonc` beside a worker entry. */
 function templatePath(entry: string): string {
-  return join(dirname(kitSource(entry)), "wrangler.jsonc");
+  return join(dirname(kitSource(KIT_ROOT, entry)), "wrangler.jsonc");
 }
 
 /** One capability's coverage: where its template lives, and how provisioning fills it. */

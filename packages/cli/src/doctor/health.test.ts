@@ -327,6 +327,7 @@ describe("buildProjectHealth — per Worker", () => {
       workers: [],
       manifests: { ok: true, faults: [] },
       bindingScope: { ok: true, split: [], divergent: [], partial: false },
+      capabilityReach: { ok: true, reachable: [], unreachable: [] },
     });
   });
 });
@@ -448,5 +449,69 @@ describe("buildProjectHealth — project-global bindings", () => {
     });
     expect(read).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledWith("/p");
+  });
+});
+
+/**
+ * The check that says why a `pithy <capability>` command just refused (#533's follow-on).
+ *
+ * A composition that loaded is not a capability the CLI can reach: the Worker's config was imported by
+ * path and resolved its own imports, and the package behind it may be installed nowhere the project keeps
+ * packages. Nothing else in the report notices — a capability with no manifest contributes no drift to any
+ * check — so the adopter learned it one refusal at a time until this section.
+ */
+describe("buildProjectHealth — capability resolution", () => {
+  /** A finding, shaped the way `capabilityReachHealth` returns one. */
+  const unreachable = {
+    ok: false,
+    reachable: ["auth"],
+    unreachable: [{ capability: "payments", package: "@pithy-sh/payments", workers: ["api"] }],
+  };
+
+  test("a project whose capabilities all resolve from the root stays ok", async () => {
+    const health = await buildProjectHealth({
+      account: null,
+      projectDir: "/p",
+      env: "dev",
+      workers: [api],
+      buildPlan: planStub({ api: clean("api") }),
+      readManifests: async () => ({ manifests: [], faults: [] }),
+      readCapabilityReach: async () => ({ ok: true, reachable: ["auth"], unreachable: [] }),
+    });
+    expect(health.capabilityReach).toEqual({ ok: true, reachable: ["auth"], unreachable: [] });
+    expect(health.ok).toBe(true);
+  });
+
+  test("a capability the CLI cannot resolve fails the project, though every Worker passes", async () => {
+    // Why it is project-wide, and why no Worker's own checks can catch it: the composition loaded, so
+    // config, bindings, migrations, entitlements and prerequisites are all green about a capability every
+    // command will refuse to reach.
+    const health = await buildProjectHealth({
+      account: null,
+      projectDir: "/p",
+      env: "dev",
+      workers: [api, collab],
+      buildPlan: planStub({ api: clean("api"), collab: clean("collab") }),
+      readManifests: async () => ({ manifests: [], faults: [] }),
+      readCapabilityReach: async () => unreachable,
+    });
+    expect(health.workers.every((worker) => worker.state === "checked" && worker.ok)).toBe(true);
+    expect(health.capabilityReach).toEqual(unreachable);
+    expect(health.ok).toBe(false);
+  });
+
+  test("it is read once, at the project, and handed the Workers for what they compose", async () => {
+    const read = vi.fn(async () => ({ ok: true, reachable: [], unreachable: [] }));
+    await buildProjectHealth({
+      account: null,
+      projectDir: "/p",
+      env: "dev",
+      workers: [api, collab],
+      buildPlan: planStub({ api: clean("api"), collab: clean("collab") }),
+      readManifests: async () => ({ manifests: [], faults: [] }),
+      readCapabilityReach: read,
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledWith("/p", [api, collab]);
   });
 });

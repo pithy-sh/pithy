@@ -3,6 +3,8 @@
 
 import { z } from "zod";
 import { VersionedValue } from "../crypto/versionedValue";
+import { SecretInvalidValueError } from "../error/errors";
+import type { SecretRegistryEntry, SecretValueType } from "../registry";
 
 /**
  * The dev secrets file — the one hand-edited input for **local dev** secret values, and the format
@@ -58,6 +60,25 @@ export const DEV_SECRETS_EXAMPLE_FILE = ".dev.secrets.example.jsonc";
  * There is one widening, for the person hand-editing the file: a `json` value is written as its own
  * structure rather than as an escaped string inside a string, and the reader serializes it on the way
  * out. That is a JSON-in-JSON concession, not a wrapper — nothing is added and nothing is removed.
+ *
+ * ## Which means a `json` secret has **two** stored forms, and this is where they are written down (#535)
+ *
+ * | where | a `json` secret's form | who validates it |
+ * |---|---|---|
+ * | this file | the value's **own structure** | `storedVersion` — `entry.schema.safeParse(value)`, no parse first |
+ * | a D1 row, a Secrets Store entry | the **canonical string** | `validateSecretValue` on write, `parseValue` on read |
+ *
+ * They are not in tension: `storedSecretValue` turns the first into the second, and that conversion is
+ * the whole of the difference. But nothing said so, and one writer that serialized before handing the
+ * value over therefore satisfied one destination and corrupted the other — `pithy turnstile provision`
+ * put a JSON string containing JSON in this file, which `TurnstileSecrets` refuses at the root because
+ * it is a `z.strictObject` handed a string. `seedDevSecrets.test.ts` pins the two forms to each other,
+ * so a reader who finds only one of them cannot conclude it is the only one.
+ *
+ * **A value is checked against its schema when it is written, not when it is next read.** Both forms
+ * have that now — {@link initialDevSecret} for this file, `validateSecretValue` for a managed write —
+ * and it is what turns a writer's wrong guess about the encoding into a failed command rather than a
+ * value that sits in three environments until `pithy doctor` mentions it.
  *
  * **Why `bootstrap` is not an exception to the rule but an instance of it.** `SECRETS_ENCRYPTION_KEYS`
  * is what the envelope decoder needs in order to exist, so its binding has always carried a bare
@@ -161,7 +182,52 @@ export type DevSecretsFile = z.output<typeof DevSecretsFile>;
  * **Every writer goes through here.** `pithy add secrets`, the provisioners and the seeder's own mint
  * all call it, so there is one statement of what a fresh entry looks like. A second
  * writer composing the envelope inline is how #323 got two shapes for one file.
+ *
+ * **And because every writer goes through here, this is where a value is checked against the schema
+ * its own registry declares (#535).** `pithy turnstile provision` wrote a serialized `TurnstileSecrets`
+ * where the file states the structure, so the entry held a JSON string containing JSON. Nothing refused
+ * it: the writer reported success, and the value's own schema — a `z.strictObject`, handed a string —
+ * first rejected it at the next `pithy seed`, in `storedVersion`, on a machine and a day unrelated to
+ * the run that wrote it. It is the same check, moved to the moment there is still something to fix, and
+ * `entry.schema` is the only thing that can make it: a writer's own idea of the shape is what drifted.
+ *
+ * An entry that declares no `valueType` — `{}`, passed by a caller holding a manifest rather than a
+ * registry — is not checked, because nothing here knows what to check it against. Silence there is the
+ * absence of a declaration, not a verdict.
  */
-export function initialDevSecret(entry: { bootstrap?: boolean }, value: unknown): unknown {
+export function initialDevSecret(entry: DevSecretShape, value: unknown): unknown {
+  assertStatedShape(entry, value);
   return entry.bootstrap === true ? value : { currentVersion: "1", versions: { "1": value } };
+}
+
+/**
+ * What {@link initialDevSecret} reads off a registry entry: whether it is enveloped, and its shape.
+ *
+ * Every field optional, because a whole {@link SecretRegistryEntry} is one caller and `{}` is another —
+ * `pithy add` composes an entry from a capability's manifest, which carries a name and no schema.
+ */
+interface DevSecretShape {
+  bootstrap?: boolean;
+  valueType?: SecretValueType;
+  schema?: z.ZodType;
+}
+
+/**
+ * Refuse a value the entry's own schema refuses, before it is composed into a file entry.
+ *
+ * Redacted like every other refusal on this surface: Zod `path:code` pairs and the field names, never
+ * `issue.message` or `received`, either of which echoes credential material into a terminal and a log.
+ */
+function assertStatedShape(entry: DevSecretShape, value: unknown): void {
+  if (entry.valueType !== "json" || entry.schema === undefined) return;
+  const result = entry.schema.safeParse(value);
+  if (result.success) return;
+  const fields = [...new Set(result.error.issues.map((issue) => issue.path.join(".") || "<root>"))].join(", ");
+  const summary = result.error.issues.map((issue) => `${issue.path.join(".") || "<root>"}:${issue.code}`).join(", ");
+  throw new SecretInvalidValueError({
+    message: `A secret value failed validation before it was written: ${fields}.`,
+    action:
+      "Write the value its registry entry declares. A json secret states its own structure, never a string of JSON.",
+    detail: `dev secrets file: json value failed registry validation on write: ${summary}`,
+  });
 }

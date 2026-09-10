@@ -8,6 +8,7 @@ import { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { GLOBAL_SCOPE } from "@pithy-sh/core/src/naming/environment";
 import { describe, expect, test } from "vitest";
 import { GLOBAL_BINDINGS } from "../doctor/bindingScope";
+import { KIT_ROOT } from "../test-utils/kitRoot";
 
 /**
  * **Every binding a shipped manifest calls project-global has a row in `doctor`'s table, and every row
@@ -179,7 +180,7 @@ describe("doctor knows every project-global binding the kit ships", () => {
     // `global` takes the environment segment, so a namer composing anything else is a row whose two halves
     // disagree — and `bindingScopeHealth` would then report every correctly-named stanza as stale.
     return expect(
-      Promise.all(GLOBAL_BINDINGS.map(async (row) => `${key(row)}: ${await row.name("acme")}`)),
+      Promise.all(GLOBAL_BINDINGS.map(async (row) => `${key(row)}: ${await row.name(KIT_ROOT, "acme")}`)),
     ).resolves.toEqual(
       GLOBAL_BINDINGS.map((row) => expect.stringMatching(new RegExp(`^${key(row)}: acme-global-[a-z0-9-]+$`))),
     );

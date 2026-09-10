@@ -1,8 +1,17 @@
 {
-  // The leaderboard rank-refresh worker. This is a TEMPLATE, not a wrangler env-stanza file: `pithy add
-  // leaderboard` resolves it per environment — filling the `<...>` placeholders and the cron from the
-  // adopter's `rank: { materialize }` setting — and deploys each with its own config
-  // (`wrangler deploy --config <resolved>`). The adopter authors none of it.
+  // The leaderboard rank-refresh worker. This is a TEMPLATE, not a wrangler env-stanza file: the
+  // `<...>` placeholders and the cron are meant to be filled per environment from the adopter's
+  // `rank: { materialize }` setting, and each resolved config deployed with `wrangler deploy --config
+  // <resolved>`.
+  //
+  // **Nothing in the kit does that yet, and this file is not deployed by any command.**
+  // `cli/src/capabilities/hostRegistry.ts` leaves `@pithy-sh/leaderboard` out of `HOST_WORKERS`
+  // deliberately: the rank worker ships this template and a `RankRefreshWorkflow`, but no
+  // `resolveLeaderboardConfig` and no provisioner, so there is nothing to drive — and
+  // `hostRegistry.test.ts` pins that absence so it cannot become an oversight. Filling and deploying it
+  // is an adopter's own step today. This comment said otherwise for as long as the template has
+  // existed, which is the kind of claim that sends somebody looking for a command that was never
+  // written.
   //
   // It does NOT have to be its own worker. What the refresh actually needs is three things: the
   // `RankRefreshWorkflow` class, a `scheduled()` handler that starts an instance, and a cron trigger.
@@ -14,7 +23,12 @@
   // once capped the refresh at ~64k entries per run. A Workflow step has unlimited wall-clock and burns
   // no CPU while awaiting D1, so a board of any size ranks across bounded, individually-durable steps
   // that checkpoint a keyset cursor. See `worker.entry.ts`.
-  "name": "pithy-leaderboard-rank", // resolved per env → pithy-leaderboard-rank-staging / -production
+  // A placeholder, not the deployed name. When something does resolve this template it will compose
+  // `<project>-<env>-leaderboard` — `workflowHostName` in `core/src/workflow/naming.ts` is
+  // `<project>-<env>-<capability>`, so the project leads and the environment is second, never trailing
+  // and never `production`. Worker script names are account-scoped, which is what makes the project
+  // segment load-bearing: without it a second Pithy project's deploy overwrites this one's worker.
+  "name": "pithy-leaderboard-rank",
   "main": "./worker.entry.ts",
   // The compatibility date every Worker in this repository runs on. Stated once in the repository
   // root's `compatibility.ts` and copied here because JSONC cannot import it —

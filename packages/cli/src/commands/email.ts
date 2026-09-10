@@ -295,6 +295,7 @@ const provision = defineCommand({
       const cf = await cloudflareClients({ accountId, apiToken });
       const provisioner = new CloudflareEmailProvisioner({
         cf,
+        projectDir,
         project,
         account,
         apiToken,

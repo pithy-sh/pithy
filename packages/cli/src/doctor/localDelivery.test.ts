@@ -3,6 +3,7 @@
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { describe, expect, test } from "vitest";
+import { KIT_ROOT } from "../test-utils/kitRoot";
 import { checkLocalDelivery, describeLocalDelivery } from "./localDelivery";
 
 /**
@@ -25,7 +26,7 @@ const empty = { live: false, capability: "none", lines: [] };
 describe("checkLocalDelivery", () => {
   test("a project composing nothing that sends has no delivery question", async () => {
     const check = await checkLocalDelivery({
-      projectDir: "/proj",
+      projectDir: KIT_ROOT,
       workers: scope([{ name: "auth" } as Capability]),
       hasCloudflareLogin: async () => true,
     });
@@ -34,7 +35,7 @@ describe("checkLocalDelivery", () => {
 
   test("a login and a real sending address read as live, in the preflight's own words", async () => {
     const check = await checkLocalDelivery({
-      projectDir: "/proj",
+      projectDir: KIT_ROOT,
       workers: scope([email("remote", "hello@acme.dev")]),
       hasCloudflareLogin: async () => true,
     });
@@ -45,7 +46,7 @@ describe("checkLocalDelivery", () => {
 
   test("no Cloudflare login is the simulator, and the line carries what fixes it", async () => {
     const check = await checkLocalDelivery({
-      projectDir: "/proj",
+      projectDir: KIT_ROOT,
       workers: scope([email("remote", "hello@acme.dev")]),
       hasCloudflareLogin: async () => false,
     });
@@ -56,7 +57,7 @@ describe("checkLocalDelivery", () => {
 
   test("the simulator by config is a choice, reported as one rather than as a failure", async () => {
     const check = await checkLocalDelivery({
-      projectDir: "/proj",
+      projectDir: KIT_ROOT,
       workers: scope([email("simulator", "hello@acme.dev")]),
       hasCloudflareLogin: async () => true,
     });
@@ -66,7 +67,7 @@ describe("checkLocalDelivery", () => {
 
   test("an address on a domain nobody can onboard cannot deliver, login or no login", async () => {
     const check = await checkLocalDelivery({
-      projectDir: "/proj",
+      projectDir: KIT_ROOT,
       workers: scope([email("remote", "hello@example.com")]),
       hasCloudflareLogin: async () => true,
     });

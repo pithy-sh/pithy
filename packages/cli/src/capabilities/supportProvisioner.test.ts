@@ -12,6 +12,7 @@ import { parse } from "comment-json";
 import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import { kitSource } from "../project/kitSource";
+import { KIT_ROOT } from "../test-utils/kitRoot";
 import { CloudflareSupportDeprovisioner, CloudflareSupportProvisioner, supportBucketName } from "./supportProvisioner";
 
 /**
@@ -28,7 +29,7 @@ const PROJECT = "acme";
 
 /** The committed template as `deployWorker` parses it off disk — not a fixture, deliberately. */
 async function committedTemplate(): Promise<WorkflowHostTemplate> {
-  const dir = dirname(kitSource("@pithy-sh/support/src/workflows/worker"));
+  const dir = dirname(kitSource(KIT_ROOT, "@pithy-sh/support/src/workflows/worker"));
   return parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
 }
 
@@ -48,6 +49,7 @@ function fakeCf() {
 function provisioner(cf: CloudflareClients, events: CliAuditEvent[], overrides?: ProvisionerSlice) {
   const { supportConfig, ...rest } = overrides ?? {};
   return new CloudflareSupportProvisioner({
+    projectDir: KIT_ROOT,
     cf,
     project: PROJECT,
     account: { accountId: "acct-1", confirmation: "pinned" },
@@ -185,6 +187,7 @@ describe("the inbound routing rule", () => {
     const { cf, removeWorkerRoute } = fakeCf();
     removeWorkerRoute.mockResolvedValue({ removed: true });
     const deprovisioner = new CloudflareSupportDeprovisioner({
+      projectDir: KIT_ROOT,
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
@@ -251,6 +254,7 @@ describe("teardown refuses an unconfirmed account", () => {
     const deleteWorker = vi.fn();
     const cf = { workers: () => ({ getWorker, deleteWorker }) } as unknown as CloudflareClients;
     const stranger = new CloudflareSupportDeprovisioner({
+      projectDir: KIT_ROOT,
       cf,
       project: PROJECT,
       account: { accountId: "acct-stranger", confirmation: "ambient" },
@@ -268,6 +272,7 @@ describe("teardown refuses an unconfirmed account", () => {
     const deleteWorker = vi.fn();
     const cf = { workers: () => ({ getWorker, deleteWorker }) } as unknown as CloudflareClients;
     const ours = new CloudflareSupportDeprovisioner({
+      projectDir: KIT_ROOT,
       cf,
       project: PROJECT,
       account: { accountId: "acct-ours", confirmation: "pinned" },

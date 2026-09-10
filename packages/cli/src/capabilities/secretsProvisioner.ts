@@ -88,6 +88,8 @@ export async function managerTokenPermissions(accountId: string): Promise<TokenP
   // Loaded here rather than at module scope. `tokens/profiles` is a pure policy module, but it reaches
   // the Cloudflare SDK through one value import of `accountResource`, which puts ~355 ms on the static
   // graph of `pithy add`, `pithy provision` and `pithy secrets` — to print their flag lists (#482).
+  // The CLI's copy. `@pithy-sh/cloudflare` is not a capability an adopter installs, and this computes
+  // the permission list for a token **the CLI mints** — that policy is the CLI's, not the project's (#533).
   const { permissionsForKeys } = await import("@pithy-sh/cloudflare/src/tokens/profiles");
   return permissionsForKeys([...secretsTokenProfile.permissions] as PermissionKey[], accountId);
 }
@@ -212,10 +214,10 @@ export class CloudflareSecretsProvisioner implements SecretsProvisioner {
 }
 
 /** The directory of the prebuilt manager worker inside the installed `@pithy-sh/secrets` package. */
-function managerDir(): string {
+function managerDir(projectDir: string): string {
   // Resolve through the package so it works installed (node_modules) or in the workspace; the
   // `./src/*` export maps `worker` → `src/manager/worker.ts`, whose directory holds wrangler.jsonc.
-  return dirname(kitSource("@pithy-sh/secrets/src/manager/worker"));
+  return dirname(kitSource(projectDir, "@pithy-sh/secrets/src/manager/worker"));
 }
 
 /**
@@ -247,10 +249,16 @@ export async function writeManagerCfApiToken(
  * binding already resolves by deploy time. The broad token never reaches the worker; the minted token
  * never deploys. Auth flows through env vars, not `wrangler login` (CLAUDE.md §CF token bootstrap).
  */
-export function buildManagerDeploy(options: { accountId: string; apiToken: string; project: string }): DeployManager {
-  const { accountId, apiToken, project } = options;
+export function buildManagerDeploy(options: {
+  accountId: string;
+  apiToken: string;
+  project: string;
+  /** The project root the manager worker is resolved from — the adopter's copy, not the CLI's (#533). */
+  projectDir: string;
+}): DeployManager {
+  const { accountId, apiToken, project, projectDir } = options;
   return async (env, resolved) => {
-    const dir = managerDir();
+    const dir = managerDir(projectDir);
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as ManagerWranglerTemplate;
     const config = resolveManagerConfig(template, { env, accountId, project, ...resolved });
     const configPath = join(dir, `.wrangler.${env}.json`);

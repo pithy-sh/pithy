@@ -147,6 +147,30 @@ describe("CloudflareBuildsManager", () => {
         expect.objectContaining({ payload: expect.objectContaining({ code: "cloudflare/request_failed" }) }),
       );
     });
+
+    /**
+     * The raw-`fetch` escape hatch composes its own refusal, so it is the one path that can drift from
+     * the shared projection (#534). It reads Cloudflare's `errors[]` through the same composer.
+     */
+    it("carries Cloudflare's own answer, and the grant line for an auth-class code", async () => {
+      fetchMock.mockResolvedValue(errorResponse(403, 10000, "Authentication error"));
+      const error = await manager
+        .createRepoConnection({
+          providerType: "gitlab",
+          repoId: "1",
+          repoName: "r",
+          providerAccountId: "a",
+          providerAccountName: "n",
+        })
+        .catch((thrown: unknown) => thrown);
+
+      expect(error).toBeInstanceOf(PithyError);
+      const { payload } = error as PithyError;
+      expect(payload.message).toBe("Cloudflare Builds returned 403. Cloudflare said: 10000 Authentication error");
+      expect(payload.action).toContain("A missing grant, a dead token and the wrong account all look the same here.");
+      // The `[cf-codes:…]` marker idempotency checks read still leads `detail`.
+      expect(payload.detail?.startsWith("[cf-codes:10000] ")).toBe(true);
+    });
   });
 
   describe("upsertTrigger", () => {

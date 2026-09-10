@@ -10,6 +10,7 @@ import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import { scaffoldProject } from "../project/scaffold";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
+import { linkKitPackages } from "../test-utils/linkKit";
 import vector from "./vector";
 
 /**
@@ -237,6 +238,10 @@ describe("pithy vector refuses an unready environment before it creates or destr
   beforeAll(async () => {
     const dir = await mkdtemp(join(tmpdir(), "pithy-vector-preflight-"));
     await scaffoldProject({ targetDir: dir, appName: PROJECT, worker: WORKER });
+    // The capabilities this fixture composes, installed the way a real project installs them. Since #533 the
+    // CLI resolves them from the project rather than from its own location, so a fixture with an empty
+    // `node_modules` is a project with nothing added.
+    await linkKitPackages(dir, ["vector"]);
     fixture.dir = dir;
     fixture.workerDir = join(dir, "apps", WORKER);
     // Staging is brought up; production is left as a bring-up leaves it, with no app database.

@@ -20,8 +20,12 @@ import type { WorkflowRetryPolicy } from "@pithy-sh/core/src/workflow/faults";
  *   the step can only act on a code. A model that was overloaded for ten seconds answers on the second
  *   attempt.
  * - **`cloudflare/request_failed`** — the Stream REST API, unreachable or answering 5xx. Video
- *   transcription asks Stream for an HLS playback URL before it fetches a single byte, and
- *   `cloudflareRequest` folds every transport failure into this one code.
+ *   transcription asks Stream for an HLS playback URL before it fetches a single byte.
+ * - **`core/upstream_timeout`** — the same call, out of time rather than answered. It reads as a second
+ *   entry for one event because it used to be one: `cloudflareRequest` folded a connect timeout into
+ *   `cloudflare/request_failed`, and #534 split it out under the code CLAUDE.md §Errors asks for. Both
+ *   halves are retryable here for the same reason — the playback-URL read is idempotent — and the split
+ *   is what stops a timeout being *silently* terminal now that the code has changed.
  * - **`media/enrichment_failed`** — **the deliberate exception, and the reason it earns its place is
  *   `fetchVideoAudio`.** A video whose Stream asset has not finished encoding has no HLS playback URL
  *   yet, and that is what the enrichment raises: not a refusal, a *not yet*. It is the single most
@@ -50,6 +54,7 @@ export const mediaWorkflowRetry: WorkflowRetryPolicy = {
     "core/upstream_failed":
       "Workers AI rejected the call rather than answering it; an overloaded model answers next time.",
     "cloudflare/request_failed": "The Stream API could not be reached; the same read is idempotent and may reach it.",
+    "core/upstream_timeout": "The Stream API ran out of time rather than refusing; the same read is idempotent.",
     "media/enrichment_failed":
       "A video's Stream asset may still be encoding, so it has no HLS audio yet — a not-yet rather than a refusal.",
   },

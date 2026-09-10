@@ -61,7 +61,7 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
 
 /** Load the support capability's resolved config from `pithy.config.ts`. */
 async function loadSupportConfig(projectDir: string) {
-  const { isSupportCapability } = await loadSupport();
+  const { isSupportCapability } = await loadSupport(projectDir);
   // Capabilities live in each Worker's `apps/<name>/pithy.config.ts`; provisioning is one project-wide
   // decision, so the first Worker composing this capability provides it.
   const capability = (await resolveWorkers({ projectDir }).then(projectCapabilities)).find(isSupportCapability);
@@ -182,7 +182,7 @@ const provision = defineCommand({
       // The project's own environment set (#241): what this command fans out across, rather than a
       // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
       const environments = loadProjectEnvironments(config);
-      const { provisionSupport } = await loadSupport();
+      const { provisionSupport } = await loadSupport(projectDir);
       const { account, accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       const supportConfig = await loadSupportConfig(projectDir);
       const appWorker = await resolveSingleWorker({
@@ -199,6 +199,7 @@ const provision = defineCommand({
       });
       const provisioner = new CloudflareSupportProvisioner({
         cf: await cloudflareClients({ accountId, apiToken }),
+        projectDir,
         project,
         account,
         apiToken,
@@ -298,7 +299,7 @@ const deprovision = defineCommand({
       // The project's own environment set (#241): what this command fans out across, rather than a
       // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
       const environments = loadProjectEnvironments(config);
-      const { deprovisionSupport } = await loadSupport();
+      const { deprovisionSupport } = await loadSupport(projectDir);
       const { account, accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
       // without it, so discovering it is missing at the bucket step would leave the workers gone and the
@@ -309,6 +310,7 @@ const deprovision = defineCommand({
       const deprovisioner = new CloudflareSupportDeprovisioner({
         account,
         cf: await cloudflareClients({ accountId, apiToken }),
+        projectDir,
         project,
         ...(args["routing-zone"] !== undefined ? { routingZoneId: args["routing-zone"] } : {}),
         ...(r2Credentials !== undefined ? { r2Credentials } : {}),

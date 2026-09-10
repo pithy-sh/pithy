@@ -11,6 +11,7 @@ import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
+import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
 import { runWrangler } from "../project/wrangler";
 import { capabilityLoadError } from "./loadFailure";
@@ -52,28 +53,28 @@ export type PaymentsModule = PaymentsResolveModule &
  * resolved, so a project that has not added payments gets one clear instruction instead of a module error
  * from whichever call site happened to run first.
  */
-export async function loadPayments(): Promise<PaymentsModule> {
+export async function loadPayments(projectDir: string): Promise<PaymentsModule> {
   try {
     const [resolve, capability, specs, subject] = await Promise.all([
-      import("@pithy-sh/payments/src/provision/resolvePaymentsConfig"),
-      import("@pithy-sh/payments/src/capability"),
-      import("@pithy-sh/payments/src/workflows/specs"),
+      kitImport<PaymentsResolveModule>(projectDir, "@pithy-sh/payments/src/provision/resolvePaymentsConfig"),
+      kitImport<PaymentsCapabilityModule>(projectDir, "@pithy-sh/payments/src/capability"),
+      kitImport<PaymentsSpecsModule>(projectDir, "@pithy-sh/payments/src/workflows/specs"),
       // `decodeSubjectReference`, so `pithy payments reconcile --subject` reads a holder through the same
       // strict decoder the rails do rather than a split of its own (#412).
-      import("@pithy-sh/payments/src/data/subject"),
+      kitImport<PaymentsSubjectModule>(projectDir, "@pithy-sh/payments/src/data/subject"),
     ]);
     return { ...resolve, ...capability, ...specs, ...subject };
   } catch (error) {
-    throw capabilityLoadError("payments", "@pithy-sh/payments", error);
+    throw capabilityLoadError("payments", "@pithy-sh/payments", error, projectDir);
   }
 }
 
 /** The directory of the prebuilt reconcile worker inside the installed package (holds `wrangler.jsonc`). */
-async function paymentsWorkerDir(): Promise<string> {
+async function paymentsWorkerDir(projectDir: string): Promise<string> {
   try {
-    return dirname(kitSource("@pithy-sh/payments/src/workflows/worker"));
+    return dirname(kitSource(projectDir, "@pithy-sh/payments/src/workflows/worker"));
   } catch (error) {
-    throw capabilityLoadError("payments", "@pithy-sh/payments/src/workflows/worker", error);
+    throw capabilityLoadError("payments", "@pithy-sh/payments/src/workflows/worker", error, projectDir);
   }
 }
 
@@ -90,6 +91,12 @@ export type ResolvePaymentsEnv = (env: ManagedEnvironment) => Promise<PaymentsEn
 
 export interface CloudflarePaymentsProvisionerOptions {
   cf: CloudflareClients;
+  /**
+   * The project root — the directory `pithy.config.ts` was read from, and the base every
+   * `@pithy-sh/payments` module is resolved against. Not derivable from {@link project}, which is a
+   * *name*; see `project/kitResolve.ts` for why a resolution may not fall back to the CLI's own copy.
+   */
+  projectDir: string;
   accountId: string;
   /**
    * The project name, from `requireProjectName(await loadProject(projectDir))` — never
@@ -114,6 +121,7 @@ export interface CloudflarePaymentsProvisionerOptions {
 /** The live payments provisioner. Every step is idempotent, so provisioning is safe to re-run. */
 export class CloudflarePaymentsProvisioner {
   readonly #cf: CloudflareClients;
+  readonly #projectDir: string;
   readonly #accountId: string;
   readonly #project: string;
   readonly #apiToken: string;
@@ -125,6 +133,7 @@ export class CloudflarePaymentsProvisioner {
 
   constructor(options: CloudflarePaymentsProvisionerOptions) {
     this.#cf = options.cf;
+    this.#projectDir = options.projectDir;
     this.#accountId = options.accountId;
     this.#project = options.project;
     this.#apiToken = options.apiToken;
@@ -147,9 +156,9 @@ export class CloudflarePaymentsProvisioner {
 
   /** Resolve the env's wrangler config from the committed template + provisioned ids, then `wrangler deploy`. */
   async deployWorker(env: ManagedEnvironment): Promise<void> {
-    const { paymentsWorkerName, resolvePaymentsConfig } = await loadPayments();
+    const { paymentsWorkerName, resolvePaymentsConfig } = await loadPayments(this.#projectDir);
     const { appDatabaseId, secretsDatabaseId } = await this.#resolveEnv(env);
-    const dir = await paymentsWorkerDir();
+    const dir = await paymentsWorkerDir(this.#projectDir);
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
     const config = resolvePaymentsConfig(template, {
       project: this.#project,
@@ -200,7 +209,7 @@ export class CloudflarePaymentsProvisioner {
    * by the cron are the same run.
    */
   async reconcile(env: ManagedEnvironment, params: Record<string, unknown>): Promise<unknown> {
-    const { PAYMENTS_CAPABILITY } = await loadPayments();
+    const { PAYMENTS_CAPABILITY } = await loadPayments(this.#projectDir);
     const name = resourceNames(this.#project).env(env).workflow(PAYMENTS_CAPABILITY, "reconcile");
     return this.#workflows.dispatchAndPoll(name, params);
   }

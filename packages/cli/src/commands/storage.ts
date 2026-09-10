@@ -57,7 +57,7 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
 
 /** Load the storage capability's resolved config from `pithy.config.ts`. */
 async function loadStorageConfig(projectDir: string) {
-  const { isStorageCapability } = await loadStorage();
+  const { isStorageCapability } = await loadStorage(projectDir);
   // Capabilities live in each Worker's `apps/<name>/pithy.config.ts`; provisioning is one
   // project-wide decision, so the first Worker composing this capability provides it.
   const capability = (await resolveWorkers({ projectDir }).then(projectCapabilities)).find(isStorageCapability);
@@ -195,7 +195,7 @@ const provision = defineCommand({
       // The project's own environment set (#241): what this command fans out across, rather than a
       // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
       const environments = loadProjectEnvironments(config);
-      const { provisionStorage } = await loadStorage();
+      const { provisionStorage } = await loadStorage(projectDir);
       const { account, accountId, apiToken, storeId, r2Raw } = loadCloudflareCreds(
         await projectCloudflareAccount(projectDir),
       );
@@ -216,6 +216,7 @@ const provision = defineCommand({
       const cf = await cloudflareClients({ accountId, apiToken });
       const provisioner = new CloudflareStorageProvisioner({
         cf,
+        projectDir,
         project,
         environments,
         account,
@@ -240,7 +241,7 @@ const provision = defineCommand({
       // requires a `name` and a `class_name` on every `workflows` entry, and the deployed Workflow name
       // is per project and environment (`<project>-<env>-storage-sweep`). An entry short of either field fails the whole
       // config, so `add` emits none and this completes it — see capabilities/add.ts.
-      const { storageWorkflowRegistry, STORAGE_CAPABILITY } = await loadStorage();
+      const { storageWorkflowRegistry, STORAGE_CAPABILITY } = await loadStorage(projectDir);
       for (const entry of result.environments) {
         // Into the **app Worker's** `wrangler.jsonc`, the same file readiness was read from. A project
         // root holds no wrangler config at all, so writing there wrote nothing an adopter ever loads.
@@ -305,7 +306,7 @@ const deprovision = defineCommand({
       // The project's own environment set (#241): what this command fans out across, rather than a
       // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
       const environments = loadProjectEnvironments(config);
-      const { deprovisionStorage } = await loadStorage();
+      const { deprovisionStorage } = await loadStorage(projectDir);
       const { account, accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
       // without it, so discovering it is missing at the bucket step would leave the sweep workers gone
@@ -317,6 +318,7 @@ const deprovision = defineCommand({
       const deprovisioner = new CloudflareStorageDeprovisioner({
         account,
         cf,
+        projectDir,
         project,
         r2Credentials,
         audit: await buildAudit(projectDir, accountId, apiToken),

@@ -71,8 +71,15 @@ function testSitekeyVars(modes: TurnstileMode[]): Record<string, string> {
 /**
  * The side-effecting steps provisioning performs, injected so the orchestration is pure and unit-testable
  * (the live implementation lives in the CLI). The secret is the one `d1`, JSON turnstile secret read by the
- * middleware through `@pithy-sh/secrets` (CLAUDE.md §secrets); dev gets it via `.dev.vars`, deployed
- * environments via the manager's write Workflow. Every step is idempotent.
+ * middleware through `@pithy-sh/secrets` (CLAUDE.md §secrets); dev gets it via the dev secrets file,
+ * deployed environments via the manager's write Workflow. Every step is idempotent.
+ *
+ * **A secret crosses this seam as a {@link TurnstileSecrets} object, never as a serialization of one
+ * (#535).** Each destination encodes for itself — the dev secrets file states a `json` secret's own
+ * structure, a managed write states the canonical string `validateSecretValue` produces — and the two
+ * do not agree. This orchestrator serialized once, for both, so the dev file held a JSON string
+ * containing JSON: a value `TurnstileSecrets` refuses at the root, because it is a `z.strictObject` and
+ * what was stored is a string. Handing over the object leaves no encoding for a caller to get wrong.
  */
 export interface TurnstileProvisioner {
   /**
@@ -82,10 +89,10 @@ export interface TurnstileProvisioner {
    * sitekey. This project's own widgets are the expected steady state and never trip it.
    */
   assertDomainAvailable(domain: string): Promise<void>;
-  /** dev: upsert the turnstile secret (JSON) and the public sitekey vars into `.dev.vars`. */
-  writeDev(secret: string, sitekeys: Record<string, string>): Promise<void>;
-  /** Write the turnstile secret (JSON) to a deployed environment's managed store (via the manager). */
-  writeManagedSecret(env: ManagedTurnstileEnv, secret: string): Promise<void>;
+  /** dev: upsert the turnstile secret and the public sitekey vars into their dev files. */
+  writeDev(secret: TurnstileSecrets, sitekeys: Record<string, string>): Promise<void>;
+  /** Write the turnstile secret to a deployed environment's managed store (via the manager). */
+  writeManagedSecret(env: ManagedTurnstileEnv, secret: TurnstileSecrets): Promise<void>;
   /** Write the public sitekey vars into a deployed environment's worker vars. */
   writeManagedSitekeys(env: ManagedTurnstileEnv, sitekeys: Record<string, string>): Promise<void>;
   /** Reuse the production widget by name, else create it bound to the domain. `secret` is null on reuse. */
@@ -156,7 +163,7 @@ export async function provisionTurnstile(
   // leaves no half-wired `.dev.vars` or staging secret behind.
   if (!plan.allowSharedDomain) await provisioner.assertDomainAvailable(plan.productionDomain);
 
-  const testSecret = JSON.stringify(buildSecrets(plan.modes, TEST_SECRET));
+  const testSecret = buildSecrets(plan.modes, TEST_SECRET);
   const sitekeys = testSitekeyVars(plan.modes);
 
   await provisioner.writeDev(testSecret, sitekeys);
@@ -184,7 +191,7 @@ export async function provisionTurnstile(
   // existing widgets' secret, so it can't be recomposed and is left as-is (the caller warns).
   const productionSecretWritten = created === plan.modes.length;
   if (productionSecretWritten) {
-    await provisioner.writeManagedSecret(REAL_WIDGET_ENV, JSON.stringify(realSecrets));
+    await provisioner.writeManagedSecret(REAL_WIDGET_ENV, realSecrets);
   }
   await provisioner.writeManagedSitekeys(REAL_WIDGET_ENV, prodSitekeys);
 

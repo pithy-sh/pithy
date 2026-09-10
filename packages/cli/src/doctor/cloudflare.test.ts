@@ -185,7 +185,9 @@ describe("describeCloudflareAccess", () => {
   });
 
   test("a reachable account reports the token's lifecycle status", () => {
-    expect(describeCloudflareAccess(access({ state: "ok", tokenStatus: "active" }))).toBe("reachable (token active)");
+    expect(describeCloudflareAccess(access({ state: "ok", tokenStatus: "active" }))).toBe(
+      "token active; checked: API tokens — no other product was reached",
+    );
   });
 
   test("unconfigured tells you which keys to set and where", () => {
@@ -213,7 +215,7 @@ describe("describeCloudflareAccess", () => {
       }),
     );
     // Reachable is still true, and still said — the split is an extra warning, not a replacement.
-    expect(text).toContain("reachable (token active)");
+    expect(text).toContain("token active; checked: API tokens — no other product was reached");
     expect(text).toContain("cloudflare.json sets CLOUDFLARE_API_TOKEN");
     expect(text).toContain("the environment supplies CLOUDFLARE_ACCOUNT_ID");
   });
@@ -289,7 +291,7 @@ describe("describeCloudflareAccess, for a resolved file", () => {
       accountName: "leed",
       accountMismatch: null,
     });
-    expect(text).toContain("reachable (token active)");
+    expect(text).toContain("token active; checked: API tokens — no other product was reached");
     expect(text).toContain("/home/u/.config/pithy/cloudflare.leed.json");
   });
 
@@ -314,7 +316,7 @@ describe("describeCloudflareAccess, for a resolved file", () => {
 
   test("a stubbed probe that names no file prints exactly what it printed before", () => {
     expect(describeCloudflareAccess({ state: "ok", missing: [], tokenStatus: "active", credentialSplit: null })).toBe(
-      "reachable (token active)",
+      "token active; checked: API tokens — no other product was reached",
     );
   });
 
@@ -338,7 +340,7 @@ describe("describeCloudflareAccess, for a resolved file", () => {
       "/home/u",
     );
     expect(text).toBe(
-      "reachable (token active); credentials from the environment, not ~/.config/pithy/cloudflare.json",
+      "token active; checked: API tokens — no other product was reached; credentials from the environment, not ~/.config/pithy/cloudflare.json",
     );
   });
 
@@ -356,7 +358,9 @@ describe("describeCloudflareAccess, for a resolved file", () => {
       },
       "/home/u",
     );
-    expect(text).toBe("reachable (token active); from ~/.config/pithy/cloudflare.json");
+    expect(text).toBe(
+      "token active; checked: API tokens — no other product was reached; from ~/.config/pithy/cloudflare.json",
+    );
   });
 
   test("not checked names the mode, so nobody reads it as a pass or as a failure", () => {

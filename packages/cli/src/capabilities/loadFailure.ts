@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { isAbsolute } from "node:path";
 import {
   causeMessage,
   isBuildFailureWrapper,
@@ -10,6 +11,7 @@ import {
   unresolvedSpecifier,
 } from "@pithy-sh/core/src/error/cause";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { packageInstalledFrom } from "../project/kitResolve";
 
 /**
  * Why an optional capability would not load — and therefore what may be said about it (#217).
@@ -28,8 +30,23 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
  * one underlying failure may not name a single specific remedy.** Classify, or hedge.
  */
 export type CapabilityLoadKind =
-  /** The capability's own package does not resolve. `pithy add <cap>` is right, and earned. */
+  /** The capability's own package does not resolve, and does not resolve from the project either. */
   | "not-installed"
+  /**
+   * The package **is** in the project's `node_modules` and the module still would not resolve (#533).
+   *
+   * The one kind that may never say `pithy add`, and the reason the classifier now takes a project root
+   * at all. An unresolved specifier looks identical whichever of two things is true — the adopter never
+   * installed the package, or something asked the wrong `node_modules` — and only a *second, positive*
+   * look at the project can tell them apart. The cause cannot: `importingPackage` reads `@pithy-sh/cli`
+   * out of the referrer for a global install and a local one alike, because the failing import never knew
+   * a project root to encode. See {@link packageInstalledFrom} for why that look is a directory check.
+   *
+   * Since #533 that second resolution is the same one the loader used, so what reaches here is the
+   * honest remainder: an installed package that does not carry the module — version skew against a CLI
+   * that is ahead of it, or a half-written install. Either way `pithy add` reinstalls the same copy.
+   */
+  | "unreachable"
   /** The capability resolves; something it imports does not. `pithy add` cannot fix this. */
   | "dependency-unresolved"
   /** Something does not resolve, and nothing names which package. Both remedies, neither asserted. */
@@ -115,11 +132,16 @@ function packageOf(specifier: string): string {
  * @param target what the loader was resolving. Its package half decides "ours or theirs"; the rest is
  *   `detail` only, since a deep subpath is our implementation and not the adopter's business.
  * @param cause whatever the `try` caught. Read duck-typed, never `instanceof`.
+ * @param projectDir the project root the loader resolved from, when the caller has one. **Supplying it is
+ *   what makes `not-installed` earnable**: absent, an unresolved specifier is taken at face value, which
+ *   is right for the pure-function callers that hand this a literal cause and wrong for every loader.
+ *   Present, the claim is checked against the project's own `node_modules` before it is made.
  */
 export function classifyCapabilityLoadFailure(
   capability: string,
   target: string,
   wrapped: unknown,
+  projectDir?: string,
 ): CapabilityLoadFailure {
   // Bun hands `import()` failures over inside an `AggregateError`. Classify what is inside it.
   const cause = rootCause(wrapped);
@@ -151,7 +173,34 @@ export function classifyCapabilityLoadFailure(
         `An import did not resolve. Run \`pithy add ${capability}\` if it is not installed, or bun install if it is.`,
       );
     }
+    // A mapped subpath whose file is missing: node names the **resolved absolute path** rather than a
+    // specifier. `packageOf` reduces a path to the empty string, which fell through to
+    // `dependency-unresolved` and interpolated that path straight into `action` — the one thing this
+    // file's own tests assert never happens. A path inside a package exists only because the package
+    // resolved, so this is the incomplete-install case and is answered as one.
+    //
+    // `isAbsolute` rather than a character class of our own. A hand-written path recognizer is half of
+    // the message-safety filter `project/config.test.ts` exists to keep in `@pithy-sh/core` alone, and
+    // that gate fires on the pattern whatever it is doing there. `node:sqlite` is untouched by both
+    // arms, which is what keeps a missing builtin a dependency problem rather than a broken package.
+    if (isAbsolute(specifier) || specifier.startsWith(".")) {
+      return failure(
+        "broken",
+        `The ${capability} capability is installed but incomplete.`,
+        `${pkg} is missing a file this command needs. Reinstall it, or report this to its maintainer.`,
+      );
+    }
     if (packageOf(specifier) === pkg) {
+      // The claim is checked before it is made. `pithy add` on a package that is already there installs
+      // nothing and then rewrites a hand-built `pithy.config.ts` — the remedy is destructive on exactly
+      // the projects where it is wrong, which is why this branch earns its extra syscall (#533).
+      if (projectDir !== undefined && packageInstalledFrom(projectDir, pkg)) {
+        return failure(
+          "unreachable",
+          `The ${capability} capability is installed and could not be reached.`,
+          `${pkg} is in this project's node_modules but nothing resolves "${specifier}". Reinstall the project's dependencies (bun install) and check ${pkg} is up to date.`,
+        );
+      }
       return failure(
         "not-installed",
         `The ${capability} capability is not installed.`,
@@ -201,8 +250,15 @@ export function classifyCapabilityLoadFailure(
  *
  * `ValidationError` is kept from the fourteen sites this replaces: the code an adopter's tooling matches
  * on does not change because the sentence got honest.
+ *
+ * @param projectDir the root the loader resolved from — see {@link classifyCapabilityLoadFailure}.
  */
-export function capabilityLoadError(capability: string, target: string, cause: unknown): ValidationError {
-  const { message, action, detail } = classifyCapabilityLoadFailure(capability, target, cause);
+export function capabilityLoadError(
+  capability: string,
+  target: string,
+  cause: unknown,
+  projectDir?: string,
+): ValidationError {
+  const { message, action, detail } = classifyCapabilityLoadFailure(capability, target, cause, projectDir);
   return new ValidationError({ message, action, detail }, { cause });
 }

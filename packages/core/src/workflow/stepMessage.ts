@@ -69,6 +69,21 @@
  * `message`, throw-site context in `detail`, and a durable boundary is not a reason to move the line.
  * `action` crosses because `action` is already operator-facing — the CLI prints it and `operatorError`
  * includes it. This stops losing a field that was always meant for this reader.
+ *
+ * ## The encoder owns producing something the reader accepts
+ *
+ * The reader is strict, and it has to be: text the kit did not write must not become an operator's
+ * sentence. The consequence is that a *writer* handing it a shape it declines loses the whole channel —
+ * the code, the sentence and the remedy at once — and the operator is handed `core/workflow_failed` 500
+ * with the platform's prose about durable execution. That is not a hypothetical. #534 put an upstream's
+ * `errors[]` into a multi-line `message`, and every Cloudflare refusal raised inside a `classifiedSteps`
+ * step stopped crossing this boundary at all: the first newline read as the code/action separator and
+ * the second as a shape this never writes, so the read returned `null` and the refusal died at the step.
+ *
+ * So {@link encodeWorkflowStepMessage} is **total**: whatever fields it is handed, what it writes decodes
+ * back. Each half is flattened to one line and, past the bound, truncated with an ellipsis rather than
+ * dropped. The asymmetry with the reader is deliberate and is the whole point — the writer owns text the
+ * kit authored and may reshape it; the reader is handed text from a Worker we did not write and may not.
  */
 
 /**
@@ -124,16 +139,47 @@ export function splitWorkflowStepCode(text: string): { code?: string; rest: stri
 }
 
 /**
+ * One half as this encoding can carry it: a single line, within the bound.
+ *
+ * Both reshapes exist because the alternative is losing the field, and the two ways a half can be
+ * unreadable are the two ways a writer actually gets it wrong. A line break would encode a shape the
+ * reader declines — the sentence would take the remedy down with it, or the remedy would forge a
+ * second field — so every break collapses to a space, exactly as `@pithy-sh/cloudflare` flattens an
+ * upstream's own text before it lands in `message`. Length is the same argument with a different
+ * cause: half a sentence naming its code and its remedy beats the platform's prose about durable
+ * execution, so the tail is spent rather than the field. The whole of it was never here anyway —
+ * `detail` holds the raw text, on the far side of a boundary it does not cross.
+ */
+function encodable(text: string): string {
+  // The break and the whitespace that dressed it: an indent under a line is structure, and structure
+  // that survives as run-on spaces reads as a typo. Whitespace elsewhere in the half is left alone —
+  // this reshapes what the line break did, not what the sentence says.
+  const flattened = text.replace(/\s*[\n\r]+\s*/g, " ").trim();
+  if (flattened.length <= MAX_WORKFLOW_STEP_TEXT) return flattened;
+  return `${flattened.slice(0, MAX_WORKFLOW_STEP_TEXT - 1).trimEnd()}…`;
+}
+
+/**
  * The text a terminal step throws. The inverse of {@link decodeWorkflowStepMessage}, and tested as one.
  *
- * An action is appended only when there is one to append and it is a single line. An action carrying a
- * break would encode a shape the reader declines, taking the sentence down with it — so the sentence
- * is kept and the action dropped. Losing the remedy is a worse day; losing both is a worse one still.
+ * **What this writes, that reads back — for a well-formed code and a sentence there is one.** Each half
+ * goes through {@link encodable}, so a multi-line sentence is flattened rather than fatal and an overlong
+ * one is truncated rather than declined. An action is appended only when there is one left after that —
+ * a remedy that was empty or only whitespace leaves no trailing separator, because a dangling separator
+ * is a field the reader would have to decline.
+ *
+ * **Two inputs it deliberately cannot represent, so "total" is not the whole word for it.** An empty
+ * `message` encodes to text {@link decodeWorkflowStepMessage} declines, and so does a `code` that does
+ * not match `CODE_PREFIX`. Both refusals are the boundary working: a step that failed without a sentence
+ * has none to promote — the caller's own `fallbackMessage` is what the operator should see — and a code
+ * the reader cannot recognize is exactly the foreign text this encoding exists to keep out of an
+ * operator's sentence. Neither is reachable from a kit throw site; an adopter code declared through
+ * `defineErrorPayload` is checked against the same shape.
  */
 export function encodeWorkflowStepMessage(fields: WorkflowStepMessage): string {
-  const stated = `${fields.code}: ${fields.message}`;
-  const action = fields.action?.trim();
-  if (action === undefined || action === "" || LINE_BREAK.test(action)) return stated;
+  const stated = `${fields.code}: ${encodable(fields.message)}`;
+  const action = encodable(fields.action ?? "");
+  if (action === "") return stated;
   return `${stated}${WORKFLOW_STEP_SEPARATOR}${action}`;
 }
 
