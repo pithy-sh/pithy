@@ -30,6 +30,7 @@ import {
   readyStanza,
   requireReadyEnvironments,
 } from "../project/environmentReadiness";
+import { kitImport } from "../project/kitResolve";
 import {
   composedProjectCapabilities,
   projectCapabilities,
@@ -179,7 +180,7 @@ async function openTesters(requested: string) {
   const env = requireEnvironment(requested);
   const projectDir = process.cwd();
   const workers = await resolveWorkers({ projectDir });
-  const { isTestersCapability } = await loadTesters();
+  const { isTestersCapability } = await loadTesters(projectDir);
   const capability = projectCapabilities(workers).find(isTestersCapability);
   if (!capability) {
     throw new ValidationError({
@@ -207,14 +208,14 @@ async function openTesters(requested: string) {
     env,
     account: await projectCloudflareAccount(projectDir),
   });
-  const modules = await loadTesters();
+  const modules = await loadTesters(projectDir);
   return {
     driver,
     d1: driver.d1("DB"),
     db: modules.testersDatabase(driver.d1("DB")),
     config: capability.testersConfig,
     modules,
-    enqueue: await buildEnqueue(workers, driver.d1("DB")),
+    enqueue: await buildEnqueue(projectDir, workers, driver.d1("DB")),
   };
 }
 
@@ -244,11 +245,11 @@ const EMAIL_MODULE = "@pithy-sh/email/src/capability";
  * #217 left for it. Exported so it is tested as a pure function against both runtimes' cause shapes,
  * per the same convention: the `bin` runs on Bun, whose resolver errors are not `instanceof Error`.
  */
-export async function loadOptionalEmail<T>(load: () => Promise<T> | T): Promise<T | undefined> {
+export async function loadOptionalEmail<T>(load: () => Promise<T> | T, projectDir?: string): Promise<T | undefined> {
   try {
     return await load();
   } catch (error) {
-    const failure = classifyCapabilityLoadFailure("email", EMAIL_MODULE, error);
+    const failure = classifyCapabilityLoadFailure("email", EMAIL_MODULE, error, projectDir);
     // The only absence there is. Everything else is a fault, and a fault that reads as an absence is
     // the defect this exists to remove.
     if (failure.kind === "not-installed") return undefined;
@@ -272,12 +273,28 @@ export async function loadOptionalEmail<T>(load: () => Promise<T> | T): Promise<
  * the only two silences** — see {@link loadOptionalEmail} for why an installed-and-broken package is
  * not a third.
  */
-export async function buildEnqueue(workers: Awaited<ReturnType<typeof resolveWorkers>>, d1: D1Database) {
-  const modules = await loadOptionalEmail(async () => ({
-    ...(await import("@pithy-sh/email/src/capability")),
-    ...(await import("@pithy-sh/email/src/send/enqueue")),
-    ...(await import("@pithy-sh/email/src/data/tables")),
-  }));
+export async function buildEnqueue(
+  projectDir: string,
+  workers: Awaited<ReturnType<typeof resolveWorkers>>,
+  d1: D1Database,
+) {
+  const modules = await loadOptionalEmail(
+    async () => ({
+      ...(await kitImport<typeof import("@pithy-sh/email/src/capability")>(
+        projectDir,
+        "@pithy-sh/email/src/capability",
+      )),
+      ...(await kitImport<typeof import("@pithy-sh/email/src/send/enqueue")>(
+        projectDir,
+        "@pithy-sh/email/src/send/enqueue",
+      )),
+      ...(await kitImport<typeof import("@pithy-sh/email/src/data/tables")>(
+        projectDir,
+        "@pithy-sh/email/src/data/tables",
+      )),
+    }),
+    projectDir,
+  );
   if (!modules) return undefined;
   const { isEmailCapability, enqueueEmail, emailDatabase } = modules;
 
@@ -365,7 +382,7 @@ async function buildProvisioner(projectDir: string, worker?: string) {
   // Assembled, for the same reason the enqueue seam above is: the catalogs stamped into the deployed
   // host come off `hostCatalogs()`, which answers `{}` until every `compose` hook has run.
   const capabilities = composedProjectCapabilities(workers);
-  const { isTestersCapability } = await loadTesters();
+  const { isTestersCapability } = await loadTesters(projectDir);
   const testers = capabilities.find(isTestersCapability);
   if (!testers) {
     throw new ValidationError({
@@ -379,7 +396,10 @@ async function buildProvisioner(projectDir: string, worker?: string) {
   // domain the adopter's DKIM does not cover. Installed-and-broken is not that state, and refuses,
   // through the same classifier as the enqueue seam: deploying a host that silently never mails is the
   // other half of the same mistake.
-  const emailModule = await loadOptionalEmail(() => import("@pithy-sh/email/src/capability"));
+  const emailModule = await loadOptionalEmail(
+    () => kitImport<typeof import("@pithy-sh/email/src/capability")>(projectDir, "@pithy-sh/email/src/capability"),
+    projectDir,
+  );
   const composed = emailModule && capabilities.find(emailModule.isEmailCapability);
   const email: TestersEmailIdentity | undefined = composed
     ? {
@@ -429,6 +449,7 @@ async function buildProvisioner(projectDir: string, worker?: string) {
     appReadiness,
     provisioner: new CloudflareTestersProvisioner({
       cf,
+      projectDir,
       project,
       account,
       apiToken,
@@ -509,7 +530,8 @@ const provision = defineCommand({
         environments: declared,
         appReadiness,
       } = await buildProvisioner(projectDir, args.worker);
-      const { testersWorkflowRegistry, TESTERS_CAPABILITY, provisionTesters } = await loadTestersProvisioning();
+      const { testersWorkflowRegistry, TESTERS_CAPABILITY, provisionTesters } =
+        await loadTestersProvisioning(projectDir);
 
       // Parsed, not cast. `--env dev` is a real thing to type, and dev is local-only — the cast turned a
       // one-line answer into a raw Cloudflare error from a worker that was never deployed.
@@ -577,7 +599,7 @@ const deprovision = defineCommand({
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
       const { provisioner, project, environments: declared } = await buildProvisioner(projectDir);
-      const { deprovisionTesters } = await loadTestersProvisioning();
+      const { deprovisionTesters } = await loadTestersProvisioning(projectDir);
 
       const environments: ManagedEnvironment[] = args.env
         ? [requireManagedEnvironment(args.env, declared)]

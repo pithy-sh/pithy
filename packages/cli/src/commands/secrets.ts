@@ -673,7 +673,7 @@ const provision = defineCommand({
         account,
         project,
         storeId,
-        deploy: buildManagerDeploy({ accountId, apiToken, project }),
+        deploy: buildManagerDeploy({ accountId, apiToken, project, projectDir }),
         audit: await buildAudit(projectDir, "dev"),
       });
 

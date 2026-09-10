@@ -237,6 +237,9 @@ export async function askCloudflareAccount(options: AskCloudflareAccountOptions)
   const listAccounts =
     options.listAccounts ??
     (async (apiToken: string) => {
+      // The CLI's own copy, and the one site where that is unarguable: `pithy init` runs *before* a
+      // project exists — `targetDir` is a directory being created, with no `node_modules` to resolve
+      // anything from. See `project/kitResolve.ts` and `ci/kitResolution.test.ts`.
       const { listCloudflareAccounts } = await import("@pithy-sh/cloudflare/src/client/accounts");
       return listCloudflareAccounts({ apiToken });
     });

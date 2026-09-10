@@ -9,6 +9,7 @@ import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { parse } from "comment-json";
+import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
 import { runWrangler } from "../project/wrangler";
 import { capabilityLoadError } from "./loadFailure";
@@ -56,28 +57,28 @@ export type VectorModule = VectorProvisionModule &
  * so a project that has not added vector gets one clear instruction instead of a module error from whichever
  * call site happened to run first.
  */
-export async function loadVector(): Promise<VectorModule> {
+export async function loadVector(projectDir: string): Promise<VectorModule> {
   try {
     const [provision, resolve, capability, drift, provisioned, specs] = await Promise.all([
-      import("@pithy-sh/vector/src/provision/provisionVector"),
-      import("@pithy-sh/vector/src/provision/resolveVectorConfig"),
-      import("@pithy-sh/vector/src/capability"),
-      import("@pithy-sh/vector/src/index/drift"),
-      import("@pithy-sh/vector/src/index/provisioned"),
-      import("@pithy-sh/vector/src/workflows/specs"),
+      kitImport<VectorProvisionModule>(projectDir, "@pithy-sh/vector/src/provision/provisionVector"),
+      kitImport<VectorResolveModule>(projectDir, "@pithy-sh/vector/src/provision/resolveVectorConfig"),
+      kitImport<VectorCapabilityModule>(projectDir, "@pithy-sh/vector/src/capability"),
+      kitImport<VectorDriftModule>(projectDir, "@pithy-sh/vector/src/index/drift"),
+      kitImport<VectorProvisionedModule>(projectDir, "@pithy-sh/vector/src/index/provisioned"),
+      kitImport<VectorSpecsModule>(projectDir, "@pithy-sh/vector/src/workflows/specs"),
     ]);
     return { ...provision, ...resolve, ...capability, ...drift, ...provisioned, ...specs };
   } catch (error) {
-    throw capabilityLoadError("vector", "@pithy-sh/vector", error);
+    throw capabilityLoadError("vector", "@pithy-sh/vector", error, projectDir);
   }
 }
 
 /** The directory of the prebuilt vector worker inside the installed package (holds `wrangler.jsonc`). */
-async function vectorWorkerDir(): Promise<string> {
+async function vectorWorkerDir(projectDir: string): Promise<string> {
   try {
-    return dirname(kitSource("@pithy-sh/vector/src/workflows/worker"));
+    return dirname(kitSource(projectDir, "@pithy-sh/vector/src/workflows/worker"));
   } catch (error) {
-    throw capabilityLoadError("vector", "@pithy-sh/vector/src/workflows/worker", error);
+    throw capabilityLoadError("vector", "@pithy-sh/vector/src/workflows/worker", error, projectDir);
   }
 }
 
@@ -89,6 +90,12 @@ const METADATA_POLL_ATTEMPTS = 10;
 const METADATA_POLL_INTERVAL_MS = 1_000;
 
 export interface CloudflareVectorProvisionerOptions {
+  /**
+   * The project root — the directory `pithy.config.ts` was read from, and the base every
+   * `@pithy-sh/vector` module is resolved against. Not derivable from `project`, which is a *name*;
+   * see `project/kitResolve.ts` for why a resolution may not fall back to the CLI's own copy.
+   */
+  readonly projectDir: string;
   cf: CloudflareClients;
   accountId: string;
   /**
@@ -111,6 +118,7 @@ export interface CloudflareVectorProvisionerOptions {
 
 /** The live {@link VectorProvisioner}. Every step is idempotent, so provisioning is safe to re-run. */
 export class CloudflareVectorProvisioner implements VectorProvisioner {
+  readonly #projectDir: string;
   readonly #cf: CloudflareClients;
   readonly #accountId: string;
   readonly #project: string;
@@ -121,6 +129,7 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
   readonly #sleep: (ms: number) => Promise<void>;
 
   constructor(options: CloudflareVectorProvisionerOptions) {
+    this.#projectDir = options.projectDir;
     this.#cf = options.cf;
     this.#accountId = options.accountId;
     this.#project = options.project;
@@ -177,7 +186,7 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
     indexName: string,
     declared: readonly MetadataIndexDescriptor[],
   ): Promise<MetadataIndexReport> {
-    const { compareMetadataIndexes } = await loadVector();
+    const { compareMetadataIndexes } = await loadVector(this.#projectDir);
     const provisioner = this.#cf.vectorizeProvisioner();
 
     const before = compareMetadataIndexes(declared, await provisioner.listMetadataIndexes(indexName));
@@ -214,9 +223,9 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
 
   /** Resolve the env's wrangler config from the committed template + provisioned ids, then `wrangler deploy`. */
   async deployWorker(env: string, indexNames: Record<string, string>): Promise<void> {
-    const { resolveVectorConfig } = await loadVector();
+    const { resolveVectorConfig } = await loadVector(this.#projectDir);
     const { appDatabaseId } = await this.#resolveEnv(env);
-    const dir = await vectorWorkerDir();
+    const dir = await vectorWorkerDir(this.#projectDir);
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
     const config = resolveVectorConfig(template, {
       project: this.#project,
@@ -249,7 +258,7 @@ export class CloudflareVectorProvisioner implements VectorProvisioner {
     index: string,
     options: { all?: boolean; filter?: Record<string, unknown> },
   ): Promise<unknown> {
-    const { VECTOR_CAPABILITY } = await loadVector();
+    const { VECTOR_CAPABILITY } = await loadVector(this.#projectDir);
     const name = resourceNames(this.#project).env(env).workflow(VECTOR_CAPABILITY, "reprocess");
     return this.#workflows.dispatchAndPoll(name, {
       index,

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
-import { CloudflareRequestError, cloudflareRequest, decodeResponse } from "../client/errors";
+import { cloudflareApiErrors, cloudflareRefusal, cloudflareRequest, decodeResponse } from "../client/errors";
 import type { CloudflareImageManager } from "./imageManager";
 import { type AssetOwner, withAssetOwnership } from "./ownership";
 import type { CloudflareStreamManager } from "./streamManager";
@@ -76,12 +76,30 @@ export async function uploadStreamBytes(
     form.append("file", file, "seed");
     const response = await fetch(mint.uploadURL, { method: "POST", body: form });
     if (!response.ok) {
-      throw new CloudflareRequestError({
-        message: "The Stream direct upload failed.",
-        detail: `Stream direct upload returned ${response.status}: ${await response.text()}`,
+      // The one-time upload URL is a Cloudflare endpoint answering the same `{ success, errors }`
+      // envelope, so its refusal is composed where every other one is. A hand-built error here was
+      // invisible to `cloudflareRequest`'s wrapper — `if (error instanceof PithyError) throw error`
+      // passes a `PithyError` straight through — so a denied upload printed one sentence and dropped
+      // Cloudflare's own code, sentence and link.
+      const body = await response.text();
+      throw cloudflareRefusal({
+        problem: "The Stream direct upload failed.",
+        apiErrors: cloudflareApiErrors(parseEnvelope(body)),
+        status: response.status,
+        permission: "Stream",
+        detail: `Stream direct upload returned ${response.status}: ${body}`.slice(0, 2000),
       });
     }
   });
 
   return { uid: mint.uid };
+}
+
+/** A CF response body as an object, or `undefined` when it is not JSON — `cloudflareApiErrors` reads either. */
+function parseEnvelope(body: string): unknown {
+  try {
+    return JSON.parse(body);
+  } catch {
+    return undefined;
+  }
 }

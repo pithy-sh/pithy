@@ -49,7 +49,7 @@ function loadCloudflareCreds(account: CloudflareAccountSelection | null): { acco
 
 /** Load the vector capability's resolved config from `pithy.config.ts`. */
 async function loadVectorConfig(projectDir: string) {
-  const { isVectorCapability } = await loadVector();
+  const { isVectorCapability } = await loadVector(projectDir);
   // Capabilities live in each Worker's `apps/<name>/pithy.config.ts`; provisioning is one
   // project-wide decision, so the first Worker composing this capability provides it.
   const capability = (await resolveWorkers({ projectDir }).then(projectCapabilities)).find(isVectorCapability);
@@ -143,6 +143,7 @@ async function buildProvisioner(projectDir: string, env: string, worker: string 
     appWorker,
     provisioner: new CloudflareVectorProvisioner({
       cf: await cloudflareClients({ accountId, apiToken }),
+      projectDir,
       project,
       accountId,
       apiToken,
@@ -176,11 +177,12 @@ interface WranglerVarsConfig {
  * record exists to feed never saw a value at all (#512).
  */
 async function recordProvisioned(
+  projectDir: string,
   workerDir: string,
   env: string,
   result: Awaited<ReturnType<VectorModule["provisionVector"]>>,
 ): Promise<void> {
-  const { toProvisionRecord, VECTOR_PROVISIONED_VAR } = await loadVector();
+  const { toProvisionRecord, VECTOR_PROVISIONED_VAR } = await loadVector(projectDir);
   const value = JSON.stringify(toProvisionRecord(result));
 
   const config = (await readWranglerConfig(workerDir)) as WranglerVarsConfig;
@@ -211,13 +213,14 @@ async function recordProvisioned(
  * binding the deployed Worker never gets.
  */
 async function recordBindings(
+  projectDir: string,
   workerDir: string,
   project: string,
   env: string,
   config: Awaited<ReturnType<typeof loadVectorConfig>>,
   result: Awaited<ReturnType<VectorModule["provisionVector"]>>,
 ): Promise<void> {
-  const { vectorWorkflowRegistry, VECTOR_CAPABILITY } = await loadVector();
+  const { vectorWorkflowRegistry, VECTOR_CAPABILITY } = await loadVector(projectDir);
   const vectorize: AppVectorizeBinding[] = result.indexes.flatMap((entry) => {
     const binding = config.indexes[entry.index]?.binding;
     // Vectorize has no local emulation, so the binding reaches the real index even in `wrangler dev`.
@@ -269,14 +272,14 @@ const provision = defineCommand({
     withErrorReporting(args.json, async () => {
       const env = requireEnvironment(args.env);
       const projectDir = process.cwd();
-      const { provisionVector } = await loadVector();
+      const { provisionVector } = await loadVector(projectDir);
       const { provisioner, project, config, appWorker } = await buildProvisioner(projectDir, env, args.worker);
 
       const result = await provisionVector(provisioner, { project, config, env });
       // Last, and only on success: the record is the Worker's evidence that these metadata indexes exist,
       // so it must never claim more than provisioning actually got done.
-      await recordProvisioned(appWorker.dir, env, result);
-      await recordBindings(appWorker.dir, project, env, config, result);
+      await recordProvisioned(projectDir, appWorker.dir, env, result);
+      await recordBindings(projectDir, appWorker.dir, project, env, config, result);
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "vector provision", ...result })}\n`);
@@ -325,7 +328,7 @@ const reset = defineCommand({
         ...(interactive ? { prompt: resetPrompt(env) } : {}),
       });
 
-      const { resetVector } = await loadVector();
+      const { resetVector } = await loadVector(projectDir);
       const { provisioner, project, config, appWorker, accountId, apiToken } = await buildProvisioner(
         projectDir,
         env,
@@ -359,7 +362,7 @@ const reset = defineCommand({
       }
       await audit({ ...event, outcome: "success" });
       // A reset rebuilds every index, so the record it left behind is stale by definition. Rewrite it.
-      await recordProvisioned(appWorker.dir, env, result);
+      await recordProvisioned(projectDir, appWorker.dir, env, result);
 
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "vector reset", ...result })}\n`);

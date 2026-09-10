@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { fileURLToPath } from "node:url";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { kitResolve } from "./kitResolve";
 
 /**
  * Where a kit module's **source** is, given the specifier that resolves it.
@@ -32,11 +32,20 @@ import { InternalError } from "@pithy-sh/core/src/error/pithyError";
  * `@pithy-sh/*` package ships `src` alongside `dist` in its tarball — for source maps, and for exactly
  * this. `packing.ts` refuses a package that ships no `src`.
  *
+ * ## Why the base is the project and not this module
+ *
+ * This resolved with `import.meta.resolve`, whose base is *this file* — so a globally installed `pithy`
+ * returned the CLI's own bundled copy of a host worker, silently and with a real path on the end of it.
+ * `pithy payments provision` then deployed **the CLI's** reconcile worker under the adopter's name. That
+ * is #533's defect in its quietest form: no error, no refusal, a wrong artifact in production. The base
+ * is the project's, for the reason {@link kitResolve} states.
+ *
+ * @param projectDir the project root the specifier is resolved from — where its `pithy.config.ts` was read.
  * @throws InternalError when the specifier does not resolve into a package's build, which means the
  * layout this depends on has changed and every host deployment is about to read the wrong directory.
  */
-export function kitSource(specifier: string): string {
-  const built = fileURLToPath(import.meta.resolve(specifier));
+export function kitSource(projectDir: string, specifier: string): string {
+  const built = kitResolve(projectDir, specifier);
   const source = built.replace(/([\\/])dist\1(.+)\.js$/, "$1src$1$2.ts");
   if (source === built) {
     throw new InternalError({

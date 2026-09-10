@@ -13,6 +13,7 @@ import { i18n } from "@pithy-sh/i18n/src/capability";
 import { parse } from "comment-json";
 import { describe, expect, test } from "vitest";
 import type { WorkerTarget } from "../project/workers";
+import { linkKitPackages } from "../test-utils/linkKit";
 import { discoverHostWorkers, hostWorkerDir, materializeHostConfigs } from "./hostWorkers";
 
 /** Two app Workers, the shape `discoverWorkers` hands back. */
@@ -90,6 +91,10 @@ describe("materializeHostConfigs", () => {
 
   async function run() {
     const projectDir = await mkdtemp(join(tmpdir(), "pithy-hosts-"));
+    // `materializeHostConfigs` writes into this directory *and* resolves each host's package from it,
+    // because in a real run those are one place. Since #533 the second half means a fixture project
+    // needs the capability installed.
+    await linkKitPackages(projectDir, ["email"]);
     const hosts = (await discover({ "/proj/apps/api": ["email"] })).hosts.map((host) => ({
       ...host,
       worker: { ...host.worker, dir: hostWorkerDir(projectDir, host.capability) },
@@ -141,6 +146,10 @@ describe("materializeHostConfigs", () => {
     // directory at all, so starting `wrangler dev` in it fails on the spawn and takes the session with
     // it — which is the opposite of the "it will not run" the note already promised.
     const projectDir = await mkdtemp(join(tmpdir(), "pithy-hosts-"));
+    // `materializeHostConfigs` writes into this directory *and* resolves each host's package from it,
+    // because in a real run those are one place. Since #533 the second half means a fixture project
+    // needs the capability installed.
+    await linkKitPackages(projectDir, ["email"]);
     const hosts = (await discover({ "/proj/apps/api": ["email"] })).hosts.map((host) => ({
       ...host,
       worker: { ...host.worker, dir: hostWorkerDir(projectDir, host.capability) },
@@ -179,6 +188,7 @@ describe("materializeHostConfigs", () => {
 describe("a dev session for a project that speaks two languages", () => {
   async function materialize(...capabilities: Capability[]) {
     const projectDir = await mkdtemp(join(tmpdir(), "pithy-hosts-i18n-"));
+    await linkKitPackages(projectDir, ["email"]);
     const found = await discoverHostWorkers({
       projectDir,
       workers: [apps[0] as WorkerTarget],

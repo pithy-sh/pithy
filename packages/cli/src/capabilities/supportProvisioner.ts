@@ -13,6 +13,7 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
 import { runWrangler } from "../project/wrangler";
 import { capabilityLoadError } from "./loadFailure";
@@ -62,19 +63,19 @@ export type SupportModule = SupportProvisionModule &
  * resolved, so a project that has not added support gets one clear instruction instead of a module error
  * from whichever call site happened to run first.
  */
-export async function loadSupport(): Promise<SupportModule> {
+export async function loadSupport(projectDir: string): Promise<SupportModule> {
   try {
     const [provision, resolve, capability, config] = await Promise.all([
-      import("@pithy-sh/support/src/provision/provisionSupport"),
-      import("@pithy-sh/support/src/provision/resolveSupportConfig"),
-      import("@pithy-sh/support/src/capability"),
+      kitImport<SupportProvisionModule>(projectDir, "@pithy-sh/support/src/provision/provisionSupport"),
+      kitImport<SupportResolveModule>(projectDir, "@pithy-sh/support/src/provision/resolveSupportConfig"),
+      kitImport<SupportCapabilityModule>(projectDir, "@pithy-sh/support/src/capability"),
       // `supportNeedsBucket` comes from here. The predicate must be the capability's own — the CLI
       // holding a second copy is exactly the drift that let provisioning and declaration disagree.
-      import("@pithy-sh/support/src/config/config"),
+      kitImport<SupportConfigModule>(projectDir, "@pithy-sh/support/src/config/config"),
     ]);
     return { ...provision, ...resolve, ...capability, ...config };
   } catch (error) {
-    throw capabilityLoadError("support", "@pithy-sh/support", error);
+    throw capabilityLoadError("support", "@pithy-sh/support", error, projectDir);
   }
 }
 
@@ -85,20 +86,25 @@ export async function loadSupport(): Promise<SupportModule> {
  * modules are only needed by `ensureSearchIndex` — and `loadSupport` is already on the hot path of
  * every other step, where paying for two more dynamic imports buys nothing.
  */
-async function loadSupportSearch(): Promise<
+async function loadSupportSearch(
+  projectDir: string,
+): Promise<
   typeof import("@pithy-sh/support/src/store/searchIndex") &
     typeof import("@pithy-sh/support/src/data/tables") &
     typeof import("@pithy-sh/support/src/store/search")
 > {
   try {
     const [searchIndex, tables, search] = await Promise.all([
-      import("@pithy-sh/support/src/store/searchIndex"),
-      import("@pithy-sh/support/src/data/tables"),
-      import("@pithy-sh/support/src/store/search"),
+      kitImport<typeof import("@pithy-sh/support/src/store/searchIndex")>(
+        projectDir,
+        "@pithy-sh/support/src/store/searchIndex",
+      ),
+      kitImport<typeof import("@pithy-sh/support/src/data/tables")>(projectDir, "@pithy-sh/support/src/data/tables"),
+      kitImport<typeof import("@pithy-sh/support/src/store/search")>(projectDir, "@pithy-sh/support/src/store/search"),
     ]);
     return { ...searchIndex, ...tables, ...search };
   } catch (error) {
-    throw capabilityLoadError("support", "@pithy-sh/support", error);
+    throw capabilityLoadError("support", "@pithy-sh/support", error, projectDir);
   }
 }
 
@@ -166,6 +172,12 @@ export interface SupportRouting {
 }
 
 export interface CloudflareSupportProvisionerOptions {
+  /**
+   * The project root — the directory `pithy.config.ts` was read from, and the base every
+   * `@pithy-sh/support` module is resolved against. Not derivable from `project`, which is a *name*;
+   * see `project/kitResolve.ts` for why a resolution may not fall back to the CLI's own copy.
+   */
+  readonly projectDir: string;
   cf: CloudflareClients;
   /**
    * The account this provisions into, and what vouches for it (#378).
@@ -204,6 +216,7 @@ export interface CloudflareSupportProvisionerOptions {
 
 /** The live {@link SupportProvisioner}. Every step is idempotent, so provisioning is safe to re-run. */
 export class CloudflareSupportProvisioner implements SupportProvisioner {
+  readonly #projectDir: string;
   readonly #cf: CloudflareClients;
   readonly #account: ConfirmedAccount;
   readonly #project: string;
@@ -214,6 +227,7 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareSupportProvisionerOptions) {
+    this.#projectDir = options.projectDir;
     this.#cf = options.cf;
     this.#account = options.account;
     this.#project = options.project;
@@ -250,7 +264,7 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
    * re-parsing and re-sanitizing possible — a property the message schema documents as load-bearing.
    */
   async ensureBucket(): Promise<{ bucket: string; created: boolean; skipped: boolean }> {
-    const { supportNeedsBucket } = await loadSupport();
+    const { supportNeedsBucket } = await loadSupport(this.#projectDir);
     const name = supportBucketName(this.#project);
     if (!supportNeedsBucket(this.#supportConfig)) {
       return { bucket: name, created: false, skipped: true };
@@ -274,9 +288,9 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
 
   /** Resolve the env's wrangler config from the committed template + the app DB id, then `wrangler deploy`. */
   async deployWorker(env: ManagedEnvironment): Promise<void> {
-    const { supportWorkerName, resolveSupportConfig } = await loadSupport();
+    const { supportWorkerName, resolveSupportConfig } = await loadSupport(this.#projectDir);
     const { appDatabaseId } = await this.#resolveEnv(env);
-    const dir = supportWorkerDir();
+    const dir = supportWorkerDir(this.#projectDir);
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
     const config = resolveSupportConfig(template, {
       project: this.#project,
@@ -330,7 +344,9 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
    * rather than assumed, so the result reports what actually changed instead of what was attempted.
    */
   async ensureSearchIndex(env: ManagedEnvironment): Promise<{ created: boolean; dropped: boolean }> {
-    const { supportDatabase, createSearchIndex, dropSearchIndex, reindexAll, SEARCH_TABLE } = await loadSupportSearch();
+    const { supportDatabase, createSearchIndex, dropSearchIndex, reindexAll, SEARCH_TABLE } = await loadSupportSearch(
+      this.#projectDir,
+    );
     const { appDatabaseId } = await this.#resolveEnv(env);
     const database = this.#cf.d1(appDatabaseId);
 
@@ -376,7 +392,7 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
    */
   async ensureRoutingRule(): Promise<{ created: boolean; skipped: boolean }> {
     if (!this.#routing) return { created: false, skipped: true };
-    const { supportRoutingRuleName } = await loadSupport();
+    const { supportRoutingRuleName } = await loadSupport(this.#projectDir);
     const ruleName = supportRoutingRuleName(this.#project);
     const { created } = await this.#cf.emailRouting().ensureWorkerRoute({
       zoneId: this.#routing.zoneId,
@@ -405,15 +421,21 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
 }
 
 /** The directory of the prebuilt support worker inside the installed `@pithy-sh/support` package (holds wrangler.jsonc). */
-function supportWorkerDir(): string {
+function supportWorkerDir(projectDir: string): string {
   try {
-    return dirname(kitSource("@pithy-sh/support/src/workflows/worker"));
+    return dirname(kitSource(projectDir, "@pithy-sh/support/src/workflows/worker"));
   } catch (error) {
-    throw capabilityLoadError("support", "@pithy-sh/support/src/workflows/worker", error);
+    throw capabilityLoadError("support", "@pithy-sh/support/src/workflows/worker", error, projectDir);
   }
 }
 
 export interface CloudflareSupportDeprovisionerOptions {
+  /**
+   * The project root — the directory `pithy.config.ts` was read from, and the base every
+   * `@pithy-sh/support` module is resolved against. Not derivable from `project`, which is a *name*;
+   * see `project/kitResolve.ts` for why a resolution may not fall back to the CLI's own copy.
+   */
+  readonly projectDir: string;
   cf: CloudflareClients;
   /** The project name, from `requireProjectName` — teardown finds resources by no other key. */
   project: string;
@@ -448,6 +470,7 @@ export interface CloudflareSupportDeprovisionerOptions {
  * a missing resource is a no-op: teardown is idempotent.
  */
 export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
+  readonly #projectDir: string;
   readonly #cf: CloudflareClients;
   readonly #project: string;
   readonly #routingZoneId: string | undefined;
@@ -456,6 +479,7 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareSupportDeprovisionerOptions) {
+    this.#projectDir = options.projectDir;
     this.#cf = options.cf;
     this.#project = options.project;
     this.#routingZoneId = options.routingZoneId;
@@ -466,7 +490,7 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
 
   /** Delete the env's classification worker if it is deployed. */
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
-    const { supportWorkerName } = await loadSupport();
+    const { supportWorkerName } = await loadSupport(this.#projectDir);
     const name = supportWorkerName(this.#project, env);
     if (
       await findOnConfirmedAccount({
@@ -493,7 +517,7 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
    */
   async removeRoutingRule(): Promise<{ removed: boolean }> {
     if (!this.#routingZoneId) return { removed: false };
-    const { supportRoutingRuleName } = await loadSupport();
+    const { supportRoutingRuleName } = await loadSupport(this.#projectDir);
     const ruleName = supportRoutingRuleName(this.#project);
     const { removed } = await this.#cf.emailRouting().removeWorkerRoute({
       zoneId: this.#routingZoneId,

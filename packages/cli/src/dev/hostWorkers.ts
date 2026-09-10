@@ -200,7 +200,7 @@ export interface MaterializeHostConfigsOptions {
   /** No message may leave this machine — the delivery preflight's verdict, passed to every resolver. */
   simulateDelivery?: boolean;
   /** Seam: read a capability's committed template. Defaults to the file beside its worker entry. */
-  readTemplate?: (entry: string) => Promise<WorkflowHostTemplate>;
+  readTemplate?: (projectDir: string, entry: string) => Promise<WorkflowHostTemplate>;
 }
 
 /**
@@ -232,8 +232,9 @@ export async function materializeHostConfigs(options: MaterializeHostConfigsOpti
 
   for (const host of options.hosts) {
     try {
-      const template = await readTemplate(host.spec.entry);
+      const template = await readTemplate(options.projectDir, host.spec.entry);
       const resolved = await host.spec.resolve(template, {
+        projectDir: options.projectDir,
         project: options.project,
         env: LOCAL_ENVIRONMENT,
         baseUrl: options.baseUrl,
@@ -241,7 +242,7 @@ export async function materializeHostConfigs(options: MaterializeHostConfigsOpti
         capability: host.composed,
         simulateDelivery: options.simulateDelivery,
       });
-      const config = forLocalDev(resolved, host.spec.entry);
+      const config = forLocalDev(resolved, options.projectDir, host.spec.entry);
       const path = join(host.worker.dir, "wrangler.jsonc");
       await mkdir(dirname(path), { recursive: true });
       await writeFileAtomic(path, `${JSON.stringify(config, null, 2)}\n`);
@@ -256,9 +257,9 @@ export async function materializeHostConfigs(options: MaterializeHostConfigsOpti
 }
 
 /** The two edits that are true of every host locally, applied after the capability's own resolver. */
-function forLocalDev(resolved: WorkflowHostTemplate, entry: string): WorkflowHostTemplate {
+function forLocalDev(resolved: WorkflowHostTemplate, projectDir: string, entry: string): WorkflowHostTemplate {
   const config: WorkflowHostTemplate = { ...resolved };
-  if (!isAbsolute(config.main)) config.main = join(dirname(hostTemplatePath(entry)), config.main);
+  if (!isAbsolute(config.main)) config.main = join(dirname(hostTemplatePath(projectDir, entry)), config.main);
   config.secrets_store_secrets = undefined;
   return config;
 }
@@ -277,10 +278,13 @@ export function capabilityHostsWorkflows(capability: string): boolean {
  * A host whose package will not load answers nothing rather than failing the session: the
  * materialization that follows names that same failure, and once is enough.
  */
-export async function hostDeliveryIdentity(hosts: readonly HostWorker[]): Promise<HostDeliveryIdentity | undefined> {
+export async function hostDeliveryIdentity(
+  projectDir: string,
+  hosts: readonly HostWorker[],
+): Promise<HostDeliveryIdentity | undefined> {
   for (const host of hosts) {
     try {
-      const identity = await host.spec.delivery?.(host.composed);
+      const identity = await host.spec.delivery?.(host.composed, projectDir);
       if (identity) return identity;
     } catch {
       // Named by materializeHostConfigs, which reaches the same package on the same run.

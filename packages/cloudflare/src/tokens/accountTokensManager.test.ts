@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { renderTerminal } from "@pithy-sh/core/src/error/terminal";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudflareNotConfiguredError, CloudflareRequestError } from "../client/errors";
 import { accountResource, CloudflareAccountTokensManager } from "./accountTokensManager";
@@ -162,6 +163,113 @@ describe("CloudflareAccountTokensManager", () => {
     await expect(
       manager.mintToken("t", [{ permissionGroupNames: ["Secrets Store Read"], resources: accountResource("acct-1") }]),
     ).rejects.toBeInstanceOf(CloudflareRequestError);
+  });
+
+  it("mintToken renders Cloudflare's own answer on a 401 — the status the token bootstrap fails under", async () => {
+    // The whole of #534, on the command that meets it first. `isAuthorizationError` is 403-only and
+    // stays that way (its other callers *swallow* a denial), so every 401 fell to the fallback throw —
+    // which composed a `CloudflareRequestError` by hand and printed one sentence: "Failed to mint
+    // account token 'pithy-prod-deploy'." No code, no sentence, no link, no action. A hand-built
+    // `PithyError` is also invisible to `cloudflareRequest`'s wrapper, so this could not be repaired
+    // from `client/errors.ts` at all.
+    // The SDK is mocked in this file, so the throw is built the way the SDK builds one: `status` plus a
+    // parsed `errors` array. `cloudflareApiErrors` is duck-typed on exactly that, never `instanceof`.
+    mockCreate.mockRejectedValue(
+      Object.assign(new Error("401 Authentication error"), {
+        status: 401,
+        errors: [
+          {
+            code: 10000,
+            message: "Authentication error",
+            documentation_url: "https://developers.cloudflare.com/api/resources/accounts/subresources/tokens",
+          },
+        ],
+      }),
+    );
+
+    const error = await manager
+      .mintToken("pithy-prod-deploy", [
+        { permissionGroupNames: ["Secrets Store Read"], resources: accountResource("acct-1") },
+      ])
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(CloudflareRequestError);
+    expect(renderTerminal((error as CloudflareRequestError).payload)).toBe(
+      [
+        "Failed to mint account token 'pithy-prod-deploy'. Cloudflare said: 10000 Authentication error — https://developers.cloudflare.com/api/resources/accounts/subresources/tokens",
+        "A missing grant, a dead token and the wrong account all look the same here. Check the token for Account → API Tokens, then CLOUDFLARE_API_TOKEN, then CLOUDFLARE_ACCOUNT_ID.",
+      ].join("\n"),
+    );
+  });
+
+  it("mintToken's 403 keeps its diagnosis and Cloudflare's answer with it", async () => {
+    // Round two moved the *fallback* throw onto the shared composer and left this branch composing its
+    // own sentence, so the one status that carries a real diagnosis — the token got in and may not
+    // create tokens — was also the one that dropped the API's `errors[]` on the floor. Both now.
+    mockCreate.mockRejectedValue(
+      Object.assign(new Error("Unauthorized"), {
+        status: 403,
+        errors: [{ code: 9109, message: "Unauthorized to access requested resource" }],
+      }),
+    );
+    const error = await manager
+      .mintToken("t", [{ permissionGroupNames: ["Secrets Store Read"], resources: accountResource("acct-1") }])
+      .catch((e: unknown) => e);
+
+    const { payload } = error as CloudflareNotConfiguredError;
+    expect(payload.message).toBe(
+      "The Cloudflare API token is not allowed to create account tokens. Cloudflare said: 9109 Unauthorized to access requested resource",
+    );
+    expect(payload.action).toMatch(/Account API Tokens Write/);
+    expect(payload.params).toMatchObject({ apiCode: 9109, apiMessage: "Unauthorized to access requested resource" });
+    expect(payload.message).not.toContain("\n");
+  });
+
+  /**
+   * **The permission hint has to be on the call that refuses first, not on the one that names it.**
+   *
+   * `pithy token mint` is the command an under-scoped bootstrap token meets first, and it is
+   * `rollToken → findTokenByName → listTokens`, then `listPermissionGroups`, and only then
+   * `tokens.create`. Every one of those runs on the same credential, so a hint attached to the mint
+   * alone is a hint the operator never reaches: round two put `permission: "API Tokens"` on `mintToken`
+   * and the refusal an operator actually saw still said "Check the token's permission for this
+   * product." Cloudflare's own docs link cannot supply it either — `accounts/tokens` yields the
+   * `accounts` segment, which maps to no single product.
+   */
+  it.each([
+    ["rollToken, which lists before it mints", (m: CloudflareAccountTokensManager) => m.rollToken("t", [])],
+    ["listTokens", (m: CloudflareAccountTokensManager) => m.listTokens()],
+    ["listPermissionGroups", (m: CloudflareAccountTokensManager) => m.listPermissionGroups()],
+    ["rollTokenValue", (m: CloudflareAccountTokensManager) => m.rollTokenValue("tk-1")],
+  ])("%s names Account → API Tokens on a 401", async (_label, call) => {
+    const denial = Object.assign(new Error("401 Authentication error"), {
+      status: 401,
+      errors: [{ code: 10000, message: "Authentication error" }],
+    });
+    mockTokenList.mockImplementation(() => {
+      throw denial;
+    });
+    mockPgList.mockImplementation(() => {
+      throw denial;
+    });
+    mockValueUpdate.mockRejectedValue(denial);
+
+    const error = await call(manager).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(CloudflareRequestError);
+    expect((error as CloudflareRequestError).payload.action).toContain("Check the token for Account → API Tokens");
+  });
+
+  it("mintToken keeps the 403 diagnosis, which says more than the generic refusal does", async () => {
+    // Broadening `isAuthorizationError` to 401 would have been the wrong repair twice over: it would
+    // report a *dead* token as a permission this project does not need, which is finding #3's false
+    // dichotomy in another costume. 403 means the token got in and may not create tokens; 401 means it
+    // did not get in, and only the three-way check above can answer that.
+    mockCreate.mockRejectedValue(Object.assign(new Error("Unauthorized"), { status: 403 }));
+    const error = await manager
+      .mintToken("t", [{ permissionGroupNames: ["Secrets Store Read"], resources: accountResource("acct-1") }])
+      .catch((e: unknown) => e);
+    expect((error as CloudflareNotConfiguredError).payload.code).toBe("cloudflare/not_configured");
   });
 
   it("verifyToken verifies the calling token against the account, never the user endpoint", async () => {

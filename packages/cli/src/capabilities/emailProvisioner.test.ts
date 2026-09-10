@@ -7,6 +7,7 @@ import { emailWorkerName, suppressionDatabaseName } from "@pithy-sh/email/src/pr
 import type { EmailTheme } from "@pithy-sh/email/src/templates/theme";
 import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
+import { KIT_ROOT } from "../test-utils/kitRoot";
 import { CloudflareEmailDeprovisioner, CloudflareEmailProvisioner } from "./emailProvisioner";
 
 /** The project every provisioned name leads with — `requireProjectName`'s answer, never a guess. */
@@ -44,6 +45,7 @@ describe("CloudflareEmailProvisioner", () => {
     const { cf, findDatabaseByName, createDatabase } = fakeCf();
     const events: CliAuditEvent[] = [];
     const provisioner = new CloudflareEmailProvisioner({
+      projectDir: KIT_ROOT,
       project: PROJECT,
       cf,
       account: { accountId: "acct-1", confirmation: "pinned" },
@@ -86,6 +88,7 @@ describe("CloudflareEmailProvisioner", () => {
     const { cf, ensureWorkerRoute } = fakeCf();
     const events: CliAuditEvent[] = [];
     const provisioner = new CloudflareEmailProvisioner({
+      projectDir: KIT_ROOT,
       project: PROJECT,
       cf,
       account: { accountId: "acct-1", confirmation: "pinned" },
@@ -122,6 +125,7 @@ describe("CloudflareEmailProvisioner", () => {
     const { cf, ensureWorkerRoute } = fakeCf();
     const events: CliAuditEvent[] = [];
     const provisioner = new CloudflareEmailProvisioner({
+      projectDir: KIT_ROOT,
       project: PROJECT,
       cf,
       account: { accountId: "acct-1", confirmation: "pinned" },
@@ -232,6 +236,7 @@ describe("teardown refuses an unconfirmed account", () => {
     const { cf, findDatabaseByName, createDatabase } = fakeCf();
     findDatabaseByName.mockResolvedValue(null);
     const stranger = new CloudflareEmailProvisioner({
+      projectDir: KIT_ROOT,
       cf,
       account: { accountId: "acct-stranger", confirmation: "ambient" },
       project: PROJECT,

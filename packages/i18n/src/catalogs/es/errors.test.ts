@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { GUARANTEED_ERROR_PARAMS, guaranteedErrorParams } from "@pithy-sh/core/src/error/messageParams";
 import { KitErrorPayload } from "@pithy-sh/core/src/error/payload";
-import { MessageKey } from "@pithy-sh/core/src/i18n/catalog";
+import { interpolate, MessageKey } from "@pithy-sh/core/src/i18n/catalog";
 import { describe, expect, test } from "vitest";
 import { esErrors } from "./errors";
 
@@ -158,31 +159,76 @@ describe("every entry is Spanish a caller can read", () => {
 });
 
 /**
- * The placeholder invariant, and why it is written the only way it can be checked soundly.
+ * The placeholder invariant, rewritten now that there is something to check it against.
  *
  * The obvious invariant — every `{placeholder}` in a Spanish entry also appears in the English one —
- * has nothing to check against. There is no English catalog: a payload carries its English `message`
- * from the throw site, and a throw site is a call, not a declaration, so no static set of placeholder
- * names for a code exists anywhere in this repository to compare with. `params` is typed as an open
+ * still has nothing to read. There is no English catalog: a payload carries its English `message` from
+ * the throw site, and a throw site is a call, not a declaration, so no static set of placeholder names
+ * for a code exists in the throw sites themselves. `params` is typed as an open
  * `Record<string, string | number | boolean>` precisely so a throw site can name what it likes.
  *
- * What *is* checkable is the fact that makes the question moot today: **no throw site in this
- * repository passes `params` at all.** So any placeholder written here would render literally — the
- * documented behavior of `interpolate`, which leaves an unsupplied placeholder as written rather than
- * blanking it — and `Sala {code} llena.` is a worse sentence than the generic one it replaced. The
- * sound gate is therefore that the catalog names no placeholder, and it fails the moment somebody
- * invents one ahead of the value that fills it.
+ * For a year the sound gate was therefore the *absence* of placeholders, justified by a fact that was
+ * true at the time: no throw site in this repository passed `params` at all. `@pithy-sh/cloudflare`'s
+ * `cloudflareRefusal` is the first that does (#534), which falsified the justification — and the old
+ * test said in as many words what would replace it: "every placeholder here is one that some throw
+ * site passes for this code, checkable then because there is finally something to read".
  *
- * The day a throw site does pass `params`, this test is what has to change, and the change is not a
- * loosening: the pin becomes "every placeholder here is one that some throw site passes for this
- * code", checkable then because there is finally something to read. Until then a gate that could not
- * fail would be worse than this one, and saying so is cheaper than discovering it.
+ * `core`'s `GUARANTEED_ERROR_PARAMS` is that something. It is the declaration a call could not be: the
+ * names a code's throw sites pass on **every** path, degraded ones included. So the gate below is the
+ * predicted one, in both directions — a locale may name only a guaranteed param, and it fails the
+ * moment somebody invents a placeholder ahead of the value that fills it, exactly as before.
+ *
+ * The population check matters here for the same reason it matters above: a gate over an empty
+ * declaration and an empty catalog would agree with each other perfectly.
  */
 describe("no entry names a placeholder no throw site fills", () => {
-  test("the catalog is placeholder-free", () => {
-    const named = Object.entries(esErrors)
-      .map(([key, message]) => [key, [...message.matchAll(PLACEHOLDER)].map((match) => match[1])] as const)
-      .filter(([, placeholders]) => placeholders.length > 0);
-    expect(named).toEqual([]);
+  test("the declaration is populated, so the gate below is not two empty sets", () => {
+    expect(Object.keys(GUARANTEED_ERROR_PARAMS).length).toBeGreaterThan(0);
+    // The first code in the kit to guarantee one, named so a throw site that stops passing it fails here
+    // as well as in its own package — this file is what a locale wrote a `{placeholder}` against.
+    expect(guaranteedErrorParams("cloudflare/request_failed")).toContain("apiAnswer");
+  });
+
+  test("every code the kit guarantees params for renders cleanly when it has nothing to say", () => {
+    // The declaration's own sweep, rather than one code named by hand. A guaranteed param exists
+    // *because* the degraded path also passes it — empty — so the sentence a locale wrote has to close
+    // on that path too, and `interpolate` leaves anything it could not fill written out as `{name}`.
+    // This is the half of the promise a catalog can check; the half that checks a *call* cannot live
+    // here, because `@pithy-sh/i18n` must not depend on a capability to see one. Those gates are
+    // `@pithy-sh/cloudflare`'s `client/errors.test.ts` and `workflows/refusalAcrossSteps.test.ts`, and
+    // the second is the one that was missing: `terminalWorkflowError` re-raised `cloudflare/request_failed`
+    // with no params at all, so a Spanish reader whose Workflow step hit Cloudflare read `{apiAnswer}`.
+    for (const [code, names] of Object.entries(GUARANTEED_ERROR_PARAMS)) {
+      const sentence = esErrors[code];
+      expect(sentence, `no Spanish entry for ${code}`).toBeDefined();
+      const empty = Object.fromEntries((names ?? []).map((name) => [name, ""]));
+      const rendered = interpolate(sentence ?? "", empty);
+      expect(rendered, `${code} renders a placeholder it cannot fill`).not.toContain("{");
+      expect(rendered, `${code} does not close on the degraded path`).toMatch(/\.$/);
+    }
+  });
+
+  test("every placeholder a sentence names is one the kit guarantees for that code", () => {
+    const unfilled = Object.entries(esErrors)
+      .map(([key, message]) => [key, [...message.matchAll(PLACEHOLDER)].map((match) => match[1] ?? "")] as const)
+      .filter(([key, named]) => named.some((name) => !guaranteedErrorParams(key).includes(name)));
+    expect(unfilled).toEqual([]);
+  });
+
+  test("a placeholder is spelled the way `interpolate` spells it, so it is one this catalog can fill", () => {
+    // `{apiAnswer}` renders; `{ apiAnswer }` and `${apiAnswer}` do not, and both read as correct.
+    const cloudflare = esErrors["cloudflare/request_failed"] ?? "";
+    expect([...cloudflare.matchAll(PLACEHOLDER)].map((match) => match[1])).toEqual(["apiAnswer"]);
+    expect(interpolate(cloudflare, { apiAnswer: ": 10000 Authentication error" })).toBe(
+      "No se ha podido completar la llamada a Cloudflare: 10000 Authentication error.",
+    );
+  });
+
+  test("the sentence closes on its period whether Cloudflare answered or not", () => {
+    // The reason the value carries its own separator rather than the template carrying the colon: a call
+    // that never reached Cloudflare has no answer, and a locale cannot write an `if`.
+    const cloudflare = esErrors["cloudflare/request_failed"] ?? "";
+    expect(interpolate(cloudflare, { apiAnswer: "" })).toBe("No se ha podido completar la llamada a Cloudflare.");
+    expect(interpolate(cloudflare, { apiAnswer: "" })).toMatch(/\.$/);
   });
 });

@@ -65,7 +65,7 @@ export async function checkLocalDelivery(options: LocalDeliveryOptions): Promise
     if (!capability || !spec.delivery) continue;
     let identity: Awaited<ReturnType<NonNullable<typeof spec.delivery>>>;
     try {
-      identity = await spec.delivery(capability);
+      identity = await spec.delivery(capability, options.projectDir);
     } catch {
       continue;
     }

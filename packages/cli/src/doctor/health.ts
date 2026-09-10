@@ -17,6 +17,7 @@ import type { CloudflareAccountSelection } from "../cloudflare/config";
 import type { ProjectLedger, readProjectLedger } from "../migrations/run";
 import type { WorkerConfig } from "../project/config";
 import { type BindingScopeHealth, bindingScopeHealth } from "./bindingScope";
+import { type CapabilityReachHealth, type ComposedWorker, capabilityReachHealth } from "./capabilityReach";
 
 /**
  * The read-only project-health engine behind `pithy doctor`'s `Project health` block — the *same*
@@ -199,6 +200,15 @@ export interface ProjectHealth {
    * because repointing a binding is not adding one.
    */
   bindingScope: BindingScopeHealth;
+  /**
+   * The `capabilities` check: a capability this project composes that the CLI cannot resolve (#533).
+   *
+   * Project-wide rather than per Worker because the resolution is: a Worker's `pithy.config.ts` resolves
+   * its own imports from `apps/<name>/`, and every `pithy <capability> …` command resolves the same
+   * package from the **project root**. The finding is that the two disagree, so it belongs to neither
+   * Worker on its own. Neither `pithy upgrade` nor `pithy provision` can act on it — it is an install.
+   */
+  capabilityReach: CapabilityReachHealth;
 }
 
 /** The manifest-scan seam: defaults to {@link availableManifests}, the scan every capability command reads. */
@@ -209,6 +219,18 @@ export type BuildPlan = (options: BuildReconcilePlanOptions) => Promise<Reconcil
 
 /** The project-global binding seam: defaults to {@link bindingScopeHealth}. */
 export type ReadBindingScope = (projectDir: string) => Promise<BindingScopeHealth>;
+
+/**
+ * The capability-resolution seam: defaults to {@link capabilityReachHealth}.
+ *
+ * It takes the Workers as well as the root, unlike its neighbor, because the question is about the
+ * composition and not only about the directory: what is composed comes from the Workers, and where the
+ * CLI looks for it comes from the root.
+ */
+export type ReadCapabilityReach = (
+  projectDir: string,
+  workers: readonly ComposedWorker[],
+) => Promise<CapabilityReachHealth>;
 
 /** The shared engine, exported so a test can assert doctor and upgrade use one implementation. */
 export const defaultBuildPlan: BuildPlan = buildReconcilePlan;
@@ -252,6 +274,8 @@ export interface ProjectHealthOptions {
   readManifests?: ReadManifests;
   /** Test seam: substitute the project-global binding comparison. Defaults to the real wrangler read. */
   readBindingScope?: ReadBindingScope;
+  /** Test seam: substitute the capability-resolution check. Defaults to the real `node_modules` read. */
+  readCapabilityReach?: ReadCapabilityReach;
 }
 
 /** Group a plan's per-capability missing bindings into one entry per binding, listing the envs that lack it. */
@@ -340,6 +364,7 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
   const build = options.buildPlan ?? defaultBuildPlan;
   const scan = options.readManifests ?? availableManifests;
   const readScope = options.readBindingScope ?? bindingScopeHealth;
+  const readReach = options.readCapabilityReach ?? capabilityReachHealth;
 
   // Read once, at the project, because that is where manifests live: one install under the root's
   // `node_modules/@pithy-sh`, shared by every Worker. Every plan below is built from the same scan, so a
@@ -350,6 +375,11 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
   // Read once, at the project, for the reason the manifest scan is: a project-global resource is shared
   // *between* Workers, so the disagreement lives across them and no per-Worker answer can see it.
   const bindingScope = await readScope(options.projectDir);
+
+  // Read once, at the project, for the reason both of the above are: the CLI resolves every capability
+  // from the project root, so "can this be reached" has one answer for the whole project however many
+  // Workers compose it. The Workers are handed over for what they compose, never for where to look.
+  const capabilityReach = await readReach(options.projectDir, options.workers);
 
   // **One Worker at a time (#371).** The wiring is per Worker, so a failure to read it is per Worker too —
   // and this is a diagnostic, so one Worker nobody could check must never cost the report on the others.
@@ -385,5 +415,11 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
   // the under-report this whole family exists to prevent. It is also what the behavior already was —
   // the throw reached `pithy doctor`'s catch and drove a non-zero exit — so the gate does not weaken.
   const checked = workers.every((worker) => worker.state === "checked" && worker.ok);
-  return { ok: manifests.ok && bindingScope.ok && checked, workers, manifests, bindingScope };
+  return {
+    ok: manifests.ok && bindingScope.ok && capabilityReach.ok && checked,
+    workers,
+    manifests,
+    bindingScope,
+    capabilityReach,
+  };
 }

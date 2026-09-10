@@ -15,6 +15,7 @@ import { defaultTheme } from "@pithy-sh/email/src/templates/theme";
 import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { parse } from "comment-json";
 import { describe, expect, test } from "vitest";
+import { KIT_ROOT } from "../test-utils/kitRoot";
 import { emailWorkerDir } from "./emailProvisioner";
 
 /**
@@ -32,7 +33,7 @@ const PLACEHOLDER = "<filled-at-provision>";
 
 /** Read and parse the real committed template, exactly as `CloudflareEmailProvisioner.deployWorker` does. */
 async function readTemplate(): Promise<EmailWorkerWranglerTemplate> {
-  const source = await readFile(join(emailWorkerDir(), "wrangler.jsonc"), "utf8");
+  const source = await readFile(join(emailWorkerDir(KIT_ROOT), "wrangler.jsonc"), "utf8");
   return parse(source) as unknown as EmailWorkerWranglerTemplate;
 }
 

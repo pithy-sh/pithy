@@ -15,6 +15,7 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { describe, expect, test } from "vitest";
 import { cloudflareEnv } from "../cloudflare/config";
+import { KIT_ROOT } from "../test-utils/kitRoot";
 import { buildManagerDeploy, CloudflareSecretsDeprovisioner, CloudflareSecretsProvisioner } from "./secretsProvisioner";
 
 /**
@@ -97,7 +98,7 @@ describe.skipIf(!hasCreds || !optedIn)("secrets — LIVE provision, write/rotate
         account: { accountId, confirmation: "pinned" },
         project,
         storeId,
-        deploy: buildManagerDeploy({ accountId, apiToken, project }),
+        deploy: buildManagerDeploy({ accountId, apiToken, project, projectDir: KIT_ROOT }),
       });
       const result = await provisionSecrets(provisioner, DEFAULT_ENVIRONMENTS);
       expect(result.perEnv.map((e) => e.env)).toEqual(managedEnvironments(DEFAULT_ENVIRONMENTS));

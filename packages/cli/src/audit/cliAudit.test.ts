@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { linkKitPackages } from "../test-utils/linkKit";
 import {
   createCliAudit,
   createProjectCliAudit,
@@ -70,6 +71,9 @@ describe("resolveAuditDatabaseId", () => {
   let dir: string;
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "pithy-cliaudit-"));
+    // Since #533 a capability is resolved from the project, so a fixture that means to compose one
+    // has to have it installed — the same thing an adopter's project has to have.
+    await linkKitPackages(dir, ["audit"]);
   });
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
@@ -111,6 +115,9 @@ describe("createCliAudit", () => {
   let dir: string;
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "pithy-cliaudit-"));
+    // Since #533 a capability is resolved from the project, so a fixture that means to compose one
+    // has to have it installed — the same thing an adopter's project has to have.
+    await linkKitPackages(dir, ["audit"]);
     await writeWorker(dir, "api", { name: "api", d1_databases: [{ binding: "DB", database_id: "x" }] });
   });
   afterEach(async () => {
@@ -244,6 +251,9 @@ describe("an unknowable capability set", () => {
   let stderr: string[];
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "pithy-cliaudit-"));
+    // Since #533 a capability is resolved from the project, so a fixture that means to compose one
+    // has to have it installed — the same thing an adopter's project has to have.
+    await linkKitPackages(dir, ["audit"]);
     stderr = [];
     // The CLI logger's default sink is `console.error` — stderr under Node — so that is what is captured.
     vi.spyOn(console, "error").mockImplementation((...parts: unknown[]) => {

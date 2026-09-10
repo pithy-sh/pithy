@@ -18,6 +18,7 @@ import {
 } from "../capabilities/reconcile";
 import { pithyOffline } from "../cloudflare/config";
 import { type BindingScopeHealth, repointableIds, type SplitGlobalBinding } from "../doctor/bindingScope";
+import type { CapabilityReachHealth } from "../doctor/capabilityReach";
 import { type CloudflareAccess, checkCloudflareAccess, describeCloudflareAccess } from "../doctor/cloudflare";
 import { checkDevPreferences, type DevPreferencesCheck, describeDevPreferences } from "../doctor/devPreferences";
 import {
@@ -32,7 +33,13 @@ import {
 import { checkDevVars, type DevVarsCheck, describeDevVars, devVarsHealthy } from "../doctor/devVars";
 import { checkDevVarsLocal, type DevVarsLocalCheck, describeDevVarsLocal } from "../doctor/devVarsLocal";
 import { checkEnvironments, describeEnvironmentDrift, type EnvironmentsCheck } from "../doctor/environments";
-import { buildProjectHealth, type MigrationHealth, type ProjectHealth, type WorkerChecks } from "../doctor/health";
+import {
+  buildProjectHealth,
+  type MigrationHealth,
+  type ProjectHealth,
+  type ReadCapabilityReach,
+  type WorkerChecks,
+} from "../doctor/health";
 import { checkLocalDelivery, describeLocalDelivery, type LocalDeliveryCheck } from "../doctor/localDelivery";
 import {
   checkPortsRegistry,
@@ -554,6 +561,16 @@ export interface DoctorReportOptions {
   /** Migration-ledger seam for the health plan. */
   readLedger?: BuildReconcilePlanOptions["readLedger"];
   /**
+   * Capability-resolution seam, forwarded to {@link buildProjectHealth}. Defaults to the real check.
+   *
+   * Forwarded for the reason `buildPlan` and `readLedger` are: without it a test can only reach the
+   * capability-reach finding by hand-writing one into the finished report, and a hand-written report
+   * carries a hand-written `health.ok` beside it — which is what a caller of {@link doctorExitCode} then
+   * answers to. The exit assertion is satisfied by the literal rather than by the finding, and reads as
+   * coverage of a chain nothing exercised. With the seam the derivation at `health.ts` runs for real.
+   */
+  readCapabilityReach?: ReadCapabilityReach;
+  /**
    * Cloudflare-credential probe seam; defaults to {@link checkCloudflareAccess}. Injected so unit tests
    * never call out. It takes no project directory: the credentials are account-scoped (#182), so the
    * answer is the same in every checkout on this machine.
@@ -857,6 +874,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
       })),
       buildPlan: options.buildPlan,
       readLedger: options.readLedger,
+      readCapabilityReach: options.readCapabilityReach,
     });
     project = { capabilities, health };
   } catch (error) {
@@ -1436,6 +1454,31 @@ function workerHealthLines(health: WorkerChecks): string[] {
  * A healthy Worker collapses to a single line: it was checked, and there is nothing to say about it.
  */
 /**
+ * The `capabilities:` lines — a capability this project composes and has not installed (#533).
+ *
+ * Beside `manifests:` and above the Workers, because it belongs to neither: the composition is a Worker's
+ * and the install is the project's, and the finding is that the two do not line up.
+ *
+ * **The remedy is `pithy add` here and nowhere near it.** #533 was reported about that sentence being
+ * printed at a package the project *had* — where it installs nothing and then rewrites a hand-built
+ * `pithy.config.ts` — and resolution now reaches a per-Worker install rather than reporting one, so what
+ * is left in this list is a capability composed and installed nowhere. That is the one state `pithy add`
+ * is for, and re-running it is safe on the half that is already done: a registration already in the
+ * config is left exactly as the adopter wrote it (`capabilities/add.ts`).
+ */
+function capabilityReachLines(reach: CapabilityReachHealth): string[] {
+  const lines: string[] = [];
+  for (const entry of reach.unreachable) {
+    lines.push(`${HEALTH_INDENT}${entry.capability} is composed, and ${entry.package} is not installed`);
+    lines.push(`${HEALTH_INDENT}  composed by ${entry.workers.join(", ")}`);
+    lines.push(`${HEALTH_INDENT}  Nothing resolves it — not the project root, not any Worker's own node_modules — so`);
+    lines.push(`${HEALTH_INDENT}  every command that reaches into it refuses, and every check below skips it.`);
+    lines.push(`${HEALTH_INDENT}  Run: pithy add ${entry.capability}`);
+  }
+  return lines;
+}
+
+/**
  * The `shared:` lines — a resource the whole project shares that its Workers do not all point at (#513).
  *
  * Above the Workers, beside `manifests:`, because no Worker owns it: the finding *is* that two stanzas
@@ -1826,6 +1869,13 @@ function healthBlock(health: ProjectHealth): string {
       );
       for (const line of fault.reason.split("\n")) lines.push(`${HEALTH_INDENT}  ${line}`);
     }
+  }
+  // Beside the manifest hole and above the shared one, because it explains more than either: a capability
+  // that is composed and not installed ships no manifest to any scan, contributes no drift to any Worker's
+  // checks, and is the reason a `pithy <capability>` command refused a moment ago (#533).
+  if (!health.capabilityReach.ok) {
+    lines.push("  capabilities:");
+    lines.push(...capabilityReachLines(health.capabilityReach));
   }
   // Beside the manifest hole and for the same reason: it belongs to the project rather than to a Worker,
   // and it explains a disagreement that only exists *between* two of the blocks below.

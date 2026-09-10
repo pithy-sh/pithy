@@ -71,11 +71,23 @@ function declaredFields(source: string): { name: string; fields: string[] }[] {
   return found;
 }
 
-/** How many vehicles a file declares, and how many of them forward `params`. */
+/**
+ * How many vehicles a file declares, and how many of them forward `params`.
+ *
+ * **Two shapes forward, not one.** The plain `params: args.params` is the common case; a vehicle that
+ * guarantees a key its catalog entry interpolates spreads instead — `params: { apiAnswer: "",
+ * ...args.params }` — and forwards just as completely. Matching only the first read
+ * `packages/cloudflare/src/client/errors.ts` as "2 of 3 vehicles forward params" and turned this gate red
+ * over correct code (#534). A gate that fails on the right answer is one somebody switches off, and it
+ * takes the real assertion with it.
+ *
+ * What still fails is a vehicle that names `params` and never passes it — which is the whole point, and
+ * is what the canary below plants.
+ */
 function forwards(source: string): { classes: number; forwarded: number } {
   return {
     classes: [...source.matchAll(/extends\s+PithyError\b/g)].length,
-    forwarded: [...source.matchAll(/^\s*params:\s*args\.params,?\s*$/gm)].length,
+    forwarded: [...source.matchAll(/^\s*params:\s*(?:args\.params|\{[^}]*\.\.\.args\.params[^}]*\}),?\s*$/gm)].length,
   };
 }
 
@@ -96,6 +108,19 @@ describe("every throw vehicle accepts every field the payload carries", () => {
         .map((args) => `${file.path.slice(file.path.indexOf("packages/"))} — ${args.name}`),
     );
     expect(missing, `these cannot accept \`${field}\`:\n${missing.join("\n")}`).toEqual([]);
+  });
+
+  // The canary, because the assertion below is that a list is empty and a detector that stopped matching
+  // would report every file clean. Both forwarding shapes must be seen, and a vehicle that drops `params`
+  // must still be caught.
+  test("the detector sees both forwarding shapes, and still catches a drop", () => {
+    const plain = "class A extends PithyError {\n  params: args.params,\n}";
+    const spread = 'class B extends PithyError {\n  params: { apiAnswer: "", ...args.params },\n}';
+    const dropped = "class C extends PithyError {\n  params: undefined,\n}";
+
+    expect(forwards(plain)).toEqual({ classes: 1, forwarded: 1 });
+    expect(forwards(spread)).toEqual({ classes: 1, forwarded: 1 });
+    expect(forwards(dropped)).toEqual({ classes: 1, forwarded: 0 });
   });
 
   test("every vehicle in a file forwards `params` — declaring it is not passing it", () => {

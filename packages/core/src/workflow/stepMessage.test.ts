@@ -58,11 +58,47 @@ describe("the encoding is one statement, and the wire is written down", () => {
   });
 });
 
-describe("an action that cannot be encoded is dropped, and the sentence survives", () => {
-  test("an action carrying a break would encode a shape the reader declines, taking the sentence with it", () => {
+/**
+ * **The encoder is total, and this is the regression that says why it has to be.**
+ *
+ * The reader declines a shape it did not write, which costs the writer everything at once: no code, no
+ * sentence, no remedy, and an operator handed `core/workflow_failed` 500 about durable execution. #534
+ * put an upstream's `errors[]` into a multi-line `message` and every Cloudflare refusal raised inside a
+ * `classifiedSteps` step stopped crossing — the first newline read as the separator, the second as a
+ * shape this never writes. Nothing in the channel could have caught it, because the writer had already
+ * produced something unreadable by the time the reader saw it.
+ *
+ * So each half is reshaped on the way out rather than declined on the way in. The asymmetry is the
+ * point: text the kit authored may be flattened and truncated; text from a Worker we did not write may
+ * not be touched at all.
+ */
+describe("what the writer hands this, the reader gets back", () => {
+  test("a multi-line sentence is flattened, not dropped — the whole of the #534 regression", () => {
+    const encoded = encodeWorkflowStepMessage({
+      code: "cloudflare/request_failed",
+      message: "Cloudflare request failed: list Turnstile widgets.\n  10000 Authentication error",
+      action: "Check the token for Account → Turnstile.",
+    });
+    expect(encoded.split(WORKFLOW_STEP_SEPARATOR)).toHaveLength(2);
+    expect(decodeWorkflowStepMessage(encoded)).toEqual({
+      code: "cloudflare/request_failed",
+      message: "Cloudflare request failed: list Turnstile widgets. 10000 Authentication error",
+      action: "Check the token for Account → Turnstile.",
+    });
+  });
+
+  test("an action carrying a break is flattened too — the remedy is kept, not spent", () => {
     const encoded = encodeWorkflowStepMessage({ ...FIELDS, action: "Run this.\nThen that." });
-    expect(encoded).toBe(WIRE.withoutAction);
-    expect(decodeWorkflowStepMessage(encoded)).toEqual({ code: FIELDS.code, message: FIELDS.message });
+    expect(decodeWorkflowStepMessage(encoded)).toEqual({ ...FIELDS, action: "Run this. Then that." });
+  });
+
+  test("a half past the bound is truncated, so the code and the remedy still arrive", () => {
+    const long = "x".repeat(MAX_WORKFLOW_STEP_TEXT * 2);
+    const read = decodeWorkflowStepMessage(encodeWorkflowStepMessage({ ...FIELDS, message: long, action: long }));
+    expect(read?.code).toBe(FIELDS.code);
+    expect(read?.message).toHaveLength(MAX_WORKFLOW_STEP_TEXT);
+    expect(read?.message.endsWith("…")).toBe(true);
+    expect(read?.action).toHaveLength(MAX_WORKFLOW_STEP_TEXT);
   });
 
   test("an empty or whitespace action leaves no trailing separator", () => {

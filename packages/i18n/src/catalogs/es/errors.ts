@@ -19,13 +19,19 @@ import type { MessageCatalog } from "@pithy-sh/core/src/i18n/catalog";
  * `action` names `pithy` commands and repository files and never leaves the terminal, so nothing here
  * translates one. Placeholders match the `params` the throw sites pass.
  *
- * **Not one sentence below carries a placeholder, and that is a finding rather than a shortcut.** No
- * throw site in this repository passes `params` today — `git grep "params: {"` over every package's
- * `src` tree returns Workflow dispatch parameters and nothing else — so a `{name}` written here would
- * have no value to receive and `interpolate` leaves an unsupplied placeholder as written. `Sala {code}
- * llena.` on a caller's screen is worse than `Esa sala ya no admite más jugadores.`, which is why the
- * generic clause wins until the English side has a value to send. `./errors.test.ts` pins the absence,
- * and says there what would replace the pin the day a throw site starts naming one.
+ * **One sentence below carries a placeholder, and exactly one may.** `interpolate` leaves a placeholder
+ * nobody supplied written out as `{apiAnswer}`, so writing one here is a claim about a *call site*:
+ * that every throw of this code passes that name, on the degraded paths too. `core`'s
+ * `GUARANTEED_ERROR_PARAMS` is where a throw site makes that promise, and `./errors.test.ts` holds this
+ * file to it — a placeholder no code guarantees fails there. For a year the sound gate was the absence
+ * of placeholders, because no throw site passed `params` at all; `@pithy-sh/cloudflare`'s
+ * `cloudflareRefusal` is the first that does (#534), which is why the pin changed rather than relaxed.
+ *
+ * `cloudflare/request_failed` is that sentence. Cloudflare's own words are English we did not write and
+ * cannot translate, but its numeric code is what an operator quotes into a search, and dropping it left
+ * a Spanish reader with strictly less than an English one had. `apiAnswer` carries its own leading
+ * separator — `": 10000 Authentication error"`, or `""` when the call never reached Cloudflare — so the
+ * one sentence closes on its period both ways. A locale cannot write an `if`; the value can.
  *
  * Peninsular-neutral: one `es` serves es-ES, es-MX and es-AR, so a regionalism that reads as home to
  * one of them and as foreign to the other two is the wrong word even when it is the better word. Where
@@ -54,7 +60,7 @@ export const esErrors: MessageCatalog = {
 
   // Cloudflare REST. Naming the provider is safe — it is the adopter's own account, not our infrastructure.
   "cloudflare/not_configured": "Este servicio no está disponible ahora.",
-  "cloudflare/request_failed": "No se ha podido completar la llamada a Cloudflare.",
+  "cloudflare/request_failed": "No se ha podido completar la llamada a Cloudflare{apiAnswer}.",
   "cloudflare/invalid_response": "La respuesta de Cloudflare no tiene el formato esperado.",
 
   // Secrets.

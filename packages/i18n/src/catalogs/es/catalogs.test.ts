@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { guaranteedErrorParams } from "@pithy-sh/core/src/error/messageParams";
 import { MessageKey } from "@pithy-sh/core/src/i18n/catalog";
 import { describe, expect, test } from "vitest";
 import { esErrors } from "./errors";
@@ -200,11 +201,17 @@ describe("placeholders are spelled the way `interpolate` spells them", () => {
     expect(withParams).toBeGreaterThanOrEqual(13);
   });
 
-  test("no error entry carries one", () => {
-    // Pinned in `errors.test.ts` too, and stated here because this file is where the sweep runs: no
-    // throw site in the kit passes `params` yet, and `interpolate` leaves an unsupplied placeholder as
-    // written. `Sala {code} llena.` on a caller's screen is worse than the generic clause.
-    expect(Object.entries(esErrors).filter(([, message]) => message.includes("{"))).toEqual([]);
+  test("an error entry carries one only where the kit guarantees the value", () => {
+    // The full gate — both directions, with the population check — is `errors.test.ts`. Stated here
+    // because this file is where the sweep runs, and because the sentence it replaces was the same
+    // false premise: "no throw site in the kit passes `params` yet" stopped being true when
+    // `@pithy-sh/cloudflare`'s `cloudflareRefusal` landed (#534). What matters on every path is
+    // unchanged: `interpolate` leaves an unsupplied placeholder written out, so a locale may name only
+    // a param a throw site promises on every path — `core`'s `GUARANTEED_ERROR_PARAMS`.
+    const unfilled = Object.entries(esErrors).filter(([key, message]) =>
+      [...message.matchAll(PLACEHOLDER)].some(([, name]) => !guaranteedErrorParams(key).includes(name ?? "")),
+    );
+    expect(unfilled).toEqual([]);
   });
 });
 

@@ -4,10 +4,17 @@
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
+import { validateSecretValue } from "../cli/validate";
 import { encodeVersionedValue, type VersionedValue } from "../crypto/versionedValue";
 import { defineSecretRegistry, type SecretValueType } from "../registry";
-import { DevSecretEnvelope, type DevSecretsFile } from "./devSecretsFile";
-import { type DevSecretsStore, devVarsForRegistry, mintMissingDevSecrets, seedDevSecrets } from "./seedDevSecrets";
+import { DevSecretEnvelope, type DevSecretsFile, initialDevSecret } from "./devSecretsFile";
+import {
+  type DevSecretsStore,
+  devVarsForRegistry,
+  mintMissingDevSecrets,
+  seedDevSecrets,
+  storedSecretValue,
+} from "./seedDevSecrets";
 
 /** An in-memory stand-in for the `SECRETS` D1 store, counting writes so idempotency is observable. */
 class FakeStore implements DevSecretsStore {
@@ -60,6 +67,48 @@ async function payload(fn: () => Promise<unknown>): Promise<PithyError["payload"
   }
   throw new Error("expected a PithyError");
 }
+
+/**
+ * **A `json` secret has two stored forms, and this is the one place both are stated (#535).**
+ *
+ * Nothing said so, and the cost was `pithy turnstile provision`: one writer serializing before it
+ * handed the value over satisfied the store and corrupted the file. Nobody reading either half alone
+ * could have seen the other. So the two forms are pinned to each other here rather than asserted apart,
+ * and each is pinned against the other's destination refusing it — which is the fact a writer needs and
+ * the fact the code could not tell them.
+ */
+describe("a json secret's two stored forms", () => {
+  const NAME = "auth-google-credentials";
+  const entry = registry[NAME];
+  const credentials = { clientId: "id", clientSecret: "shh" };
+
+  test("the file states the structure, the store holds the canonical string, and one converts to the other", () => {
+    if (entry === undefined) throw new Error("the fixture registry lost its json entry");
+    const stated = initialDevSecret(entry, credentials);
+
+    // The file's form: the value's own object, inside the envelope. Nothing serialized.
+    expect(stated).toEqual({ currentVersion: "1", versions: { "1": credentials } });
+    // The store's form, reached from the file's by the one conversion — and identical, string for
+    // string, to what a hand-run `pithy secrets create` would have dispatched for the same value.
+    expect(storedSecretValue(entry, NAME, stated).versions["1"]).toBe(
+      validateSecretValue(entry, NAME, JSON.stringify(credentials)),
+    );
+  });
+
+  test("each destination refuses the other's form, at the write", () => {
+    if (entry === undefined) throw new Error("the fixture registry lost its json entry");
+    const invalidValue = expect.objectContaining({
+      payload: expect.objectContaining({ code: "secrets/invalid_value" }),
+    });
+
+    // The store's form in the file — the turnstile defect exactly.
+    expect(() => initialDevSecret(entry, JSON.stringify(credentials))).toThrowError(invalidValue);
+    // And the file's form on its way to the store: serialized once more than it should be.
+    expect(() => validateSecretValue(entry, NAME, JSON.stringify(JSON.stringify(credentials)))).toThrowError(
+      invalidValue,
+    );
+  });
+});
 
 describe("seedDevSecrets — the registry decides the destination", () => {
   test("a d1 secret becomes an encrypted row, in the shape a provisioned secret has", async () => {

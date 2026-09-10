@@ -8,6 +8,7 @@ import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients"
 import { parse } from "comment-json";
 import { cloudflareClients } from "../cloudflare/clients";
 import { loadProject, requireProjectName } from "../project/config";
+import { kitImport } from "../project/kitResolve";
 import { type CapabilitySet, isUnknown, projectCapabilitySet, type UnknownSet } from "../project/workerScope";
 import { discoverWorkers } from "../project/workers";
 import { AUDIT_DESTINATION_ENV } from "../provision/resources";
@@ -308,8 +309,22 @@ export async function createCliAudit(options: CreateCliAuditOptions): Promise<Cl
   let emitFromCLI: typeof import("@pithy-sh/audit/src/cli/emitFromCLI").emitFromCLI;
   let createCachedActorResolver: typeof import("@pithy-sh/audit/src/cli/resolveActor").createCachedActorResolver;
   try {
-    ({ emitFromCLI } = await import("@pithy-sh/audit/src/cli/emitFromCLI"));
-    ({ createCachedActorResolver } = await import("@pithy-sh/audit/src/cli/resolveActor"));
+    // **From the project, and that is the whole of it (#533).** Four lines up this already asked the
+    // *project* whether `audit` is composed; resolving the package against the CLI after that answer is
+    // incoherent, and it was worse than incoherent — `@pithy-sh/audit` is a `devDependency`, so a
+    // published `@pithy-sh/cli` tarball ships without it. A globally installed CLI therefore reached
+    // this line on every project that composes audit, resolved nothing, and returned the silent no-op
+    // below: no message, no exit code, and a security-relevant action with an audit trail the adopter
+    // believes is on. The guarded import stays guarded — the CLI must not hard-depend on an optional
+    // capability — and now it asks the install that actually has one.
+    ({ emitFromCLI } = await kitImport<typeof import("@pithy-sh/audit/src/cli/emitFromCLI")>(
+      options.projectDir,
+      "@pithy-sh/audit/src/cli/emitFromCLI",
+    ));
+    ({ createCachedActorResolver } = await kitImport<typeof import("@pithy-sh/audit/src/cli/resolveActor")>(
+      options.projectDir,
+      "@pithy-sh/audit/src/cli/resolveActor",
+    ));
   } catch {
     return NO_OP; // audit isn't installed in this project — nothing to record through.
   }

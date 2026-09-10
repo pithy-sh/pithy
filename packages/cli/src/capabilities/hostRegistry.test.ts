@@ -6,6 +6,7 @@ import { join, relative, resolve } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { describe, expect, test } from "vitest";
+import { KIT_ROOT } from "../test-utils/kitRoot";
 import { HOST_WORKERS, hostTemplatePath, hostWorkerFor, readHostTemplate } from "./hostRegistry";
 
 /**
@@ -41,6 +42,7 @@ async function committedTemplates(): Promise<string[]> {
 function devContext() {
   return {
     project: "acme",
+    projectDir: KIT_ROOT,
     env: LOCAL_ENVIRONMENT,
     baseUrl: "http://localhost:8787",
     databaseId: (binding: string) => binding,
@@ -49,7 +51,7 @@ function devContext() {
 
 describe("the host-worker registry", () => {
   test("names every committed host template, or records why not", async () => {
-    const covered = HOST_WORKERS.map((spec) => relative(PACKAGES_DIR, hostTemplatePath(spec.entry))).sort();
+    const covered = HOST_WORKERS.map((spec) => relative(PACKAGES_DIR, hostTemplatePath(KIT_ROOT, spec.entry))).sort();
     expect([...covered, ...UNRESOLVED].sort()).toEqual(await committedTemplates());
   });
 
@@ -60,7 +62,7 @@ describe("the host-worker registry", () => {
 
   describe.each(HOST_WORKERS)("$capability", (spec) => {
     test("resolves for dev under <project>-dev-<capability>", async () => {
-      const config = await spec.resolve(await readHostTemplate(spec.entry), devContext());
+      const config = await spec.resolve(await readHostTemplate(KIT_ROOT, spec.entry), devContext());
       expect(config.name).toBe(`acme-dev-${spec.capability}`);
     });
 
@@ -72,7 +74,7 @@ describe("the host-worker registry", () => {
      * code fault.
      */
     test("gives every D1 binding the binding itself as its local id", async () => {
-      const config = await spec.resolve(await readHostTemplate(spec.entry), devContext());
+      const config = await spec.resolve(await readHostTemplate(KIT_ROOT, spec.entry), devContext());
       for (const entry of config.d1_databases ?? []) expect(entry.database_id).toBe(entry.binding);
     });
 
@@ -88,7 +90,7 @@ describe("the host-worker registry", () => {
      * not a wider list.
      */
     test("binds only databases pithy migrate --env dev has already filled", async () => {
-      const config = await spec.resolve(await readHostTemplate(spec.entry), devContext());
+      const config = await spec.resolve(await readHostTemplate(KIT_ROOT, spec.entry), devContext());
       const migrated = new Set(["DB", "SECRETS", "EMAIL_SUPPRESSIONS"]);
       for (const entry of config.d1_databases ?? []) expect(migrated.has(entry.binding), entry.binding).toBe(true);
     });
@@ -112,7 +114,7 @@ describe("the host-worker registry", () => {
       // stand-in has to answer the question — a project speaking one language answers with none.
       hostCatalogs: () => ({}),
     } as unknown as Capability;
-    const config = await spec?.resolve(await readHostTemplate("@pithy-sh/email/src/workflows/worker"), {
+    const config = await spec?.resolve(await readHostTemplate(KIT_ROOT, "@pithy-sh/email/src/workflows/worker"), {
       ...devContext(),
       capability: composed,
     });

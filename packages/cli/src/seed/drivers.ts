@@ -376,6 +376,9 @@ async function lazyClients(
   config: WranglerSeedConfig,
   account: CloudflareAccountSelection | null,
 ): Promise<LazyClients> {
+  // The CLI's copy: `@pithy-sh/cloudflare` is not a capability and is never in an adopter's
+  // `node_modules`. `SeedDriverOptions.persistRoot` *is* the project root, so a project base is in
+  // scope here — and using it would break every project rather than fix one (#533).
   const { CloudflareClients: Clients } = await import("@pithy-sh/cloudflare/src/client/clients");
   let clients: CloudflareClients | undefined;
   let vars: Record<string, string> | undefined;

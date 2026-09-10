@@ -17,6 +17,7 @@ import type { CommandDef } from "citty";
 import { beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { scaffoldProject } from "../project/scaffold";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
+import { linkKitPackages } from "../test-utils/linkKit";
 
 /**
  * **Requirement 4 of pithy-sh/pithy#512, driven rather than grepped: a run in which every environment was
@@ -272,6 +273,10 @@ function projectWorkers(dir: string): unknown[] {
 async function scaffoldedProject(prefix: string): Promise<{ dir: string; workerDir: string }> {
   const dir = await mkdtemp(join(tmpdir(), prefix));
   await scaffoldProject({ targetDir: dir, appName: PROJECT, worker: WORKER });
+  // The capabilities this fixture composes, installed the way a real project installs them. Since #533 the
+  // CLI resolves them from the project rather than from its own location, so a fixture with an empty
+  // `node_modules` is a project with nothing added.
+  await linkKitPackages(dir, ["media", "payments", "storage", "support", "testers", "email"]);
   return { dir, workerDir: join(dir, "apps", WORKER) };
 }
 

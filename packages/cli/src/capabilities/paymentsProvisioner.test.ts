@@ -12,6 +12,7 @@ import { parse } from "comment-json";
 import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import { kitSource } from "../project/kitSource";
+import { KIT_ROOT } from "../test-utils/kitRoot";
 import { CloudflarePaymentsProvisioner, loadPayments } from "./paymentsProvisioner";
 
 /** The project every provisioned name leads with — `requireProjectName`'s answer, never a guess. */
@@ -62,6 +63,7 @@ function provisioner(
   workflows: CloudflareWorkflowsClient = fakeWorkflows([]),
 ) {
   return new CloudflarePaymentsProvisioner({
+    projectDir: KIT_ROOT,
     project: PROJECT,
     cf,
     accountId: "acct-1",
@@ -103,7 +105,7 @@ describe("loadPayments", () => {
     // The guard exists so a project that has not run `pithy add payments` gets one instruction rather than an
     // unresolved-module crash from whichever call site ran first. Here the package *is* installed, which is
     // what proves the import list itself is right.
-    const payments = await loadPayments();
+    const payments = await loadPayments(KIT_ROOT);
     expect(typeof payments.resolvePaymentsConfig).toBe("function");
     expect(typeof payments.isPaymentsCapability).toBe("function");
     expect(payments.PAYMENTS_CAPABILITY).toBe("payments");
@@ -114,7 +116,7 @@ describe("loadPayments", () => {
 describe("the committed reconcile-worker template", () => {
   /** The template as the provisioner parses it off disk — not a fixture, deliberately. */
   async function template(): Promise<WorkflowHostTemplate> {
-    const dir = dirname(kitSource("@pithy-sh/payments/src/workflows/worker"));
+    const dir = dirname(kitSource(KIT_ROOT, "@pithy-sh/payments/src/workflows/worker"));
     return parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
   }
 
@@ -187,7 +189,7 @@ describe("the committed reconcile-worker template", () => {
   test("the template's entry point is the module the class is exported from", async () => {
     // A `main` that does not resolve is a deploy that fails after every id has been looked up.
     const parsed = await template();
-    const dir = dirname(kitSource("@pithy-sh/payments/src/workflows/worker"));
+    const dir = dirname(kitSource(KIT_ROOT, "@pithy-sh/payments/src/workflows/worker"));
     await expect(readFile(join(dir, parsed.main.replace("./", "")), "utf8")).resolves.toContain(
       "export class PaymentsReconcileWorkflow",
     );

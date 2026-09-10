@@ -41,7 +41,14 @@ export function formatList(rows: { name: string; description: string }[]): strin
   return rows.map((row) => `${row.name.padEnd(width)}  ${row.description}`).join("\n");
 }
 
-/** Problem line (red), then action line (docs/CLI.md §3.3). */
+/**
+ * Problem line (red), then the action line plain (docs/CLI.md §3.3).
+ *
+ * The split is on the first newline because `renderTerminal` adds exactly one, between the message and
+ * the action — a `message` is a single line, kit-wide, for the reasons stated there. So this reds the
+ * whole message and nothing else, which is what it has always done; the newline is a field separator
+ * being read as one, not a heuristic about where a sentence ends.
+ */
 export function formatError(payload: ErrorPayload): string {
   const rendered = renderTerminal(payload);
   const newline = rendered.indexOf("\n");

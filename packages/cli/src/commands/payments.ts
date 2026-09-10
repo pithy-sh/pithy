@@ -60,7 +60,7 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
 
 /** Load the payments capability's resolved catalog from `pithy.config.ts`. */
 async function loadPaymentsConfig(projectDir: string) {
-  const { isPaymentsCapability } = await loadPayments();
+  const { isPaymentsCapability } = await loadPayments(projectDir);
   // Capabilities live in each Worker's `apps/<name>/pithy.config.ts`; provisioning is one project-wide
   // decision, so the first Worker composing this capability provides it.
   const capability = (await resolveWorkers({ projectDir }).then(projectCapabilities)).find(isPaymentsCapability);
@@ -209,6 +209,7 @@ async function buildProvisioner(projectDir: string, worker?: string) {
     paymentsConfig,
     provisioner: new CloudflarePaymentsProvisioner({
       cf,
+      projectDir,
       project,
       accountId,
       apiToken,
@@ -235,7 +236,7 @@ const provision = defineCommand({
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
       const { provisioner, project, appReadiness } = await buildProvisioner(projectDir, args.worker);
-      const { paymentsWorkflowRegistry, PAYMENTS_CAPABILITY } = await loadPayments();
+      const { paymentsWorkflowRegistry, PAYMENTS_CAPABILITY } = await loadPayments(projectDir);
 
       // The account check first, before a single deploy. Failing here means failing before one environment is
       // half provisioned rather than part way through the fan-out.
@@ -313,7 +314,7 @@ const reconcile = defineCommand({
       requireProjectName(config);
       const env = requireManagedEnvironment(args.env, loadProjectEnvironments(config));
       const { provisioner } = await buildProvisioner(projectDir);
-      const { PaymentsReconcileParams, decodeSubjectReference } = await loadPayments();
+      const { PaymentsReconcileParams, decodeSubjectReference } = await loadPayments(projectDir);
 
       // Decoded through payments' own strict decoder, never split here. `--subject ada` is the shape
       // somebody types from memory, and a lenient read of it would narrow the pass to whichever user *or*

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { z } from "zod";
-import { CloudflareInvalidResponseError, CloudflareRequestError } from "../client/errors";
+import { CloudflareInvalidResponseError, cloudflareApiErrors, cloudflareRefusal } from "../client/errors";
 import type { CloudflareWorkersManager } from "../workers/workersManager";
 import type { IntegrationCreds } from "./harness";
 
@@ -169,10 +169,15 @@ export async function readObservedInbound(options: {
   const response = await fetch(url, { headers: { Authorization: `Bearer ${creds.apiToken}` } });
   if (response.status === 404) return null;
   if (!response.ok) {
-    throw new CloudflareRequestError({
-      message: "Could not read the recorded inbound message.",
-      action: "Check the token carries Workers KV Storage: Edit on this account.",
-      detail: `KV read for the inbound record returned ${response.status}.`,
+    // Composed where every Cloudflare refusal is — see `client/errors.ts`. The polling loop reads this
+    // on every failed attempt, so it is worth the code Cloudflare actually answered with.
+    const failure = await response.text();
+    throw cloudflareRefusal({
+      problem: "Could not read the recorded inbound message.",
+      apiErrors: cloudflareApiErrors(parseEnvelope(failure)),
+      status: response.status,
+      permission: "Workers KV Storage",
+      detail: `KV read for the inbound record returned ${response.status}: ${failure}`.slice(0, 2000),
     });
   }
 
@@ -186,4 +191,13 @@ export async function readObservedInbound(options: {
     });
   }
   return ObservedInbound.parse(body);
+}
+
+/** A CF response body as an object, or `undefined` when it is not JSON — `cloudflareApiErrors` reads either. */
+function parseEnvelope(body: string): unknown {
+  try {
+    return JSON.parse(body);
+  } catch {
+    return undefined;
+  }
 }

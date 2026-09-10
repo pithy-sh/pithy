@@ -4,14 +4,33 @@
 import { z } from "zod";
 import {
   CloudflareNotConfiguredError,
-  CloudflareRequestError,
+  cloudflareApiErrors,
+  cloudflareRefusal,
   cloudflareRequest,
+  cloudflareSaid,
   decodeResponse,
   isAuthorizationError,
   messageOf,
+  statusOf,
 } from "../client/errors";
 import { CloudflareManager } from "../client/manager";
 import { CfTokenVerification } from "../user/userManager";
+
+/**
+ * The account permission group behind every endpoint in this file, handed to `cloudflareRequest` so an
+ * auth-class refusal names it.
+ *
+ * It has to be stated rather than derived, because Cloudflare's `documentation_url` for
+ * `accounts/tokens` yields `accounts` — a segment `ACCOUNT_PERMISSIONS` deliberately does not map, since
+ * account-scoped endpoints span every product. And it has to be on **every** call here rather than only
+ * on the mint: `pithy token mint` is `rollToken → findTokenByName → listTokens`, then
+ * `listPermissionGroups`, and every one of those runs before `tokens.create` on the same credential. A
+ * hint reachable only from the mint is a hint an under-scoped bootstrap token never reaches (#534).
+ *
+ * `verifyToken` is the deliberate omission: any account token may call `/tokens/verify` with no
+ * permission at all, so a refusal there is a dead token or the wrong account, never a missing grant.
+ */
+const API_TOKENS_ENDPOINT = { permission: "API Tokens" } as const;
 
 /**
  * One access policy to attach to a minted token: a set of permission groups (named, resolved to ids
@@ -132,30 +151,38 @@ export class CloudflareAccountTokensManager extends CloudflareManager {
    * with no permission at all. Every other failure still throws.
    */
   async getTokenName(tokenId: string): Promise<string | null> {
-    const raw = await cloudflareRequest(`get account token ${tokenId}`, async () => {
-      try {
-        return await this.getClient().accounts.tokens.get(tokenId, { account_id: this.accountId });
-      } catch (error) {
-        if (isAuthorizationError(error)) return null;
-        throw error;
-      }
-    });
+    const raw = await cloudflareRequest(
+      `get account token ${tokenId}`,
+      async () => {
+        try {
+          return await this.getClient().accounts.tokens.get(tokenId, { account_id: this.accountId });
+        } catch (error) {
+          if (isAuthorizationError(error)) return null;
+          throw error;
+        }
+      },
+      API_TOKENS_ENDPOINT,
+    );
     const parsed = TokenName.safeParse(raw);
     return parsed.success ? parsed.data.name : null;
   }
 
   /** Every permission group available to account-owned tokens in this account (SDK auto-paginates). */
   async listPermissionGroups(): Promise<CfPermissionGroup[]> {
-    return cloudflareRequest("list account token permission groups", async () => {
-      const out: CfPermissionGroup[] = [];
-      for await (const group of this.getClient().accounts.tokens.permissionGroups.list({
-        account_id: this.accountId,
-      })) {
-        const parsed = CfPermissionGroup.safeParse(group);
-        if (parsed.success) out.push(parsed.data);
-      }
-      return out;
-    });
+    return cloudflareRequest(
+      "list account token permission groups",
+      async () => {
+        const out: CfPermissionGroup[] = [];
+        for await (const group of this.getClient().accounts.tokens.permissionGroups.list({
+          account_id: this.accountId,
+        })) {
+          const parsed = CfPermissionGroup.safeParse(group);
+          if (parsed.success) out.push(parsed.data);
+        }
+        return out;
+      },
+      API_TOKENS_ENDPOINT,
+    );
   }
 
   /**
@@ -189,19 +216,40 @@ export class CloudflareAccountTokensManager extends CloudflareManager {
       raw = await this.getClient().accounts.tokens.create({ account_id: this.accountId, name, policies });
     } catch (error) {
       if (isAuthorizationError(error)) {
+        // The 403 keeps its own diagnosis — the token got in and may not create tokens, which is more
+        // than the generic three-way refusal can say — and it no longer keeps it *instead of*
+        // Cloudflare's answer. Round two moved the fallback below onto the shared composer and left
+        // this branch composing its own sentence, so the one status that carries a real diagnosis was
+        // also the one that dropped the API's `errors[]` on the floor. `cloudflareSaid` is that
+        // composition, exported for exactly this: a call site with a better problem line still gets
+        // the API's words, on one line, bounded, with the structured fields in `params`.
+        const said = cloudflareSaid(
+          "The Cloudflare API token is not allowed to create account tokens.",
+          cloudflareApiErrors(error),
+        );
         throw new CloudflareNotConfiguredError(
           {
-            message: "The Cloudflare API token is not allowed to create account tokens.",
+            message: said.message,
             action: "Grant it 'Account API Tokens Write' (Account → API Tokens → Edit), then re-run.",
+            params: said.params,
             detail: `mint account token '${name}': ${messageOf(error)}`,
           },
           { cause: error },
         );
       }
-      throw new CloudflareRequestError(
-        { message: `Failed to mint account token '${name}'.`, detail: messageOf(error) },
-        { cause: error },
-      );
+      // The shared composer, never a hand-built refusal. The branch above is 403-only on purpose —
+      // `isAuthorizationError` stays strictly 403 because its other callers *swallow* a denial — and a
+      // 401 is the status the token bootstrap actually fails under, so every 401 landed here and
+      // printed one sentence with no code, no link and nothing to do. `permission` names the group
+      // this endpoint needs, because Cloudflare's docs link for `accounts/tokens` does not.
+      throw cloudflareRefusal({
+        problem: `Failed to mint account token '${name}'.`,
+        apiErrors: cloudflareApiErrors(error),
+        status: statusOf(error),
+        permission: "API Tokens",
+        detail: messageOf(error),
+        cause: error,
+      });
     }
     return decodeResponse(MintedAccountToken, raw, "account token create");
   }
@@ -235,31 +283,41 @@ export class CloudflareAccountTokensManager extends CloudflareManager {
 
   /** Every account-owned token's metadata (SDK auto-paginates). No secret values — list is metadata only. */
   async listTokens(): Promise<AccountTokenSummary[]> {
-    return cloudflareRequest("list account tokens", async () => {
-      const out: AccountTokenSummary[] = [];
-      for await (const token of this.getClient().accounts.tokens.list({ account_id: this.accountId })) {
-        const parsed = AccountTokenSummary.safeParse(token);
-        if (parsed.success) out.push(parsed.data);
-      }
-      return out;
-    });
+    return cloudflareRequest(
+      "list account tokens",
+      async () => {
+        const out: AccountTokenSummary[] = [];
+        for await (const token of this.getClient().accounts.tokens.list({ account_id: this.accountId })) {
+          const parsed = AccountTokenSummary.safeParse(token);
+          if (parsed.success) out.push(parsed.data);
+        }
+        return out;
+      },
+      API_TOKENS_ENDPOINT,
+    );
   }
 
   /** Find an account token by exact name, or `null` — for idempotent re-mint (SDK auto-paginates). */
   async findTokenByName(name: string): Promise<AccountTokenSummary | null> {
-    return cloudflareRequest(`find account token ${name}`, async () => {
-      for await (const token of this.getClient().accounts.tokens.list({ account_id: this.accountId })) {
-        const parsed = AccountTokenSummary.safeParse(token);
-        if (parsed.success && parsed.data.name === name) return parsed.data;
-      }
-      return null;
-    });
+    return cloudflareRequest(
+      `find account token ${name}`,
+      async () => {
+        for await (const token of this.getClient().accounts.tokens.list({ account_id: this.accountId })) {
+          const parsed = AccountTokenSummary.safeParse(token);
+          if (parsed.success && parsed.data.name === name) return parsed.data;
+        }
+        return null;
+      },
+      API_TOKENS_ENDPOINT,
+    );
   }
 
   /** Delete an account token by id. */
   async deleteToken(tokenId: string): Promise<void> {
-    await cloudflareRequest(`delete account token ${tokenId}`, () =>
-      this.getClient().accounts.tokens.delete(tokenId, { account_id: this.accountId }),
+    await cloudflareRequest(
+      `delete account token ${tokenId}`,
+      () => this.getClient().accounts.tokens.delete(tokenId, { account_id: this.accountId }),
+      API_TOKENS_ENDPOINT,
     );
   }
 
@@ -269,17 +327,21 @@ export class CloudflareAccountTokensManager extends CloudflareManager {
    * when none match. Used by teardown.
    */
   async deleteTokensByName(name: string): Promise<number> {
-    return cloudflareRequest(`delete account tokens named ${name}`, async () => {
-      const ids: string[] = [];
-      for await (const token of this.getClient().accounts.tokens.list({ account_id: this.accountId })) {
-        const parsed = AccountTokenSummary.safeParse(token);
-        if (parsed.success && parsed.data.name === name) ids.push(parsed.data.id);
-      }
-      for (const id of ids) {
-        await this.getClient().accounts.tokens.delete(id, { account_id: this.accountId });
-      }
-      return ids.length;
-    });
+    return cloudflareRequest(
+      `delete account tokens named ${name}`,
+      async () => {
+        const ids: string[] = [];
+        for await (const token of this.getClient().accounts.tokens.list({ account_id: this.accountId })) {
+          const parsed = AccountTokenSummary.safeParse(token);
+          if (parsed.success && parsed.data.name === name) ids.push(parsed.data.id);
+        }
+        for (const id of ids) {
+          await this.getClient().accounts.tokens.delete(id, { account_id: this.accountId });
+        }
+        return ids.length;
+      },
+      API_TOKENS_ENDPOINT,
+    );
   }
 
   /**
@@ -289,8 +351,10 @@ export class CloudflareAccountTokensManager extends CloudflareManager {
    * builds on: a credential self-rolls without ever changing identity.
    */
   async rollTokenValue(tokenId: string): Promise<string> {
-    const raw = await cloudflareRequest(`roll account token value ${tokenId}`, () =>
-      this.getClient().accounts.tokens.value.update(tokenId, { account_id: this.accountId, body: {} }),
+    const raw = await cloudflareRequest(
+      `roll account token value ${tokenId}`,
+      () => this.getClient().accounts.tokens.value.update(tokenId, { account_id: this.accountId, body: {} }),
+      API_TOKENS_ENDPOINT,
     );
     return decodeResponse(RolledTokenValue, raw, "account token value roll");
   }

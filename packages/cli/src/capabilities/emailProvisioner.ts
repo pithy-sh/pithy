@@ -62,6 +62,11 @@ export type ResolveEmailEnv = (env: ManagedEnvironment) => Promise<EmailEnvResou
 export interface CloudflareEmailProvisionerOptions {
   cf: CloudflareClients;
   /**
+   * The project root — the directory `pithy.config.ts` was read from, and the base `@pithy-sh/email`
+   * is resolved against. Not derivable from `project`, which is a *name*; see `project/kitResolve.ts`.
+   */
+  projectDir: string;
+  /**
    * The account this provisions into, and what vouches for it (#378).
    *
    * Replaces a bare `accountId`, and the replacement is the point: an id on its own is what six sites
@@ -112,6 +117,7 @@ export interface CloudflareEmailProvisionerOptions {
  * `SECRETS` bindings, neither of which uses a token. The live steps are exercised by the integration suite.
  */
 export class CloudflareEmailProvisioner implements EmailProvisioner {
+  readonly #projectDir: string;
   readonly #cf: CloudflareClients;
   readonly #account: ConfirmedAccount;
   readonly #project: string;
@@ -124,6 +130,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareEmailProvisionerOptions) {
+    this.#projectDir = options.projectDir;
     this.#cf = options.cf;
     this.#account = options.account;
     this.#project = options.project;
@@ -188,7 +195,7 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
   /** Resolve the env's wrangler config from the committed template + provisioned ids, then `wrangler deploy`. */
   async deployWorker(env: ManagedEnvironment, suppressionDatabaseId: string): Promise<void> {
     const { appDatabaseId, secretsDatabaseId, baseUrl } = await this.#resolveEnv(env);
-    const dir = emailWorkerDir();
+    const dir = emailWorkerDir(this.#projectDir);
     const template = parse(
       await readFile(join(dir, "wrangler.jsonc"), "utf8"),
     ) as unknown as EmailWorkerWranglerTemplate;
@@ -270,9 +277,14 @@ export class CloudflareEmailProvisioner implements EmailProvisioner {
  * The directory of the prebuilt email worker inside the installed `@pithy-sh/email` package (holds
  * wrangler.jsonc). Exported so the template test resolves the same file the deploy reads — a copy of
  * this resolution in the test would be a copy free to drift from the path it is meant to guard.
+ *
+ * **From the project (#533).** What gets deployed here runs under the adopter's name and against the
+ * adopter's database, so it is the adopter's copy of the Worker — not whichever one happens to sit beside
+ * a global `pithy`. `resolveEmailConfig` above is still imported statically and so is still the CLI's;
+ * `project/kitResolve.ts` says why that pairing is where this stops.
  */
-export function emailWorkerDir(): string {
-  return dirname(kitSource("@pithy-sh/email/src/workflows/worker"));
+export function emailWorkerDir(projectDir: string): string {
+  return dirname(kitSource(projectDir, "@pithy-sh/email/src/workflows/worker"));
 }
 
 export interface CloudflareEmailDeprovisionerOptions {

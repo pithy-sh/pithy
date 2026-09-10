@@ -6,6 +6,7 @@ import { TestersConfig } from "@pithy-sh/testers/src/config/config";
 import { testersWorkerName } from "@pithy-sh/testers/src/provision/provisionTesters";
 import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
+import { KIT_ROOT } from "../test-utils/kitRoot";
 import { CloudflareTestersProvisioner } from "./testersProvisioner";
 
 /** The project every provisioned name leads with — `requireProjectName`'s answer, never a guess. */
@@ -36,6 +37,7 @@ function fakeCf() {
 
 function provisioner(cf: CloudflareClients, events: CliAuditEvent[] = []) {
   return new CloudflareTestersProvisioner({
+    projectDir: KIT_ROOT,
     project: PROJECT,
     cf,
     account: { accountId: "acct-1", confirmation: "pinned" },
@@ -122,6 +124,7 @@ describe("the audit is optional", () => {
     getWorker.mockResolvedValue({ id: testersWorkerName(PROJECT, "staging") });
 
     const bare = new CloudflareTestersProvisioner({
+      projectDir: KIT_ROOT,
       project: PROJECT,
       cf,
       account: { accountId: "acct-1", confirmation: "pinned" },
@@ -151,6 +154,7 @@ describe("teardown refuses an unconfirmed account", () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     getWorker.mockResolvedValue(null);
     const stranger = new CloudflareTestersProvisioner({
+      projectDir: KIT_ROOT,
       project: PROJECT,
       cf,
       account: { accountId: "acct-stranger", confirmation: "ambient" },
@@ -169,6 +173,7 @@ describe("teardown refuses an unconfirmed account", () => {
   test("does not even ask — an answer it could not believe is not worth the round trip", async () => {
     const { cf, getWorker } = fakeCf();
     const stranger = new CloudflareTestersProvisioner({
+      projectDir: KIT_ROOT,
       project: PROJECT,
       cf,
       account: { accountId: "acct-stranger", confirmation: "ambient" },
@@ -187,6 +192,7 @@ describe("teardown refuses an unconfirmed account", () => {
     getWorker.mockResolvedValue(null);
     const events: CliAuditEvent[] = [];
     const stranger = new CloudflareTestersProvisioner({
+      projectDir: KIT_ROOT,
       project: PROJECT,
       cf,
       account: { accountId: "acct-stranger", confirmation: "ambient" },

@@ -461,8 +461,21 @@ Check your CLOUDFLARE_API_TOKEN and try again.
 
 - No stack traces in user-facing output (debug mode enables them via `--verbose`)
 - First line: the problem, sentence-length, no jargon
-- Second line: the action the user should take
+- Last line: the action the user should take
 - Color: ANSI basic-16 red (terminal-themed) for the first line; default otherwise. See Section 3.4.
+
+**When the failure came from a service Pithy does not control, that service's own answer is carried on the problem line, after the words `Cloudflare said:`** — its code, its sentence, and its documentation link, entries separated by semicolons. Pithy reports it rather than paraphrasing it. A refusal that names only what Pithy was attempting cannot tell a missing permission from a dead credential from an outage, and each of those has a different remedy:
+
+```
+Cloudflare request failed: Turnstile list widgets for 'app.pithy.sh'. Cloudflare said: 10000 Authentication error — https://developers.cloudflare.com/api/resources/turnstile/subresources/widgets/methods/list
+A missing grant, a dead token and the wrong account all look the same here. Check the token for Account → Turnstile, then CLOUDFLARE_API_TOKEN, then CLOUDFLARE_ACCOUNT_ID.
+```
+
+**One line, and a word rather than an indent, for a reason that is not typography.** A `PithyError` raised inside a Workflow step crosses a durable boundary as a single string whose newline separates the sentence from the remedy, so an indented second line was declined whole at the far end and the operator got `core/workflow_failed` about durable execution instead of the answer. The same newline is what §3.3's action line is, so an upstream sentence containing one would forge a remedy Pithy never wrote. A word survives a step record, a `--json` line and a browser alike.
+
+The action line says which part of that is known and which is concluded. Cloudflare answered `10000` for one call; whether the token is missing that product's grant, is dead everywhere, or is pointed at another account is something the operator can check and the CLI cannot, so the line orders those checks instead of asserting one. It names the permission group and not its level, because a failed read does not prove Edit was needed.
+
+When the answer does not fit, the operation label is shortened first and whole entries are dropped from the end with a trailing `…` — never a link cut mid-URL, and never Cloudflare's half sacrificed to keep Pithy's.
 
 ### 3.4 Color tiers
 

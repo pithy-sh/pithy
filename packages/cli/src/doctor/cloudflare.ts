@@ -31,7 +31,14 @@ import {
 export type CloudflareAccessState =
   /** Neither credential is set. Legitimate before provisioning; never fails the exit. */
   | "unconfigured"
-  /** The token verified and the account answered. */
+  /**
+   * The token verified and the account answered **on the token API**, which is the whole of what was asked.
+   *
+   * Not "Cloudflare is reachable", and the difference is #534. Two calls are made — `tokens/verify`, then
+   * `listPermissionGroups` — and both live under Account → API Tokens. Turnstile, D1, KV, R2, Vectorize,
+   * Workers AI, Email and Workers are never touched, so a token holding none of their grants reaches this
+   * state and then fails the first command that needs one. `describeState` says so in the line.
+   */
   | "ok"
   /** `GET /user/tokens/verify` rejected it — wrong value, revoked, or expired. */
   | "token_invalid"
@@ -218,7 +225,25 @@ function configPath(access: CloudflareAccess, home: string | undefined): string 
 function describeState(access: CloudflareAccess, home?: string): string {
   switch (access.state) {
     case "ok":
-      return `reachable (token ${access.tokenStatus ?? "verified"})`;
+      // **It used to say `reachable`, and that word was a claim about products nothing had touched
+      // (#534).** The probe is two calls, `tokens/verify` and `listPermissionGroups`, and both are Account
+      // → API Tokens. A bring-up read `reachable (token active)` off a token with no Turnstile grant at
+      // all, took it as a green light, and learned the truth from `pithy turnstile provision` — after the
+      // account, the token and the config had each been ruled out in turn.
+      //
+      // **Narrowed rather than widened, and that is the decision.** Probing each product looks like the
+      // fix and is a worse claim one level down: `validateServiceAccess` is a *read* per product (Turnstile
+      // lists widgets), so a token holding Turnstile Read and not Edit passes every probe and still fails
+      // `provision` — and it would fail it under a line that had just said the product was checked. The
+      // set is not derivable either: `@pithy-sh/turnstile` declares `requiredBindings: []`, because
+      // Turnstile is provisioned over REST and consumed as a secret, so the one product #534 is about is
+      // exactly the one a binding-derived list leaves out. What *is* per product, and does know what the
+      // grant has to do, is the capability's own account-tier settings check (`doctor/settings.ts`), which
+      // runs against the credentials this line has already resolved.
+      //
+      // So the line says what the probe did. `checked:` names it, and the clause after it refuses the
+      // inference that would otherwise be drawn from silence.
+      return `token ${access.tokenStatus ?? "verified"}; checked: API tokens — no other product was reached`;
     case "unconfigured":
       // The file this run actually resolved, when it knows it. `~/.config/pithy/cloudflare.json` is the
       // right answer for a single-account machine and the wrong one for a project that names an account,

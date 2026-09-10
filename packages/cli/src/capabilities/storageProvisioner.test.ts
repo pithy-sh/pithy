@@ -14,6 +14,7 @@ import { parse } from "comment-json";
 import { describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import { kitSource } from "../project/kitSource";
+import { KIT_ROOT } from "../test-utils/kitRoot";
 import { CloudflareStorageDeprovisioner, CloudflareStorageProvisioner } from "./storageProvisioner";
 
 /** The project every provisioned name leads with — `requireProjectName`'s answer, never a guess. */
@@ -60,6 +61,7 @@ function provisioner(
   dispatch: (request: { mode: string }) => Promise<void> = async () => {},
 ) {
   return new CloudflareStorageProvisioner({
+    projectDir: KIT_ROOT,
     project: PROJECT,
     cf,
     account: { accountId: "acct-1", confirmation: "pinned" },
@@ -173,6 +175,7 @@ describe("CloudflareStorageDeprovisioner", () => {
     const { cf, calls, getWorker, deleteWorker, findBucketByName, deleteBucket } = fakeCf();
     const events: CliAuditEvent[] = [];
     const storage = new CloudflareStorageDeprovisioner({
+      projectDir: KIT_ROOT,
       account: { accountId: "acct-1", confirmation: "pinned" },
       project: PROJECT,
       cf,
@@ -205,6 +208,7 @@ describe("CloudflareStorageDeprovisioner", () => {
   test("refuses a bucket teardown with no key pair, before anything is deleted", async () => {
     const { cf, calls, findBucketByName } = fakeCf();
     const storage = new CloudflareStorageDeprovisioner({
+      projectDir: KIT_ROOT,
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
       project: PROJECT,
@@ -219,7 +223,7 @@ describe("CloudflareStorageDeprovisioner", () => {
 describe("the committed sweep worker template", () => {
   /** The real file `deployWorker` reads — parsed exactly as the provisioner parses it. */
   async function committedTemplate(): Promise<WorkflowHostTemplate> {
-    const dir = dirname(kitSource("@pithy-sh/storage/src/workflows/worker"));
+    const dir = dirname(kitSource(KIT_ROOT, "@pithy-sh/storage/src/workflows/worker"));
     return parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
   }
 
@@ -271,6 +275,7 @@ describe("teardown refuses an unconfirmed account", () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     getWorker.mockResolvedValue(null);
     const stranger = new CloudflareStorageDeprovisioner({
+      projectDir: KIT_ROOT,
       cf,
       project: PROJECT,
       account: { accountId: "acct-stranger", confirmation: "ambient" },
@@ -287,6 +292,7 @@ describe("teardown refuses an unconfirmed account", () => {
     const { cf, getWorker, deleteWorker } = fakeCf();
     getWorker.mockResolvedValue({ id: "acme-prod-storage-sweep" });
     const ours = new CloudflareStorageDeprovisioner({
+      projectDir: KIT_ROOT,
       cf,
       project: PROJECT,
       account: { accountId: "acct-ours", confirmation: "named" },

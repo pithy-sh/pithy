@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { type CliAuditEmit, type CliAuditEvent, createCliAudit } from "../audit/cliAudit";
 import { sourceFiles } from "../ci/sourceFiles";
 import type { SeedDriver } from "../seed/drivers";
+import { linkKitPackages } from "../test-utils/linkKit";
 import { connectionRegistry, openConnectionRegistry } from "./registry";
 
 const JWK = { kty: "OKP", crv: "Ed25519", x: "kHo4iZ3rG3Jm2m7L9pQwXyZ0aBcDeFgHiJkLmNoPqRs" } as const;
@@ -465,6 +466,9 @@ describe("openConnectionRegistry", () => {
 
   beforeEach(async () => {
     projectDir = await mkdtemp(join(tmpdir(), "pithy-dashboard-"));
+    // `createCliAudit` resolves `@pithy-sh/audit` from the project since #533, so a fixture composing
+    // audit has to have it installed — which is what an adopter's project has.
+    await linkKitPackages(projectDir, ["audit"]);
     await mkdir(join(projectDir, "apps", "api"), { recursive: true });
     await writeFile(
       join(projectDir, "apps", "api", "wrangler.jsonc"),

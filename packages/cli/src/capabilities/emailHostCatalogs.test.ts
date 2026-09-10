@@ -12,6 +12,7 @@ import { i18n } from "@pithy-sh/i18n/src/capability";
 import { describe, expect, test, vi } from "vitest";
 import { loadEmailCapability } from "../commands/email";
 import type { ResolvedWorker } from "../project/workerScope";
+import { KIT_ROOT } from "../test-utils/kitRoot";
 import { CloudflareEmailProvisioner } from "./emailProvisioner";
 
 /**
@@ -102,6 +103,7 @@ describe("loadEmailCapability", () => {
 describe("CloudflareEmailProvisioner.deployWorker", () => {
   function provisioner(messages: LocaleCatalogs) {
     return new CloudflareEmailProvisioner({
+      projectDir: KIT_ROOT,
       cf: {} as CloudflareClients,
       account: { accountId: "acct-1", confirmation: "pinned" },
       project: "acme",

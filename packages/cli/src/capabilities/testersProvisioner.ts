@@ -10,6 +10,7 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { parse } from "comment-json";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
+import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
 import { runWrangler } from "../project/wrangler";
 import { capabilityLoadError } from "./loadFailure";
@@ -46,16 +47,16 @@ export type TestersProvisionSurface = TestersProvisionModule & TestersResolveMod
  * commands need. Splitting them keeps `pithy testers status` from importing a wrangler template
  * resolver it will never call.
  */
-export async function loadTestersProvisioning(): Promise<TestersProvisionSurface> {
+export async function loadTestersProvisioning(projectDir: string): Promise<TestersProvisionSurface> {
   try {
     const [provision, resolve, specs] = await Promise.all([
-      import("@pithy-sh/testers/src/provision/provisionTesters"),
-      import("@pithy-sh/testers/src/provision/resolveTestersConfig"),
-      import("@pithy-sh/testers/src/workflows/specs"),
+      kitImport<TestersProvisionModule>(projectDir, "@pithy-sh/testers/src/provision/provisionTesters"),
+      kitImport<TestersResolveModule>(projectDir, "@pithy-sh/testers/src/provision/resolveTestersConfig"),
+      kitImport<TestersSpecsModule>(projectDir, "@pithy-sh/testers/src/workflows/specs"),
     ]);
     return { ...provision, ...resolve, ...specs };
   } catch (error) {
-    throw capabilityLoadError("testers", "@pithy-sh/testers", error);
+    throw capabilityLoadError("testers", "@pithy-sh/testers", error, projectDir);
   }
 }
 
@@ -65,11 +66,11 @@ export async function loadTestersProvisioning(): Promise<TestersProvisionSurface
  * Resolved from the module rather than assembled from a path, so it keeps working however the adopter's
  * package manager laid `node_modules` out.
  */
-async function testersWorkerDir(): Promise<string> {
+async function testersWorkerDir(projectDir: string): Promise<string> {
   try {
-    return dirname(kitSource("@pithy-sh/testers/src/workflows/worker"));
+    return dirname(kitSource(projectDir, "@pithy-sh/testers/src/workflows/worker"));
   } catch (error) {
-    throw capabilityLoadError("testers", "@pithy-sh/testers/src/workflows/worker", error);
+    throw capabilityLoadError("testers", "@pithy-sh/testers/src/workflows/worker", error, projectDir);
   }
 }
 
@@ -85,6 +86,12 @@ export interface TestersEnvResources {
 export type ResolveTestersEnv = (env: ManagedEnvironment) => Promise<TestersEnvResources>;
 
 export interface CloudflareTestersProvisionerOptions {
+  /**
+   * The project root — the directory `pithy.config.ts` was read from, and the base every
+   * `@pithy-sh/testers` module is resolved against. Not derivable from `project`, which is a *name*;
+   * see `project/kitResolve.ts` for why a resolution may not fall back to the CLI's own copy.
+   */
+  readonly projectDir: string;
   readonly cf: CloudflareClients;
   /**
    * The account this provisions into, and what vouches for it (#378).
@@ -115,6 +122,7 @@ export interface CloudflareTestersProvisionerOptions {
 
 /** The live provisioner. Every step is idempotent, so provisioning is safe to re-run. */
 export class CloudflareTestersProvisioner implements TestersProvisioner, TestersDeprovisioner {
+  readonly #projectDir: string;
   readonly #cf: CloudflareClients;
   readonly #account: ConfirmedAccount;
   readonly #project: string;
@@ -125,6 +133,7 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
   readonly #audit: CliAuditEmit;
 
   constructor(options: CloudflareTestersProvisionerOptions) {
+    this.#projectDir = options.projectDir;
     this.#cf = options.cf;
     this.#account = options.account;
     this.#project = options.project;
@@ -147,9 +156,9 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
 
   /** Resolve the env's wrangler config from the committed template + ids, then `wrangler deploy`. */
   async deployWorker(env: ManagedEnvironment): Promise<void> {
-    const { resolveTestersConfig, testersWorkerName } = await loadTestersProvisioning();
+    const { resolveTestersConfig, testersWorkerName } = await loadTestersProvisioning(this.#projectDir);
     const { appDatabaseId, suppressionDatabaseId } = await this.#resolveEnv(env);
-    const dir = await testersWorkerDir();
+    const dir = await testersWorkerDir(this.#projectDir);
     const template = parse(await readFile(join(dir, "wrangler.jsonc"), "utf8")) as unknown as WorkflowHostTemplate;
 
     const config = resolveTestersConfig(template, {
@@ -213,7 +222,7 @@ export class CloudflareTestersProvisioner implements TestersProvisioner, Testers
    * production Worker. The lookup does not even happen unless something vouches for the account.
    */
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
-    const { testersWorkerName } = await loadTestersProvisioning();
+    const { testersWorkerName } = await loadTestersProvisioning(this.#projectDir);
     const name = testersWorkerName(this.#project, env);
     if (
       await findOnConfirmedAccount({

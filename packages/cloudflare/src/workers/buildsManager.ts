@@ -5,6 +5,8 @@ import { z } from "zod";
 import {
   CloudflareInvalidResponseError,
   CloudflareRequestError,
+  cloudflareApiErrors,
+  cloudflareRefusal,
   cloudflareRequest,
   decodeResponse,
   messageOf,
@@ -32,7 +34,17 @@ const NOT_FOUND = 12000;
 const CfEnvelope = z.object({
   result: z.unknown(),
   success: z.boolean().optional(),
-  errors: z.array(z.object({ code: z.number().optional(), message: z.string().optional() }).loose()).optional(),
+  errors: z
+    .array(
+      z
+        .object({
+          code: z.number().optional(),
+          message: z.string().optional(),
+          documentation_url: z.string().optional(),
+        })
+        .loose(),
+    )
+    .optional(),
 });
 
 /** Arguments for `createRepoConnection`. */
@@ -138,12 +150,15 @@ export class CloudflareBuildsManager extends CloudflareManager {
     // CF signals failure two ways: a non-2xx status, or a 200 body with `success: false`.
     const apiReportedFailure = envelope.success && envelope.data.success === false;
     if (!response.ok || apiReportedFailure) {
-      const codes = envelope.success
-        ? (envelope.data.errors ?? []).map((e) => e.code).filter((c): c is number => c !== undefined)
-        : [];
+      const errors = envelope.success ? (envelope.data.errors ?? []) : [];
+      const codes = errors.map((e) => e.code).filter((c): c is number => c !== undefined);
       const marker = codes.length > 0 ? `[cf-codes:${codes.join(",")}] ` : "";
-      throw new CloudflareRequestError({
-        message: `Cloudflare Builds returned ${response.status}.`,
+      // The shared composer, so the one manager on the raw-`fetch` escape hatch refuses with the same
+      // projection of Cloudflare's `errors[]` as the 133 calls that go through `cloudflareRequest`.
+      throw cloudflareRefusal({
+        problem: `Cloudflare Builds returned ${response.status}.`,
+        apiErrors: cloudflareApiErrors(errors),
+        status: response.status,
         detail: `${marker}${method} ${path} → ${response.status}: ${text}`.slice(0, 2000),
       });
     }

@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { guaranteedErrorParams } from "@pithy-sh/core/src/error/messageParams";
 import { ErrorPayload, kitErrorStatus } from "@pithy-sh/core/src/error/payload";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import type { MessageParams } from "@pithy-sh/core/src/i18n/catalog";
 import {
   decodeWorkflowStepMessage,
   MAX_WORKFLOW_STEP_TEXT,
@@ -250,6 +252,34 @@ export const WORKFLOW_FAILED_STATUS = 500 as const;
  * the boundary — and nothing derived from the step's own `detail` is in it, because the step's
  * `detail` never left the step. The only fields promoted from the far side are `message` and `action`,
  * both already public, both already proved kit-authored by `kitSentence`.
+ *
+ * ## `params` did not cross either, and a recovered code still has to keep their promise
+ *
+ * `core`'s `GUARANTEED_ERROR_PARAMS` states the names a code's throw sites pass on **every** path, and
+ * a locale writes `{apiAnswer}` into its sentence against that statement. Re-raising a recovered code
+ * here is a throw site like any other — it just happens to be one whose inputs came over a wire that
+ * carries three fields. So every guaranteed name is supplied, as the empty string: `interpolate` leaves
+ * an unsupplied placeholder written out, and `{apiAnswer}` on a Spanish reader's screen is the exact
+ * defect the declaration exists to prevent. Empty is also the honest value — it is what the catalogs
+ * define as *no answer to quote*, and the answer genuinely did not cross.
+ *
+ * **One reader does lose something by it, and it is worth naming rather than glossing.** An earlier
+ * version of this comment said nothing was lost, on the grounds that the API's words are already inside
+ * the promoted English `message`. That is true of the operator's terminal, the `--json` line and any
+ * client with no catalog — but the contract is `t.maybe(payload.code, payload.params) ?? payload.message`
+ * (`core/src/i18n/translator.ts`), and `maybe` returns null only on a catalog **miss**. `es` has an entry
+ * for this code, so a Spanish reader gets the translated sentence with an empty `{apiAnswer}` rather
+ * than falling through to the English one that carries the answer:
+ *
+ * ```
+ * at the CLI          No se ha podido completar la llamada a Cloudflare: 10000 Authentication error.
+ * across a step       No se ha podido completar la llamada a Cloudflare.
+ * ```
+ *
+ * The step channel carries three fields and `params` is not one of them, so closing this means widening
+ * the channel or re-parsing the promoted sentence — the first is a change to a durable format, the
+ * second reconstructs data from prose. Neither belongs in a re-raise, so the gap stands and is written
+ * down here instead of being claimed away.
  */
 export function terminalWorkflowError(args: {
   /** What the instance's steps said, or `null` when no step reported a failure. */
@@ -267,7 +297,7 @@ export function terminalWorkflowError(args: {
 
   const status = failure?.code === undefined ? undefined : kitErrorStatus(failure.code);
   if (failure?.sentence !== undefined && failure.code !== undefined && status !== undefined) {
-    const candidate = { code: failure.code, status, message, action, detail };
+    const candidate = { code: failure.code, status, message, action, detail, params: crossedParams(failure.code) };
     // Parsed rather than trusted. A recovered code is a string from a Worker we did not write, and one
     // kit member (`validation/invalid_input`) requires a field this boundary has no way to supply — so
     // a payload that would not validate must not be thrown from the error path. It falls through to
@@ -277,4 +307,17 @@ export function terminalWorkflowError(args: {
   }
 
   return new PithyError({ code: WORKFLOW_FAILED_CODE, status: WORKFLOW_FAILED_STATUS, message, action, detail });
+}
+
+/**
+ * The `params` a re-raised code owes a translating client: every name its throw sites guarantee, empty.
+ *
+ * `undefined` when the code guarantees none, so a payload for the other 60-odd codes is byte-identical
+ * to what it was — an empty `params` object on every recovered error would be a new field on the wire
+ * for no reader.
+ */
+function crossedParams(code: string): MessageParams | undefined {
+  const names = guaranteedErrorParams(code);
+  if (names.length === 0) return undefined;
+  return Object.fromEntries(names.map((name) => [name, ""]));
 }
