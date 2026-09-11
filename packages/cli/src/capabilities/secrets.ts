@@ -18,6 +18,7 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { allCapabilities, type WorkerConfig } from "../project/config";
+import { type UnresolvedEnvironment, unresolvedLines } from "./secretApplicability";
 
 /** The audit action for a value-touching secret command, by mode. Never carries the secret's value. */
 const SECRET_WRITE_ACTION: Record<SecretWriteCommand["mode"], string> = {
@@ -327,6 +328,36 @@ export function secretListRows(registry: SecretRegistry, inapplicable: ReadonlyM
       const axes = `${entry.backend} · ${entry.scope}${entry.rotatable ? " · rotatable" : ""}${entry.keyed ? " · keyspace" : ""}`;
       return { name, description: axes, applies: true };
     });
+}
+
+/**
+ * **Which environments this list was decided from, when it was not all of them (#548).**
+ *
+ * Whether a secret applies is a property of the composition, and a project may hold one per environment.
+ * An environment whose `pithy.config.ts` throws produced no composition, so it said nothing about any name
+ * and the marks above are drawn from the environments that remain. That is the correct answer — an
+ * environment that will not load has a broken config, not a requirement — and it is an answer the operator
+ * has to be told the shape of, because a credential only that environment needs may be marked *not
+ * applicable* on the strength of the environments that did compose.
+ *
+ * It used to be worse and quieter: a non-composition contributed *every name in reach*, which under
+ * "in reach anywhere wins" beat every real one. The first project to run #541 had a `prod` throwing
+ * `Billing is not configured for this environment`, and `ls` printed the unmarked pre-#541 list on every
+ * run with nothing saying why. Now it marks, and says what it could not ask.
+ *
+ * Empty when every environment composed, which is the ordinary case and prints no line at all.
+ *
+ * The head and the reasons are {@link unresolvedLines}', shared with `pithy doctor` — one fact about one
+ * project, worded once. Only the closing sentence is this command's: `ls` **marks** where doctor
+ * **filters**, so the risk each one owes its reader is the opposite of the other's.
+ */
+export function unresolvedNote(unresolved: readonly UnresolvedEnvironment[]): string {
+  if (unresolved.length === 0) return "";
+  return [
+    "",
+    ...unresolvedLines(unresolved),
+    "A secret only those environments need may be marked not applicable above. Run pithy doctor.",
+  ].join("\n");
 }
 
 /** The `ls` / `ls --check` view: the declared names (keyspaces included), the audit, and the gate. */

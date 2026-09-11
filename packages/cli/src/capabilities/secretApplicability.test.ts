@@ -5,15 +5,17 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { FreshCopyRefused } from "../project/config";
+import { FreshCopyRefused, loadWorkerConfig, type WorkerConfig } from "../project/config";
 import type { BindingDeclines } from "./reconcile";
 import {
   type ApplicabilityWorker,
   declaredSecrets,
   projectSecretApplicability,
   secretApplicability,
+  unresolvedLines,
 } from "./secretApplicability";
 
 /** A credential bundle whose whole purpose is reaching one bucket. */
@@ -367,8 +369,170 @@ describe("projectSecretApplicability — across environments", () => {
     // Three environments are declared once `dev` is added, and this project has one Worker — so the
     // unfixed sweep made three doomed copies to reach the same answer.
     expect(attempts).toBe(1);
-    // And the answer is the permissive one: nothing was composed, so nothing is claimed, and every surface
-    // renders what it rendered before #541 rather than marking a name on a composition nobody could take.
+    // And nothing is marked, because nothing composed — see the no-environment-composed case below for
+    // why that is an absence of votes rather than a fallback policy.
     expect(applicability.project.size).toBe(0);
+  });
+
+  /**
+   * **Only a composition votes, and an environment that throws is not one (#548).**
+   *
+   * Whether a secret applies is a property of the **composition** — which capabilities are composed and
+   * how they are configured. Environments enter into it only because an adopter may gate a provider on
+   * `compositionEnvironment()`, so one project can hold three compositions, folded *in reach anywhere
+   * wins*.
+   *
+   * An environment whose `pithy.config.ts` throws has no capabilities, no registry and no configuration,
+   * so it has no requirement about any name. It used to contribute *every name in reach* — and under that
+   * fold a thing that does not exist beat every composition that does. One half-configured environment
+   * turned the whole of #541 off: the project that found it had a `prod` throwing `Billing is not
+   * configured for this environment`, and `pithy secrets ls` printed the unmarked pre-#541 list on every
+   * run, saying nothing.
+   *
+   * The old worry is answered rather than traded away. A credential only `prod` needs is not wrongly
+   * marked, because a `prod` that does not compose is not a `prod` that needs anything — it is a config to
+   * fix, which `pithy doctor` now raises as a fault of its own. And the guard that keeps this from
+   * becoming *mark everything* is the last test here: among the compositions that exist, in reach anywhere
+   * is still in reach.
+   */
+  describe("and one that would not compose", () => {
+    /** The real loader, for every environment the case is not about. */
+    const composing = (workerDir: string) => loadWorkerConfig(workerDir, { fresh: true });
+
+    /**
+     * A config that refuses in one environment — the shape of the project that found this. The refusal is
+     * a `PithyError` carrying all four fields, so what reaches an operator is a choice this module makes
+     * rather than whatever the throw site happened to put first.
+     */
+    function refusing(environment: string): (workerDir: string) => Promise<WorkerConfig> {
+      return async (workerDir) => {
+        if (process.env.ENVIRONMENT !== environment) return composing(workerDir);
+        throw new InternalError({
+          message: "Billing is not configured for this environment.",
+          action: "Set payments.billing in apps/api/pithy.config.ts, or drop prod from environments.",
+          detail: "throw at apps/api/pithy.config.ts:14:9",
+        });
+      };
+    }
+
+    test("names the environment that would not compose", async () => {
+      await writeProject(["staging", "prod"]);
+      const applicability = await projectSecretApplicability(dir, { loadConfig: refusing("prod") });
+      expect(applicability.unresolved.map((entry) => entry.environment)).toEqual(["prod"]);
+    });
+
+    /**
+     * **The reason is `action`, and never `detail`.** That ordering is the error taxonomy's rather than a
+     * preference: `action` is the operator's field — it names the config, the setting, the command — and
+     * `detail` is the throw site's, for logs and audit alone (`CLAUDE.md` §Errors). This line goes to a
+     * terminal and into `--json`, so a `detail` here would be the boundary leaking through a new surface.
+     */
+    test("reports the operator's action, never the throw site's detail", async () => {
+      await writeProject(["staging", "prod"]);
+      const applicability = await projectSecretApplicability(dir, { loadConfig: refusing("prod") });
+      expect(applicability.unresolved[0]?.reason).toBe(
+        "Set payments.billing in apps/api/pithy.config.ts, or drop prod from environments.",
+      );
+      expect(JSON.stringify(applicability.unresolved)).not.toContain("pithy.config.ts:14:9");
+    });
+
+    /**
+     * **The load-bearing assertion: a non-composition casts no vote, so the compositions decide.**
+     *
+     * `staging` and `dev` both compose and both say `auth()` enables neither provider. `prod` throws, so it
+     * says nothing — and what the two real compositions ruled out is marked. Under the old fallback this
+     * map was empty, on every run, because the environment that did not exist outvoted the two that did.
+     */
+    test("marks what the composing environments ruled out, whatever the one that threw would have said", async () => {
+      await writeProject(["staging", "prod"]);
+      const applicability = await projectSecretApplicability(dir, { loadConfig: refusing("prod") });
+      expect(applicability.project.get("auth-apple-credentials")).toBe("auth() does not enable the apple provider");
+      expect(applicability.project.get("auth-google-credentials")).toBe("auth() does not enable the google provider");
+      expect(applicability.byWorker.get("api")?.get("auth-apple-credentials")).toBeDefined();
+    });
+
+    /**
+     * **And the guard that keeps the rule from becoming *mark everything*.** In reach anywhere is still in
+     * reach **among the compositions that exist**: `prod` composes here and enables google, so the
+     * credential stays unmarked however many other environments would have ruled it out. Lose this and the
+     * correction becomes the bug it replaced, pointing the other way.
+     */
+    test("a name one composing environment still reaches stays in reach", async () => {
+      await writeProject(["staging", "prod"]);
+      const applicability = await projectSecretApplicability(dir, { loadConfig: refusing("staging") });
+      expect(applicability.unresolved.map((entry) => entry.environment)).toEqual(["staging"]);
+      expect(applicability.project.has("auth-google-credentials")).toBe(false);
+      // The one no composition reaches is still marked. Both halves, one sweep.
+      expect(applicability.project.get("auth-apple-credentials")).toBe("auth() does not enable the apple provider");
+    });
+
+    /** And the same project, asked when every environment composes: nothing to report, and the marking. */
+    test("a project whose every environment composes reports none and marks normally", async () => {
+      await writeProject(["staging", "prod"]);
+      const applicability = await projectSecretApplicability(dir);
+      expect(applicability.unresolved).toEqual([]);
+      expect(applicability.project.get("auth-apple-credentials")).toBe("auth() does not enable the apple provider");
+      expect(applicability.project.has("auth-google-credentials")).toBe(false);
+    });
+
+    /**
+     * **No environment composed at all: nothing is marked, and `unresolved` is what says why.**
+     *
+     * Not a fallback policy — there is simply nothing to fold, because no composition said anything about
+     * any name. The sweep stops after the first refusal, since every remaining attempt is another doomed
+     * write into somebody's source tree, so the environments it never reached owe the same explanation as
+     * the one that refused: reporting `staging` alone would read as *two thirds of your configuration was
+     * asked and found nothing*, which is the silence again in smaller print.
+     */
+    test("a refused checkout marks nothing and reports every environment, attempted or not", async () => {
+      await writeProject(["staging", "prod"]);
+      const applicability = await projectSecretApplicability(dir, {
+        loadConfig: async () => {
+          throw new FreshCopyRefused({
+            message: "Could not re-read apps/api.",
+            action: "Make the checkout writable.",
+            detail: "EACCES",
+          });
+        },
+      });
+      // Declared first, then the local one — the order `applicabilityEnvironments` walks.
+      expect(applicability.unresolved).toEqual([
+        { environment: "staging", reason: "Make the checkout writable." },
+        { environment: "prod", reason: "Make the checkout writable." },
+        { environment: "dev", reason: "Make the checkout writable." },
+      ]);
+      expect(applicability.project.size).toBe(0);
+      expect(applicability.byWorker.size).toBe(0);
+    });
+  });
+});
+
+/**
+ * **One fact about one project, worded once (#548).**
+ *
+ * The head states what happened and the lines under it name each environment and its config's own action.
+ * The consequence is each surface's own closing sentence, because the two run opposite risks — `ls` marks,
+ * so its reader may see a mark an unloaded environment would have removed; doctor filters, so its reader
+ * may see work that environment would have settled.
+ */
+describe("unresolvedLines", () => {
+  test("says nothing when every environment composed", () => {
+    expect(unresolvedLines([])).toEqual([]);
+  });
+
+  test("names each environment under a head line that counts them", () => {
+    expect(unresolvedLines([{ environment: "prod", reason: "Set payments.billing." }])).toEqual([
+      "One environment did not compose, so this answer is drawn from the rest.",
+      "  prod: Set payments.billing.",
+    ]);
+  });
+
+  test("counts more than one", () => {
+    const lines = unresolvedLines([
+      { environment: "staging", reason: "Make the checkout writable." },
+      { environment: "prod", reason: "Make the checkout writable." },
+    ]);
+    expect(lines[0]).toBe("2 environments did not compose, so this answer is drawn from the rest.");
+    expect(lines).toHaveLength(3);
   });
 });

@@ -2391,6 +2391,91 @@ describe("dev secrets file", () => {
   });
 });
 
+/**
+ * **A `pithy.config.ts` that will not load for a declared environment (#548).**
+ *
+ * A config is code, and the kit teaches it to read the environment it is being composed for, so one can
+ * load under `dev` and throw under `prod`. The project that found this had exactly that — `prod` threw
+ * `Billing is not configured for this environment` — and the only thing in the run that noticed was
+ * `projectSecretApplicability`, which fed the failure back into its own fold as *every name in reach* and
+ * turned #541 off in silence.
+ *
+ * The composition no longer votes, and the fault is reported **here**, on its own terms. Not as a footnote
+ * under `Dev secrets:`: the reader does not have a narrow secret listing, they have a Worker whose config
+ * does not load for a deployed environment, and `deploy`, `migrate`, `provision` and `dev` all fail the
+ * same way. So it gets its own block, near the declaration it is about, and it fails the exit.
+ */
+describe("environment configs", () => {
+  const unloadable = {
+    unresolved: [{ environment: "prod", reason: "Set payments.billing in apps/api/pithy.config.ts." }],
+  };
+
+  test("a project whose every environment composes says nothing and stays terse", async () => {
+    const report = await buildDoctorReport(
+      healthyOptions({ checkEnvironmentConfigs: async () => ({ unresolved: [] }) }),
+    );
+    expect(renderDoctorText(report, "/home/u")).not.toContain("Environment configs:");
+    expect(doctorExitCode(report)).toBe(0);
+  });
+
+  test("names the environment, the problem, and the config's own action", async () => {
+    const report = await buildDoctorReport(healthyOptions({ checkEnvironmentConfigs: async () => unloadable }));
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("Environment configs:");
+    expect(text).toContain("env.prod");
+    expect(text).toContain("pithy.config.ts throws when it is composed");
+    expect(text).toContain("Set payments.billing in apps/api/pithy.config.ts.");
+  });
+
+  /**
+   * **The closing line is the finding's real size.** This is reached through a secret-applicability sweep,
+   * so the temptation is to describe it as a narrower secret list. Every command that composes that
+   * environment fails the same way, and the narrowed lists further down are the smallest consequence.
+   */
+  test("says that every command composing that environment fails the same way", async () => {
+    const report = await buildDoctorReport(healthyOptions({ checkEnvironmentConfigs: async () => unloadable }));
+    expect(renderDoctorText(report, "/home/u")).toContain("Every command that composes prod fails the same way.");
+  });
+
+  /**
+   * **It fails the exit**, on the standard `doctorExitCode` holds every gate to: the fault is established
+   * from the checkout's own files, no account was reached, nothing was inferred — and there is no day-one
+   * state to spare, because a freshly scaffolded project composes in every environment it declares.
+   */
+  test("fails the exit", async () => {
+    expect(
+      doctorExitCode(await buildDoctorReport(healthyOptions({ checkEnvironmentConfigs: async () => unloadable }))),
+    ).toBe(1);
+  });
+
+  /** And `--json` carries it as its own key, so a script never has to read the sentence to find it. */
+  test("--json carries the environments and their reasons", async () => {
+    const report = await buildDoctorReport(healthyOptions({ checkEnvironmentConfigs: async () => unloadable }));
+    const json = renderDoctorJson(report) as {
+      environmentConfigs: { unresolved: { environment: string; reason: string }[]; detail: string[] };
+    };
+    expect(json.environmentConfigs.unresolved).toEqual(unloadable.unresolved);
+    expect(json.environmentConfigs.detail).toEqual(["prod: Set payments.billing in apps/api/pithy.config.ts."]);
+  });
+
+  /**
+   * A probe that threw establishes nothing, so it claims nothing: the resolution behind this never throws,
+   * which makes a throw here this report's own fault rather than a fact about any environment. Saying a
+   * config does not load on the strength of it would send an operator to a file that is fine.
+   */
+  test("a probe that throws claims no unloadable environment", async () => {
+    const report = await buildDoctorReport(
+      healthyOptions({
+        checkEnvironmentConfigs: async () => {
+          throw new Error("the sweep blew up");
+        },
+      }),
+    );
+    expect(report.environmentConfigs?.unresolved).toEqual([]);
+    expect(doctorExitCode(report)).toBe(0);
+  });
+});
+
 describe("worker names", () => {
   /** The hand-rename the dashboard did: `apps/board`, still deploying and stamping as `api`. */
   const handRenamed = {

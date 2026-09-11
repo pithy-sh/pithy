@@ -70,6 +70,19 @@ auth({ google: { enabled: compositionEnvironment() === "prod" } })
 
 That credential is unreachable in `dev` and `staging` and read on every sign-in in `prod`, and reporting it as *not applicable* would hide work you have to do. `ls` composes each Worker once per environment your root config declares, plus `dev`, and takes the union: a secret needed in **any** of them applies. There is no `--env` on `ls` or on [`pithy doctor`](./doctor.md), and that is the reason — a secret is one value per project, so the answer is the project's rather than the run's. A project whose `environments` never includes `prod` never composes under it, and the same line is then marked, which is correct: nothing there will ever run under an environment the project does not declare.
 
+**Only a composition has an opinion, so an environment that will not compose has none.** Your `pithy.config.ts` is code, so it can throw — a half-configured `prod` that refuses with *Billing is not configured for this environment* is the ordinary case. That environment produced no composition: no capabilities, no registry, no configuration, and so nothing that could need a secret. It is left out of the union, and the marks come from the environments that did compose:
+
+```
+auth-github-credentials     d1 · environment
+auth-apple-credentials      not applicable — auth() does not enable the apple provider
+
+One environment did not compose, so this answer is drawn from the rest.
+  prod: Set payments.billing in apps/api/pithy.config.ts, or drop prod from environments.
+A secret only those environments need may be marked not applicable above. Run pithy doctor.
+```
+
+The reason is that error's own action line. **The note is there because this carries a risk**: a credential only `prod` reads can be marked *not applicable* on the strength of `dev` and `staging`. The answer is to fix the config rather than to guess — a `prod` that does not load does not have requirements, it has a fault, and [`pithy doctor`](./doctor.md) reports it as one under `Environment configs:`. Fix it and the marks are decided from all three.
+
 **A value never comes from a flag.** `create` and `update` read the value from stdin when it is piped, and from a masked prompt when one can be drawn — and refuse when neither is available, rather than reading your terminal in silence. A flag would leave a live credential in shell history and in every process list on the machine. Nothing here prints a value back, on any subcommand, in either output mode.
 
 **A `json` secret is asked for one field at a time.** On a terminal, `create` and `update` walk the entry's schema and ask per field, using that field's own description as the question. Every field is masked, with no exceptions: these values arrive by paste, so masking costs nothing an operator was going to use, and a field wrongly treated as public is a credential in a screen share. An empty answer is not a value — it is left out, and a field the schema requires is then named on the problem line by the same validation that checks a piped document, so you know which of six questions to answer again. The name only, never the value.
@@ -226,6 +239,11 @@ An `unrecorded` run also writes one `{ "error": … }` line to stderr with code 
 | `secrets` | object[] | Every declared name, sorted. |
 | `secrets[].name` | string | The registry key — a secret name, or a keyspace. |
 | `secrets[].description` | string | The entry's routing facts, joined by ` · `: backend (`d1` or `cf-secrets-store`), then scope (`environment` or `global`), then `rotatable` when it is, then `keyspace` when the entry is keyed. |
+| `unresolved` | object[] | The environments whose `pithy.config.ts` would not compose. Empty on an ordinary project. |
+| `unresolved[].environment` | string | The environment that could not be composed. |
+| `unresolved[].reason` | string | That failure's action line — what to change to fix it. |
+
+**`unresolved` is a fact about the answer, not about any one secret**, which is why it is its own key rather than a field on a row. Non-empty means every `applies` on this list was decided from fewer environments than the project declares: the listed ones produced no composition, so they had no say. A consumer acting on `applies` should treat a non-empty `unresolved` as *decided from part of the project* — a row marked `applies: false` may be one an unloaded environment would have kept.
 
 A `keyspace` marker is the one entry an operator must not try to set: its members are written per key, in-Worker, by the application that mints them — through `putKeyed` / `rotateKeyed` / `deleteKeyed` on the accessor it already holds. See `@pithy-sh/secrets`' README.
 
