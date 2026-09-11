@@ -11,7 +11,7 @@ pithy secrets create <name> [--env <env>] [--json]
 pithy secrets update <name> [--env <env>] [--json]
 pithy secrets rotate <name> [--env <env>] [--dry-run] [--json]
 pithy secrets rm <name> [--env <env>] [--json]
-pithy secrets ls [--json]
+pithy secrets ls [--all] [--json]
 pithy secrets edit [--json]
 pithy secrets provision [--json]
 pithy secrets deprovision [--keys] [--json]
@@ -46,23 +46,34 @@ There is no `--worker`. Every subcommand reads the **project's** registry: each 
 
 The registry is the definition. `pithy secrets` never invents a name — a secret must be declared by a capability the Worker composes, and an undeclared one is refused before anything is sent. Every capability's declarations count, not just the secrets capability's own: `auth`'s session secret and OAuth credentials, `email`'s link signing key and `payments`' provider credentials are all declared by the capability that reads them, and all of them are yours to create here.
 
-**`ls` lists every declared secret, and marks the ones this project cannot reach.** A capability declares its secrets whether or not your configuration uses them: `auth` declares four OAuth credentials whichever providers you enabled, and `support` declares its R2 credentials whether or not you declined the bucket they presign. Those rows read as *not applicable*, with the reason drawn from your configuration rather than from prose — so the list still says what exists, and it also says what you would have to change to turn one on.
+**`ls` lists the secrets your configuration actually uses.** A capability declares its secrets whether or not you use them — `auth` declares four OAuth credentials whichever providers you enabled, `support` declares its R2 credentials whether or not anything will ever write to the bucket — and the ones your configuration will never read are **not listed**. This is a checklist of what to go and set, and a project running Google and GitHub has two OAuth credentials to think about, not four.
 
 ```
 auth-github-credentials     d1 · environment
+auth-google-credentials     d1 · environment
+auth-session-secret         d1 · environment · rotatable
+
+2 secrets this configuration will never read are not listed. pithy secrets ls --all shows them, and why.
+```
+
+Hiding is never silent: the count is always there, so *nothing applies here* can never be mistaken for *the CLI stopped showing me things*.
+
+**`--all` adds them back, each with its reason**, drawn from your configuration rather than from prose — so *why is apple missing* is one flag away, and it answers what you would change to turn one on:
+
+```
 auth-apple-credentials      not applicable — auth() does not enable the apple provider
 support-r2-credentials      not applicable — SUPPORT_BUCKET declined in pithy.config.ts
 ```
 
-Under `--json` every row carries `applies` and, when it is `false`, `reason` — so nothing has to read the sentence:
+`--all` applies to `--json` too, rather than only the terminal — an agent is asking the same question a person is. Every row carries `applies` and, when it is `false`, `reason`, so nothing has to read the sentence; `hidden` counts what the flag would add:
 
 ```json
-{"command":"secrets ls","secrets":[{"name":"auth-github-credentials","description":"d1 · environment","applies":true},{"name":"support-r2-credentials","description":"not applicable — SUPPORT_BUCKET declined in pithy.config.ts","applies":false,"reason":"SUPPORT_BUCKET declined in pithy.config.ts"}]}
+{"command":"secrets ls","secrets":[{"name":"auth-github-credentials","description":"d1 · environment","applies":true}],"hidden":2,"unresolved":[]}
 ```
 
-A secret is marked only when **no** Worker in the project can reach it. One Worker that still reads it is enough to leave the row alone, because the value is one value and that Worker needs it. [`pithy doctor`](./doctor.md) takes the other branch with the same answer: it is a fault report, so it leaves these out of *"No dev value for …"* entirely rather than listing something you cannot act on.
+A secret is hidden only when **no** Worker in the project can reach it. One Worker that still reads it is enough to leave the row alone, because the value is one value and that Worker needs it. [`pithy doctor`](./doctor.md) takes the other branch with the same answer: it is a fault report, so it leaves these out of *"No dev value for …"* entirely rather than listing something you cannot act on.
 
-**A secret is marked only when no *environment* can reach it either.** A `pithy.config.ts` is code, and it may read the environment it is being composed for — `pithy init` scaffolds exactly that with `originFor(compositionEnvironment(), DOMAINS)`. So a project may enable a provider for production alone:
+**A secret is hidden only when no *environment* can reach it either.** A `pithy.config.ts` is code, and it may read the environment it is being composed for — `pithy init` scaffolds exactly that with `originFor(compositionEnvironment(), DOMAINS)`. So a project may enable a provider for production alone:
 
 ```ts
 auth({ google: { enabled: compositionEnvironment() === "prod" } })

@@ -16,6 +16,7 @@ import type { WorkerConfig } from "../project/config";
 import { unresolvedLines } from "./secretApplicability";
 import {
   assertNotTheMasterKey,
+  hiddenNote,
   resolveSecretRegistry,
   runSecretsList,
   runSecretWrite,
@@ -543,15 +544,35 @@ describe("secretListRows", () => {
   });
 
   /**
-   * **The axes are replaced, not appended to.** `d1 · environment` describes where a value would be
-   * stored, and for a secret this project will never hold a value for there is nothing that would be
-   * stored. The mark is the whole answer, so it is the whole column.
+   * **The headline of #552, and the reason `ls` exists.** This listing reads as a checklist of what a
+   * project has to go and set. A line saying *not applicable* is still a line on that checklist, so it
+   * re-raises a settled question on every run — which is the complaint #541 opened with, and marking
+   * rather than hiding only changed the wording of it. A project running Google and GitHub has two OAuth
+   * credentials to think about, not four.
    */
-  test("an unreachable secret reads as the reason instead of the axes", () => {
+  test("a secret this configuration will never read is not listed at all", () => {
     const rows = secretListRows(
       registry,
       new Map([["support-r2-credentials", "SUPPORT_BUCKET declined in pithy.config.ts"]]),
     );
+
+    expect(rows.map((row) => row.name)).toEqual(["auth-github-credentials"]);
+  });
+
+  /**
+   * **`--all` is where completeness lives**, and the reason travels with the name — otherwise *why is
+   * apple missing* has no answer anywhere, which was the one real argument for marking them.
+   *
+   * The axes are replaced, not appended to: `d1 · environment` describes where a value would be stored,
+   * and for a secret this project will never hold a value for there is nothing that would be stored.
+   */
+  test("--all lists it, with the reason in place of the axes", () => {
+    const rows = secretListRows(
+      registry,
+      new Map([["support-r2-credentials", "SUPPORT_BUCKET declined in pithy.config.ts"]]),
+      true,
+    );
+
     expect(rows[1]).toEqual({
       name: "support-r2-credentials",
       description: "not applicable — SUPPORT_BUCKET declined in pithy.config.ts",
@@ -560,13 +581,37 @@ describe("secretListRows", () => {
     });
   });
 
+  // The floor under both: with nothing ruled out, `--all` and the default are the same listing. A filter
+  // that quietly dropped a reachable secret would be the worst outcome of this change, and it is the one
+  // nothing else here would catch.
+  test("with nothing ruled out, --all changes nothing", () => {
+    expect(secretListRows(registry, new Map(), true)).toEqual(secretListRows(registry, new Map()));
+  });
+
   /**
-   * `applies` is what `--json` gates on. The description is one rendered sentence, identical on both
-   * surfaces so the terminal and the JSON line cannot come to say two different things — and `reason`
-   * is beside it so nothing has to parse prose to learn why.
+   * **Hiding is never silent.** The one real cost of filtering is that a reader cannot tell *nothing
+   * applies here* from *the CLI stopped showing me things*, so a count answers it in one line and names
+   * the flag that expands it — one line rather than one per secret, which is what marking cost.
    */
+  test("the count says how many were left out, and names the flag that shows them", () => {
+    expect(hiddenNote(3)).toContain("3 secrets");
+    expect(hiddenNote(3)).toContain("pithy secrets ls --all");
+  });
+
+  test("one reads as one, because a tool that says `1 secrets` is a tool nobody trusts", () => {
+    expect(hiddenNote(1)).toContain("1 secret this configuration will never read is not listed");
+    // Narrowed to the count: `secrets` on its own also matches `pithy secrets ls --all` in the same line.
+    expect(hiddenNote(1)).not.toContain("1 secrets");
+    expect(hiddenNote(1)).toContain("shows it, and why");
+  });
+
+  // The ordinary case for a project that composes what it configures: no line at all.
+  test("nothing hidden says nothing", () => {
+    expect(hiddenNote(0)).toBe("");
+  });
+
   test("every row carries applies, so a consumer never parses the description", () => {
-    const rows = secretListRows(registry, new Map([["support-r2-credentials", "off"]]));
+    const rows = secretListRows(registry, new Map([["support-r2-credentials", "off"]]), true);
     expect(rows.map((row) => row.applies)).toEqual([true, false]);
     expect(rows.map((row) => row.reason)).toEqual([undefined, "off"]);
   });

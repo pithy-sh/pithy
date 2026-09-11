@@ -35,6 +35,7 @@ import { projectSecretApplicability } from "../capabilities/secretApplicability"
 import { mergeSecretBranches, type SecretBranches, secretBranchDeclarations } from "../capabilities/secretBranches";
 import {
   assertNotTheMasterKey,
+  hiddenNote,
   resolveSecretRegistry,
   runSecretWrite,
   secretListRows,
@@ -589,8 +590,15 @@ const rotate = defineCommand({
 });
 
 const ls = defineCommand({
-  meta: { name: "ls", description: "List the declared secrets" },
-  args: { json: { type: "boolean", default: false, description: "Machine-readable output" } },
+  meta: { name: "ls", description: "List the secrets this project's configuration actually uses" },
+  args: {
+    all: {
+      type: "boolean",
+      default: false,
+      description: "Include the secrets this configuration will never read, and why",
+    },
+    json: { type: "boolean", default: false, description: "Machine-readable output" },
+  },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
@@ -598,18 +606,24 @@ const ls = defineCommand({
       // What the configuration says each of those names can reach (#541). Never throws: an answer it
       // could not establish is an empty one, and every row then reads exactly as it did before.
       const applicability = await projectSecretApplicability(projectDir);
-      const rows = secretListRows(registry, applicability.project);
+      // Hidden by default (#552). `--all` applies to both surfaces rather than only the terminal: two
+      // listings that answer the same flag differently is a thing somebody has to learn, and an agent
+      // reading `--json` is asking the same question a person at a terminal is.
+      const rows = secretListRows(registry, applicability.project, args.all);
+      const hidden = args.all ? 0 : applicability.project.size;
       if (args.json) {
         // `unresolved` is its own key rather than a field on a row, because it is a fact about the
         // *answer* and not about any one secret: it says which environments these marks were decided
         // from. An agent acting on `applies` has to be able to tell a whole project's answer from one
         // drawn out of two of its three environments (#548).
         process.stdout.write(
-          `${formatJsonLine({ command: "secrets ls", secrets: rows, unresolved: applicability.unresolved })}\n`,
+          `${formatJsonLine({ command: "secrets ls", secrets: rows, hidden, unresolved: applicability.unresolved })}\n`,
         );
         return;
       }
-      process.stdout.write(`${formatList(rows)}${unresolvedNote(applicability.unresolved)}\n`);
+      process.stdout.write(
+        `${formatList(rows)}${hiddenNote(hidden)}${unresolvedNote(applicability.unresolved, hidden)}\n`,
+      );
     }),
 });
 
