@@ -183,7 +183,7 @@ export class CloudflarePaymentsProvisioner {
         dir,
         env,
         readVars: (script) => this.#cf.workers().getWorkerVars(script),
-        credentials: { accountId: this.#accountId, apiToken: this.#apiToken },
+        account: { accountId: this.#accountId, apiToken: this.#apiToken },
       });
       // A skipped deploy shipped nothing, so it records nothing. An audit row saying a Worker was
       // deployed on a run where wrangler never ran is worse than a gap in the trail.

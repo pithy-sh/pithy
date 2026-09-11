@@ -277,7 +277,7 @@ export function buildManagerDeploy(options: {
       dir,
       env,
       readVars: (script) => cf.workers().getWorkerVars(script),
-      credentials: { accountId, apiToken },
+      account: { accountId, apiToken },
     });
   };
 }

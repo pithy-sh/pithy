@@ -138,14 +138,21 @@ function reasonOf(error: unknown): string {
  * pair handed to `wrangler deploy`: resolving it against the wrong account does not fail, it ships to
  * another company's tenant and exits 0. A pinned `accountId` that disagrees refuses before wrangler is
  * ever spawned (#206).
+ *
+ * **The four lines that used to build that pair here now live in `cloudflareChildEnv`, once (#555).**
+ * They were right here and right in `hostDeploy` and absent in `pithy dev`, which is what a rule kept
+ * at call sites costs. The account is still the argument; only the assembly moved.
+ *
+ * **The resolution still happens here, before the batch, and that is not redundant with the one inside
+ * `runWrangler`.** `deployProject` deliberately does not abort on a single worker's failure, so a
+ * mismatch discovered per spawn would be reported as every worker failing rather than as the one
+ * configuration fault it is — the shape #236 records for whole-project facts consulted per item.
+ * Resolving once at construction keeps #206's refusal a refusal.
  */
 function defaultRunDeploy(account: CloudflareAccountSelection | null): RunDeploy {
-  const vars = cloudflareEnv({ account });
-  const env: Record<string, string> = {};
-  if (vars.CLOUDFLARE_API_TOKEN) env.CLOUDFLARE_API_TOKEN = vars.CLOUDFLARE_API_TOKEN;
-  if (vars.CLOUDFLARE_ACCOUNT_ID) env.CLOUDFLARE_ACCOUNT_ID = vars.CLOUDFLARE_ACCOUNT_ID;
+  cloudflareEnv({ account });
   return async (target, args) => {
-    const { stdout } = await runWrangler(args, { cwd: target.dir, env });
+    const { stdout } = await runWrangler(args, { account, cwd: target.dir });
     return stdout;
   };
 }

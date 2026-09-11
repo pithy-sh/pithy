@@ -3,7 +3,11 @@
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { HOST_WORKERS } from "../capabilities/hostRegistry";
-import { hasCloudflareLogin as defaultHasCloudflareLogin, deliveryPreflight } from "../dev/delivery";
+import {
+  type ChildCloudflareIdentity,
+  projectChildCloudflareIdentity as defaultChildCloudflareIdentity,
+  deliveryPreflight,
+} from "../dev/delivery";
 
 /**
  * Whether local email delivery is **live** — the question `pithy doctor` answers about a machine, and
@@ -40,8 +44,14 @@ export interface LocalDeliveryOptions {
   projectDir: string;
   /** The Workers in scope, with the capability instances doctor already resolved. */
   workers: readonly { capabilities: readonly Capability[] }[];
-  /** Seam: whether Cloudflare credentials resolve at all. Defaults to the dev command's own reader. */
-  hasCloudflareLogin?: (projectDir: string, env: NodeJS.ProcessEnv) => Promise<boolean>;
+  /**
+   * Seam: what a worker `pithy dev` starts would authenticate as. Defaults to the dev command's own reader.
+   *
+   * The *child's* identity, not the CLI's, and they are not always the same thing — which is the whole of
+   * #555. Doctor reports on the machine a dev session would run on, so it has to ask the question that
+   * session will answer.
+   */
+  cloudflare?: (projectDir: string, env: NodeJS.ProcessEnv) => Promise<ChildCloudflareIdentity>;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -74,7 +84,7 @@ export async function checkLocalDelivery(options: LocalDeliveryOptions): Promise
       composed: true,
       requested: identity.requested,
       ...(identity.fromAddress !== undefined ? { fromAddress: identity.fromAddress } : {}),
-      hasCloudflareLogin: await (options.hasCloudflareLogin ?? defaultHasCloudflareLogin)(
+      cloudflare: await (options.cloudflare ?? defaultChildCloudflareIdentity)(
         options.projectDir,
         options.env ?? process.env,
       ),

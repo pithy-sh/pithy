@@ -296,7 +296,6 @@ async function runKitDeploy(options: DeployKitOptions, rows: KitWorkerDeploy[], 
         stanza: stanzas.get(host.sourceDir),
         storeId: vars.SECRETS_STORE_ID,
         accountId: vars.CLOUDFLARE_ACCOUNT_ID,
-        credentials,
       }),
     );
   }
@@ -374,7 +373,6 @@ async function deployOneKitWorker(input: {
   stanza: KitStanza | undefined;
   storeId: string | undefined;
   accountId: string | undefined;
-  credentials: { accountId: string; apiToken: string } | undefined;
 }): Promise<KitWorkerDeploy> {
   const { host, options } = input;
   const capability = host.capability;
@@ -451,7 +449,10 @@ async function deployOneKitWorker(input: {
       env: options.env,
       readVars: input.readVars,
       runDeploy: options.runDeploy,
-      credentials: input.credentials,
+      // The **selection**, not `input.credentials`. It re-resolves to the same pair and carries the
+      // `cloudflare.accountId` pin with it, so #206's refusal still fires — where a pair that resolved
+      // incomplete would have arrived here as `null` and read the default credentials file (#555).
+      account: options.account,
       force: options.force,
     });
     return { capability, worker: outcome.worker, outcome: outcome.outcome, reason: outcome.reason };

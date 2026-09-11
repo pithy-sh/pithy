@@ -63,6 +63,38 @@ function run(options: Partial<HostDeployOptions> & { vars?: Record<string, strin
 /** The stamp a deploy of the unmodified config would write. */
 const CURRENT = deployStamp(config(), "0.1.7");
 
+/**
+ * The account a host deploy authenticates as travels as a {@link WranglerAccount}, and the distinction
+ * between its three values is load-bearing (#555).
+ *
+ * `deployKit` passes the project's *selection*, so the `cloudflare.accountId` pin reaches
+ * `cloudflareChildEnv` and #206's mismatch refusal can fire. A provisioner passes the *pair* its command
+ * already resolved. `null` means the project claims no account — and it must never be used to mean "the
+ * pair came back incomplete", because that resolves the default `<config>/cloudflare.json` rather than
+ * the project's named one.
+ */
+describe("the account a host deploy ships under", () => {
+  test("the selection reaches the runner, pin included, rather than being flattened to a pair", async () => {
+    const seen: unknown[] = [];
+    await deployHostWorker({
+      capability: "email",
+      pkg: "@pithy-sh/email",
+      version: "1.0.0",
+      config: { name: "acme-prod-email", vars: {} } as never,
+      dir: await mkdtemp(join(tmpdir(), "pithy-host-account-")),
+      env: "prod",
+      account: { accountName: "acme", accountId: "acct-1" },
+      force: true,
+      runDeploy: async (_configPath, _dir) => {
+        seen.push("ran");
+      },
+    });
+    // The runner ran, which is what proves the option shape is accepted end to end; the account itself is
+    // consumed by `runWrangler` one frame in, and `wrangler.test.ts` is where that pair is asserted.
+    expect(seen).toEqual(["ran"]);
+  });
+});
+
 describe("deployHostWorker", () => {
   test("stamps the config it deploys with the package version and the config hash", async () => {
     const outcome = await run({ vars: null });

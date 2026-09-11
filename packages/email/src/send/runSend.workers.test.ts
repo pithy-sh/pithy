@@ -343,7 +343,13 @@ describe("runSend", () => {
     const row = await env.DB.prepare("select status, attempts, error from pithy_email_jobs where id = ?")
       .bind(jobId)
       .first<{ status: string; attempts: number; error: string }>();
-    expect(row).toEqual({ status: "failed", attempts: 2, error: "E_DELIVERY_FAILED" });
+    // The row records the provider's own words, not just the code it already had. `error` held the bare
+    // code until #555, which is how five failed attempts came to say `E_UNKNOWN` and nothing else.
+    expect(row).toEqual({
+      status: "failed",
+      attempts: 2,
+      error: "email send failed: E_DELIVERY_FAILED — smtp 451",
+    });
   });
 
   test("a terminal send code is never thrown, so no step ever retries it", async () => {
@@ -366,7 +372,11 @@ describe("runSend", () => {
     const row = await env.DB.prepare("select status, attempts, error from pithy_email_jobs where id = ?")
       .bind(jobId)
       .first<{ status: string; attempts: number; error: string }>();
-    expect(row).toEqual({ status: "failed", attempts: 1, error: "E_INVALID_SENDER" });
+    expect(row).toEqual({
+      status: "failed",
+      attempts: 1,
+      error: "email send failed: E_INVALID_SENDER — sender not verified",
+    });
   });
 
   test("a synchronous permanent bounce on send suppresses that address", async () => {

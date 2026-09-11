@@ -125,6 +125,9 @@ function harness(overrides: Partial<StartDevOptions> = {}) {
 
   const options: StartDevOptions = {
     projectDir: "/proj",
+    // `null`, stated: this fixture project names no Cloudflare account. The credentialed child
+    // environment is the `devCloudflareEnv` seam below, so no case here reaches a credentials file.
+    account: null,
     discoverWorkers: async () => workers,
     // Stubbed: these workers are fixtures with no directories on disk, and generating each one's
     // `.dev.vars` is `devSecrets/generate.test.ts`'s subject rather than this file's.
@@ -142,7 +145,11 @@ function harness(overrides: Partial<StartDevOptions> = {}) {
     projectName: async () => "acme",
     discoverHostWorkers: async () => ({ hosts: [], notes: [] }),
     materializeHostConfigs: async () => ({ notes: [], failed: [] }),
-    hasCloudflareLogin: async () => true,
+    devCloudflareEnv: (_account, base) => ({
+      env: { ...(base as Record<string, string>), CLOUDFLARE_ACCOUNT_ID: "acct-1", CLOUDFLARE_API_TOKEN: "t" },
+      identity: { accountId: "acct-1", hasToken: true, mismatch: null },
+      overridden: [],
+    }),
     // Stubbed for the same reason: which worker composes auth is read off a real `pithy.config.ts`, and
     // `devLoginTargets.test.ts` owns that question. `api` is the wrangler worker in this fixture set.
     devLoginTargets: async (started) =>
@@ -523,6 +530,48 @@ describe("startDev — spawn commands and env", () => {
     expect(env.WEB_PORT).toBe("8788");
     expect(env.WEB_ORIGIN).toBe("http://localhost:8788");
     expect(env.PATH).toBe("/usr/bin");
+  });
+
+  test("every child env carries the project's Cloudflare credentials, not the shell's (#555)", async () => {
+    // The defect, at the only place it is observable: the environment handed to `spawn`. `pithy dev`
+    // copied the parent environment wholesale and added the port table, so `wrangler dev` authenticated
+    // as whatever the shell held — and on a machine with two accounts a magic link went out through a
+    // tenant that does not own the sending domain, five times, with nothing said.
+    const h = harness();
+    await startDev({
+      ...h.options,
+      baseEnv: { PATH: "/usr/bin", CLOUDFLARE_ACCOUNT_ID: "shell-account", CLOUDFLARE_API_TOKEN: "shell-token" },
+    });
+    const env = h.spawned[0]?.opts.env ?? {};
+    expect(env.CLOUDFLARE_ACCOUNT_ID).toBe("acct-1");
+    expect(env.CLOUDFLARE_API_TOKEN).toBe("t");
+    // And the rest of the environment still arrives: this replaces two keys, not a PATH.
+    expect(env.PATH).toBe("/usr/bin");
+  });
+
+  test("says so when it overrode what the shell exported, because whoami is about to disagree", async () => {
+    const h = harness({
+      devCloudflareEnv: (_account, base) => ({
+        env: { ...(base as Record<string, string>), CLOUDFLARE_ACCOUNT_ID: "acct-1", CLOUDFLARE_API_TOKEN: "t" },
+        identity: { accountId: "acct-1", hasToken: true, mismatch: null },
+        overridden: ["CLOUDFLARE_API_TOKEN"],
+      }),
+    });
+    await startDev(h.options);
+    expect(h.stdoutLines.join("")).toContain("CLOUDFLARE_API_TOKEN");
+    expect(h.stdoutLines.join("")).toContain("acct-1");
+  });
+
+  test("a pinned account the credentials contradict refuses before a single worker spawns", async () => {
+    // #206's refusal, reaching `pithy dev` for the first time. It resolved no account at all before, so
+    // there was nothing to compare — and the disagreement surfaced as five failed sends instead.
+    const h = harness({
+      devCloudflareEnv: () => {
+        throw new ConflictError({ message: "This project pins Cloudflare account A, and the file supplies B." });
+      },
+    });
+    await expect(startDev(h.options)).rejects.toThrow(/pins Cloudflare account A/);
+    expect(h.spawned).toHaveLength(0);
   });
 
   test("children are spawned detached (process-group leaders)", async () => {
@@ -1652,7 +1701,11 @@ describe("startDev — capability hosts", () => {
   test("no Cloudflare login falls back to the simulator rather than to a binding that would fail", async () => {
     const h = hosted({
       discoverHostWorkers: async () => ({ hosts: [sender("remote", "hi@acme.dev") as never], notes: [] }),
-      hasCloudflareLogin: async () => false,
+      devCloudflareEnv: (_account, base) => ({
+        env: { ...(base as Record<string, string>) },
+        identity: { accountId: null, hasToken: false, mismatch: null },
+        overridden: [],
+      }),
     });
     const calls: boolean[] = [];
     const handle = await startDev({
@@ -1726,7 +1779,11 @@ describe("startDev — capability hosts", () => {
   test("the delivery verdict is said once, in the banner", async () => {
     const h = hosted({
       discoverHostWorkers: async () => ({ hosts: [sender("remote", "hi@acme.dev") as never], notes: [] }),
-      hasCloudflareLogin: async () => false,
+      devCloudflareEnv: (_account, base) => ({
+        env: { ...(base as Record<string, string>) },
+        identity: { accountId: null, hasToken: false, mismatch: null },
+        overridden: [],
+      }),
     });
     const handle = await startDev(h.options);
     // Nothing before the banner: the pre-spawn copy and the banner copy were one sentence twice.

@@ -28,7 +28,7 @@ describe("checkLocalDelivery", () => {
     const check = await checkLocalDelivery({
       projectDir: KIT_ROOT,
       workers: scope([{ name: "auth" } as Capability]),
-      hasCloudflareLogin: async () => true,
+      cloudflare: async () => ({ accountId: "acct-1", hasToken: true, mismatch: null }),
     });
     expect(check).toBeNull();
   });
@@ -37,18 +37,20 @@ describe("checkLocalDelivery", () => {
     const check = await checkLocalDelivery({
       projectDir: KIT_ROOT,
       workers: scope([email("remote", "hello@acme.dev")]),
-      hasCloudflareLogin: async () => true,
+      cloudflare: async () => ({ accountId: "acct-1", hasToken: true, mismatch: null }),
     });
     expect(check?.live).toBe(true);
     expect(check?.capability).toBe("email");
-    expect(describeLocalDelivery(check ?? empty)).toBe("Email: sending for real from hello@acme.dev.");
+    expect(describeLocalDelivery(check ?? empty)).toBe(
+      "Email: sending for real from hello@acme.dev, as Cloudflare account acct-1.",
+    );
   });
 
   test("no Cloudflare login is the simulator, and the line carries what fixes it", async () => {
     const check = await checkLocalDelivery({
       projectDir: KIT_ROOT,
       workers: scope([email("remote", "hello@acme.dev")]),
-      hasCloudflareLogin: async () => false,
+      cloudflare: async () => ({ accountId: null, hasToken: false, mismatch: null }),
     });
     expect(check?.live).toBe(false);
     expect(describeLocalDelivery(check ?? empty)).toContain("using the simulator");
@@ -59,7 +61,7 @@ describe("checkLocalDelivery", () => {
     const check = await checkLocalDelivery({
       projectDir: KIT_ROOT,
       workers: scope([email("simulator", "hello@acme.dev")]),
-      hasCloudflareLogin: async () => true,
+      cloudflare: async () => ({ accountId: "acct-1", hasToken: true, mismatch: null }),
     });
     expect(check?.live).toBe(false);
     expect(describeLocalDelivery(check ?? empty)).toContain("by config");
@@ -69,7 +71,7 @@ describe("checkLocalDelivery", () => {
     const check = await checkLocalDelivery({
       projectDir: KIT_ROOT,
       workers: scope([email("remote", "hello@example.com")]),
-      hasCloudflareLogin: async () => true,
+      cloudflare: async () => ({ accountId: "acct-1", hasToken: true, mismatch: null }),
     });
     expect(check?.live).toBe(false);
     expect(describeLocalDelivery(check ?? empty)).toContain("cannot be onboarded onto Email Service");
