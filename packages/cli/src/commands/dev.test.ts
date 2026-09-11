@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { stripAnsi } from "../dev/logging";
-import dev, { collectAppFlags } from "./dev";
+import dev, { autostartIntent, collectAppFlags } from "./dev";
 
 /** The args are a static object literal on this command — resolve their type for the assertions. */
 type ArgSpec = { type: string; default?: unknown; description?: string };
@@ -24,6 +24,51 @@ describe("dev command", () => {
 
   test("says --app is repeatable, because citty's own parse does not make it so", () => {
     expect(args.app?.description).toContain("repeatable");
+  });
+});
+
+/**
+ * **The two flags that write instead of running (#548).**
+ *
+ * They put a line in a file the person never opens, so neither refusal here is pedantry. Both flags at
+ * once has no safe reading — preferring either silently writes the opposite of what half the people who
+ * typed it expected. And the permissive reading of a bare `--disable-autostart`, *every worker*, is the
+ * one answer nobody means: it would park the whole dev set on a flag somebody typed by itself.
+ */
+describe("autostartIntent", () => {
+  test("--disable-autostart with --app means disable", () => {
+    expect(autostartIntent({ disable: true, enable: false, apps: ["payments"] })).toEqual({ enabled: false });
+  });
+
+  test("--enable-autostart with --app means enable", () => {
+    expect(autostartIntent({ disable: false, enable: true, apps: ["payments"] })).toEqual({ enabled: true });
+  });
+
+  test("both at once is refused rather than resolved", () => {
+    expect(() => autostartIntent({ disable: true, enable: true, apps: ["payments"] })).toThrow(ValidationError);
+  });
+
+  // The action line has to name the flag they actually typed, or it reads as advice about the other one.
+  test("neither, without --app, is refused and the remedy names the flag that was typed", () => {
+    const disabling = (() => {
+      try {
+        autostartIntent({ disable: true, enable: false, apps: [] });
+      } catch (error) {
+        return error as ValidationError;
+      }
+      throw new Error("expected a refusal");
+    })();
+    expect(disabling.payload.action).toContain("--disable-autostart");
+
+    const enabling = (() => {
+      try {
+        autostartIntent({ disable: false, enable: true, apps: [] });
+      } catch (error) {
+        return error as ValidationError;
+      }
+      throw new Error("expected a refusal");
+    })();
+    expect(enabling.payload.action).toContain("--enable-autostart");
   });
 });
 

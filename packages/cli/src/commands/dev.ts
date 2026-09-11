@@ -106,28 +106,44 @@ async function printDevSet(projectDir: string, apps: string[], json: boolean): P
  * worker for one run — naming a worker outright is the more specific act, and it is how you reach a
  * worker you have turned off without turning it back on.
  */
-async function setDevAutostart(options: {
-  projectDir: string;
-  apps: string[];
+/**
+ * Which of the two autostart flags was meant, refusing the two ways of meaning neither.
+ *
+ * Pulled out of {@link setDevAutostart} because it is the only branching in that path and the rest of it
+ * touches the registry, a git checkout and the real dev set — so this is the half that can be held to
+ * account directly. Both refusals are about the same thing: a flag that writes to a file the person
+ * cannot see has no business guessing.
+ */
+export function autostartIntent(flags: { disable: boolean; enable: boolean; apps: readonly string[] }): {
   enabled: boolean;
-  both: boolean;
-  json: boolean;
-}): Promise<void> {
-  // Asking for both at once is not a mistake with a safe reading — neither order is more obviously meant
-  // — so it is refused rather than silently resolved. `exactlyOne` is the house helper for this shape.
-  if (options.both) {
+} {
+  // Both at once is not a mistake with a safe reading — neither order is more obviously meant — so it is
+  // refused rather than resolved. Silently preferring one would write the opposite of what half the
+  // people who typed it expected, to a file they cannot see.
+  if (flags.disable && flags.enable) {
     throw new ValidationError({
       message: "--disable-autostart and --enable-autostart cannot both be given.",
       action: "Pass one of them with --app <name>.",
     });
   }
-  if (options.apps.length === 0) {
+  const enabled = flags.enable;
+  // Without `--app` there is nothing to act on, and the permissive reading — *every worker* — is the one
+  // answer nobody means: it would park the entire dev set on a flag somebody typed by itself.
+  if (flags.apps.length === 0) {
     throw new ValidationError({
-      message: `Name the workers to ${options.enabled ? "enable" : "disable"}.`,
-      action: `pithy dev --app <name> ${options.enabled ? "--enable-autostart" : "--disable-autostart"}`,
+      message: `Name the workers to ${enabled ? "enable" : "disable"}.`,
+      action: `pithy dev --app <name> ${enabled ? "--enable-autostart" : "--disable-autostart"}`,
     });
   }
+  return { enabled };
+}
 
+async function setDevAutostart(options: {
+  projectDir: string;
+  apps: string[];
+  enabled: boolean;
+  json: boolean;
+}): Promise<void> {
   // Resolved against the real set, and through `selectDevMembers` — the same resolution a run does, so
   // the three name forms are the three name forms and an unknown name is refused here exactly as it
   // would be there. Turning off a name that could never have started is a silent no-op otherwise, and
@@ -181,13 +197,12 @@ export default defineCommand({
       // they act on, which is the same resolution a run uses, so a name that would not start is a name
       // that cannot be turned off either.
       if (args["disable-autostart"] || args["enable-autostart"]) {
-        await setDevAutostart({
-          projectDir,
+        const { enabled } = autostartIntent({
+          disable: args["disable-autostart"],
+          enable: args["enable-autostart"],
           apps,
-          enabled: args["enable-autostart"],
-          both: args["disable-autostart"] && args["enable-autostart"],
-          json: args.json,
         });
+        await setDevAutostart({ projectDir, apps, enabled, json: args.json });
         return;
       }
 

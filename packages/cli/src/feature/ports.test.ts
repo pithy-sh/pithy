@@ -18,8 +18,10 @@ import {
   LOCK_STALE_MS,
   type PortsRegistry,
   portsRegistryPath,
+  readWorkerAutostart,
   reclaimPortBlocks,
   resolveMainRepoRoot,
+  setWorkerAutostart,
 } from "./ports";
 import { defaultGit, mainRepoRoot } from "./worktree";
 
@@ -565,5 +567,166 @@ describe("refusals that must not assert a cause", () => {
       expect(error.payload.action).toMatch(/inside a git repository/i);
       return true;
     });
+  });
+});
+
+/**
+ * **What a branch says about which workers it starts (#548).**
+ *
+ * The answer moved off `pithy.worker.jsonc` and onto the branch entry beside the port block, because it
+ * is one developer's and not the project's. That makes the registry a second tenant's home, and these
+ * are the properties that keep the two tenants from damaging each other:
+ *
+ * - a write does not disturb the block, and the block's own writes do not disturb the answer;
+ * - **inheritance happens exactly once**, on the allocation that creates a branch entry, so a feature
+ *   starts from what `main` decided and then owns its own copy;
+ * - clearing is a deletion, not a stored `true`, so the file cannot accumulate a row per worker per
+ *   branch for everything somebody toggled and toggled back.
+ *
+ * The read path is asserted to survive a broken file, because it is on `pithy dev`'s critical path and
+ * a registry nobody can parse must not stop a developer starting their workers.
+ */
+describe("worker autostart", () => {
+  let dir: string;
+  let registryPath: string;
+  let root: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-autostart-"));
+    registryPath = join(dir, "dev-ports.json");
+    root = join(dir, "repo");
+    await mkdir(root);
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const entryFor = async (branch: string) =>
+    (JSON.parse(await readFile(registryPath, "utf8")) as PortsRegistry)[root]?.[branch];
+
+  it("says nothing about a branch nobody has written", async () => {
+    expect(await readWorkerAutostart({ registryPath, root, branch: "main" })).toEqual({});
+  });
+
+  it("records a worker this branch does not start", async () => {
+    await setWorkerAutostart({ registryPath, root, branch: "main", workers: ["payments"], enabled: false });
+
+    expect(await readWorkerAutostart({ registryPath, root, branch: "main" })).toEqual({ payments: false });
+  });
+
+  // Allocating rather than refusing: there is no meaningful state where a branch has an opinion about
+  // its workers and no ports to run them on, and the flag is reached from `pithy dev` either way.
+  it("allocates the branch's block when it is the first thing written", async () => {
+    await setWorkerAutostart({ registryPath, root, branch: "main", workers: ["payments"], enabled: false });
+
+    const entry = await entryFor("main");
+    expect(entry?.base).toBe(BASE_PORT);
+    expect(entry?.size).toBe(BLOCK_SIZE);
+  });
+
+  // Absent and `true` mean the same thing — the worker starts — so only one spelling is kept. Storing
+  // `true` would grow a row per worker per branch for everything anybody ever toggled back.
+  it("clearing removes the name rather than storing true", async () => {
+    await setWorkerAutostart({ registryPath, root, branch: "main", workers: ["payments", "email"], enabled: false });
+    await setWorkerAutostart({ registryPath, root, branch: "main", workers: ["payments"], enabled: true });
+
+    expect(await readWorkerAutostart({ registryPath, root, branch: "main" })).toEqual({ email: false });
+  });
+
+  it("clearing the last name removes the key entirely", async () => {
+    await setWorkerAutostart({ registryPath, root, branch: "main", workers: ["payments"], enabled: false });
+    await setWorkerAutostart({ registryPath, root, branch: "main", workers: ["payments"], enabled: true });
+
+    expect(await entryFor("main")).not.toHaveProperty("autostart");
+  });
+
+  // The two tenants of one entry. A port allocation rewrites the branch's object, so an answer written
+  // first has to survive it — otherwise starting `pithy dev` would quietly undo what the flag wrote.
+  it("survives a later port allocation on the same branch", async () => {
+    await setWorkerAutostart({ registryPath, root, branch: "main", workers: ["payments"], enabled: false });
+    await allocatePortBlock({ registryPath, root, branch: "main" });
+
+    expect(await readWorkerAutostart({ registryPath, root, branch: "main" })).toEqual({ payments: false });
+  });
+
+  // And the other direction: writing an answer must not move a block that other things are pinned to.
+  it("does not move the block it is written beside", async () => {
+    const before = await allocatePortBlock({ registryPath, root, branch: "main" });
+    await setWorkerAutostart({ registryPath, root, branch: "main", workers: ["payments"], enabled: false });
+
+    expect(await entryFor("main")).toMatchObject({ block: before.block, base: before.base, size: before.size });
+  });
+
+  describe("inheritance", () => {
+    // The rule this issue was specified around: a worker parked on `main` stays parked in a feature cut
+    // from it. Without this, starting a feature quietly turns everything back on.
+    it("a new branch copies the branch it was cut from", async () => {
+      await setWorkerAutostart({ registryPath, root, branch: "main", workers: ["payments"], enabled: false });
+
+      await allocatePortBlock({ registryPath, root, branch: "feature/1-x", inheritAutostartFrom: "main" });
+
+      expect(await readWorkerAutostart({ registryPath, root, branch: "feature/1-x" })).toEqual({ payments: false });
+    });
+
+    // A copy and not a reference, which is what lets the two disagree afterwards. Asserted from both
+    // sides, because a shared object would make either edit show up in the other.
+    it("is a copy, so the two disagree freely afterwards", async () => {
+      await setWorkerAutostart({ registryPath, root, branch: "main", workers: ["payments"], enabled: false });
+      await allocatePortBlock({ registryPath, root, branch: "feature/1-x", inheritAutostartFrom: "main" });
+
+      await setWorkerAutostart({ registryPath, root, branch: "feature/1-x", workers: ["payments"], enabled: true });
+      await setWorkerAutostart({ registryPath, root, branch: "main", workers: ["email"], enabled: false });
+
+      expect(await readWorkerAutostart({ registryPath, root, branch: "feature/1-x" })).toEqual({});
+      expect(await readWorkerAutostart({ registryPath, root, branch: "main" })).toEqual({
+        payments: false,
+        email: false,
+      });
+    });
+
+    // **Only on the allocation that creates the entry.** `pithy feature sync` allocates again on every
+    // run, and re-reading the source there would reimpose `main`'s answer on a feature that had since
+    // changed its own — silently, on a command whose whole job is to change nothing it need not.
+    it("is read once, so a later sync never reimposes the source's answer", async () => {
+      await setWorkerAutostart({ registryPath, root, branch: "main", workers: ["payments"], enabled: false });
+      await allocatePortBlock({ registryPath, root, branch: "feature/1-x", inheritAutostartFrom: "main" });
+      await setWorkerAutostart({ registryPath, root, branch: "feature/1-x", workers: ["payments"], enabled: true });
+
+      await allocatePortBlock({ registryPath, root, branch: "feature/1-x", inheritAutostartFrom: "main" });
+
+      expect(await readWorkerAutostart({ registryPath, root, branch: "feature/1-x" })).toEqual({});
+    });
+
+    it("carries nothing when the source branch said nothing", async () => {
+      await allocatePortBlock({ registryPath, root, branch: "main" });
+
+      await allocatePortBlock({ registryPath, root, branch: "feature/1-x", inheritAutostartFrom: "main" });
+
+      expect(await entryFor("feature/1-x")).not.toHaveProperty("autostart");
+    });
+
+    it("carries nothing when the source branch does not exist at all", async () => {
+      await allocatePortBlock({ registryPath, root, branch: "feature/1-x", inheritAutostartFrom: "main" });
+
+      expect(await readWorkerAutostart({ registryPath, root, branch: "feature/1-x" })).toEqual({});
+    });
+  });
+
+  // Freeing the branch takes its answer with it — the key is the branch, so there is nothing left to
+  // leak into the next feature that happens to reuse the name.
+  it("is freed with the branch", async () => {
+    await setWorkerAutostart({ registryPath, root, branch: "feature/1-x", workers: ["payments"], enabled: false });
+    await freePortBlock({ registryPath, root, branch: "feature/1-x" });
+
+    expect(await readWorkerAutostart({ registryPath, root, branch: "feature/1-x" })).toEqual({});
+  });
+
+  // The read is on `pithy dev`'s critical path. A registry nobody can parse is `pithy doctor`'s to
+  // report; here it must mean *nothing was said*, which is what every worker starting already means.
+  it("reads a corrupt registry as nothing said, rather than throwing", async () => {
+    await writeFile(registryPath, "{ not json");
+
+    expect(await readWorkerAutostart({ registryPath, root, branch: "main" })).toEqual({});
   });
 });
