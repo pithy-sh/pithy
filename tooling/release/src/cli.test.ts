@@ -182,10 +182,24 @@ describe("post", () => {
     expect(result.output).toMatch(/staging, prod/);
   });
 
-  // The release stands — step 5 published long ago and `replay` recovers the record. But a rejected
-  // delivery is not a green step: it exits non-zero under `continue-on-error: true`, so GitHub renders
-  // a failed step under a green job instead of one line in a log nobody opens.
-  it("exits non-zero when a delivery fails", async () => {
+  // The release stands — step 5 published long ago and `replay` recovers the record. But a destination
+  // that *answered and refused* is not a green step: it exits non-zero under `continue-on-error: true`,
+  // so GitHub renders a failed step under a green job instead of one line in a log nobody opens.
+  it("exits non-zero when a destination answers and refuses", async () => {
+    await build();
+    const send = vi.fn(async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
+
+    const result = await run(["post"], { root: fixture.root, env: BOTH, fetch: send, mintToken });
+
+    expect(result.code).toBe(1);
+    expect(result.output).toMatch(/rejected the records: 500/);
+    expect(result.output).toMatch(/replay/);
+  });
+
+  // The other half, and the reason the grade exists. Both dashboard origins were unresolvable for the
+  // whole of the first pipeline's life, so the strict reading spent every release printing a red step
+  // that the reader was supposed to ignore — which is how somebody learns to ignore the next one.
+  it("stays green when nothing answered, and still says so", async () => {
     await build();
     const send = vi.fn(async () => {
       throw new Error("ECONNREFUSED");
@@ -193,18 +207,40 @@ describe("post", () => {
 
     const result = await run(["post"], { root: fixture.root, env: BOTH, fetch: send, mintToken });
 
-    expect(result.code).toBe(1);
+    expect(result.code).toBe(0);
+    // Quiet is not silent: the same sentence, and an annotation GitHub renders on the run itself.
+    expect(result.output).toMatch(/^::warning title=Release reporting::/);
     expect(result.output).toMatch(/ECONNREFUSED/);
     expect(result.output).toMatch(/replay/);
   });
 
-  it("annotates a failure so the run list shows it", async () => {
+  // A token that never arrived means the request was never made, so the dashboard's state is unknown
+  // and nothing about it was learned. That is CI's own credential path — somebody's to fix, and red.
+  it("exits non-zero when no token could be minted", async () => {
     await build();
-    const send = vi.fn(async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
+    const send = vi.fn(async () => new Response("{}", { status: 202 })) as unknown as typeof fetch;
 
-    const result = await run(["post"], { root: fixture.root, env: BOTH, fetch: send, mintToken });
+    const result = await run(["post"], {
+      root: fixture.root,
+      env: BOTH,
+      fetch: send,
+      mintToken: async () => {
+        throw new Error("no OIDC token endpoint");
+      },
+    });
 
-    expect(result.output).toMatch(/^::warning title=Release reporting::/);
+    expect(result.code).toBe(1);
+    expect(result.output).toMatch(/^::error title=Release reporting::/);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("annotates a failure so the run list shows it, at the severity it graded", async () => {
+    await build();
+    const refused = vi.fn(async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
+
+    const result = await run(["post"], { root: fixture.root, env: BOTH, fetch: refused, mintToken });
+
+    expect(result.output).toMatch(/^::error title=Release reporting::/);
   });
 
   it("writes the outcome to the step summary", async () => {
@@ -232,9 +268,25 @@ describe("post", () => {
 
     const result = await run(["post"], { root: fixture.root, env: BOTH, fetch: send, mintToken });
 
-    expect(result.code).toBe(1);
+    expect(result.code).toBe(0);
     expect(result.output).toMatch(/Posted 1 records to prod\./);
     expect(result.output).toMatch(/Failed to staging: ECONNREFUSED\./);
+  });
+
+  // One blocking fault among several decides the verdict for all of them. The alternative reads as
+  // *mostly fine* and is the state where a real refusal hides behind an origin that is merely not up.
+  it("goes red when one destination refuses, however the other failed", async () => {
+    await build();
+    const send = vi.fn(async (url: string) =>
+      url === STAGING_URL ? Promise.reject(new Error("ECONNREFUSED")) : new Response("nope", { status: 403 }),
+    ) as unknown as typeof fetch;
+
+    const result = await run(["post"], { root: fixture.root, env: BOTH, fetch: send, mintToken });
+
+    expect(result.code).toBe(1);
+    expect(result.output).toMatch(/^::error title=Release reporting::/);
+    expect(result.output).toMatch(/Failed to staging: ECONNREFUSED\./);
+    expect(result.output).toMatch(/Failed to prod: rejected the records: 403/);
   });
 
   // Without this the first exercise of the OIDC path would be a real release. A dry run mints a real

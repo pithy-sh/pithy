@@ -60,11 +60,19 @@ import { ReleaseRecord } from "./records";
  * transport error, a dashboard that never answers, an OIDC token that never arrives — is reported and
  * returned, never thrown.
  *
- * It is still **not silent**: the caller exits non-zero and the workflow step carries
- * `continue-on-error: true`, so GitHub renders a failed step under a green job. The release stands and
- * the failure is visible in the run list rather than in a log nobody opens. A missed write is recovered
+ * It is still **not silent**, and {@link Delivery.fault} is what grades the noise. A destination that
+ * **never answered** is the state this ships in — the dashboard is not deployed at every origin yet, and
+ * a host that does not resolve is not a fact about the release — so it is a `::warning` annotation and a
+ * line on the run's summary page, under a step that stays green. A destination that **answered and
+ * refused**, or a token that could not be minted, is somebody's misconfiguration: the caller exits
+ * non-zero, the step carries `continue-on-error: true`, and GitHub renders a failed step under a green
+ * job. Publishing is long over in both cases and nothing here rolls it back; a missed write is recovered
  * by `releaseRecords.ts replay`, which reads the `Security:` markers back out of the committed
  * CHANGELOGs.
+ *
+ * The grading is by **where** the delivery stopped, never by reading an error message. A transport
+ * error's text is a runtime's wording and changes with the runtime; the position in this function does
+ * not.
  *
  * ## What the log may say
  *
@@ -140,11 +148,33 @@ export function releaseRecordsConfig(env: ReleaseRecordsEnv): ReleaseDestination
   return configured;
 }
 
-/** What one destination's delivery did. Both are normal, non-fatal outcomes. */
+/**
+ * Why a delivery failed — and the only thing that decides whether a release run goes red.
+ *
+ * - `unreachable`: nothing answered. DNS did not resolve, the connection was refused, or the endpoint
+ *   did not reply inside the timeout. Expected until a dashboard is deployed at that origin.
+ * - `refused`: something answered and said no. A status, a rejected body — a receiver that is up and
+ *   disagrees with us, which is a token, an audience, or a payload somebody has to fix.
+ * - `mint`: no token. GitHub's OIDC endpoint did not give us one, so the request was never made.
+ * - `contract`: the records do not satisfy the schema, so nothing was sent anywhere. Ours.
+ */
+export type DeliveryFault = "unreachable" | "refused" | "mint" | "contract";
+
+/** What one destination's delivery did. Both are normal outcomes; neither fails a release. */
 export type Delivery = { destination: DestinationName } & (
   | { status: "posted"; count: number }
-  | { status: "failed"; reason: string }
+  | { status: "failed"; fault: DeliveryFault; reason: string }
 );
+
+/**
+ * Whether a failure is somebody's to fix, rather than a server that is simply not up yet.
+ *
+ * The one place the grading lives, so the workflow's verdict and the annotation's severity cannot come
+ * apart from each other.
+ */
+export function isBlocking(delivery: Delivery): boolean {
+  return delivery.status === "failed" && delivery.fault !== "unreachable";
+}
 
 /**
  * What the whole write did.
@@ -201,6 +231,11 @@ function redact(text: string, token: string): string {
  *
  * Never throws: the token stays inside this call, and so does every way it can go wrong. That is what
  * makes one destination's outage cost only its own record.
+ *
+ * **Two `try` blocks, not one**, and that is the whole of how a fault is classified. Minting and sending
+ * fail for unrelated reasons and only their position separates them — the alternative is matching on a
+ * transport error's message, which is a runtime's wording rather than a fact, and which would have to be
+ * rewritten the first time Bun, Node and workerd disagreed about how to spell *connection refused*.
  */
 async function deliver(
   destination: ReleaseDestination,
@@ -215,30 +250,47 @@ async function deliver(
   const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
   try {
-    token = await options.mintToken(destination.audience);
-    const response = await send(destination.url, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ records }),
-      signal: controller.signal,
-    });
+    try {
+      token = await options.mintToken(destination.audience);
+    } catch (error) {
+      // No token, so no request was made. Nothing was asked of the dashboard and its state is unknown —
+      // this is CI's own credential path, and it is somebody's to fix.
+      return { destination: destination.name, status: "failed", fault: "mint", reason: reasonOf(error, token) };
+    }
 
-    if (!response.ok) {
-      // Read the body for diagnosis, and never let reading it become its own failure.
-      const body = await response.text().catch(() => "");
-      const excerpt = redact(body.slice(0, REJECTION_EXCERPT).trim(), token);
+    try {
+      const response = await send(destination.url, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ records }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        // Read the body for diagnosis, and never let reading it become its own failure.
+        const body = await response.text().catch(() => "");
+        const excerpt = redact(body.slice(0, REJECTION_EXCERPT).trim(), token);
+        return {
+          destination: destination.name,
+          status: "failed",
+          fault: "refused",
+          reason: `rejected the records: ${response.status}${excerpt === "" ? "" : ` ${excerpt}`}`,
+        };
+      }
+      return { destination: destination.name, status: "posted", count: records.length };
+    } catch (error) {
+      // The request went out and nothing came back: no DNS, no connection, or no answer inside the
+      // timeout. The ordinary state of an origin nobody has deployed to yet.
       return {
         destination: destination.name,
         status: "failed",
-        reason: `rejected the records: ${response.status}${excerpt === "" ? "" : ` ${excerpt}`}`,
+        fault: "unreachable",
+        reason: reasonOf(error, token),
       };
     }
-    return { destination: destination.name, status: "posted", count: records.length };
-  } catch (error) {
-    return { destination: destination.name, status: "failed", reason: reasonOf(error, token) };
   } finally {
     clearTimeout(timer);
   }
@@ -265,6 +317,7 @@ export async function postReleaseRecords(options: PostOptions): Promise<PostOutc
       deliveries: options.destinations.map((destination) => ({
         destination: destination.name,
         status: "failed" as const,
+        fault: "contract" as const,
         reason: `records do not satisfy the contract: ${validated.error.message}`,
       })),
     };

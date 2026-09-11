@@ -227,7 +227,20 @@ Reporting used to be skipped entirely on a dry run, which meant the first exerci
 
 An unreachable dashboard cannot block publishing an open-source package. Publishing is step 5 and is long over by the time anything is reported, so nothing here rolls a release back.
 
-It is still visible. A failed delivery exits non-zero and the step carries `continue-on-error: true`, so GitHub renders a **failed step under a green job** — in the run list, not only in a log — with a `::warning::` annotation and a line in the run summary naming which destination failed and why. Partial outcomes stay legible: *Posted 12 records to prod. Failed to staging: ECONNREFUSED.* is a different sentence from *failed*.
+It is still visible, and how loudly depends on **what kind** of failure it was. Every failure gets an annotation on the run and a line in the run summary naming the destination and the reason; only the verdict differs.
+
+| What happened | Exit | How it shows |
+| --- | --- | --- |
+| Nothing answered — no DNS, refused connection, no reply inside the timeout | `0` | `::warning`, green step |
+| Something answered and refused — a status, a rejected body | `1` | `::error`, failed step under a green job |
+| No token could be minted, so the request was never made | `1` | `::error`, failed step under a green job |
+| The records do not satisfy the contract, so nothing was sent | `1` | `::error`, failed step under a green job |
+
+The split exists because a host nobody has deployed to yet is not a fact about the release. Both dashboard origins were unresolvable for the whole of this pipeline's first life, so treating every failure as red spent each release printing a red step that the reader was meant to ignore — which is how somebody learns to ignore the next one. A receiver that is up and disagreeing with us is different: that is a token, an audience or a payload, and each of those is somebody's to fix.
+
+The classification is by **where** the delivery stopped, never by reading an error message — a transport error's text is a runtime's wording and would need rewriting the first time two runtimes disagreed about how to spell *connection refused*.
+
+Partial outcomes stay legible either way: *Posted 12 records to prod. Failed to staging: ECONNREFUSED.* is a different sentence from *failed*. One blocking failure among several decides the verdict for all of them, so a real refusal cannot hide behind an origin that is merely not up.
 
 The remaining cost is a dashboard missing a release. That is recoverable, because the `Security:` marker is visible prose committed to the CHANGELOG:
 

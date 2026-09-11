@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { parseChangelog } from "./changelog";
 import { type SnapshotEntry, snapshotChangesets } from "./changesets";
 import { actionsTokenMinter, type MintToken } from "./oidc";
-import { type Delivery, postReleaseRecords, releaseRecordsConfig } from "./post";
+import { type Delivery, isBlocking, postReleaseRecords, releaseRecordsConfig } from "./post";
 import { joinRecords, type ReleaseRecord } from "./records";
 import { splitVersion } from "./version";
 import { publishedPackages, publishedVersions } from "./workspace";
@@ -174,10 +174,25 @@ function describeDeliveries(deliveries: readonly Delivery[], count: number): str
  * Write the records to every configured dashboard.
  *
  * **The release still stands, and the failure is still visible.** Publishing is step 5 and is long over;
- * nothing here rolls it back, and a missed write is recovered by `replay`. But a failed delivery exits
- * **non-zero**, and the workflow step carries `continue-on-error: true` — so GitHub renders a failed
- * step under a green job, in the run list rather than only in a log. Returning 0 was the old behavior,
- * and it made a rejected delivery indistinguishable from a successful one.
+ * nothing here rolls it back, and a missed write is recovered by `replay`.
+ *
+ * ## What turns a run red, and what does not
+ *
+ * Graded on {@link isBlocking}, and the grade is the difference between *somebody has to fix this* and
+ * *that host does not exist yet*:
+ *
+ * - **Nothing answered** — exit **0**, a `::warning` annotation, a line on the run summary, a green step.
+ *   Both dashboard origins were unresolvable for the whole of the first pipeline's life, so the strict
+ *   reading spent every release printing a red step that the person reading it was supposed to ignore.
+ *   That is the habit `biomeSchema.test.ts` argues against at length: the first diagnostic somebody is
+ *   told to disregard is the one that teaches them to disregard the next.
+ * - **Something answered and refused, or no token was minted** — exit **1**, an `::error` annotation, and
+ *   a failed step under a green job, because `continue-on-error: true` is on the step. A receiver that is
+ *   up and disagreeing with us is a token, an audience or a payload, and each of those is somebody's.
+ *
+ * Returning 0 for *everything* was the original behavior and it made a rejected delivery
+ * indistinguishable from a successful one. The annotation is what lets the unreachable case be quiet
+ * without going back to that: it is reported in both directions, and only the verdict differs.
  *
  * `--dry-run` posts a **zero-record delivery to staging**: a real token, a real answer, no rows. Without
  * it the first exercise of this path would be a real release.
@@ -225,8 +240,12 @@ async function post(options: RunOptions, dryRun: boolean): Promise<RunResult> {
       summarize(options, `Release reporting: ${prefix}${sentence}`);
       const failed = outcome.deliveries.filter((delivery) => delivery.status === "failed");
       if (failed.length === 0) return { code: 0, output: `${prefix}${sentence}` };
+
+      // The summary line is the same either way — what a person reads does not depend on the verdict.
+      const blocking = failed.some(isBlocking);
       const line = `${prefix}${sentence} The release stands; recover it with \`replay\`.`;
-      return { code: 1, output: `::warning title=Release reporting::${annotationSafe(line)}\n${line}` };
+      const level = blocking ? "error" : "warning";
+      return { code: blocking ? 1 : 0, output: `::${level} title=Release reporting::${annotationSafe(line)}\n${line}` };
     }
   }
 }
