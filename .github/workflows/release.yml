@@ -306,6 +306,10 @@ jobs:
         with:
           name: release-records
           path: .release/
+          # `.release/` is a dot directory and the action skips hidden files by default, so every run
+          # so far uploaded nothing and warned about it — the artifact this comment calls the first
+          # thing to read when a release looks wrong has never once existed.
+          include-hidden-files: true
           if-no-files-found: warn
 
       - name: What would ship

@@ -7,8 +7,11 @@
  *   bun scripts/releaseRecords.ts post --dry-run   # a zero-record delivery to staging, to prove the claims
  *   bun scripts/releaseRecords.ts replay     # rebuild from the changelogs, to recover a failed write
  *
- * `post` exits **non-zero** when a destination fails, and the workflow step carries
- * `continue-on-error: true`. The release stands and the failure is still visible.
+ * `post` exits **non-zero** when a destination answers and refuses, or when no token could be minted,
+ * and the workflow step carries `continue-on-error: true` — the release stands and the failed step is
+ * visible under a green job. A destination that never answered exits **0** with a `::warning`: an origin
+ * nobody has deployed to yet is not a fact about the release. Either way the same sentence reaches the
+ * run's summary page.
  *
  * The logic lives in `@pithy-sh/release` rather than here, because `scripts/` sits in no vitest project
  * and nothing in it can be tested. This file is the entry point `release.yml` names: it resolves the

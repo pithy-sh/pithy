@@ -3,7 +3,14 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type { MintToken } from "./oidc";
-import { postReleaseRecords, type ReleaseDestination, releaseRecordsConfig } from "./post";
+import {
+  type Delivery,
+  type DeliveryFault,
+  isBlocking,
+  postReleaseRecords,
+  type ReleaseDestination,
+  releaseRecordsConfig,
+} from "./post";
 import type { ReleaseRecord } from "./records";
 
 const RECORD: ReleaseRecord = {
@@ -208,7 +215,7 @@ describe("postReleaseRecords", () => {
     expect(outcome).toEqual({
       status: "delivered",
       deliveries: [
-        { destination: "staging", status: "failed", reason: "ECONNREFUSED" },
+        { destination: "staging", status: "failed", fault: "unreachable", reason: "ECONNREFUSED" },
         { destination: "prod", status: "posted", count: 1 },
       ],
     });
@@ -231,7 +238,7 @@ describe("postReleaseRecords", () => {
 
     expect(outcome.status === "delivered" && outcome.deliveries).toEqual([
       { destination: "staging", status: "posted", count: 1 },
-      { destination: "prod", status: "failed", reason: "no OIDC token endpoint" },
+      { destination: "prod", status: "failed", fault: "mint", reason: "no OIDC token endpoint" },
     ]);
     expect(calls(send)).toHaveLength(1);
   });
@@ -317,5 +324,43 @@ describe("postReleaseRecords", () => {
     });
 
     expect(JSON.stringify(outcome)).not.toContain(`token-for-${PROD.audience}`);
+  });
+});
+
+/**
+ * The grade, on its own.
+ *
+ * `isBlocking` is one comparison and reads as though it could not be wrong, which is exactly why it gets
+ * a direct test: it is the single value deciding whether a release run goes red, both branches of the
+ * caller are keyed on it, and a release nobody reads twice is where an inverted boolean would live
+ * longest. The cases below are the whole of the enum, so a fault added without a decision fails here.
+ */
+describe("isBlocking", () => {
+  const failed = (fault: DeliveryFault): Delivery => ({
+    destination: "staging",
+    status: "failed",
+    fault,
+    reason: "whatever it was",
+  });
+
+  it("says a host that never answered is not somebody's to fix", () => {
+    expect(isBlocking(failed("unreachable"))).toBe(false);
+  });
+
+  it("says an answer that refused is", () => {
+    expect(isBlocking(failed("refused"))).toBe(true);
+  });
+
+  it("says a token that never arrived is", () => {
+    // The request was never made, so nothing was learned about the dashboard. Unknown is not quiet.
+    expect(isBlocking(failed("mint"))).toBe(true);
+  });
+
+  it("says records that do not satisfy the contract are", () => {
+    expect(isBlocking(failed("contract"))).toBe(true);
+  });
+
+  it("says nothing at all about a delivery that succeeded", () => {
+    expect(isBlocking({ destination: "prod", status: "posted", count: 3 })).toBe(false);
   });
 });
