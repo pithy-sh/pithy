@@ -11,6 +11,7 @@ import { InternalError, PithyError, UpstreamError, WebhookUnverifiedError } from
 import { base64Url, type MintedKey, mintKey, publishing, signToken } from "../test-utils/oidcFixtures";
 import {
   memoryJwksCache,
+  OIDC_JWKS_MIN_REFRESH_SECONDS,
   OIDC_JWKS_TTL_SECONDS,
   OIDC_MAX_CLOCK_SKEW_SECONDS,
   type OidcClaims,
@@ -84,6 +85,15 @@ function verify(token: string, overrides: Record<string, unknown> = {}) {
     transport: publishing(JWKS_URL, [key.jwk]),
     ...overrides,
   });
+}
+
+/**
+ * The cheapest forgery there is: a token signed by a key nobody publishes, naming a `kid` nobody has ever
+ * published either. A new `kid` per call, because `kid` is read out of an unverified header — an attacker
+ * picks one per delivery for nothing, and that is the traffic the refresh window exists to bound.
+ */
+function forgedToken(): Promise<string> {
+  return signToken(claims(), impostor, { kid: `forged-${crypto.randomUUID()}` });
 }
 
 describe("verifyOidcToken accepts", () => {
@@ -384,28 +394,31 @@ describe("the issuer's published keys", () => {
     expect(seen).toEqual([JWKS_URL]);
   });
 
-  test("are refetched once when a token names a kid the cache does not hold", async () => {
+  test("are refetched when a token names a kid the cache does not hold", async () => {
     // This is what makes key rotation invisible: a new signing key appears in a token before anything told us
-    // to look for it, so an unknown `kid` is a reason to refresh rather than to refuse.
+    // to look for it, so an unknown `kid` is a reason to refresh rather than to refuse. Past the refresh
+    // window, because the window is the only thing standing between that rule and an unauthenticated flood.
     const seen: string[] = [];
     const rotated = await mintKey("rotated-1");
-    const cache = memoryJwksCache({ now: () => NOW });
+    let clock = NOW;
+    const cache = memoryJwksCache({ now: () => clock });
     let published: OidcJwk[] = [key.jwk];
     const transport: OidcJwksFetch = async (url) => {
       seen.push(url);
       return { ok: true, status: 200, text: async () => JSON.stringify({ keys: published }) };
     };
 
-    await verify(await signToken(claims(), key), { transport, jwksCache: cache });
+    await verify(await signToken(claims(), key), { transport, jwksCache: cache, now: clock });
     expect(seen).toHaveLength(1);
     published = [key.jwk, rotated.jwk];
-    await expect(verify(await signToken(claims(), rotated), { transport, jwksCache: cache })).resolves.toBeDefined();
+    clock = new Date(NOW.getTime() + (OIDC_JWKS_MIN_REFRESH_SECONDS + 1) * 1000);
+    await expect(
+      verify(await signToken(claims(), rotated), { transport, jwksCache: cache, now: clock }),
+    ).resolves.toBeDefined();
     expect(seen).toHaveLength(2);
   });
 
   test("are refetched exactly once for a kid nobody publishes", async () => {
-    // The refresh is bounded at one per delivery. Unbounded, a forged `kid` would be a way to make us hammer
-    // the issuer's key endpoint from an unauthenticated request.
     const seen: string[] = [];
     const cache = memoryJwksCache({ now: () => NOW });
     const thrown = await refusal(
@@ -418,18 +431,88 @@ describe("the issuer's published keys", () => {
     expect(seen).toEqual([JWKS_URL]);
   });
 
-  test("stay bounded at one fetch per delivery under a flood of unknown kids", async () => {
-    // Ten forged tokens, each naming a `kid` nobody has ever published, and each still costs exactly one
-    // fetch. The bound is per delivery, so the multiplier is a constant rather than a function of the
-    // attacker's imagination.
+  test("stay bounded at one fetch per window under a flood of attacker-chosen kids", async () => {
+    // **The case the first round of this missed.** A `kid` is read out of an unverified header, so a forger
+    // picks a new one per delivery for nothing — and a store keyed only on what the issuer published
+    // answered none of them, because every random `kid` is a miss and every miss was a fetch. Fifty
+    // deliveries, fifty `kid`s nobody has ever published, one round trip: the bound is per window per key
+    // endpoint, so the multiplier is a constant and not a function of the attacker's imagination.
     const seen: string[] = [];
     const cache = memoryJwksCache({ now: () => NOW });
     const transport = publishing(JWKS_URL, [key.jwk], seen);
-    for (let index = 0; index < 10; index += 1) {
-      const forged = await mintKey(`forged-${index}`);
-      await refusal(verify(await signToken(claims(), forged), { transport, jwksCache: cache }));
+    for (let index = 0; index < 50; index += 1) {
+      const thrown = await refusal(verify(await forgedToken(), { transport, jwksCache: cache }));
+      // Still a 401 apiece. The bound is on what the refusal costs us, never on whether it refuses.
+      expect(thrown).toBeInstanceOf(WebhookUnverifiedError);
     }
-    expect(seen).toHaveLength(10);
+    expect(seen).toEqual([JWKS_URL]);
+  });
+
+  test("are asked again once the window is over, so the flood is a rate and not a single fetch", async () => {
+    const seen: string[] = [];
+    let clock = NOW;
+    const cache = memoryJwksCache({ now: () => clock });
+    const transport = publishing(JWKS_URL, [key.jwk], seen);
+
+    await refusal(verify(await forgedToken(), { transport, jwksCache: cache, now: clock }));
+    await refusal(verify(await forgedToken(), { transport, jwksCache: cache, now: clock }));
+    expect(seen).toHaveLength(1);
+
+    clock = new Date(NOW.getTime() + (OIDC_JWKS_MIN_REFRESH_SECONDS + 1) * 1000);
+    await refusal(verify(await forgedToken(), { transport, jwksCache: cache, now: clock }));
+    expect(seen).toHaveLength(2);
+  });
+
+  test("cost nothing outbound for an invented kid inside the window, and still refuse it as the sender's", async () => {
+    const seen: string[] = [];
+    const cache = memoryJwksCache({ now: () => NOW });
+    const transport = publishing(JWKS_URL, [key.jwk], seen);
+
+    // One genuine delivery fills the store and spends the window.
+    await expect(verify(await signToken(claims(), key), { transport, jwksCache: cache })).resolves.toBeDefined();
+    const thrown = await refusal(verify(await forgedToken(), { transport, jwksCache: cache }));
+
+    // 401 and not 502: we hold what the issuer published a moment ago, so a `kid` outside it is a `kid` the
+    // issuer does not publish. Which of the two it is decides whether the sender is audited or invited back.
+    expect(thrown).toBeInstanceOf(WebhookUnverifiedError);
+    expect(thrown.payload.status).toBe(401);
+    expect(seen).toEqual([JWKS_URL]);
+  });
+
+  test("are not asked again while the issuer is failing, which would be the same flood one hop over", async () => {
+    // A refresh that ends in a 502 has still spent the window. Otherwise the amplifier survives its own
+    // fix: nothing is held, every delivery misses, and every miss buys another attempt at an endpoint that
+    // is already rate-limiting us — which is the loop that keeps us rate-limited.
+    const seen: string[] = [];
+    const cache = memoryJwksCache({ now: () => NOW });
+    const transport: OidcJwksFetch = async (url) => {
+      seen.push(url);
+      return { ok: false, status: 429, text: async () => "" };
+    };
+
+    const first = await refusal(verify(await signToken(claims(), key), { transport, jwksCache: cache }));
+    expect(first).toBeInstanceOf(UpstreamError);
+    const second = await refusal(verify(await signToken(claims(), key), { transport, jwksCache: cache }));
+    // Still 502 — we hold nothing, so we cannot say the token is the sender's failure. What changed is that
+    // saying so costs no outbound request.
+    expect(second).toBeInstanceOf(UpstreamError);
+    expect(second.payload.status).toBe(502);
+    expect(seen).toHaveLength(1);
+  });
+
+  test("answer a concurrent burst with one ask, because the claim is made before it yields", async () => {
+    // Twenty deliveries in flight at once, none of which has seen another's answer. `claimRefresh` decides
+    // and records with no `await` between the two, so nineteen of them are refused out of memory. What they
+    // are refused *with* is the honest thing: nothing is held yet, so they get the 502 that says we could
+    // not look, and Pub/Sub brings a genuine one back a second later.
+    const seen: string[] = [];
+    const cache = memoryJwksCache({ now: () => NOW });
+    const transport = publishing(JWKS_URL, [key.jwk], seen);
+    const forged = await Promise.all(Array.from({ length: 20 }, () => forgedToken()));
+
+    await Promise.all(forged.map((token) => refusal(verify(token, { transport, jwksCache: cache }))));
+
+    expect(seen).toEqual([JWKS_URL]);
   });
 
   test("expire out of the cache, so a rotated set is picked up without an unknown kid", async () => {
@@ -490,12 +573,28 @@ describe("a failure that is not the sender's", () => {
     expect(thrown).toBeInstanceOf(UpstreamError);
   });
 
-  test("a non-RSA published key is refused rather than handed to WebCrypto", async () => {
+  test("a non-RSA key the token's kid names is the sender's 401, not the issuer's 502", async () => {
+    // **Which key is reached is the sender's choice**, because `kid` arrives in a header nobody has
+    // verified. A 502 here would let an anonymous caller pick a code the webhook guard passes through — so
+    // the probe never reaches the audit trail, and Pub/Sub is invited to retry it forever. A token naming a
+    // key that cannot check its own `alg` is a token nothing can verify, which is what 401 says.
     const cache = memoryJwksCache({ now: () => NOW });
     await cache.set(JWKS_URL, [{ ...key.jwk, kty: "EC" }], OIDC_JWKS_TTL_SECONDS);
     const thrown = await refusal(verify(await signToken(claims(), key), { jwksCache: cache }));
-    expect(thrown).toBeInstanceOf(UpstreamError);
+    expect(thrown).toBeInstanceOf(WebhookUnverifiedError);
+    expect(thrown.payload.status).toBe(401);
     expect(thrown.payload.detail).toContain("only RSA keys");
+  });
+
+  test("a key the token's kid names that will not import is the sender's 401 too", async () => {
+    // The other half of the same door: `crypto.subtle.importKey` refuses a key published for encryption
+    // rather than for signatures, and the caller who decided we would reach this key sent the `kid`.
+    const cache = memoryJwksCache({ now: () => NOW });
+    await cache.set(JWKS_URL, [{ ...key.jwk, use: "enc" }], OIDC_JWKS_TTL_SECONDS);
+    const thrown = await refusal(verify(await signToken(claims(), key), { jwksCache: cache }));
+    expect(thrown).toBeInstanceOf(WebhookUnverifiedError);
+    expect(thrown.payload.status).toBe(401);
+    expect(thrown.payload.detail).toContain("could not be imported");
   });
 
   test("an endpoint configured with no issuer refuses as our fault, not the sender's", async () => {
@@ -677,6 +776,23 @@ describe("requireOidcWebhook", () => {
       const response = await app.request("/hooks/release", {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${forged}` },
+        body: JSON.stringify({ event: "release.published" }),
+      });
+      expect(response.status).toBe(401);
+    }
+    expect(seen).toEqual([JWKS_URL]);
+  });
+
+  test("collapses one naming a different invented kid every time onto the same one fetch", async () => {
+    // The flood above replays one token; this one never sends the same `kid` twice, which is the cheaper
+    // attack and the one the store alone did nothing about. Twenty deliveries, twenty `kid`s, one round
+    // trip — and twenty 401s, so nothing about the refusal itself changed.
+    const seen: string[] = [];
+    const app = guardedApp({ transport: publishing(JWKS_URL, [key.jwk], seen) });
+    for (let index = 0; index < 20; index += 1) {
+      const response = await app.request("/hooks/release", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${await forgedToken()}` },
         body: JSON.stringify({ event: "release.published" }),
       });
       expect(response.status).toBe(401);

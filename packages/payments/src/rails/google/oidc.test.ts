@@ -1,12 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { OIDC_MAX_CLOCK_SKEW_SECONDS } from "@pithy-sh/core/src/http/oidcWebhook";
-import { afterEach, beforeAll, describe, expect, test } from "vitest";
-import { PaymentsInvalidReceiptError, PaymentsVerificationFailedError } from "../../error/errors";
+import {
+  memoryJwksCache,
+  OIDC_JWKS_MIN_REFRESH_SECONDS,
+  OIDC_MAX_CLOCK_SKEW_SECONDS,
+} from "@pithy-sh/core/src/http/oidcWebhook";
+import { beforeAll, describe, expect, test } from "vitest";
+import { PaymentsVerificationFailedError } from "../../error/errors";
 import { type MintedOidcKey, mintOidcKey, signOidcToken, tamperClaims } from "./fixtures/push";
 import type { GoogleHttpFetch } from "./http";
-import { GOOGLE_JWKS_URL, type GoogleJwk, resetGoogleJwksCache, verifyGoogleOidcToken } from "./oidc";
+import { GOOGLE_JWKS_URL, type GoogleJwk, verifyGoogleOidcToken } from "./oidc";
 
 /**
  * The authenticity boundary on the Google webhook, exercised for real: a minted RSA key, real RS256
@@ -17,6 +21,11 @@ import { GOOGLE_JWKS_URL, type GoogleJwk, resetGoogleJwksCache, verifyGoogleOidc
  * push token for *every* Pub/Sub push subscription in the world with the same keys, so a signature alone says
  * nothing about whose endpoint the token was minted for. Without the audience check, anybody who can point a
  * push subscription at our URL can deliver notifications we will accept.
+ *
+ * **The verification itself is core's since #520**, so these cases are the rail's contract over it: Google's
+ * issuers, Google's key endpoint, Google's service-account pair, and the code a refusal carries. The forgery
+ * cases stay here rather than being left to core's suite — a rail that tests only the happy path after
+ * delegating is a rail that would not notice core regressing.
  */
 
 const AUDIENCE = "https://acme.example/payments/webhooks/google";
@@ -31,8 +40,6 @@ beforeAll(async () => {
   key = await mintOidcKey();
   impostor = await mintOidcKey("impostor-1");
 });
-
-afterEach(() => resetGoogleJwksCache());
 
 /** The claims Google puts on a Pub/Sub push token, all valid. */
 function claims(overrides: Record<string, unknown> = {}) {
@@ -174,6 +181,48 @@ describe("verifyGoogleOidcToken", () => {
     );
   });
 
+  test("refuses a token that is not yet valid", async () => {
+    // `nbf` is a claim the rail's own verifier never read: a token minted for an hour from now verified
+    // immediately under it. Core honors it, and delegating is what the rail gets it from.
+    const thrown = await catchError(async () =>
+      verify(await signOidcToken(claims({ nbf: Math.floor(NOW.getTime() / 1000) + 3600 }), key)),
+    );
+    expect(thrown).toBeInstanceOf(PaymentsVerificationFailedError);
+    expect(thrown?.payload.detail).toContain("not valid before");
+  });
+
+  test("allows the same clock skew on `nbf` as on the other two", async () => {
+    const almost = Math.floor(NOW.getTime() / 1000) + 30;
+    await expect(verify(await signOidcToken(claims({ nbf: almost }), key))).resolves.toBeDefined();
+  });
+
+  test("an expiry outside Date's range is refused, not a RangeError composing the refusal", async () => {
+    // The refusal message renders the claim as an instant, and `new Date(-1e18).toISOString()` throws a bare
+    // `RangeError` — a plain Error escaping a path whose every other exit is a `PithyError`. Through the
+    // webhook guard that turned a forgery into a 500, which is a forger choosing our status code.
+    const thrown = await catchError(async () => verify(await signOidcToken(claims({ exp: -1e15 }), key)));
+    expect(thrown).toBeInstanceOf(PaymentsVerificationFailedError);
+    expect(thrown?.payload.detail).toContain("expired");
+  });
+
+  test("a not-before outside Date's range is refused the same way", async () => {
+    const thrown = await catchError(async () => verify(await signOidcToken(claims({ nbf: 1e15 }), key)));
+    expect(thrown).toBeInstanceOf(PaymentsVerificationFailedError);
+    expect(thrown?.payload.detail).toContain("not valid before");
+  });
+
+  test.each([
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["a negative lifetime", -1],
+  ])("refuses a key-set lifetime of %s as our fault rather than the sender's", async (_label, jwksTtlSeconds) => {
+    // A non-finite lifetime is an entry that expires at NaN, and `NaN <= now` is false forever — so a key the
+    // issuer has rotated out stays trusted for the life of the isolate. A key pin nobody chose.
+    const thrown = await catchError(async () => verify(await signOidcToken(claims(), key), { jwksTtlSeconds }));
+    expect(thrown?.payload.code).toBe("core/internal");
+    expect(thrown?.payload.status).toBe(500);
+  });
+
   test("refuses a token issued in the future beyond the skew", async () => {
     const thrown = await catchError(async () =>
       verify(await signOidcToken(claims({ iat: Math.floor(NOW.getTime() / 1000) + 3600 }), key)),
@@ -202,40 +251,45 @@ describe("verifyGoogleOidcToken", () => {
     expect(thrown?.payload.detail).toContain("signature");
   });
 
+  // The five cases below read `payments/verification_failed` where they once read `payments/invalid_receipt`.
+  // That split means *the receipt could not be read*, and a Pub/Sub push token is not a receipt — it is a
+  // webhook credential, on a path where the guard already collapsed both codes to `payments/webhook_unverified`
+  // (401) before anything reached the sender. Both are 400 on the direct path, so the change is visible only in
+  // the audit row's `metadata.step`. Deliberate, and stated in `oidc.ts`.
   test("refuses `alg: none` with an empty signature", async () => {
     const token = await signOidcToken(claims(), key, { alg: "none" });
     const [head, body] = token.split(".");
-    await expect(verify(`${head}.${body}.`)).rejects.toBeInstanceOf(PaymentsInvalidReceiptError);
+    await expect(verify(`${head}.${body}.`)).rejects.toBeInstanceOf(PaymentsVerificationFailedError);
   });
 
   test("refuses `alg: none` carrying a real signature", async () => {
     // The header is the half nobody has verified yet, so `alg` is parsed against a literal rather than looked
     // up. A lookup is what makes `none` reachable.
     await expect(verify(await signOidcToken(claims(), key, { alg: "none" }))).rejects.toBeInstanceOf(
-      PaymentsInvalidReceiptError,
+      PaymentsVerificationFailedError,
     );
   });
 
   test("refuses `alg: HS256` — the confusion that asks a verifier to HMAC with a public key", async () => {
     await expect(verify(await signOidcToken(claims(), key, { alg: "HS256" }))).rejects.toBeInstanceOf(
-      PaymentsInvalidReceiptError,
+      PaymentsVerificationFailedError,
     );
   });
 
   test("refuses `alg: RS512`, which the pinned literal excludes even though it is an RSA algorithm", async () => {
     await expect(verify(await signOidcToken(claims(), key, { alg: "RS512" }))).rejects.toBeInstanceOf(
-      PaymentsInvalidReceiptError,
+      PaymentsVerificationFailedError,
     );
   });
 
   test("refuses a header with no kid", async () => {
     await expect(verify(await signOidcToken(claims(), key, { kid: undefined }))).rejects.toBeInstanceOf(
-      PaymentsInvalidReceiptError,
+      PaymentsVerificationFailedError,
     );
   });
 
   test("refuses a token that is not three segments", async () => {
-    await expect(verify("not-a-token")).rejects.toBeInstanceOf(PaymentsInvalidReceiptError);
+    await expect(verify("not-a-token")).rejects.toBeInstanceOf(PaymentsVerificationFailedError);
   });
 
   test("refuses a service account other than the configured one", async () => {
@@ -266,7 +320,28 @@ describe("Google's published keys", () => {
     expect(seen).toEqual([GOOGLE_JWKS_URL]);
   });
 
-  test("are cached, so a burst of notifications costs one fetch", async () => {
+  test("are cached when a cache is passed, so a burst of notifications costs one fetch", async () => {
+    // The cache is a parameter now, not a module variable. That is what deleted `resetGoogleJwksCache`: a
+    // store no caller owns is a store only an exported reset can empty between suites.
+    const seen: string[] = [];
+    const transport = publishing([key.jwk], seen);
+    const jwksCache = memoryJwksCache({ now: () => NOW });
+    const token = await signOidcToken(claims(), key);
+    for (let i = 0; i < 3; i += 1) {
+      await verifyGoogleOidcToken(token, {
+        audience: AUDIENCE,
+        serviceAccountEmail: SERVICE_ACCOUNT,
+        now: NOW,
+        transport,
+        jwksCache,
+      });
+    }
+    expect(seen).toEqual([GOOGLE_JWKS_URL]);
+  });
+
+  test("are fetched per delivery when no cache is passed", async () => {
+    // The other half, and the one that says what removing the module global costs. Correct and slow beats a
+    // store nothing can empty; a Worker that wants the round trip back passes a `JwksCache`.
     const seen: string[] = [];
     const transport = publishing([key.jwk], seen);
     const token = await signOidcToken(claims(), key);
@@ -278,24 +353,31 @@ describe("Google's published keys", () => {
         transport,
       });
     }
-    expect(seen).toEqual([GOOGLE_JWKS_URL]);
+    expect(seen).toHaveLength(3);
   });
 
-  test("are refetched once when a token names a kid the cache does not hold", async () => {
+  test("are refetched when a token names a kid the cache does not hold", async () => {
     // This is what makes Google's key rotation invisible: a new signing key appears in a token before anything
-    // told us to look for it, so an unknown `kid` is a reason to refresh rather than to refuse.
+    // told us to look for it, so an unknown `kid` is a reason to refresh rather than to refuse. Once the
+    // refresh window is over, because that window is what stops the same rule being an outbound amplifier —
+    // a `kid` is attacker-chosen, so "refresh on an unknown one" with no rate is one fetch per forgery.
     const seen: string[] = [];
     const rotated = await mintOidcKey("rotated-1");
     let published = [key.jwk];
+    let clock = NOW;
     const transport: GoogleHttpFetch = async (url) => {
       seen.push(url);
       return { ok: true, status: 200, text: async () => JSON.stringify({ keys: published }) };
     };
-    const options = { audience: AUDIENCE, serviceAccountEmail: SERVICE_ACCOUNT, now: NOW, transport };
+    const jwksCache = memoryJwksCache({ now: () => clock });
+    const options = { audience: AUDIENCE, serviceAccountEmail: SERVICE_ACCOUNT, transport, jwksCache };
 
-    await verifyGoogleOidcToken(await signOidcToken(claims(), key), options);
+    await verifyGoogleOidcToken(await signOidcToken(claims(), key), { ...options, now: clock });
     published = [rotated.jwk];
-    await expect(verifyGoogleOidcToken(await signOidcToken(claims(), rotated), options)).resolves.toBeDefined();
+    clock = new Date(NOW.getTime() + (OIDC_JWKS_MIN_REFRESH_SECONDS + 1) * 1000);
+    await expect(
+      verifyGoogleOidcToken(await signOidcToken(claims(), rotated), { ...options, now: clock }),
+    ).resolves.toBeDefined();
     expect(seen).toHaveLength(2);
   });
 
@@ -369,15 +451,60 @@ describe("Google's published keys", () => {
     expect(seen).toEqual([GOOGLE_JWKS_URL]);
   });
 
-  test("a non-RSA published key is refused rather than imported", async () => {
+  test("a configured key never reaches the shared cache", async () => {
+    // The seeding shape, refused. Writing `trustedKeys` into the store is the obvious way to hand them to core
+    // and it widens trust sideways: the store is shared, so an emulator's key — or this suite's — would read
+    // back as a key *Google publishes* to every other verifier holding the same cache, including one that was
+    // never given it. Keeping them in a wrapper means they are additive for their own caller and invisible to
+    // everyone else.
+    const jwksCache = memoryJwksCache({ now: () => NOW });
+    const published = await mintOidcKey("google-side-2");
+    const shared = { audience: AUDIENCE, serviceAccountEmail: SERVICE_ACCOUNT, now: NOW, jwksCache };
+
+    await verifyGoogleOidcToken(await signOidcToken(claims(), key), {
+      ...shared,
+      trustedKeys: [key.jwk],
+      transport: publishing([published.jwk]),
+    });
     await expect(
+      verifyGoogleOidcToken(await signOidcToken(claims(), key), {
+        ...shared,
+        transport: publishing([published.jwk]),
+      }),
+    ).rejects.toBeInstanceOf(PaymentsVerificationFailedError);
+  });
+
+  test("a non-RSA key the token's kid names is the rail's 401, audited, and not Google's 502", async () => {
+    // **Which key is reached is the sender's choice.** `kid` arrives in an unverified header, so a 502 here
+    // would be a code an anonymous caller picks by naming one `kid` instead of another — and this rail passes
+    // `core/upstream_failed` straight through the webhook guard, which means no `payments/webhook_unverified`
+    // audit row for the probe and an indefinite Pub/Sub retry for the prober. Core answers 401; the rail
+    // re-codes it like every other refusal, so the trail sees it.
+    const thrown = await catchError(async () =>
       verifyGoogleOidcToken(await signOidcToken(claims(), key), {
         audience: AUDIENCE,
         serviceAccountEmail: SERVICE_ACCOUNT,
         now: NOW,
         trustedKeys: [{ ...key.jwk, kty: "EC" }],
       }),
-    ).rejects.toThrow();
+    );
+    expect(thrown).toBeInstanceOf(PaymentsVerificationFailedError);
+    expect(thrown?.payload.code).toBe("payments/verification_failed");
+    expect(thrown?.payload.detail).toContain("only RSA keys");
+  });
+
+  test("a key the token's kid names that will not import is the rail's 401 too", async () => {
+    const thrown = await catchError(async () =>
+      verifyGoogleOidcToken(await signOidcToken(claims(), key), {
+        audience: AUDIENCE,
+        serviceAccountEmail: SERVICE_ACCOUNT,
+        now: NOW,
+        trustedKeys: [{ ...key.jwk, use: "enc" }],
+      }),
+    );
+    expect(thrown).toBeInstanceOf(PaymentsVerificationFailedError);
+    expect(thrown?.payload.code).toBe("payments/verification_failed");
+    expect(thrown?.payload.detail).toContain("could not be imported");
   });
 });
 

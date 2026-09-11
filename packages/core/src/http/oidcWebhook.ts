@@ -49,17 +49,20 @@ import { InternalError, UpstreamError, WebhookUnverifiedError } from "../error/p
  * ## What a refusal says
  *
  * `core/webhook_unverified`, 401, one code for every step a sender can fail — unreadable token, unknown key,
- * bad signature, wrong audience, expired, predicate false. The step goes in `detail`, which the HTTP codec
+ * a key that cannot verify an `RS256` signature, bad signature, wrong audience, expired, predicate false. A
+ * `kid` selects the key, and a `kid` is a value the sender chose, so *every* answer the key leads to is the
+ * sender's. The step goes in `detail`, which the HTTP codec
  * strips, so an operator reading a log learns which check refused it and the sender learns only that
  * something did. Values that decide something are named there (`kid`, `iss`, `aud`) because a misconfigured
  * audience is the realistic failure and an operator cannot fix what the log will not name — truncated by
  * {@link snippet}, and never the signature and never the whole token.
  *
- * Two failures are deliberately **not** the sender's. An endpoint with no issuers, no audience, no key
- * endpoint, or a clock that is not a clock is a configuration fault and takes `core/internal` — reporting it
- * as an unverified webhook sends an operator hunting a forger who is not there. And a key endpoint that
- * cannot be reached or answers nonsense is `core/upstream_failed` (502), because a 500 tells an operator to
- * read *our* logs and the thing that broke is the issuer's. Both still refuse the delivery: fail closed is
+ * Two failures are deliberately **not** the sender's, and the test for both is whether the sender could have
+ * chosen them. An endpoint with no issuers, no audience, no key endpoint, or a clock that is not a clock is a
+ * configuration fault and takes `core/internal` — reporting it as an unverified webhook sends an operator
+ * hunting a forger who is not there. And a key endpoint that cannot be reached or answers nonsense is
+ * `core/upstream_failed` (502), because a 500 tells an operator to read *our* logs and the thing that broke
+ * is the issuer's; no `kid` decides whether that happens. Both still refuse the delivery: fail closed is
  * about what happens to the request, not about whose code goes on it.
  *
  * ## What this proves, and what it does not
@@ -69,8 +72,30 @@ import { InternalError, UpstreamError, WebhookUnverifiedError } from "../error/p
  * deletes needs its own uniqueness key.
  */
 
-/** How long a fetched key set is reused. Issuers rotate slowly, and an unknown `kid` forces a refresh anyway. */
+/** How long a fetched key set is reused. Issuers rotate slowly, so an hour of it is one round trip an hour. */
 export const OIDC_JWKS_TTL_SECONDS = 3600;
+
+/**
+ * **The most often the issuer's key endpoint is asked, whatever a token's `kid` claims.**
+ *
+ * The TTL above bounds the *hit* path and bounds nothing else. A `kid` the held set does not name is a miss,
+ * a miss is a reason to refresh — that is what makes rotation invisible — and `kid` arrives in a header
+ * nobody has verified yet. So the miss path was the whole amplifier: `Bearer <jwt with kid: random-uuid>` is
+ * exactly as cheap to mint as one naming a published key, and each one bought a round trip to the issuer,
+ * 1:1, from an anonymous caller. The cache answered only the forger who bothered to name a real `kid`.
+ *
+ * A window closes it, and it closes it for every `kid` at once because it is not about the `kid`: at most one
+ * ask per window per key endpoint, and a miss inside the window is refused on what we already hold rather
+ * than on a fresh look. A random `kid` therefore costs a lookup in memory, and the outbound rate is a
+ * constant an attacker cannot move.
+ *
+ * **A minute, and the number is a rotation delay.** It is how long a genuinely new signing key can be refused
+ * before we look again — an issuer publishes the key before the first token names it, and every one of them
+ * overlaps rotations by hours, so a minute is inside the overlap and a refusal inside it is a redelivery
+ * rather than a loss. Wider trades rotation latency for nothing much: one ask a minute is already too little
+ * traffic for any issuer to rate-limit.
+ */
+export const OIDC_JWKS_MIN_REFRESH_SECONDS = 60;
 
 /** Tolerance on `exp`, `nbf` and `iat`. A minute covers clock drift; an hour would cover a replay. */
 export const OIDC_CLOCK_SKEW_SECONDS = 60;
@@ -210,20 +235,43 @@ export const oidcJwksFetch: OidcJwksFetch = (url) => fetch(url) as unknown as Pr
  * over KV or the Cache API and shares it across isolates.
  *
  * **Owning the store is not the same as having none.** {@link requireOidcWebhook} builds one per guard when a
- * route gives none, because the guard is the surface anonymous traffic arrives on: with no cache, a 49-byte
- * forged token naming a published `kid` buys a round trip to the issuer, 1:1, until the issuer rate-limits us
- * and the real deliveries 502 alongside the forgeries. {@link verifyOidcToken} called directly is the other
- * case and does fetch per call — its caller holds one token it has already decided to check, so there is no
- * flood to absorb and no cache to acquire by surprise.
+ * route gives none, because the guard is the surface anonymous traffic arrives on: with no store, a 49-byte
+ * forged token buys a round trip to the issuer, 1:1, until the issuer rate-limits us and the real deliveries
+ * 502 alongside the forgeries. {@link verifyOidcToken} called directly is the other case and does fetch per
+ * call — its caller holds one token it has already decided to check, so there is no flood to absorb and no
+ * cache to acquire by surprise.
+ *
+ * **Two facts, not one, and the second is the one that bounds an attacker.** `get`/`set` hold what the issuer
+ * published, which answers a `kid` we have seen. {@link claimRefresh} holds *when we last asked*, which is
+ * what answers a `kid` we have not — and that is the whole of the miss path, where an unverified header used
+ * to buy an outbound request per delivery. Both live in the store rather than in a closure so that a store
+ * shared across isolates (KV, the Cache API) shares the bound too: one ask per window for the deployment,
+ * not one per isolate.
  *
  * Public keys, so nothing here is what CLAUDE.md's secrets rule governs: the whole point of a JWKS endpoint
- * is that anyone may read it. What the cache buys is one round trip per TTL instead of one per delivery.
+ * is that anyone may read it. What the store buys is one round trip per TTL on the hit path and one per
+ * {@link OIDC_JWKS_MIN_REFRESH_SECONDS} on the miss path, instead of one per delivery on both.
  */
 export interface JwksCache {
   /** The key set held for `url`, or `undefined` when nothing usable is held. */
   get(url: string): Promise<readonly OidcJwk[] | undefined>;
   /** Hold a freshly fetched key set for `url` for `ttlSeconds`. */
   set(url: string, keys: readonly OidcJwk[], ttlSeconds: number): Promise<void>;
+  /**
+   * **May the issuer's endpoint be asked for `url` right now?** `true` grants the ask and records it for
+   * `seconds`; `false` says somebody already asked inside that window.
+   *
+   * One call rather than a read and a write, because the question and the claim are the same act: two
+   * deliveries that both read *nobody has asked* and then both ask are the flood this exists to stop. An
+   * implementation decides and records before it yields — {@link memoryJwksCache} does it synchronously
+   * inside the promise, so concurrent deliveries in one isolate produce exactly one ask. A store over a
+   * network is best-effort about that, and best-effort is still a bound.
+   *
+   * It is about the *ask*, never about the answer, which is what keeps a failing endpoint from being a
+   * second amplifier: a refresh that ends in `core/upstream_failed` has still spent the window, so a flood
+   * arriving while the issuer is down costs one attempt per window rather than one per delivery.
+   */
+  claimRefresh(url: string, seconds: number): Promise<boolean>;
 }
 
 /**
@@ -236,6 +284,8 @@ export interface JwksCache {
 export function memoryJwksCache(options: { now?: () => Date } = {}): JwksCache {
   const now = options.now ?? (() => new Date());
   const held = new Map<string, { keys: readonly OidcJwk[]; expiresAt: number }>();
+  /** When the endpoint behind each url may be asked again. The miss path's whole state. */
+  const askedUntil = new Map<string, number>();
   return {
     get: async (url) => {
       const entry = held.get(url);
@@ -248,6 +298,16 @@ export function memoryJwksCache(options: { now?: () => Date } = {}): JwksCache {
     },
     set: async (url, keys, ttlSeconds) => {
       held.set(url, { keys, expiresAt: now().getTime() + ttlSeconds * 1000 });
+    },
+    // Decided and recorded with no `await` between the read and the write, which is what makes this a claim
+    // rather than a check: an isolate handling a thousand concurrent forgeries runs this body a thousand
+    // times and grants it once. The async signature is the seam's, for the stores that do reach a network.
+    claimRefresh: async (url, seconds) => {
+      const at = now().getTime();
+      const until = askedUntil.get(url);
+      if (until !== undefined && until > at) return false;
+      askedUntil.set(url, at + seconds * 1000);
+      return true;
     },
   };
 }
@@ -281,6 +341,10 @@ export interface OidcWebhookScheme {
   /**
    * How long a fetched key set is held. Defaults to {@link OIDC_JWKS_TTL_SECONDS} and must be a finite number
    * of seconds — a `NaN` is an entry that never expires, which pins a key the issuer has rotated out.
+   *
+   * Keep it above {@link OIDC_JWKS_MIN_REFRESH_SECONDS}. Below it, a set expires while the window that
+   * governs re-asking is still spent, and every delivery in the gap is answered `core/upstream_failed`
+   * because nothing is held and nothing may be asked. An hour against a minute is not close to that line.
    */
   jwksTtlSeconds?: number;
   /**
@@ -315,9 +379,11 @@ export interface OidcWebhookGuardOptions extends OidcWebhookScheme {
  * it has not checked yet.
  *
  * @throws {@link WebhookUnverifiedError} (401) when the sender did not prove itself — unreadable token,
- *   unknown key, bad signature, wrong issuer or audience, expired, not yet valid, predicate false.
+ *   unknown key, a key that cannot verify an `RS256` signature, bad signature, wrong issuer or audience,
+ *   expired, not yet valid, predicate false.
  * @throws {@link InternalError} (500) when this endpoint is not configured to verify anything.
- * @throws {@link UpstreamError} (502) when the issuer's key endpoint could not be read.
+ * @throws {@link UpstreamError} (502) when the issuer's key endpoint could not be read — either because the
+ *   ask failed, or because it was asked inside {@link OIDC_JWKS_MIN_REFRESH_SECONDS} and nothing is held.
  */
 export async function verifyOidcToken(token: string, options: VerifyOidcTokenOptions): Promise<OidcClaims> {
   // Ours before theirs. An endpoint with nothing to check against refuses every delivery, and calling that an
@@ -435,21 +501,24 @@ export async function verifyOidcToken(token: string, options: VerifyOidcTokenOpt
  * be unauthenticated work an anonymous POST could buy on the one route whose purpose is to refuse anonymous
  * callers.
  *
- * ## Why a cache is not optional here
+ * ## Why a store is not optional here
  *
  * A caller that presents *something* is past that first check, and the next thing the verifier needs is the
  * issuer's key set. So the guard builds a {@link memoryJwksCache} when the route gives none — once, when the
- * middleware is constructed, never per request, which is a cache that has never held anything. A `kid` is
- * published by definition, which makes a 49-byte token naming one the cheapest thing on the internet to send,
- * and with no cache each one is a round trip to the issuer, 1:1. That is a bandwidth multiplier aimed at
- * somebody else's endpoint, and once the issuer rate-limits us {@link fetchJwks} maps it to
- * `core/upstream_failed` for the genuine deliveries too — an anonymous caller taking the boundary down by
- * asking it politely. A route wanting a harder bound (shared across isolates, or rate-limiting) passes its
- * own {@link OidcWebhookScheme.jwksCache}, and this one is never built.
+ * middleware is constructed, never per request, which is a store that has never held anything. A 49-byte
+ * token is the cheapest thing on the internet to send, and with no store each one is a round trip to the
+ * issuer, 1:1. That is a bandwidth multiplier aimed at somebody else's endpoint, and once the issuer
+ * rate-limits us {@link fetchJwks} maps it to `core/upstream_failed` for the genuine deliveries too — an
+ * anonymous caller taking the boundary down by asking it politely.
  *
- * A `kid` **nobody** publishes still costs one fetch per delivery, cache or no cache, because an unknown key
- * id is how rotation announces itself and declining to look is an outage. That bound is per delivery and
- * lives in {@link resolveKey}; the cache is what collapses the other flood, the one naming a key that exists.
+ * **Both halves of the flood, not one.** A token naming a `kid` the issuer really publishes is answered out
+ * of what the store holds. A token naming a `kid` nobody has ever published is answered by
+ * {@link JwksCache.claimRefresh}: one ask per {@link OIDC_JWKS_MIN_REFRESH_SECONDS} per key endpoint, for
+ * every `kid` at once, so a `kid` an attacker invents costs a map lookup and no outbound request. The first
+ * round of this fix had only the first half, which meant the cache helped exactly against a forger who
+ * bothered to copy a real `kid` and not at all against one who did not. A route wanting the bound shared
+ * across isolates rather than held per isolate passes its own {@link OidcWebhookScheme.jwksCache} — over KV
+ * or the Cache API — and this one is never built.
  *
  * ## Why nothing is published to the request
  *
@@ -482,22 +551,52 @@ export function requireOidcWebhook(options: OidcWebhookGuardOptions): Middleware
 }
 
 /**
- * The key a token's `kid` names, from the cache when it holds it and from the issuer otherwise.
+ * The key a token's `kid` names, from the store when it holds it and from the issuer otherwise.
  *
- * A `kid` the cache does not hold triggers **exactly one** refresh, which is what makes key rotation
- * invisible: a new signing key appears in a token before anything tells us to look for it, and waiting out a
- * TTL would be an outage. Exactly one, because otherwise a stream of forged tokens naming random `kid`s is a
- * way to make us hammer the issuer — one delivery buys one fetch, whatever it claims. A caller that wants a
- * harder bound than that gives a {@link JwksCache} that rate-limits, which is the other thing injecting the
- * store buys.
+ * ## The miss path is the one an anonymous caller reaches
+ *
+ * A `kid` the store does not hold is a reason to refresh, and it has to be: a new signing key appears in a
+ * token before anything tells us to look for it, so waiting out a TTL would be an outage. But `kid` is read
+ * out of a header nobody has verified yet, and the two things it can mean — *the issuer rotated* and *I made
+ * this up* — are indistinguishable until after the fetch it costs. That is the whole amplifier, and it is why
+ * a store keyed only on what the issuer published answered the wrong half of it: the forger who names a
+ * published `kid` was collapsed onto one fetch, and the one who names `crypto.randomUUID()` bought a round
+ * trip per delivery, from an endpoint whose purpose is refusing anonymous callers.
+ *
+ * So the ask is claimed before it is made — {@link JwksCache.claimRefresh}, one per
+ * {@link OIDC_JWKS_MIN_REFRESH_SECONDS} per key endpoint, for every `kid` together rather than per `kid`.
+ * Per `kid` would be no bound at all: an attacker has as many of those as they care to type.
+ *
+ * ## What a miss inside the window answers, and why it is two different codes
+ *
+ * Whatever we hold is what the issuer published a moment ago, so a `kid` outside it is a `kid` the issuer
+ * does not publish — the sender's failure, 401, audited, and not worth retrying. **Unless we hold nothing**,
+ * which means the last ask inside this window failed or has not come back: then the honest answer is that we
+ * could not look, and that is the issuer's 502. Neither answer costs an outbound request, which is the point.
+ *
+ * With no store at all there is nothing to claim and nothing to hold, so every call fetches. That is
+ * {@link verifyOidcToken}'s direct-call shape — one caller, one token it already decided to check — and
+ * never the guard's, which builds a store precisely so this paragraph does not describe it.
  */
 async function resolveKey(kid: string, options: VerifyOidcTokenOptions): Promise<OidcJwk> {
-  const held = await options.jwksCache?.get(options.jwksUrl);
+  const cache = options.jwksCache;
+  const held = await cache?.get(options.jwksUrl);
   const cached = held?.find((key) => key.kid === kid);
   if (cached) return cached;
 
+  if (cache !== undefined && !(await cache.claimRefresh(options.jwksUrl, OIDC_JWKS_MIN_REFRESH_SECONDS))) {
+    if (held === undefined || held.length === 0) {
+      throw upstream(
+        `The OIDC key endpoint ${options.jwksUrl} was asked within the last ${OIDC_JWKS_MIN_REFRESH_SECONDS} seconds and nothing is held, so the token's kid could not be looked up.`,
+      );
+    }
+    throw unverified(
+      `no key the issuer publishes matches the token's kid ${snippet(kid)}, and the published set was read within the last ${OIDC_JWKS_MIN_REFRESH_SECONDS} seconds.`,
+    );
+  }
+
   const refreshed = await fetchJwks(options);
-  await options.jwksCache?.set(options.jwksUrl, refreshed, options.jwksTtlSeconds ?? OIDC_JWKS_TTL_SECONDS);
+  await cache?.set(options.jwksUrl, refreshed, options.jwksTtlSeconds ?? OIDC_JWKS_TTL_SECONDS);
   const found = refreshed.find((key) => key.kid === kid);
   if (!found) {
     throw unverified(`no key the issuer publishes matches the token's kid ${snippet(kid)}.`);
@@ -541,17 +640,33 @@ async function fetchJwks(options: VerifyOidcTokenOptions): Promise<OidcJwk[]> {
   return parsed.data.keys;
 }
 
-/** Import one published JWK as a verification key. A non-RSA key is refused rather than handed to WebCrypto. */
+/**
+ * Import one published JWK as a verification key. A non-RSA key is refused rather than handed to WebCrypto.
+ *
+ * **Both refusals are the sender's, 401, and the reason is who chose the key.** A published key that cannot
+ * verify an `RS256` signature looks like the issuer's fact, and as a fact about the key set it is — but the
+ * key reached here because a `kid` in an unverified header selected it, so as an *answer* it is attacker-
+ * chosen. A 502 hands that caller three things it must not have: a code the webhook guard passes through
+ * untouched, so the refusal never reaches the audit trail that exists to show a rail being probed; a status
+ * a sender is invited to retry, which for Pub/Sub means forever; and a lever for picking which of those two
+ * an endpoint answers. The narrower reading is also the true one — a token naming a key that cannot check its
+ * own algorithm is a token nothing can verify, which is what `core/webhook_unverified` says.
+ *
+ * The issuer's own failures stay the issuer's: {@link fetchJwks} is 502 for every one of them, and no `kid`
+ * decides whether they happen.
+ */
 async function importKey(jwk: OidcJwk): Promise<CryptoKey> {
   if (jwk.kty !== "RSA") {
-    throw upstream(`Published key ${snippet(jwk.kid)} is ${snippet(jwk.kty)}, and only RSA keys sign an OIDC token.`);
+    throw unverified(
+      `the token's kid ${snippet(jwk.kid)} names a ${snippet(jwk.kty)} key, and only RSA keys sign an OIDC token.`,
+    );
   }
   try {
     // `alg` is forced to `RS256` rather than taken from the published key: the algorithm is already pinned by
     // the header literal, and a key set that published a different one would otherwise decide it for us.
     return await crypto.subtle.importKey("jwk", { ...jwk, alg: "RS256" }, RS256, false, ["verify"]);
   } catch (cause) {
-    throw upstream(`Published key ${snippet(jwk.kid)} could not be imported.`, cause);
+    throw unverified(`the key the token's kid ${snippet(jwk.kid)} names could not be imported.`, cause);
   }
 }
 

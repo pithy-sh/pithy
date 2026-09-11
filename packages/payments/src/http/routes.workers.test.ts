@@ -64,7 +64,7 @@ import rtdnRevoked from "../rails/google/fixtures/rtdn-subscription-revoked.json
 import rtdnTest from "../rails/google/fixtures/rtdn-test.json" with { type: "json" };
 import rtdnVoided from "../rails/google/fixtures/rtdn-voided-purchase.json" with { type: "json" };
 import type { GoogleHttpFetch } from "../rails/google/http";
-import { GOOGLE_JWKS_URL, resetGoogleJwksCache } from "../rails/google/oidc";
+import { GOOGLE_JWKS_URL } from "../rails/google/oidc";
 import { GOOGLE_TOKEN_URL } from "../rails/google/playApi";
 import type { LemonSqueezyHttpFetch } from "../rails/lemonSqueezy/api";
 import {
@@ -327,8 +327,6 @@ beforeEach(async () => {
   emitted = [];
   stripeCalls = [];
   paddleCalls = [];
-  // Google's published keys are cached per isolate, which is right in a Worker and wrong across tests.
-  resetGoogleJwksCache();
   // The routes read credentials through the shared per-invocation accessor, so it is configured with payments'
   // own slice — the real resolver, no seam replaced. The bundle is a `d1` secret, so it is provisioned as the
   // encrypted row the manager Workflow writes and the reader reads, in dev exactly as deployed (#153); a case
