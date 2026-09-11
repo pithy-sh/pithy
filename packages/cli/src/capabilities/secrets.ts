@@ -305,28 +305,37 @@ export interface SecretListRow {
  * reads as a checklist, and a checklist that cannot distinguish *not yet done* from *will never apply*
  * re-raises settled questions on every run.
  *
- * **Marked rather than filtered, and that is the deliberate half.** Filtering settles a question by
- * hiding it: an adopter who declined a binding by mistake would get no signal, and a reader could not
- * tell a secret that does not apply from one the CLI stopped seeing. `ls` is the project's inventory —
- * its job is to be complete — so the reason stays on the line, drawn from configuration, and it answers
- * *what would I have to do to enable this* as well as *why is this here*. `pithy doctor` takes the other
- * branch for the opposite reason: it is a fault list, and a settled configuration is not a fault.
+ * **Hidden, not marked (#552).** This listing reads as a checklist of what a project has to set, and a
+ * line saying *not applicable* is still a line on that checklist — it re-raises a settled question every
+ * run, which is the whole complaint #541 opened with. A project running Google and GitHub does not have
+ * four OAuth credentials to think about; it has two, and the other two are not its business.
  *
- * **The mark replaces the axes.** `d1 · environment` says where a value would be stored, and there is no
- * value to store for a secret nothing will ever read.
+ * The first cut marked them instead, arguing that `ls` is an inventory and its job is to be complete.
+ * That argument is not wrong about inventories and it was the wrong thing to optimize: nobody reading
+ * this is auditing the kit's declarations, they are working out what to go and set. `--all` is where
+ * completeness lives now, and it prints the reason with each hidden name, so *why is apple missing* has
+ * an answer that is one flag away rather than absent.
+ *
+ * **The reason is never lost, only moved.** `--all` renders it in place of the axes — `d1 · environment`
+ * says where a value would be stored, and there is no value to store for a secret nothing will read.
  */
-export function secretListRows(registry: SecretRegistry, inapplicable: ReadonlyMap<string, string>): SecretListRow[] {
+export function secretListRows(
+  registry: SecretRegistry,
+  inapplicable: ReadonlyMap<string, string>,
+  all = false,
+): SecretListRow[] {
   return Object.entries(registry)
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([name, entry]) => {
+    .flatMap(([name, entry]): SecretListRow[] => {
       const reason = inapplicable.get(name);
       if (reason !== undefined) {
-        return { name, description: `not applicable — ${reason}`, applies: false, reason };
+        if (!all) return [];
+        return [{ name, description: `not applicable — ${reason}`, applies: false, reason }];
       }
       // A keyspace is marked, because it is the one entry an operator must not try to set: its members
       // are written per key by the application that mints them.
       const axes = `${entry.backend} · ${entry.scope}${entry.rotatable ? " · rotatable" : ""}${entry.keyed ? " · keyspace" : ""}`;
-      return { name, description: axes, applies: true };
+      return [{ name, description: axes, applies: true }];
     });
 }
 
@@ -351,13 +360,32 @@ export function secretListRows(registry: SecretRegistry, inapplicable: ReadonlyM
  * project, worded once. Only the closing sentence is this command's: `ls` **marks** where doctor
  * **filters**, so the risk each one owes its reader is the opposite of the other's.
  */
-export function unresolvedNote(unresolved: readonly UnresolvedEnvironment[]): string {
+/**
+ * One line saying how many names were left out, so hiding them is never silent (#552).
+ *
+ * The whole objection to filtering was that a reader cannot tell *nothing applies here* from *the CLI
+ * stopped showing me things*. A count answers that in one line and names the flag that expands it, which
+ * is the part the marked version was really buying — and it costs one line rather than one per secret.
+ *
+ * Nothing hidden prints nothing at all, which is the ordinary case for a project that composes what it
+ * configures.
+ */
+export function hiddenNote(hidden: number): string {
+  if (hidden === 0) return "";
+  const s = hidden === 1 ? "" : "s";
+  return `\n\n${hidden} secret${s} this configuration will never read ${hidden === 1 ? "is" : "are"} not listed. pithy secrets ls --all shows ${hidden === 1 ? "it" : "them"}, and why.`;
+}
+
+export function unresolvedNote(unresolved: readonly UnresolvedEnvironment[], hidden = 0): string {
   if (unresolved.length === 0) return "";
-  return [
-    "",
-    ...unresolvedLines(unresolved),
-    "A secret only those environments need may be marked not applicable above. Run pithy doctor.",
-  ].join("\n");
+  // The risk is the same fact either way and the sentence has to name what the reader is looking at.
+  // With rows hidden there is nothing "above" to have been marked, and a note pointing at a listing that
+  // is not there reads as a bug in the tool rather than a caveat about the answer (#552).
+  const risk =
+    hidden > 0
+      ? "A secret only those environments need may be among the ones not listed. Run pithy doctor."
+      : "A secret only those environments need may be marked not applicable above. Run pithy doctor.";
+  return ["", ...unresolvedLines(unresolved), risk].join("\n");
 }
 
 /** The `ls` / `ls --check` view: the declared names (keyspaces included), the audit, and the gate. */

@@ -442,6 +442,8 @@
     {
       "path": "secrets ls",
       "flags": [
+        "--all",
+        "--no-all",
         "--json",
         "--no-json"
       ]
