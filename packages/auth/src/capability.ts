@@ -18,7 +18,7 @@ import { createSessionMiddleware } from "./http/middleware";
 import { createRateLimitMiddleware } from "./http/rateLimit";
 import { createAuthRoutes } from "./http/routes";
 import { AuthPlugin, assertAdditivePlugins } from "./instance/plugins";
-import { authSecretsRegistry } from "./instance/secrets";
+import { authSecretsRegistry, inapplicableProviderSecrets } from "./instance/secrets";
 import { AUTH_MIGRATION_ORDER, auth_0001_init } from "./migrations/0001_init";
 import { authPluginPlan } from "./migrations/pluginTables";
 import { authDevSessionSeed } from "./seeds/devSession";
@@ -189,6 +189,11 @@ export function auth(config: AuthConfigInput): AuthCapability {
     config: AuthConfig,
     dependsOn: ["secrets", "email"],
     secretRegistry: authSecretsRegistry,
+    // And which of those four credentials this composition cannot reach (#541). A provider that is off
+    // has no code path that reads its pair, so `pithy doctor` listing it as outstanding re-raised a
+    // settled question on every run. Declared rather than inferred: the config key and the secret name
+    // are spelled alike by coincidence, and this is the only place that holds both.
+    inapplicableSecrets: inapplicableProviderSecrets(resolved),
     requiredBindings: [
       { type: "d1", name: resolved.database },
       { type: "ratelimit", name: resolved.rateLimiterBinding },

@@ -138,6 +138,17 @@ describe("payments()", () => {
     expect(payments({ billingSubject: "user" }).secretBranches).toEqual({ [PAYMENTS_PROVIDER_SECRET]: [] });
   });
 
+  test("and says the bundle is out of reach entirely when no rail is on (#541)", () => {
+    // The neighbor of the line above, one level up: no blocks to ask for is not the same claim as
+    // nothing reads this, so the capability states the second rather than letting the CLI infer it from
+    // the first. Every toggle is off until named, so this is what `pithy add payments` leaves behind —
+    // and `pithy doctor` asked for the credential on every run of it.
+    expect(payments({ billingSubject: "user" }).inapplicableSecrets).toEqual({
+      [PAYMENTS_PROVIDER_SECRET]: "payments() enables no rail, so no code path reads a credential",
+    });
+    expect(payments(CATALOG).inapplicableSecrets).toEqual({});
+  });
+
   test("contributes its routes, mounted under the configured basePath", () => {
     const app = new Hono<PithyHonoEnv>();
     payments({ ...CATALOG, basePath: "/billing" }).routes?.(app);

@@ -25,6 +25,7 @@ import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import type { RotationTracker } from "@pithy-sh/secrets/src/store/rotationTracker";
 import type { SystemSecretsStore } from "@pithy-sh/secrets/src/store/systemSecretsStore";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import type { SecretApplicability } from "../capabilities/secretApplicability";
 import { runSecretWrite } from "../capabilities/secrets";
 import { storeSecretWriter } from "../capabilities/storeSecretWrites";
 import type { DevSecretsTarget } from "../devSecrets/targets";
@@ -235,6 +236,15 @@ async function worker(name: string, env: Record<string, unknown>): Promise<DevSe
 async function bareWorker(registry: SecretRegistry = REGISTRY): Promise<DevSecretsTarget> {
   const target = await worker("board", Object.fromEntries(ENVIRONMENTS.map((env) => [env, {}])));
   return { ...target, registry };
+}
+
+/**
+ * One name out of reach, said both ways: project-wide, and for the Worker named. A single-Worker project's
+ * applicability looks exactly like this, because with one Worker the two answers cannot differ.
+ */
+function applicabilityFor(name: string, reason: string, worker = "board"): SecretApplicability {
+  const map = new Map([[name, reason]]);
+  return { project: map, byWorker: new Map([[worker, map]]) };
 }
 
 /** The report for one Worker, as `pithy doctor` prints it. */
@@ -965,5 +975,110 @@ describe("the write rule decides which flag a remedy may carry", () => {
     );
     expect([...where.store.keys()]).toEqual([]);
     expect([...where.rows.keys()]).toEqual([]);
+  });
+});
+
+/**
+ * **A stanza is not short of a binding for a secret nothing can reach (#541).**
+ *
+ * The same rule this wave applied to `Dev secrets:`, one block down. `boundSecretNames` filters on
+ * `cf-secrets-store`, and no kit credential behind a declined binding is one today — but the rule is
+ * about the report rather than about today's registry, and a `secrets_store_secrets` line for a
+ * credential the configuration has refused is a line an operator can never close.
+ */
+describe("what the configuration cannot reach", () => {
+  const storeBacked = defineSecretRegistry({
+    "support-r2-credentials": {
+      backend: "cf-secrets-store",
+      scope: "environment",
+      rotatable: false,
+      valueType: "text",
+      binding: "SUPPORT_BUCKET",
+    },
+  });
+
+  test("is reported when it applies", async () => {
+    const check = await checkSecretBindings({
+      projectDir: dir,
+      targets: [await bareWorker(storeBacked)],
+      environments: ENVIRONMENTS,
+      project: PROJECT,
+    });
+    expect(check?.state).toBe("unbound");
+    expect(check?.missing.map((entry) => entry.binding)).toContain("support-r2-credentials");
+  });
+
+  test("and is not reported when it does not", async () => {
+    const check = await checkSecretBindings({
+      projectDir: dir,
+      targets: [await bareWorker(storeBacked)],
+      environments: ENVIRONMENTS,
+      project: PROJECT,
+      inapplicable: applicabilityFor("support-r2-credentials", "SUPPORT_BUCKET declined in pithy.config.ts"),
+    });
+    expect(check?.state).toBe("ok");
+    expect(check?.missing).toEqual([]);
+  });
+
+  /**
+   * **Never the master key.** Every environment's `SECRETS_ENCRYPTION_KEYS` stanza is what lets a
+   * deployed Worker open its store at all, so a declaration that could silence it would hide the one
+   * finding in this block that stops everything else working.
+   */
+  test("never silences the master key", async () => {
+    const withMaster = defineSecretRegistry({
+      [MASTER_KEY_BINDING]: {
+        backend: "cf-secrets-store",
+        scope: "environment",
+        rotatable: false,
+        bootstrap: true,
+        valueType: "text",
+      },
+    });
+    const check = await checkSecretBindings({
+      projectDir: dir,
+      targets: [await bareWorker(withMaster)],
+      environments: ENVIRONMENTS,
+      project: PROJECT,
+      inapplicable: applicabilityFor(MASTER_KEY_BINDING, "somebody declared this unreachable"),
+    });
+    expect(check?.missing.map((entry) => entry.binding)).toContain(MASTER_KEY_BINDING);
+  });
+
+  /**
+   * **The mixed-Worker case, which is where this survived a round.**
+   *
+   * A secret is per project — one name, one value — so `SecretApplicability.project` marks a name only
+   * when *every* Worker has declined it, and that is right for `pithy secrets ls` and for the one
+   * `.dev.secrets.json`. It is wrong here, and wrong in the way that reads as a bug: this loop is per
+   * Worker and per environment, and a `secrets_store_secrets` stanza belongs to one Worker. Handed the
+   * project answer, the report told the Worker that had *just* declined `SUPPORT_BUCKET` that its stanza
+   * was short of `support-r2-credentials` — because a second Worker still reaches it. That is a finding
+   * the first Worker can never close, printed a few lines under its own decline.
+   */
+  test("takes a credential out of the Worker that declined it, and leaves it for the one that did not", async () => {
+    const declining = {
+      ...(await worker("board", Object.fromEntries(ENVIRONMENTS.map((env) => [env, {}])))),
+      registry: storeBacked,
+    };
+    const reading = {
+      ...(await worker("collab", Object.fromEntries(ENVIRONMENTS.map((env) => [env, {}])))),
+      registry: storeBacked,
+    };
+    const check = await checkSecretBindings({
+      projectDir: dir,
+      targets: [declining, reading],
+      environments: ENVIRONMENTS,
+      project: PROJECT,
+      // What the real resolver answers for that project: nothing is out of reach *project-wide*, because
+      // `collab` still reads it, and it is out of reach for `board`.
+      inapplicable: {
+        project: new Map(),
+        byWorker: new Map([
+          ["board", new Map([["support-r2-credentials", "SUPPORT_BUCKET declined in pithy.config.ts"]])],
+        ]),
+      },
+    });
+    expect(check?.missing.map((entry) => entry.worker)).toEqual(["collab", "collab"]);
   });
 });

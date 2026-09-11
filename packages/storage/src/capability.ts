@@ -11,7 +11,7 @@ import { StorageConfig, type StorageConfigInput } from "./config/config";
 import { storageTables } from "./data/tables";
 import { registerStorageRoutes } from "./http/routes";
 import { storage_0001_objects } from "./migrations/0001_objects";
-import { storageSecretsRegistry } from "./secret/registry";
+import { STORAGE_BUCKET_BINDING, storageSecretsRegistry } from "./secret/registry";
 import { storageExampleSeed } from "./seeds/example";
 import { PACKAGE_VERSION } from "./version.generated";
 import { storageWorkflows } from "./workflows/specs";
@@ -66,7 +66,7 @@ export function storage(options: StorageOptions = {}): StorageCapability {
     // The app database — the objects and shares tables live here.
     { type: "d1", name: "DB" },
     // The bucket the bytes live in. Deliberately separate from media's `MEDIA_BUCKET`.
-    { type: "r2", name: "STORAGE_BUCKET" },
+    { type: "r2", name: STORAGE_BUCKET_BINDING },
     // The sweep's Workflow binding, derived from the spec rather than written again — one declaration,
     // so a binding rename cannot leave the two disagreeing. Optional: the binding exists only once
     // `pithy storage provision` has deployed the sweep worker, and an unprovisioned project must still

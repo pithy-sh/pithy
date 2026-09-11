@@ -77,6 +77,13 @@ export interface R2CredentialsEntry {
   origin: SecretOrigin;
   /** How the pair is replaced. `manual`, always — the same page, by the same human. */
   rotation: SecretRotation;
+  /**
+   * The R2 binding this bundle presigns, when the declaring capability names one — `STORAGE_BUCKET`,
+   * `MEDIA_BUCKET`, `SUPPORT_BUCKET`. See {@link SecretRegistryEntryBase.binding}: it is what lets
+   * `pithy doctor` and `pithy secrets ls` stop asking for a credential whose bucket the project has
+   * declined (#541).
+   */
+  binding?: string;
 }
 
 /**
@@ -115,13 +122,31 @@ const R2_CREDENTIALS_ENTRY: R2CredentialsEntry = {
 /**
  * A one-entry secret-registry slice declaring `name` as an R2 credential bundle. Hang it on the
  * declaring capability's `secretRegistry`, then pass the same `name` to `objectStore`.
+ *
+ * **`binding` is the bucket this bundle presigns**, and a capability that declares this slice states it
+ * — `STORAGE_BUCKET` here, `MEDIA_BUCKET` in `@pithy-sh/media`, `SUPPORT_BUCKET` in `@pithy-sh/support`.
+ * It is what lets the CLI stop asking for a credential whose bucket the project declined (#541), and
+ * `secret/registry.test.ts` in each of those packages holds its own call to it.
+ *
+ * It is **optional rather than required**, and for exactly one caller: `objectStore` builds a one-entry
+ * registry per read from the secret *name* it was handed, holding an `R2Bucket` object and no binding
+ * name to state. That registry is never composed onto a capability and never reaches a reporting
+ * command, so the field would have nothing to say there — and making it required would force that call
+ * site to invent one.
  */
-export function r2CredentialsRegistry<const N extends string>(name: N): Record<N, R2CredentialsEntry> {
-  return defineSecretRegistry({ [name]: R2_CREDENTIALS_ENTRY } as Record<N, R2CredentialsEntry> & SecretRegistry);
+export function r2CredentialsRegistry<const N extends string>(
+  name: N,
+  binding?: string,
+): Record<N, R2CredentialsEntry> {
+  const entry: R2CredentialsEntry = binding === undefined ? R2_CREDENTIALS_ENTRY : { ...R2_CREDENTIALS_ENTRY, binding };
+  return defineSecretRegistry({ [name]: entry } as Record<N, R2CredentialsEntry> & SecretRegistry);
 }
 
 /** The name storage's own bucket credentials are stored and resolved under. */
 export const STORAGE_R2_SECRET = "storage-r2-credentials";
 
+/** The binding storage's own bundle presigns — the one `storage()` declares and `objectStore` writes through. */
+export const STORAGE_BUCKET_BINDING = "STORAGE_BUCKET";
+
 /** The storage capability's secret-registry slice — aggregated into the shared accessor at startup. */
-export const storageSecretsRegistry = r2CredentialsRegistry(STORAGE_R2_SECRET);
+export const storageSecretsRegistry = r2CredentialsRegistry(STORAGE_R2_SECRET, STORAGE_BUCKET_BINDING);

@@ -26,7 +26,7 @@ import { supportAdminRoutes } from "./http/scopes";
 import { createSupportEmailHandler } from "./inbound/handler";
 import { support_0001_threads } from "./migrations/0001_threads";
 import { resolveReplies, type SupportReplySnippets } from "./reply/snippets";
-import { supportSecretsRegistry } from "./secret/registry";
+import { inapplicableAttachmentSecrets, SUPPORT_BUCKET_BINDING, supportSecretsRegistry } from "./secret/registry";
 import { supportExampleSeed } from "./seeds/example";
 import { PACKAGE_VERSION } from "./version.generated";
 import { supportWorkflows } from "./workflows/specs";
@@ -227,7 +227,7 @@ export function support(options: SupportOptions = {}): SupportCapability {
     // three environments for an inbox with attachments off, and `pithy doctor` call them missing
     // forever once they were deleted by hand (#440). The three settings behind `supportNeedsBucket`
     // all default `true`, so nothing changes for a project that has not turned one off.
-    ...(supportNeedsBucket(resolved) ? [{ type: "r2" as const, name: "SUPPORT_BUCKET", optional: true }] : []),
+    ...(supportNeedsBucket(resolved) ? [{ type: "r2" as const, name: SUPPORT_BUCKET_BINDING, optional: true }] : []),
     // The classification Workflow the inbound handler dispatches to, derived from the spec rather
     // than listed again — one declaration, so a binding rename cannot leave the two disagreeing.
     ...workflowBindings(supportWorkflows),
@@ -241,6 +241,10 @@ export function support(options: SupportOptions = {}): SupportCapability {
     // Attachment presigning reads an R2 credential bundle through @pithy-sh/secrets.
     dependsOn: ["secrets"],
     secretRegistry: supportSecretsRegistry,
+    // And whether this composition can reach it at all (#541). The binding is suppressed when nothing
+    // would ever write to the bucket, so there is no decline for the CLI to join against — the
+    // capability is the only thing that knows, and it already computed the answer for the binding.
+    inapplicableSecrets: inapplicableAttachmentSecrets(resolved),
     workflows: supportWorkflows,
     requiredBindings,
     // Provisioning creates the routing rule that delivers mail to this Worker.

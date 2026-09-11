@@ -1,12 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { InternalError } from "@pithy-sh/core/src/error/pithyError";
-import { OIDC_MAX_CLOCK_SKEW_SECONDS } from "@pithy-sh/core/src/http/oidcWebhook";
+import { WebhookUnverifiedError } from "@pithy-sh/core/src/error/pithyError";
+import { type JwksCache, OidcClaims, OidcJwk, OidcJwks, verifyOidcToken } from "@pithy-sh/core/src/http/oidcWebhook";
 import { z } from "zod";
-import { PaymentsInvalidReceiptError, PaymentsVerificationFailedError } from "../../error/errors";
-import { type GoogleHttpFetch, googleHttpFetch, googleJson } from "./http";
-import { base64UrlDecode, decodeJwtJson, splitJwt } from "./jwt";
+import { PaymentsVerificationFailedError } from "../../error/errors";
+import type { GoogleHttpFetch } from "./http";
 
 /**
  * The authenticity boundary on Google's webhook: the OIDC token a Pub/Sub push carries.
@@ -23,21 +22,47 @@ import { base64UrlDecode, decodeJwtJson, splitJwt } from "./jwt";
  * for. Verify the signature and skip the audience and you have built an endpoint that accepts notifications
  * from any Google customer who points a subscription at it.
  *
- * Four checks, in this order, and the order is deliberate:
+ * ## Everything above is `@pithy-sh/core/src/http/oidcWebhook`, and none of it is here
  *
- * 1. **Pin the algorithm before touching a key.** `alg` arrives in a header nobody has verified, so it is
- *    parsed against a literal `RS256` rather than looked up. That is what makes the two published confusions
- *    unreachable — `none`, which asks for the signature to be skipped, and `HS256`, which asks the verifier to
- *    HMAC with the public key as if it were a shared secret. Neither survives a literal.
- * 2. **Resolve the key by `kid` from Google's published set.** Never from the token, which is why there is no
- *    `jwk`/`x5u` handling here: a token that carries its own key is a token that verifies itself.
- * 3. **Verify the signature over the exact received segments** — `header.claims` as encoded.
- * 4. **Then read the claims,** and only then, because a claim from an unverified token means nothing.
+ * Algorithm pinning, key resolution by `kid`, signature verification, issuer, audience, `exp`, `nbf`, `iat`,
+ * the JWKS fetch and its cache: one implementation, in core, shared with every other OIDC sender the kit
+ * verifies. This module is the **Google specialization** — two issuer spellings, a key endpoint, an audience,
+ * and the one claim pair Google's own guidance adds — and nothing else. A second copy of a verifier is a
+ * second thing to keep current, and the thing that would drift here is an authentication boundary (#520).
  *
- * A failure to *read* the token is `payments/invalid_receipt`; a token that is well-formed and does not check
- * out is `payments/verification_failed`. On the webhook path the guard maps either to
- * `payments/webhook_unverified` (401), so the distinction serves the operator reading `detail` rather than the
- * caller — and a forger is told nothing about how close it got.
+ * Core is stricter than the copy it replaced, deliberately: `nbf` is honored, a non-finite skew or key-set
+ * lifetime is refused rather than silently disabling the freshness checks, and a claim outside `Date`'s range
+ * is quoted as a number rather than throwing a `RangeError` while composing the refusal it had already
+ * decided on.
+ *
+ * ## What a refusal is called
+ *
+ * Core answers `core/webhook_unverified` for every failing step. The rail re-codes that to
+ * **`payments/verification_failed`**, so the audit trail's `metadata.step` stays a `payments/*` value and the
+ * webhook guard's pass-through set governs the rest. Core's `detail` rides along under a `Google:` prefix.
+ *
+ * `payments/invalid_receipt` no longer appears on this path, and that is a deliberate contract change rather
+ * than something the refactor dropped. It meant *the token could not be read*, which is a **receipt**
+ * distinction: `PaymentsRailProvider.verify` uses it for a client submission, where telling a developer that
+ * their payload is malformed is useful. A Pub/Sub push token is not a receipt, it is a webhook credential, and
+ * on the webhook path the guard already collapsed both codes to `payments/webhook_unverified` (401) before
+ * anything reached the sender — so no caller ever saw the difference, and core's own argument for one code
+ * applies with full force: a forger must not learn which check it tripped. Both codes were 400 and
+ * `verifyGoogleOidcToken` is not exported from the package, so the change is visible in exactly one place,
+ * the audit row's `metadata.step`.
+ *
+ * Two codes come from core untouched, because neither is a statement about the sender and both are already in
+ * the webhook guard's pass-through set: `core/internal` (500) for an endpoint of ours that is not configured
+ * to verify anything, and `core/upstream_failed` (502) for Google's key endpoint failing to answer. The
+ * second replaces `payments/provider_unavailable` (503) on the JWKS hop alone — CLAUDE.md §Errors gives the
+ * upstream pair exactly this job, and the Play Developer API hop is untouched and still 503.
+ *
+ * **A pass-through code is a code an anonymous caller must not be able to choose**, and that is what decided
+ * where the line sits. A published key that is not RSA, or will not import, used to be core's 502 and is
+ * core's 401 now: the key was reached because a `kid` in an unverified header selected it, so a 502 there
+ * let a forger pick a code this rail passes through — out of the audit trail, and into Pub/Sub's indefinite
+ * retry — by naming one `kid` instead of another. Nothing a `kid` can steer stays in the pass-through set.
+ * What is left in it is failure nobody chose: the endpoint being unreachable, and our own configuration.
  */
 
 /** Where Google publishes the keys that sign an OIDC token. Public, so it is pinned here rather than stored. */
@@ -49,89 +74,39 @@ export const GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs";
  */
 export const GOOGLE_OIDC_ISSUERS: readonly string[] = ["https://accounts.google.com", "accounts.google.com"];
 
-/** How long a fetched key set is reused. Google rotates slowly, and an unknown `kid` forces a refresh anyway. */
-const JWKS_TTL_MS = 60 * 60 * 1000;
-
-/** Tolerance on `exp` and `iat`. A minute covers clock drift; an hour would cover a replay. */
-const DEFAULT_CLOCK_SKEW_SECONDS = 60;
-
-/** RSASSA-PKCS1-v1_5 with SHA-256 — the one algorithm `alg: RS256` names, fixed here rather than derived. */
-const RS256 = { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" } as const;
+/**
+ * One published RSA verification key, and the key set Google's endpoint returns.
+ *
+ * Core's schemas under the rail's published names, not copies of them. The shape is the JWKS shape — it
+ * belongs to RFC 7517 rather than to Google — and two declarations of one wire format is the same drift this
+ * module exists to remove, one layer down. The names stay because they are `@pithy-sh/payments`' public
+ * surface and an adopter typing a Pub/Sub emulator's key against `GoogleJwk` should not have to learn a
+ * second one.
+ */
+export const GoogleJwk = OidcJwk;
+export type GoogleJwk = OidcJwk;
+export const GoogleJwks = OidcJwks;
+export type GoogleJwks = OidcJwks;
 
 /**
- * The header of a Pub/Sub push token, as tightly as it can be stated. `alg` is a literal for the reason in the
- * module doc; `kid` is required because a key is resolved by it and a token that names no key cannot be
- * checked against one.
+ * The claims a Pub/Sub push token carries: core's, plus the two Google adds.
+ *
+ * `email` and `email_verified` are the extension, and they are the reason this schema exists at all — core
+ * reads what every OIDC token has and hands the rest to a predicate. Extended rather than redeclared, so
+ * `iss`/`aud`/`exp`/`nbf`/`iat` have one definition in the kit. Still `.loose()`: the whole token is never
+ * stored, and a claim set must not be refused for being richer than expected.
  */
-const GoogleOidcHeader = z
-  .object({
-    alg: z
-      .literal("RS256")
-      .describe(
-        "The signing algorithm. A literal, not a lookup: `alg` arrives in an unverified header, and accepting `none` or `HS256` from it is how JWS verifiers are bypassed.",
-      ),
-    kid: z
-      .string()
-      .min(1)
-      .describe("Which of Google's published keys signed the token. Resolved against Google's key endpoint."),
-  })
-  .loose()
-  .describe("The header of a Google-signed OIDC token, constrained to the one shape Pub/Sub sends.");
-
-/**
- * One published RSA verification key, in the shape Google's key endpoint returns. `.loose()` because Google
- * adds fields and a key set must not be rejected for carrying something new.
- */
-export const GoogleJwk = z
-  .object({
-    kid: z.string().min(1).describe("The key id a token header names."),
-    kty: z.string().min(1).describe("The key type. Only `RSA` is accepted — Google signs these with RSA keys."),
-    n: z.string().min(1).describe("The RSA modulus, base64url."),
-    e: z.string().min(1).describe("The RSA public exponent, base64url."),
-    alg: z.string().min(1).optional().describe("The algorithm the key is published for, when stated."),
-    use: z.string().min(1).optional().describe("What the key is published for — `sig` for a signing key."),
-  })
-  .loose()
-  .describe("One of Google's published OIDC verification keys.");
-export type GoogleJwk = z.infer<typeof GoogleJwk>;
-
-/** Google's published key set. At least one key: an empty set is an endpoint that is not answering properly. */
-export const GoogleJwks = z
-  .object({
-    keys: z.array(GoogleJwk).min(1).describe("Every key currently signing Google OIDC tokens."),
-  })
-  .loose()
-  .describe("The response of Google's OIDC key endpoint.");
-export type GoogleJwks = z.infer<typeof GoogleJwks>;
-
-/**
- * The claims a Pub/Sub push token carries, narrowed to the ones that decide anything. `.loose()` keeps the
- * rest — the whole token is never stored, but a claim set must not be refused for being richer than expected.
- */
-export const GoogleOidcClaims = z
-  .object({
-    iss: z.string().min(1).describe("Who issued the token. One of Google's two issuer spellings, and nothing else."),
-    aud: z
-      .string()
-      .min(1)
-      .describe(
-        "Who the token was minted for — the audience configured on the push subscription. The claim that makes a token ours rather than merely Google's.",
-      ),
-    exp: z.number().int().describe("When the token expires, in seconds since the epoch."),
-    iat: z.number().int().optional().describe("When the token was issued, in seconds since the epoch."),
-    email: z
-      .string()
-      .min(1)
-      .optional()
-      .describe("The service account Pub/Sub used to mint the token. Checked against the configured one."),
-    email_verified: z
-      .boolean()
-      .optional()
-      .describe("Whether Google vouches for that address. Always true on a real push token."),
-    sub: z.string().min(1).optional().describe("The service account's numeric id."),
-  })
-  .loose()
-  .describe("The claims on a Pub/Sub push OIDC token, narrowed to the ones verification depends on.");
+export const GoogleOidcClaims = OidcClaims.extend({
+  email: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("The service account Pub/Sub used to mint the token. Checked against the configured one."),
+  email_verified: z
+    .boolean()
+    .optional()
+    .describe("Whether Google vouches for that address. Always true on a real push token."),
+}).describe("The claims on a Pub/Sub push OIDC token, narrowed to the ones verification depends on.");
 export type GoogleOidcClaims = z.infer<typeof GoogleOidcClaims>;
 
 /** What verifying a push token needs. Everything is explicit, so verification is deterministic in a test. */
@@ -148,180 +123,146 @@ export interface VerifyGoogleOidcOptions {
    * Keys accepted **in addition to** Google's published set, matched by `kid`.
    *
    * Additive, so nothing can narrow production's trust: a token whose `kid` these do not cover still resolves
-   * against Google. Two callers have a real reason — the tests, which mint their own key so the signature check
-   * is exercised for real, and a local Pub/Sub emulator, whose tokens are signed by a key Google never saw.
+   * against Google. Two callers have a real reason — the tests, which mint their own key so the signature
+   * check is exercised for real, and a local Pub/Sub emulator, whose tokens are signed by a key Google never
+   * saw.
    */
   trustedKeys?: readonly GoogleJwk[];
   /**
-   * Tolerance on `exp` and `iat`, in seconds. Defaults to a minute, and must be a finite number from 0 to
-   * {@link OIDC_MAX_CLOCK_SKEW_SECONDS}; anything else is `core/internal`, because this is the second operand
-   * of both freshness comparisons and one `NaN` turns the pair into no-ops together.
+   * Tolerance on `exp`, `nbf` and `iat`, in seconds. Defaults to a minute, and must be a finite number from 0
+   * to core's maximum; anything else is `core/internal`, because this is the second operand of all three
+   * freshness comparisons and one `NaN` turns them into no-ops together.
    */
   clockSkewSeconds?: number;
-}
-
-/**
- * Google's published keys, cached per isolate.
- *
- * A cache of *public* keys is not the thing CLAUDE.md's secrets rule forbids — nothing here is confidential,
- * and the whole point of the endpoint is that anyone may read it. What the cache buys is one round-trip per
- * hour instead of one per notification, on a path that already has a mandatory Play API call in it.
- */
-let publishedKeys: { keys: GoogleJwk[]; expiresAt: number } | null = null;
-
-/** Drop the cached key set. For tests, which must not inherit another suite's keys. */
-export function resetGoogleJwksCache(): void {
-  publishedKeys = null;
-}
-
-/** Fetch and validate Google's key set, replacing the cache. */
-async function refreshPublishedKeys(transport: GoogleHttpFetch, now: Date): Promise<GoogleJwk[]> {
-  const body = await googleJson(transport, GOOGLE_JWKS_URL, { what: "Google's OIDC verification keys" });
-  const parsed = GoogleJwks.safeParse(body);
-  if (!parsed.success) {
-    // Fail closed. A verifier that cannot read a key set must deny, not wave the token through.
-    throw new PaymentsVerificationFailedError({
-      detail: `Google: the OIDC key endpoint answered an unexpected shape — ${issues(parsed.error)}.`,
-    });
-  }
-  publishedKeys = { keys: parsed.data.keys, expiresAt: now.getTime() + JWKS_TTL_MS };
-  return parsed.data.keys;
-}
-
-/**
- * The key a token's `kid` names.
- *
- * A `kid` the cache does not hold triggers **exactly one** refresh, which is what makes Google's key rotation
- * invisible: a new signing key appears in a token before anything tells us to look for it. Exactly one,
- * because otherwise a stream of forged tokens naming random `kid`s is a way to make us hammer Google.
- */
-async function resolveKey(kid: string, options: VerifyGoogleOidcOptions): Promise<GoogleJwk> {
-  const configured = options.trustedKeys?.find((key) => key.kid === kid);
-  if (configured) return configured;
-
-  const transport = options.transport ?? googleHttpFetch;
-  const fresh = publishedKeys !== null && publishedKeys.expiresAt > options.now.getTime();
-  if (fresh) {
-    const cached = publishedKeys?.keys.find((key) => key.kid === kid);
-    if (cached) return cached;
-  }
-
-  const refreshed = await refreshPublishedKeys(transport, options.now);
-  const found = refreshed.find((key) => key.kid === kid);
-  if (!found) {
-    throw new PaymentsVerificationFailedError({
-      detail: `Google: no published key matches the token's kid "${kid}".`,
-    });
-  }
-  return found;
-}
-
-/** Import one published JWK as a verification key. A non-RSA key is refused rather than handed to WebCrypto. */
-async function importKey(jwk: GoogleJwk): Promise<CryptoKey> {
-  if (jwk.kty !== "RSA") {
-    throw new PaymentsVerificationFailedError({
-      detail: `Google: published key "${jwk.kid}" is ${jwk.kty}, and only RSA keys sign an OIDC token.`,
-    });
-  }
-  try {
-    return await crypto.subtle.importKey("jwk", { ...jwk, alg: "RS256" }, RS256, false, ["verify"]);
-  } catch (cause) {
-    throw new PaymentsVerificationFailedError(
-      { detail: `Google: published key "${jwk.kid}" could not be imported.` },
-      { cause },
-    );
-  }
+  /**
+   * How long a fetched key set is held. Defaults to core's hour, and must be a finite number of seconds — a
+   * `NaN` is an entry that never expires, which pins a key Google has rotated out.
+   */
+  jwksTtlSeconds?: number;
+  /**
+   * Where Google's fetched keys are held between deliveries.
+   *
+   * **Injected, and there is no default**, which is the point: this used to be a module variable no caller
+   * owned, and the only way a test suite could stop inheriting the previous one's keys was an exported
+   * `resetGoogleJwksCache` whose sole purpose was to undo it. With no cache the verifier fetches per call,
+   * which is correct and slow; a Worker that verifies more than one notification per hour passes a
+   * `memoryJwksCache` built once at module scope, or one over KV to share it across isolates.
+   *
+   * It is two bounds in one object: what Google published, and when Google was last asked. The second is
+   * what a token naming a `kid` nobody published runs into, and with no store there is no second bound
+   * either — which is why the webhook path is given one and the `verify` path is not.
+   */
+  jwksCache?: JwksCache;
 }
 
 /**
  * Verify one Pub/Sub push OIDC token and return its claims.
  *
- * @throws {@link PaymentsInvalidReceiptError} when the token cannot be read — wrong segment count, a header
- *   Google would never send, a non-JSON segment.
- * @throws {@link PaymentsVerificationFailedError} when it is well-formed and does not check out — an unknown
- *   key, a bad signature, the wrong audience, the wrong issuer, an expiry, the wrong service account.
+ * @throws {@link PaymentsVerificationFailedError} when the sender did not prove itself — an unreadable token,
+ *   an unknown key, a key that cannot verify an `RS256` signature, a bad signature, the wrong audience, the
+ *   wrong issuer, an expiry, the wrong service account.
+ * @throws `core/internal` (500) when this endpoint is not configured to verify anything — an audience that is
+ *   empty, a clock that is not a clock, a skew or key-set lifetime that is not a number.
+ * @throws `core/upstream_failed` (502) when Google's key endpoint could not be read.
  */
 export async function verifyGoogleOidcToken(
   token: string,
   options: VerifyGoogleOidcOptions,
 ): Promise<GoogleOidcClaims> {
-  const { head, body, mac } = splitJwt(token);
-
-  const header = GoogleOidcHeader.safeParse(decodeJwtJson(head, "the token header"));
-  if (!header.success) {
-    throw new PaymentsInvalidReceiptError({
-      detail: `Google: the token header is not one Pub/Sub sends — ${issues(header.error)}.`,
+  let verified: OidcClaims;
+  try {
+    verified = await verifyOidcToken(token, {
+      issuers: GOOGLE_OIDC_ISSUERS,
+      jwksUrl: GOOGLE_JWKS_URL,
+      audience: options.audience,
+      claims: (claims) => acceptedByThisEndpoint(claims, options.serviceAccountEmail),
+      skewSeconds: options.clockSkewSeconds,
+      jwksTtlSeconds: options.jwksTtlSeconds,
+      jwksCache: googleKeySource(options.trustedKeys, options.jwksCache),
+      transport: options.transport,
+      now: options.now,
     });
+  } catch (error) {
+    throw railCode(error);
   }
-
-  const key = await importKey(await resolveKey(header.data.kid, options));
-  const verified = await crypto.subtle.verify(
-    RS256.name,
-    key,
-    base64UrlDecode(mac, "the token signature") as unknown as ArrayBuffer,
-    new TextEncoder().encode(`${head}.${body}`) as unknown as ArrayBuffer,
-  );
-  if (!verified) {
-    throw new PaymentsVerificationFailedError({
-      detail: `Google: the token signature does not match the signed segments under key "${header.data.kid}".`,
-    });
-  }
-
-  // Only now. A claim read from a token whose signature has not been checked is a claim an attacker wrote.
-  const parsed = GoogleOidcClaims.safeParse(decodeJwtJson(body, "the token claims"));
+  // Core verified and returned the claim set; this is the Google *view* of the same object, and it cannot
+  // fail — `acceptedByThisEndpoint` already read both extension fields off it.
+  const parsed = GoogleOidcClaims.safeParse(verified);
   if (!parsed.success) {
-    throw new PaymentsVerificationFailedError({
-      detail: `Google: the token claims are not those of a Pub/Sub push token — ${issues(parsed.error)}.`,
-    });
+    throw failed(`the token claims are not those of a Pub/Sub push token — ${issues(parsed.error)}.`);
   }
-  const claims = parsed.data;
-  // Both operands of both time checks, and both fail open unguarded: `exp + NaN < seconds` and
-  // `iat - NaN > seconds` are false alike, so one unchecked number does not widen the window — it deletes it,
-  // and a captured Play RTDN push replays forever under a signature that is genuinely Google's. Everything
-  // above still holds; freshness is precisely what is lost, which is the half nothing else here recovers.
-  // Our fault, our code: a 401 would send an operator hunting a forger who is not there. The ceiling is the
-  // kit's, imported rather than restated, because a skew is a replay window in the plainest possible units.
-  const skew = options.clockSkewSeconds ?? DEFAULT_CLOCK_SKEW_SECONDS;
-  if (!Number.isFinite(skew) || skew < 0 || skew > OIDC_MAX_CLOCK_SKEW_SECONDS) {
-    throw new InternalError({
-      message: "This webhook endpoint is not configured.",
-      action: `Give the Google Pub/Sub webhook a clock skew between 0 and ${OIDC_MAX_CLOCK_SKEW_SECONDS} seconds.`,
-      detail: `Google: the push-token check was given a clock skew of ${String(skew)} seconds, and a tolerance must be a number from 0 to ${OIDC_MAX_CLOCK_SKEW_SECONDS}.`,
-    });
-  }
-  const seconds = Math.floor(options.now.getTime() / 1000);
-  if (!Number.isFinite(seconds)) {
-    throw new InternalError({
-      message: "This webhook endpoint is not configured.",
-      action: "Give the Google Pub/Sub webhook a valid clock.",
-      detail:
-        "Google: the push-token check was handed a clock that is not a valid Date, so no token's freshness can be judged.",
-    });
-  }
+  return parsed.data;
+}
 
-  if (!GOOGLE_OIDC_ISSUERS.includes(claims.iss)) {
-    throw failed(`the token issuer is "${claims.iss}", not one of Google's.`);
-  }
-  // The boundary. Everything above proves Google minted the token; this is what proves it was minted for us.
-  if (claims.aud !== options.audience) {
-    throw failed(`the token audience is "${claims.aud}", and this endpoint expects "${options.audience}".`);
-  }
-  if (claims.exp + skew < seconds) {
-    throw failed(`the token expired at ${new Date(claims.exp * 1000).toISOString()}.`);
-  }
-  if (claims.iat !== undefined && claims.iat - skew > seconds) {
-    throw failed(`the token was issued at ${new Date(claims.iat * 1000).toISOString()}, which is in the future.`);
-  }
-  // Google's own guidance, and a second, independent statement: the audience says which endpoint the token was
-  // minted for, the email says which identity minted it. Both are always present on a real push token.
-  if (claims.email !== options.serviceAccountEmail) {
-    throw failed(`the token names service account "${claims.email ?? "none"}", not the configured one.`);
+/**
+ * Google's own second check, run last and handed only claims core has already proven.
+ *
+ * It **throws** rather than answering `false`. Core's own refusal for a rejected predicate names the subject
+ * and nothing else, which is right for a rule it cannot see inside — and wrong here, where the two things
+ * being asserted are named claims and an operator reading the log needs to know which one failed. A predicate
+ * that throws a `PaymentsVerificationFailedError` leaves `verifyOidcToken` as itself, past
+ * {@link railCode}'s `instanceof`, with the sentence the old verifier wrote.
+ *
+ * The audience says which endpoint the token was minted for; the email says which identity minted it. Both
+ * are always present on a real push token.
+ */
+function acceptedByThisEndpoint(claims: OidcClaims, serviceAccountEmail: string): true {
+  // `.loose()`, so Google's extra claims survive core's parse as `unknown` rather than as strings.
+  const email = typeof claims.email === "string" ? claims.email : undefined;
+  if (email !== serviceAccountEmail) {
+    throw failed(`the token names service account "${snippet(email ?? "none")}", not the configured one.`);
   }
   if (claims.email_verified !== true) {
     throw failed("the token's service-account address is not marked verified by Google.");
   }
+  return true;
+}
 
-  return claims;
+/**
+ * The configured keys, presented to core as a key source rather than seeded into its cache.
+ *
+ * Seeding is the obvious shape and the wrong one, because a cache is **shared** and `trustedKeys` is not. A
+ * key written into the store reads back to every other verifier holding that store as a key *Google
+ * publishes* — so a Pub/Sub emulator's key, or a suite's, would be trusted by a rail instance nobody handed
+ * it to. A wrapper keeps `trustedKeys` additive for its own caller and invisible to everyone else, and it is
+ * additive **by construction**: core still fetches for a `kid` the configured keys do not cover, and core's
+ * own write-back cannot evict them.
+ *
+ * No keys and no cache is `undefined`, which is core's "fetch per call" and not a cache that never holds
+ * anything.
+ *
+ * **The refresh claim is delegated, never answered here**, and that is the same rule one axis over: the
+ * window belongs to the store, because it is what bounds every caller sharing it. Answering `true` would
+ * hand each configured-key caller its own window, which for a store shared across isolates is the bound
+ * dissolved by a wrapper nobody thought was one. With no store behind it there is no window to claim and no
+ * bound to keep, which is core's own fetch-per-call state.
+ */
+function googleKeySource(
+  trustedKeys: readonly GoogleJwk[] | undefined,
+  cache: JwksCache | undefined,
+): JwksCache | undefined {
+  if (trustedKeys === undefined || trustedKeys.length === 0) return cache;
+  return {
+    get: async (url) => [...trustedKeys, ...((await cache?.get(url)) ?? [])],
+    set: async (url, keys, ttlSeconds) => cache?.set(url, keys, ttlSeconds),
+    claimRefresh: async (url, seconds) => (await cache?.claimRefresh(url, seconds)) ?? true,
+  };
+}
+
+/**
+ * Core's refusal under the rail's own code.
+ *
+ * Only `core/webhook_unverified` is re-coded, and it is re-coded by **class** rather than by reading core's
+ * prose — matching on a sentence is the drift this module was written to delete. `core/internal` and
+ * `core/upstream_failed` pass through untouched: neither is the sender's failure, both are already in the
+ * webhook guard's pass-through set, and re-coding either would name a culprit that is not there.
+ */
+function railCode(error: unknown): unknown {
+  if (!(error instanceof WebhookUnverifiedError)) return error;
+  return new PaymentsVerificationFailedError(
+    { detail: `Google: ${error.payload.detail ?? "the push token did not verify."}` },
+    { cause: error },
+  );
 }
 
 /** A post-signature refusal. `Google:` prefixed, and the token itself never appears. */
@@ -332,4 +273,12 @@ function failed(detail: string): PaymentsVerificationFailedError {
 /** Zod issues as `path:code` pairs — never `message` or `received`, which would echo the token. */
 function issues(error: z.ZodError): string {
   return error.issues.map((issue) => `${issue.path.join(".") || "<root>"}:${issue.code}`).join(", ");
+}
+
+/** How much of a token-supplied value a refusal may quote. Enough to diagnose, too little to fill a log. */
+const SNIPPET_LENGTH = 120;
+
+/** A token-supplied value, bounded, so a refusal names what failed without becoming the log. */
+function snippet(value: string): string {
+  return value.length > SNIPPET_LENGTH ? `${value.slice(0, SNIPPET_LENGTH)}…` : value;
 }

@@ -22,32 +22,62 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type CleanRoomManifest, kitOverrides, thirdPartyFloors } from "@pithy-sh/release/src/cleanRoom";
+import {
+  type CleanRoomManifest,
+  cleanRoomEnv,
+  isStalledStep,
+  kitOverrides,
+  STEP_TIMEOUT_MS,
+  stalledStep,
+  thirdPartyFloors,
+} from "@pithy-sh/release/src/cleanRoom";
 import { composedResult } from "@pithy-sh/release/src/composed";
 import { publishedPackages } from "@pithy-sh/release/src/workspace";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const atFloors = process.argv.includes("--floors");
 
+/**
+ * Every command the gate runs: in the workspace, on the workspace's own installer cache, and bounded.
+ *
+ * **`cleanRoomEnv` is the third assumption the clean room removes** — see `@pithy-sh/release/src/cleanRoom`
+ * for the measurements. A shared package-manager cache is "everything else on disk" wearing a different
+ * hat, and a half-warm one deadlocks `bun add` at the declared floors.
+ *
+ * **`timeout` is what makes a deadlock reportable.** Without it the only bound on a wedged child was the
+ * CI runner's own limit, so the gate held a job for 1h42m and then said nothing. `SIGKILL` rather than
+ * the default `SIGTERM`: a process parked in `epoll_wait` on nothing is not going to run a handler.
+ */
 function run(command: string, args: string[], cwd: string, env: Record<string, string> = {}): string {
   return execFileSync(command, args, {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, ...env },
+    env: { ...process.env, ...cleanRoomEnv(workspace), ...env },
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: 64 * 1024 * 1024,
+    timeout: STEP_TIMEOUT_MS,
+    killSignal: "SIGKILL",
   });
 }
 
 function fail(what: string, cause: unknown): never {
-  process.stderr.write(`\nClean room failed: ${what}\n\n${cause instanceof Error ? cause.message : String(cause)}\n\n`);
+  // A stall carries no output and no exit code, so `cause.message` is `spawnSync bun ETIMEDOUT` and
+  // nothing else. `stalledStep` says what that actually means instead.
+  const said = isStalledStep(cause)
+    ? stalledStep(what, STEP_TIMEOUT_MS)
+    : cause instanceof Error
+      ? cause.message
+      : String(cause);
+  process.stderr.write(`\nClean room failed: ${what}\n\n${said}\n\n`);
   process.exit(1);
 }
 
 const workspace = mkdtempSync(join(tmpdir(), "pithy-cleanroom-"));
 const packs = join(workspace, "packs");
 const project = join(workspace, "project");
-run("mkdir", ["-p", packs, project], root);
+// The installer cache among them, so it is visibly part of the workspace rather than a directory some
+// child happens to create — and so it goes when the workspace goes.
+run("mkdir", ["-p", packs, project, ...Object.values(cleanRoomEnv(workspace))], root);
 
 try {
   // 1. Pack every package that would be published — the artifact, never the source tree.

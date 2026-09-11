@@ -9,6 +9,7 @@ import { type DevSecretsFile, ENVELOPE_SHAPE } from "@pithy-sh/secrets/src/dev/d
 import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
 import { devSecretPayload, keyedSecretRefusal } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import { isMintableSecret, isProvisionableSecret, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
+import { projectSecretApplicability } from "../capabilities/secretApplicability";
 import { DEV_SECRETS_FILE_NAME, resolveDevSecretsFile } from "../devSecrets/location";
 import { type DevSecretsTarget, resolveDevSecretsTargets, type UnresolvableWorker } from "../devSecrets/targets";
 import { type StatePathOptions, stateDir } from "../notifier/state";
@@ -69,6 +70,14 @@ export interface MisplacedDevSecret {
   state: MisplacedDevSecretState;
 }
 
+/** One declared secret this project's configuration cannot reach, and the reason it gave. */
+export interface InapplicableDevSecret {
+  /** The registry secret name. */
+  name: string;
+  /** Why nothing here reads it — a decline, or a capability's own statement about its config. */
+  reason: string;
+}
+
 /** One declared secret the file states, and the sentence saying why its value will not read. */
 export interface MalformedDevSecret {
   /** The registry secret name, exactly as the file and the registry both spell it. */
@@ -93,8 +102,34 @@ export interface DevSecretsCheck {
    * capability that reads one fails with its own `secrets/not_found` naming it. It is here because this
    * is the only place that can list them without running anything, and nowhere else says them once
    * instead of on every `pithy dev`.
+   *
+   * **What the configuration cannot reach is not in here (#541).** A credential for a declined binding,
+   * or for a provider `auth()` never enabled, is not *not yet done* — it is *will never apply*, and it
+   * went out under "fine to leave until you need it", the one sentence that is false about it. See
+   * {@link inapplicable}.
    */
   missing: string[];
+  /**
+   * **Declared secrets this project's configuration cannot reach, with the reason it gave (#541).**
+   *
+   * Carried and **not printed**. Doctor's terminal is a fault list, and a settled configuration is not a
+   * fault: the `bindings` tier has already stated the decline, in the adopter's own words, and repeating
+   * it here is how one report came to contradict itself. `pithy secrets ls` is the inventory that marks
+   * every declared secret with its reason, which is where *what would I have to do to enable this* is
+   * answered. So this reaches `--json`, for an agent that wants the whole picture from one command, and
+   * `describeDevSecrets` says nothing about it.
+   *
+   * The names are taken out of {@link missing} and {@link bootstrapUnmintable} — the two lines that name
+   * outstanding work — and out of nothing else. A **stated** value is still judged {@link malformed},
+   * because unreachable means *nothing reads this*, not *nothing here can be wrong*, and a value the
+   * next `pithy seed` refuses is a fault whoever reads it. The master key is never in here either: it is
+   * the thing actually stopping a developer, and a filter that could silence it would hide the blocker
+   * rather than the noise.
+   *
+   * Empty when {@link unreadable}, on the rule every field here follows: a file that will not parse
+   * states nothing to classify.
+   */
+  inapplicable: InapplicableDevSecret[];
   /**
    * The **master key** with no value. Kept apart from {@link missing} because the answer is a different
    * one: nothing outside the project issues a master key, `pithy add secrets` mints it, and until it does
@@ -179,6 +214,16 @@ export interface CheckDevSecretsOptions {
   unresolvable?: UnresolvableWorker[];
   /** Where the Pithy config directory is. Defaults to the real one; a seam so a test reads its own. */
   paths?: StatePathOptions;
+  /**
+   * Secret name → why this project's configuration cannot reach it (#541). Defaults to the real
+   * project's answer, which is `projectSecretApplicability` and never throws.
+   *
+   * Its own resolution rather than a half of {@link targets}, deliberately: a fabricated target list is
+   * about what a Worker *declares*, and this is about what the project's `pithy.config.ts` files
+   * *decline* — two different reads of two different things, and a seam that bundled them would make a
+   * test stating one silently state the other.
+   */
+  inapplicable?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -196,6 +241,10 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
       ? await resolveDevSecretsTargets(options.projectDir)
       : { targets: options.targets, unresolvable: options.unresolvable ?? [] };
   if (targets.length === 0 && unresolvable.length === 0) return null;
+
+  // Never throws — an answer it could not establish is an empty one, and every line then reads exactly
+  // as it did before this existed. The direction that cannot hide outstanding work.
+  const inapplicable = options.inapplicable ?? (await projectSecretApplicability(options.projectDir)).project;
 
   const path = await resolveDevSecretsFile(options.projectDir, options.paths ?? {});
   const inDevVars = parseDevVars(await readFile(join(options.projectDir, ".dev.vars"), "utf8").catch(() => ""));
@@ -218,6 +267,7 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
   const missing = new Set<string>();
   const bootstrapMissing = new Set<string>();
   const bootstrapUnmintable = new Set<string>();
+  const unreachable: InapplicableDevSecret[] = [];
   const seen = new Set<string>();
   for (const target of targets) {
     for (const [name, entry] of Object.entries(target.registry)) {
@@ -267,6 +317,16 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
       // Mintable means the next seed supplies it. Only a value that has to come from somewhere real is
       // something the adopter has to do — and the file, not the store, is dev's source of truth for it.
       if (isMintableSecret(entry)) continue;
+      // **Nothing reads this one, so it is not outstanding work** (#541). After the branches above and
+      // before every branch below, which is exactly where it belongs: a *stated* value is still judged
+      // malformed, because unreachable says nothing reads it rather than nothing about it can be wrong.
+      // The master key is excluded on the line after, not here, so nothing a capability declares can
+      // silence the one gap that stops the local store opening at all.
+      const why = inapplicable.get(name);
+      if (why !== undefined && !isProvisionableSecret(name, entry)) {
+        unreachable.push({ name, reason: why });
+        continue;
+      }
       // **{@link isProvisionableSecret}, never the `bootstrap` axis** (#517). `bootstrap` says a value is
       // read straight from its binding before any store is open; it says nothing about what creates one.
       // Reading the axis put an adopter's own bootstrap entry on a line naming `pithy add secrets` — a
@@ -304,6 +364,9 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
     // adopter would be told to move a value that is already there. Say the file is broken, once.
     misplaced: unreadable ? [] : misplaced,
     missing: unreadable ? [] : [...missing].sort(),
+    // The same rule once more: a file that will not parse classified nothing, so it states nothing about
+    // what this project can reach either.
+    inapplicable: unreadable ? [] : [...unreachable].sort((left, right) => left.name.localeCompare(right.name)),
     bootstrapMissing: unreadable ? [] : [...bootstrapMissing].sort(),
     bootstrapUnmintable: unreadable ? [] : [...bootstrapUnmintable].sort(),
     // And nothing about a stated value's shape either: a file that will not parse stated nothing.

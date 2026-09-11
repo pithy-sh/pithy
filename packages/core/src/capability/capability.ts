@@ -155,6 +155,16 @@ export interface SecretRegistryEntrySeam {
    * which it can do without executing the package.
    */
   readonly devValue?: string;
+  /**
+   * The Worker binding this value exists to reach, or absent when it reaches none — the constant half
+   * of *can this composition use this secret* (#541).
+   *
+   * Read here and never interpreted, exactly like {@link devValue}: the CLI joins it against a Worker's
+   * `declinedBindings` so a credential whose bucket the project declined stops being listed as
+   * outstanding work. `@pithy-sh/secrets` owns the concrete field; core needs it on the seam so a
+   * reporting surface can read a capability's declared slice off this contract.
+   */
+  readonly binding?: string;
 }
 
 /** A capability's secret-registry slice: secret name → {@link SecretRegistryEntrySeam}. */
@@ -187,6 +197,35 @@ export type SecretRegistrySeam = Record<string, SecretRegistryEntrySeam>;
  * secret whose schema has no branches at all needs no declaration — every field is asked.
  */
 export type SecretBranchSeam = Record<string, readonly string[]>;
+
+/**
+ * **Which of this capability's secrets this Worker's configuration cannot reach** — secret name → the
+ * reason, in an operator's words.
+ *
+ * The neighbor of {@link SecretBranchSeam}, one level up. That one says which *blocks* of a bundle
+ * apply when the bundle itself does; this says that a whole secret does not. `@pithy-sh/auth` declares
+ * one credential per OAuth provider, so a project running Google and GitHub has two secrets that no
+ * code path will ever read — and until #541 `pithy doctor` listed both as outstanding work under
+ * *"fine to leave until you need it"*, which is not true of a credential the configuration has refused.
+ *
+ * **Declared, never inferred**, for {@link SecretBranchSeam}'s reason: `auth-apple-credentials` and
+ * `providers.apple` are spelled alike today and nothing makes a secret name and a config key the same
+ * thing. The capability holds both halves at construction; a CLI matching them by substring would be
+ * right by luck.
+ *
+ * **Per composition, which is why it is here and not on the registry entry.** A registry entry is plain
+ * data shared by every Worker that declares the name; whether a provider is enabled is one Worker's
+ * configuration. The constant half of the same question — *which binding does this credential exist to
+ * reach* — is on the entry, as `binding`, because it does not change between compositions.
+ *
+ * **The reason reaches a terminal, so it is a sentence and not a code.** Name the configuration that
+ * decided it, the way an operator would have to edit it: `providers.apple is not enabled in
+ * pithy.config.ts`. It answers *what would I have to do to turn this on* as well as *why is this here*.
+ *
+ * Declaring nothing is the ordinary case and means every declared secret applies. It is descriptive
+ * only: nothing in the runtime reads it, and no command acts on it beyond reporting.
+ */
+export type InapplicableSecretSeam = Record<string, string>;
 
 /**
  * The structural seam for one capability's token-profile slice — profile name → the scoped CF API
@@ -332,6 +371,12 @@ export interface Capability<
    * no `json` secret at all, declares nothing.
    */
   secretBranches?: SecretBranchSeam;
+  /**
+   * Which of this capability's secrets this Worker's configuration cannot reach, and why — see
+   * {@link InapplicableSecretSeam}. Additive and optional: a capability whose secrets all apply
+   * whenever it is composed declares nothing, which is the ordinary case.
+   */
+  inapplicableSecrets?: InapplicableSecretSeam;
   /**
    * The scoped CF API tokens this capability's code needs, as a token-profile slice (profile name →
    * {@link TokenProfileSeam}). Additive and optional, and declared next to {@link Capability.secretRegistry}

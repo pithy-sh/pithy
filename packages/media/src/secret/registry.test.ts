@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
+import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { resolveWriteTargets } from "@pithy-sh/secrets/src/scope";
 import { describe, expect, test } from "vitest";
-import { MEDIA_R2_SECRET, MEDIA_STORAGE_SECRET, mediaSecretsRegistry } from "./registry";
+import { media } from "../capability";
+import { MEDIA_BUCKET_BINDING, MEDIA_R2_SECRET, MEDIA_STORAGE_SECRET, mediaSecretsRegistry } from "./registry";
 
 describe("mediaSecretsRegistry", () => {
   test("declares both names — its own credentials and the R2 bundle it points objectStore at", () => {
@@ -29,5 +31,29 @@ describe("mediaSecretsRegistry", () => {
       expect(resolveWriteTargets(entry.backend, entry.scope, "staging", DEFAULT_ENVIRONMENTS)).toEqual(["staging"]);
       expect(resolveWriteTargets(entry.backend, entry.scope, "prod", DEFAULT_ENVIRONMENTS)).toEqual(["prod"]);
     }
+  });
+});
+
+/**
+ * **The R2 bundle names the bucket it presigns (#541).**
+ *
+ * The relation was a sentence in `r2CredentialsRegistry`'s docstring, so a project that declined the
+ * bucket was still asked for the credential whose only purpose is reaching it. One constant feeds the
+ * entry and the capability's binding, and this is what fails if they are ever split.
+ */
+describe("media-r2-credentials — the bucket it exists to reach", () => {
+  test("declares the binding", () => {
+    expect(mediaSecretsRegistry[MEDIA_R2_SECRET]?.binding).toBe(MEDIA_BUCKET_BINDING);
+  });
+
+  test("and it is the r2 binding the capability declares", () => {
+    const r2 = media({}).requiredBindings.filter((binding) => binding.type === "r2");
+    expect(r2.map((binding) => binding.name)).toContain(mediaSecretsRegistry[MEDIA_R2_SECRET]?.binding);
+  });
+
+  /** Media's own credentials reach no binding — they mint Images and Stream upload URLs over HTTPS. */
+  test("media's own credentials declare none, because they address no binding", () => {
+    const own: SecretRegistryEntry = mediaSecretsRegistry[MEDIA_STORAGE_SECRET];
+    expect(own.binding).toBeUndefined();
   });
 });

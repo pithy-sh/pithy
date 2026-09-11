@@ -8,6 +8,7 @@ import { safeEmit } from "@pithy-sh/core/src/controlPlane/audit/actions";
 import type { ControlPlaneContext } from "@pithy-sh/core/src/controlPlane/context";
 import { requireControlPlane } from "@pithy-sh/core/src/controlPlane/http/guard";
 import { InternalError, NotFoundError, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { memoryJwksCache } from "@pithy-sh/core/src/http/oidcWebhook";
 import { validationHook } from "@pithy-sh/core/src/http/validation";
 import { resolveWorkflowBinding } from "@pithy-sh/core/src/workflow/dispatch";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
@@ -909,7 +910,37 @@ export function registerPaymentsRoutes(options: PaymentsRoutesOptions): (app: Ho
   const { config } = options;
   const base = options.basePath ?? config.basePath;
   const clock = options.now ?? (() => new Date());
-  const trust = options.trust ?? {};
+  /**
+   * The caller's seams, plus the one thing a per-request rail cannot own: Google's key store.
+   *
+   * **Built here because this is the first thing in the chain that outlives a request.** `payments()` calls
+   * `registerPaymentsRoutes` once, at composition, so this object is constructed once per isolate and every
+   * delivery the Google webhook sees shares it. The rail below it is rebuilt per request by
+   * `resolveRailProvider` — a cache hung on that would be one that has never held anything — and the module
+   * variable that used to hold it is exactly what #520 deleted, because state no caller owns needs an
+   * exported `reset` for every suite that inherits it.
+   *
+   * **Owning the store is not the same as having none.** That is core's sentence, on `JwksCache`, about the
+   * surface anonymous traffic arrives on, and the Google webhook is one: the OIDC guard resolves a key by
+   * `kid` *before* it can check a signature, so with no store a forged token buys a round trip to Google,
+   * 1:1. Google rate-limits us, `fetchJwks` maps that to `core/upstream_failed`, and that code is in the
+   * webhook guard's pass-through set — so Pub/Sub redelivers the genuine notifications into the same
+   * uncached path. One anonymous caller, the whole rail down.
+   *
+   * **The store answers both floods, and only one of them is about a published `kid`.** What it holds
+   * collapses a forgery naming a key Google really publishes; `JwksCache.claimRefresh` — the window, one ask
+   * per `OIDC_JWKS_MIN_REFRESH_SECONDS` — collapses the cheaper one, the token naming a `kid` nobody has
+   * ever published, which is a miss and was therefore a fetch apiece however much was cached. Both live in
+   * this object, so a route passing its own store passes both bounds together.
+   *
+   * On `clock`, not wall time, so a suite injecting a clock governs the expiry too. A route wanting a bound
+   * harder than one isolate's memory — shared across isolates, or rate-limiting — passes its own
+   * `trust.googleJwksCache` and this one is never built.
+   */
+  const trust: RailTrustOptions = {
+    ...(options.trust ?? {}),
+    googleJwksCache: options.trust?.googleJwksCache ?? memoryJwksCache({ now: clock }),
+  };
   /** The seam `payments()` built, or the resolver-less one this config implies. See {@link PaymentsRoutesOptions.subject}. */
   const seam: PaymentsSubjectSeam = options.subject ?? { billingSubject: config.billingSubject };
 

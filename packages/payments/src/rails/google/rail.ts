@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { JwksCache } from "@pithy-sh/core/src/http/oidcWebhook";
 import type { PaymentsPurchase } from "../../data/purchase";
 import { PaymentsVerificationFailedError } from "../../error/errors";
 import type { PaymentsGoogleCredentials } from "../../secret/registry";
@@ -68,6 +69,30 @@ export interface GoogleRailOptions {
    * Passed down by the reconciliation Workflow; absent everywhere else, where one call mints its own.
    */
   accessToken?: string;
+  /**
+   * Where Google's published keys are held between deliveries, and it is **not optional on the webhook path**.
+   *
+   * A rail is built per request — `resolveRailProvider` runs inside the guard — so this object cannot own the
+   * store, and a cache hung here would be one that has never held anything. It is passed in instead, from
+   * whatever *does* outlive a request: `registerPaymentsRoutes` builds one per registered route tree, which is
+   * once per isolate, and an adopter wanting a harder bound hands `RailTrustOptions.googleJwksCache` a store
+   * over KV.
+   *
+   * Absent is core's fetch-per-call, which is correct on the `verify` and `refresh` paths (one caller, one
+   * purchase, no flood to absorb) and is an outbound amplifier on the webhook: `parseNotification` resolves a
+   * key *before* it can check a signature, so a 49-byte forged token buys a round trip to
+   * `https://www.googleapis.com/oauth2/v3/certs`, 1:1, until Google rate-limits us and the genuine deliveries
+   * 502 alongside the forgeries — and a 502 is in the webhook guard's pass-through set, so Pub/Sub redelivers
+   * into the same uncached path. That is the hazard core's own `JwksCache` doc names, and this is the seam
+   * that answers it here.
+   *
+   * **Whatever the `kid` claims**, which is the half the first round of this missed. Holding Google's keys
+   * answers a token naming one of them and nothing else, and a `kid` is attacker-chosen: a random one is a
+   * miss, and a miss is a refresh. So the store carries a refresh window too (`JwksCache.claimRefresh`), and
+   * the bound it keeps is one ask per `OIDC_JWKS_MIN_REFRESH_SECONDS` per key endpoint rather than one per
+   * `kid` somebody invents.
+   */
+  jwksCache?: JwksCache;
 }
 
 /** The `Authorization` scheme a Pub/Sub push uses for its OIDC token. */
@@ -109,6 +134,9 @@ export function googleRail(
         now: context.now,
         transport: options.transport,
         trustedKeys: options.trustedKeys,
+        // The store the route owns, so one key fetch covers every delivery in its lifetime rather than one
+        // per delivery. See {@link GoogleRailOptions.jwksCache} for why it cannot be built here.
+        jwksCache: options.jwksCache,
       });
 
       const parsed = parseGoogleNotification(delivery.body, { packageName: credentials.packageName });

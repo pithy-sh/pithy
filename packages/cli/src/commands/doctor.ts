@@ -16,6 +16,7 @@ import {
   type ReconcilePlan,
   undeclinableReason,
 } from "../capabilities/reconcile";
+import { projectSecretApplicability, type SecretApplicability } from "../capabilities/secretApplicability";
 import { pithyOffline } from "../cloudflare/config";
 import { type BindingScopeHealth, repointableIds, type SplitGlobalBinding } from "../doctor/bindingScope";
 import type { CapabilityReachHealth } from "../doctor/capabilityReach";
@@ -455,6 +456,12 @@ function jsonDevSecrets(value: Checked<DevSecretsCheck> | null): Record<string, 
     // Beside it since #517: a bootstrap secret `pithy add secrets` does not mint is a different finding
     // with a different remedy, and folding the two lost the distinction a script would branch on.
     bootstrapUnmintable: check.bootstrapUnmintable,
+    // And what this project's configuration cannot reach at all (#541) — the names taken *out* of
+    // `missing`, each with the reason. The text report says nothing about these on purpose: a settled
+    // configuration is not a fault, and `pithy secrets ls` is the inventory that marks every one. It is
+    // here because an agent driving `doctor --json` would otherwise see three secrets disappear between
+    // two releases with nothing saying why, which is the one way filtering can lie.
+    inapplicable: check.inapplicable,
     malformed: check.malformed,
     undeclared: check.undeclared,
     mode: check.mode === null ? null : check.mode.toString(8),
@@ -743,9 +750,27 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeDevPreferences =
     options.checkDevPreferences ??
     ((dir: string) => checkDevPreferences(dir, { ...(options.homedir ? { homedir: options.homedir } : {}), env }));
-  const probeDevSecrets = options.checkDevSecrets ?? ((dir: string) => checkDevSecrets({ projectDir: dir }));
+  /**
+   * What this project's configuration cannot reach (#541), resolved **once for the run**.
+   *
+   * Both secret checks take it, and each would otherwise resolve its own — which since the per-environment
+   * fix costs a fresh import of every Worker's `pithy.config.ts` per declared environment, twice over. The
+   * answer cannot differ between them: it is a fact about the project, not about the check asking.
+   *
+   * Lazy, so a run that reaches neither check (a directory that is not a project) composes nothing.
+   */
+  let applicability: Promise<SecretApplicability> | undefined;
+  const projectApplicability = (dir: string): Promise<SecretApplicability> =>
+    (applicability ??= projectSecretApplicability(dir));
+  // The project-wide half, because `.dev.secrets.json` holds one value per name for the whole project.
+  const probeDevSecrets =
+    options.checkDevSecrets ??
+    (async (dir: string) =>
+      checkDevSecrets({ projectDir: dir, inapplicable: (await projectApplicability(dir)).project }));
+  // Both halves, because that check's loop is per Worker and per environment — see `secretApplicability`.
   const probeSecretBindings =
-    options.checkSecretBindings ?? ((dir: string) => checkSecretBindings({ projectDir: dir }));
+    options.checkSecretBindings ??
+    (async (dir: string) => checkSecretBindings({ projectDir: dir, inapplicable: await projectApplicability(dir) }));
   const probeDevVarsLocal = options.checkDevVarsLocal ?? ((dir: string) => checkDevVarsLocal({ projectDir: dir }));
   const probeDevVars =
     options.checkDevVars ??
