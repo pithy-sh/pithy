@@ -278,6 +278,57 @@ export function secretWriteReportLine(
   return effect.accountEntry ? `${name} ${verb} one account entry, read by ${where}.` : `${name} ${verb} ${where}.`;
 }
 
+/** One row of `pithy secrets ls` — rendered for the terminal, structured for `--json`. */
+export interface SecretListRow {
+  /** The registry name, which is also the binding and the `.dev.vars` variable name. */
+  name: string;
+  /**
+   * The second column, and the same string on both surfaces.
+   *
+   * Terminal and `--json` render one sentence rather than two, because a report that says two things
+   * about one secret is a report somebody eventually quotes the wrong half of. A machine reads
+   * {@link applies} and {@link reason} and never this.
+   */
+  description: string;
+  /** Whether this project's configuration can reach the secret at all. `true` for almost every row. */
+  applies: boolean;
+  /** Why it cannot, when it cannot — the configuration's own reason, never prose about it. */
+  reason?: string;
+}
+
+/**
+ * **The `pithy secrets ls` rows: every declared secret, with what the configuration says about it (#541).**
+ *
+ * `ls` listed what a composed capability *declares*, so a project running two OAuth providers saw four
+ * credentials and a project that had declined its attachment bucket saw the credential for it. The list
+ * reads as a checklist, and a checklist that cannot distinguish *not yet done* from *will never apply*
+ * re-raises settled questions on every run.
+ *
+ * **Marked rather than filtered, and that is the deliberate half.** Filtering settles a question by
+ * hiding it: an adopter who declined a binding by mistake would get no signal, and a reader could not
+ * tell a secret that does not apply from one the CLI stopped seeing. `ls` is the project's inventory —
+ * its job is to be complete — so the reason stays on the line, drawn from configuration, and it answers
+ * *what would I have to do to enable this* as well as *why is this here*. `pithy doctor` takes the other
+ * branch for the opposite reason: it is a fault list, and a settled configuration is not a fault.
+ *
+ * **The mark replaces the axes.** `d1 · environment` says where a value would be stored, and there is no
+ * value to store for a secret nothing will ever read.
+ */
+export function secretListRows(registry: SecretRegistry, inapplicable: ReadonlyMap<string, string>): SecretListRow[] {
+  return Object.entries(registry)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, entry]) => {
+      const reason = inapplicable.get(name);
+      if (reason !== undefined) {
+        return { name, description: `not applicable — ${reason}`, applies: false, reason };
+      }
+      // A keyspace is marked, because it is the one entry an operator must not try to set: its members
+      // are written per key by the application that mints them.
+      const axes = `${entry.backend} · ${entry.scope}${entry.rotatable ? " · rotatable" : ""}${entry.keyed ? " · keyspace" : ""}`;
+      return { name, description: axes, applies: true };
+    });
+}
+
 /** The `ls` / `ls --check` view: the declared names (keyspaces included), the audit, and the gate. */
 export interface SecretsListView {
   names: string[];

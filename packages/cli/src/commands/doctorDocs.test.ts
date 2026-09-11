@@ -1192,6 +1192,7 @@ describe("the docs say what the code emits", () => {
             missing: [],
             bootstrapMissing: [],
             bootstrapUnmintable: [],
+            inapplicable: [],
             malformed: [],
             undeclared: [],
             mode: 0o600,

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, lutimes, mkdir, mkdtemp, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
@@ -12,6 +12,7 @@ import { sourceFiles, sourcePaths } from "../ci/sourceFiles";
 import {
   allCapabilities,
   classifyConfigLoadFailure,
+  FreshCopyRefused,
   loadProject,
   loadProjectCloudflare,
   loadProjectEnvironments,
@@ -594,6 +595,97 @@ describe("loadWorkerConfig", () => {
   test("a worker config that doesn't default-export { capabilities } fails with the expected shape", async () => {
     const workerDir = await writeWorkerConfig("bad", "export default { nope: true };\n");
     await expect(loadWorkerConfig(workerDir)).rejects.toThrow(/default-export/);
+  });
+});
+
+/**
+ * **A fresh read writes into the adopter's Worker directory, so it has to clean up after itself.**
+ *
+ * Busting the module cache needs a different file, and a different file beside the original is the only
+ * one whose relative imports still resolve — so `pithy add` has always written one here. What changed is
+ * who reaches it: `pithy doctor` and `pithy secrets ls` re-read every Worker's config once per declared
+ * environment now (#541), and both are commands that wrote nothing to the project before that. A stray
+ * `.pithy.reload.*.ts` in `apps/<name>/` after a Ctrl-C is somebody's `git status`, and on a checkout that
+ * cannot be written at all the feature was paying for copies it could never make and saying nothing.
+ */
+describe("a fresh read", () => {
+  const COPY = /^\.pithy\.reload\..*\.ts$/;
+
+  /** Every `.pithy.reload.*.ts` in a Worker's directory. What must be empty when a command is done. */
+  async function leftovers(workerDir: string): Promise<string[]> {
+    return (await readdir(workerDir)).filter((entry) => COPY.test(entry));
+  }
+
+  test("leaves nothing behind on the ordinary path", async () => {
+    const workerDir = await writeWorkerConfig("api", "export default { capabilities: [] };\n");
+    await loadWorkerConfig(workerDir, { fresh: true });
+    expect(await leftovers(workerDir)).toEqual([]);
+  });
+
+  test("sweeps a copy an interrupted run left behind", async () => {
+    // A `kill -9` is the one exit no handler covers, so the next run is what heals it. Aged past the
+    // window deliberately: this is the file a dead process left, not one a live process is importing.
+    const workerDir = await writeWorkerConfig("api", "export default { capabilities: [] };\n");
+    const stale = join(workerDir, ".pithy.reload.dead-run.ts");
+    await writeFile(stale, "export default { capabilities: [] };\n");
+    const old = new Date(Date.now() - 5 * 60_000);
+    await utimes(stale, old, old);
+
+    await loadWorkerConfig(workerDir, { fresh: true });
+
+    expect(await leftovers(workerDir)).toEqual([]);
+  });
+
+  test("leaves a copy another run is still importing alone", async () => {
+    // The other half, and the reason the sweep has a clock at all: two `pithy` processes in one worktree
+    // are safe because the names are unique, and a sweep that deleted anything wearing the prefix would
+    // have taken that back — unlinking the file the other process is in the middle of importing.
+    const workerDir = await writeWorkerConfig("api", "export default { capabilities: [] };\n");
+    const live = join(workerDir, ".pithy.reload.another-run.ts");
+    await writeFile(live, "export default { capabilities: [] };\n");
+
+    await loadWorkerConfig(workerDir, { fresh: true });
+
+    expect(await leftovers(workerDir)).toEqual([".pithy.reload.another-run.ts"]);
+  });
+
+  test("leaves a link wearing the name alone, however old the link itself is", async () => {
+    // The sweep unlinks, so what it asks about has to be what it would remove. `stat` answers for a
+    // link's *destination* — a stranger's mtime deciding whether we delete a name in the adopter's Worker
+    // directory — and every copy this module writes it writes with `copyFile`, so a link is never one of
+    // ours. Aged with `lutimes` rather than `utimes` so the clock cannot be what spares it: the link is
+    // five minutes old by its own timestamps, and the regular-file check is the only thing left.
+    const workerDir = await writeWorkerConfig("api", "export default { capabilities: [] };\n");
+    const target = join(workerDir, "not-ours.ts");
+    await writeFile(target, "export default { capabilities: [] };\n");
+    const link = join(workerDir, ".pithy.reload.a-link.ts");
+    await symlink(target, link);
+    const old = new Date(Date.now() - 5 * 60_000);
+    await lutimes(link, old, old);
+
+    await loadWorkerConfig(workerDir, { fresh: true });
+
+    expect(await leftovers(workerDir)).toEqual([".pithy.reload.a-link.ts"]);
+    expect(await readdir(workerDir)).toContain("not-ours.ts");
+  });
+
+  // Root ignores the mode bits, and a test that quietly passes because the runner is root would be
+  // asserting nothing. The property is about a checkout this process cannot write, which is what the mode
+  // makes for everybody else.
+  test.skipIf(process.getuid?.() === 0)("names the directory when the tree cannot be written", async () => {
+    const workerDir = await writeWorkerConfig("api", "export default { capabilities: [] };\n");
+    await chmod(workerDir, 0o555);
+    try {
+      const error = (await loadWorkerConfig(workerDir, { fresh: true }).catch(
+        (thrown: unknown) => thrown,
+      )) as PithyError;
+      // A named class, because "the checkout is read-only" and "the adopter's config is broken" are two
+      // different facts and a caller sweeping every environment has to stop on the first and not the second.
+      expect(error).toBeInstanceOf(FreshCopyRefused);
+      expect(error.payload.action).toContain(workerDir);
+    } finally {
+      await chmod(workerDir, 0o755);
+    }
   });
 });
 

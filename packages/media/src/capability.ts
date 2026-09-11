@@ -15,7 +15,7 @@ import { registerMediaRoutes } from "./http/routes";
 import { media_0001_init } from "./migrations/0001_init";
 import { mediaExtendMigration } from "./migrations/extend";
 import { assertValidKvMetadata } from "./record/kvStore";
-import { mediaSecretsRegistry } from "./secret/registry";
+import { MEDIA_BUCKET_BINDING, mediaSecretsRegistry } from "./secret/registry";
 import { PACKAGE_VERSION } from "./version.generated";
 import { mediaWorkflows } from "./workflows/specs";
 
@@ -91,7 +91,7 @@ export function media(options: MediaOptions = {}): MediaCapability {
     // The KV namespace records live in, when `recordStore: 'kv'`.
     ...(isKv ? [{ type: "kv" as const, name: "MEDIA" }] : []),
     // The R2 bucket the routes read and delete objects through (bindings-first).
-    { type: "r2", name: "MEDIA_BUCKET" },
+    { type: "r2", name: MEDIA_BUCKET_BINDING },
     // The enrichment Workflow bindings the finalize route dispatches to, derived from the specs rather
     // than listed again — one declaration, so a binding rename cannot leave the two disagreeing. Each is
     // optional: the bindings exist only once `pithy media provision` has deployed the media worker, and

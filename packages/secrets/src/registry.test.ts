@@ -566,3 +566,45 @@ describe("isProvisionableSecret", () => {
     expect(isProvisionableSecret("TENANT_KEYS", { ...text, keyed: true, devValue: "random" })).toBe(false);
   });
 });
+
+/**
+ * **`binding` — the Worker binding a secret's value exists to reach (#541).**
+ *
+ * An R2 credential bundle is addressed at one bucket and at nothing else, and a project that declines
+ * that bucket has declined the credential with it. The relation was prose in `r2CredentialsRegistry`'s
+ * docstring for four releases, so `pithy doctor` could acknowledge `SUPPORT_BUCKET (r2) declined in
+ * pithy.config.ts` two blocks above asking for `support-r2-credentials`. A field is what lets one
+ * command read the other's fact.
+ */
+describe("binding — what this secret's value exists to reach", () => {
+  const bundle: SecretRegistryEntry = { backend: "d1", scope: "environment", rotatable: false, valueType: "text" };
+
+  test("is carried through define time, verbatim", () => {
+    const registry = defineSecretRegistry({ "support-r2-credentials": { ...bundle, binding: "SUPPORT_BUCKET" } });
+    expect(registry["support-r2-credentials"].binding).toBe("SUPPORT_BUCKET");
+  });
+
+  /** Absent is the ordinary case: a session secret reaches no binding, and saying nothing is the truth. */
+  test("is optional", () => {
+    expect(defineSecretRegistry({ "auth-session-secret": bundle })["auth-session-secret"].binding).toBeUndefined();
+  });
+
+  /**
+   * An empty string is not a binding, and it is the one value that would read as *declared and never
+   * declined* — the secret would be judged reachable against a binding nothing declares, forever.
+   */
+  test("refuses an empty binding, naming the entry", () => {
+    expect(() => defineSecretRegistry(asRegistry({ "support-r2-credentials": { ...bundle, binding: "" } }))).toThrow(
+      InternalError,
+    );
+    expect(() => defineSecretRegistry(asRegistry({ "support-r2-credentials": { ...bundle, binding: "" } }))).toThrow(
+      /support-r2-credentials/,
+    );
+  });
+
+  test("refuses a binding that is not a string", () => {
+    expect(() => defineSecretRegistry(asRegistry({ "support-r2-credentials": { ...bundle, binding: 7 } }))).toThrow(
+      InternalError,
+    );
+  });
+});

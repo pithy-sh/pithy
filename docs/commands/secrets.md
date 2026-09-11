@@ -46,6 +46,30 @@ There is no `--worker`. Every subcommand reads the **project's** registry: each 
 
 The registry is the definition. `pithy secrets` never invents a name — a secret must be declared by a capability the Worker composes, and an undeclared one is refused before anything is sent. Every capability's declarations count, not just the secrets capability's own: `auth`'s session secret and OAuth credentials, `email`'s link signing key and `payments`' provider credentials are all declared by the capability that reads them, and all of them are yours to create here.
 
+**`ls` lists every declared secret, and marks the ones this project cannot reach.** A capability declares its secrets whether or not your configuration uses them: `auth` declares four OAuth credentials whichever providers you enabled, and `support` declares its R2 credentials whether or not you declined the bucket they presign. Those rows read as *not applicable*, with the reason drawn from your configuration rather than from prose — so the list still says what exists, and it also says what you would have to change to turn one on.
+
+```
+auth-github-credentials     d1 · environment
+auth-apple-credentials      not applicable — auth() does not enable the apple provider
+support-r2-credentials      not applicable — SUPPORT_BUCKET declined in pithy.config.ts
+```
+
+Under `--json` every row carries `applies` and, when it is `false`, `reason` — so nothing has to read the sentence:
+
+```json
+{"command":"secrets ls","secrets":[{"name":"auth-github-credentials","description":"d1 · environment","applies":true},{"name":"support-r2-credentials","description":"not applicable — SUPPORT_BUCKET declined in pithy.config.ts","applies":false,"reason":"SUPPORT_BUCKET declined in pithy.config.ts"}]}
+```
+
+A secret is marked only when **no** Worker in the project can reach it. One Worker that still reads it is enough to leave the row alone, because the value is one value and that Worker needs it. [`pithy doctor`](./doctor.md) takes the other branch with the same answer: it is a fault report, so it leaves these out of *"No dev value for …"* entirely rather than listing something you cannot act on.
+
+**A secret is marked only when no *environment* can reach it either.** A `pithy.config.ts` is code, and it may read the environment it is being composed for — `pithy init` scaffolds exactly that with `originFor(compositionEnvironment(), DOMAINS)`. So a project may enable a provider for production alone:
+
+```ts
+auth({ google: { enabled: compositionEnvironment() === "prod" } })
+```
+
+That credential is unreachable in `dev` and `staging` and read on every sign-in in `prod`, and reporting it as *not applicable* would hide work you have to do. `ls` composes each Worker once per environment your root config declares, plus `dev`, and takes the union: a secret needed in **any** of them applies. There is no `--env` on `ls` or on [`pithy doctor`](./doctor.md), and that is the reason — a secret is one value per project, so the answer is the project's rather than the run's. A project whose `environments` never includes `prod` never composes under it, and the same line is then marked, which is correct: nothing there will ever run under an environment the project does not declare.
+
 **A value never comes from a flag.** `create` and `update` read the value from stdin when it is piped, and from a masked prompt when one can be drawn — and refuse when neither is available, rather than reading your terminal in silence. A flag would leave a live credential in shell history and in every process list on the machine. Nothing here prints a value back, on any subcommand, in either output mode.
 
 **A `json` secret is asked for one field at a time.** On a terminal, `create` and `update` walk the entry's schema and ask per field, using that field's own description as the question. Every field is masked, with no exceptions: these values arrive by paste, so masking costs nothing an operator was going to use, and a field wrongly treated as public is a credential in a screen share. An empty answer is not a value — it is left out, and a field the schema requires is then named on the problem line by the same validation that checks a piped document, so you know which of six questions to answer again. The name only, never the value.

@@ -2731,6 +2731,7 @@ describe("a Worker nobody could ask, in the report (#208)", () => {
         missing: [],
         bootstrapMissing: [],
         bootstrapUnmintable: [],
+        inapplicable: [],
         malformed: [],
         undeclared: [],
         mode: null,
@@ -2792,6 +2793,7 @@ describe("--json carries every dev-secrets fault the text block prints (#325)", 
         missing: [],
         bootstrapMissing: ["SECRETS_ENCRYPTION_KEYS"],
         bootstrapUnmintable: [],
+        inapplicable: [],
         malformed: [{ name: "auth-google-credentials", reason: "auth-google-credentials is not the shape it needs." }],
         undeclared: [],
         mode: null,
@@ -2799,6 +2801,46 @@ describe("--json carries every dev-secrets fault the text block prints (#325)", 
         unresolvable: [],
       }),
     });
+
+  /**
+   * **What the report filters out, the payload still carries (#541).** The text block says nothing about
+   * a secret the configuration cannot reach — a settled configuration is not a fault — but an agent
+   * driving `doctor --json` would otherwise watch three names vanish between two releases with nothing
+   * saying why. It is the one way filtering can lie, and this field is what stops it.
+   */
+  test("what the configuration cannot reach is in the payload, and out of the text", async () => {
+    const report = await buildDoctorReport(
+      harness.healthyOptions({
+        checkDevSecrets: async () => ({
+          path: "/home/u/.config/pithy/acme/secrets.jsonc",
+          misplaced: [],
+          missing: [],
+          bootstrapMissing: [],
+          bootstrapUnmintable: [],
+          inapplicable: [
+            { name: "support-r2-credentials", reason: "SUPPORT_BUCKET declined in pithy.config.ts" },
+            { name: "auth-apple-credentials", reason: "auth() does not enable the apple provider" },
+          ],
+          malformed: [],
+          undeclared: [],
+          mode: null,
+          unreadable: null,
+          unresolvable: [],
+        }),
+      }),
+    );
+    const json = renderDoctorJson(report) as {
+      devSecrets: { inapplicable: { name: string; reason: string }[]; missing: string[]; healthy: boolean };
+    };
+
+    expect(json.devSecrets.inapplicable).toEqual([
+      { name: "support-r2-credentials", reason: "SUPPORT_BUCKET declined in pithy.config.ts" },
+      { name: "auth-apple-credentials", reason: "auth() does not enable the apple provider" },
+    ]);
+    // Not a fault, so it does not flip the exit and it does not drag the report verbose.
+    expect(json.devSecrets.healthy).toBe(true);
+    expect(renderDoctorText(report, "/home/u")).not.toContain("support-r2-credentials");
+  });
 
   test("a malformed value is in the payload, and so is the bootstrap key nobody minted", async () => {
     const json = renderDoctorJson(await buildDoctorReport(faulty())) as {
@@ -2829,6 +2871,7 @@ describe("--json carries every dev-secrets fault the text block prints (#325)", 
           missing: [],
           bootstrapMissing: [],
           bootstrapUnmintable: [],
+          inapplicable: [],
           malformed: [],
           undeclared: [],
           mode: null,
@@ -2852,6 +2895,7 @@ describe("--json carries every dev-secrets fault the text block prints (#325)", 
             missing: [],
             bootstrapMissing: [],
             bootstrapUnmintable: [],
+            inapplicable: [],
             malformed: [],
             undeclared: [],
             mode: null,

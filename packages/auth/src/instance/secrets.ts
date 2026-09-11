@@ -177,6 +177,46 @@ export const authSecretsRegistry = defineSecretRegistry({
   },
 });
 
+/**
+ * Which provider a credential belongs to — the join the CLI must never make by spelling (#541).
+ *
+ * `auth-apple-credentials` and the `apple` config key look like each other and that is a coincidence:
+ * nothing makes a secret name and a config key the same thing, and a reporting command that matched
+ * them by substring would be right by luck. Stated here, once, beside both.
+ */
+const PROVIDER_CREDENTIALS = [
+  ["google", AUTH_GOOGLE_CREDENTIALS],
+  ["apple", AUTH_APPLE_CREDENTIALS],
+  ["facebook", AUTH_FACEBOOK_CREDENTIALS],
+  ["github", AUTH_GITHUB_CREDENTIALS],
+] as const;
+
+/** The four toggles this reads off the resolved `AuthConfig` — nothing else about it is its business. */
+export type AuthProviderToggles = Record<(typeof PROVIDER_CREDENTIALS)[number][0], { enabled: boolean }>;
+
+/**
+ * **The provider credentials this composition cannot reach**, as the `inapplicableSecrets` contribution.
+ *
+ * Auth declares four credentials whether or not a project runs four providers, so a project on Google
+ * and GitHub carries two secrets nothing will ever read. `pithy doctor` asked for them every run under
+ * *"fine to leave until you need it"* — softening, not silence, and "until you need it" is wrong about a
+ * provider the configuration has not enabled.
+ *
+ * **The session secret is never in here**, and that is the line this draws: it is read on every sign-in
+ * whatever the providers are, so it is outstanding work in every project that has not set it.
+ *
+ * The reason names the call an adopter would edit, because the point is to answer *what would I have to
+ * do to turn this on* as well as *why am I being shown this*.
+ */
+export function inapplicableProviderSecrets(providers: AuthProviderToggles): Record<string, string> {
+  const declared: Record<string, string> = {};
+  for (const [provider, secret] of PROVIDER_CREDENTIALS) {
+    if (providers[provider].enabled) continue;
+    declared[secret] = `auth() does not enable the ${provider} provider`;
+  }
+  return declared;
+}
+
 /** Resolve the Better Auth session secret for this invocation. */
 export async function resolveSessionSecret(env: SecretsStoreEnv): Promise<string> {
   const secrets = await sharedSecretsStore(env, authSecretsRegistry);

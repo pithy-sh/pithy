@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { randomUUID } from "node:crypto";
-import { access, copyFile, rm } from "node:fs/promises";
+import { unlinkSync } from "node:fs";
+import { access, copyFile, lstat, readdir, rm } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ProfileOverride } from "@pithy-sh/cloudflare/src/tokens/profiles";
@@ -650,17 +651,123 @@ export function classifyConfigLoadFailure(wrapped: unknown, relativeTo?: string)
  * **Only a different file busts it.** Measured on Bun 1.3: a `?t=…` query on the file URL does not, and
  * neither does the same file reached by a differently-spelled path. So this imports a copy, beside the
  * original — where the config's own relative imports and `import.meta.dirname` still resolve to the same
- * directory — and removes it. Dot-prefixed and uniquely named, so a crashed run leaves nothing a tool
- * collects and two concurrent runs cannot collide.
+ * directory — and removes it. Dot-prefixed and uniquely named, so two concurrent runs cannot collide.
+ *
+ * ## It writes into the adopter's source tree, so it cleans up three ways
+ *
+ * A read-only command that leaves files behind is worse than one that is slow, and `pithy doctor` and
+ * `pithy secrets ls` both reach this now — once per Worker per declared environment (#541). So: the `finally`
+ * removes the copy on the ordinary path; {@link forgetOnExit} removes what is still open on `SIGINT`,
+ * `SIGTERM` and `exit`, which is Ctrl-C and every throw that reaches the top; and {@link sweepStaleCopies}
+ * deletes any left by a run that was killed outright, before the next copy lands beside them. A `kill -9`
+ * is the only survivor, and the next command heals it.
+ *
+ * **A tree that cannot be written says so.** `copyFile` on a read-only checkout used to fail into whatever
+ * the caller's catch did with it — for the applicability sweep, a permissive answer and three more doomed
+ * copies. The refusal names the directory and the command that needs it, so the failure is a sentence rather
+ * than a feature quietly doing nothing.
  */
 async function importFreshCopy(path: string): Promise<{ default?: unknown }> {
-  const copy = join(dirname(path), `.pithy.reload.${randomUUID()}.ts`);
-  await copyFile(path, copy);
+  const directory = dirname(path);
+  await sweepStaleCopies(directory);
+  const copy = join(directory, `${RELOAD_PREFIX}${randomUUID()}.ts`);
+  try {
+    await copyFile(path, copy);
+  } catch (cause) {
+    throw new FreshCopyRefused({
+      message: `Could not re-read ${path}.`,
+      action: `Re-reading a config per environment writes a temporary file beside it. Make ${directory} writable, or run this command on a writable checkout.`,
+      detail: `copyFile into ${directory} failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+    });
+  }
+  openCopies.add(copy);
   try {
     return (await import(pathToFileURL(copy).href)) as { default?: unknown };
   } finally {
+    openCopies.delete(copy);
     await rm(copy, { force: true });
   }
+}
+
+/** What a fresh copy is called. One prefix, so the sweep and the writer cannot drift apart. */
+const RELOAD_PREFIX = ".pithy.reload.";
+
+/**
+ * A tree this process could not write a fresh copy into. Its own class, so a caller can tell *the config is
+ * broken* from *the checkout is read-only* — the first is the adopter's file and the second is not a fact
+ * about their project at all, and a sweep that cannot write must stop rather than try once per Worker per
+ * environment. `core/internal`, like every other load failure here: the operator reading our logs is the one
+ * who can act on it.
+ */
+export class FreshCopyRefused extends InternalError {}
+
+/** Copies this process still has open. Emptied by the `finally` above, or by the handlers below. */
+const openCopies = new Set<string>();
+
+/**
+ * Remove what an interrupted run would otherwise leave in the adopter's Worker directory.
+ *
+ * Registered once, lazily, and only while a copy is open — `exit` cannot await, so the unlink is the
+ * synchronous one. The signal handlers re-raise by exiting with the conventional code rather than swallowing
+ * the interrupt, because a Ctrl-C that does not stop the process is a worse bug than a stray file.
+ */
+let exitHooked = false;
+function forgetOnExit(): void {
+  if (exitHooked) return;
+  exitHooked = true;
+  const clean = () => {
+    for (const copy of openCopies) {
+      try {
+        unlinkSync(copy);
+      } catch {
+        // Already gone, or a tree we cannot write. Neither is worth a word on the way out.
+      }
+    }
+    openCopies.clear();
+  };
+  process.on("exit", clean);
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.on(signal, () => {
+      clean();
+      process.exit(signal === "SIGINT" ? 130 : 143);
+    });
+  }
+}
+
+/**
+ * Delete copies an earlier run left behind, before writing one beside them.
+ *
+ * Best-effort in every direction: a directory that will not list, or a file that will not unlink, is not
+ * this command's problem and never its error. Only our own prefix, and only at the top level of the Worker's
+ * own directory — a sweep that guessed wider would be deleting an adopter's files on the strength of a name.
+ */
+async function sweepStaleCopies(directory: string): Promise<void> {
+  forgetOnExit();
+  const entries = await readdir(directory).catch(() => [] as string[]);
+  const stale = entries.filter((entry) => entry.startsWith(RELOAD_PREFIX) && entry.endsWith(".ts"));
+  await Promise.all(stale.map((entry) => removeIfStale(join(directory, entry))));
+}
+
+/**
+ * How old a copy must be before another run may delete it. A copy exists for one `import()` — milliseconds —
+ * so a minute is far past any live one, and the age check is what keeps this from being the bug it is
+ * preventing: two `pithy` processes in one worktree, and one of them unlinking the file the other is
+ * importing. Unique names already made concurrent runs safe; a sweep with no clock would have undone that.
+ */
+const STALE_COPY_MS = 60_000;
+
+/**
+ * Remove one leftover copy if nothing could still be importing it. Best-effort, and never an error.
+ *
+ * `lstat`, and a regular file only. Every copy this module writes is one it created with `copyFile`, so
+ * anything wearing the name that is a link is not ours — and a `stat` would age it out on its *target's*
+ * clock, which is a stranger's fact about a file we never wrote.
+ */
+async function removeIfStale(copy: string): Promise<void> {
+  if (openCopies.has(copy)) return;
+  const age = await lstat(copy).catch(() => undefined);
+  if (age === undefined || !age.isFile() || Date.now() - age.mtimeMs < STALE_COPY_MS) return;
+  await rm(copy, { force: true }).catch(() => undefined);
 }
 
 /**
@@ -685,6 +792,9 @@ async function importConfig(path: string, missing: () => never, fresh = false): 
   try {
     module = fresh ? await importFreshCopy(path) : ((await import(pathToFileURL(path).href)) as { default?: unknown });
   } catch (cause) {
+    // Not a fact about the file. A tree that cannot be written refuses every config in it identically, and
+    // classifying it as *this config would not import* would send the adopter to a file that is fine.
+    if (cause instanceof FreshCopyRefused) throw cause;
     // The file is present but would not import. Which of the three ways it failed decides what to tell
     // the adopter — see {@link classifyConfigLoadFailure}. The raw cause still goes to `detail` and stops
     // there: the CLI renderer prints `message` and `action` only, and the HTTP codec strips `detail`.

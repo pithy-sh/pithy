@@ -31,11 +31,13 @@ import {
   type SecretRotationDispatcher,
   unrecordedFailure,
 } from "../capabilities/rotateSecrets";
+import { projectSecretApplicability } from "../capabilities/secretApplicability";
 import { mergeSecretBranches, type SecretBranches, secretBranchDeclarations } from "../capabilities/secretBranches";
 import {
   assertNotTheMasterKey,
   resolveSecretRegistry,
   runSecretWrite,
+  secretListRows,
   secretWriteEffect,
   secretWriteReportLine,
 } from "../capabilities/secrets";
@@ -590,15 +592,11 @@ const ls = defineCommand({
   args: { json: { type: "boolean", default: false, description: "Machine-readable output" } },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
-      const registry = await projectSecretRegistry(process.cwd());
-      const rows = Object.entries(registry)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([name, entry]) => ({
-          name,
-          // A keyspace is marked, because it is the one entry an operator must not try to set: its
-          // members are written per key by the application that mints them.
-          description: `${entry.backend} · ${entry.scope}${entry.rotatable ? " · rotatable" : ""}${entry.keyed ? " · keyspace" : ""}`,
-        }));
+      const projectDir = process.cwd();
+      const registry = await projectSecretRegistry(projectDir);
+      // What the configuration says each of those names can reach (#541). Never throws: an answer it
+      // could not establish is an empty one, and every row then reads exactly as it did before.
+      const rows = secretListRows(registry, (await projectSecretApplicability(projectDir)).project);
       if (args.json) {
         process.stdout.write(`${formatJsonLine({ command: "secrets ls", secrets: rows })}\n`);
         return;

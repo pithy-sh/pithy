@@ -3,6 +3,7 @@
 
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { isProvisionableSecret, type SecretRegistryEntry, type SecretScope } from "@pithy-sh/secrets/src/registry";
+import { projectSecretApplicability, type SecretApplicability } from "../capabilities/secretApplicability";
 import { resolveDevSecretsTargets } from "../devSecrets/targets";
 import { loadProject, projectEnvironments, requireProjectName } from "../project/config";
 import { readOptionalWranglerConfig } from "../project/wrangler";
@@ -149,6 +150,26 @@ export interface CheckSecretBindingsOptions {
    * never looks at. A project with no name resolves to `could-not-check` rather than to a guess.
    */
   project?: string;
+  /**
+   * What this project's configuration cannot reach (#541), **both answers**. Defaults to the real project's,
+   * which never throws.
+   *
+   * **A stanza is not short of a binding for a value nothing can read.** The same rule `checkDevSecrets`
+   * applies one block up, and it has to be applied here too or the noise moves rather than going: a
+   * `secrets_store_secrets` line for a credential behind a declined binding is a finding an operator can
+   * never close. The master key is never taken out, whatever anything declares — it is what lets a
+   * deployed Worker open its store at all.
+   *
+   * **And the answer this loop wants is the per-Worker one**, because the loop is per Worker and per
+   * environment while `SecretApplicability.project` is one fact about the whole project. Where Worker A
+   * declines `SUPPORT_BUCKET` and Worker B does not, `support-r2-credentials` is reachable *somewhere*, so
+   * the project answer leaves it unmarked — and this check then printed a missing binding for **A's**
+   * stanza, a few lines under A's own `SUPPORT_BUCKET (r2) declined in pithy.config.ts`. A finding A can
+   * never close is the exact self-contradiction #541 removes, and the mixed-Worker case is where it
+   * survived a round. A Worker the map does not name falls back to the project answer, which marks the
+   * fewest names — an unknown composition must not take work out of the report.
+   */
+  inapplicable?: SecretApplicability;
 }
 
 /**
@@ -201,6 +222,7 @@ export async function checkSecretBindings(options: CheckSecretBindingsOptions): 
     return { state: "could-not-check", missing: [] };
   }
 
+  const applicability = options.inapplicable ?? (await projectSecretApplicability(options.projectDir));
   const missing: MissingSecretBinding[] = [];
   let unreadable = false;
   for (const target of targets) {
@@ -219,6 +241,9 @@ export async function checkSecretBindings(options: CheckSecretBindingsOptions): 
     // `wrangler.jsonc` declares no environments and binds nothing.
     if (config === null) continue;
     const declared = boundSecretNames(target.registry as Parameters<typeof boundSecretNames>[0]).sort();
+    // This Worker's own answer. Its stanza is its own, so what another Worker can still reach says nothing
+    // about whether this one is short of a binding.
+    const inapplicable = applicability.byWorker.get(target.name) ?? applicability.project;
     for (const env of environments) {
       const bound = new Set(
         (config.env?.[env]?.secrets_store_secrets ?? []).map((entry) => entry.binding).filter(Boolean),
@@ -228,6 +253,9 @@ export async function checkSecretBindings(options: CheckSecretBindingsOptions): 
       for (const binding of declared) {
         if (bound.has(binding)) continue;
         const entry = (target.registry as Record<string, SecretRegistryEntry>)[binding] as SecretRegistryEntry;
+        // Nothing reads it, so nothing is short of it. `isProvisionableSecret` is the same guard the
+        // `Dev secrets:` block uses, and here it is what keeps the master key's stanza reported.
+        if (inapplicable.has(binding) && !isProvisionableSecret(binding, entry)) continue;
         missing.push({
           worker: target.name,
           env,

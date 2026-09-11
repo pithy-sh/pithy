@@ -13,7 +13,14 @@ import {
   sharedSecretsStore,
 } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { afterEach, describe, expect, test } from "vitest";
-import { R2StorageCredentials, r2CredentialsRegistry, STORAGE_R2_SECRET, storageSecretsRegistry } from "./registry";
+import { storage } from "../capability";
+import {
+  R2StorageCredentials,
+  r2CredentialsRegistry,
+  STORAGE_BUCKET_BINDING,
+  STORAGE_R2_SECRET,
+  storageSecretsRegistry,
+} from "./registry";
 
 /** A bare env — the fake resolver never touches it, so its shape is irrelevant here. */
 const env = {} as Parameters<typeof sharedSecretsStore>[0];
@@ -122,5 +129,32 @@ describe("R2StorageCredentials", () => {
 
   test("rejects an empty key — an unresolved credential fails here, not as an opaque SigV4 fault", () => {
     expect(R2StorageCredentials.safeParse({ ...credentials, accessKeyId: "" }).success).toBe(false);
+  });
+});
+
+/**
+ * **The bundle names the bucket it presigns (#541).**
+ *
+ * The factory's second argument exists so a reporting command can read what was prose: decline the
+ * bucket and the credential is a value nothing can read, which `pithy doctor` used to ask for anyway.
+ */
+describe("the binding a bundle exists to reach", () => {
+  test("storage declares its own bucket", () => {
+    expect(storageSecretsRegistry[STORAGE_R2_SECRET].binding).toBe(STORAGE_BUCKET_BINDING);
+  });
+
+  test("and it is the r2 binding the capability declares", () => {
+    const r2 = storage({}).requiredBindings.filter((binding) => binding.type === "r2");
+    expect(r2.map((binding) => binding.name)).toContain(storageSecretsRegistry[STORAGE_R2_SECRET].binding);
+  });
+
+  /**
+   * `objectStore` builds one of these per read from a secret *name*, holding an `R2Bucket` object and no
+   * binding name to state — so the argument is optional, and omitting it says only that nothing here
+   * knows which binding it is. That registry is never composed onto a capability and never reaches a
+   * report, which is why the absence costs nothing.
+   */
+  test("omitting it is legal, for the one caller that has a bucket and no binding name", () => {
+    expect(r2CredentialsRegistry(STORAGE_R2_SECRET)[STORAGE_R2_SECRET].binding).toBeUndefined();
   });
 });

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { JwksCache } from "@pithy-sh/core/src/http/oidcWebhook";
 import type { PaymentsConfig } from "../config/config";
 import { productForProviderSku, railEnabled } from "../config/config";
 import type { PaymentsRail } from "../data/rail";
@@ -66,6 +67,20 @@ export interface RailTrustOptions {
   googleTransport?: GoogleHttpFetch;
   /** A Play access token already minted, so a batch of Google refreshes pays for one. */
   googleAccessToken?: string;
+  /**
+   * Where the Google rail holds Google's published verification keys between deliveries.
+   *
+   * **The third kind of seam, and the only one that is about availability rather than trust or cost.** A rail
+   * is built per request, so it cannot own a store that outlives one; the webhook path resolves a key before
+   * it can check a signature; and therefore with no store an anonymous POST buys a round trip to Google,
+   * 1:1 — whether it names a `kid` Google publishes, which the held keys answer, or one nobody ever
+   * published, which only the store's refresh window does. `registerPaymentsRoutes` supplies one per
+   * registered route tree when a caller gives none; this parameter is for the caller that wants a harder
+   * bound than an isolate's memory, a store over KV or the Cache API that every isolate shares — and sharing
+   * it shares the window with it. Additive to nothing and narrowing nothing: core still fetches for a `kid`
+   * the store does not hold once the window is over, which is how key rotation stays invisible.
+   */
+  googleJwksCache?: JwksCache;
   /** The HTTP transport the Stripe rail reaches Stripe's API through. Defaults to `fetch`. */
   stripeTransport?: StripeHttpFetch;
   /** The HTTP transport the Lemon Squeezy rail reaches its API through. Defaults to `fetch`. */
@@ -98,6 +113,7 @@ const RAIL_FACTORIES: Partial<Record<PaymentsRail, RailFactory>> = {
       trustedKeys: trust.googleTrustedKeys,
       transport: trust.googleTransport,
       accessToken: trust.googleAccessToken,
+      jwksCache: trust.googleJwksCache,
     }),
   stripe: (credentials, trust) =>
     stripeRail(railCredentials(credentials, "stripe"), { transport: trust.stripeTransport }),

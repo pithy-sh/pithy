@@ -191,6 +191,33 @@ interface SecretRegistryEntryBase {
    * that by `registry.test.ts` rather than by this sentence.
    */
   rotator?: ValueRotator;
+  /**
+   * **The Worker binding this value exists to reach**, when it exists to reach one.
+   *
+   * An R2 credential bundle is addressed at one bucket and at nothing else: `support-r2-credentials`
+   * presigns `SUPPORT_BUCKET`, `media-r2-credentials` presigns `MEDIA_BUCKET`. Decline the binding and
+   * the credential is a value nothing can ever read — which is a fact about the *project's*
+   * configuration, not about the secret, so only the CLI can join the two. This field is the join key
+   * (#541).
+   *
+   * **It was prose for four releases, and prose is what a command cannot read.** `r2CredentialsRegistry`
+   * has always said which bucket each name is for, in a docstring, so one `pithy doctor` run printed
+   * `SUPPORT_BUCKET (r2) declined in pithy.config.ts` two blocks above `No dev value for
+   * support-r2-credentials`. Both lines were right and the report contradicted itself.
+   *
+   * **A property of the secret, which is why it is on the entry rather than on the capability.** An
+   * entry is plain data, shared by every Worker that declares the name, and *which bucket these
+   * credentials sign* does not change between two Workers composing the same capability. What changes
+   * per composition is whether that binding is declined, and that is read from the Worker's own
+   * `declinedBindings` — never from here. Compare {@link Capability.secretBranches}, which is per
+   * composition and therefore lives on the capability.
+   *
+   * **Never a remedy and never a read path.** Nothing resolves a value through this; `backend` still
+   * decides where a value lives, and the binding named here is not one anything reads the secret *from*.
+   * Absent is the ordinary case — a session secret reaches no binding — and absent means only that the
+   * secret's reachability is not decided by a binding.
+   */
+  binding?: string;
   /** Optional human note surfaced by the audit (`ls --check`). */
   notes?: string;
 }
@@ -468,6 +495,14 @@ export function defineSecretRegistry<const R extends SecretRegistry>(registry: R
     }
     if (entry.keyed !== undefined && typeof entry.keyed !== "boolean") {
       throw new InternalError({ message: `secret registry: entry "${name}" must declare keyed as a boolean.` });
+    }
+    // An empty string is the one value that reads as *declared and never declined*: the CLI would ask a
+    // Worker whether it declines `""`, get no for the life of the project, and call the secret reachable
+    // forever. Refused where the author is, like every other axis.
+    if (entry.binding !== undefined && (typeof entry.binding !== "string" || entry.binding.length === 0)) {
+      throw new InternalError({
+        message: `secret registry: entry "${name}" must declare binding as a non-empty binding name, or omit it.`,
+      });
     }
     if (entry.keyed) {
       // Both axes are load-bearing for a keyspace — see `KeyedEntry`. Caught here, where the author

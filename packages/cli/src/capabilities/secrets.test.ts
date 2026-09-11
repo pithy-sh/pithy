@@ -18,6 +18,7 @@ import {
   resolveSecretRegistry,
   runSecretsList,
   runSecretWrite,
+  secretListRows,
   secretWriteEffect,
   secretWriteReportLine,
 } from "./secrets";
@@ -512,5 +513,75 @@ describe("secretWriteEffect", () => {
   /** An undeclared name is refused before anything is dispatched, so there is nothing to widen. */
   test("an unknown name reports the targets verbatim", () => {
     expect(secretWriteEffect(undefined, ["prod"], declared)).toEqual({ environments: ["prod"], accountEntry: false });
+  });
+});
+
+/**
+ * **`pithy secrets ls` marks what the configuration cannot reach (#541).**
+ *
+ * The list read as a checklist, so an operator could not tell *not yet done* from *will never apply* —
+ * and three settled questions came back on every run. The mark is the shape chosen over a filter,
+ * because it answers *what would I have to do to enable this* as well.
+ */
+describe("secretListRows", () => {
+  const registry = defineSecretRegistry({
+    "auth-github-credentials": { backend: "d1", scope: "environment", rotatable: false, valueType: "text" },
+    "support-r2-credentials": {
+      backend: "d1",
+      scope: "environment",
+      rotatable: false,
+      valueType: "text",
+      binding: "SUPPORT_BUCKET",
+    },
+  });
+
+  test("a reachable secret keeps its declaration axes, exactly as before", () => {
+    const [row] = secretListRows(registry, new Map());
+    expect(row).toEqual({ name: "auth-github-credentials", description: "d1 · environment", applies: true });
+  });
+
+  /**
+   * **The axes are replaced, not appended to.** `d1 · environment` describes where a value would be
+   * stored, and for a secret this project will never hold a value for there is nothing that would be
+   * stored. The mark is the whole answer, so it is the whole column.
+   */
+  test("an unreachable secret reads as the reason instead of the axes", () => {
+    const rows = secretListRows(
+      registry,
+      new Map([["support-r2-credentials", "SUPPORT_BUCKET declined in pithy.config.ts"]]),
+    );
+    expect(rows[1]).toEqual({
+      name: "support-r2-credentials",
+      description: "not applicable — SUPPORT_BUCKET declined in pithy.config.ts",
+      applies: false,
+      reason: "SUPPORT_BUCKET declined in pithy.config.ts",
+    });
+  });
+
+  /**
+   * `applies` is what `--json` gates on. The description is one rendered sentence, identical on both
+   * surfaces so the terminal and the JSON line cannot come to say two different things — and `reason`
+   * is beside it so nothing has to parse prose to learn why.
+   */
+  test("every row carries applies, so a consumer never parses the description", () => {
+    const rows = secretListRows(registry, new Map([["support-r2-credentials", "off"]]));
+    expect(rows.map((row) => row.applies)).toEqual([true, false]);
+    expect(rows.map((row) => row.reason)).toEqual([undefined, "off"]);
+  });
+
+  /** Sorted by name, and a keyspace still says so — the one entry an operator must not try to set. */
+  test("keeps the sort and the keyspace mark", () => {
+    const keyed = defineSecretRegistry({
+      "tenant-keys": { backend: "d1", scope: "environment", rotatable: true, valueType: "text", keyed: true },
+      "auth-session-secret": { backend: "d1", scope: "environment", rotatable: true, valueType: "text" },
+    });
+    expect(secretListRows(keyed, new Map()).map((row) => row.name)).toEqual(["auth-session-secret", "tenant-keys"]);
+    expect(secretListRows(keyed, new Map())[1]?.description).toBe("d1 · environment · rotatable · keyspace");
+  });
+
+  /** A reason for a name the registry does not declare is not a row. Nothing invents a secret. */
+  test("never invents a row for a name the registry does not declare", () => {
+    const rows = secretListRows(registry, new Map([["auth-apple-credentials", "auth() does not enable it"]]));
+    expect(rows.map((row) => row.name)).toEqual(["auth-github-credentials", "support-r2-credentials"]);
   });
 });

@@ -1111,7 +1111,7 @@ describe("the gate on the gate", () => {
   const FOLLOWS_ON_PURPOSE: Record<string, { probes: string; why: string }> = {
     "cli/src/project/config.ts": {
       probes: "access",
-      why: "Asks whether a pithy.config.ts is there, and then only imports it — following is right, since a config reached through a linked checkout is still that project's config. It writes to one other path: a `.pithy.reload.<uuid>.ts` copy beside it, carrying a name nothing can already hold and that no probe here answered about.",
+      why: "Asks whether a pithy.config.ts is there, and then only imports it — following is right, since a config reached through a linked checkout is still that project's config. It writes to one other path: a `.pithy.reload.<uuid>.ts` copy beside it, carrying a name nothing can already hold and that no probe here answered about. The sweep that deletes those copies again asks with `lstat` and unlinks a regular file only, so a link wearing the name is neither aged on its target's clock nor removed.",
     },
     "cli/src/project/packageManager.ts": {
       probes: "access",

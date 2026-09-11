@@ -45,6 +45,16 @@ const MEDIA_TOKEN_ROLL = "https://developers.cloudflare.com/api/resources/user/s
 /** The name media's R2 bucket credentials are stored under — the name `objectStore` is pointed at. */
 export const MEDIA_R2_SECRET = "media-r2-credentials";
 
+/**
+ * The bucket binding those credentials presign, declared beside the name so the two travel together.
+ *
+ * `media()` declares the same string as a required R2 binding. It is stated here rather than imported
+ * from the capability because the capability imports this module, and a credential that names the
+ * binding it exists to reach is what stops `pithy doctor` asking for a bundle whose bucket a project
+ * has declined (#541).
+ */
+export const MEDIA_BUCKET_BINDING = "MEDIA_BUCKET";
+
 /** The credential bundle media reads to mint Cloudflare Images and Stream direct-upload URLs. */
 export const MediaStorageCredentials = z
   .object({
@@ -62,7 +72,7 @@ export type MediaStorageCredentials = z.output<typeof MediaStorageCredentials>;
  * own so the provisioner can write the secret against the *declared* schema rather than a second copy
  * of the shape, which is the only way the two cannot drift.
  */
-export const mediaR2Registry = r2CredentialsRegistry(MEDIA_R2_SECRET);
+export const mediaR2Registry = r2CredentialsRegistry(MEDIA_R2_SECRET, MEDIA_BUCKET_BINDING);
 
 /** The media capability's secret-registry slice — aggregated into the shared accessor at startup. */
 export const mediaSecretsRegistry = defineSecretRegistry({

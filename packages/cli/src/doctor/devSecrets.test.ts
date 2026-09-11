@@ -22,6 +22,7 @@ import type { StatePathOptions } from "../notifier/state";
 import {
   checkDevSecrets,
   checkDevSecretsLocation,
+  type DevSecretsCheck,
   describeDevSecrets,
   describeDevSecretsLocation,
   devSecretsHealthy,
@@ -339,6 +340,7 @@ describe("devSecretsHealthy", () => {
     missing: [],
     bootstrapMissing: [],
     bootstrapUnmintable: [],
+    inapplicable: [],
     undeclared: [],
     mode: 0o600,
     unreadable: null,
@@ -378,6 +380,7 @@ describe("describeDevSecrets", () => {
       missing: [],
       bootstrapMissing: [],
       bootstrapUnmintable: [],
+      inapplicable: [],
       undeclared: [],
       mode: 0o600,
       unresolvable: [],
@@ -394,6 +397,7 @@ describe("describeDevSecrets", () => {
       missing: [],
       bootstrapMissing: [],
       bootstrapUnmintable: [],
+      inapplicable: [],
       undeclared: [],
       unresolvable: [],
       mode: null,
@@ -412,6 +416,7 @@ describe("describeDevSecrets", () => {
       missing: [],
       bootstrapMissing: [],
       bootstrapUnmintable: [],
+      inapplicable: [],
       undeclared: [],
       unresolvable: [],
       mode: 0o600,
@@ -430,6 +435,7 @@ describe("describeDevSecrets", () => {
       missing: [],
       bootstrapMissing: [],
       bootstrapUnmintable: [],
+      inapplicable: [],
       undeclared: [],
       mode: 0o644,
       unresolvable: [],
@@ -447,6 +453,7 @@ describe("describeDevSecrets", () => {
       missing: [],
       bootstrapMissing: [],
       bootstrapUnmintable: [],
+      inapplicable: [],
       undeclared: [],
       mode: 0o600,
       unresolvable: [],
@@ -782,5 +789,116 @@ describe("a bootstrap secret nothing mints is its own finding", () => {
     expect(describeDevSecrets(result as NonNullable<typeof result>).join("\n")).not.toContain(
       "issued by somebody else",
     );
+  });
+});
+
+/**
+ * **A secret the configuration cannot reach is not outstanding work (#541).**
+ *
+ * `Dev secrets:` asked for `support-r2-credentials` in the same run whose `bindings` tier had just said
+ * `SUPPORT_BUCKET (r2) declined in pithy.config.ts`, and for two OAuth credentials belonging to
+ * providers the project never enabled. All three arrived under *"Each is issued by somebody else, so
+ * nothing mints one. Fine to leave until you need it."* — softening, not silence, and "until you need
+ * it" is simply wrong about a credential the configuration has already refused.
+ *
+ * **Doctor filters where `pithy secrets ls` marks**, and the split is principled: doctor's terminal is a
+ * fault list, and a settled configuration is not a fault; the complete inventory with reasons is `ls`'s
+ * job. The reason is still carried in the check, so `--json` says it rather than dropping it.
+ */
+describe("checkDevSecrets — what the configuration cannot reach", () => {
+  test("keeps an unreachable secret off the outstanding line, and names it with its reason", async () => {
+    const result = await checkDevSecrets({
+      projectDir: dir,
+      targets: [board()],
+      paths: paths(),
+      inapplicable: new Map([["auth-google-credentials", "auth() does not enable the google provider"]]),
+    });
+    expect(result?.missing).not.toContain("auth-google-credentials");
+    expect(result?.inapplicable).toEqual([
+      { name: "auth-google-credentials", reason: "auth() does not enable the google provider" },
+    ]);
+  });
+
+  test("says nothing about it in the report — the question is settled, not outstanding", async () => {
+    const result = await checkDevSecrets({
+      projectDir: dir,
+      targets: [board()],
+      paths: paths(),
+      inapplicable: new Map([["auth-google-credentials", "auth() does not enable the google provider"]]),
+    });
+    expect(describeDevSecrets(result as DevSecretsCheck).join("\n")).not.toContain("auth-google-credentials");
+  });
+
+  /** A reachable one is untouched: the line still exists, for the secrets that really are outstanding. */
+  test("leaves a reachable secret on the outstanding line", async () => {
+    const result = await checkDevSecrets({ projectDir: dir, targets: [board()], paths: paths() });
+    expect(result?.missing).toContain("auth-google-credentials");
+    expect(result?.inapplicable).toEqual([]);
+    expect(describeDevSecrets(result as DevSecretsCheck).join("\n")).toContain("auth-google-credentials");
+  });
+
+  /**
+   * **A value the adopter actually wrote is still judged.** Unreachable says *nothing reads this*, not
+   * *nothing here can be wrong* — and a malformed value is what the next `pithy seed` refuses. Dropping
+   * it would be doctor calling a file green that seed hard-fails on, which is #323 again.
+   */
+  test("still judges a stated value for an unreachable secret", async () => {
+    await writeFile(path, JSON.stringify({ "auth-google-credentials": { clientId: "only-half" } }), { mode: 0o600 });
+    const result = await checkDevSecrets({
+      projectDir: dir,
+      targets: [board()],
+      paths: paths(),
+      inapplicable: new Map([["auth-google-credentials", "auth() does not enable the google provider"]]),
+    });
+    expect(result?.malformed.map((entry) => entry.name)).toEqual(["auth-google-credentials"]);
+    expect(result?.inapplicable).toEqual([]);
+  });
+
+  /**
+   * **Never the master key, whatever anything declares.** `bootstrapMissing` is the one line that names
+   * the thing actually stopping a developer — the local `SECRETS` store cannot be opened without it —
+   * and a filter that could silence it would hide the blocker rather than the noise.
+   */
+  test("never silences the master key", async () => {
+    const withMaster: DevSecretsTarget = {
+      name: "board",
+      dir: join(dir, "apps", "board"),
+      registry: {
+        ...registry,
+        [MASTER_KEY_BINDING]: {
+          backend: "cf-secrets-store",
+          scope: "environment",
+          rotatable: false,
+          bootstrap: true,
+          valueType: "text",
+        },
+      },
+    };
+    const result = await checkDevSecrets({
+      projectDir: dir,
+      targets: [withMaster],
+      paths: paths(),
+      inapplicable: new Map([[MASTER_KEY_BINDING, "somebody declared this unreachable"]]),
+    });
+    expect(result?.bootstrapMissing).toEqual([MASTER_KEY_BINDING]);
+    expect(result?.inapplicable).toEqual([]);
+  });
+
+  /** An unreadable file states nothing, so nothing about it is judged — the same rule as every field. */
+  test("claims nothing when the secrets file will not parse", async () => {
+    await writeFile(path, "{ not json", { mode: 0o600 });
+    const result = await checkDevSecrets({
+      projectDir: dir,
+      targets: [board()],
+      paths: paths(),
+      inapplicable: new Map([["auth-google-credentials", "auth() does not enable the google provider"]]),
+    });
+    expect(result?.unreadable).not.toBeNull();
+    expect(result?.inapplicable).toEqual([]);
+  });
+
+  /** Nothing unreachable is the ordinary state, and it is an empty list rather than an absent field. */
+  test("is an empty list when everything applies", async () => {
+    expect((await check())?.inapplicable).toEqual([]);
   });
 });
