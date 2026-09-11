@@ -1,6 +1,6 @@
 {
   "name": "@pithy-sh/auth",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -43,7 +43,7 @@
   },
   "peerDependencies": {
     "@pithy-sh/core": "^0.4.0",
-    "@pithy-sh/email": "^0.2.0",
+    "@pithy-sh/email": "^0.3.0",
     "@pithy-sh/secrets": "^0.2.0",
     "@pithy-sh/turnstile": "^0.2.0",
     "hono": "^4.13.2",

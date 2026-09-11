@@ -1,5 +1,17 @@
 # @pithy-sh/email
 
+## 0.3.0
+
+### Minor Changes
+
+- [#556](https://github.com/pithy-sh/pithy/pull/556) [`65d9ba0`](https://github.com/pithy-sh/pithy/commit/65d9ba01ebb3790f744306b3a7e6042212d6c369) Thanks [@kingmesal](https://github.com/kingmesal)! - A failed send now records why it failed.
+  
+  The job's `error` column held the bare code, so a magic link that failed five times read `E_UNKNOWN` five times — while the sentence naming the cause was built one line away and thrown out with the error. It carries the provider's own words now, and a numeric provider code is recorded as itself instead of being flattened.
+  
+  An authentication failure is also terminal. `E_UNKNOWN` is retryable because it means nothing named itself, and a token that cannot send as your domain is not a momentary fault — it was spending the whole attempt budget in silence.
+  
+  `ClassifiedSendError` gains `detail`, the line both the row and the log read.
+
 ## 0.2.0
 
 ### Minor Changes

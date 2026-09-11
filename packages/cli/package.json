@@ -1,6 +1,6 @@
 {
   "name": "@pithy-sh/cli",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -45,7 +45,7 @@
     "@cloudflare/workers-types": "^5.20260729.1",
     "@pithy-sh/cloudflare": "^0.2.0",
     "@pithy-sh/core": "^0.4.0",
-    "@pithy-sh/email": "^0.2.0",
+    "@pithy-sh/email": "^0.3.0",
     "@pithy-sh/secrets": "^0.2.0",
     "@pithy-sh/turnstile": "^0.2.0",
     "@pithy-sh/ui-react": "^0.1.4",
