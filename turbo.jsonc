@@ -111,10 +111,20 @@
     // three pins are being compared against without a byte of either manifest moving.
     // `turboInputs.test.ts` in the fixture re-derives every one of those — the closure included — from
     // the compile, the workspace manifests and the cross-package-read register, and holds it against
-    // what `turbo run --dry=json` says is hashed. A hand-written `inputs` list is the same defect one
-    // level up; that test is what keeps this one honest. Measured after the rewrite: dropping
-    // `packages/core/src/**` from `#test` alone reddens it with 258 uncovered files, and restoring it
-    // is green.
+    // what `turbo run --dry=json` says is hashed.
+    //
+    // **What that test no longer gates is whether the two globs below are declared, and this comment
+    // used to claim otherwise (#545).** Its coverage assertion moved from the task's own inputs to the
+    // whole closure's, because a hand-rolled walk of the manifests drifted the moment #542 moved an edge
+    // to `peerDependencies`. The closure is the honest question — but it is also answered by
+    // `vite#build` and `core#build` hashing their own source, so deleting these globs no longer fails
+    // that assertion. Measured: with both removed, `#test`'s own hashed inputs drop from 292 to 12 and
+    // the coverage assertion stays green, while the hash still moves on a touch to
+    // `packages/vite/src/plugin.ts` or `packages/core/src/capability/client.ts`. **They are redundant to
+    // invalidation, and they are kept for what they say rather than what they catch** — a reader of this
+    // file learns what the fixture depends on without reconstructing a build closure in their head.
+    // The one assertion that still reddens on their removal is `the three tasks are keyed identically`,
+    // which is about the three tasks agreeing, not about these globs being right.
     //
     // **This file is in the key too, and it has to be.** A task's hash covers its own definition and no
     // other — measured on 2.10.10: adding a glob to `#typecheck` above left `#test`'s hash at

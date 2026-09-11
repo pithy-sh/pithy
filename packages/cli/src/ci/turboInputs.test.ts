@@ -471,24 +471,84 @@ describe("a task named for one package still depends on the builds it reads", ()
   // capability — it reaches them through guarded dynamic imports and through the adopter's own
   // `node_modules` — and a devDependency is never installed by a consumer while still being a workspace
   // edge turbo builds along.
-  test("the CLI names every package in the workspace, because its gates read all of them", () => {
-    const manifest = JSON.parse(readFileSync(join(REPO_ROOT, "packages", "cli", "package.json"), "utf8")) as {
-      dependencies?: Record<string, string>;
-      devDependencies?: Record<string, string>;
-    };
-    const named = new Set([
-      ...Object.keys(manifest.dependencies ?? {}),
-      ...Object.keys(manifest.devDependencies ?? {}),
-    ]);
-
+  //
+  // **Asked of turbo, not of the manifest (#545).** This used to read `dependencies` and
+  // `devDependencies` off `packages/cli/package.json` and assert every workspace name was in one of
+  // them — a manifest standing in for turbo's answer, which is the shape #545 was opened about. The
+  // property wanted is not "the CLI names it"; it is "a build for it is planned before the CLI's tests
+  // run", and the plan states that directly. Which manifest field expresses it is then turbo's business
+  // rather than this file's, which matters more than it sounds: `^build` follows `dependencies`,
+  // `devDependencies` and `optionalDependencies` and **does not follow `peerDependencies`** (measured on
+  // 2.10.10 in `tooling/vite-adopter/src/turboGraph.test.ts`), so a name moved to the peer field would
+  // have satisfied the old assertion under one reading and broken the build under the real one.
+  test("turbo plans a build for every workspace package before the CLI's tests run", async () => {
     const workspace = readdirSync(join(REPO_ROOT, "packages"), { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => JSON.parse(readFileSync(join(REPO_ROOT, "packages", entry.name, "package.json"), "utf8")))
       .map((one: { name: string }) => one.name)
       .filter((name) => name !== "@pithy-sh/cli");
 
+    // The vacuity floor: an empty workspace satisfies the containment below without asking turbo
+    // anything.
     expect(workspace.length).toBeGreaterThan(15);
-    expect(workspace.filter((name) => !named.has(name))).toEqual([]);
+
+    let asked = 0;
+    for (const task of TEST_TASKS) {
+      const { stdout } = await run(TURBO, ["run", task, "--filter=@pithy-sh/cli", "--dry=json"], {
+        cwd: REPO_ROOT,
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      const plan = JSON.parse(stdout) as Plan;
+      const own = plan.tasks.find((entry) => entry.taskId === `@pithy-sh/cli#${task}`);
+      // The CLI defines no `test:workers`, and a task a package does not define owes nothing.
+      if (own === undefined || own.command === NO_SCRIPT) continue;
+      asked += 1;
+      const built = new Set(
+        plan.tasks
+          .filter((entry) => entry.taskId.endsWith("#build"))
+          .map((entry) => entry.taskId.slice(0, entry.taskId.lastIndexOf("#"))),
+      );
+      expect(
+        workspace.filter((name) => !built.has(name)),
+        `${task} plans no build for it — name it in packages/cli/package.json, as a devDependency`,
+      ).toEqual([]);
+    }
+
+    // And the floor for the loop itself: every task skipped would pass it without a comparison.
+    expect(asked).toBeGreaterThan(0);
+  });
+
+  // **A workspace peer edge is invisible to turbo, so it is never the only place an edge is declared.**
+  // `^build` follows `dependencies`, `devDependencies` and `optionalDependencies` and stops at
+  // `peerDependencies` — measured on 2.10.10 in `tooling/vite-adopter/src/turboGraph.test.ts`, which
+  // builds the same four-package workspace once per field and watches the plan lose two builds on that
+  // one. Every `@pithy-sh/*` peerDependency in this tree is also declared in a field turbo reads, and
+  // that is load-bearing rather than incidental: #542 moved the kit's shared packages to
+  // `peerDependencies` and kept the devDependency beside it, and dropping the second as redundant would
+  // stop turbo building that package ahead — a stale `dist` under a green run, with nothing to say so.
+  test("a workspace peerDependency is also declared where turbo looks", () => {
+    const FOLLOWED = ["dependencies", "devDependencies", "optionalDependencies"] as const;
+    const faults: string[] = [];
+    let peers = 0;
+    for (const group of ["packages", "tooling"]) {
+      for (const entry of readdirSync(join(REPO_ROOT, group), { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const path = join(REPO_ROOT, group, entry.name, "package.json");
+        if (!existsSync(path)) continue;
+        const manifest = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown> & { name: string };
+        const declared = (field: string): Record<string, string> => (manifest[field] ?? {}) as Record<string, string>;
+        for (const peer of Object.keys(declared("peerDependencies"))) {
+          if (!peer.startsWith("@pithy-sh/")) continue;
+          peers += 1;
+          if (FOLLOWED.some((field) => peer in declared(field))) continue;
+          faults.push(`${manifest.name} peer-depends on ${peer} and declares it nowhere turbo follows`);
+        }
+      }
+    }
+
+    // The vacuity floor: no peer edges at all would satisfy the assertion without measuring anything.
+    expect(peers).toBeGreaterThan(0);
+    expect(faults).toEqual([]);
   });
 
   test("every task this repository names for a single package plans a build first", async () => {
