@@ -168,6 +168,13 @@ export interface CheckSecretBindingsOptions {
    * never close is the exact self-contradiction #541 removes, and the mixed-Worker case is where it
    * survived a round. A Worker the map does not name falls back to the project answer, which marks the
    * fewest names — an unknown composition must not take work out of the report.
+   *
+   * **`unresolved` is reported by `Environment configs:` and deliberately not here (#548).** An
+   * environment whose `pithy.config.ts` throws is not a composition, so it contributes nothing to either
+   * answer and both are drawn from the environments that remain. That is a fact about the project, not
+   * about this check, and it is a far bigger fault than a stanza: doctor gives it its own block near the
+   * top rather than a footnote here and a second one under `Dev secrets:`. One fact, one sentence, one
+   * place — the same rule that stopped this report contradicting itself in #541.
    */
   inapplicable?: SecretApplicability;
 }

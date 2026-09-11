@@ -33,6 +33,11 @@ import {
 } from "../doctor/devSecrets";
 import { checkDevVars, type DevVarsCheck, describeDevVars, devVarsHealthy } from "../doctor/devVars";
 import { checkDevVarsLocal, type DevVarsLocalCheck, describeDevVarsLocal } from "../doctor/devVarsLocal";
+import {
+  checkEnvironmentConfigs,
+  describeEnvironmentConfigs,
+  type EnvironmentConfigsCheck,
+} from "../doctor/environmentConfigs";
 import { checkEnvironments, describeEnvironmentDrift, type EnvironmentsCheck } from "../doctor/environments";
 import {
   buildProjectHealth,
@@ -223,6 +228,17 @@ export interface DoctorReport {
    * nothing to compare a stanza to.
    */
   environments: EnvironmentsCheck | null;
+  /**
+   * Whether every declared environment's `pithy.config.ts` **loads** (#548) — the question the block above
+   * does not ask, because comparing a stanza to a declaration never evaluates either config. `null`
+   * outside a project with Workers, where nothing composes in any environment.
+   *
+   * **It fails the exit**, unlike its two secret-flavored neighbors. A config that throws under `prod` is
+   * a fault the checkout's own files positively establish, with no account reached and nothing inferred,
+   * and every command that composes that environment — `deploy`, `migrate`, `provision`, `dev` — fails the
+   * same way. There is no day-one state to spare: a freshly scaffolded project composes everywhere.
+   */
+  environmentConfigs: EnvironmentConfigsCheck | null;
   /**
    * Whether every environment this project declares names every origin it answers on (#253). `null`
    * outside a readable project, on the same `loadProject` outcome as the checks above: with no declared
@@ -607,6 +623,12 @@ export interface DoctorReportOptions {
   checkDevSecrets?: (projectDir: string) => Promise<DevSecretsCheck | null>;
   /** Seam: whether every declared environment binds the Secrets Store entries its Worker reads. */
   checkSecretBindings?: (projectDir: string) => Promise<SecretBindingsCheck | null>;
+  /**
+   * Seam: whether every declared environment's `pithy.config.ts` loads. Defaults to a projection of the
+   * one applicability sweep the two seams above also read, so a test that stubs those and not this one
+   * still costs nothing — the real resolution is lazy and nothing forces it.
+   */
+  checkEnvironmentConfigs?: (projectDir: string) => Promise<EnvironmentConfigsCheck>;
   /** Seam: what this project's `.dev.vars.local` files carry that nothing else declares. */
   checkDevVarsLocal?: (projectDir: string) => Promise<DevVarsLocalCheck | null>;
   /**
@@ -767,6 +789,12 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     options.checkDevSecrets ??
     (async (dir: string) =>
       checkDevSecrets({ projectDir: dir, inapplicable: (await projectApplicability(dir)).project }));
+  // The third reader of the same resolution, and the one that reports what the other two could not ask
+  // (#548). Its own block rather than a footnote in either of theirs: a Worker config that will not load
+  // for a declared environment is a fault in its own right and much bigger than a secret listing.
+  const probeEnvironmentConfigs =
+    options.checkEnvironmentConfigs ??
+    (async (dir: string) => checkEnvironmentConfigs(await projectApplicability(dir)));
   // Both halves, because that check's loop is per Worker and per environment — see `secretApplicability`.
   const probeSecretBindings =
     options.checkSecretBindings ??
@@ -957,6 +985,18 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
         drift: [],
       })
     : null;
+  // The same declaration, asked the question the block above cannot: comparing a stanza to a declaration
+  // never evaluates a config, and a `pithy.config.ts` is code that may load under one environment and
+  // throw under another (#548). Files only once more — the composition is taken in this process, and
+  // nothing it composes is run.
+  //
+  // Guarded to *nothing found* rather than to a `could-not-check` member of its own, and that is the
+  // honest shape: the resolution behind it never throws, so a throw here is this report's own fault and
+  // not a fact about any environment. Claiming a config does not load on the strength of it would send an
+  // operator to a file that is fine.
+  const environmentConfigs = inProject
+    ? await probed<EnvironmentConfigsCheck>(() => probeEnvironmentConfigs(options.projectDir), { unresolved: [] })
+    : null;
   // One level further out again, and gated the same way: an environment is declared, and now what is
   // true *about* it — where it answers — must be too. Files only, so it answers offline like the rest.
   const origins = inProject
@@ -1056,6 +1096,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     projectName,
     workerNames,
     environments,
+    environmentConfigs,
     origins,
     workflows,
     extensions,
@@ -1120,6 +1161,12 @@ export function doctorExitCode(report: DoctorReport): number {
   // inferred — an orphan is established by ids the checkout already commits — and `could-not-check`
   // establishes nothing, so only `drifted` gates.
   if (report.environments?.state === "drifted") return 1;
+  // And the same standard applied to the same declaration one level deeper (#548): a Worker's
+  // `pithy.config.ts` throws when it is composed for a declared environment. Established from the
+  // checkout's own files, with no account reached and nothing inferred — and there is no day-one state
+  // here to spare, because a freshly scaffolded project composes in every environment it declares. Every
+  // command that composes that environment fails the same way, so a green CI over it would be the lie.
+  if ((report.environmentConfigs?.unresolved.length ?? 0) > 0) return 1;
   // The same standard, and two of the three origin faults meet it. `workers-dev-open` is a Worker serving
   // a live origin its own config does not name, established from that config alone — and it is the
   // security half: on that origin the CSRF gate refuses the requests that establish who you are, and
@@ -2000,6 +2047,34 @@ function environmentsBlock(check: EnvironmentsCheck): string {
 }
 
 /**
+ * The `Environment configs:` lines — shown only when a declared environment's `pithy.config.ts` throws
+ * when it is composed (#548). Silence is the healthy answer, as everywhere in this half of the report.
+ *
+ * One line per environment on the health block's shape, with the config's own action beneath the problem
+ * — the form every `PithyError` renders in, and the one `Settings:` uses for the same reason.
+ *
+ * **The closing line is the finding's real size.** The report reaches this because
+ * `projectSecretApplicability` had to compose every environment to decide which secrets apply, so the
+ * temptation is to describe it as a narrower secret list. It is not: `pithy deploy`, `pithy migrate`,
+ * `pithy provision` and `pithy dev` all evaluate that same config, and every one of them fails the way
+ * this did. The narrowed lists further down are the smallest consequence, not the finding.
+ */
+function environmentConfigsBlock(check: EnvironmentConfigsCheck): string {
+  const lines = ["Environment configs:"];
+  for (const { environment, reason } of check.unresolved) {
+    lines.push(healthLine(`env.${environment}`, "pithy.config.ts throws when it is composed"));
+    lines.push(`${HEALTH_CONT}${reason}`);
+  }
+  lines.push(`${HEALTH_INDENT}Every command that composes ${environmentList(check)} fails the same way.`);
+  return lines.join("\n");
+}
+
+/** The environments the block just named, for its closing sentence. */
+function environmentList(check: EnvironmentConfigsCheck): string {
+  return check.unresolved.map((entry) => entry.environment).join(", ");
+}
+
+/**
  * The `Origins` lines — shown only when an environment serves an origin its config does not name, grouped
  * one block per Worker, on the health block's shape (#253).
  *
@@ -2216,6 +2291,10 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // Same silence for `could-not-check` and the same reason: an unreadable config is the `Project:` block's
   // line, and a second block repeating it is how a report starts contradicting itself.
   const environmentsOk = !report.environments || report.environments.drift.length === 0;
+  // Its own answer, because it is its own question — see {@link DoctorReport.environmentConfigs}. A config
+  // that does not load for a declared environment is never terse: it is the loudest finding this report has
+  // about a file the adopter owns.
+  const environmentConfigsOk = (report.environmentConfigs?.unresolved.length ?? 0) === 0;
   // Both origin faults keep the report verbose, even though only one of them fails the exit. An
   // environment with no origin is the thing `pithy deploy` will refuse, and a report that stayed silent
   // about it would send the adopter to that refusal with no warning — which is exactly what #253 asked
@@ -2266,6 +2345,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     projectNameOk &&
     workerNamesOk &&
     environmentsOk &&
+    environmentConfigsOk &&
     originsOk &&
     workflowsOk &&
     devPreferencesOk &&
@@ -2431,6 +2511,13 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     blocks.push(environmentsBlock(report.environments));
   }
 
+  // Straight after it, because it is the same declaration asked whether it *works*: one of these
+  // environments has a `pithy.config.ts` that throws when it is composed. The reader meets it here, near
+  // the top, as a config that does not load — never as a footnote under the secret lists it also narrows.
+  if (report.environmentConfigs && report.environmentConfigs.unresolved.length > 0) {
+    blocks.push(environmentConfigsBlock(report.environmentConfigs));
+  }
+
   // Where each declared environment answers, and only when one of them serves an origin nothing named.
   // Beside the environments block because it is the same argument one level down: an environment is
   // declared, and now what is true about it must be too.
@@ -2576,6 +2663,16 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
             ...drift,
             detail: describeEnvironmentDrift(drift, report.environments?.declared ?? []),
           })),
+        }
+      : null,
+    // The same declaration asked whether it loads at all (#548). Its own key rather than a field on the
+    // one above, because an environment whose config throws and one whose stanzas drift are two different
+    // faults with two different fixes — and this one gates the exit, so a script must be able to reach it
+    // without parsing a sentence.
+    environmentConfigs: report.environmentConfigs
+      ? {
+          unresolved: report.environmentConfigs.unresolved,
+          detail: describeEnvironmentConfigs(report.environmentConfigs),
         }
       : null,
     // Same `null` discipline once more, and each drift carries its own sentence: the remedy for "no

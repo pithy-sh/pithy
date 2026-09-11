@@ -13,6 +13,7 @@ import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import type { WorkerConfig } from "../project/config";
+import { unresolvedLines } from "./secretApplicability";
 import {
   assertNotTheMasterKey,
   resolveSecretRegistry,
@@ -21,6 +22,7 @@ import {
   secretListRows,
   secretWriteEffect,
   secretWriteReportLine,
+  unresolvedNote,
 } from "./secrets";
 
 class StubDispatcher implements SecretDispatcher {
@@ -583,5 +585,50 @@ describe("secretListRows", () => {
   test("never invents a row for a name the registry does not declare", () => {
     const rows = secretListRows(registry, new Map([["auth-apple-credentials", "auth() does not enable it"]]));
     expect(rows.map((row) => row.name)).toEqual(["auth-github-credentials", "support-r2-credentials"]);
+  });
+});
+
+/**
+ * **`ls` says which environments its marks were decided from, when it was not all of them (#548).**
+ *
+ * Whether a secret applies is a property of the composition, and an environment whose `pithy.config.ts`
+ * throws produced none — so it says nothing about any name, and the marks are drawn from the environments
+ * that remain. That is the right answer, and it carries a risk this note is what discloses: a credential
+ * only the unloaded environment needs can be marked *not applicable* on the strength of the ones that did
+ * compose. The remedy is fixing that config, which is why the note sends the reader to `pithy doctor`.
+ *
+ * It used to be worse and quieter. A non-composition contributed *every name in reach*, which under
+ * "in reach anywhere wins" beat every real one — so the project that found this printed the unmarked
+ * pre-#541 list on every run with nothing saying why.
+ */
+describe("unresolvedNote", () => {
+  /** The ordinary project prints no note at all — an empty string, so the caller appends it blind. */
+  test("says nothing when every environment composed", () => {
+    expect(unresolvedNote([])).toBe("");
+  });
+
+  test("names each environment, its reason, and the risk the marks above it carry", () => {
+    const note = unresolvedNote([{ environment: "prod", reason: "Set payments.billing in apps/api/pithy.config.ts." }]);
+    expect(note).toContain("One environment did not compose, so this answer is drawn from the rest.");
+    expect(note).toContain("  prod: Set payments.billing in apps/api/pithy.config.ts.");
+    expect(note).toContain("may be marked not applicable above");
+    expect(note).toContain("pithy doctor");
+  });
+
+  /** It follows a rendered list, so it opens with a blank line rather than running onto the last row. */
+  test("stands off the list it qualifies", () => {
+    expect(unresolvedNote([{ environment: "prod", reason: "Set payments.billing." }]).startsWith("\n")).toBe(true);
+  });
+
+  /**
+   * **The head and the reasons are `pithy doctor`'s too, and the closing sentence is not.** One fact about
+   * one project, worded once — two surfaces wording it twice is how two reports come to disagree. Only the
+   * closing differs, because the two run opposite risks: `ls` marks, so its reader may see a mark that
+   * environment would have removed; doctor filters, so its reader may see work it would have settled.
+   */
+  test("shares its head and reasons with doctor, and closes in its own words", () => {
+    const unresolved = [{ environment: "prod", reason: "Set payments.billing." }];
+    for (const line of unresolvedLines(unresolved)) expect(unresolvedNote(unresolved)).toContain(line);
+    expect(unresolvedLines(unresolved).join("\n")).not.toContain("pithy doctor");
   });
 });

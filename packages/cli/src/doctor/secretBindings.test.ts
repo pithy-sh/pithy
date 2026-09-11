@@ -244,7 +244,7 @@ async function bareWorker(registry: SecretRegistry = REGISTRY): Promise<DevSecre
  */
 function applicabilityFor(name: string, reason: string, worker = "board"): SecretApplicability {
   const map = new Map([[name, reason]]);
-  return { project: map, byWorker: new Map([[worker, map]]) };
+  return { project: map, byWorker: new Map([[worker, map]]), unresolved: [] };
 }
 
 /** The report for one Worker, as `pithy doctor` prints it. */
@@ -1073,6 +1073,7 @@ describe("what the configuration cannot reach", () => {
       // What the real resolver answers for that project: nothing is out of reach *project-wide*, because
       // `collab` still reads it, and it is out of reach for `board`.
       inapplicable: {
+        unresolved: [],
         project: new Map(),
         byWorker: new Map([
           ["board", new Map([["support-r2-credentials", "SUPPORT_BUCKET declined in pithy.config.ts"]])],

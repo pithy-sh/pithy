@@ -3,6 +3,7 @@
 
 import type { Capability, SecretRegistrySeam } from "@pithy-sh/core/src/capability/capability";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { ENVIRONMENT_VAR } from "@pithy-sh/core/src/worker/identity";
 import { FreshCopyRefused, loadWorkerConfig, projectEnvironments, type WorkerConfig } from "../project/config";
@@ -67,6 +68,13 @@ import { type BindingDeclines, honoredNames, workerDeclines } from "./reconcile"
  * negative claim, and an unreadable declaration is exactly what might have settled it. Doctor's
  * bindings tier is what reports the broken block; this one only has to stop asserting what it could not
  * establish. Same rule as `checkDevSecrets`'s `undeclared`.
+ *
+ * **That is a composition with one fact missing, and it is not the case {@link UnresolvedEnvironment}
+ * covers.** This Worker composed: it has capabilities, a registry and a configuration, and every one of
+ * them still speaks. Only the decline block is unreadable, so only what that block would have ruled out
+ * goes unclaimed. An environment whose config threw produced no composition at all, so it says nothing
+ * rather than saying *everything applies* — a distinction that cost this feature a release when the two
+ * were treated alike.
  */
 
 /** One Worker's half of the question: what it declares, what it composes, and what it declines. */
@@ -89,8 +97,53 @@ export interface ApplicabilityWorker {
 }
 
 /**
- * **The two answers, because the two surfaces ask two questions.** Both are secret name → why it cannot be
- * reached; absent means it applies, which is the ordinary state of almost every declared secret.
+ * **An environment that is not a composition, and why it is not (#548).**
+ *
+ * ## Only a composition votes
+ *
+ * Whether a secret applies is a property of **the composition** — which capabilities are composed and how
+ * they are configured. Environments enter into this at all for one reason: an adopter may write
+ * `auth({ google: { enabled: compositionEnvironment() === "prod" } })`, so one project can hold three
+ * compositions. The sweep below takes each of them and folds *in reach anywhere wins*.
+ *
+ * An environment whose `pithy.config.ts` **throws is not a composition.** There are no capabilities, no
+ * registry and no configuration — so there is nothing that could have a requirement, and nothing for it
+ * to say about any name. It contributes nothing to the fold: not every-name-in-reach, and not any name.
+ *
+ * **That correction is the whole of this issue.** It used to contribute `inReach(worker)` — every declared
+ * name reachable — on the reasoning that the environment nobody could take is the one that might have
+ * needed the credential. The reasoning is what was wrong: an environment that will not load has a broken
+ * config, not a requirement. And because the fold is *in reach anywhere wins*, counting a thing that does
+ * not exist as a vote let it beat every composition that does. One half-configured environment turned the
+ * whole of #541 off. The first project to run it had exactly that — `prod` threw `Billing is not
+ * configured for this environment`, and `pithy secrets ls` listed `auth-apple-credentials` for a project
+ * that enables neither Apple nor Facebook, on every run, saying nothing.
+ *
+ * **The old worry is answered rather than traded away.** A credential only `prod` needs is not marked by
+ * mistake, because a `prod` that does not compose is not a `prod` that needs anything — it is a config to
+ * fix, and `pithy doctor` raises it on those terms. Restore the fallback and #541 is off again.
+ *
+ * ## Which is why this is reported, and reported loudly
+ *
+ * The answer is now drawn from **fewer environments than the project declares**, so saying so is not a
+ * courtesy. `pithy secrets ls` prints it under its list and `pithy doctor` gives it a block of its own —
+ * *this Worker's config does not load for prod*, which is a far bigger fault than a secret listing and is
+ * met as one.
+ *
+ * When **no** environment composed, both answers are empty and everything is in reach — not by a fallback
+ * policy but because there is nothing to fold. No composition said anything about any name.
+ */
+export interface UnresolvedEnvironment {
+  /** The environment whose composition threw. */
+  environment: string;
+  /** The operator's sentence for why — a config's own `action`, never prose about it. */
+  reason: string;
+}
+
+/**
+ * **The two answers, because the two surfaces ask two questions** — plus what could not be asked at all.
+ * Both answers are secret name → why it cannot be reached; absent means it applies, which is the ordinary
+ * state of almost every declared secret.
  *
  * The reason is an operator's sentence, drawn from configuration and not from prose: it names the
  * binding and the file, or the call an adopter would edit. A surface renders it; nothing parses it.
@@ -112,6 +165,19 @@ export interface SecretApplicability {
    * means, and the safe reading is {@link project}, which marks the fewest names.
    */
   byWorker: ReadonlyMap<string, ReadonlyMap<string, string>>;
+  /**
+   * The declared environments that are **not compositions** — see {@link UnresolvedEnvironment}.
+   *
+   * Empty is the ordinary case and means both answers above were folded over every environment the
+   * project declares. Non-empty means they were folded over **fewer**: each listed environment has a
+   * config that will not load, so it said nothing, and what it would have said is unknown rather than
+   * permissive. A surface renders this; nothing branches on it beyond saying so.
+   *
+   * Reporting it is not optional. An answer drawn from two of a project's three environments is a
+   * narrower answer than the one an operator asked for, and the environment that is missing from it is a
+   * fault they have to fix anyway.
+   */
+  unresolved: readonly UnresolvedEnvironment[];
 }
 
 /**
@@ -163,7 +229,9 @@ export function secretApplicability(workers: readonly ApplicabilityWorker[]): Se
     for (const reached of own.reachable) own.reasons.delete(reached);
     byWorker.set(name, own.reasons);
   }
-  return { project: reasons, byWorker };
+  // The pure fold answers about the compositions it was handed and knows nothing about environments that
+  // never became one. `projectSecretApplicability` is what takes them, so it is what reports them.
+  return { project: reasons, byWorker, unresolved: [] };
 }
 
 /**
@@ -185,6 +253,12 @@ export function secretApplicability(workers: readonly ApplicabilityWorker[]): Se
  * in reach. Exactly `composedPaths` in `ui/routeAllowlist.ts`, which stamps {@link ENVIRONMENT_VAR}
  * around each composition for the same reason and resolves the union the same way.
  *
+ * **The union is over the compositions that exist, and not over the environments a project declares.** An
+ * environment whose config throws produced no composition, so it is not in the union and contributes
+ * nothing — see {@link UnresolvedEnvironment} for why counting it as *everything in reach* turned this
+ * feature off wherever one environment was half-configured. The in-reach-anywhere rule is unchanged among
+ * the compositions themselves, and that is what keeps the correction from becoming *mark everything*.
+ *
  * ## Why the config is re-imported rather than re-composed
  *
  * `routeAllowlist` stamps and calls `createBackend` again, because the gate it is chasing is inside
@@ -200,9 +274,8 @@ async function applicabilityIn(
   projectDir: string,
   environment: string,
   manifests: ReadonlyMap<string, CapabilityManifest[]>,
-  base: readonly ResolvedWorker[],
   loadConfig: FreshConfigLoader,
-): Promise<{ workers: ApplicabilityWorker[]; unwritable: boolean }> {
+): Promise<{ workers: ApplicabilityWorker[]; unwritable: boolean; failed?: UnresolvedEnvironment }> {
   const previous = process.env[ENVIRONMENT_VAR];
   process.env[ENVIRONMENT_VAR] = environment;
   try {
@@ -212,15 +285,23 @@ async function applicabilityIn(
       unwritable: false,
     };
   } catch (cause) {
-    // **An environment that would not compose leaves every name in reach.** Skipping it instead would
-    // narrow the union to the environments that happened to load, and the one that did not is exactly
-    // the one that might have needed the credential. Same direction as every other guard here.
+    // **An environment that would not compose is not a composition, so it contributes nothing** — see
+    // {@link UnresolvedEnvironment}. No capabilities, no registry, no configuration: nothing that could
+    // have a requirement about any name. It is reported instead, which is where it belongs.
+    //
+    // It used to contribute every declared name *in reach*, and because the fold is "in reach anywhere
+    // wins" that non-vote beat every environment that really did compose. One half-configured environment
+    // turned the whole of #541 off, silently. Restoring it restores that.
     //
     // One failure is not about this environment at all: a checkout the process cannot write a fresh copy
     // into will fail identically for every remaining Worker and every remaining environment, and each
     // attempt is another doomed write into somebody's source tree. That one is reported upward so the
     // sweep stops after it.
-    return { workers: base.map(inReach), unwritable: cause instanceof FreshCopyRefused };
+    return {
+      workers: [],
+      unwritable: cause instanceof FreshCopyRefused,
+      failed: { environment, reason: loadReason(cause) },
+    };
   } finally {
     // Restored, not defaulted: a variable this process never had must not exist afterwards, or the next
     // thing to read `ENVIRONMENT` in this CLI run is told something the project never said.
@@ -229,7 +310,31 @@ async function applicabilityIn(
   }
 }
 
-/** One Worker's half of the question, in the environment it was just composed under. */
+/**
+ * The operator's sentence for why an environment would not compose.
+ *
+ * `action` first, then `message`, because that ordering is the error taxonomy's and not a preference:
+ * `action` is the operator's field — it names the config, the setting, the command — and `message` is
+ * the caller's. This line goes to a terminal, so the operator's is the one worth having. `detail` is
+ * never read: it is the throw site's, for logs and audit alone (`CLAUDE.md` §Errors).
+ *
+ * A non-`PithyError` falls back to its own text, and something that is not an `Error` at all gets a
+ * sentence rather than `[object Object]` — this is a diagnostic, and it runs in the broken project it
+ * exists to diagnose.
+ */
+function loadReason(cause: unknown): string {
+  if (cause instanceof PithyError) return cause.payload.action ?? cause.payload.message;
+  if (cause instanceof Error && cause.message.trim() !== "") return cause.message;
+  return "the composition threw something that is not an error";
+}
+
+/**
+ * One Worker's half of the question, in the environment it was just composed under.
+ *
+ * This is the only thing that builds an {@link ApplicabilityWorker}, and it takes a composition that
+ * exists. There is deliberately no counterpart for an environment that would not compose: such an
+ * environment is not a composition, so it has nothing to contribute and nothing to build from.
+ */
 function applicabilityOf(worker: ResolvedWorker, manifests: readonly CapabilityManifest[]): ApplicabilityWorker {
   // Guarded, and the failure falls to *nothing declined* rather than to skipping the Worker — a Worker
   // with no say leaves its names in reach, which is the direction that cannot hide outstanding work.
@@ -244,19 +349,6 @@ function applicabilityOf(worker: ResolvedWorker, manifests: readonly CapabilityM
     capabilities: worker.capabilities,
     registry: declaredSecrets(worker.capabilities),
     declines,
-  };
-}
-
-/**
- * The same Worker with no opinion at all: every name it declares, no decline, no capability's sentence.
- * What an environment that could not be composed contributes, so its names stay in reach.
- */
-function inReach(worker: ResolvedWorker): ApplicabilityWorker {
-  return {
-    name: worker.name,
-    capabilities: [],
-    registry: declaredSecrets(worker.capabilities),
-    declines: { state: "read", declines: [] },
   };
 }
 
@@ -310,19 +402,20 @@ export interface ProjectApplicabilityOptions {
  * read-only commands. The copies are removed on the ordinary path, on Ctrl-C, and by the next run's sweep
  * (`importFreshCopy`). Where they cannot be written at all — a read-only checkout, a container mount — the
  * first refusal ends the sweep: every remaining Worker and environment would fail the same way, and
- * answering nothing three times over is still answering nothing. The answer is then the permissive one, so
- * every surface renders exactly what it rendered before #541 rather than marking something on a composition
- * nobody could take.
+ * answering nothing three times over is still answering nothing. **No environment composed, so both answers
+ * are empty** and every name is in reach — not by a fallback policy, but because there is no composition to
+ * have ruled anything out. Every environment is in {@link SecretApplicability.unresolved}, which is what
+ * makes that empty answer readable as *nobody could ask* rather than as *nothing to say*.
  */
 export async function projectSecretApplicability(
   projectDir: string,
   options: ProjectApplicabilityOptions = {},
 ): Promise<SecretApplicability> {
   const loadConfig = options.loadConfig ?? ((workerDir: string) => loadWorkerConfig(workerDir, { fresh: true }));
-  // One unstamped resolution first: it answers which Workers there are and what they declare — the two
-  // questions that do not vary — and it is the permissive fallback for an environment that will not load.
+  // One unstamped resolution first, and only to answer which Workers there are — a project with none has
+  // no composition to take in any environment, so there is no sweep to run.
   const base = await resolveWorkers({ projectDir }).catch(() => []);
-  if (base.length === 0) return { project: new Map(), byWorker: new Map() };
+  if (base.length === 0) return { project: new Map(), byWorker: new Map(), unresolved: [] };
 
   // Hoisted out of the environment loop: a manifest scan reads `node_modules`, which no `ENVIRONMENT`
   // changes, and it is the one part of this that would otherwise be repeated per environment for nothing.
@@ -334,15 +427,50 @@ export async function projectSecretApplicability(
     );
   }
 
+  // Resolved once and walked once. The list is also what the early return below owes a reason for, and
+  // asking twice would let a project whose root config changed mid-sweep answer two different questions.
+  const environments = await applicabilityEnvironments(projectDir);
   const applicability: ApplicabilityWorker[] = [];
-  for (const environment of await applicabilityEnvironments(projectDir)) {
-    const taken = await applicabilityIn(projectDir, environment, manifests, base, loadConfig);
+  const unresolved: UnresolvedEnvironment[] = [];
+  for (const [index, environment] of environments.entries()) {
+    const taken = await applicabilityIn(projectDir, environment, manifests, loadConfig);
     applicability.push(...taken.workers);
+    if (taken.failed !== undefined) unresolved.push(taken.failed);
     // The tree, not the environment. Nothing after this could answer differently, and every attempt is one
     // more write into a directory that has already refused one.
-    if (taken.unwritable) return secretApplicability(base.map(inReach));
+    //
+    // **The environments never reached are unresolved too, and saying so is the point.** None of them
+    // became a composition, so none of them voted — and a reader owed the reason is owed it for every
+    // environment the sweep gave up on, not only the one that happened to refuse first. Each carries that
+    // refusal's own sentence, because it is why they were skipped and the one thing that would fix them.
+    if (taken.unwritable) {
+      const reason = taken.failed?.reason ?? "the checkout could not be written";
+      const skipped = environments.slice(index + 1).map((name) => ({ environment: name, reason }));
+      return { ...secretApplicability(applicability), unresolved: [...unresolved, ...skipped] };
+    }
   }
-  return secretApplicability(applicability);
+  return { ...secretApplicability(applicability), unresolved };
+}
+
+/**
+ * **The shared half of what a surface says about an environment that is not a composition (#548).**
+ *
+ * The head states what happened and the lines under it name each environment and the config's own action.
+ * The *consequence* is the caller's own closing sentence, because the two surfaces run opposite risks:
+ * `pithy secrets ls` marks, so its reader may be shown a mark an unloaded environment would have removed;
+ * `pithy doctor` filters, so its reader may be shown work that environment would have settled. One fact,
+ * worded once; two consequences, each worded where it is true.
+ *
+ * Empty for an empty list, which is the ordinary case — so a surface splices it in unconditionally and
+ * prints nothing at all when every environment composed.
+ */
+export function unresolvedLines(unresolved: readonly UnresolvedEnvironment[]): string[] {
+  if (unresolved.length === 0) return [];
+  const count = unresolved.length === 1 ? "One environment" : `${unresolved.length} environments`;
+  return [
+    `${count} did not compose, so this answer is drawn from the rest.`,
+    ...unresolved.map(({ environment, reason }) => `  ${environment}: ${reason}`),
+  ];
 }
 
 /**

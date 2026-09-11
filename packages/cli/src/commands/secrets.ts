@@ -40,6 +40,7 @@ import {
   secretListRows,
   secretWriteEffect,
   secretWriteReportLine,
+  unresolvedNote,
 } from "../capabilities/secrets";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import {
@@ -596,12 +597,19 @@ const ls = defineCommand({
       const registry = await projectSecretRegistry(projectDir);
       // What the configuration says each of those names can reach (#541). Never throws: an answer it
       // could not establish is an empty one, and every row then reads exactly as it did before.
-      const rows = secretListRows(registry, (await projectSecretApplicability(projectDir)).project);
+      const applicability = await projectSecretApplicability(projectDir);
+      const rows = secretListRows(registry, applicability.project);
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "secrets ls", secrets: rows })}\n`);
+        // `unresolved` is its own key rather than a field on a row, because it is a fact about the
+        // *answer* and not about any one secret: it says which environments these marks were decided
+        // from. An agent acting on `applies` has to be able to tell a whole project's answer from one
+        // drawn out of two of its three environments (#548).
+        process.stdout.write(
+          `${formatJsonLine({ command: "secrets ls", secrets: rows, unresolved: applicability.unresolved })}\n`,
+        );
         return;
       }
-      process.stdout.write(`${formatList(rows)}\n`);
+      process.stdout.write(`${formatList(rows)}${unresolvedNote(applicability.unresolved)}\n`);
     }),
 });
 
