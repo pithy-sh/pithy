@@ -1,6 +1,6 @@
 {
   "name": "@pithy-sh/media",
-  "version": "0.1.7",
+  "version": "0.2.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -38,10 +38,10 @@
     "@hono/zod-validator": "^0.9.0"
   },
   "peerDependencies": {
-    "@pithy-sh/cloudflare": "^0.1.7",
-    "@pithy-sh/core": "^0.3.1",
-    "@pithy-sh/secrets": "^0.1.7",
-    "@pithy-sh/storage": "^0.1.6",
+    "@pithy-sh/cloudflare": "^0.2.0",
+    "@pithy-sh/core": "^0.4.0",
+    "@pithy-sh/secrets": "^0.2.0",
+    "@pithy-sh/storage": "^0.2.0",
     "hono": "^4.13.2",
     "kysely": "^0.29.0",
     "zod": "^4.4.0"

@@ -1,6 +1,6 @@
 {
   "name": "@pithy-sh/vite",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -33,7 +33,7 @@
     "reset": "bun run clean && rm -rf node_modules"
   },
   "peerDependencies": {
-    "@pithy-sh/core": "^0.3.1",
+    "@pithy-sh/core": "^0.4.0",
     "vite": "^6.1.0 || ^7.0.0 || ^8.0.0"
   },
   "devDependencies": {

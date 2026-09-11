@@ -1,6 +1,6 @@
 {
   "name": "@pithy-sh/cloudflare",
-  "version": "0.1.7",
+  "version": "0.2.0",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -40,7 +40,7 @@
     "js-base64": "^3.9.2"
   },
   "peerDependencies": {
-    "@pithy-sh/core": "^0.3.1",
+    "@pithy-sh/core": "^0.4.0",
     "zod": "^4.4.0"
   },
   "devDependencies": {
