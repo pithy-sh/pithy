@@ -263,7 +263,10 @@ describe("docs/commands/doctor.md", () => {
     // composes that the CLI cannot resolve, which is the third finding here belonging to no single Worker.
     // It sits between the other two because that is where it prints, and because it explains them: a
     // capability the root cannot resolve has no manifest in the root scan and contributes no drift below.
-    expect(WHAT_BLOCKS).toHaveLength(18);
+    // Nineteen since #539 gave that same section its second finding — one capability two Workers hold at
+    // two versions, which is `shared:`'s sentence about a package rather than about a resource, and the
+    // first finding on this page that prints while the exit stays 0.
+    expect(WHAT_BLOCKS).toHaveLength(19);
     expect(EXAMPLE_BLOCKS).toHaveLength(2);
     expect(JSON_SAMPLES).toHaveLength(1);
     // The carry-over sequence is prose and shell rather than a rendered report, so it is its own class:
@@ -587,7 +590,7 @@ describe("docs/commands/doctor.md", () => {
       ],
       manifests: { ok: true, faults: [] },
       bindingScope: { ok: true, split: [], divergent: [], partial: false },
-      capabilityReach: { ok: true, reachable: [], unreachable: [] },
+      capabilityReach: { ok: true, reachable: [], unreachable: [], split: [] },
     };
     const fragment = FRAGMENTS[7];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the unchecked-worker fragment.`);
@@ -612,7 +615,7 @@ describe("docs/commands/doctor.md", () => {
     report.project.health = {
       ok: false,
       workers: report.project.health.workers,
-      capabilityReach: { ok: true, reachable: [], unreachable: [] },
+      capabilityReach: { ok: true, reachable: [], unreachable: [], split: [] },
       manifests: {
         ok: false,
         faults: [{ package: "@pithy-sh/leaderboard", reason: "configOptions[0].key: not a bare identifier" }],
@@ -647,10 +650,55 @@ describe("docs/commands/doctor.md", () => {
         ok: false,
         reachable: ["auth"],
         unreachable: [{ capability: "payments", package: "@pithy-sh/payments", workers: ["api"] }],
+        split: [],
       },
     };
     const fragment = FRAGMENTS[9];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the capability-resolution fragment.`);
+    expect(renderDoctorText(report, harness.dir)).toContain(fragment);
+  });
+
+  /**
+   * The `capabilities:` section's **second** finding (#539): one capability its Workers hold at two
+   * versions, pinned against a project where `api` and `admin` each keep their own `@pithy-sh/payments`.
+   *
+   * It is a second block rather than a second reading of the first because it is a different fault with a
+   * different remedy — the package is installed, and `pithy add` is the sentence the section above exists
+   * to stop printing. What must not drift is the last line: this finding prints while the exit stays 0,
+   * and a page that dropped that would have an adopter hunting a red that is not there.
+   *
+   * The health block is set to `ok: true` deliberately, because that is the state the fragment is *about*.
+   * A pin against a red report would go on passing the day the section stopped printing on a green one,
+   * which is the whole of what the gate does.
+   */
+  test("the version-skew fragment is what the renderer prints for one capability at two versions", async () => {
+    const report = await buildDoctorReport(
+      docOptions(
+        harness.baseOptions({ resolveWorkers: async () => workerSet("api"), buildPlan: planStub(cleanPlanFor("api")) }),
+      ),
+    );
+    if (!report.project) throw new Error("the fixture must load a project — the health block has nowhere else to sit.");
+    report.project.health = {
+      ...report.project.health,
+      ok: true,
+      capabilityReach: {
+        ok: true,
+        reachable: ["payments"],
+        unreachable: [],
+        split: [
+          {
+            capability: "payments",
+            package: "@pithy-sh/payments",
+            at: [
+              { worker: "api", version: "5.9.9" },
+              { worker: "admin", version: "5.0.0" },
+            ],
+          },
+        ],
+      },
+    };
+    const fragment = FRAGMENTS[10];
+    if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the version-skew fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
 
@@ -673,7 +721,7 @@ describe("docs/commands/doctor.md", () => {
     report.project.health = {
       ok: false,
       workers: report.project.health.workers,
-      capabilityReach: { ok: true, reachable: [], unreachable: [] },
+      capabilityReach: { ok: true, reachable: [], unreachable: [], split: [] },
       manifests: { ok: true, faults: [] },
       bindingScope: {
         ok: false,
@@ -696,7 +744,7 @@ describe("docs/commands/doctor.md", () => {
         ],
       },
     };
-    const fragment = FRAGMENTS[10];
+    const fragment = FRAGMENTS[11];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the shared-binding fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -722,7 +770,7 @@ describe("docs/commands/doctor.md", () => {
     report.project.health = {
       ok: false,
       workers: report.project.health.workers,
-      capabilityReach: { ok: true, reachable: [], unreachable: [] },
+      capabilityReach: { ok: true, reachable: [], unreachable: [], split: [] },
       manifests: { ok: true, faults: [] },
       bindingScope: {
         ok: false,
@@ -745,7 +793,7 @@ describe("docs/commands/doctor.md", () => {
         ],
       },
     };
-    const fragment = FRAGMENTS[11];
+    const fragment = FRAGMENTS[12];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the divergent-binding fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -780,7 +828,7 @@ describe("docs/commands/doctor.md", () => {
     report.project.health = {
       ok: false,
       workers: report.project.health.workers,
-      capabilityReach: { ok: true, reachable: [], unreachable: [] },
+      capabilityReach: { ok: true, reachable: [], unreachable: [], split: [] },
       manifests: { ok: true, faults: [] },
       bindingScope: {
         ok: false,
@@ -882,7 +930,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[12];
+    const fragment = FRAGMENTS[13];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the unknown-alias fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -908,7 +956,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[13];
+    const fragment = FRAGMENTS[14];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the offline fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -956,7 +1004,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[14];
+    const fragment = FRAGMENTS[15];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the settings fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });
@@ -980,7 +1028,7 @@ describe("docs/commands/doctor.md", () => {
         }),
       ),
     );
-    const fragment = FRAGMENTS[15];
+    const fragment = FRAGMENTS[16];
     if (fragment === undefined) throw new Error(`${WHERE} no longer pastes the local delivery fragment.`);
     expect(renderDoctorText(report, harness.dir)).toContain(fragment);
   });

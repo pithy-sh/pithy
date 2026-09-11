@@ -4,7 +4,7 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { parse } from "comment-json";
 import { kitImport } from "../project/kitResolve";
@@ -37,19 +37,29 @@ import { capabilityLoadError } from "./loadFailure";
  * install does not have, so a composed, installed, working capability was refused as "not installed"
  * with `pithy add` for a remedy. See `project/kitResolve.ts`.
  *
- * ## What a dev resolution is, and what it deliberately is not
+ * ## What a resolution is, and where its configuration comes from
  *
  * {@link HostResolveContext} is capability-agnostic on purpose: project, environment, the app's base
- * URL, the id each D1 binding resolves to, and the composed capability object when the project has
- * one. Each entry maps that onto its own resolver's bespoke parameters, which is the shape the
- * provisioners already have and the shape `hostTemplates.test.ts` already drives.
+ * URL, the id each binding resolves to, and the composed capability object. Each entry maps that onto
+ * its own resolver's bespoke parameters, which is the shape the provisioners already have and the
+ * shape `hostTemplates.test.ts` already drives.
  *
- * A capability's *own* configuration (`MediaConfig`, `StorageConfig`, …) is read from the composed
- * capability where the capability exposes it — email does, through `emailConfig` — and otherwise
- * falls back to that capability's schema defaults. A capability that wants its adopter's tuning in
- * the local host attaches it to its composed object the way `@pithy-sh/email` does; until it does,
- * the local host runs on defaults and the deployed one runs on the adopter's config, because
- * provisioning has the config object and `pithy dev` has only the `Capability`.
+ * **A capability's own configuration is read from the composed capability, always.** There is no
+ * branch left that parses `Config.parse({})`, and {@link HostResolveContext.capability} is required
+ * rather than optional so a new entry cannot grow one. Five branches did exactly that — media,
+ * storage, support, testers and vector — written while this registry served `pithy dev` alone, where
+ * a host on schema defaults was a local convenience nobody deployed. #537 pointed
+ * `pithy deploy --kit` at the same entries and inherited the wrong half: an adopter on
+ * `recordStore: "kv"` had `pithy deploy` strip the `MEDIA` KV binding their config asks for while
+ * `pithy media provision` put it back, and testers' deployed host lost `EMAIL_FROM_ADDRESS`
+ * entirely, because the entry passed `email: undefined` under a comment about local sending.
+ *
+ * So the registry serves one master. A composed object that is not the shape its own package defines
+ * is {@link ownCapability}'s refusal, never a default — the whole failure was a silent fallback, and
+ * a second one would be the same bug spelled differently. **The dev path supplies its defaults out
+ * loud instead**: `pithy dev` answers `storeId()` with the empty string at its own call site, where
+ * the sentence explaining that a developer's machine has no Secrets Store can be read, rather than
+ * through a `?? ""` in here that a deploy silently inherited.
  */
 
 /** What one host resolution needs, stated without reference to any particular capability. */
@@ -74,12 +84,47 @@ export interface HostResolveContext {
    * `pithy migrate --env dev` filled. A host answering anything else opens an empty database.
    */
   databaseId: (binding: string) => string;
-  /** The Secrets Store id. Absent locally — dev has no store, and the master key arrives in `.dev.vars`. */
-  storeId?: string;
-  /** The Cloudflare account id, which only the secrets manager's own resolver stamps into its vars. */
-  accountId?: string;
-  /** The composed capability object, when one of the project's Workers composes this capability. */
-  capability?: Capability;
+  /**
+   * The KV namespace id a binding resolves to, on the same rule {@link databaseId} states and for the
+   * same reason: wrangler's local key for a namespace is `id ?? binding`, so under `dev` this answers
+   * the **binding name** and a host answering anything else opens a namespace nothing wrote.
+   *
+   * Asked for rather than derived, because the only id a derivation could invent is the namespace's
+   * *title* — `acme-prod-media` — and a title is not an id. `pithy deploy --kit` reads the real one
+   * off the app Worker's own `wrangler.jsonc`, exactly as it reads a database id.
+   */
+  kvNamespaceId: (binding: string) => string;
+  /**
+   * The Secrets Store id, asked for rather than read, so a host that binds the store says so by
+   * calling — exactly as it says which databases it needs by calling {@link databaseId}.
+   *
+   * A function and not a string because the two callers answer it differently and both answers are
+   * deliberate: `pithy dev` answers `""`, since a developer's machine has no store and the block is
+   * stripped before the config reaches disk; `pithy deploy --kit` answers the account's id, or
+   * records the miss and skips. It was `storeId ?? ""` here, which meant the deploy path shipped
+   * `store_id: ""` and reported the row as deployed (#537).
+   */
+  storeId: () => string;
+  /** The Cloudflare account id, on the same terms. Only the secrets manager stamps it into its vars. */
+  accountId: () => string;
+  /**
+   * **The composed capability this host belongs to. Required.**
+   *
+   * The host is in the set *because* a Worker composed it, so there is always one — `discoverHostWorkers`
+   * reads it off the project's own `pithy.config.ts` for the dev path and the deploy path alike. It is
+   * required rather than optional because optional is what let five entries quietly resolve an
+   * adopter's Worker from schema defaults.
+   */
+  capability: Capability;
+  /**
+   * The project's **other** composed capabilities, for the one resolution that reads across
+   * capabilities: testers' host mails, and its sending identity is the email capability's.
+   *
+   * Optional, and empty means what it says — this project composes nothing else this resolver wants.
+   * That is a legitimate state (a testers host with no email capability advances roster state and
+   * sends nothing), which is exactly why it may stay optional where {@link capability} may not.
+   */
+  siblings?: readonly Capability[];
   /**
    * No message may leave this machine. Set when `pithy dev`'s delivery preflight established that real
    * delivery is impossible here — no Cloudflare login, or a from address nobody could onboard — so the
@@ -116,7 +161,7 @@ export interface HostWorkerSpec {
   /** Fill the template for one environment. Throws {@link capabilityLoadError} when the package is absent. */
   resolve(template: WorkflowHostTemplate, context: HostResolveContext): Promise<WorkflowHostTemplate>;
   /** What this host would send from a developer's machine, or `undefined` when it sends nothing. */
-  delivery?(capability: Capability | undefined, projectDir: string): Promise<HostDeliveryIdentity | undefined>;
+  delivery?(capability: Capability, projectDir: string): Promise<HostDeliveryIdentity | undefined>;
 }
 
 /** The absolute path of the `wrangler.jsonc` committed beside a host's worker entry, in the project's copy. */
@@ -154,9 +199,72 @@ function shared(context: HostResolveContext) {
     env: context.env,
     appDatabaseId: context.databaseId("DB"),
     secretsDatabaseId: context.databaseId("SECRETS"),
-    // Empty rather than a placeholder: a dev resolution has no store, and the block is stripped
-    // before the config reaches disk. A marker left standing would read like a value nobody filled.
-    storeId: context.storeId ?? "",
+    // Asked for, so the four hosts that bind the store are the four that ask. Whether an unanswerable
+    // one is `""` or a skipped row is the caller's decision and is made at the caller — see
+    // {@link HostResolveContext.storeId}.
+    storeId: context.storeId(),
+  };
+}
+
+/**
+ * **The host's own composed capability, narrowed by its package's own type guard — or a refusal.**
+ *
+ * The one place a capability's configuration enters a resolution, and deliberately the only one. Each
+ * entry used to narrow inline and fall back to `Config.parse({})` when the guard said no, which reads
+ * as defensive and is the #537 defect in miniature: the fallback fires on exactly the input nobody
+ * anticipated, and what it produces is an adopter's Worker deployed on somebody else's settings.
+ *
+ * A guard says no when the object composed under this name is not the one the package defines — an
+ * adopter's own `defineCapability({ name: "media" })`, or two copies of the package in one graph. Both
+ * are real, both are the adopter's to fix, and neither is a reason to deploy defaults over their
+ * configuration. So it throws, which reaches an operator as a `failed` row under `pithy deploy` and as
+ * a named, non-fatal note under `pithy dev` — the same treatment a capability whose package will not
+ * load already gets.
+ */
+function ownCapability<T extends Capability>(
+  context: HostResolveContext,
+  capability: string,
+  pkg: string,
+  guard: (value: Capability) => value is T,
+): T {
+  if (guard(context.capability)) return context.capability;
+  throw new ValidationError({
+    message: `The composed ${capability} capability does not carry its configuration.`,
+    action: `Compose it with ${capability}({ ... }) from ${pkg} in the Worker's pithy.config.ts.`,
+    detail: `${pkg}: the object composed under the name "${context.capability.name}" is not the one this package defines.`,
+  });
+}
+
+/**
+ * **The sending identity testers' host mails from — the project's email capability's, or none.**
+ *
+ * The one place a resolution reads across capabilities, and it reads {@link HostResolveContext.siblings}
+ * for it. The four fields are the same four `pithy testers provision` copies (`commands/testers.ts`),
+ * `messages` included: the daily-pass host composes nothing, so the project's catalogs can only reach
+ * it as a var, and a host without them mails the kit's English however many languages the project
+ * speaks.
+ *
+ * **`undefined` is a state and not a failure**, and it is the only one: the pass advances roster state,
+ * writes its snapshot, and sends nothing. `resolveTestersConfig` then deletes the three `EMAIL_*`
+ * placeholders the template carries, so nothing deploys looking configured to send. A default address
+ * would be worse than none — mail from a domain the adopter's DKIM does not cover trains recipients'
+ * providers to distrust the real one — which is why the entry passed `email: undefined` before #537,
+ * and why that was right locally and wrong for every deployed testers host.
+ */
+async function testersSendingIdentity(context: HostResolveContext) {
+  // The name first, so a project composing no email capability never asks its package for anything.
+  // A sibling *named* email was composed from the package, so the import below cannot be an absence.
+  const sibling = (context.siblings ?? []).find((capability) => capability.name === "email");
+  if (!sibling) return undefined;
+  const { isEmailCapability } = await load("email", "@pithy-sh/email", context.projectDir, () =>
+    kitImport<typeof import("@pithy-sh/email/src/capability")>(context.projectDir, "@pithy-sh/email/src/capability"),
+  );
+  if (!isEmailCapability(sibling)) return undefined;
+  return {
+    fromAddress: sibling.emailConfig.fromAddress,
+    fromName: sibling.emailConfig.fromName,
+    theme: sibling.emailConfig.theme,
+    messages: sibling.hostCatalogs(),
   };
 }
 
@@ -174,7 +282,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     entry: "@pithy-sh/email/src/workflows/worker",
     package: "@pithy-sh/email",
     async resolve(template, context) {
-      const [{ resolveEmailConfig }, { defaultTheme }, { isEmailCapability }] = await load(
+      const [{ resolveEmailConfig }, { isEmailCapability }] = await load(
         "email",
         "@pithy-sh/email",
         context.projectDir,
@@ -184,20 +292,16 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
               context.projectDir,
               "@pithy-sh/email/src/provision/resolveEmailConfig",
             ),
-            kitImport<typeof import("@pithy-sh/email/src/templates/theme")>(
-              context.projectDir,
-              "@pithy-sh/email/src/templates/theme",
-            ),
             kitImport<typeof import("@pithy-sh/email/src/capability")>(
               context.projectDir,
               "@pithy-sh/email/src/capability",
             ),
           ]),
       );
-      // The one capability that already hands its resolved config to whoever composed it. The theme
+      // The capability that has always handed its resolved config to whoever composed it. The theme
       // and the delivery mode are both the adopter's, so the local host renders and sends exactly
       // what the deployed one would.
-      const composed = context.capability && isEmailCapability(context.capability) ? context.capability : undefined;
+      const composed = ownCapability(context, "email", "@pithy-sh/email", isEmailCapability);
       return resolveEmailConfig(template as Parameters<typeof resolveEmailConfig>[0], {
         ...shared(context),
         suppressionDatabaseId: context.databaseId("EMAIL_SUPPRESSIONS"),
@@ -207,7 +311,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
         // signing key. `context.baseUrl` is the origin for the environment being resolved, which is
         // the app's own address in the one environment this resolver is used from.
         baseUrl: context.baseUrl,
-        theme: composed?.emailConfig.theme ?? defaultTheme,
+        theme: composed.emailConfig.theme,
         // The local host renders through the same catalogs the deployed one is stamped with, so a
         // Spanish magic link looks the same on a developer's machine as it does in production. Empty
         // when nothing composed an i18n capability, and then no var is written at all.
@@ -215,12 +319,11 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
         // True only because `discoverHostWorkers` assembles the set before handing a capability here —
         // `hostCatalogs()` answers `{}` on one whose `compose` hook has not run, and this sentence was
         // false for exactly as long as it did not (pithy-sh/pithy#441).
-        messages: composed?.hostCatalogs() ?? {},
-        devDelivery: context.simulateDelivery ? "simulator" : composed?.emailConfig.devDelivery,
+        messages: composed.hostCatalogs(),
+        devDelivery: context.simulateDelivery ? "simulator" : composed.emailConfig.devDelivery,
       });
     },
     async delivery(capability, projectDir) {
-      if (!capability) return undefined;
       const { isEmailCapability } = await load("email", "@pithy-sh/email", projectDir, () =>
         kitImport<typeof import("@pithy-sh/email/src/capability")>(projectDir, "@pithy-sh/email/src/capability"),
       );
@@ -233,27 +336,47 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     entry: "@pithy-sh/media/src/workflows/worker",
     package: "@pithy-sh/media",
     async resolve(template, context) {
-      const [{ resolveMediaConfig }, { MediaConfig }] = await load("media", "@pithy-sh/media", context.projectDir, () =>
-        Promise.all([
-          kitImport<typeof import("@pithy-sh/media/src/provision/resolveMediaConfig")>(
-            context.projectDir,
-            "@pithy-sh/media/src/provision/resolveMediaConfig",
-          ),
-          kitImport<typeof import("@pithy-sh/media/src/config/config")>(
-            context.projectDir,
-            "@pithy-sh/media/src/config/config",
-          ),
-        ]),
+      const [{ resolveMediaConfig }, { mediaBucketName }, { isMediaCapability }] = await load(
+        "media",
+        "@pithy-sh/media",
+        context.projectDir,
+        () =>
+          Promise.all([
+            kitImport<typeof import("@pithy-sh/media/src/provision/resolveMediaConfig")>(
+              context.projectDir,
+              "@pithy-sh/media/src/provision/resolveMediaConfig",
+            ),
+            kitImport<typeof import("@pithy-sh/media/src/provision/provisionMedia")>(
+              context.projectDir,
+              "@pithy-sh/media/src/provision/provisionMedia",
+            ),
+            kitImport<typeof import("@pithy-sh/media/src/capability")>(
+              context.projectDir,
+              "@pithy-sh/media/src/capability",
+            ),
+          ]),
       );
-      const mediaConfig = MediaConfig.parse({});
+      const { mediaConfig } = ownCapability(context, "media", "@pithy-sh/media", isMediaCapability);
       return resolveMediaConfig(template, {
         ...shared(context),
         resources: {
-          bucketName: resourceNames(context.project).env(context.env).r2("MEDIA"),
-          // Records live in D1 by default, and the KV binding is dropped rather than pointed at a
-          // namespace nothing created. `recordStore` decides; the resolver reads it.
-          kvNamespaceId:
-            mediaConfig.recordStore === "kv" ? resourceNames(context.project).env(context.env).kv("MEDIA") : null,
+          // **The capability's own namer, not a second derivation of it.** An R2 binding names its
+          // bucket, so there is no account-minted id to read — but which name is the capability's to
+          // say, and `pithy media provision` creates the bucket by calling exactly this. A local
+          // `resourceNames(project).env(env).r2("MEDIA")` stood here, and the same shortcut in the
+          // vector entry composed `<project>-<env>-<index>` against the provisioner's
+          // `<project>-<env>-vector-<index>` — a deployed Worker bound to an index nobody created.
+          bucketName: mediaBucketName(context.project, context.env),
+          // Records live in D1 by default, and in that mode the KV binding is dropped rather than
+          // pointed at a namespace nothing created. `recordStore` decides — **the adopter's, not the
+          // schema's**: this branch read `MediaConfig.parse({})`, so a project storing records in KV
+          // had its `MEDIA` binding deleted by `pithy deploy` and restored by `pithy media provision`,
+          // and the two commands fought over every deploy (#537).
+          //
+          // A KV namespace *does* have an account-minted id, so it is asked for rather than derived —
+          // the derivable value is the namespace's title, and binding a title as an id fails at the
+          // Worker's first read.
+          kvNamespaceId: mediaConfig.recordStore === "kv" ? context.kvNamespaceId("MEDIA") : null,
         },
         mediaConfig,
       });
@@ -264,7 +387,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     entry: "@pithy-sh/storage/src/workflows/worker",
     package: "@pithy-sh/storage",
     async resolve(template, context) {
-      const [{ resolveStorageConfig }, { StorageConfig }] = await load(
+      const [{ resolveStorageConfig }, { storageBucketName }, { isStorageCapability }] = await load(
         "storage",
         "@pithy-sh/storage",
         context.projectDir,
@@ -274,16 +397,21 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
               context.projectDir,
               "@pithy-sh/storage/src/provision/resolveStorageConfig",
             ),
-            kitImport<typeof import("@pithy-sh/storage/src/config/config")>(
+            kitImport<typeof import("@pithy-sh/storage/src/provision/provisionStorage")>(
               context.projectDir,
-              "@pithy-sh/storage/src/config/config",
+              "@pithy-sh/storage/src/provision/provisionStorage",
+            ),
+            kitImport<typeof import("@pithy-sh/storage/src/capability")>(
+              context.projectDir,
+              "@pithy-sh/storage/src/capability",
             ),
           ]),
       );
       return resolveStorageConfig(template, {
         ...shared(context),
-        resources: { bucketName: resourceNames(context.project).env(context.env).r2("STORAGE") },
-        storageConfig: StorageConfig.parse({}),
+        // The capability's own namer, for the reason the media entry states.
+        resources: { bucketName: storageBucketName(context.project, context.env) },
+        storageConfig: ownCapability(context, "storage", "@pithy-sh/storage", isStorageCapability).storageConfig,
       });
     },
   },
@@ -292,7 +420,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     entry: "@pithy-sh/payments/src/workflows/worker",
     package: "@pithy-sh/payments",
     async resolve(template, context) {
-      const [{ resolvePaymentsConfig }, { PaymentsConfig }, { isPaymentsCapability }] = await load(
+      const [{ resolvePaymentsConfig }, { isPaymentsCapability }] = await load(
         "payments",
         "@pithy-sh/payments",
         context.projectDir,
@@ -301,10 +429,6 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
             kitImport<typeof import("@pithy-sh/payments/src/provision/resolvePaymentsConfig")>(
               context.projectDir,
               "@pithy-sh/payments/src/provision/resolvePaymentsConfig",
-            ),
-            kitImport<typeof import("@pithy-sh/payments/src/config/config")>(
-              context.projectDir,
-              "@pithy-sh/payments/src/config/config",
             ),
             kitImport<typeof import("@pithy-sh/payments/src/capability")>(
               context.projectDir,
@@ -316,15 +440,12 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
       // reconcile host runs the adopter's own catalog and their own `billingSubject`, and a dev pass
       // narrows to the holder kind the project actually bills.
       //
-      // The fallback is a project that composes no payments capability at all. It cannot be
-      // `PaymentsConfig.parse({})` any more: `billingSubject` is required precisely because nothing may
-      // pick it silently (#412), and an empty catalog has nobody to ask. `user` is stated here as what it
-      // is — a placeholder for a local host with no catalog behind it, which reaches no deployed Worker,
-      // because `pithy payments provision` resolves the deployed one from the adopter's config object.
-      const composed = context.capability && isPaymentsCapability(context.capability) ? context.capability : undefined;
+      // There is nothing left to fall back to, and `billingSubject` is why the fallback was always
+      // wrong: the key is required precisely because nothing may pick it silently (#412), so the
+      // `PaymentsConfig.parse({ billingSubject: "user" })` that stood here picked it silently.
       return resolvePaymentsConfig(template, {
         ...shared(context),
-        paymentsConfig: composed?.paymentsConfig ?? PaymentsConfig.parse({ billingSubject: "user" }),
+        paymentsConfig: ownCapability(context, "payments", "@pithy-sh/payments", isPaymentsCapability).paymentsConfig,
       });
     },
   },
@@ -333,7 +454,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     entry: "@pithy-sh/support/src/workflows/worker",
     package: "@pithy-sh/support",
     async resolve(template, context) {
-      const [{ resolveSupportConfig }, { SupportConfig }] = await load(
+      const [{ resolveSupportConfig }, { isSupportCapability }] = await load(
         "support",
         "@pithy-sh/support",
         context.projectDir,
@@ -343,9 +464,9 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
               context.projectDir,
               "@pithy-sh/support/src/provision/resolveSupportConfig",
             ),
-            kitImport<typeof import("@pithy-sh/support/src/config/config")>(
+            kitImport<typeof import("@pithy-sh/support/src/capability")>(
               context.projectDir,
-              "@pithy-sh/support/src/config/config",
+              "@pithy-sh/support/src/capability",
             ),
           ]),
       );
@@ -353,7 +474,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
         project: context.project,
         env: context.env,
         appDatabaseId: context.databaseId("DB"),
-        supportConfig: SupportConfig.parse({}),
+        supportConfig: ownCapability(context, "support", "@pithy-sh/support", isSupportCapability).supportConfig,
       });
     },
   },
@@ -362,7 +483,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     entry: "@pithy-sh/testers/src/workflows/worker",
     package: "@pithy-sh/testers",
     async resolve(template, context) {
-      const [{ resolveTestersConfig }, { TestersConfig }] = await load(
+      const [{ resolveTestersConfig }, { isTestersCapability }] = await load(
         "testers",
         "@pithy-sh/testers",
         context.projectDir,
@@ -372,9 +493,9 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
               context.projectDir,
               "@pithy-sh/testers/src/provision/resolveTestersConfig",
             ),
-            kitImport<typeof import("@pithy-sh/testers/src/config/config")>(
+            kitImport<typeof import("@pithy-sh/testers/src/capability")>(
               context.projectDir,
-              "@pithy-sh/testers/src/config/config",
+              "@pithy-sh/testers/src/capability",
             ),
           ]),
       );
@@ -383,11 +504,8 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
         env: context.env,
         appDatabaseId: context.databaseId("DB"),
         suppressionDatabaseId: context.databaseId("EMAIL_SUPPRESSIONS"),
-        testersConfig: TestersConfig.parse({}),
-        // No sending identity locally. Undefined is the capability's own legitimate state — the pass
-        // advances roster state and sends nothing — and is far better than a default address, which
-        // would send from a domain the adopter's DKIM does not cover.
-        email: undefined,
+        testersConfig: ownCapability(context, "testers", "@pithy-sh/testers", isTestersCapability).testersConfig,
+        email: await testersSendingIdentity(context),
       });
     },
   },
@@ -396,7 +514,7 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
     entry: "@pithy-sh/vector/src/workflows/worker",
     package: "@pithy-sh/vector",
     async resolve(template, context) {
-      const [{ resolveVectorConfig }, { VectorConfig }] = await load(
+      const [{ resolveVectorConfig }, { vectorIndexName }, { isVectorCapability }] = await load(
         "vector",
         "@pithy-sh/vector",
         context.projectDir,
@@ -406,20 +524,30 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
               context.projectDir,
               "@pithy-sh/vector/src/provision/resolveVectorConfig",
             ),
-            kitImport<typeof import("@pithy-sh/vector/src/config/config")>(
+            kitImport<typeof import("@pithy-sh/vector/src/provision/provisionVector")>(
               context.projectDir,
-              "@pithy-sh/vector/src/config/config",
+              "@pithy-sh/vector/src/provision/provisionVector",
+            ),
+            kitImport<typeof import("@pithy-sh/vector/src/capability")>(
+              context.projectDir,
+              "@pithy-sh/vector/src/capability",
             ),
           ]),
       );
-      const config = VectorConfig.parse({});
-      const names = resourceNames(context.project).env(context.env);
+      // The adopter's, not the schema's, and here the difference is the *set of indexes*: the names
+      // below are derived per configured index, so a defaulted config bound a Worker to whichever
+      // indexes the schema ships and to none of the ones the project declared.
+      const config = ownCapability(context, "vector", "@pithy-sh/vector", isVectorCapability).vectorConfig;
       return resolveVectorConfig(template, {
         project: context.project,
         env: context.env,
         appDatabaseId: context.databaseId("DB"),
+        // `vectorIndexName`, which is what `pithy vector provision` creates the index by. The local
+        // `resourceNames(project).env(env).vectorizeIndex(index)` that stood here omitted the
+        // capability segment the namer adds, so this path bound `acme-prod-notes` while provisioning
+        // created `acme-prod-vector-notes` — an index nothing had made, and a search that fails.
         indexNames: Object.fromEntries(
-          Object.keys(config.indexes).map((index) => [index, names.vectorizeIndex(index)]),
+          Object.keys(config.indexes).map((index) => [index, vectorIndexName(context.project, index, context.env)]),
         ),
         config,
       });
@@ -440,8 +568,8 @@ export const HOST_WORKERS: readonly HostWorkerSpec[] = [
         project: context.project,
         env: context.env,
         databaseId: context.databaseId("SECRETS"),
-        storeId: context.storeId ?? "",
-        accountId: context.accountId ?? "",
+        storeId: context.storeId(),
+        accountId: context.accountId(),
       });
     },
   },

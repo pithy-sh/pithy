@@ -98,7 +98,7 @@ describe.skipIf(!hasCreds || !optedIn)("secrets — LIVE provision, write/rotate
         account: { accountId, confirmation: "pinned" },
         project,
         storeId,
-        deploy: buildManagerDeploy({ accountId, apiToken, project, projectDir: KIT_ROOT }),
+        deploy: buildManagerDeploy({ accountId, apiToken, cf, project, projectDir: KIT_ROOT }),
       });
       const result = await provisionSecrets(provisioner, DEFAULT_ENVIRONMENTS);
       expect(result.perEnv.map((e) => e.env)).toEqual(managedEnvironments(DEFAULT_ENVIRONMENTS));

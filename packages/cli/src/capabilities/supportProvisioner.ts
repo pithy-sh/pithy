@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readFile, unlink, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { R2Credentials } from "@pithy-sh/cloudflare/src/r2/r2Credentials";
@@ -15,7 +15,7 @@ import type { CliAuditEmit } from "../audit/cliAudit";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { kitImport } from "../project/kitResolve";
 import { kitSource } from "../project/kitSource";
-import { runWrangler } from "../project/wrangler";
+import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
 import { capabilityLoadError } from "./loadFailure";
 import { deleteR2BucketWithContents } from "./r2Bucket";
 
@@ -298,21 +298,35 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
       appDatabaseId,
       supportConfig: this.#supportConfig,
     });
-    const configPath = join(dir, `.wrangler.${env}.json`);
-    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    // **The gate, inherited rather than opted into (#537).** `deployHostWorker` stamps the resolved
+    // config with this package's version and a hash of the config itself, compares that against what
+    // the deployed Worker carries, and ships only when they differ. A first provision has no stamp, so
+    // it deploys. Anything it cannot establish — no Worker, no stamp, an unreachable account — deploys
+    // too: a false redeploy costs seconds, a false skip is silent.
     try {
-      await runWrangler(["deploy", "--config", configPath], {
-        cwd: dir,
-        env: { CLOUDFLARE_API_TOKEN: this.#apiToken, CLOUDFLARE_ACCOUNT_ID: this.#account.accountId },
+      const { outcome } = await deployHostWorker({
+        capability: "support",
+        pkg: "@pithy-sh/support",
+        version: await kitPackageVersion(this.#projectDir, "@pithy-sh/support"),
+        config,
+        dir,
+        env,
+        readVars: (script) => this.#cf.workers().getWorkerVars(script),
+        credentials: { accountId: this.#account.accountId, apiToken: this.#apiToken },
       });
-      await this.#audit({
-        environment: env,
-        action: "support/worker_deployed",
-        outcome: "success",
-        severity: "info",
-        resourceType: "cf_worker",
-        resourceId: supportWorkerName(this.#project, env),
-      });
+      // A skipped deploy shipped nothing, so it records nothing. An audit row saying a Worker was
+      // deployed on a run where wrangler never ran is worse than a gap in the trail.
+      if (outcome === "deployed") {
+        await this.#audit({
+          environment: env,
+          action: "support/worker_deployed",
+          outcome: "success",
+          severity: "info",
+          resourceType: "cf_worker",
+          resourceId: supportWorkerName(this.#project, env),
+        });
+      }
     } catch (error) {
       await this.#audit({
         environment: env,
@@ -323,10 +337,6 @@ export class CloudflareSupportProvisioner implements SupportProvisioner {
         resourceId: supportWorkerName(this.#project, env),
       });
       throw error;
-    } finally {
-      // The resolved config carries provisioned resource ids and is written inside an installed package.
-      // It exists for the length of one deploy and is removed whether that deploy worked or not.
-      await unlink(configPath).catch(() => {});
     }
   }
 

@@ -6,6 +6,7 @@ import { join, relative, resolve } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { describe, expect, test } from "vitest";
+import { kitImport } from "../project/kitResolve";
 import { KIT_ROOT } from "../test-utils/kitRoot";
 import { HOST_WORKERS, hostTemplatePath, hostWorkerFor, readHostTemplate } from "./hostRegistry";
 
@@ -38,14 +39,44 @@ async function committedTemplates(): Promise<string[]> {
   return found.sort();
 }
 
-/** A dev context: the shape `pithy dev` builds, with the binding standing in for every database id. */
-function devContext() {
+/**
+ * The options each capability's composer needs before it will build. Two do; the rest default.
+ *
+ * A table rather than a per-capability fixture, because {@link composed} is what makes every case in
+ * this file drive the resolver the way `pithy dev` and `pithy deploy --kit` both do — with the
+ * project's real composed object, not a stand-in. The registry requires one now (#537), so a case that
+ * forgets fails to compile rather than quietly resolving on schema defaults.
+ */
+const COMPOSE_OPTIONS: Record<string, Record<string, unknown>> = {
+  email: { fromAddress: "hello@acme.dev", baseUrl: "https://api.acme.dev" },
+  payments: { billingSubject: "user" },
+  secrets: { registry: {} },
+};
+
+/** One capability, composed from its own package exactly as an adopter's `pithy.config.ts` does. */
+async function composed(capability: string): Promise<Capability> {
+  const module = await kitImport<Record<string, (options?: unknown) => Capability>>(
+    KIT_ROOT,
+    `@pithy-sh/${capability}/src/capability`,
+  );
+  const compose = module[capability];
+  if (!compose) throw new Error(`@pithy-sh/${capability} exports no ${capability}() composer.`);
+  return compose(COMPOSE_OPTIONS[capability] ?? {});
+}
+
+/** A dev context: the shape `pithy dev` builds, with the binding standing in for every resource id. */
+function devContext(capability: Capability) {
   return {
     project: "acme",
     projectDir: KIT_ROOT,
     env: LOCAL_ENVIRONMENT,
     baseUrl: "http://localhost:8787",
     databaseId: (binding: string) => binding,
+    kvNamespaceId: (binding: string) => binding,
+    // Dev's two answers, spelled out here as `pithy dev` spells them out at its own call site.
+    storeId: () => "",
+    accountId: () => "",
+    capability,
   };
 }
 
@@ -62,7 +93,10 @@ describe("the host-worker registry", () => {
 
   describe.each(HOST_WORKERS)("$capability", (spec) => {
     test("resolves for dev under <project>-dev-<capability>", async () => {
-      const config = await spec.resolve(await readHostTemplate(KIT_ROOT, spec.entry), devContext());
+      const config = await spec.resolve(
+        await readHostTemplate(KIT_ROOT, spec.entry),
+        devContext(await composed(spec.capability)),
+      );
       expect(config.name).toBe(`acme-dev-${spec.capability}`);
     });
 
@@ -74,7 +108,10 @@ describe("the host-worker registry", () => {
      * code fault.
      */
     test("gives every D1 binding the binding itself as its local id", async () => {
-      const config = await spec.resolve(await readHostTemplate(KIT_ROOT, spec.entry), devContext());
+      const config = await spec.resolve(
+        await readHostTemplate(KIT_ROOT, spec.entry),
+        devContext(await composed(spec.capability)),
+      );
       for (const entry of config.d1_databases ?? []) expect(entry.database_id).toBe(entry.binding);
     });
 
@@ -90,11 +127,33 @@ describe("the host-worker registry", () => {
      * not a wider list.
      */
     test("binds only databases pithy migrate --env dev has already filled", async () => {
-      const config = await spec.resolve(await readHostTemplate(KIT_ROOT, spec.entry), devContext());
+      const config = await spec.resolve(
+        await readHostTemplate(KIT_ROOT, spec.entry),
+        devContext(await composed(spec.capability)),
+      );
       const migrated = new Set(["DB", "SECRETS", "EMAIL_SUPPRESSIONS"]);
       for (const entry of config.d1_databases ?? []) expect(migrated.has(entry.binding), entry.binding).toBe(true);
     });
   });
+
+  /**
+   * **A composed object that is not its package's own shape is refused, never defaulted.**
+   *
+   * The refusal is the whole of #537's fix. Every entry used to narrow with its package's type guard
+   * and fall back to `Config.parse({})` when the guard said no, which reads as defensive and is the
+   * defect: the fallback fires on exactly the input nobody anticipated, and what it produces is an
+   * adopter's Worker deployed on somebody else's settings. A throw reaches an operator as a `failed`
+   * row under `pithy deploy` and a named note under `pithy dev`; a default reaches them as nothing.
+   */
+  test.each(HOST_WORKERS.filter((spec) => spec.capability !== "secrets"))(
+    "$capability refuses a capability object that carries no configuration",
+    async (spec) => {
+      const impostor = { name: spec.capability } as Capability;
+      await expect(spec.resolve(await readHostTemplate(KIT_ROOT, spec.entry), devContext(impostor))).rejects.toThrow(
+        `The composed ${spec.capability} capability does not carry its configuration.`,
+      );
+    },
+  );
 
   /**
    * The address a locally sent message points people at.
@@ -107,16 +166,15 @@ describe("the host-worker registry", () => {
    */
   test("email's local host builds its links against the app's local origin, not the deployed one", async () => {
     const spec = hostWorkerFor("email");
-    const composed = {
-      name: "email",
-      emailConfig: { baseUrl: "https://api.acme.com", theme: undefined, devDelivery: "simulator" },
-      // The local host is stamped with the project's catalogs the way the deployed one is, so the
-      // stand-in has to answer the question — a project speaking one language answers with none.
-      hostCatalogs: () => ({}),
-    } as unknown as Capability;
+    // The real composer, with the deployed origin an adopter is required to state. Nothing else here
+    // says `https://api.acme.com`, so a resolver reading `emailConfig.baseUrl` would be visible.
+    const module = await kitImport<typeof import("@pithy-sh/email/src/capability")>(
+      KIT_ROOT,
+      "@pithy-sh/email/src/capability",
+    );
+    const capability = module.email({ fromAddress: "hello@acme.com", baseUrl: "https://api.acme.com" });
     const config = await spec?.resolve(await readHostTemplate(KIT_ROOT, "@pithy-sh/email/src/workflows/worker"), {
-      ...devContext(),
-      capability: composed,
+      ...devContext(capability),
     });
     expect(config?.vars?.BASE_URL).toBe("http://localhost:8787");
   });

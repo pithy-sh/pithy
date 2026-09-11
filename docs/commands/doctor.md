@@ -237,6 +237,23 @@ Project health:
 
 **`pithy add` is the right remedy here and the wrong one one step away.** A capability that reaches this list is installed nowhere, which is the single state that command is for, and re-running it is safe on the half already done: a registration already in your `pithy.config.ts` is left exactly as you wrote it. Printed at a package the project already has — the sentence this section exists to stop — it installs nothing and rewrites a hand-built config for the privilege, which is why no other finding here offers it. It **fails the exit**, on the same standard `manifests:` is held to — the fault is established from this project's own files, its composition against its own `node_modules`, and every command for that capability refuses today. `pithy upgrade` cannot clear it: it writes bindings and config keys, and this is an install. It compares **packages** and never modules — which module a command reaches for is that command's business — and it checks only capabilities the catalog names, so a capability you wrote yourself is never reported as a missing `@pithy-sh/` package.
 
+**The same section reports one capability held at two versions**, which is a different fault with the same shape: one thing that should be identical across the project is not. Capabilities are per Worker, so a capability can be installed hoisted at the project root **or** under `apps/<name>/node_modules` — and with no root copy, two Workers can each hold their own at different versions. Every `pithy <capability>` command resolves the first copy under `apps/` in directory order and takes no Worker to resolve *for*, so `pithy payments provision` acting for `apps/api` builds its plan from api's manifest and then loads and deploys **admin's** package. Silently, at exit 0. The state should not exist, but it is reachable and nothing refuses it, so this is what says so.
+
+```
+Project health:
+  capabilities:
+    payments is one package for the whole project, and its Workers hold 2 versions
+      api resolves @pithy-sh/payments 5.9.9
+      admin resolves @pithy-sh/payments 5.0.0
+      Every pithy command for payments plans from the Worker it acts for and loads
+      the first copy under apps/, so it can deploy a version it did not plan.
+      Install one version: hoist it to the project root, or move every Worker onto it.
+      Nothing refuses this, so it does not fail the exit. A mid-upgrade project passes through.
+  api: healthy ✓
+```
+
+**It reports and it does not fail the exit**, which is the one place it parts company with the finding above it. A capability installed nowhere fails, because every command for it refuses today. Skew refuses nothing — a run picks a copy and succeeds — and a project legitimately mid-upgrade, one Worker bumped ahead of another, would be red for as long as the upgrade took. So it is printed, explained, and green, the way a stale `dev` stanza is in `shared:` below. The version is read from **each resolved package's own `package.json`**, never from a range in a manifest or a `dependencies` entry: a range is what somebody asked for, and the file on disk is what would load. A copy declaring no readable version is left off the list rather than named `unknown`, because a word that is not a version is worse in front of an operator than a shorter list. And no `pithy` command is printed, because none of them fixes it: the fix is an install, `pithy add` would rewrite a config to work around a package you already have, and only you know which version the project is meant to be on.
+
 Beside it sits a **`shared:`** section, for a resource the whole project shares that its Workers do not all point at. Two bindings in the kit are project-global — `EMAIL_SUPPRESSIONS`, because "do not email this person again" is not an environment-local fact, and `SUPPORT_BUCKET`, because the bytes are written from the app Worker and the bucket takes no environment. Older projects were scaffolded before a manifest could say so, so `pithy add email` wrote a *per-environment* database into every stanza while `pithy email provision` created the single global one, and the app Worker and the email Worker read different suppression lists: an unsubscribe recorded through either was invisible to the other. This section is the only thing that will ever tell such a project it is split — every other reader keys on the binding name alone, deliberately, so that repointing a binding at your own database is never reported as a missing one. It is project-wide because the finding *is* that two stanzas disagree, and no Worker's own block can see that.
 
 ```

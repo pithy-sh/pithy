@@ -22,6 +22,8 @@ pithy testers close <cohort> [--env <env>] [--json]
 pithy testers run [--cohort <cohort>] [--env <env>] [--skip-nudges] [--json]
 ```
 
+**Its Worker deploy is gated.** The Worker is deployed carrying a stamp naming the package version and a hash of its resolved configuration, and a run whose stamp matches both ships nothing. Anything the gate cannot establish — no Worker, no stamp, an unreachable account — deploys. `pithy deploy --env <env>` ships the same Worker without provisioning anything else, and `pithy deploy --env <env> --kit --force` re-uploads it regardless. See [`pithy deploy`](./deploy.md).
+
 **Which operations need a Cloudflare account.** `provision` and `deprovision` always do — they deploy and delete a Worker. The nine roster subcommands read and write the database directly, so at the default `--env dev` they run entirely locally, resolving through Miniflare against the same `.wrangler/state` `pithy dev` uses. Point any of them at `staging` or `prod` and they resolve over the REST client keyed by that environment's `wrangler.jsonc` ids, which needs credentials.
 
 **The roster commands talk to the database, not to the Worker over HTTP.** The control-plane routes exist for a management client holding a credential; a developer at a terminal in their own repo already has the database, and minting a token to read their own roster would be ceremony with no security benefit.

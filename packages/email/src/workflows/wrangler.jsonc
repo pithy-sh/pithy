@@ -58,8 +58,9 @@
     { "binding": "EMAIL_SCHEDULER", "name": "pithy-email-schedule", "class_name": "EmailSchedulerWorkflow" }
   ],
 
-  // The every-minute scheduler cron. Cheap: scheduled() fires the scheduler Workflow, which sends
-  // nothing when nothing is due.
+  // The every-minute scheduler cron. Cheap because it stays cheap when idle: scheduled() probes
+  // pithy_email_jobs for a due row and creates a Workflow instance only when it finds one, so an idle
+  // minute costs one read rather than an instance and a billed step (pithy-sh/pithy#538).
   "triggers": { "crons": ["* * * * *"] },
 
   "vars": {

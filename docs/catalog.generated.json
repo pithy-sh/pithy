@@ -183,6 +183,12 @@
       "path": "deploy",
       "flags": [
         "--env",
+        "--apps",
+        "--no-apps",
+        "--kit",
+        "--no-kit",
+        "--force",
+        "--no-force",
         "--json",
         "--no-json"
       ]

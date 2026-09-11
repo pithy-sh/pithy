@@ -35,14 +35,23 @@
   },
   "dependencies": {
     "@cloudflare/workers-types": "^5.20260729.1",
-    "@hono/zod-validator": "^0.9.0",
+    "@hono/zod-validator": "^0.9.0"
+  },
+  "peerDependencies": {
     "@pithy-sh/cloudflare": "^0.1.7",
     "@pithy-sh/core": "^0.3.1",
     "@pithy-sh/secrets": "^0.1.7",
-    "@pithy-sh/storage": "^0.1.6"
+    "@pithy-sh/storage": "^0.1.6",
+    "hono": "^4.13.2",
+    "kysely": "^0.29.0",
+    "zod": "^4.4.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.0.0",
+    "@pithy-sh/cloudflare": "workspace:*",
+    "@pithy-sh/core": "workspace:*",
+    "@pithy-sh/secrets": "workspace:*",
+    "@pithy-sh/storage": "workspace:*",
     "@pithy-sh/tsconfig": "workspace:*",
     "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "^4.1.0",
@@ -53,11 +62,6 @@
     "typescript": "^7.0.2",
     "vitest": "^4.1.0",
     "wrangler": "^4.115.0",
-    "zod": "^4.4.0"
-  },
-  "peerDependencies": {
-    "hono": "^4.13.2",
-    "kysely": "^0.29.0",
     "zod": "^4.4.0"
   }
 }

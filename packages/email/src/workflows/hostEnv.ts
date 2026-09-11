@@ -148,7 +148,7 @@ export const EmailHostEnv = z
       .default("true")
       .transform((value) => value === "true")
       .describe(
-        "Whether the every-minute scheduler Workflow runs. `false` stops due jobs being claimed at all — the cron still fires and does nothing — so it is a maintenance switch, not a tuning knob.",
+        "Whether the every-minute scheduler Workflow runs. `false` stops due jobs being claimed at all — the cron still fires, and does not even look — so it is a maintenance switch, not a tuning knob.",
       ),
     SCHEDULER_BATCH_SIZE: tunedNumber(50).describe(
       "How many jobs one send Workflow instance takes. Each job is a durable step, so this is the unit of retry and of the instance's report.",

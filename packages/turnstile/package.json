@@ -33,13 +33,17 @@
     "clean": "rm -rf dist .turbo",
     "reset": "bun run clean && rm -rf node_modules"
   },
-  "dependencies": {
+  "peerDependencies": {
     "@pithy-sh/core": "^0.3.1",
-    "@pithy-sh/secrets": "^0.1.7"
+    "@pithy-sh/secrets": "^0.1.7",
+    "hono": "^4.13.2",
+    "zod": "^4.4.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.0.0",
     "@cloudflare/workers-types": "^5.20260729.1",
+    "@pithy-sh/core": "workspace:*",
+    "@pithy-sh/secrets": "workspace:*",
     "@pithy-sh/tsconfig": "workspace:*",
     "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "^4.1.0",
@@ -48,10 +52,6 @@
     "typescript": "^7.0.2",
     "vitest": "^4.1.0",
     "wrangler": "^4.115.0",
-    "zod": "^4.4.0"
-  },
-  "peerDependencies": {
-    "hono": "^4.13.2",
     "zod": "^4.4.0"
   }
 }

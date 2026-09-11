@@ -2,16 +2,19 @@
 // SPDX-License-Identifier: MIT
 
 import { chunkByBoundParameters } from "@pithy-sh/core/src/data/boundParameters";
+import type { DatabaseSchema } from "@pithy-sh/core/src/data/db";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import type { EmailDatabase } from "../data/tables";
+import type { Expression, ExpressionBuilder, SqlBool } from "kysely";
+import type { EmailDatabase, EmailTables } from "../data/tables";
 
 /**
  * The every-minute scheduler. It finds due rows — `scheduled`/`timezone` jobs whose `sendAt` has
  * arrived, plus the safety net of `pending` and `undispatched` immediate jobs that never dispatched and
  * `sending` jobs left stale by a dead dispatch — claims them (status → `sending`, so the next tick won't
  * repick them), and fans them out into sender batches. **The fan-out scales with volume:** the more rows are due, the
- * more batches are dispatched, each its own durable send Workflow. Cron is cheap; this runs every
- * minute and does nothing when nothing is due.
+ * more batches are dispatched, each its own durable send Workflow. The cron probes for a due row
+ * first ({@link hasDueJobs}) and creates no instance at all when there is none, so an idle minute
+ * costs one read rather than a Workflow and a billed step (pithy-sh/pithy#538).
  *
  * Jobs are claimed before dispatch, so a dispatch failure strands a row in `sending` rather than
  * double-sending; the `sending` re-drive recovers it on a later tick, and `runSend`'s idempotency makes
@@ -24,9 +27,16 @@ import type { EmailDatabase } from "../data/tables";
  * per batch.
  */
 
-/** Inputs the scheduler needs. `dispatch` creates one send Workflow per batch. */
-export interface SchedulerDeps {
+/**
+ * What it takes to ask whether anything is due — the database and the three numbers that define
+ * "due", and nothing else.
+ *
+ * It is the front half of {@link SchedulerDeps} rather than a type beside it, so the cron's probe and
+ * the tick cannot be pointed at different databases or measured against different windows.
+ */
+export interface DueProbeDeps {
   db: EmailDatabase;
+  /** The instant this tick measures every cutoff from. */
   now: Date;
   /** How stale (ms) a `pending`/`undispatched` immediate job must be before the safety net re-drives it. */
   graceMs: number;
@@ -43,6 +53,10 @@ export interface SchedulerDeps {
    * slower horse, and the queue gets longer.
    */
   stuckMs: number;
+}
+
+/** Inputs the scheduler needs. `dispatch` creates one send Workflow per batch. */
+export interface SchedulerDeps extends DueProbeDeps {
   /**
    * Jobs per dispatched batch — one send Workflow each. From `SCHEDULER_BATCH_SIZE`.
    *
@@ -160,32 +174,106 @@ async function strandedIds(
   return stranded;
 }
 
+/** The instants "due" is measured against, derived once from one clock. */
+interface DueCutoffs {
+  /** Now, as ms since the epoch — what `sendAt` is compared against, and what a claim stamps. */
+  nowMs: number;
+  /** Before this, an immediate job that never dispatched is the safety net's. */
+  graceCutoff: number;
+  /** Before this, a `sending` job is old enough to ask the runtime about. */
+  stuckCutoff: number;
+}
+
+/** Derive this tick's cutoffs. The tick claims against the same `nowMs` it selected against. */
+function dueCutoffs(deps: DueProbeDeps): DueCutoffs {
+  const nowMs = deps.now.getTime();
+  return { nowMs, graceCutoff: nowMs - deps.graceMs, stuckCutoff: nowMs - deps.stuckMs };
+}
+
+/**
+ * **"Due" — the one definition.** Three branches over four statuses: a `scheduled` job whose `sendAt`
+ * has arrived, a `pending` or `undispatched` immediate job past its grace, and a `sending` job past
+ * `stuckMs`.
+ *
+ * It is a function rather than a clause typed into a query because two callers ask it now: the tick
+ * below, and the cron's probe ({@link hasDueJobs}) that decides whether to create the tick at all
+ * (pithy-sh/pithy#538). A second copy would be a second definition, and the drift is silent in the
+ * worst way — a probe that stops matching a branch never wakes the scheduler for those rows, and they
+ * sit there with nothing logged. This file has been bitten twice by that shape already: the `NaN`
+ * batch size that produced one empty batch a minute, and the `undispatched` dead end (#410).
+ */
+function isDue(cutoffs: DueCutoffs) {
+  return (eb: ExpressionBuilder<DatabaseSchema<EmailTables>, "pithyEmailJobs">): Expression<SqlBool> =>
+    eb.or([
+      eb.and([eb("status", "=", "scheduled"), eb("sendAt", "<=", cutoffs.nowMs)]),
+      // `undispatched` beside `pending`, and it is the whole recovery path for one
+      // (pithy-sh/pithy#410). A row born `undispatched` was enqueued by a composition that binds no
+      // send Workflow — deployed before `pithy <capability> provision`, or a plain `wrangler dev` —
+      // and the tick reading this query is running on the host that composition was missing. So the
+      // first tick after the host exists is what drains that backlog; without this line the row is a
+      // dead end, because `retryJob` takes only `failed` and no command moves it.
+      eb.and([eb("status", "in", ["pending", "undispatched"]), eb("createdAt", "<=", cutoffs.graceCutoff)]),
+      eb.and([eb("status", "=", "sending"), eb("updatedAt", "<=", cutoffs.stuckCutoff)]),
+    ]);
+}
+
+/**
+ * Is anything due? The question the every-minute cron asks **before** it creates a Workflow instance
+ * (pithy-sh/pithy#538).
+ *
+ * It used to be asked from inside the instance, so an idle minute cost a Workflow creation and a
+ * billed step to discover there was nothing to do — 1,440 of each per day per environment, against a
+ * Workers Free allowance of 3,000 steps a day for the whole account. Now an idle minute costs one
+ * indexed read and creates nothing.
+ *
+ * **It is deliberately the wider question.** It reads rows, not batches, so a stale row whose batch is
+ * still alive wakes the scheduler and the tick then declines to re-drive it — one instance, spent
+ * being right. The opposite asymmetry is the one that loses mail, which is why both sides share
+ * {@link isDue} rather than agreeing by inspection.
+ */
+export async function hasDueJobs(deps: DueProbeDeps): Promise<boolean> {
+  const row = await deps.db
+    .selectFrom("pithyEmailJobs")
+    .select("id")
+    .where(isDue(dueCutoffs(deps)))
+    .limit(1)
+    .executeTakeFirst();
+  return row !== undefined;
+}
+
+/**
+ * The whole of what the cron asks before it creates anything: **is this scheduler configured, and is
+ * anything due** — in that order (pithy-sh/pithy#538).
+ *
+ * The order is the point. {@link assertBatchSize} was written to run before the tick does any work, so
+ * that a misconfigured worker says so on its first tick rather than on its first busy one; the probe
+ * that now stands in front of the tick would have postponed it to the first minute a job came due. An
+ * idle cron that quietly accepts a broken batch size is the shape of the bug this file has already
+ * been bitten by twice, and "quietly" is what the probe would have restored.
+ *
+ * It takes the tick's own {@link SchedulerDeps} rather than the probe's {@link DueProbeDeps}, because
+ * the question is about the configuration the tick would run under. The email host validates the same
+ * number a second way — `SCHEDULER_BATCH_SIZE` is coerced and refused by `hostEnv.ts` before this is
+ * reached — so on that path this is a second lock on one door. It is the module's own invariant, and
+ * it holds for any caller that assembles deps itself.
+ */
+export async function schedulerHasWork(deps: SchedulerDeps): Promise<boolean> {
+  assertBatchSize(deps.batchSize);
+  return await hasDueJobs(deps);
+}
+
 /** Run one scheduler tick: find due rows, claim them, fan out batches. */
 export async function runScheduler(deps: SchedulerDeps): Promise<SchedulerResult> {
   // Before the query, so a misconfigured worker says so on its first tick rather than on its first
   // busy one. An idle cron that quietly accepts a broken batch size is the shape of the bug, not a
   // reason to postpone the complaint.
   assertBatchSize(deps.batchSize);
-  const nowMs = deps.now.getTime();
-  const graceCutoff = nowMs - deps.graceMs;
-  const stuckCutoff = nowMs - deps.stuckMs;
+  const cutoffs = dueCutoffs(deps);
 
   const rows = await deps.db
     .selectFrom("pithyEmailJobs")
     .select(["id", "batchId"])
-    .where((eb) =>
-      eb.or([
-        eb.and([eb("status", "=", "scheduled"), eb("sendAt", "<=", nowMs)]),
-        // `undispatched` beside `pending`, and it is the whole recovery path for one
-        // (pithy-sh/pithy#410). A row born `undispatched` was enqueued by a composition that binds no
-        // send Workflow — deployed before `pithy <capability> provision`, or a plain `wrangler dev` —
-        // and the tick reading this query is running on the host that composition was missing. So the
-        // first tick after the host exists is what drains that backlog; without this line the row is a
-        // dead end, because `retryJob` takes only `failed` and no command moves it.
-        eb.and([eb("status", "in", ["pending", "undispatched"]), eb("createdAt", "<=", graceCutoff)]),
-        eb.and([eb("status", "=", "sending"), eb("updatedAt", "<=", stuckCutoff)]),
-      ]),
-    )
+    .where(isDue(cutoffs))
     .orderBy("sendAt", "asc")
     .limit(deps.maxJobs)
     .execute();
@@ -208,7 +296,7 @@ export async function runScheduler(deps: SchedulerDeps): Promise<SchedulerResult
     for (const claim of chunkByBoundParameters(batch, CLAIM_FIXED_PARAMETERS)) {
       await deps.db
         .updateTable("pithyEmailJobs")
-        .set({ status: "sending", updatedAt: nowMs, batchId })
+        .set({ status: "sending", updatedAt: cutoffs.nowMs, batchId })
         .where("id", "in", claim)
         .execute();
     }

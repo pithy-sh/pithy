@@ -71,11 +71,18 @@ const CLI_SRC = resolve(import.meta.dirname, "..");
  *
  * Every entry is `@pithy-sh/cloudflare`, and that is the whole shape of the exception. It is **not a
  * capability**: it ships no manifest, no catalog entry, and there is no `pithy add cloudflare`. It is a
- * hard `dependencies` entry of the CLI, type-imported statically by fourteen modules here, and an
- * adopter's project never installs it — so re-basing these onto the project root would fail on every
- * correctly configured project rather than fix any broken one. `commands/init.ts` carries the sharpest
- * form of it: `pithy init` runs *before* a project exists, against a directory being created, with no
- * `node_modules` to resolve anything from.
+ * hard `dependencies` entry of the CLI, type-imported statically by fourteen modules here, and **no
+ * project installs it because it asked for it** — so re-basing these onto the project root would fail on
+ * every correctly configured project rather than fix any broken one. `commands/init.ts` carries the
+ * sharpest form of it: `pithy init` runs *before* a project exists, against a directory being created,
+ * with no `node_modules` to resolve anything from.
+ *
+ * **A project composing `secrets`, `storage` or `media` does now have a copy**, since #542 made
+ * `@pithy-sh/cloudflare` a required peer of the three that import it and `pithy add` declares a required
+ * peer on the Worker. That does not move any entry here. A project composing none of them still has
+ * nothing to resolve from, `pithy init` still runs before there is a project at all, and the copy an
+ * adopter would have is there to satisfy `secrets`' own bundle rather than to serve the CLI — these four
+ * sites mint and read tokens with the CLI's credentials, which is work the CLI does as itself.
  */
 const CLI_OWNED: Record<string, string> = {
   "cloudflare/clients.ts": "The CF REST client is a CLI dependency, not a capability. No project installs it.",
@@ -88,10 +95,11 @@ const CLI_OWNED: Record<string, string> = {
  * The two packages the CLI's **own runtime** is built from, so a static import of either is not residue.
  *
  * Neither is a thing the CLI resolves *on an adopter's behalf*. `@pithy-sh/cloudflare` is not a capability
- * at all — no manifest, no catalog entry, no `pithy add cloudflare` — and no project installs it. `core` is
- * the CLI's own error family, naming rules and manifest types: the CLI is a Node program that happens to
- * share a library with the Workers it scaffolds, and re-basing that library onto the adopter's project
- * would mean the CLI's own `PithyError` came from somewhere else.
+ * at all — no manifest, no catalog entry, no `pithy add cloudflare` — and no project asks for it (a project
+ * composing `secrets`, `storage` or `media` carries a copy since #542 made it their peer, which is theirs
+ * and not the CLI's to read). `core` is the CLI's own error family, naming rules and manifest types: the
+ * CLI is a Node program that happens to share a library with the Workers it scaffolds, and re-basing that
+ * library onto the adopter's project would mean the CLI's own `PithyError` came from somewhere else.
  *
  * A version skew here is a skew between the CLI and *itself*, which npm resolves at install time.
  */

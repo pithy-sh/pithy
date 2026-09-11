@@ -4,7 +4,7 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
-import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { messageOf, PithyError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { composeCapabilities } from "../capabilities/compose";
@@ -76,8 +76,24 @@ export interface HostWorker {
   worker: WorkerTarget;
   /** The registry entry that fills this host's template. */
   spec: HostWorkerSpec;
-  /** The composed capability object, when a Worker's config carried one this resolver can read. */
-  composed?: Capability;
+  /**
+   * The composed capability object this host belongs to. Always present: a host is in the set only
+   * because a Worker composed its capability, so `owner.capability` below is what put it here.
+   *
+   * It was optional, and every reader treated the absence it could never have as "use schema
+   * defaults" — which is how `pithy deploy --kit` came to ship defaults over an adopter's
+   * configuration (#537). {@link HostResolveContext.capability} is required for the same reason.
+   */
+  composed: Capability;
+  /**
+   * Every *other* capability the project composes, for the one resolution that reads across them —
+   * testers' host takes its sending identity from the email capability's config.
+   *
+   * The project-wide set rather than the composing Worker's, matching what `discoverHostWorkers`
+   * already does with the hosts themselves: a capability is the project's, not one Worker's, and two
+   * Workers composing one share a single host.
+   */
+  siblings: readonly Capability[];
   /**
    * The app Worker whose composition brought this host into the set — the directory its `.dev.vars`
    * is generated into, and therefore the one this host copies. A host reads the same secrets the
@@ -90,7 +106,15 @@ export interface HostWorker {
 /** What discovery found, and anything it had to survive on the way. */
 export interface HostWorkerDiscovery {
   hosts: HostWorker[];
-  /** Non-fatal lines for the terminal. A Worker whose config will not load is one; silence would not be. */
+  /**
+   * What discovery had to survive, one line at a time. A Worker whose config will not load is one;
+   * silence would not be.
+   *
+   * **A note always means something is broken**, which is what lets a second caller act on it: `pithy
+   * dev` prints them and runs the hosts it did find, and `pithy deploy --kit` fails the command,
+   * because a note means an app Worker's capabilities are invisible and their Workers would silently
+   * not ship. A Worker with no `pithy.config.ts` and no `wrangler.jsonc` is therefore not noted at all.
+   */
   notes: string[];
 }
 
@@ -101,6 +125,17 @@ export interface DiscoverHostWorkersOptions {
   workers: readonly WorkerTarget[];
   /** Seam: the capabilities one Worker composes. Defaults to loading its `apps/<name>/pithy.config.ts`. */
   capabilitiesFor?: (workerDir: string) => Promise<Capability[]>;
+}
+
+/**
+ * Whether a failure to read a Worker's capabilities is "there is no `pithy.config.ts` here" — the one
+ * shape that can be an ordinary state rather than a fault.
+ *
+ * `loadWorkerConfig` throws `core/not_found` for exactly that and `core/internal` for a config that is
+ * present and will not import, which is what keeps the two apart without matching on a sentence.
+ */
+function isMissingConfig(error: unknown): boolean {
+  return error instanceof PithyError && error.payload.code === "core/not_found";
 }
 
 /**
@@ -121,6 +156,8 @@ function hostDev(): WorkerTarget["dev"] {
  * A Worker whose `pithy.config.ts` will not load contributes nothing and is named — the same trade
  * the entitlement check makes. `pithy dev` reports wiring; a config that will not import is
  * wrangler's error to raise, and refusing to run the whole session over it would be a worse trade.
+ * A Worker that has no `pithy.config.ts` at all and no `wrangler.jsonc` either is a dev-only process
+ * rather than an unreadable Worker: it composes nothing, and nothing is said about it.
  */
 export async function discoverHostWorkers(options: DiscoverHostWorkersOptions): Promise<HostWorkerDiscovery> {
   const capabilitiesFor =
@@ -133,6 +170,17 @@ export async function discoverHostWorkers(options: DiscoverHostWorkersOptions): 
     try {
       capabilities = await capabilitiesFor(worker.dir);
     } catch (error) {
+      // **A dev-only process is not a gap.** A Vite frontend joins the set through `pithy.worker.jsonc`
+      // alone: it has no `pithy.config.ts`, never had one, and composes nothing — so there is nothing to
+      // say about it. A directory carrying a `wrangler.jsonc` *is* a Worker, so an absent config there
+      // leaves the set incomplete and is noted like any other unreadable one. `project/workerScope.ts`
+      // partitions the same two cases on the same strict `hasWrangler === true`, for the same reason
+      // (#454): real discovery always sets the flag, and the test doubles that carry only `name`/`dir`
+      // must not start reporting themselves as gaps.
+      //
+      // It matters beyond a line of output now: `pithy deploy --kit` fails the command on any note
+      // (`project/deployKit.ts`), and a project with a front end must not fail a deploy for having one.
+      if (isMissingConfig(error) && worker.hasWrangler !== true) continue;
       notes.push(`${worker.name}: its capabilities could not be read, so its capability hosts will not run.`);
       notes.push(`  ${messageOf(error)}`);
       continue;
@@ -183,6 +231,7 @@ export async function discoverHostWorkers(options: DiscoverHostWorkersOptions): 
       capability: spec.capability,
       spec,
       composed: owner.capability,
+      siblings: [...composed.values()].map((entry) => entry.capability).filter((one) => one !== owner.capability),
       sourceDir: owner.dir,
       worker: {
         name: spec.capability,
@@ -246,7 +295,20 @@ export async function materializeHostConfigs(options: MaterializeHostConfigsOpti
         env: LOCAL_ENVIRONMENT,
         baseUrl: options.baseUrl,
         databaseId: (binding) => binding,
+        // The same rule one line up: wrangler's local key for a KV namespace is `id ?? binding`, so
+        // the binding is what makes a host and the app Worker that composed it open one namespace.
+        kvNamespaceId: (binding) => binding,
+        // **Dev's defaults, stated here rather than defaulted in the registry.** There is no Secrets
+        // Store on a developer's machine — the master key arrives in `.dev.vars`, and `forLocalDev`
+        // drops the `secrets_store_secrets` block below before this config reaches disk — so the empty
+        // string is the honest answer and not an absent one. It lived in the registry as `?? ""`,
+        // where `pithy deploy --kit` inherited it and shipped `store_id: ""` to production (#537).
+        storeId: () => "",
+        // Only the secrets manager stamps this, and locally it manages nothing: its own dev run reads
+        // the account from `.dev.vars` like every other Worker.
+        accountId: () => "",
         capability: host.composed,
+        siblings: host.siblings,
         simulateDelivery: options.simulateDelivery,
       });
       const config = forLocalDev(resolved, options.projectDir, host.spec.entry);

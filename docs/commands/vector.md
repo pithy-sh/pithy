@@ -12,6 +12,8 @@ pithy vector reset [--env <environment>] [--worker <name>] [--confirm-reset <phr
 pithy vector reprocess [--env <environment>] [--worker <name>] [--index <name>] [--all] [--filter <json>] [--json]
 ```
 
+**Its Worker deploy is gated.** The Worker is deployed carrying a stamp naming the package version and a hash of its resolved configuration, and a run whose stamp matches both ships nothing. Anything the gate cannot establish — no Worker, no stamp, an unreachable account — deploys. `pithy deploy --env <env>` ships the same Worker without provisioning anything else, and `pithy deploy --env <env> --kit --force` re-uploads it regardless. See [`pithy deploy`](./deploy.md).
+
 **All three subcommands need a Cloudflare account, `--env dev` included.** Cloudflare ships no local emulation for Vectorize, so a dev search reaches a real remote index — which is also why the capability's bindings are declared `remote`. `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are checked before anything is created.
 
 ## Flags
