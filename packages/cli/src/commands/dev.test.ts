@@ -129,8 +129,8 @@ describe("pithy dev --list", () => {
     );
   }
 
-  /** Run `pithy dev --list` from inside the project, capturing stdout. */
-  async function run(json: boolean, rawArgs: string[] = []): Promise<string> {
+  /** Run `pithy dev` from inside the project with the given args, capturing stdout. */
+  async function invoke(args: Record<string, unknown>, rawArgs: string[] = []): Promise<string> {
     const written: string[] = [];
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
       written.push(String(chunk));
@@ -138,12 +138,27 @@ describe("pithy dev --list", () => {
     });
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
-      await dev.run?.({ args: { list: true, app: undefined, json }, rawArgs } as never);
+      await dev.run?.({
+        args: {
+          list: false,
+          app: undefined,
+          "disable-autostart": false,
+          "enable-autostart": false,
+          json: false,
+          ...args,
+        },
+        rawArgs,
+      } as never);
     } finally {
       stdout.mockRestore();
       stderr.mockRestore();
     }
     return written.join("");
+  }
+
+  /** Run `pithy dev --list` from inside the project, capturing stdout. */
+  async function run(json: boolean, rawArgs: string[] = []): Promise<string> {
+    return invoke({ list: true, json }, rawArgs);
   }
 
   beforeEach(async () => {
@@ -154,6 +169,41 @@ describe("pithy dev --list", () => {
   afterEach(async () => {
     cwd.mockRestore();
     await rm(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * **`--list` describes the run this command would make, so it reads the answer the run reads.**
+   *
+   * It did not, for one commit. `startDev` resolved this branch's `dev-ports.json` answer and
+   * `printDevSet` called `listDevSet` without it, so a worker somebody had turned off still listed as
+   * starting. Every unit test passed: each injected `autostartOverrides` straight into `listDevSet`, and
+   * none of them went through the command, which is the only place the two paths could disagree.
+   *
+   * So this one drives the real `dev.run` twice — once to write, once to read — through a redirected
+   * config directory. Nothing is stubbed between the flag and the file.
+   */
+  test("a worker turned off through the flag is what --list then reports", async () => {
+    await project();
+    const configDir = await mkdtemp(join(tmpdir(), "pithy-dev-cfg-"));
+    const previous = process.env.PITHY_CONFIG_DIR;
+    process.env.PITHY_CONFIG_DIR = configDir;
+    try {
+      await invoke({ "disable-autostart": true }, ["--app", "acme-api", "--disable-autostart"]);
+
+      const listed = stripAnsi(await run(false));
+      expect(listed).toContain("skipped");
+      expect(listed).toContain("off here");
+
+      // And back again — `--enable-autostart` is the undo, not a second kind of write.
+      await invoke({ "enable-autostart": true }, ["--app", "acme-api", "--enable-autostart"]);
+      const after = stripAnsi(await run(false));
+      expect(after).toContain("starts");
+      expect(after).not.toContain("off here");
+    } finally {
+      if (previous === undefined) delete process.env.PITHY_CONFIG_DIR;
+      else process.env.PITHY_CONFIG_DIR = previous;
+      await rm(configDir, { recursive: true, force: true });
+    }
   });
 
   test("--json writes one object naming every member, its kind, and its pinned port", async () => {

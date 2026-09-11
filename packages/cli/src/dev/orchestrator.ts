@@ -261,8 +261,17 @@ async function defaultBranch(projectDir: string): Promise<string | null> {
  * Off a branch the key is the checkout path, the same fallback the block uses. Two checkouts of one
  * repository in detached HEAD are two keys, which is the answer a developer would expect and the one
  * the ports already give.
+ *
+ * **Exported because `--list` has to reach the same answer the run does.** It did not, for one commit:
+ * the run resolved this and `printDevSet` called `listDevSet` without it, so a worker turned off still
+ * listed as starting. Every test passed, because each injected `autostartOverrides` straight into
+ * `listDevSet` and none of them went through the command. One function, both callers.
  */
-async function resolveAutostartOverrides(options: StartDevOptions): Promise<Record<string, boolean>> {
+export async function resolveAutostartOverrides(options: {
+  projectDir: string;
+  ensureDeps?: EnsureDevConfigDeps;
+  autostartOverrides?: Readonly<Record<string, boolean>>;
+}): Promise<Record<string, boolean>> {
   if (options.autostartOverrides !== undefined) return { ...options.autostartOverrides };
   const deps = options.ensureDeps ?? {};
   try {

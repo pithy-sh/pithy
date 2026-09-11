@@ -5,7 +5,7 @@ import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
 import { resolveDevSet, selectDevMembers } from "../dev/devSet";
 import { devListingRows, listDevSet } from "../dev/listDev";
-import { startDev } from "../dev/orchestrator";
+import { resolveAutostartOverrides, startDev } from "../dev/orchestrator";
 import { portsRegistryPath, registryRootFor, setWorkerAutostart } from "../feature/ports";
 import { currentBranch, defaultGit } from "../feature/worktree";
 import { formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
@@ -66,7 +66,13 @@ export function collectAppFlags(rawArgs: string[]): string[] {
 
 /** Print the set a run would start. Reads only — no port is assigned, no file is written, nothing spawns. */
 async function printDevSet(projectDir: string, apps: string[], json: boolean): Promise<void> {
-  const listing = await listDevSet({ projectDir, apps });
+  // The same resolution `startDev` makes, through the same function. `--list` promises to describe the
+  // run this command would make, and a second way of answering *what starts* is a second answer.
+  const listing = await listDevSet({
+    projectDir,
+    apps,
+    autostartOverrides: await resolveAutostartOverrides({ projectDir }),
+  });
   const members = listing.members;
 
   if (json) {
