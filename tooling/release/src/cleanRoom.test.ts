@@ -1,8 +1,20 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { type CleanRoomManifest, floorOf, kitOverrides, thirdPartyFloors } from "./cleanRoom";
+import {
+  type CleanRoomManifest,
+  cleanRoomEnv,
+  floorOf,
+  isStalledStep,
+  kitOverrides,
+  STEP_TIMEOUT_MS,
+  stalledStep,
+  thirdPartyFloors,
+} from "./cleanRoom";
 
 describe("floorOf", () => {
   it("takes the version a caret range starts at", () => {
@@ -111,5 +123,90 @@ describe("thirdPartyFloors", () => {
 
   it("ignores devDependencies, which a consumer never installs", () => {
     expect(thirdPartyFloors([{ name: "a", devDependencies: { vitest: "^4.1.0" } }])).toEqual({});
+  });
+});
+
+/**
+ * **The clean room's own bound, and the reason it needs one.**
+ *
+ * `bun add` deadlocked mid-install under `--floors` — no CPU, no child, no socket, both threads parked
+ * in `epoll_wait` on nothing — and the gate had no bound but the CI runner's, so it held a job for
+ * 1h42m and reported nothing at all. A gate that cannot fail cannot report. These two hold the halves
+ * that stop it recurring: the run gets its own installer cache, and a step that stops answering is
+ * killed and named.
+ */
+describe("the clean room's isolation and bound", () => {
+  it("gives the run its own installer cache, inside the workspace", () => {
+    // Inside the workspace, because the workspace is what the run deletes. A cache anywhere else is the
+    // machine's, and a machine's cache is what carries every other install it has ever done.
+    const env = cleanRoomEnv("/tmp/pithy-cleanroom-abc123");
+
+    expect(env.BUN_INSTALL_CACHE_DIR).toBe(join("/tmp/pithy-cleanroom-abc123", "installer-cache"));
+  });
+
+  it("bounds a step, and kills one that stops answering rather than waiting on it", () => {
+    // The real runner shape, with the real bound swapped for one a test can wait out. A child that never
+    // exits is the failure being guarded against, so the test uses one rather than a mock of one.
+    const stalled = () =>
+      execFileSync("sleep", ["30"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 300,
+        killSignal: "SIGKILL",
+      });
+
+    expect(stalled).toThrow();
+    try {
+      stalled();
+      expect.unreachable("a child that never exits must not be waited on");
+    } catch (cause) {
+      expect(isStalledStep(cause)).toBe(true);
+    }
+  });
+
+  it("does not read an ordinary failure as a stall — one answered, the other never did", () => {
+    try {
+      execFileSync("false", [], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000 });
+      expect.unreachable("`false` exits non-zero");
+    } catch (cause) {
+      expect(isStalledStep(cause)).toBe(false);
+    }
+  });
+
+  it("says what a stall means, names the step, and names the bound it broke", () => {
+    const said = stalledStep("pithy add secrets", STEP_TIMEOUT_MS);
+
+    expect(said).toContain("pithy add secrets");
+    expect(said).toContain("10 minutes");
+    // The sentence exists because `spawnSync bun ETIMEDOUT` is all the runner itself says.
+    expect(said).toContain("never answered");
+  });
+
+  it("is bounded well above the slowest honest step, so the bound is not a performance budget", () => {
+    // `pithy add secrets` takes 83 seconds. The bound is for a deadlock, not for a slow cold install.
+    expect(STEP_TIMEOUT_MS).toBeGreaterThan(5 * 60 * 1000);
+  });
+});
+
+/**
+ * **The entry point has to actually use them**, and a unit test of an exported constant cannot say that.
+ * Both halves are one line each in `scripts/cleanRoom.ts`, and a line is what gets dropped in a rebase —
+ * so this reads the file the CI job names and fails if the gate has quietly gone back to unbounded,
+ * cache-sharing spawns.
+ */
+describe("scripts/cleanRoom.ts", () => {
+  const source = readFileSync(join(import.meta.dirname, "..", "..", "..", "scripts", "cleanRoom.ts"), "utf8");
+
+  it("runs every command on the workspace's own installer cache", () => {
+    expect(source).toContain("cleanRoomEnv(workspace)");
+  });
+
+  it("bounds every command, and kills a child that will not answer a signal it cannot handle", () => {
+    expect(source).toContain("timeout: STEP_TIMEOUT_MS");
+    expect(source).toContain('killSignal: "SIGKILL"');
+  });
+
+  it("tells a stall apart from a failure when it reports one", () => {
+    expect(source).toContain("isStalledStep(cause)");
   });
 });

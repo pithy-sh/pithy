@@ -119,6 +119,7 @@ describe("a program a test writes outside the repository", () => {
       "const HARNESS = `",
       'import { writeFileSync } from "node:fs";',
       'import { z } from "zod";',
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the interpolation is the fixture, and has to arrive here uninterpolated.
       "import { readSecretValue } from ${JSON.stringify(entry)};",
       "`;",
     ].join("\n");
