@@ -3,6 +3,7 @@
 
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { defineCommand } from "citty";
+import { devCloudflareAccount } from "../dev/delivery";
 import { resolveDevSet, selectDevMembers } from "../dev/devSet";
 import { devListingRows, listDevSet } from "../dev/listDev";
 import { resolveAutostartOverrides, startDev } from "../dev/orchestrator";
@@ -219,7 +220,10 @@ export default defineCommand({
         return;
       }
 
-      const handle = await startDev({ projectDir, json: args.json, apps });
+      // The account is resolved here, where the project is loaded, and handed down — never reached for
+      // inside the orchestrator. It is what every worker this session spawns authenticates as (#555).
+      const account = await devCloudflareAccount(projectDir);
+      const handle = await startDev({ projectDir, account, json: args.json, apps });
 
       if (args.json) {
         const workers = Object.fromEntries(handle.workers.map((w) => [w.name, { port: w.port, origin: w.origin }]));

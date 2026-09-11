@@ -5,6 +5,8 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { parse } from "comment-json";
+import { cloudflareChildEnv, credentialedChildEnv } from "../cloudflare/childEnv";
+import type { CloudflareAccountSelection, CloudflareCredentials } from "../cloudflare/config";
 import { writeJsonc } from "./jsonc";
 import { detectPackageManager, execArgs } from "./packageManager";
 import { readOptionalFile } from "./readOptionalFile";
@@ -88,7 +90,29 @@ export async function writeWranglerConfig(projectDir: string, config: unknown): 
   await writeJsonc(join(projectDir, "wrangler.jsonc"), config);
 }
 
+/**
+ * Who a wrangler spawn authenticates as: the project's selection, the pair it resolved to, or nobody.
+ *
+ * The pair is discriminated by `apiToken`, which a {@link CloudflareAccountSelection} never carries.
+ */
+export type WranglerAccount = CloudflareAccountSelection | CloudflareCredentials | null;
+
 export interface WranglerOptions {
+  /**
+   * Which Cloudflare account this wrangler authenticates as — the project's selection, or the pair that
+   * selection already resolved to, or `null` for a project that names none.
+   *
+   * **Required, and there is no default.** wrangler authenticates from its own process environment, so a
+   * spawn that says nothing about the account authenticates as whatever the operator's shell last
+   * exported — which does not fail, it reaches another company's tenant and exits 0. That is the sentence
+   * `defaultRunDeploy` has carried since #206, and the defect `pithy dev` shipped as #555. Omitting it is
+   * a type error, which is the only form of "you must think about this" that survives the next person in
+   * a hurry; `null` is the deliberate answer, and it is visible in a diff.
+   *
+   * Either way the child's environment is built by `cloudflare/childEnv`, never here — see
+   * {@link CloudflareChildEnvOptions} for why there are two inputs and not one.
+   */
+  account: WranglerAccount;
   /**
    * Stream wrangler's output straight to the terminal. Off by default: the output is captured and
    * surfaced **only on failure** — quiet on success, the error when there is one. That's pithy.
@@ -103,9 +127,13 @@ export interface WranglerOptions {
    */
   bin?: string;
   /**
-   * Extra env vars merged onto the child process. Provisioning passes `CLOUDFLARE_API_TOKEN`
-   * (from the `.dev.vars` token) so wrangler authenticates without a separate `wrangler login` —
-   * `.dev.vars` stays the single source of credentials.
+   * Extra env vars merged **on top of** the credentialed environment {@link cloudflareChildEnv} builds.
+   *
+   * For everything that is not a Cloudflare credential. The pair is `account`'s job now, and it was
+   * this option's for three call sites, two of which hand-rolled the same four lines and one of which
+   * (`pithy dev`, which does not spawn through here at all) forgot them entirely — #555. A caller that
+   * writes `CLOUDFLARE_API_TOKEN` here is opting out of the seam and out of #206's mismatch refusal
+   * with it; `ci/cloudflareChildEnv.test.ts` fails the build for it.
    */
   env?: Record<string, string>;
 }
@@ -135,9 +163,15 @@ export interface WranglerOptions {
  * installed *the adopter's* wrangler. `cwd` defaults to the process's, which is the project a command
  * is being run against.
  */
+/** The child's environment, from whichever of the two things the caller holds. See {@link WranglerAccount}. */
+function wranglerChildEnv(account: WranglerAccount): Record<string, string> {
+  if (account !== null && "apiToken" in account) return credentialedChildEnv(account);
+  return cloudflareChildEnv({ account });
+}
+
 export async function runWrangler(
   args: string[],
-  options: WranglerOptions = {},
+  options: WranglerOptions,
 ): Promise<{ stdout: string; stderr: string }> {
   const runner = options.bin
     ? { command: options.bin, args }
@@ -145,11 +179,14 @@ export async function runWrangler(
   const command = runner.command;
   const commandArgs = runner.args;
   const label = options.bin ?? "wrangler";
+  // Built before the spawn, and deliberately outside the promise: a pin the credentials contradict
+  // rejects the call rather than the child, so nothing is running when the refusal is raised.
+  const childEnv = { ...wranglerChildEnv(options.account), ...(options.env ?? {}) };
   return new Promise((resolve, reject) => {
     const child = spawn(command, commandArgs, {
       cwd: options.cwd,
       stdio: options.passthrough ? "inherit" : ["ignore", "pipe", "pipe"],
-      env: options.env ? { ...process.env, ...options.env } : process.env,
+      env: childEnv,
     });
 
     let stdout = "";

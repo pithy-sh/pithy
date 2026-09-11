@@ -8,6 +8,7 @@ import { isContinuousIntegration } from "@pithy-sh/core/src/env/ci";
 import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { DevLogin } from "@pithy-sh/core/src/seed/devLogin";
 import { findEntitlementGap } from "../capabilities/entitlementGap";
+import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { type GenerateDevVarsResult, generateDevVars } from "../devSecrets/generate";
 import { renderDevSecretsNotes, renderDevVarsNotes } from "../devSecrets/report";
 import { type DevSecretsSeedReport, seedProjectDevSecrets } from "../devSecrets/seed";
@@ -35,7 +36,12 @@ import { defaultWorkerDev } from "../project/workerManifest";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "../project/workers";
 import { formatJsonLine } from "../terminal/output";
 import { dim, workerColor } from "../terminal/style";
-import { hasCloudflareLogin as defaultHasCloudflareLogin, deliveryFailureNote, deliveryPreflight } from "./delivery";
+import {
+  type DevCloudflareEnv,
+  devCloudflareEnv as defaultDevCloudflareEnv,
+  deliveryFailureNote,
+  deliveryPreflight,
+} from "./delivery";
 import { type DevLoginTarget, devLoginKeyAction, devLoginLines, readDevLogin as readDevLoginDefault } from "./devLogin";
 import { devLoginTargets as devLoginTargetsDefault } from "./devLoginTargets";
 import { type DevSetMember, resolveDevSet, selectDevMembers } from "./devSet";
@@ -101,6 +107,18 @@ const defaultCheckEntitlements = async (workerDir: string): Promise<string[]> =>
 
 export interface StartDevOptions {
   projectDir: string;
+  /**
+   * The Cloudflare account this project belongs to, from `projectCloudflareAccount(projectDir)` — or
+   * `null` for a project that names none.
+   *
+   * **Required, and stated by the caller rather than defaulted**, for the reason `DeployProjectOptions`
+   * gives: there is no safe default. `pithy dev` copied `process.env` into every worker and added only
+   * the port table, so a `wrangler dev` with a remote send binding authenticated as whatever token the
+   * operator's shell last exported — and a magic link left through a tenant that does not own the
+   * sending domain, five times, silently (#555). This is the value that stops it, and it is the only
+   * field on this interface that is not a seam.
+   */
+  account: CloudflareAccountSelection | null;
   json?: boolean;
   /**
    * Start exactly these members — `--app`, repeatable. A name is the deployed name, the `apps/<dir>`
@@ -124,8 +142,13 @@ export interface StartDevOptions {
   materializeHostConfigs?: (options: MaterializeHostConfigsOptions) => Promise<HostMaterialization>;
   /** Seam: the project name every host's derived names lead with. `null` skips the hosts, loudly. */
   projectName?: (projectDir: string) => Promise<string | null>;
-  /** Seam: whether Cloudflare credentials resolve at all — the cheap half of the delivery preflight. */
-  hasCloudflareLogin?: (projectDir: string, env: NodeJS.ProcessEnv) => Promise<boolean>;
+  /**
+   * Seam: the credentialed child environment, and the identity the preflight reads off it.
+   *
+   * One seam, because they must be one value — the banner and the spawn consulting two resolutions is
+   * exactly how a confident `sending for real` came to precede five silent failures (#555).
+   */
+  devCloudflareEnv?: (account: CloudflareAccountSelection | null, base: NodeJS.ProcessEnv) => DevCloudflareEnv;
   loadDevConfig?: (projectDir: string) => Promise<DevConfig | null>;
   /** Bootstrap seam: assign and persist pinned ports when the project has none yet. */
   ensureDevConfig?: (options: EnsureDevConfigOptions) => Promise<DevConfig>;
@@ -579,6 +602,26 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   let materializeHosts: ((options: MaterializeHostConfigsOptions) => Promise<HostMaterialization>) | undefined;
   let hostBaseUrl = "http://localhost";
   let deliveryIsLive = false;
+  // **Resolved here, before the preflight and before anything spawns, and exactly once.**
+  // Two properties depend on the position. The preflight below decides whether this session sends real
+  // mail, and it must decide from the credentials the children will *receive* — deciding from a second
+  // resolution is how `Email: sending for real from noreply@pithy.sh.` came to be printed over workers
+  // authenticating as a different tenant (#555). And a pinned `cloudflare.accountId` the credentials
+  // contradict throws out of this call, which is #206's refusal finally reaching `pithy dev`: before, it
+  // resolved no account at all, so there was nothing to compare and nothing to refuse.
+  const cloudflare = (options.devCloudflareEnv ?? defaultDevCloudflareEnv)(
+    options.account,
+    options.baseEnv ?? process.env,
+  );
+  // A shell that exported a token for other work is ordinary and is not a fault, so this is a line rather
+  // than a refusal. But it is the line that was missing: `wrangler whoami` answers for the shell, `pithy
+  // doctor` answers for the project, and nothing said that every Worker started here uses the second.
+  if (cloudflare.overridden.length > 0) {
+    emitLine(
+      `Cloudflare: using this project's account${cloudflare.identity.accountId ? ` (${cloudflare.identity.accountId})` : ""}, not the ${cloudflare.overridden.join(" and ")} your shell exported.`,
+    );
+  }
+
   if (project !== null && selectedHosts.length > 0) {
     // The app's address: the first started Worker that is not a host. Callback links point at the
     // app, never at the host — the host holds no public route of its own.
@@ -609,10 +652,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
       composed: identity !== undefined,
       requested: identity?.requested ?? "remote",
       fromAddress: identity?.fromAddress,
-      hasCloudflareLogin: await (options.hasCloudflareLogin ?? defaultHasCloudflareLogin)(
-        projectDir,
-        options.baseEnv ?? process.env,
-      ),
+      cloudflare: cloudflare.identity,
     });
     deliveryLines = preflight.lines;
     deliveryIsLive = preflight.live;
@@ -695,7 +735,9 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   log.write(
     `=== dev session ${now().toISOString()} — ${started.map((s) => `${s.worker.name}:${s.port}`).join(", ")} ===`,
   );
-  const baseEnv = options.baseEnv ?? process.env;
+  // The credentialed environment from above, not `process.env` again: this is what every child inherits,
+  // so the account the session reported is the account the children actually use (#555).
+  const baseEnv = cloudflare.env;
   // The keypress follows the route. Under CI the auth capability registers none, so `l` would open a
   // 404 — the read is the same one the capability makes, from the same module, and it is the only
   // refusal the supervisor can see coming rather than discover.

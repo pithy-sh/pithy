@@ -38,6 +38,14 @@ describe("buildWorkerEnv", () => {
     expect(env.MEDIA_CLI_PORT).toBe("8788");
     expect(env.MEDIA_CLI_ORIGIN).toBe("http://localhost:8788");
   });
+
+  test("the base env is already credentialed — nothing here re-reads a Cloudflare key", () => {
+    // #555's fix is upstream of this function, deliberately. The orchestrator builds its base through
+    // `cloudflareChildEnv` and hands the result in, so this stays the one thing it was: the table of
+    // siblings' addresses. A second resolution here would be a second place for the account to be wrong.
+    const env = buildWorkerEnv(config, { PATH: "/usr/bin", CLOUDFLARE_API_TOKEN: "project-token" });
+    expect(env.CLOUDFLARE_API_TOKEN).toBe("project-token");
+  });
 });
 
 describe("ownOriginFor and childEnvFor", () => {

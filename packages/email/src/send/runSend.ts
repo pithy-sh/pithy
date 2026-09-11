@@ -309,12 +309,16 @@ export async function runSend(deps: SendDeps, jobId: string): Promise<SendOutcom
 
     if (classified.retryable && attempts < deps.maxAttempts) {
       // Persist the last error, then throw so the Workflow step retries with backoff (row stays `sending`).
-      await patchJob(deps, jobId, { error: classified.code });
+      await patchJob(deps, jobId, { error: classified.detail });
       throw classified.error;
     }
 
-    await patchJob(deps, jobId, { status: "failed", error: classified.code });
-    await recordEvent(deps.db, { jobId, recipient, type: "failed", detail: classified.code }, deps.passStartedAt);
+    // **`detail`, not `code`.** The column is described as "the last error code/message", and it held only
+    // the code — so a magic link that failed five times recorded `E_UNKNOWN` five times, and the one
+    // sentence naming the cause was discarded with the error object (pithy-sh/pithy#555, and #534's
+    // family). `detail` leads with the code, so nothing a reader had before is lost.
+    await patchJob(deps, jobId, { status: "failed", error: classified.detail });
+    await recordEvent(deps.db, { jobId, recipient, type: "failed", detail: classified.detail }, deps.passStartedAt);
     return { jobId, status: "failed" };
   }
 }

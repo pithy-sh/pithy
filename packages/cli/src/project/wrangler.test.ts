@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { readOptionalWranglerConfig, readWranglerConfig, runWrangler, workerEntryPath } from "./wrangler";
 
 /** Use `node` as the binary so these run without wrangler installed. */
@@ -120,18 +120,25 @@ describe("workerEntryPath", () => {
 
 describe("runWrangler", () => {
   test("resolves with captured stdout/stderr on a zero exit", async () => {
-    await expect(runWrangler(["-e", "process.exit(0)"], { bin: NODE })).resolves.toEqual({ stdout: "", stderr: "" });
+    await expect(runWrangler(["-e", "process.exit(0)"], { account: null, bin: NODE })).resolves.toEqual({
+      stdout: "",
+      stderr: "",
+    });
   });
 
   test("captures stdout so callers can scrape it (deploy reads the version id + url)", async () => {
-    const { stdout } = await runWrangler(["-e", "process.stdout.write('Current Version ID: v1')"], { bin: NODE });
+    const { stdout } = await runWrangler(["-e", "process.stdout.write('Current Version ID: v1')"], {
+      account: null,
+      bin: NODE,
+    });
     expect(stdout).toContain("Version ID: v1");
   });
 
   test("rejects on a non-zero exit, surfacing the captured output in detail (quiet mode)", async () => {
-    const error = (await runWrangler(["-e", "console.error('boom'); process.exit(1)"], { bin: NODE }).catch(
-      (e: unknown) => e,
-    )) as PithyError;
+    const error = (await runWrangler(["-e", "console.error('boom'); process.exit(1)"], {
+      account: null,
+      bin: NODE,
+    }).catch((e: unknown) => e)) as PithyError;
     expect(error).toBeInstanceOf(InternalError);
     expect(error.payload.detail).toContain("boom");
     expect(error.payload.detail).toContain("exit 1");
@@ -179,7 +186,7 @@ describe("runWrangler", () => {
     async function calledWith(lockfile: string, runner: string): Promise<string[]> {
       await writeFile(join(project, lockfile), "");
       await plant(runner);
-      const { stdout } = await runWrangler(["deploy"], { cwd: project, env: { PATH: fakeBin } });
+      const { stdout } = await runWrangler(["deploy"], { account: null, cwd: project, env: { PATH: fakeBin } });
       return stdout.split("\n").filter(Boolean);
     }
 
@@ -203,7 +210,7 @@ describe("runWrangler", () => {
     // every Node install, and a project with no lockfile has not told us anything else.
     test("a project with no lockfile falls back to npx, not to bun", async () => {
       await plant("npx");
-      const { stdout } = await runWrangler(["deploy"], { cwd: project, env: { PATH: fakeBin } });
+      const { stdout } = await runWrangler(["deploy"], { account: null, cwd: project, env: { PATH: fakeBin } });
       expect(stdout.split("\n").filter(Boolean)).toEqual(["wrangler", "deploy"]);
     });
 
@@ -213,14 +220,14 @@ describe("runWrangler", () => {
       await writeFile(join(project, "package-lock.json"), "");
       await plant("npx");
       await plant("bun");
-      const { stdout } = await runWrangler(["whoami"], { cwd: project, env: { PATH: fakeBin } });
+      const { stdout } = await runWrangler(["whoami"], { account: null, cwd: project, env: { PATH: fakeBin } });
       expect(stdout).not.toContain("x\n");
       expect(stdout.split("\n").filter(Boolean)).toEqual(["wrangler", "whoami"]);
     });
   });
 
   test("rejects with a clear error when the binary is missing", async () => {
-    const error = (await runWrangler(["--version"], { bin: "pithy-no-such-binary-xyz" }).catch(
+    const error = (await runWrangler(["--version"], { account: null, bin: "pithy-no-such-binary-xyz" }).catch(
       (e: unknown) => e,
     )) as PithyError;
     expect(error).toBeInstanceOf(InternalError);
@@ -233,6 +240,7 @@ describe("runWrangler", () => {
     try {
       await writeFile(join(project, "bun.lock"), "");
       const error = (await runWrangler(["--version"], {
+        account: null,
         cwd: project,
         // An empty PATH, so the runner cannot be found however the machine is set up.
         env: { PATH: join(project, "nothing-here") },
@@ -248,16 +256,61 @@ describe("runWrangler", () => {
   });
 
   test("passthrough mode resolves on success (nothing captured — output already streamed)", async () => {
-    await expect(runWrangler(["-e", "process.exit(0)"], { bin: NODE, passthrough: true })).resolves.toEqual({
+    await expect(
+      runWrangler(["-e", "process.exit(0)"], { account: null, bin: NODE, passthrough: true }),
+    ).resolves.toEqual({
       stdout: "",
       stderr: "",
     });
+  });
+
+  test("the project's credentials reach the child, over whatever the shell exported (#555)", async () => {
+    // The account is an argument here for the reason `deploy` states: resolving against the wrong one
+    // does not fail, it ships to another company's tenant and exits 0. The child's environment is built
+    // by `cloudflareChildEnv`, so a spawn cannot inherit the shell's token by omission.
+    const dir = await mkdtemp(join(tmpdir(), "pithy-wrangler-account-"));
+    try {
+      await writeFile(join(dir, "cloudflare.json"), JSON.stringify({ CLOUDFLARE_API_TOKEN: "project-token" }), {
+        mode: 0o600,
+      });
+      vi.stubEnv("PITHY_CONFIG_DIR", dir);
+      vi.stubEnv("CLOUDFLARE_API_TOKEN", "shell-token");
+      await expect(
+        runWrangler(["-e", "process.exit(process.env.CLOUDFLARE_API_TOKEN === 'project-token' ? 0 : 1)"], {
+          account: null,
+          bin: NODE,
+        }),
+      ).resolves.toEqual({ stdout: "", stderr: "" });
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("refuses before the spawn when the project's pin and the credentials disagree", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pithy-wrangler-pin-"));
+    try {
+      await writeFile(join(dir, "cloudflare.json"), JSON.stringify({ CLOUDFLARE_ACCOUNT_ID: "other-account" }), {
+        mode: 0o600,
+      });
+      vi.stubEnv("PITHY_CONFIG_DIR", dir);
+      const error = (await runWrangler(["--version"], {
+        account: { accountId: "pinned-account" },
+        bin: NODE,
+      }).catch((e: unknown) => e)) as PithyError;
+      expect(error).toBeInstanceOf(PithyError);
+      expect(error.payload.message).toContain("pinned-account");
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   test("passes extra env to the child — how wrangler gets CLOUDFLARE_API_TOKEN from .dev.vars", async () => {
     // The child exits 0 only when the injected env var is visible to it.
     await expect(
       runWrangler(["-e", "process.exit(process.env.PITHY_WRANGLER_TEST === 'ok' ? 0 : 1)"], {
+        account: null,
         bin: NODE,
         env: { PITHY_WRANGLER_TEST: "ok" },
       }),

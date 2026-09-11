@@ -3,7 +3,8 @@
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { renderTerminal } from "@pithy-sh/core/src/error/terminal";
-import { resolveCloudflare } from "../cloudflare/config";
+import { cloudflareChildEnv, overriddenCredentialKeys } from "../cloudflare/childEnv";
+import type { CloudflareAccountSelection } from "../cloudflare/config";
 import { projectCloudflareAccount } from "../project/config";
 
 /**
@@ -36,22 +37,138 @@ import { projectCloudflareAccount } from "../project/config";
  * reason for a sentence, not for tearing down every process a developer is working in.
  */
 
+/** Which Cloudflare account the workers of this session will authenticate as, and whether they can. */
+export interface ChildCloudflareIdentity {
+  /** The account id in the child environment, or `null` when it carries none. */
+  accountId: string | null;
+  /** Whether that environment also carries a token. Both halves or neither — see {@link deliveryPreflight}. */
+  hasToken: boolean;
+  /**
+   * The sentence for a pin the credentials contradict, or `null` when there is no disagreement.
+   *
+   * **A third state, because two could not say this and both said something false.** `pithy dev` refuses
+   * outright on a mismatch, so it never reaches the preflight — but `pithy doctor` reports rather than
+   * refuses, and with only `accountId`/`hasToken` to answer with it had to pick a lie: the resolution
+   * before #555 was non-throwing, so a mismatch read as credentials *present* and doctor announced
+   * `sending for real` about an account the repository disowns; resolving through `cloudflareEnv` instead
+   * makes it read as credentials *absent*, and doctor says `run: pithy init` — which is not the fix and
+   * would not help anyone who ran it. The remedy is one line of `pithy.config.ts`, so the state that
+   * names it has to exist.
+   */
+  mismatch: string | null;
+}
+
 /**
- * Whether Cloudflare credentials resolve at all — the cheap half of the delivery preflight.
+ * What the workers this session spawns will authenticate to Cloudflare as — **read off the environment
+ * they are actually handed.**
  *
- * No network call and no account probe: it reads the file this project's own account selection points
- * at, overlaid with the environment, exactly as every other command does. That is enough to catch the
- * state a developer most often starts in, at none of the cost of asking Cloudflare.
+ * **The preflight used to answer a different question than the one it was asked, and that is #555's
+ * second half.** It resolved the *project's* credentials, found them present, and printed `Email: sending
+ * for real from noreply@pithy.sh.` — then the orchestrator spawned workers carrying the *shell's*
+ * credentials, because nothing overlaid the resolved pair onto the child environment. The check was not
+ * wrong about what it looked at. It was looking at the wrong thing, which is why a confident banner was
+ * followed by five silent failures.
+ *
+ * So it takes the child environment itself. There is no second resolution to agree or disagree with: the
+ * map this reads is the map handed to `spawn`, so the account named in the banner and the account the
+ * mail leaves through are one fact by construction.
+ *
+ * Blank is unset, exactly as the credential overlay reads it, so a `CLOUDFLARE_API_TOKEN=""` from a
+ * guarded test environment is no token rather than an empty one.
  *
  * Here rather than in the dev command because `pithy dev` and `pithy doctor` both ask it, and they must
  * not come to two answers about one machine.
  */
-export async function hasCloudflareLogin(projectDir: string, env: NodeJS.ProcessEnv): Promise<boolean> {
+export function childCloudflareIdentity(env: Readonly<Record<string, string | undefined>>): ChildCloudflareIdentity {
+  const accountId = env.CLOUDFLARE_ACCOUNT_ID;
+  return {
+    accountId: accountId ? accountId : null,
+    hasToken: Boolean(env.CLOUDFLARE_API_TOKEN),
+    // An environment that resolved is an environment with no disagreement left in it: `cloudflareEnv`
+    // throws on a mismatch rather than returning one, so reaching here at all settles it.
+    mismatch: null,
+  };
+}
+
+/**
+ * The environment every worker of this session inherits, credentialed for the project's account — and the
+ * identity read back off it.
+ *
+ * One call, two consumers: the orchestrator spawns with `env` and the preflight decides on `identity`.
+ * That is the invariant this module exists to hold — see {@link childCloudflareIdentity}.
+ *
+ * `overridden` names the credential keys the project's resolution replaced on the way in, for the line
+ * that tells a developer `wrangler whoami` is about to disagree with every Worker `pithy dev` starts.
+ */
+export interface DevCloudflareEnv {
+  /** The child environment, from `cloudflareChildEnv`. Hand this to `spawn`, unaltered. */
+  env: Record<string, string>;
+  /** What those children authenticate as. */
+  identity: ChildCloudflareIdentity;
+  /** Credential keys the shell had exported and the project's resolution replaced. Usually empty. */
+  overridden: readonly string[];
+}
+
+/**
+ * Build that environment for one dev session.
+ *
+ * A pinned `cloudflare.accountId` the credentials contradict throws out of here — `cloudflareChildEnv`'s
+ * refusal, which is #206's — and it throws **before any worker spawns**, which is the point: a disowned
+ * account discovered by five failed sends is the incident.
+ */
+export function devCloudflareEnv(
+  account: CloudflareAccountSelection | null,
+  base: NodeJS.ProcessEnv,
+): DevCloudflareEnv {
+  const env = cloudflareChildEnv({ account, base });
+  return { env, identity: childCloudflareIdentity(env), overridden: overriddenCredentialKeys(base, env) };
+}
+
+/**
+ * The project's Cloudflare account for a dev session — **`null` where there is no project config, and a
+ * refusal where there is one that will not load.**
+ *
+ * The distinction is the whole function. `pithy dev` has always tolerated a missing root
+ * `pithy.config.ts`: `devSet`'s `defaultProjectName` catches and degrades to "no capability host can be
+ * named", and the session still starts every `apps/*`. Moving the account resolution up to the command
+ * put a `loadProject` in front of that, and a bare `await projectCloudflareAccount(projectDir)` would
+ * have made a config-less project stop starting at all.
+ *
+ * But it may not swallow more than absence. A root config that *exists* and fails to load — an invalid
+ * `cloudflare.accountName`, a config that default-exports the wrong shape — would degrade to `null`,
+ * and `null` does not mean "no account": it selects the **default** `<config>/cloudflare.json`. On a
+ * machine with two accounts that is another tenant's credentials, chosen because a config file had a
+ * typo in it. So absence is `null` and everything else is raised, which is `readOptionalWranglerConfig`'s
+ * rule — absent is ENOENT and nothing else — applied one layer up.
+ */
+export async function devCloudflareAccount(projectDir: string): Promise<CloudflareAccountSelection | null> {
   try {
-    const vars = resolveCloudflare({ account: await projectCloudflareAccount(projectDir), env }).vars;
-    return Boolean(vars.CLOUDFLARE_ACCOUNT_ID && vars.CLOUDFLARE_API_TOKEN);
-  } catch {
-    return false;
+    return await projectCloudflareAccount(projectDir);
+  } catch (error) {
+    if (error instanceof PithyError && error.payload.code === "core/not_found") return null;
+    throw error;
+  }
+}
+
+/**
+ * The same, for `pithy doctor`, which reports on a machine rather than spawning on it.
+ *
+ * It loads the account itself — doctor has no dev session to have resolved one — and answers `null`
+ * credentials rather than throwing, because a mismatch is a line in that report and not the end of it.
+ */
+export async function projectChildCloudflareIdentity(
+  projectDir: string,
+  env: NodeJS.ProcessEnv,
+): Promise<ChildCloudflareIdentity> {
+  try {
+    const account = await devCloudflareAccount(projectDir);
+    return childCloudflareIdentity(devCloudflareEnv(account, env).env);
+  } catch (error) {
+    // A contradicted pin is reported as itself. Everything else — no project, an unreadable credentials
+    // file — is the unconfigured case, which the `pithy init` line already answers correctly.
+    const mismatch =
+      error instanceof PithyError && error.payload.code === "core/conflict" ? error.payload.message : null;
+    return { accountId: null, hasToken: false, mismatch };
   }
 }
 
@@ -63,8 +180,11 @@ export interface DeliveryPreflightOptions {
   requested: "remote" | "simulator";
   /** The from address the capability sends as; its domain is what must be onboarded. */
   fromAddress?: string;
-  /** Whether Cloudflare credentials resolved at all. `false` means `wrangler dev` has no login to use. */
-  hasCloudflareLogin: boolean;
+  /**
+   * What the workers this session spawns will authenticate as — from {@link childCloudflareIdentity},
+   * read off the environment they are handed rather than resolved a second time (#555).
+   */
+  cloudflare: ChildCloudflareIdentity;
 }
 
 /** The preflight's answer: what this session will do about delivery, and the lines that say so. */
@@ -107,7 +227,22 @@ export function deliveryPreflight(options: DeliveryPreflightOptions): DeliveryPr
     };
   }
 
-  if (!options.hasCloudflareLogin) {
+  // Before the unconfigured branch, because a mismatch is not an absence and `pithy init` is not its fix.
+  // The sentence is `describeCloudflareAccountMismatch`'s, reused rather than spelled a second time — two
+  // wordings for one diagnosis is how they drift.
+  if (options.cloudflare.mismatch) {
+    return {
+      live: false,
+      lines: [
+        `Email: ${options.cloudflare.mismatch} Real delivery is not possible here — using the simulator.`,
+        "  set `cloudflare.accountId` in pithy.config.ts to the account this project belongs to, or `cloudflare.accountName` to the file holding its credentials.",
+      ],
+    };
+  }
+
+  // Both halves or neither. An account id with no token cannot authenticate and a token with no account
+  // id has nothing to authenticate against, so either alone is the `pithy init` case.
+  if (!options.cloudflare.accountId || !options.cloudflare.hasToken) {
     return {
       live: false,
       lines: [
@@ -128,7 +263,15 @@ export function deliveryPreflight(options: DeliveryPreflightOptions): DeliveryPr
     };
   }
 
-  return { live: true, lines: [`Email: sending for real from ${options.fromAddress}.`] };
+  // The account is named, and that is #555 in one line: a developer whose shell holds a second account's
+  // token could read `wrangler whoami`, read `pithy doctor`, and still not know which one a send from
+  // this session would use. The banner is where that stops being a deduction.
+  return {
+    live: true,
+    lines: [
+      `Email: sending for real from ${options.fromAddress}, as Cloudflare account ${options.cloudflare.accountId}.`,
+    ],
+  };
 }
 
 /**

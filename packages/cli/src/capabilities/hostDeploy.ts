@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { messageOf, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { kitImport } from "../project/kitResolve";
-import { runWrangler } from "../project/wrangler";
+import { runWrangler, type WranglerAccount } from "../project/wrangler";
 import { DEPLOY_STAMP_VAR, type DeployedStamp, stampConfig, stampVerdict } from "../provision/deployStamp";
 
 /**
@@ -75,10 +75,26 @@ export interface HostDeployOptions {
   env: string;
   /** Read the deployed Worker's vars. Omitted, nothing is known and the Worker deploys. */
   readVars?: ReadWorkerVars;
-  /** Ship it. Defaults to `wrangler deploy --config <path>` with the credentials below. */
+  /** Ship it. Defaults to `wrangler deploy --config <path>` for the account below. */
   runDeploy?: RunHostDeploy;
-  /** The pair handed to wrangler. Required by the default runner, unused when one is injected. */
-  credentials?: { accountId: string; apiToken: string };
+  /**
+   * Who wrangler authenticates as. Required by the default runner, unused when one is injected.
+   *
+   * **A {@link WranglerAccount}, and the union is the whole point.** `deployKit` holds the project's
+   * *selection* and passes that, so the `cloudflare.accountId` pin travels with it and #206's mismatch
+   * refusal still runs; the eight capability provisioners hold a pair their command already resolved and
+   * pass that. The four lines that used to spread a pair onto `runWrangler`'s `env` are gone — that was
+   * the second of three copies, and the reason the third (`pithy dev`) could be missing with nothing
+   * noticing (#555). `runWrangler` builds the child through `cloudflare/childEnv` now.
+   *
+   * **Narrowing this to a bare pair was a bug, briefly.** With `credentials ?? null`, a project whose
+   * named credentials file held only half the pair fell through to `null` — which does not mean "no
+   * credentials", it means "this project names no account", and so resolved the *default*
+   * `<config>/cloudflare.json`. On a two-account machine that is another tenant's live token, with the
+   * pin that would have refused it dropped one frame earlier. Passing the selection is what keeps
+   * "incomplete" and "unclaimed" from becoming the same value.
+   */
+  account?: WranglerAccount;
   /** `--force`: ship regardless of the stamp, and read nothing. For a recovery run. */
   force?: boolean;
 }
@@ -121,15 +137,17 @@ async function readDeployedStamp(read: ReadWorkerVars | undefined, scriptName: s
   }
 }
 
-/** The default runner: `wrangler deploy --config <resolved>`, in the installed package's worker dir. */
-function defaultRunDeploy(credentials: { accountId: string; apiToken: string } | undefined): RunHostDeploy {
+/**
+ * The default runner: `wrangler deploy --config <resolved>`, in the installed package's worker dir.
+ *
+ * The environment comes from `cloudflareChildEnv`, inside `runWrangler` — so a host Worker ships to the
+ * account the project claims, and a pin the credentials contradict refuses rather than deploying to
+ * whichever tenant the shell last exported a token for (#555). See {@link HostDeployOptions.account} for
+ * why what arrives here is the selection or the pair, and never the pair flattened to `null`.
+ */
+function defaultRunDeploy(account: WranglerAccount): RunHostDeploy {
   return async (configPath, dir) => {
-    await runWrangler(["deploy", "--config", configPath], {
-      cwd: dir,
-      ...(credentials
-        ? { env: { CLOUDFLARE_API_TOKEN: credentials.apiToken, CLOUDFLARE_ACCOUNT_ID: credentials.accountId } }
-        : {}),
-    });
+    await runWrangler(["deploy", "--config", configPath], { account, cwd: dir });
   };
 }
 
@@ -163,7 +181,7 @@ export async function deployHostWorker(options: HostDeployOptions): Promise<Host
     return { capability: options.capability, worker, outcome: "unchanged", reason: verdict.reason };
   }
 
-  const run = options.runDeploy ?? defaultRunDeploy(options.credentials);
+  const run = options.runDeploy ?? defaultRunDeploy(options.account ?? null);
   const configPath = join(options.dir, `.wrangler.${options.env}.json`);
   await writeFile(configPath, `${JSON.stringify(stamped, null, 2)}\n`);
   try {
