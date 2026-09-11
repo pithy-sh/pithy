@@ -21,12 +21,12 @@ import type { WorkerTarget } from "./workers";
 
 /** A discovered worker target, as `discoverWorkers` would return it. */
 function target(name: string, dir = `/proj/apps/${name}`): WorkerTarget {
-  return { name, dir, dev: { autostart: true, readySignal: "Ready on https?://" }, hasWrangler: true };
+  return { name, dir, dev: { readySignal: "Ready on https?://" }, hasWrangler: true };
 }
 
 /** A discovered non-Worker process — a Vite frontend joining the dev set through its manifest alone. */
 function devOnly(name: string, dir = `/proj/apps/${name}`): WorkerTarget {
-  return { name, dir, dev: { autostart: true, readySignal: "Ready on https?://" }, hasWrangler: false };
+  return { name, dir, dev: { readySignal: "Ready on https?://" }, hasWrangler: false };
 }
 
 /** A worker config seam keyed by directory, so tests never touch the filesystem. */

@@ -32,8 +32,18 @@ export interface DevListingMember {
   name: string;
   /** `app` for an `apps/` Worker, `host` for a composed capability's host Worker. */
   kind: DevMemberKind;
-  /** Whether a plain `pithy dev` starts it — `dev.autostart`, which defaults to true. */
+  /** Whether a plain `pithy dev` starts it — this branch's local answer, else `dev.autostart`, else true. */
   autostart: boolean;
+  /**
+   * Whether {@link autostart} came from this branch's `dev-ports.json` answer rather than the manifest.
+   *
+   * Reported rather than folded in, because the two are answers to different questions and a reader has
+   * to be able to tell them apart. *This worker does not run locally* is the project's decision, in a
+   * file everyone shares; *I turned this off* is one developer's, on one branch, on one machine. A
+   * listing that rendered them identically would send somebody to `pithy.worker.jsonc` to undo something
+   * that is not written there (#548).
+   */
+  autostartLocal: boolean;
   /** Whether *this* invocation would start it: the autostart set, or exactly what `--app` named. */
   starts: boolean;
   /** The port it would be pinned to, or `null` when the project has no `.dev.config.json` yet. */
@@ -101,6 +111,7 @@ export async function listDevSet(options: ListDevOptions): Promise<DevListing> {
         name,
         kind: member.kind,
         autostart: member.autostart,
+        autostartLocal: member.autostartLocal,
         starts: starting.has(name),
         port: pinned[name]?.port ?? null,
         origin: pinned[name]?.origin ?? null,
@@ -117,8 +128,14 @@ export async function listDevSet(options: ListDevOptions): Promise<DevListing> {
  * run starts it, and where it answers.
  */
 export function devListingRows(listing: DevListing): { name: string; description: string }[] {
-  return listing.members.map((member) => ({
-    name: member.name,
-    description: `${member.kind.padEnd(4)}  ${(member.starts ? "starts" : "skipped").padEnd(7)}  port ${member.port ?? "—"}`,
-  }));
+  return listing.members.map((member) => {
+    // Only on a row that is skipped *because* of it. On a row that starts, the fact that a local answer
+    // exists and says yes is noise — and on one skipped by `--app`, "off here" would name the wrong
+    // reason, since `--app` narrowed it and the branch never said anything about it at all.
+    const why = !member.starts && member.autostartLocal && !member.autostart ? "  off here" : "";
+    return {
+      name: member.name,
+      description: `${member.kind.padEnd(4)}  ${(member.starts ? "starts" : "skipped").padEnd(7)}  port ${member.port ?? "—"}${why}`,
+    };
+  });
 }

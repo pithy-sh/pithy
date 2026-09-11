@@ -132,10 +132,50 @@ export const PortBlock = z
   .describe("A contiguous block of ports assigned to one feature branch.");
 export type PortBlock = z.output<typeof PortBlock>;
 
-/** One checkout's allocations: branch name → its allocated block. */
+/**
+ * **Which workers this branch does not start locally** — worker name → whether `pithy dev` runs it.
+ *
+ * Beside the block rather than in `pithy.worker.jsonc`, because it is not a fact about the project. The
+ * manifest says what a Worker *is* and everyone on the team shares it; this says what one developer is
+ * working on this week, on this machine, on this branch. Committing that would put one person's
+ * narrowing into everyone else's checkout, and the review comment would be *why is payments off*.
+ *
+ * **Per branch, and inherited once.** `pithy feature create` copies the branch it was cut from, so a
+ * developer who turned `payments` off on `main` does not turn it back on by starting a feature — and
+ * because it is a copy rather than a reference, the feature can then disagree. Changing it in a
+ * worktree changes that feature; changing it on `main` changes `main`. That is the whole rule, and it
+ * falls out of the key the registry already has.
+ *
+ * A name absent from this map **autostarts**, which is also what an absent map and an absent branch
+ * entry mean. Three ways of saying nothing, one answer, so there is no state where the file's silence
+ * has to be interpreted.
+ */
+export const WorkerAutostart = z
+  .record(
+    z.string().describe("A worker name — a deployed name, an apps/ basename, or a capability host's name."),
+    z.boolean().describe("Whether a plain `pithy dev` on this branch starts it."),
+  )
+  .describe("Which workers this branch does not start locally — worker name → whether pithy dev runs it.");
+export type WorkerAutostart = z.output<typeof WorkerAutostart>;
+
+/**
+ * One branch's entry: the ports it holds, and anything else that is true of this branch on this machine.
+ *
+ * The block is why the file exists and `autostart` is the second tenant, added deliberately rather than
+ * given a file of its own: both are *this checkout, this branch, this machine*, both are written under
+ * the same lock, and a second file would be a second thing to keep in step with `feature destroy`.
+ */
+export const BranchDevState = PortBlock.extend({
+  autostart: WorkerAutostart.optional().describe(
+    "Which workers this branch does not start locally. Absent means every worker autostarts.",
+  ),
+}).describe("One branch's entry: the ports it holds and the workers it does not start.");
+export type BranchDevState = z.output<typeof BranchDevState>;
+
+/** One checkout's allocations: branch name → its allocated block and local dev state. */
 export const RepoPortBlocks = z
-  .record(z.string().describe('A branch name, e.g. "feature/69-media-cli".'), PortBlock)
-  .describe("One main checkout's allocations: branch name → its allocated block.");
+  .record(z.string().describe('A branch name, e.g. "feature/69-media-cli".'), BranchDevState)
+  .describe("One main checkout's allocations: branch name → its allocated block and local dev state.");
 export type RepoPortBlocks = z.output<typeof RepoPortBlocks>;
 
 /**
@@ -162,6 +202,15 @@ export interface AllocateOptions {
   branch: string;
   /** Ports per block (default BLOCK_SIZE). */
   size?: number;
+  /**
+   * The branch whose {@link WorkerAutostart} a **newly created** entry copies — `pithy feature create`
+   * passes the branch it cut from.
+   *
+   * Read on the creating path only. A branch that already has an entry keeps what it decided, whatever
+   * this says, because allocation is idempotent and re-running it must not quietly reimpose `main`'s
+   * answer on a feature that has since changed its own.
+   */
+  inheritAutostartFrom?: string;
   /** How long to wait for the registry lock. Defaults to the production budget — see {@link LockBudget}. */
   lock?: LockBudget;
 }
@@ -425,7 +474,7 @@ function lowestFreeBlock(taken: ReadonlySet<number>, size: number, held: readonl
  * branch already has a block, returns it unchanged. Otherwise assigns the LOWEST free block index not
  * overlapping any taken block, writes the registry atomically, and returns it.
  */
-export async function allocatePortBlock(options: AllocateOptions): Promise<PortBlock> {
+export async function allocatePortBlock(options: AllocateOptions): Promise<BranchDevState> {
   const { registryPath, root, branch } = options;
   const size = options.size ?? BLOCK_SIZE;
 
@@ -450,14 +499,92 @@ export async function allocatePortBlock(options: AllocateOptions): Promise<PortB
       const held = Object.values(registry).flatMap((branches) => Object.values(branches));
       const taken = new Set(held.map((entry) => entry.block));
       const block = lowestFreeBlock(taken, size, held);
-      const allocated: PortBlock = { block, base: BASE_PORT + block * size, size };
-
       const branches = registry[root] ?? {};
+      // **Inherited once, at creation, and only then.** A developer who turned `payments` off on `main`
+      // has said what they are working on; cutting a feature is not them changing their mind. Copied
+      // rather than referenced, so the feature can disagree from its first run — and taken only on this
+      // path, which is the one branch entry that did not exist a moment ago, so nothing an existing
+      // branch already decided can be overwritten by it.
+      const inherited = options.inheritAutostartFrom ? branches[options.inheritAutostartFrom]?.autostart : undefined;
+      const allocated: BranchDevState = {
+        block,
+        base: BASE_PORT + block * size,
+        size,
+        ...(inherited !== undefined && Object.keys(inherited).length > 0 ? { autostart: { ...inherited } } : {}),
+      };
+
       branches[branch] = allocated;
       registry[root] = branches;
       await writeRegistry(registryPath, registry);
 
       return allocated;
+    },
+    options.lock,
+  );
+}
+
+/** Inputs to {@link readWorkerAutostart} and {@link setWorkerAutostart}. */
+export interface AutostartOptions {
+  /** Absolute path to the registry — `<config>/dev-ports.json`, see {@link portsRegistryPath}. */
+  registryPath: string;
+  /** The absolute main-checkout root this branch belongs to — the registry's outer key. */
+  root: string;
+  /** The branch whose answer is being read or written. */
+  branch: string;
+  /** How long to wait for the registry lock. Defaults to the production budget — see {@link LockBudget}. */
+  lock?: LockBudget;
+}
+
+/**
+ * What this branch says about which workers start locally. Empty when it has said nothing.
+ *
+ * **Never throws and never locks.** It is on the read path of `pithy dev` and `pithy worker list`, and a
+ * registry that will not parse must not stop a developer starting their Workers — the fallback is *every
+ * worker autostarts*, which is what the file's absence means and what the project meant before any of
+ * this existed. `pithy doctor` is what reports a broken registry; this one only has to not make it worse.
+ */
+export async function readWorkerAutostart(options: Omit<AutostartOptions, "lock">): Promise<WorkerAutostart> {
+  const registry = await readPortsRegistry(options.registryPath).catch(() => ({}) as PortsRegistry);
+  return registry[options.root]?.[options.branch]?.autostart ?? {};
+}
+
+/**
+ * Set or clear this branch's answer for one or more workers, under the lock.
+ *
+ * `enabled: true` **deletes** the key rather than storing `true`. Absent and `true` mean the same thing
+ * — the worker starts — and keeping only one spelling of it means the file never accumulates a row per
+ * worker per branch for every developer who turned something off and on again. It also makes the
+ * inherit-on-create copy carry only what somebody actually decided.
+ *
+ * Allocates the branch entry if it has none, through the same call `pithy dev` makes, because there is
+ * no meaningful state where a branch has an opinion about its Workers and no ports to run them on.
+ */
+export async function setWorkerAutostart(
+  options: AutostartOptions & { workers: readonly string[]; enabled: boolean },
+): Promise<WorkerAutostart> {
+  const { registryPath, root, branch, workers, enabled } = options;
+  // Before the lock: `allocatePortBlock` takes it itself, and taking it twice is the deadlock.
+  await allocatePortBlock({ registryPath, root, branch, ...(options.lock ? { lock: options.lock } : {}) });
+
+  return withLock(
+    registryPath,
+    async () => {
+      const registry = await readPortsRegistry(registryPath);
+      const entry = registry[root]?.[branch];
+      // Allocation above guarantees this, so its absence is a registry somebody edited underneath us
+      // mid-command. Answering nothing beats throwing at a developer who asked to stop one Worker.
+      if (entry === undefined) return {};
+
+      const autostart = { ...entry.autostart };
+      for (const worker of workers) {
+        if (enabled) delete autostart[worker];
+        else autostart[worker] = false;
+      }
+
+      if (Object.keys(autostart).length === 0) delete entry.autostart;
+      else entry.autostart = autostart;
+      await writeRegistry(registryPath, registry);
+      return autostart;
     },
     options.lock,
   );

@@ -12,13 +12,13 @@ const api: WorkerTarget = {
   name: "api",
   dir: "/proj/apps/api",
   hasWrangler: true,
-  dev: { autostart: true, readySignal: "Ready on https?://" },
+  dev: { readySignal: "Ready on https?://" },
 };
 const web: WorkerTarget = {
   name: "web",
   dir: "/proj/apps/web",
   hasWrangler: false,
-  dev: { autostart: false, readySignal: "ready in \\d+", command: ["vite"] },
+  dev: { readySignal: "ready in \\d+", command: ["vite"] },
 };
 
 const emailHost = {
@@ -29,7 +29,7 @@ const emailHost = {
     name: "email",
     dir: "/proj/.wrangler/pithy/hosts/email",
     hasWrangler: true,
-    dev: { autostart: true, readySignal: "Ready on https?://" },
+    dev: { readySignal: "Ready on https?://" },
   },
 } as unknown as HostWorker;
 
@@ -63,10 +63,55 @@ describe("listDevSet", () => {
     const listing = await listDevSet(options());
 
     expect(listing.members).toEqual([
-      { name: "api", kind: "app", autostart: true, starts: true, port: 8787, origin: "http://localhost:8787" },
-      { name: "web", kind: "app", autostart: false, starts: false, port: 8788, origin: "http://localhost:8788" },
-      { name: "email", kind: "host", autostart: true, starts: true, port: 8789, origin: "http://localhost:8789" },
+      {
+        name: "api",
+        kind: "app",
+        autostart: true,
+        autostartLocal: false,
+        starts: true,
+        port: 8787,
+        origin: "http://localhost:8787",
+      },
+      {
+        name: "web",
+        kind: "app",
+        autostart: true,
+        autostartLocal: false,
+        starts: true,
+        port: 8788,
+        origin: "http://localhost:8788",
+      },
+      {
+        name: "email",
+        kind: "host",
+        autostart: true,
+        autostartLocal: false,
+        starts: true,
+        port: 8789,
+        origin: "http://localhost:8789",
+      },
     ]);
+  });
+
+  // The listing is where a developer checks what a run would do, so it has to show the branch's answer
+  // *and* say it is the branch's — `off here` is the difference between a file everyone shares and one
+  // that is yours. Asserted through the rendered row, because that string is the whole of the signal.
+  test("marks a member this branch turned off, and says the answer is local", async () => {
+    const listing = await listDevSet({ ...options(), autostartOverrides: { web: false } });
+
+    const web = listing.members.find((m) => m.name === "web");
+    expect(web).toMatchObject({ autostart: false, autostartLocal: true, starts: false });
+    expect(devListingRows(listing).find((r) => r.name === "web")?.description).toContain("off here");
+  });
+
+  // The other side of that string, and the reason it is conditional: `--app` narrowing a run is not the
+  // branch saying anything, so a row skipped by `--app` must not claim it was turned off here.
+  test("a member skipped only by --app is not reported as turned off here", async () => {
+    const listing = await listDevSet({ ...options(), apps: ["api"] });
+
+    const web = listing.members.find((m) => m.name === "web");
+    expect(web).toMatchObject({ autostart: true, autostartLocal: false, starts: false });
+    expect(devListingRows(listing).find((r) => r.name === "web")?.description).not.toContain("off here");
   });
 
   /**
@@ -102,10 +147,17 @@ describe("listDevSet", () => {
     expect(listing.notes).toContain("No .dev.config.json yet, so no port is pinned. The first pithy dev assigns them.");
   });
 
+  // A plain run starts everything now, so what this asserts is the other half: the branch's answer is
+  // the only thing that subtracts from it, and the listing reflects that rather than a manifest key.
   test("marks what a plain run would start, and lists what it would not", async () => {
-    const listing = await listDevSet(options());
+    expect((await listDevSet(options())).members.map((m) => [m.name, m.starts])).toEqual([
+      ["api", true],
+      ["web", true],
+      ["email", true],
+    ]);
 
-    expect(listing.members.map((m) => [m.name, m.starts])).toEqual([
+    const narrowed = await listDevSet(options({ autostartOverrides: { web: false } }));
+    expect(narrowed.members.map((m) => [m.name, m.starts])).toEqual([
       ["api", true],
       ["web", false],
       ["email", true],
@@ -149,11 +201,19 @@ describe("devListingRows", () => {
     devListingRows(await listDevSet(options(overrides)));
 
   test("names each member, its kind, whether it starts, and its port", async () => {
-    const rows = await rowFor();
-
-    expect(rows).toEqual([
+    expect(await rowFor()).toEqual([
       { name: "api", description: "app   starts   port 8787" },
-      { name: "web", description: "app   skipped  port 8788" },
+      { name: "web", description: "app   starts   port 8788" },
+      { name: "email", description: "host  starts   port 8789" },
+    ]);
+  });
+
+  // `off here` is the only thing distinguishing "this branch turned it off" from "--app did not name
+  // it", and both render as `skipped`. Without the suffix a reader goes looking for a committed file.
+  test("a member this branch turned off says so on its row", async () => {
+    expect(await rowFor({ autostartOverrides: { web: false } })).toEqual([
+      { name: "api", description: "app   starts   port 8787" },
+      { name: "web", description: "app   skipped  port 8788  off here" },
       { name: "email", description: "host  starts   port 8789" },
     ]);
   });

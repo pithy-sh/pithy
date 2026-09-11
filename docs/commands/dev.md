@@ -16,18 +16,20 @@ pithy dev --list [--app <name>]… [--json]
 | Flag | Meaning |
 |---|---|
 | `--list` | Print the set a run right now would start — every `apps/` Worker and every capability host, marked by kind and carrying the port it would be pinned to. Starts nothing and writes nothing. Honors `--app`. Default `false`. |
-| `--app <name>` | Start exactly the worker named, whatever its `dev.autostart` says. **Repeatable** — the raw argv is read, so several survive. A name is the deployed name, the `apps/<dir>` basename, or a capability name for a host. Literal: naming a worker pulls in no capability host. An unknown name refuses the whole run before anything spawns, naming the valid set. |
+| `--app <name>` | Start exactly the worker named, whatever this branch has turned off. **Repeatable** — the raw argv is read, so several survive. A name is the deployed name, the `apps/<dir>` basename, or a capability name for a host. Literal: naming a worker pulls in no capability host. An unknown name refuses the whole run before anything spawns, naming the valid set. |
+| `--disable-autostart` | Stop `--app`'s workers starting on this branch, on this machine. Writes `dev-ports.json` and **starts nothing**. Default `false`. |
+| `--enable-autostart` | Undo `--disable-autostart` for `--app`'s workers. Removes the key rather than storing `true`. Starts nothing. Default `false`. |
 | `--json` | Machine-readable output. Default `false`. |
 
 ## What it does
 
 `pithy dev` runs the whole backend — every Worker in `apps/`, plus any web frontend — under one supervising process, so a developer never hand-juggles terminals or ports. It ports the proven CMS `scripts/dev.ts` design.
 
-- **Discovers workers from `apps/`.** `apps/` *is* the registry — `pithy dev` enumerates `apps/*` (no hand-maintained list) and reads each worker's co-located **`pithy.worker.jsonc`** — a file you own, sitting beside `wrangler.jsonc` (which stays wrangler's) — for its `dev` manifest block: `dev.autostart` (does `pithy dev` start this worker? It does by default — set `dev.autostart: false` to keep one out of the local dev set), `dev.readySignal` (regex marking "ready" in its output, default `/Ready on https?:\/\//`), an optional `dev.preferredPort`, and an optional `dev.command` (run a non-Worker process — a Vite frontend with no `wrangler.jsonc` — instead of `wrangler dev`). Discovery keys on `pithy.worker.jsonc`, so such a process can join the dev set. **It starts every worker that has not opted out.** Whether a `pithy.worker.jsonc` exists no longer changes the answer — writing one to set a `readySignal` used to drop that worker out of the dev set, reported as `manual`, as though somebody had asked for that. Nobody should have to configure a worker to get it to run locally; a worker that should not run locally says so. `--app` narrows what starts without touching the file. Add, remove, or rename a worker with `pithy worker add|remove|rename` and the dev set follows automatically.
+- **Discovers workers from `apps/`.** `apps/` *is* the registry — `pithy dev` enumerates `apps/*` (no hand-maintained list) and reads each worker's co-located **`pithy.worker.jsonc`** — a file you own, sitting beside `wrangler.jsonc` (which stays wrangler's) — for its `dev` manifest block: `dev.readySignal` (regex marking "ready" in its output, default `/Ready on https?:\/\//`), an optional `dev.preferredPort`, and an optional `dev.command` (run a non-Worker process — a Vite frontend with no `wrangler.jsonc` — instead of `wrangler dev`). Discovery keys on `pithy.worker.jsonc`, so such a process can join the dev set. **Every worker starts.** The manifest has no say in it: `dev.autostart` was removed, because which workers one developer is exercising this week is not a fact about the project and did not belong in a committed file. See [Keeping a worker out of your dev set](#keeping-a-worker-out-of-your-dev-set). Add, remove, or rename a worker with `pithy worker add|remove|rename` and the dev set follows automatically.
 - **Runs each composed capability's host Worker too.** `apps/` is the *app* Worker registry; a capability that owns Workflows ships a prebuilt host Worker that `pithy <capability> provision` deploys, and none of them lives in `apps/`. `pithy dev` starts those as well: it reads each app Worker's `pithy.config.ts`, and for every composed capability that owns a host it resolves that capability's committed `wrangler.jsonc` template into a local config under `.wrangler/pithy/hosts/<capability>/` (git-ignored, generated on every run) and starts it. **A host is an ordinary member of the dev set** — its own pinned port from `.dev.config.json`, its own label and color in the terminal and `logs/dev.log`, its own entry in `.dev-state.json`, reaped with everything else. Adding or removing a capability reconciles the feature's port block exactly the way adding or removing a Worker does. It is registered under the capability's own name, so its siblings reach it at `EMAIL_ORIGIN`, `MEDIA_ORIGIN`, and so on; an `apps/` Worker already using that name is refused rather than silently shadowed. Locally a host binds its databases by binding name — the same names `pithy migrate --env dev` filled — so a first `pithy dev` boots rather than erroring on a missing table. This is why mail sent from localhost now goes somewhere: the app Worker's `EMAIL_SENDER` Workflow named a Worker `pithy dev` did not run, so every enqueued message sat `pending` while the UI reported success.
 - **Sends real mail from your machine, and says when it cannot.** The email host's `send_email` binding runs with `remote: true` in `dev` by default, so a magic link you trigger from localhost is delivered through Cloudflare Email Service for real — the same pipeline, the same DKIM, the same delivery logs as production. That needs a Cloudflare login and a sending domain already onboarded. `pithy dev` checks what it cheaply can before spawning anything: with no credentials, or a from address on a domain nobody can onboard, it resolves the host for its local simulator instead, says so with the command that fixes it, and starts the session anyway. The simulator logs the sender, recipient and subject and writes the rendered HTML and text bodies to disk. The verdict is said once, in the ready banner, where a developer looks. The preflight is not the guarantee — a failure that only appears when the binding starts, or at the first send, is caught in the host's own output, rendered as a problem line and an action line, and never kills the session: the host is re-resolved for its simulator on the spot, so the sends that follow are logged and written to disk rather than lost. `email({ devDelivery: "simulator" })` selects the simulator deliberately; every deployed environment always sends for real.
 - **Runs a front end as part of the set.** A Worker scaffolded by `pithy ui add` (`docs/commands/ui.md`) does not get a second process. Its `dev.command` replaces `wrangler dev` with Vite, and Vite serves the SPA *and* the Worker on that worker's one pinned port. The command is argv, and the token **`{port}`** in any argument is substituted with that port at spawn time: `["bun", "x", "vite", "dev", "--configLoader", "runner", "--strictPort", "--port", "{port}"]` runs as `bun x vite dev --configLoader runner --strictPort --port 8787`. `{port}` is the only token substituted.
-- **Supervises N workers.** Spawns each worker in the started set — every autostart worker, or exactly what `--app` names — labels and colorizes their interleaved output, and tees everything to the terminal *and* `logs/dev.log`. A single "ready" banner prints once every started worker matches its `dev.readySignal`.
+- **Supervises N workers.** Spawns each worker in the started set — every worker this branch has not turned off, or exactly what `--app` names — labels and colorizes their interleaved output, and tees everything to the terminal *and* `logs/dev.log`. A single "ready" banner prints once every started worker matches its `dev.readySignal`.
 - **Names a worker that starts and never becomes ready.** A child that never matches its `dev.readySignal` is still a *live* child. `wrangler dev` does not exit when a build fails — it prints the error and keeps running — and the same shape covers a startup that hangs, a port that never binds, and a `dev.command` process that comes up wrong. The banner waits on the whole set, so it never fires, and the session used to proceed looking healthy with the real error forty lines up the scrollback. 90 seconds after the last worker is spawned, `pithy dev` says `Still waiting on: support.` — every worker still missing, by name — and repeats the line every 30 seconds while it stays true, because one line at the deadline scrolls away exactly like the error did. The clock starts at the spawn, not at the command: everything before it — `.dev.vars`, the host configs, the previous session, the orphan sweep, both loopback families of every pinned port, the dev secrets — is tens of seconds on a cold project, and none of it is a worker being slow. It is *still waiting*, not *failed*: the first `wrangler dev` of a session pays for a cold bundle, and a slow worker is not a broken one. A worker that arrives late drops out of the next line on its own, and the banner fires as it always would. **A worker that never arrives is reported, never killed** — one child exiting tears the whole session down, and stopping every healthy worker over one worker's typo is a worse trade than a line naming it. The report names the mechanism, never a cause it cannot know: the worker is still running, so nothing else in the session was going to mention it, and its own output above says why. It names a restart because a `wrangler dev` whose *first* build fails never rebuilds — fixing the file and waiting is the one thing that cannot work. Under `--json` the report is a record rather than a sentence (`--json`, below).
 - **Resolves ports safely.** Each worker's start port is the one pinned in the worktree's port block (Per-feature ports, below), verified — never probed. A port is used only if free on **both** `127.0.0.1` and `::1` (Vite binds IPv6-only, wrangler binds both); if a pinned port is taken, the orchestrator reports a conflict and stops, rather than silently drifting to another port and breaking the sibling workers that were told its address ahead of time.
 - **Wires workers to each other over localhost.** Resolved ports are exported as env and the cross-worker URLs are baked in as `*_ORIGIN` dev vars, so workers call each other directly — never relying on wrangler's flaky cross-`wrangler dev` service registry.
@@ -45,13 +47,35 @@ pithy dev --list [--app <name>]… [--json]
 
 ### Starting part of it: `--app`
 
-`pithy dev --app <name>` starts exactly the workers it names, whatever their `dev.autostart` says. Naming a worker is the more specific act, and that is the flag's whole purpose.
+`pithy dev --app <name>` starts exactly the workers it names, whatever this branch has turned off. Naming a worker is the more specific act, and that is the flag's whole purpose.
 
 - **Repeatable.** `pithy dev --app api --app web`. The raw argv is read, because citty keeps only the last occurrence of a repeated string flag.
 - **Three name forms.** The deployed name, the `apps/<dir>` basename, or a capability name for a host — so `pithy dev --app email` runs the email host on its own. The deployed name is tried first: a Worker in `apps/email/` deployed as `acme-email` can sit beside the `email` capability host, and there `email` means the host while `acme-email` means the Worker. The deployed name leads because it is the key `.dev.config.json`, `.dev-state.json` and `<CAPABILITY>_ORIGIN` are all written under.
 - **Literal.** No composed host comes along for the ride. `--app board` gives you `board`, with `EMAIL_ORIGIN` pointing at something that is not running, and that is the answer you asked for: a developer narrowing the dev set knows what they are narrowing.
 - **Validated before anything spawns.** One unknown name refuses the whole run and names the valid set. So does a `--app` with nothing after it — an empty selection means *start everything*, so a forgotten name would spawn the estate. Nothing half-starts and then dies.
 - **It never changes what a worker's port is.** Ports are pinned per worker for the life of the feature and are computed over every discovered member, not over what happens to be running — so a run of one hands that one worker exactly the port a run of all of them would, and the run after it finds every address where it left it.
+
+### Keeping a worker out of your dev set
+
+```bash
+pithy dev --app payments --disable-autostart   # stop it starting on this branch
+pithy dev --app payments --enable-autostart    # let it start again
+```
+
+Both write and **start nothing**.
+
+Whether a worker starts locally is not a fact about the project. `pithy.worker.jsonc` is committed and the same for everyone: it says a worker exists and how it is run. Which workers *you* are exercising this week is yours. So the answer lives beside your port block in `dev-ports.json`, keyed on the same three things the block is — **this checkout, this branch, this machine** — and nothing about it is committed or shared. `dev.autostart` was removed for exactly this reason.
+
+- **Every worker autostarts.** No entry, no `autostart` map, or no name in the map all mean the same thing: it starts. There is no state where the file's silence has to be interpreted.
+- **`--app` is above it.** `pithy dev --app payments` still starts a worker you have turned off, for that one run, without turning it back on. Naming a worker outright is the more specific act.
+- **Per branch, inherited once.** `pithy feature create` copies the branch it cut from, so a worker you parked on `main` stays parked in the new feature rather than quietly coming back. It is a copy, so from then on the two disagree freely — change it in a worktree and you change that feature; change it on `main` and you change `main`. `pithy feature sync` never reimposes `main`'s answer on a feature that has since changed its own, and `pithy feature destroy` takes the feature's answer with the branch.
+- **`--enable-autostart` removes the key** rather than storing `true`, so the file never grows a row per worker per branch for every worker somebody turned off and on again.
+- **Names resolve exactly as a run resolves them** — the deployed name, the `apps/<dir>` basename, or a capability name for a host. An unknown name is refused before anything is written. A capability host can be turned off too: that is an explicit act by somebody who knows its Workflows will not run.
+- **Ports are untouched.** Turning a worker off changes nothing about what any worker is pinned to.
+
+`pithy dev --list` marks such a worker `skipped  off here`, and `pithy worker list` reports it separately from the manifest, so you are never sent to a committed file to undo something that is not written there.
+
+**A leftover `dev.autostart` in a manifest:** `true` is accepted and ignored — `pithy worker add` wrote it into every manifest it ever scaffolded, and it agrees with the answer. `false` is **refused**, naming the command above, because it is the one value somebody chose and silently dropping it would start a worker its owner had turned off.
 
 ### Signing in: press `l`
 
@@ -196,7 +220,8 @@ Written 90 seconds after the last worker is spawned, and every 30 seconds after 
 Written by `pithy dev --list`, which writes this line and nothing else, then exits.
 
 ```json
-{"command":"dev","event":"list","members":[{"name":"api","kind":"app","autostart":true,"starts":true,"port":8787,"origin":"http://localhost:8787"}]}
+{"command":"dev","event":"list","members":[{"name":"api","kind":"app","autostart":true,"autostartLocal":false,"starts":true,"port":8787,"origin":"http://localhost:8787"}]}
+{"command":"dev","event":"autostart","branch":"main","apps":["payments"],"enabled":false,"autostart":{"payments":false}}
 ```
 
 | key | type | meaning |
@@ -205,7 +230,18 @@ Written by `pithy dev --list`, which writes this line and nothing else, then exi
 | `members` | array of object | Every member of the dev set, `apps/` Workers in discovery order followed by the capability hosts. Always the whole set, whatever `--app` names. |
 | `members[].name` | string | The member's name — its deployed name, or a host's capability name. What `--app` accepts, and what `<STEM>_ORIGIN` is derived from. |
 | `members[].kind` | string | `"app"` for a Worker in `apps/`, `"host"` for a composed capability's host Worker. |
-| `members[].autostart` | boolean | Whether a plain `pithy dev` starts it. From `dev.autostart`, which defaults to `true`. |
+| `members[].autostart` | boolean | Whether a plain `pithy dev` starts it. `true` unless this branch has turned it off. |
+| `members[].autostartLocal` | boolean | Whether `autostart` came from this branch's `dev-ports.json` answer rather than being the default. |
+
+One more object, written by `--disable-autostart` and `--enable-autostart` instead of a run:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `event` | string | `autostart`. |
+| `branch` | string | The branch the answer was written under — the `dev-ports.json` key. |
+| `apps` | string[] | The workers it was written for, as `--app` resolved them. Named `apps` and not `workers` because `workers` already means the run's name → `{port, origin}` map on this page, and one key meaning two things on one page is a key nobody can parse. |
+| `enabled` | boolean | `false` for `--disable-autostart`, `true` for `--enable-autostart`. |
+| `autostart` | object | This branch's whole answer after the write: worker name → whether it starts. |
 | `members[].starts` | boolean | Whether *this* invocation would start it: the autostart set, or exactly what `--app` named. |
 | `members[].port` | number or null | The port it would be pinned to, or `null` when the project has no `.dev.config.json` yet. |
 | `members[].origin` | string or null | The address its siblings would reach it at, or `null` when no port is pinned. |

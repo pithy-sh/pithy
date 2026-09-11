@@ -34,7 +34,6 @@ const SOLUTION = `{
 const MANIFEST = `{
   // How pithy dev runs this worker locally.
   "dev": {
-    "autostart": false,
     "readySignal": "Ready on https?://"
   }
 }
@@ -160,10 +159,12 @@ describe("wire", () => {
     await wireManifest(dir, reactStub, "bun");
     const raw = await readFile(join(dir, "pithy.worker.jsonc"), "utf8");
     const manifest = parse(raw) as unknown as {
-      dev: { autostart: boolean; readySignal: string; command: string[] };
+      dev: { autostart?: boolean; readySignal: string; command: string[] };
       ui: { stub: string; build: string[] };
     };
-    expect(manifest.dev.autostart).toBe(true);
+    // `wire` used to force `autostart: true` back on, which was its way of undoing a stale opt-out.
+    // There is nothing to undo now: the key does not decide anything, so wire leaves it alone (#548).
+    expect(manifest.dev.autostart).toBeUndefined();
     expect(manifest.dev.readySignal).toBe("ready in \\d+");
     expect(manifest.dev.command).toEqual([
       "bun",

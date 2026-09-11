@@ -236,7 +236,7 @@ describe("buildEnvInventory — per Worker", () => {
     await writeWorker("api", { name: "acme-api" });
     const webDir = join(dir, "apps", "web");
     await mkdir(webDir, { recursive: true });
-    await writeFile(join(webDir, "pithy.worker.jsonc"), JSON.stringify({ dev: { autostart: true } }));
+    await writeFile(join(webDir, "pithy.worker.jsonc"), JSON.stringify({ dev: {} }));
 
     const inv = await buildEnvInventory({ projectDir: dir, paths: paths(), account: null });
     expect(inv.workers.map((worker) => worker.worker)).toEqual(["acme-api"]);

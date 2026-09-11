@@ -21,12 +21,12 @@ describe("discoverWorkers", () => {
   async function writeWorker(at: string, name: string, dev?: Record<string, unknown>): Promise<void> {
     await mkdir(at, { recursive: true });
     await writeFile(join(at, "wrangler.jsonc"), JSON.stringify({ name }));
-    await writeFile(join(at, "pithy.worker.jsonc"), JSON.stringify({ dev: dev ?? { autostart: true } }));
+    await writeFile(join(at, "pithy.worker.jsonc"), JSON.stringify({ dev: dev ?? {} }));
   }
 
   test("enumerates apps/* workers, named by their wrangler.jsonc, sorted, carrying their dev block", async () => {
-    await writeWorker(join(dir, "apps", "web"), "pithy-web", { autostart: false, readySignal: "Local:\\s+http" });
-    await writeWorker(join(dir, "apps", "api"), "pithy-api", { autostart: true });
+    await writeWorker(join(dir, "apps", "web"), "pithy-web", { readySignal: "Local:\\s+http" });
+    await writeWorker(join(dir, "apps", "api"), "pithy-api", {});
 
     const workers = await discoverWorkers(dir);
 
@@ -34,13 +34,13 @@ describe("discoverWorkers", () => {
       {
         name: "pithy-api",
         dir: join(dir, "apps", "api"),
-        dev: { autostart: true, readySignal: DEFAULT_READY_SIGNAL },
+        dev: { readySignal: DEFAULT_READY_SIGNAL },
         hasWrangler: true,
       },
       {
         name: "pithy-web",
         dir: join(dir, "apps", "web"),
-        dev: { autostart: false, readySignal: "Local:\\s+http" },
+        dev: { readySignal: "Local:\\s+http" },
         hasWrangler: true,
       },
     ]);
@@ -52,7 +52,7 @@ describe("discoverWorkers", () => {
     await mkdir(webDir, { recursive: true });
     await writeFile(
       join(webDir, "pithy.worker.jsonc"),
-      JSON.stringify({ dev: { autostart: true, command: ["bun", "run", "dev"], readySignal: "Local:\\s+http" } }),
+      JSON.stringify({ dev: { command: ["bun", "run", "dev"], readySignal: "Local:\\s+http" } }),
     );
 
     const workers = await discoverWorkers(dir);
@@ -60,7 +60,7 @@ describe("discoverWorkers", () => {
     expect(web).toEqual({
       name: "web",
       dir: webDir,
-      dev: { autostart: true, readySignal: "Local:\\s+http", command: ["bun", "run", "dev"] },
+      dev: { readySignal: "Local:\\s+http", command: ["bun", "run", "dev"] },
       hasWrangler: false,
     });
   });
@@ -77,13 +77,13 @@ describe("discoverWorkers", () => {
       {
         name: "pithy-job",
         dir: join(dir, "apps", "job"),
-        dev: { autostart: true, readySignal: "Local:\\s+http" },
+        dev: { readySignal: "Local:\\s+http" },
         hasWrangler: true,
       },
     ]);
   });
 
-  test("discovers a wrangler-only worker (no manifest) with a synthesized autostart dev block", async () => {
+  test("discovers a wrangler-only worker (no manifest) with a synthesized dev block", async () => {
     const apiDir = join(dir, "apps", "api");
     await mkdir(apiDir, { recursive: true });
     await writeFile(join(apiDir, "wrangler.jsonc"), JSON.stringify({ name: "pithy-api" }));
@@ -93,7 +93,7 @@ describe("discoverWorkers", () => {
       {
         name: "pithy-api",
         dir: apiDir,
-        dev: { autostart: true, readySignal: DEFAULT_READY_SIGNAL },
+        dev: { readySignal: DEFAULT_READY_SIGNAL },
         hasWrangler: true,
       },
     ]);
@@ -112,7 +112,7 @@ describe("discoverWorkers", () => {
     // There is no root worker. A leftover root wrangler.jsonc is not a Worker and must not be discovered,
     // or its capabilities and DO class migrations would attach to a script nothing deploys.
     await writeFile(join(dir, "wrangler.jsonc"), JSON.stringify({ name: "acme" }));
-    await writeWorker(join(dir, "apps", "web"), "acme-web", { autostart: true, readySignal: "Local:\\s+http" });
+    await writeWorker(join(dir, "apps", "web"), "acme-web", { readySignal: "Local:\\s+http" });
 
     const names = (await discoverWorkers(dir)).map((w) => w.name);
     expect(names).toEqual(["acme-web"]);

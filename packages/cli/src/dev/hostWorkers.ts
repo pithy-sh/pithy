@@ -139,15 +139,17 @@ function isMissingConfig(error: unknown): boolean {
 }
 
 /**
- * The dev block a host Worker runs under: it must be up for the local loop to work, so it autostarts.
+ * The dev block a host Worker runs under. A ready signal and nothing else.
  *
- * A claim about hosts, not a reading of `WorkerDev`'s default. A host has no `pithy.worker.jsonc` and
- * therefore no opt-out to honor — its Workflows never run if it does not, which is the whole failure this
- * discovery exists to close. So it stays `true` whatever the schema's default becomes, and it is spelled out
- * here rather than derived so nobody later reads it as drift.
+ * There is no autostart key to set any more (#548): every worker starts, and the only thing that stops
+ * one is this branch's own answer in `dev-ports.json`. A host is reachable by that answer like anything
+ * else — it is keyed on the capability name, which is the name `--app` takes and the name every listing
+ * prints — and it should be: turning off `email` locally is an explicit act by somebody who knows its
+ * Workflows will not run, which is different in kind from the old default that could strand a host by
+ * accident.
  */
 function hostDev(): WorkerTarget["dev"] {
-  return { autostart: true, readySignal: DEFAULT_READY_SIGNAL };
+  return { readySignal: DEFAULT_READY_SIGNAL };
 }
 
 /**

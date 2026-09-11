@@ -75,7 +75,7 @@ beforeEach(async () => {
   workerDir = join(projectDir, "apps", WORKER);
   await mkdir(workerDir, { recursive: true });
   await writeFile(join(workerDir, "wrangler.jsonc"), `{\n  "name": "${DEPLOYED}"\n}\n`);
-  await writeFile(join(workerDir, "pithy.worker.jsonc"), '{\n  "dev": { "autostart": true }\n}\n');
+  await writeFile(join(workerDir, "pithy.worker.jsonc"), '{\n  "dev": {}\n}\n');
   await writeFile(
     join(workerDir, "package.json"),
     `${JSON.stringify({ name: DEPLOYED, scripts: { dev: "wrangler dev" } }, null, 2)}\n`,

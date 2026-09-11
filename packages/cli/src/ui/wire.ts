@@ -134,7 +134,6 @@ export async function wireManifest(workerDir: string, stub: UiStub, packageManag
     });
   }
   const { command, args } = execArgs(packageManager, bin, rest);
-  dev.autostart = true;
   dev.readySignal = stub.readySignal;
   dev.command = [command, ...args];
   document.dev = dev;

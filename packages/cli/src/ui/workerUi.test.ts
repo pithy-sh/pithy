@@ -25,13 +25,13 @@ describe("the ui block of pithy.worker.jsonc", () => {
   test("reads the block from raw JSONC, whatever the Zod manifest schema declares", async () => {
     await writeFile(
       join(dir, "pithy.worker.jsonc"),
-      '{\n  // a note\n  "dev": { "autostart": true },\n  "ui": { "stub": "react", "build": ["vite", "build"] }\n}\n',
+      '{\n  // a note\n  "dev": {},\n  "ui": { "stub": "react", "build": ["vite", "build"] }\n}\n',
     );
     expect(await readWorkerUi(dir)).toEqual({ stub: "react", build: ["vite", "build"] });
   });
 
   test("a worker with a dev block but no ui block has no front end", async () => {
-    await writeFile(join(dir, "pithy.worker.jsonc"), '{\n  "dev": { "autostart": true }\n}\n');
+    await writeFile(join(dir, "pithy.worker.jsonc"), '{\n  "dev": {}\n}\n');
     expect(await readWorkerUi(dir)).toBeNull();
   });
 
@@ -56,18 +56,18 @@ describe("the ui block of pithy.worker.jsonc", () => {
     // An unreadable file is one way to lose the adopter's other blocks; a lossy rebuild is another.
     await writeFile(
       join(dir, "pithy.worker.jsonc"),
-      '{\n  "name": "api",\n  "bindings": { "DB": "pithy-db" },\n  "dev": { "autostart": false }\n}\n',
+      '{\n  "name": "api",\n  "bindings": { "DB": "pithy-db" },\n  "dev": { }\n}\n',
     );
 
     const document = await readManifestDocument(dir);
-    document.dev = { autostart: true };
+    document.dev = {};
     document.ui = { stub: "react", build: ["vite", "build"] };
     await writeManifestDocument(dir, document);
 
     expect(await readManifestDocument(dir)).toEqual({
       name: "api",
       bindings: { DB: "pithy-db" },
-      dev: { autostart: true },
+      dev: {},
       ui: { stub: "react", build: ["vite", "build"] },
     });
   });
@@ -146,7 +146,7 @@ describe("the ui block of pithy.worker.jsonc", () => {
   });
 
   test("writes back comment-preserving, 2-space, trailing newline", async () => {
-    await writeFile(join(dir, "pithy.worker.jsonc"), '{\n  // keep me\n  "dev": { "autostart": false }\n}\n');
+    await writeFile(join(dir, "pithy.worker.jsonc"), '{\n  // keep me\n  "dev": { }\n}\n');
     const document = await readManifestDocument(dir);
     document.ui = { stub: "react", build: ["vite", "build"] };
     await writeManifestDocument(dir, document);

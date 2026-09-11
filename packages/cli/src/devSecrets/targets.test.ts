@@ -34,7 +34,7 @@ async function worker(name: string, config: string): Promise<void> {
   const workerDir = join(dir, "apps", name);
   await mkdir(workerDir, { recursive: true });
   await writeFile(join(workerDir, "wrangler.jsonc"), JSON.stringify({ name: `replay-${name}` }));
-  await writeFile(join(workerDir, "pithy.worker.jsonc"), JSON.stringify({ dev: { autostart: true } }));
+  await writeFile(join(workerDir, "pithy.worker.jsonc"), JSON.stringify({ dev: {} }));
   await writeFile(join(workerDir, "pithy.config.ts"), config);
 }
 
@@ -125,7 +125,7 @@ describe("resolveDevSecretsTargets", () => {
     const workerDir = join(dir, "apps", "site");
     await mkdir(workerDir, { recursive: true });
     await writeFile(join(workerDir, "wrangler.jsonc"), JSON.stringify({ name: "replay-site" }));
-    await writeFile(join(workerDir, "pithy.worker.jsonc"), JSON.stringify({ dev: { autostart: true } }));
+    await writeFile(join(workerDir, "pithy.worker.jsonc"), JSON.stringify({ dev: {} }));
 
     expect(await resolveDevSecretsTargets(dir)).toEqual({ targets: [], unresolvable: [] });
   });

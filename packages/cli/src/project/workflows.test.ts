@@ -62,7 +62,7 @@ async function worker(name: string, wrangler: Record<string, unknown>, jobs?: Re
     join(workerDir, "wrangler.jsonc"),
     `${JSON.stringify({ name: `${PROJECT}-${name}`, ...wrangler }, null, 2)}\n`,
   );
-  await writeFile(join(workerDir, "pithy.worker.jsonc"), '{ "dev": { "autostart": true } }\n');
+  await writeFile(join(workerDir, "pithy.worker.jsonc"), '{ "dev": {} }\n');
   const app = jobs === undefined ? "" : `app: { name: "${name}", workflows: ${JSON.stringify(jobs)} },`;
   await writeFile(
     join(workerDir, "pithy.config.ts"),

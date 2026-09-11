@@ -36,7 +36,7 @@ async function worker(
     join(workerDir, "wrangler.jsonc"),
     `${JSON.stringify({ name: `replay-${name}`, ...wrangler }, null, 2)}\n`,
   );
-  await writeFile(join(workerDir, "pithy.worker.jsonc"), '{ "dev": { "autostart": true } }\n');
+  await writeFile(join(workerDir, "pithy.worker.jsonc"), '{ "dev": {} }\n');
   const declaration = domains === undefined ? "" : `domains: ${JSON.stringify(domains)},`;
   await writeFile(
     join(workerDir, "pithy.config.ts"),

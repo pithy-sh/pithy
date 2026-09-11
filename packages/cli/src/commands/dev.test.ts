@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { stripAnsi } from "../dev/logging";
-import dev, { collectAppFlags } from "./dev";
+import dev, { autostartIntent, collectAppFlags } from "./dev";
 
 /** The args are a static object literal on this command — resolve their type for the assertions. */
 type ArgSpec = { type: string; default?: unknown; description?: string };
@@ -16,7 +16,7 @@ const args = dev.args as Record<string, ArgSpec>;
 describe("dev command", () => {
   test("is an agent-drivable command with a --json surface", () => {
     expect(dev.meta).toMatchObject({ name: "dev" });
-    expect(Object.keys(args)).toEqual(["list", "app", "json"]);
+    expect(Object.keys(args)).toEqual(["list", "app", "disable-autostart", "enable-autostart", "json"]);
     expect(args.list).toMatchObject({ type: "boolean", default: false });
     expect(args.app).toMatchObject({ type: "string" });
     expect(args.json).toMatchObject({ type: "boolean", default: false });
@@ -24,6 +24,51 @@ describe("dev command", () => {
 
   test("says --app is repeatable, because citty's own parse does not make it so", () => {
     expect(args.app?.description).toContain("repeatable");
+  });
+});
+
+/**
+ * **The two flags that write instead of running (#548).**
+ *
+ * They put a line in a file the person never opens, so neither refusal here is pedantry. Both flags at
+ * once has no safe reading — preferring either silently writes the opposite of what half the people who
+ * typed it expected. And the permissive reading of a bare `--disable-autostart`, *every worker*, is the
+ * one answer nobody means: it would park the whole dev set on a flag somebody typed by itself.
+ */
+describe("autostartIntent", () => {
+  test("--disable-autostart with --app means disable", () => {
+    expect(autostartIntent({ disable: true, enable: false, apps: ["payments"] })).toEqual({ enabled: false });
+  });
+
+  test("--enable-autostart with --app means enable", () => {
+    expect(autostartIntent({ disable: false, enable: true, apps: ["payments"] })).toEqual({ enabled: true });
+  });
+
+  test("both at once is refused rather than resolved", () => {
+    expect(() => autostartIntent({ disable: true, enable: true, apps: ["payments"] })).toThrow(ValidationError);
+  });
+
+  // The action line has to name the flag they actually typed, or it reads as advice about the other one.
+  test("neither, without --app, is refused and the remedy names the flag that was typed", () => {
+    const disabling = (() => {
+      try {
+        autostartIntent({ disable: true, enable: false, apps: [] });
+      } catch (error) {
+        return error as ValidationError;
+      }
+      throw new Error("expected a refusal");
+    })();
+    expect(disabling.payload.action).toContain("--disable-autostart");
+
+    const enabling = (() => {
+      try {
+        autostartIntent({ disable: false, enable: true, apps: [] });
+      } catch (error) {
+        return error as ValidationError;
+      }
+      throw new Error("expected a refusal");
+    })();
+    expect(enabling.payload.action).toContain("--enable-autostart");
   });
 });
 
@@ -84,8 +129,8 @@ describe("pithy dev --list", () => {
     );
   }
 
-  /** Run `pithy dev --list` from inside the project, capturing stdout. */
-  async function run(json: boolean, rawArgs: string[] = []): Promise<string> {
+  /** Run `pithy dev` from inside the project with the given args, capturing stdout. */
+  async function invoke(args: Record<string, unknown>, rawArgs: string[] = []): Promise<string> {
     const written: string[] = [];
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
       written.push(String(chunk));
@@ -93,12 +138,27 @@ describe("pithy dev --list", () => {
     });
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
-      await dev.run?.({ args: { list: true, app: undefined, json }, rawArgs } as never);
+      await dev.run?.({
+        args: {
+          list: false,
+          app: undefined,
+          "disable-autostart": false,
+          "enable-autostart": false,
+          json: false,
+          ...args,
+        },
+        rawArgs,
+      } as never);
     } finally {
       stdout.mockRestore();
       stderr.mockRestore();
     }
     return written.join("");
+  }
+
+  /** Run `pithy dev --list` from inside the project, capturing stdout. */
+  async function run(json: boolean, rawArgs: string[] = []): Promise<string> {
+    return invoke({ list: true, json }, rawArgs);
   }
 
   beforeEach(async () => {
@@ -109,6 +169,41 @@ describe("pithy dev --list", () => {
   afterEach(async () => {
     cwd.mockRestore();
     await rm(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * **`--list` describes the run this command would make, so it reads the answer the run reads.**
+   *
+   * It did not, for one commit. `startDev` resolved this branch's `dev-ports.json` answer and
+   * `printDevSet` called `listDevSet` without it, so a worker somebody had turned off still listed as
+   * starting. Every unit test passed: each injected `autostartOverrides` straight into `listDevSet`, and
+   * none of them went through the command, which is the only place the two paths could disagree.
+   *
+   * So this one drives the real `dev.run` twice — once to write, once to read — through a redirected
+   * config directory. Nothing is stubbed between the flag and the file.
+   */
+  test("a worker turned off through the flag is what --list then reports", async () => {
+    await project();
+    const configDir = await mkdtemp(join(tmpdir(), "pithy-dev-cfg-"));
+    const previous = process.env.PITHY_CONFIG_DIR;
+    process.env.PITHY_CONFIG_DIR = configDir;
+    try {
+      await invoke({ "disable-autostart": true }, ["--app", "acme-api", "--disable-autostart"]);
+
+      const listed = stripAnsi(await run(false));
+      expect(listed).toContain("skipped");
+      expect(listed).toContain("off here");
+
+      // And back again — `--enable-autostart` is the undo, not a second kind of write.
+      await invoke({ "enable-autostart": true }, ["--app", "acme-api", "--enable-autostart"]);
+      const after = stripAnsi(await run(false));
+      expect(after).toContain("starts");
+      expect(after).not.toContain("off here");
+    } finally {
+      if (previous === undefined) delete process.env.PITHY_CONFIG_DIR;
+      else process.env.PITHY_CONFIG_DIR = previous;
+      await rm(configDir, { recursive: true, force: true });
+    }
   });
 
   test("--json writes one object naming every member, its kind, and its pinned port", async () => {
@@ -124,6 +219,7 @@ describe("pithy dev --list", () => {
           name: "acme-api",
           kind: "app",
           autostart: true,
+          autostartLocal: false,
           starts: true,
           port: 8787,
           origin: "http://localhost:8787",
