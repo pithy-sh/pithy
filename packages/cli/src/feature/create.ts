@@ -8,7 +8,7 @@ import type { WorkerTarget } from "../project/workers";
 import { seedProject } from "../seed/run";
 import type { DevConfig } from "./devConfig";
 import { syncFeatureDevConfig } from "./sync";
-import { createWorktree, defaultGit, type GitRunner } from "./worktree";
+import { createWorktree, currentBranch, defaultGit, type GitRunner } from "./worktree";
 
 /**
  * `pithy feature create` — the local, automatic half of the lifecycle, run from the main checkout. It
@@ -143,10 +143,15 @@ export async function createFeature(options: CreateFeatureOptions): Promise<Crea
 
   // Reserve the block and pin every worker's port — the same reconciliation `pithy feature sync` runs, so
   // creating and later adding a worker go through one implementation.
+  // The branch the main checkout is on, which is the branch this feature was just cut from — so what a
+  // developer turned off there is carried into the feature rather than silently coming back on.
+  const cutFrom = await currentBranch(git, worktree.root);
+
   const { dev } = await syncFeatureDevConfig({
     mainRoot: worktree.root,
     worktreePath: worktree.wtPath,
     branch: worktree.branch,
+    ...(cutFrom !== null ? { inheritAutostartFrom: cutFrom } : {}),
     ...(options.registryPath !== undefined ? { registryPath: options.registryPath } : {}),
     ...(options.blockSize !== undefined ? { blockSize: options.blockSize } : {}),
     ...(options.discoverWorkers !== undefined ? { discoverWorkers: options.discoverWorkers } : {}),

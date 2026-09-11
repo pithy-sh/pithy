@@ -27,12 +27,27 @@ export const DEV_PORT_TOKEN = "{port}";
 /** How `pithy dev` runs one worker locally: whether it autostarts, what marks it ready, its port, its command. */
 export const WorkerDev = z
   .object({
+    /**
+     * **Removed (#548), and refused rather than ignored.**
+     *
+     * Whether a worker starts locally is not a fact about the project. The manifest is committed and the
+     * same for everyone; which workers one developer is exercising this week is theirs, and putting it
+     * here made it a diff somebody had to review. So every worker autostarts, and the only override is
+     * per branch and per machine in `dev-ports.json` — `pithy dev --app <name> --disable-autostart`.
+     *
+     * **Kept in the schema purely to refuse it.** A `z.object` strips unknown keys, so deleting the field
+     * outright would silently swallow a key somebody wrote — and for `false` that means starting a worker
+     * its owner had turned off, which is the loudest version of the bug #536 fixed, where the *presence*
+     * of a file decided the answer. A key that no longer means anything has to say so, once, in the one
+     * place it is read: `parseWorkerManifest` renders this through `fromZodError` with the command that
+     * replaces it. Nothing reads the value — {@link WorkerDev}'s output has no `autostart` at all.
+     */
     autostart: z
-      .boolean()
-      .default(true)
-      .describe(
-        "Does pithy dev start this worker? It does unless this says otherwise — set false to keep a worker out of the local dev set.",
-      ),
+      .never({
+        error:
+          "dev.autostart was removed — every worker autostarts. Delete the key; to keep one out of your local dev set run `pithy dev --app <name> --disable-autostart`, which is per branch and per machine and is not committed.",
+      })
+      .optional(),
     readySignal: z
       .string()
       .default(DEFAULT_READY_SIGNAL)

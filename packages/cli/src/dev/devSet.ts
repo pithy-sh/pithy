@@ -4,7 +4,6 @@
 import { basename } from "node:path";
 import { NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { loadProject, requireProjectName } from "../project/config";
-import { defaultWorkerDev } from "../project/workerManifest";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "../project/workers";
 import { dim } from "../terminal/style";
 import {
@@ -40,8 +39,20 @@ export interface DevSetMember {
   worker: WorkerTarget;
   /** `app` for an `apps/` Worker, `host` for a composed capability's host Worker. */
   kind: DevMemberKind;
-  /** Whether a plain `pithy dev` starts it — the manifest's `dev.autostart`, which defaults to true. */
+  /**
+   * Whether a plain `pithy dev` starts it.
+   *
+   * **Every worker autostarts.** The only thing that can say otherwise is this branch's own answer in
+   * `dev-ports.json` — per branch, per machine, never committed (#548). There is no project-wide switch:
+   * `dev.autostart` was removed, because which workers one developer is exercising is not a fact about
+   * the project and did not belong in a file everyone shares.
+   *
+   * `--app` is neither of these and sits above both — naming a Worker outright is the more specific act,
+   * and it is how a parked Worker is started for one run.
+   */
   autostart: boolean;
+  /** Whether {@link autostart} came from this branch's `dev-ports.json` answer rather than the manifest. */
+  autostartLocal: boolean;
 }
 
 /** Everything {@link resolveDevSet} needs, every dependency defaulted to its real implementation. */
@@ -52,6 +63,14 @@ export interface DevSetOptions {
   discoverWorkers?: (projectDir: string) => Promise<WorkerTarget[]>;
   /** Seam: the project name every host's derived names lead with. `null` skips the hosts, loudly. */
   projectName?: (projectDir: string) => Promise<string | null>;
+  /**
+   * This branch's local autostart answers, worker name → whether it starts (default: none).
+   *
+   * Passed in rather than read here: resolving it needs the registry path, the checkout root and the
+   * branch, and this module knows none of the three. The caller that already resolves all of them for
+   * the port block is the one that has them.
+   */
+  autostartOverrides?: Readonly<Record<string, boolean>>;
   /** Seam: the host Worker of every capability the project's Workers compose. */
   discoverHostWorkers?: (options: {
     projectDir: string;
@@ -115,11 +134,20 @@ export async function resolveDevSet(options: DevSetOptions): Promise<DevSet> {
           workers: discovered,
         });
 
-  const member = (worker: WorkerTarget, kind: DevMemberKind): DevSetMember => ({
-    worker,
-    kind,
-    autostart: (worker.dev ?? defaultWorkerDev()).autostart,
-  });
+  const overrides = options.autostartOverrides ?? {};
+  const member = (worker: WorkerTarget, kind: DevMemberKind): DevSetMember => {
+    // Looked up by the name every surface prints and every flag accepts, which for a host is the
+    // capability name — the same key `--app` resolves, so what you turned off is what you turned off.
+    const local = Object.hasOwn(overrides, worker.name) ? overrides[worker.name] : undefined;
+    return {
+      worker,
+      kind,
+      // `true`, not a manifest lookup: every worker autostarts, and this branch's answer is the only
+      // thing that can say otherwise (#548). `--app` is above both and is applied by the caller.
+      autostart: local ?? true,
+      autostartLocal: local !== undefined,
+    };
+  };
 
   return {
     project,

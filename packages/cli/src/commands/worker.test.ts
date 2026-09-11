@@ -33,7 +33,7 @@ async function project(domains: string): Promise<string> {
     join(workerDir, "wrangler.jsonc"),
     `${JSON.stringify({ name: "replay-board", env: { prod: { vars: { ENVIRONMENT: "prod" } } } }, null, 2)}\n`,
   );
-  await writeFile(join(workerDir, "pithy.worker.jsonc"), '{ "dev": { "autostart": true } }\n');
+  await writeFile(join(workerDir, "pithy.worker.jsonc"), '{ "dev": {} }\n');
   await writeFile(
     join(workerDir, "pithy.config.ts"),
     `const config = {\n  domains: ${domains},\n  capabilities: []\n};\nexport default config;\n`,

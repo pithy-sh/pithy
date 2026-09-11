@@ -77,6 +77,13 @@ export interface SyncFeatureOptions {
   branch: string;
   /** Ports per block, when a block still has to be reserved. */
   blockSize?: number;
+  /**
+   * The branch this feature was cut from, whose local autostart answer a **new** block entry copies.
+   *
+   * Only the creating allocation reads it, so `pithy feature sync` on an existing feature can pass it
+   * freely and never has its own answer overwritten by the branch it came from.
+   */
+  inheritAutostartFrom?: string;
   /** Worker-discovery seam (default: `discoverWorkers`). */
   discoverWorkers?: (projectDir: string) => Promise<WorkerTarget[]>;
 }
@@ -128,6 +135,7 @@ export async function syncFeatureDevConfig(options: SyncFeatureOptions): Promise
     root: options.mainRoot,
     branch: options.branch,
     ...(options.blockSize !== undefined ? { size: options.blockSize } : {}),
+    ...(options.inheritAutostartFrom !== undefined ? { inheritAutostartFrom: options.inheritAutostartFrom } : {}),
   });
 
   const workers = await (options.discoverWorkers ?? discoverWorkersDefault)(options.worktreePath);

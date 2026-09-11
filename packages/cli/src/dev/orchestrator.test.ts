@@ -53,13 +53,13 @@ const workers: WorkerTarget[] = [
     name: "api",
     dir: "/proj/apps/api",
     hasWrangler: true,
-    dev: { autostart: true, readySignal: "Ready on https?://" },
+    dev: { readySignal: "Ready on https?://" },
   },
   {
     name: "web",
     dir: "/proj/apps/web",
     hasWrangler: false,
-    dev: { autostart: true, readySignal: "ready in \\d+", command: ["vite", "--host"] },
+    dev: { readySignal: "ready in \\d+", command: ["vite", "--host"] },
   },
 ];
 
@@ -1160,7 +1160,7 @@ describe("startDev — the .dev.vars a checkout cannot inherit", () => {
         projectDir: dir,
         checkEntitlements: async () => [],
         discoverWorkers: async () => [
-          { name: "api", dir: apiDir, hasWrangler: true, dev: { autostart: true, readySignal: "Ready on https?://" } },
+          { name: "api", dir: apiDir, hasWrangler: true, dev: { readySignal: "Ready on https?://" } },
         ],
         loadDevConfig: async () => ({ ...config, workers: { api: { port: 8787, origin: "http://localhost:8787" } } }),
         generateDevVars: (projectDir, workerDirs) =>
@@ -1288,7 +1288,7 @@ describe("startDev — naming what starts", () => {
       name: "email",
       dir: "/proj/.wrangler/pithy/hosts/email",
       hasWrangler: true,
-      dev: { autostart: true, readySignal: "Ready on https?://" },
+      dev: { readySignal: "Ready on https?://" },
     },
   };
 
@@ -1308,14 +1308,10 @@ describe("startDev — naming what starts", () => {
     expect(h.spawned.map((s) => s.opts.cwd)).toEqual(["/proj/apps/web"]);
   });
 
-  test("starts a named worker whatever its dev.autostart says", async () => {
-    const manual: WorkerTarget[] = [
-      workers[0] as WorkerTarget,
-      { ...(workers[1] as WorkerTarget), dev: { autostart: false, readySignal: "ready in \\d+", command: ["vite"] } },
-    ];
-    const h = harness({ discoverWorkers: async () => manual });
+  test("starts a named worker even when this branch has turned it off", async () => {
+    const h = harness({});
 
-    const handle = await startDev({ ...h.options, apps: ["web"] });
+    const handle = await startDev({ ...h.options, apps: ["web"], autostartOverrides: { web: false } });
 
     expect(handle.workers.map((w) => w.name)).toEqual(["web"]);
   });
@@ -1401,19 +1397,14 @@ describe("startDev — naming what starts", () => {
     }
   });
 
-  test("names an unpinned worker that had opted out, and it gets a port rather than a refusal", async () => {
-    // `unpinned` is computed over every member, not over the autostart set — an opted-out or newly added
+  test("names a worker this branch turned off that has no pin, and it gets a port rather than a refusal", async () => {
+    // `unpinned` is computed over every member, not over the autostart set — a turned-off or newly added
     // worker is invisible to that filter, so the bootstrap is skipped, `config` stays the partial one,
     // and the run dies on `no port in .dev.config.json`, whose action says to delete the file and
     // renumber everything.
-    const manual: WorkerTarget[] = [
-      workers[0] as WorkerTarget,
-      { ...(workers[1] as WorkerTarget), dev: { autostart: false, readySignal: "ready in \\d+", command: ["vite"] } },
-    ];
     const partial: DevConfig = { ...config, workers: { api: config.workers.api as DevConfig["workers"][string] } };
     const ensure = vi.fn(async () => config);
     const h = harness({
-      discoverWorkers: async () => manual,
       loadDevConfig: async () => partial,
       ensureDevConfig: ensure,
     });
@@ -1450,14 +1441,15 @@ describe("startDev — naming what starts", () => {
   });
 
   test("the app it builds links against is one a plain run would start, not merely one with a port", async () => {
-    // `admin` sorts first and is pinned, but it has opted out — so it is not where the app answers.
+    // `admin` sorts first and is pinned, but this branch turned it off — so it is not where the app
+    // answers.
     // Picking it would make `pithy dev` and `pithy dev --app email` disagree about the same project,
     // and mail a magic link to an address nobody runs.
     const admin: WorkerTarget = {
       name: "admin",
       dir: "/proj/apps/admin",
       hasWrangler: true,
-      dev: { autostart: false, readySignal: "Ready on https?://" },
+      dev: { readySignal: "Ready on https?://" },
     };
     const seen: MaterializeHostConfigsOptions[] = [];
     const h = hosted({
@@ -1472,29 +1464,28 @@ describe("startDev — naming what starts", () => {
       },
     });
 
-    await startDev({ ...h.options, apps: ["email"] });
+    await startDev({ ...h.options, apps: ["email"], autostartOverrides: { admin: false } });
 
     expect(seen[0]?.baseUrl).toBe("http://localhost:8787");
   });
 
   test("falls back to any pinned app when no app autostarts — never to the host's own address", async () => {
-    // Every app Worker opted out (run by hand under a debugger, say), so there is no autostart app to
-    // prefer. The chain used to end at `started[0]`, which in this run is the host itself — a Worker
-    // holding no public route, and the exact failure the fallback exists to prevent.
-    const manual: WorkerTarget[] = workers.map((w) => ({
-      ...w,
-      dev: { ...(w.dev ?? { readySignal: "x" }), autostart: false },
-    }));
+    // Every app Worker turned off on this branch (run by hand under a debugger, say), so there is no
+    // autostart app to prefer. The chain used to end at `started[0]`, which in this run is the host
+    // itself — a Worker holding no public route, and the exact failure the fallback exists to prevent.
     const seen: MaterializeHostConfigsOptions[] = [];
     const h = hosted({
-      discoverWorkers: async () => manual,
       materializeHostConfigs: async (o) => {
         seen.push(o);
         return { notes: [], failed: [] };
       },
     });
 
-    await startDev({ ...h.options, apps: ["email"] });
+    await startDev({
+      ...h.options,
+      apps: ["email"],
+      autostartOverrides: Object.fromEntries(workers.map((w) => [w.name, false])),
+    });
 
     expect(seen[0]?.baseUrl).toBe("http://localhost:8787");
   });
@@ -1539,7 +1530,7 @@ describe("startDev — capability hosts", () => {
       name: "email",
       dir: "/proj/.wrangler/pithy/hosts/email",
       hasWrangler: true,
-      dev: { autostart: true, readySignal: "Ready on https?://" },
+      dev: { readySignal: "Ready on https?://" },
     },
   };
 

@@ -36,7 +36,7 @@ pithy worker sync [--worker <name>] [--env <environment>] [--json]
 
 One gap, stated rather than hidden: `add` writes the new Worker's `tsconfig.json` but does **not** add it to the root solution file. Add the reference yourself, or that Worker's source is typechecked by nothing (`docs/CLI.md` §1.3).
 
-**`list`** reports the discovered Workers with their autostart state and pinned dev port. It is the **registry view** — which Workers exist under `apps/`, which have opted out of the local dev set, which port each holds. For the **run view** — what `pithy dev` would actually start, capability hosts included — use `pithy dev --list` ([`commands/dev.md`](dev.md)). Two commands, two questions.
+**`list`** reports the discovered Workers with their autostart state and pinned dev port. It is the **registry view** — which Workers exist under `apps/`, which you have kept out of your local dev set, which port each holds. Every Worker autostarts; a Worker you have turned off on this branch reads `off here`, because that decision is yours and is not in any committed file ([`commands/dev.md`](dev.md#keeping-a-worker-out-of-your-dev-set)). For the **run view** — what `pithy dev` would actually start, capability hosts included — use `pithy dev --list` ([`commands/dev.md`](dev.md)). Two commands, two questions.
 
 **`remove`** deletes `apps/<name>/` and releases its port back to the feature's block. The target is resolved from the discovered set and restricted to `apps/*`, so nothing outside it can be addressed. Your data is untouched: this deletes a directory, not a database.
 
@@ -84,7 +84,7 @@ $ pithy worker add web --json
 
 ```
 $ pithy worker list --json
-{"command":"worker.list","workers":[{"worker":"api","deployedAs":"acme-api","dir":"/repo/apps/api","autostart":true,"hasWrangler":true,"port":8787}]}
+{"command":"worker.list","workers":[{"worker":"api","deployedAs":"acme-api","dir":"/repo/apps/api","autostart":true,"autostartLocal":null,"hasWrangler":true,"port":8787}]}
 ```
 
 | key | type | meaning |
@@ -94,7 +94,8 @@ $ pithy worker list --json
 | `workers[].worker` | `string` | The Worker's `apps/` directory |
 | `workers[].deployedAs` | `string` | The Worker's `wrangler.jsonc` `name` — the deployed script name — or the directory basename when the file declares none |
 | `workers[].dir` | `string` | The Worker's directory |
-| `workers[].autostart` | `boolean` | Whether `pithy dev` starts it. From the Worker's `pithy.worker.jsonc` `dev.autostart`, which defaults to `true` — set it `false` to keep a Worker out of the local dev set |
+| `workers[].autostart` | `boolean` | Whether `pithy dev` starts it. `true` unless you have turned it off on this branch |
+| `workers[].autostartLocal` | `boolean \| null` | `null` when nothing local was set, so `autostart` is the default. Otherwise what this branch said, on this machine — see [`commands/dev.md`](dev.md#keeping-a-worker-out-of-your-dev-set) |
 | `workers[].hasWrangler` | `boolean` | Whether the directory holds a `wrangler.jsonc`. `false` means a non-Worker process in the dev set, which `pithy deploy` skips |
 | `workers[].port` | `number \| null` | The port pinned in `.dev.config.json`, or `null` when none is assigned — a plain checkout, or an unassigned Worker |
 

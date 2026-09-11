@@ -81,7 +81,7 @@ describe("startCommand", () => {
       name: "api",
       dir: "/p/apps/api",
       hasWrangler: true,
-      dev: { autostart: true, readySignal: "Ready on https?://" },
+      dev: { readySignal: "Ready on https?://" },
     };
     expect(startCommand(worker, 8787, "http://localhost:8787", launch, "/p/.wrangler/state", {})).toEqual({
       command: "bun",
@@ -148,7 +148,7 @@ describe("startCommand", () => {
         name: "web",
         dir: "/p/apps/web",
         hasWrangler: false,
-        dev: { autostart: true, readySignal: "ready", command: ["vite", "--host"] },
+        dev: { readySignal: "ready", command: ["vite", "--host"] },
       };
       expect(startCommand(web, 5173, "http://localhost:5173", launch, "/p/state", {})).toEqual({
         command: "vite",
@@ -194,7 +194,7 @@ describe("startCommand", () => {
         name: "web",
         dir: "/p/apps/web",
         hasWrangler: false,
-        dev: { autostart: true, readySignal: "ready", command: ["vite", "--host"] },
+        dev: { readySignal: "ready", command: ["vite", "--host"] },
       };
       expect(startCommand(web, 5173, "http://localhost:5173", launch, "/p/state", { CI: "true" })).toEqual({
         command: "vite",
@@ -236,7 +236,7 @@ describe("startCommand", () => {
         name: "web",
         dir: "/p/apps/web",
         hasWrangler: false,
-        dev: { autostart: true, readySignal: "ready", command: ["vite", "--host"] },
+        dev: { readySignal: "ready", command: ["vite", "--host"] },
       };
       expect(startCommand(web, 5173, "http://localhost:5173", launch, "/p/state", {}, { email: 8797 }).args).toEqual([
         "--host",
@@ -268,7 +268,7 @@ describe("startCommand", () => {
       name: "web",
       dir: "/p/apps/web",
       hasWrangler: false,
-      dev: { autostart: true, readySignal: "ready in", command: ["vite", "--host"] },
+      dev: { readySignal: "ready in", command: ["vite", "--host"] },
     };
     expect(startCommand(worker, 5173, "http://localhost:5173", launch, "/p/.wrangler/state", {})).toEqual({
       command: "vite",
@@ -284,7 +284,6 @@ describe("startCommand", () => {
       dir: "/p/apps/web",
       hasWrangler: true,
       dev: {
-        autostart: true,
         readySignal: "ready in \\d+",
         command: ["bun", "x", "vite", "dev", "--strictPort", "--port", "{port}"],
       },
@@ -301,7 +300,6 @@ describe("startCommand", () => {
       dir: "/p/apps/web",
       hasWrangler: false,
       dev: {
-        autostart: true,
         readySignal: "ready",
         command: ["serve", "--port={port}", "--origin=http://localhost:{port}/{port}"],
       },

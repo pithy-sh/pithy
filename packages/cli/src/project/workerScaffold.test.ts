@@ -43,9 +43,11 @@ describe("scaffoldWorker", () => {
     expect(wrangler.env.prod).toBeDefined();
 
     const manifest = parse(await readFile(join(workerDir, "pithy.worker.jsonc"), "utf8")) as unknown as {
-      dev: { autostart: boolean; readySignal: string };
+      dev: { autostart?: boolean; readySignal: string };
     };
-    expect(manifest.dev.autostart).toBe(true);
+    // The scaffolder stopped writing it (#548): a fresh manifest carries no autostart key, because
+    // there is no longer a project-wide answer for it to state.
+    expect(manifest.dev.autostart).toBeUndefined();
     expect(manifest.dev.readySignal).toBe("Ready on https?://");
 
     const pkg = JSON.parse(await readFile(join(workerDir, "package.json"), "utf8")) as { name: string };

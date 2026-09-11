@@ -1462,6 +1462,7 @@ function sharedKeys(pages: Record<string, string[]>): Record<string, string[]> {
  * would have said it. Neither claim can be made by accident, which is the whole point.
  */
 const SHARED_JSON_KEYS: Record<string, string[]> = {
+  branch: ["dev", "feature"],
   alias: ["alias", "doctor"],
   changed: ["secrets", "ui"],
   command: [
@@ -1543,6 +1544,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
  * type is telling the truth about how much it says.
  */
 const SHARED_JSON_KEY_TYPES: Record<string, string> = {
+  branch: "string",
   changed: "boolean",
   command: "string",
   deployedAs: "string",

@@ -16,30 +16,33 @@ import {
 } from "./workerManifest";
 
 describe("WorkerManifest", () => {
-  test("an absent dev block autostarts — the key is an opt-out, not an opt-in", () => {
-    const manifest = WorkerManifest.parse({});
-    expect(manifest.dev).toEqual({ autostart: true, readySignal: DEFAULT_READY_SIGNAL });
-  });
-
-  // The case the outer block default used to mask: a manifest that exists and omits `autostart` must
-  // read exactly like one that is absent, or writing a readySignal silently drops a Worker from the set.
-  test("a dev block that omits autostart autostarts too", () => {
+  // The manifest has no say in whether a worker starts any more (#548). It describes how a worker is
+  // run — its ready signal, its command — and nothing it can contain keeps a worker out of the dev set.
+  test("a parsed dev block carries no autostart at all", () => {
+    expect(WorkerManifest.parse({}).dev).toEqual({ readySignal: DEFAULT_READY_SIGNAL });
     expect(WorkerManifest.parse({ dev: { readySignal: "Local:\\s+http" } }).dev).toEqual({
-      autostart: true,
       readySignal: "Local:\\s+http",
     });
   });
 
-  test("an explicit false is the opt-out, and it still keeps a worker out", () => {
-    expect(WorkerManifest.parse({ dev: { autostart: false } }).dev.autostart).toBe(false);
+  // Refused whatever its value. The key decides nothing now, and a `z.object` would strip it in
+  // silence — which for `false` means starting a worker its owner had turned off, the loudest version
+  // of the bug #536 fixed. One project exists and it has one such key; the refusal is how it gets
+  // deleted rather than quietly ignored forever.
+  test.each([true, false])("an autostart key is refused, whatever its value (%s)", (value) => {
+    const result = WorkerManifest.safeParse({ dev: { autostart: value, readySignal: "x" } });
+
+    expect(result.success).toBe(false);
+    const message = JSON.stringify(result.error?.issues);
+    expect(message).toContain("dev.autostart was removed");
+    expect(message).toContain("--disable-autostart");
   });
 
   test("keeps a declared command and preferredPort", () => {
     const manifest = WorkerManifest.parse({
-      dev: { autostart: true, command: ["bun", "run", "dev"], preferredPort: 5173 },
+      dev: { command: ["bun", "run", "dev"], preferredPort: 5173 },
     });
     expect(manifest.dev).toEqual({
-      autostart: true,
       readySignal: DEFAULT_READY_SIGNAL,
       command: ["bun", "run", "dev"],
       preferredPort: 5173,
@@ -54,7 +57,7 @@ describe("WorkerManifest", () => {
     expect(WorkerManifest.parse({}).ui).toBeUndefined();
     expect(
       WorkerManifest.parse({
-        dev: { autostart: true, command: ["bun", "x", "vite", "dev", "--port", DEV_PORT_TOKEN] },
+        dev: { command: ["bun", "x", "vite", "dev", "--port", DEV_PORT_TOKEN] },
         ui: { stub: "react", build: ["vite", "build"] },
       }).ui,
     ).toEqual({ stub: "react", build: ["vite", "build"] });
@@ -78,7 +81,7 @@ describe("WorkerManifest", () => {
 
 describe("defaultWorkerDev", () => {
   test("reports exactly the schema's own defaults", () => {
-    expect(defaultWorkerDev()).toEqual({ autostart: true, readySignal: DEFAULT_READY_SIGNAL });
+    expect(defaultWorkerDev()).toEqual({ readySignal: DEFAULT_READY_SIGNAL });
   });
 });
 
@@ -96,12 +99,8 @@ describe("parseWorkerManifest", () => {
   });
 
   test("parses a commented JSONC manifest", async () => {
-    await writeFile(
-      join(dir, "pithy.worker.jsonc"),
-      '{\n  // the api worker\n  "dev": { "autostart": true, "preferredPort": 8787 }\n}\n',
-    );
+    await writeFile(join(dir, "pithy.worker.jsonc"), '{\n  // the api worker\n  "dev": { "preferredPort": 8787 }\n}\n');
     const manifest = await parseWorkerManifest(dir);
-    expect(manifest?.dev.autostart).toBe(true);
     expect(manifest?.dev.preferredPort).toBe(8787);
   });
 
@@ -109,7 +108,7 @@ describe("parseWorkerManifest", () => {
     await writeFile(
       join(dir, "pithy.worker.jsonc"),
       JSON.stringify({
-        dev: { autostart: true, command: ["bun", "x", "vite", "dev", "--strictPort", "--port", "{port}"] },
+        dev: { command: ["bun", "x", "vite", "dev", "--strictPort", "--port", "{port}"] },
         ui: { stub: "react", build: ["vite", "build"] },
       }),
     );
@@ -129,7 +128,7 @@ describe("parseWorkerManifest", () => {
   });
 
   test("throws on a schema violation", async () => {
-    await writeFile(join(dir, "pithy.worker.jsonc"), JSON.stringify({ dev: { autostart: "yes" } }));
+    await writeFile(join(dir, "pithy.worker.jsonc"), JSON.stringify({ dev: { readySignal: 42 } }));
     await expect(parseWorkerManifest(dir)).rejects.toThrow(/invalid/);
   });
 

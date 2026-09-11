@@ -1,10 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { execFile, spawn as spawnChild } from "node:child_process";
+import { spawn as spawnChild } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { promisify } from "node:util";
 import { isContinuousIntegration } from "@pithy-sh/core/src/env/ci";
 import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { DevLogin } from "@pithy-sh/core/src/seed/devLogin";
@@ -25,9 +24,11 @@ import {
   allocatePortBlock,
   type PortBlock,
   portsRegistryPath,
+  readWorkerAutostart,
   reclaimPortBlocks,
   registryRootFor,
 } from "../feature/ports";
+import { currentBranch, defaultGit } from "../feature/worktree";
 import { allCapabilities, loadWorkerConfig } from "../project/config";
 import { detectPackageManager, execArgs } from "../project/packageManager";
 import { defaultWorkerDev } from "../project/workerManifest";
@@ -103,7 +104,7 @@ export interface StartDevOptions {
   json?: boolean;
   /**
    * Start exactly these members — `--app`, repeatable. A name is the deployed name, the `apps/<dir>`
-   * basename, or a capability name for a host, and it starts that member whatever its `dev.autostart`
+   * basename, or a capability name for a host, and it starts that member whatever this branch
    * says. Empty starts the autostart set. It narrows what runs; it never narrows what gets a port.
    */
   apps?: readonly string[];
@@ -130,6 +131,14 @@ export interface StartDevOptions {
   ensureDevConfig?: (options: EnsureDevConfigOptions) => Promise<DevConfig>;
   /** Seams handed to the real {@link ensureDevConfig} (git branch, registry path, write). */
   ensureDeps?: EnsureDevConfigDeps;
+  /**
+   * This branch's local autostart answers (default: read from the port registry).
+   *
+   * A seam, and the only one that could make the resolution testable at this level: the registry read
+   * needs a config directory, a git checkout and a branch, and a test driving `startDev` has none of
+   * the three. Given, it is used as-is and nothing is read.
+   */
+  autostartOverrides?: Readonly<Record<string, boolean>>;
   tryBind?: TryBind;
   /** Reap our own orphans on the pinned ports. `knownPids` are the previous session's recorded children. */
   sweep?: (ports: number[], knownPids: readonly number[]) => Promise<number[]>;
@@ -204,8 +213,6 @@ const spawnDefault: SpawnDev = (command, args, options) =>
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-const execFileAsync = promisify(execFile);
-
 /** Seams for {@link ensureDevConfig} — the git and registry lookups a test drives itself. */
 export interface EnsureDevConfigDeps {
   /** Resolve the machine's registry file (default: `<config>/dev-ports.json`). */
@@ -233,14 +240,44 @@ async function defaultRegistryPath(_projectDir: string): Promise<string> {
   return portsRegistryPath();
 }
 
-/** The current branch, or `null` when there is no repo or HEAD is detached. */
+/**
+ * The current branch, or `null` when there is no repo or HEAD is detached.
+ *
+ * One `rev-parse`, in `feature/worktree.ts` beside every other git lookup this package makes. This was
+ * the second of three copies; `project/workerCommand.ts` held the third, and #548 would have added a
+ * fourth. Identical semantics — `defaultGit` trims, and an empty or detached answer is `null`.
+ */
 async function defaultBranch(projectDir: string): Promise<string | null> {
+  return currentBranch(defaultGit, projectDir);
+}
+
+/**
+ * This branch's local autostart answers, from the registry the port block already lives in.
+ *
+ * The three keys are resolved exactly as {@link ensureDevConfig} resolves them for the block, through
+ * the same seams — a test that redirects the registry gets this redirected with it, and there is no
+ * second derivation of *which branch am I* to disagree with the first.
+ *
+ * Off a branch the key is the checkout path, the same fallback the block uses. Two checkouts of one
+ * repository in detached HEAD are two keys, which is the answer a developer would expect and the one
+ * the ports already give.
+ */
+async function resolveAutostartOverrides(options: StartDevOptions): Promise<Record<string, boolean>> {
+  if (options.autostartOverrides !== undefined) return { ...options.autostartOverrides };
+  const deps = options.ensureDeps ?? {};
   try {
-    const { stdout } = await execFileAsync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: projectDir });
-    const branch = stdout.trim();
-    return branch === "" || branch === "HEAD" ? null : branch;
+    const registryPath = await (deps.registryPathFor ?? defaultRegistryPath)(options.projectDir);
+    const root = await (deps.rootFor ?? registryRootFor)(options.projectDir);
+    const named = await (deps.branchFor ?? defaultBranch)(options.projectDir);
+    return await readWorkerAutostart({
+      registryPath,
+      root,
+      branch: named ?? `local:${options.projectDir}`,
+    });
   } catch {
-    return null;
+    // A checkout with no registry, no repository, or no readable config directory starts everything —
+    // the state every project was in before this existed, and never a reason to refuse a dev run.
+    return {};
   }
 }
 
@@ -385,9 +422,14 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   // 1. Resolve the dev set — `apps/` plus the host Worker of every capability those Workers compose
   //    (pithy-sh/pithy#410). Through `resolveDevSet`, which is the one place membership is decided, so
   //    `pithy dev --list` describes the run this function makes rather than a second guess at it.
+  //    This branch's own answer about what starts (#549) is resolved here, from the same three values the
+  //    port block is keyed on. Best effort by construction: `readWorkerAutostart` never throws, so a
+  //    registry that will not parse leaves every Worker starting — which is what it meant before.
+  const overrides = await resolveAutostartOverrides(options);
   const set = await resolveDevSet({
     projectDir,
     discoverWorkers,
+    autostartOverrides: overrides,
     ...(options.projectName ? { projectName: options.projectName } : {}),
     ...(options.discoverHostWorkers ? { discoverHostWorkers: options.discoverHostWorkers } : {}),
   });
@@ -396,7 +438,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   const discovered = set.members.filter((m) => m.kind === "app").map((m) => m.worker);
   const members = set.members.map((m) => m.worker);
 
-  //    What this run starts. `--app` names members outright — whatever their `dev.autostart` says, since
+  //    What this run starts. `--app` names members outright — whatever this branch turned off, since
   //    naming one is the more specific act — and it is literal: no composed host comes along for the
   //    ride. Every name is resolved here, above every write below, so an unknown one refuses the run
   //    rather than letting half of it start and then die.
@@ -406,7 +448,7 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
   if (selected.length === 0) {
     throw new ValidationError({
       message: "No autostart workers to run.",
-      action: "Add one with pithy worker add, or set dev.autostart in a worker's pithy.worker.jsonc.",
+      action: "Add one with pithy worker add, or re-enable one with pithy dev --app <name> --enable-autostart.",
     });
   }
 

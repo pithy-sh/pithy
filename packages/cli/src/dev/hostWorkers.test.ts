@@ -18,8 +18,8 @@ import { discoverHostWorkers, hostWorkerDir, materializeHostConfigs } from "./ho
 
 /** Two app Workers, the shape `discoverWorkers` hands back. */
 const apps: WorkerTarget[] = [
-  { name: "api", dir: "/proj/apps/api", hasWrangler: true, dev: { autostart: true, readySignal: "Ready on" } },
-  { name: "web", dir: "/proj/apps/web", hasWrangler: false, dev: { autostart: true, readySignal: "ready in" } },
+  { name: "api", dir: "/proj/apps/api", hasWrangler: true, dev: { readySignal: "Ready on" } },
+  { name: "web", dir: "/proj/apps/web", hasWrangler: false, dev: { readySignal: "ready in" } },
 ];
 
 /** A composed capability, minimally what discovery matches on. */
@@ -50,7 +50,10 @@ describe("discoverHostWorkers", () => {
     // The name is the wire: `buildWorkerEnv` derives `EMAIL_ORIGIN` from it, and that is the address
     // the loopback dispatcher reads. Anything else and the app Worker looks up a key nobody publishes.
     expect(found.hosts[0]?.worker.dir).toBe(hostWorkerDir("/proj", "email"));
-    expect(found.hosts[0]?.worker.dev?.autostart).toBe(true);
+    // No autostart key on a host either (#548) — every worker starts, and only this branch's own
+    // answer says otherwise. What a host's dev block carries is the signal that marks it ready.
+    expect(found.hosts[0]?.worker.dev?.autostart).toBeUndefined();
+    expect(found.hosts[0]?.worker.dev?.readySignal).toBeTruthy();
     expect(found.hosts[0]?.worker.hasWrangler).toBe(true);
   });
 
@@ -113,7 +116,7 @@ describe("discoverHostWorkers", () => {
   test("an apps/ Worker already holding a host's name is refused, never silently shadowed", async () => {
     await expect(
       discover({ "/proj/apps/api": ["email"] }, [
-        { name: "email", dir: "/proj/apps/email", hasWrangler: true, dev: { autostart: true, readySignal: "x" } },
+        { name: "email", dir: "/proj/apps/email", hasWrangler: true, dev: { readySignal: "x" } },
         ...apps,
       ]),
     ).rejects.toThrow(ValidationError);

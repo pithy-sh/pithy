@@ -10,13 +10,13 @@ import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { generateDevVars } from "../devSecrets/generate";
 import { devConfigPath, readDevConfig } from "../feature/devConfig";
+import { portsRegistryPath, readWorkerAutostart, registryRootFor } from "../feature/ports";
 import { syncFeatureDevConfig } from "../feature/sync";
-import { defaultGit, type GitRunner, mainRepoRoot } from "../feature/worktree";
+import { defaultGit, type GitRunner, mainRepoRoot, currentBranch as sharedCurrentBranch } from "../feature/worktree";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "./config";
 import { detectPackageManager } from "./packageManager";
 import { ensureScaffoldPath, pathExists, removeScaffoldPath, WORKER_NAME } from "./scaffold";
 import { type WorkerIdentity, workerIdentity } from "./workerIdentity";
-import { defaultWorkerDev } from "./workerManifest";
 import { scaffoldWorker } from "./workerScaffold";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
@@ -44,9 +44,19 @@ const defaultInstall: WorkspaceInstall = async (projectDir) => {
   }
 };
 
-/** The current branch name, e.g. `feature/73-cli-commands` — the port registry's key for a feature worktree. */
+/**
+ * The current branch name, e.g. `feature/73-cli-commands` — the port registry's key for a worktree.
+ *
+ * Delegates to `feature/worktree.ts`, which is where every other git lookup in this package lives. It
+ * was a third copy of one `rev-parse` until #548 needed a fourth; `dev/orchestrator.ts` had the second.
+ *
+ * `?? "HEAD"` keeps this caller's contract exactly as it was — the shared resolver reports a detached
+ * HEAD as `null`, and the raw command reported the literal string `HEAD`. Both are equally poor registry
+ * keys and neither is this change's business to improve, so the behavior is preserved rather than
+ * quietly altered underneath `worker add`.
+ */
 async function currentBranch(git: GitRunner, cwd: string): Promise<string> {
-  return git(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+  return (await sharedCurrentBranch(git, cwd)) ?? "HEAD";
 }
 
 /** Shared seams every worker command accepts, so the flows are testable without git, install, or discovery. */
@@ -59,6 +69,14 @@ interface WorkerContext {
   branch?: string;
   git?: GitRunner;
   discoverWorkers?: DiscoverWorkers;
+  /**
+   * The port registry file (default: `<config>/dev-ports.json`).
+   *
+   * A seam so a test never reads or writes the developer's real one — the same reason `feature/sync.ts`
+   * takes it. Without it `listWorkers` could not be tested at all against a branch that has turned a
+   * worker off, which is the state #548 exists to produce.
+   */
+  registryPath?: string;
 }
 
 /**
@@ -211,10 +229,40 @@ export async function addWorker(options: AddWorkerOptions): Promise<AddWorkerRep
   }
 }
 
+/**
+ * This branch's local autostart answers, or `{}` when it has none and when anything at all goes wrong.
+ *
+ * A listing is a read-only report and must survive a broken machine: no repository, no config directory,
+ * a registry somebody hand-edited. Each of those means *nothing local was said*, which is the same thing
+ * an empty registry means and produces a listing identical to the one this command gave before #548.
+ */
+async function localAutostart(options: WorkerContext): Promise<Record<string, boolean>> {
+  try {
+    const branch = options.branch ?? (await sharedCurrentBranch(options.git ?? defaultGit, options.projectDir));
+    return await readWorkerAutostart({
+      registryPath: options.registryPath ?? portsRegistryPath(),
+      root: options.mainRoot ?? (await registryRootFor(options.projectDir)),
+      branch: branch ?? `local:${options.projectDir}`,
+    });
+  } catch {
+    return {};
+  }
+}
+
 /** One row of {@link listWorkers}: a worker's two names, dir, whether it autostarts, and its pinned dev port. */
 export interface WorkerListing extends WorkerIdentity {
   dir: string;
+  /** Whether `pithy dev` on this branch starts it: `true` unless this branch has said otherwise. */
   autostart: boolean;
+  /**
+   * What *this* branch says on *this* machine, when it has said anything (#548).
+   *
+   * `null` is the ordinary case and means nothing local was set, so {@link autostart} is the answer.
+   * Kept beside the manifest's value rather than replacing it, because `pithy worker list` is the
+   * registry view — it reports what a worker *is*, and one developer's local narrowing is not that. A
+   * reader has to be able to see both to know which file to edit.
+   */
+  autostartLocal: boolean | null;
   hasWrangler: boolean;
   /** The port pinned in `.dev.config.json`, or null when none is assigned (a plain checkout, or unassigned). */
   port: number | null;
@@ -225,13 +273,17 @@ export async function listWorkers(options: WorkerContext): Promise<WorkerListing
   const discoverWorkers = options.discoverWorkers ?? discoverWorkersDefault;
   const workers = await discoverWorkers(options.projectDir);
   const config = await readDevConfig(devConfigPath(options.projectDir));
+  // Best effort, and never a reason to refuse a listing: `localAutostart` swallows its own failures and
+  // answers `{}` for a checkout with no registry, no repository, or no readable config directory.
+  const local = await localAutostart(options);
   return workers.map((worker) => ({
     ...workerIdentity(worker),
     dir: worker.dir,
-    // The schema decides the default, here and everywhere: a `?? true` here was a second opinion, and it
-    // only ever fired for a target carrying no dev block at all — so a manifest that existed and omitted
-    // the key read `false` in the orchestrator and `true` in this listing.
-    autostart: (worker.dev ?? defaultWorkerDev()).autostart,
+    // One source now (#548). The manifest key is gone, so there is no second opinion left to disagree
+    // with — which is what this comment used to be about, when an absent `dev` block and a `dev` block
+    // omitting the key meant opposite things.
+    autostart: Object.hasOwn(local, worker.name) ? (local[worker.name] ?? true) : true,
+    autostartLocal: Object.hasOwn(local, worker.name) ? (local[worker.name] ?? null) : null,
     hasWrangler: worker.hasWrangler !== false,
     // The registry's key is the deployed name, which is what `workerIdentity` reports as `deployedAs`.
     port: config?.workers[worker.name]?.port ?? null,

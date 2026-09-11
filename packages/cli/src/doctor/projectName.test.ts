@@ -179,7 +179,7 @@ describe("declaredResources", () => {
     // and a healthy project must not be reported as unchecked because of it.
     const webDir = join(dir, "apps", "web");
     await mkdir(webDir, { recursive: true });
-    await writeFile(join(webDir, "pithy.worker.jsonc"), JSON.stringify({ dev: { autostart: true } }));
+    await writeFile(join(webDir, "pithy.worker.jsonc"), JSON.stringify({ dev: {} }));
 
     expect(await declaredResources(dir)).toEqual({ resources: [], unreadable: false });
   });

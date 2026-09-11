@@ -22,7 +22,7 @@ describe("unprovisionedBindings", () => {
     const workerDir = join(dir, "apps", name);
     await mkdir(workerDir, { recursive: true });
     await writeFile(join(workerDir, "wrangler.jsonc"), `${JSON.stringify(wrangler, null, 2)}\n`);
-    await writeFile(join(workerDir, "pithy.worker.jsonc"), '{ "dev": { "autostart": true } }\n');
+    await writeFile(join(workerDir, "pithy.worker.jsonc"), '{ "dev": {} }\n');
   }
 
   test("names every binding in the environment that has no id", async () => {

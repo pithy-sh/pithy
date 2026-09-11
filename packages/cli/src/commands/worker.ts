@@ -94,7 +94,11 @@ const list = defineCommand({
       }
       const rows = workers.map((worker) => {
         const port = worker.port === null ? "—" : String(worker.port);
-        const auto = worker.autostart ? "autostart" : "manual";
+        // `off here` rather than `manual`, and the distinction is the point (#548): a worker that does
+        // not start is never a property of the project any more, so the word has to say whose decision
+        // it was. `manual` read like a setting somebody would find in a committed file, and there is no
+        // longer any such file to find.
+        const auto = worker.autostart ? "autostart" : "off here";
         // The deployed name leads the row, because it is the string the Cloudflare dashboard shows and
         // the one `--worker`, `remove` and `rename` all also accept. The directory is what the adopter
         // acts on, so it is named too rather than left to be inferred from the deployed one — the two

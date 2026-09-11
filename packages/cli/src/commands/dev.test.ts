@@ -16,7 +16,7 @@ const args = dev.args as Record<string, ArgSpec>;
 describe("dev command", () => {
   test("is an agent-drivable command with a --json surface", () => {
     expect(dev.meta).toMatchObject({ name: "dev" });
-    expect(Object.keys(args)).toEqual(["list", "app", "json"]);
+    expect(Object.keys(args)).toEqual(["list", "app", "disable-autostart", "enable-autostart", "json"]);
     expect(args.list).toMatchObject({ type: "boolean", default: false });
     expect(args.app).toMatchObject({ type: "string" });
     expect(args.json).toMatchObject({ type: "boolean", default: false });
@@ -124,6 +124,7 @@ describe("pithy dev --list", () => {
           name: "acme-api",
           kind: "app",
           autostart: true,
+          autostartLocal: false,
           starts: true,
           port: 8787,
           origin: "http://localhost:8787",

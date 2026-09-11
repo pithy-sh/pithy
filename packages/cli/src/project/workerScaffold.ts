@@ -86,8 +86,9 @@ ${envStanzas}
   const manifest = `{
   // How \`pithy dev\` runs this worker locally. This file is yours; wrangler.jsonc stays wrangler's.
   "dev": {
-    // Set this false to keep this worker out of the local dev set. pithy dev starts every worker by default.
-    "autostart": true,
+    // Every worker autostarts. To keep one out of your local dev set, run
+    //   pithy dev --app <name> --disable-autostart
+    // It is per branch and per machine, so it is yours and not the team's.
     // Regex marking "ready" in this worker's output.
     "readySignal": "Ready on https?://"
     // "preferredPort": 8787   // a hint only — the feature's reserved port block is authoritative.

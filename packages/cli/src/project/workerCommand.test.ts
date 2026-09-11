@@ -8,6 +8,7 @@ import { ConflictError, InternalError, NotFoundError, ValidationError } from "@p
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { devConfigPath, readDevConfig } from "../feature/devConfig";
+import { setWorkerAutostart } from "../feature/ports";
 import { addWorker, type DeployedScriptProbe, listWorkers, removeWorker, renameWorker } from "./workerCommand";
 import { type WorkerIdentity, workerIdentity } from "./workerIdentity";
 import { discoverWorkers, type WorkerTarget } from "./workers";
@@ -18,7 +19,7 @@ function discover(root: string, names: string[]): () => Promise<WorkerTarget[]> 
     names.map((name) => ({
       name,
       dir: name === "app" ? root : join(root, "apps", name),
-      dev: { autostart: true, readySignal: "Ready on https?://" },
+      dev: { readySignal: "Ready on https?://" },
       hasWrangler: true,
     }));
 }
@@ -37,7 +38,7 @@ function discoverDeployed(root: string, names: string[]): () => Promise<WorkerTa
     names.map((name) => ({
       name: `acme-${name}`,
       dir: join(root, "apps", name),
-      dev: { autostart: true, readySignal: "Ready on https?://" },
+      dev: { readySignal: "Ready on https?://" },
       hasWrangler: true,
     }));
 }
@@ -343,25 +344,26 @@ describe("listWorkers", () => {
         worker: "app",
         deployedAs: "acme-app",
         dir: join(dir, "apps", "app"),
-        autostart: true,
         hasWrangler: true,
+        autostart: true,
+        autostartLocal: null,
         port: 8787,
       },
       {
         worker: "web",
         deployedAs: "acme-web",
         dir: join(dir, "apps", "web"),
-        autostart: true,
         hasWrangler: true,
+        autostart: true,
+        autostartLocal: null,
         port: null,
       },
     ]);
   });
 
-  // The default is decided once, in the WorkerDev schema. These two cases are what stops this listing
-  // growing a second opinion: a target carrying no dev block at all reads the schema's answer, and an
-  // explicit opt-out survives it.
-  test("a worker with no dev block reads the schema's default rather than a rule of its own", async () => {
+  // There is one source now (#548), so what these cases guard is that the listing did not grow a second
+  // one: a target with no dev block starts, and only the branch's own answer subtracts from that.
+  test("a worker with no dev block starts, like every other worker", async () => {
     const workers = await listWorkers({
       projectDir: dir,
       discoverWorkers: async () => [{ name: "acme-app", dir: join(dir, "apps", "app"), hasWrangler: true }],
@@ -370,20 +372,48 @@ describe("listWorkers", () => {
     expect(workers[0]?.autostart).toBe(true);
   });
 
-  test("an opted-out worker is reported as such", async () => {
+  // The opt-out moved off the manifest and onto the branch (#548). It is the developer's, on this
+  // machine, so the listing has to read it from the registry — and has to keep the two apart, because
+  // *the project does not run this* and *I turned this off* send a reader to different files.
+  test("a worker this branch turned off is reported as such, and marked local", async () => {
+    const registryPath = join(dir, "dev-ports.json");
+    await setWorkerAutostart({
+      registryPath,
+      root: dir,
+      branch: "main",
+      workers: ["acme-app"],
+      enabled: false,
+    });
+
     const workers = await listWorkers({
       projectDir: dir,
+      mainRoot: dir,
+      branch: "main",
+      registryPath,
       discoverWorkers: async () => [
-        {
-          name: "acme-app",
-          dir: join(dir, "apps", "app"),
-          hasWrangler: true,
-          dev: { autostart: false, readySignal: "x" },
-        },
+        { name: "acme-app", dir: join(dir, "apps", "app"), hasWrangler: true, dev: { readySignal: "x" } },
       ],
     });
 
     expect(workers[0]?.autostart).toBe(false);
+    expect(workers[0]?.autostartLocal).toBe(false);
+  });
+
+  // The floor under the case above: with nothing written, the answer is yes and it is *not* local. A
+  // listing that reported `autostartLocal` for every worker would make the column meaningless.
+  test("a worker nobody has turned off autostarts, and is not marked local", async () => {
+    const workers = await listWorkers({
+      projectDir: dir,
+      mainRoot: dir,
+      branch: "main",
+      registryPath: join(dir, "dev-ports.json"),
+      discoverWorkers: async () => [
+        { name: "acme-app", dir: join(dir, "apps", "app"), hasWrangler: true, dev: { readySignal: "x" } },
+      ],
+    });
+
+    expect(workers[0]?.autostart).toBe(true);
+    expect(workers[0]?.autostartLocal).toBeNull();
   });
 });
 
@@ -417,7 +447,7 @@ describe("removeWorker", () => {
     await mkdir(apiDir, { recursive: true });
     await writeFile(join(apiDir, "wrangler.jsonc"), JSON.stringify({ name: "my-service" }));
     const discoverRenamed = async () => [
-      { name: "my-service", dir: apiDir, dev: { autostart: true, readySignal: "x" }, hasWrangler: true },
+      { name: "my-service", dir: apiDir, dev: { readySignal: "x" }, hasWrangler: true },
     ];
 
     const report = await removeWorker({

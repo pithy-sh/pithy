@@ -16,18 +16,18 @@ const api: WorkerTarget = {
   name: "acme-api",
   dir: "/proj/apps/api",
   hasWrangler: true,
-  dev: { autostart: true, readySignal: "Ready on https?://" },
+  dev: { readySignal: "Ready on https?://" },
 };
 
 /** `apps/batch`, carrying no dev block at all — the target shape every test double uses. */
 const batch: WorkerTarget = { name: "batch", dir: "/proj/apps/batch", hasWrangler: true };
 
-/** `apps/web`, the opt-out. */
+/** `apps/web` — a non-Worker process, and the one this branch has turned off in the cases below. */
 const web: WorkerTarget = {
   name: "web",
   dir: "/proj/apps/web",
   hasWrangler: false,
-  dev: { autostart: false, readySignal: "ready in \\d+", command: ["vite", "--host"] },
+  dev: { readySignal: "ready in \\d+", command: ["vite", "--host"] },
 };
 
 /** The email capability's prebuilt host — registered under the capability name, as discovery does. */
@@ -39,7 +39,7 @@ const emailHost = {
     name: "email",
     dir: "/proj/.wrangler/pithy/hosts/email",
     hasWrangler: true,
-    dev: { autostart: true, readySignal: "Ready on https?://" },
+    dev: { readySignal: "Ready on https?://" },
   },
 } as unknown as HostWorker;
 
@@ -67,8 +67,26 @@ describe("resolveDevSet", () => {
     expect(set.project).toBe("acme");
   });
 
-  test("autostart is the schema's answer, so a target with no dev block starts", async () => {
+  // Every worker autostarts (#548). There is no manifest key left to say otherwise, so this is the
+  // whole of the default: a target with a dev block, a target without one, and a capability host all
+  // answer the same way.
+  test("every member autostarts when this branch has said nothing", async () => {
     const set = await resolveDevSet(options());
+
+    expect(set.members.map((m) => [m.worker.name, m.autostart])).toEqual([
+      ["acme-api", true],
+      ["batch", true],
+      ["web", true],
+      ["email", true],
+    ]);
+    expect(set.members.every((m) => !m.autostartLocal)).toBe(true);
+  });
+
+  // The only thing that can turn one off, and the reason `autostartLocal` exists beside it: a reader
+  // has to be able to tell *this branch turned it off* from a project-wide default, because the two
+  // send them to different places to undo it.
+  test("this branch's answer turns one off, and says that is where it came from", async () => {
+    const set = await resolveDevSet({ ...options(), autostartOverrides: { web: false } });
 
     expect(set.members.map((m) => [m.worker.name, m.autostart])).toEqual([
       ["acme-api", true],
@@ -76,6 +94,23 @@ describe("resolveDevSet", () => {
       ["web", false],
       ["email", true],
     ]);
+    expect(set.members.filter((m) => m.autostartLocal).map((m) => m.worker.name)).toEqual(["web"]);
+  });
+
+  // A host is reachable by the same answer, under the capability name — the name `--app` takes and
+  // every listing prints. Turning off `email` locally is an explicit act, and it is honored.
+  test("a capability host can be turned off too, under its capability name", async () => {
+    const set = await resolveDevSet({ ...options(), autostartOverrides: { email: false } });
+
+    expect(set.members.find((m) => m.worker.name === "email")?.autostart).toBe(false);
+  });
+
+  // An override naming a worker that does not exist is not an error here — `--app` refuses an unknown
+  // name at the command, and a stale key for a worker somebody deleted must not break a dev run.
+  test("an answer about a worker that no longer exists changes nothing", async () => {
+    const set = await resolveDevSet({ ...options(), autostartOverrides: { gone: false } });
+
+    expect(set.members.every((m) => m.autostart)).toBe(true);
   });
 
   // A guessed project name differs between checkouts and this one is stamped into a Worker script name,
@@ -155,8 +190,11 @@ describe("selectDevMembers", () => {
     expect(names(selectDevMembers(await members(), ["acme-api"]))).toEqual(["acme-api"]);
   });
 
-  test("selects a Worker that opted out of autostart", async () => {
-    expect(names(selectDevMembers(await members(), ["web"]))).toEqual(["web"]);
+  // `--app` is above the branch's answer: naming a worker outright is the more specific act, and it is
+  // how a parked worker is started for one run without turning it back on.
+  test("selects a Worker this branch turned off", async () => {
+    const parked = await resolveDevSet({ ...options(), autostartOverrides: { web: false } });
+    expect(names(selectDevMembers(parked.members, ["web"]))).toEqual(["web"]);
   });
 
   // Member order, not flag order: labels, colors, host ports and .dev-state.json all key on it.

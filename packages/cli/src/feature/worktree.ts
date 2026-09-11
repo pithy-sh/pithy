@@ -85,6 +85,22 @@ export function canonicalRepoPath(path: string): Promise<string> {
  * Canonicalised through {@link canonicalRepoPath}, which is what makes it the *same string* as the other
  * derivation rather than merely the same directory.
  */
+/**
+ * The branch a checkout is on, or `null` off one — no repository, or a detached HEAD.
+ *
+ * `null` rather than a guess, and every caller treats it as *nothing to inherit* rather than as `main`.
+ * A detached HEAD has no branch, and naming one anyway would copy a stranger's local answer into a new
+ * feature on the strength of a default.
+ */
+export async function currentBranch(git: GitRunner = defaultGit, cwd?: string): Promise<string | null> {
+  try {
+    const branch = (await git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)).trim();
+    return branch === "" || branch === "HEAD" ? null : branch;
+  } catch {
+    return null;
+  }
+}
+
 export async function mainRepoRoot(git: GitRunner = defaultGit): Promise<string> {
   const first = (await git(["worktree", "list", "--porcelain"])).split("\n")[0] ?? "";
   const path = first.startsWith("worktree ") ? first.slice("worktree ".length) : "";
