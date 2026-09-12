@@ -1,5 +1,12 @@
 # @pithy-sh/vite
 
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @pithy-sh/core@0.4.1
+
 ## 0.4.0
 
 ### Minor Changes

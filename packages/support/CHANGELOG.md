@@ -1,5 +1,17 @@
 # @pithy-sh/support
 
+## 0.2.2
+
+### Patch Changes
+
+- Updated dependencies [[`a65cc8f`](https://github.com/pithy-sh/pithy/commit/a65cc8f4b55d6ee584e87b2a743b34bc9d4e4465)]:
+  - @pithy-sh/auth@0.3.0
+  - @pithy-sh/core@0.4.1
+  - @pithy-sh/email@0.3.0
+  - @pithy-sh/payments@0.3.0
+  - @pithy-sh/secrets@0.2.0
+  - @pithy-sh/storage@0.2.0
+
 ## 0.2.1
 
 ### Patch Changes
