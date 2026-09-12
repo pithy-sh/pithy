@@ -22,9 +22,18 @@ import type { Migration } from "kysely/migration";
  * `UNIQUE` — a slug, one membership per person per organization, one invitation token, one acting row
  * per session — and the indexes the gates actually use.
  *
- * No foreign keys, matching the rest of the repo: D1 does not enforce them, so declaring them would be
- * documentation pretending to be a constraint. Referential integrity is held by the writers, and
- * deleting an organization deletes its children first.
+ * **No foreign keys across a capability boundary — a choice, not a limitation.** D1 *does* enforce
+ * them: `PRAGMA foreign_keys` is on, a cascade fires, and an orphan insert is refused with
+ * `FOREIGN KEY constraint failed`. `packages/core/src/data/foreignKeys.workers.test.ts` measures both
+ * directions, because this is the kind of claim that rots quietly. What is traded away is real, and the
+ * reason is the boundary rather than the platform: a constraint from one capability's table to another's
+ * binds two release cadences together and breaks the day either moves to its own database. Within a
+ * single capability's own tables a foreign key is available and is simply not used here — worth
+ * revisiting per table rather than as a rule.
+ *
+ * Referential integrity is held by the writers here, and deleting an organization deletes its children
+ * first. `user_id` is the case the boundary rule is about: it names `pithy_auth_users`, which belongs to
+ * `@pithy-sh/auth`.
  *
  * **`user_id` references a table this capability does not own.** `pithy_auth_users` belongs to
  * `@pithy-sh/auth`, versioned on its own release cadence, so the reference is a plain text column and

@@ -23,9 +23,16 @@ import type { Migration } from "kysely/migration";
  * `UNIQUE` (a cohort name, a member's address within a cohort, a token, one snapshot per cohort-day)
  * and the indexes the queries actually use.
  *
- * No foreign keys, matching the rest of the repo: D1 does not enforce them, so declaring them would be
- * documentation pretending to be a constraint. Referential integrity is held by the writers, and cohort
- * teardown deletes children first.
+ * **No foreign keys across a capability boundary — a choice, not a limitation.** D1 *does* enforce
+ * them: `PRAGMA foreign_keys` is on, a cascade fires, and an orphan insert is refused with
+ * `FOREIGN KEY constraint failed`. `packages/core/src/data/foreignKeys.workers.test.ts` measures both
+ * directions, because this is the kind of claim that rots quietly. What is traded away is real, and the
+ * reason is the boundary rather than the platform: a constraint from one capability's table to another's
+ * binds two release cadences together and breaks the day either moves to its own database. Within a
+ * single capability's own tables a foreign key is available and is simply not used here — worth
+ * revisiting per table rather than as a rule.
+ *
+ * Referential integrity is held by the writers here, and cohort teardown deletes children first.
  */
 export const testers_0001_cohorts: Migration = {
   up: async (db: Kysely<unknown>): Promise<void> => {
