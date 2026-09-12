@@ -1,0 +1,61 @@
+{
+  "name": "organization",
+  "package": "@pithy-sh/organization",
+  "requiredBindings": [
+    {
+      "type": "d1",
+      "name": "DB"
+    }
+  ],
+  "peerCapabilities": ["auth"],
+  "optionalCapabilities": ["email", "audit", "controlplane"],
+  "migrationNamespace": "organization",
+  "seams": ["organizationRoles"],
+  "whenToEnable": "Every multi-tenant project on this kit writes the same model, and this is the one the Pithy dashboard itself runs on: organizations, memberships, roles you declare with the powers they hold, invitations bound to an address, ownership that moves only when somebody accepts it, and a chooser for people who belong to more than one. You declare the roles in a module of your own, because your handlers import those powers as typed values and reading a handler's vocabulary out of a config file is backwards. A coaching academy's coach and student are parallel where a dashboard's owner, admin and member nest, so nesting is something you state and something the kit checks, never something it assumes — a capability that assumed either shape would refuse the other. Five power names are the kit's, because it ships the routes that gate on them; yours sit beside them under your own vocabulary. What a membership is worth is what makes the refusals load-bearing. A caller naming an organization they do not belong to gets a 404 byte-identical to the one for an organization that does not exist, because a distinguishable refusal is an existence oracle and iterating it produces your customer list. A role is decoded off the row and refused when the catalog does not know it, never asserted against a matrix that would deny everything today and allow it after one refactor. Nothing about a role rides on the session — only the id of the chosen organization — so deleting a membership row is the whole of revocation and it takes effect on the next request, with no sign-out. The acting membership lands on its own context variable rather than on the auth one, because signed in and a member of this organization are two conditions and merging them makes them one. Better Auth ships an organization() plugin and this is not it: that plugin puts free-string roles on a member row and one nullable active_organization_id on the session, with no power matrix and no way to say whether an account was chosen or defaulted into. Composing both is refused at boot naming each, because two membership models in one Worker is two answers to whether somebody may act, and a route gets whichever one it was written against.",
+  "scaffold": [
+    "Add an `organization({ roles })` block to pithy.config.ts. `pithy add organization` writes it, alongside `src/organization/roles.ts` — the starter matrix it puts there is three roles that nest, and it is not your matrix until you have read it.",
+    "Edit `src/organization/roles.ts` before anybody signs in. A role name is stable forever once a membership holds one: renaming `coach` orphans every row carrying it and nothing in the capability can repair that.",
+    "Bind a D1 database named DB in wrangler.jsonc — the same app database `auth` uses. The roster resolves people through `@pithy-sh/auth`'s published reader, so both sets of tables have to be in one database.",
+    "Run `pithy migrate` to create pithy_organization_organizations, pithy_organization_memberships, pithy_organization_invitations, pithy_organization_ownership_nominations and pithy_organization_acting.",
+    "Compose `auth(...)` in the same Worker. It is a hard peer: a membership is keyed by a user id this capability does not own, and every route but the public accept screen begins with a session.",
+    "Do not also compose Better Auth's `organization()` plugin. The Worker refuses to start, naming both — two membership models is two answers to whether somebody may act here.",
+    "Set `baseUrl` to the origin your Worker actually answers on, per environment, before you invite anybody. An email cannot carry a relative link, and the invite route refuses before it mints an offer rather than after.",
+    "Add `email(...)` if you want invitations mailed. Without it, set `sendInvitationEmail: false` and the accept link is handed back to your own code to deliver — the token is minted and digested identically either way.",
+    "Pass `ownership: { confers: 'owner', demotesTo: 'admin' }` if this product has an owner who pays. Omit it and the three transfer routes do not mount, which is the right shape for a product where nobody signs for the bill.",
+    "Gate your own routes with `requireOrganization()` then `requirePower('...')`, in that order. The first proves the membership and fills `c.var.acting`; the second asks your matrix. A route with neither can read no tenant data, because `c.var.acting` is not there to read.",
+    "Add `audit(...)` if you want the trail. Every membership and role change is recorded through the seam already, so composing it is the whole of turning it on — and a membership is transitively a credential to whatever the account owns."
+  ],
+  "configOptions": [
+    {
+      "key": "basePath",
+      "default": "/organizations",
+      "describe": "Where the tenancy routes mount, the invitation accept link included. Change it and the links in already-sent invitations break, so pick it before you invite anybody."
+    },
+    {
+      "key": "baseUrl",
+      "default": "https://example.com",
+      "constant": "publicOrigin",
+      "describe": "The absolute origin an invitation link is built from. Required before an invitation can be sent, because an email cannot carry a relative URL. Set it to the origin your Worker actually answers on, per environment."
+    },
+    {
+      "key": "invitationTtlDays",
+      "default": 14,
+      "describe": "How long an invitation stays redeemable. Days rather than hours, deliberately: somebody invited on a Friday should not find a dead link on Monday. Short enough that a forwarded link does not stay live for a quarter."
+    },
+    {
+      "key": "nominationTtlDays",
+      "default": 7,
+      "describe": "How long an offer of ownership stands. Shorter than an invitation, because it is an offer to take responsibility for an account rather than to join one, and an open-ended one is accepted a year later by somebody who has forgotten it was made."
+    },
+    {
+      "key": "allowSelfService",
+      "default": true,
+      "describe": "Whether a signed-in person may create an organization of their own. True for a product anybody can sign up to; false where every tenant is provisioned by the operator, and then the create route refuses for everyone rather than checking a power nobody holds."
+    },
+    {
+      "key": "sendInvitationEmail",
+      "default": true,
+      "describe": "Whether an invitation is mailed through the composed email capability. False hands the link back to the caller instead, for a product that delivers it its own way — the token is minted and digested identically either way."
+    }
+  ]
+}

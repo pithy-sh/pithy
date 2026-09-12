@@ -14,6 +14,7 @@ import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/sr
 import { type SecretFixture, seedSecrets } from "@pithy-sh/secrets/src/test-utils/secretFixtures";
 import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { getUsers } from "../admin/users";
 import { AuthConfig, type AuthWiring } from "../capability";
 import { authDatabase } from "../data/tables";
 import { publishSameOrigin } from "../http/csrf";
@@ -22,7 +23,9 @@ import { createAuthRoutes } from "../http/routes";
 import { makeAuth } from "../instance/auth";
 import { NO_SOCIAL_PROVIDERS } from "../instance/providers";
 import { authSecretsRegistry } from "../instance/secrets";
-import { AUTH_MIGRATION_ORDER, auth_0001_init } from "../migrations/0001_init";
+import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
+import { AUTH_MIGRATIONS } from "../migrations/set";
+import { userImageSource } from "./profile";
 
 const SECRET = "test-secret-please-rotate-0000000000";
 
@@ -142,7 +145,7 @@ beforeEach(async () => {
     await env.DB.prepare(`drop table if exists ${t}`).run();
   }
   const provider = createMigrationRegistry([
-    { database: "app", namespace: "auth", order: AUTH_MIGRATION_ORDER, migrations: { "0001_init": auth_0001_init } },
+    { database: "app", namespace: "auth", order: AUTH_MIGRATION_ORDER, migrations: AUTH_MIGRATIONS },
     { database: "app", namespace: "email", order: 200, migrations: { "0001_init": email_0001_init } },
   ]).app;
   if (!provider) throw new Error('expected a provider for database "app"');
@@ -298,5 +301,39 @@ describe("the person's own read", () => {
     // Read, change the name, write the whole record back. The picture survives.
     expect((await updateUser(token, { name: "Ada Lovelace", image: body.user.image })).status).toBe(200);
     expect(await storedImageOf((await signIn("ada@test.com")).userId)).toBe(RASTER);
+  });
+});
+
+describe("a row the rule would not accept today", () => {
+  // **The regression this pins, found by the tenancy capability's roster (#563).** The gate makes it
+  // impossible for the kit to *write* an unacceptable picture. It says nothing about one that is
+  // already there — a provider wrote it before the rule existed, a repair script put it there, a backup
+  // restored it. If the column refused such a value on read, `getUsers` would throw for a whole page of
+  // rows because of one of them, and every operator would lose the roster over somebody else's row.
+  //
+  // So the column is permissive and the *projection* is where the value stops. A bad row draws initials.
+  test("does not take the roster down with it", async () => {
+    const ada = await signIn("ada@test.com");
+    const grace = await signIn("grace@test.com");
+    await updateUser(grace.token, { image: RASTER });
+    // Straight past every validator, the way a repair script would.
+    await env.DB.prepare("update pithy_auth_users set image = ? where id = ?")
+      .bind("data:text/html;base64,PHNjcmlwdD4=", ada.userId)
+      .run();
+
+    const roster = await getUsers(authDatabase(env.DB), [ada.userId, grace.userId]);
+    expect(roster.size).toBe(2);
+    expect(roster.get(ada.userId)?.image).toBe("data:text/html;base64,PHNjcmlwdD4=");
+  });
+
+  test("and the projection is what refuses it, so nothing renders it", async () => {
+    // The second half, and the half that matters: permissive at the column only buys a readable roster
+    // if the value cannot reach a page from there.
+    expect(userImageSource("data:text/html;base64,PHNjcmlwdD4=", "/auth/profile/image", new Date(1))).toBeNull();
+  });
+
+  test("the write still refuses the same value, so the column cannot gain another", async () => {
+    const { token } = await signIn("ada@test.com");
+    expect((await updateUser(token, { image: "data:text/html;base64,PHNjcmlwdD4=" })).status).toBe(400);
   });
 });
