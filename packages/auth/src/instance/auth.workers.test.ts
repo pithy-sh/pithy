@@ -48,6 +48,7 @@ function instanceWithMailbox() {
     verificationExpiresIn: 300,
     otpLength: 6,
     disableSignUp: false,
+    providerSignUp: { google: true, apple: true, facebook: true, github: true },
     emit: async (event) => {
       events.push({ action: event.action, outcome: event.outcome });
     },
@@ -230,6 +231,7 @@ describe("social providers and account linking, via instance.options", () => {
       verificationExpiresIn: 300,
       otpLength: 6,
       disableSignUp: false,
+      providerSignUp: { google: true, apple: true, facebook: true, github: true },
       emit: async () => {},
       plugins: [],
       ...NO_SOCIAL_PROVIDERS,

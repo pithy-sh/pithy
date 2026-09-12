@@ -70,6 +70,7 @@ function instanceWithMailbox() {
       verificationExpiresIn: 300,
       otpLength: 6,
       disableSignUp: false,
+      providerSignUp: { google: true, apple: true, facebook: true, github: true },
       emit: async () => {},
       plugins: PLUGINS,
     }),

@@ -47,6 +47,7 @@ const ADA = {
 function wiring(): AuthWiring {
   return {
     config: AuthConfig.parse({ baseURL: "http://localhost", basePath: "/auth", trustedOrigins: ["http://localhost"] }),
+    resolveGithubUserInfo: undefined,
     enqueueEmail: undefined,
     turnstile: undefined,
   };
@@ -76,6 +77,7 @@ function instance(secret = SECRET) {
     verificationExpiresIn: 300,
     otpLength: 6,
     disableSignUp: false,
+    providerSignUp: { google: true, apple: true, facebook: true, github: true },
     emit: async () => {},
     plugins: [],
   });

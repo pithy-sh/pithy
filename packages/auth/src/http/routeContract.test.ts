@@ -38,6 +38,7 @@ import { createAuthRoutes } from "./routes";
 function buildWiring(turnstile?: { mode: "visible" }, basePath = "/auth"): AuthWiring {
   return {
     config: AuthConfig.parse({ baseURL: "http://localhost", basePath, trustedOrigins: ["http://localhost"] }),
+    resolveGithubUserInfo: undefined,
     enqueueEmail: undefined,
     turnstile,
   };

@@ -96,7 +96,15 @@ describe("an adopter's route wears auth's same-origin policy", () => {
       const capability = auth({ baseURL: "https://api.example.com", ...config });
       const app = new Hono<PithyHonoEnv>();
       app.onError(pithyErrorHandler);
-      publishSameOrigin({ config: capability.authConfig, enqueueEmail: undefined, turnstile: undefined }, dev)(app);
+      publishSameOrigin(
+        {
+          config: capability.authConfig,
+          resolveGithubUserInfo: undefined,
+          enqueueEmail: undefined,
+          turnstile: undefined,
+        },
+        dev,
+      )(app);
       app.post("/organizations", requireSameOrigin(), (c) => c.text("ok"));
       return app;
     }

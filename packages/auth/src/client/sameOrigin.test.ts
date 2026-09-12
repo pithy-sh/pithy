@@ -142,6 +142,8 @@ const FETCH_EXEMPTIONS: Readonly<Record<string, string>> = {
     "A live integration test driving a real deployed Worker and Google's own endpoints from Node, by absolute URL. Not a browser program, and not this Worker's own origin.",
   "src/http/turnstileGate.integration.test.ts":
     "A live integration test driving a real deployed Worker and Cloudflare's siteverify endpoint from Node, by absolute URL. Not a browser program.",
+  "src/instance/githubUserInfo.ts":
+    "The kit's GitHub identity resolver, reading api.github.com by absolute URL with the OAuth token this callback was issued. Server-side, inside the Worker, and never a browser program: it runs from Better Auth's `getUserInfo` and this Worker's session cookie has no business on github.com. The transport is injected (`FetchJson`) so every test drives it without a socket.",
   "src/http/clientRoundTrip.test.ts":
     "Node's `fetch` standing in for a browser against a real listening port, so the primitive can be driven over a real socket with a real cookie jar. It is the harness the primitive is tested through, not a second producer: it takes the relative path `callAuth` produced and resolves it, and nothing in the package calls it.",
 };

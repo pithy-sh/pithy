@@ -8,8 +8,14 @@ import { emitAfterRequest, emitProviderUnavailable } from "../audit/emit";
 import { KIT_SESSION_FIELDS, KIT_USER_FIELDS } from "../data/kitFields";
 import type { AuthDatabase } from "../data/tables";
 import { parseDeviceMeta, registerDevice } from "../device/registry";
+import { defaultGithubUserInfo, type GithubUserInfoResolver } from "./githubUserInfo";
 import { kitPlugins } from "./plugins";
-import { providerUnavailable, type ResolvedProviders, unavailableProviderFor } from "./providers";
+import {
+  providerUnavailable,
+  type ResolvedProviders,
+  type SocialProviderId,
+  unavailableProviderFor,
+} from "./providers";
 
 /**
  * Build the `socialProviders` block from whichever provider credentials were resolved. Exported so the
@@ -21,6 +27,23 @@ import { providerUnavailable, type ResolvedProviders, unavailableProviderFor } f
  * The narrowing is the type's doing rather than this function's discipline — `deps.google.credentials`
  * does not exist until `state === "ready"` has been established.
  */
+/**
+ * One provider's sign-up policy, in Better Auth's spelling.
+ *
+ * **Applied by every provider block, because the toggle is declared on every provider.** `allowSignUp`
+ * lives on the shared `ProviderToggle`, so an adopter can write it for google, apple or facebook exactly
+ * as readily as for github — and a policy the config accepts, describes and type-checks while the
+ * instance ignores it is worse than one that was never offered. It shipped github-only for one round;
+ * the reason nobody noticed is that github is the provider anybody testing this would try.
+ *
+ * Permitted is the **absence** of the key rather than `disableSignUp: false`, so the default path asserts
+ * nothing and Better Auth's own default stands. It reads this off `provider.options` at
+ * `callback.mjs:229`.
+ */
+function signUpOption(allowed: boolean): { disableSignUp?: true } {
+  return allowed ? {} : { disableSignUp: true };
+}
+
 export function socialProviders(deps: AuthInstanceDeps): Record<string, unknown> | undefined {
   const providers: Record<string, unknown> = {};
   if (deps.google.state === "ready") {
@@ -29,6 +52,7 @@ export function socialProviders(deps: AuthInstanceDeps): Record<string, unknown>
       clientSecret: deps.google.credentials.clientSecret,
       accessType: "offline",
       prompt: "select_account consent",
+      ...signUpOption(deps.providerSignUp.google),
     };
   }
   if (deps.apple.state === "ready") {
@@ -37,6 +61,7 @@ export function socialProviders(deps: AuthInstanceDeps): Record<string, unknown>
       clientId: apple.clientId,
       clientSecret: apple.clientSecret,
       ...(apple.appBundleIdentifier ? { appBundleIdentifier: apple.appBundleIdentifier } : {}),
+      ...signUpOption(deps.providerSignUp.apple),
     };
   }
   if (deps.facebook.state === "ready") {
@@ -52,6 +77,7 @@ export function socialProviders(deps: AuthInstanceDeps): Record<string, unknown>
       clientSecret: deps.facebook.credentials.clientSecret,
       scope: ["email"],
       mapProfileToUser: () => ({ emailVerified: true }),
+      ...signUpOption(deps.providerSignUp.facebook),
     };
   }
   if (deps.github.state === "ready") {
@@ -62,6 +88,11 @@ export function socialProviders(deps: AuthInstanceDeps): Record<string, unknown>
       clientId: deps.github.credentials.clientId,
       clientSecret: deps.github.credentials.clientSecret,
       scope: ["user:email"],
+      // The kit's own resolution rule, or the adopter's. Better Auth's stock resolver keeps the primary
+      // and falls back to `emails[0]`, and matches no existing user by any other address — so a GitHub
+      // whose primary is not the sign-up address minted a second, empty user (#554).
+      getUserInfo: deps.resolveGithubUserInfo ?? defaultGithubUserInfo(),
+      ...signUpOption(deps.providerSignUp.github),
     };
   }
   return Object.keys(providers).length > 0 ? providers : undefined;
@@ -130,8 +161,26 @@ export interface AuthInstanceDeps<Plugins extends readonly BetterAuthPlugin[] = 
   verificationExpiresIn: number;
   /** OTP length (digits). */
   otpLength: number;
-  /** When true, sign-in never provisions a new user (existing accounts only). */
+  /** When true, sign-in never provisions a new user (existing accounts only). Magic link and OTP. */
   disableSignUp: boolean;
+  /**
+   * Whether each social provider may create an account, from that provider's `allowSignUp` toggle.
+   *
+   * **A second question from {@link disableSignUp}, and the reason it is separate.** The dashboard needs
+   * *email* sign-up — somebody creating an organization — and *no* GitHub sign-up. One global boolean
+   * cannot say that, and the gap is exactly how a GitHub sign-in minted a second, empty user beside the
+   * real account (pithy-sh/pithy#554). Better Auth has supported this per provider all along; the kit
+   * simply never surfaced it.
+   */
+  providerSignUp: Readonly<Record<SocialProviderId, boolean>>;
+  /**
+   * How a GitHub identity is resolved, or `undefined` for the kit's own rule.
+   *
+   * The one seam an adopter overrides to build a richer ladder — `getUserInfo` is the only hook running
+   * before both fetches and before `mapProfileToUser`, and the only one holding the OAuth token. See
+   * `githubUserInfo.ts` for the default and why it is primary-only.
+   */
+  resolveGithubUserInfo?: GithubUserInfoResolver;
   /** Audit seam — emits `auth/*` events. A no-op when the audit capability is absent. */
   emit: AuditEmit;
   /**
@@ -293,6 +342,22 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
         enabled: true,
         // Link a social sign-in to an existing magic-link user when the verified emails match.
         trustedProviders: ["google", "apple"],
+        /**
+         * **A provider is never the last way in, which is also what makes an orphaned link recoverable.**
+         *
+         * Better Auth refuses to unlink somebody's only account, on the reasonable fear of locking them
+         * out. That fear does not apply here: magic link is unconditional in this kit, so every user can
+         * always reach their own address, and the "last account" it is protecting is a provider link
+         * rather than a credential.
+         *
+         * It also settles #554's orphan without a merge rule. A GitHub sign-in that minted an empty user
+         * holds the provider identity, so linking it to the real account collides. With this, the owner
+         * of that empty account — who controls its address, or magic link could not have created it —
+         * signs in, unlinks GitHub, and links it where it belongs. At no point does one account take an
+         * identity from another; one gives it up, authenticated as itself. A claim-from-an-empty-account
+         * rule is where takeover bugs live, and this needs none.
+         */
+        allowUnlinkingAll: true,
       },
     },
     verification: { modelName: "pithyAuthVerifications" },

@@ -78,6 +78,58 @@ One account per verified email. GitHub is **not** a trusted provider, so it link
 - **Unverified email → verify first.** If your GitHub primary email is not verified on GitHub, Pithy will not silently link it and will not create a second account. Verify the email on GitHub, or sign in with a magic link to that address first, then connect GitHub. This closes the takeover hole where an unverified address could be linked to an account you do not own.
 - **No seeding.** A GitHub sign-in whose email is unverified is refused rather than used to create a fresh account — so no one can seed a row at an address they have not proven they own.
 
+### Sign-in reads your GitHub primary, and nothing else
+
+GitHub tells us one address: the primary on your account. A **secondary** address will not match an account here, even when GitHub has verified it, and that is deliberate rather than a limitation.
+
+GitHub marks an address verified once, after delivering a confirmation to it, and never re-verifies. A work address from a job you left three years ago stays verified on your personal account forever, and addresses get reassigned. Linking is a decision about *present* control, and a stale verified secondary can only speak to the past.
+
+The cost is one extra sign-in, once. Sign in with your email, connect GitHub from your profile, and after that sign-in resolves by account id — your primary stops mattering permanently.
+
+An adopter who wants a different rule replaces it whole, without forking the provider block:
+
+```ts
+auth({
+  github: { enabled: true },
+  resolveGithubUserInfo: async (token) => {
+    /* your own ladder — match a verified secondary, present a chooser, whatever fits */
+  },
+});
+```
+
+Better Auth trusts what a resolver returns **verbatim**. Return GitHub's real per-address `verified` flag, never a literal `true`: an attacker who adds somebody else's address to their own GitHub *unverified* must never match it.
+
+### Connecting a GitHub whose primary differs is not yet supported
+
+Not an oversight. It needs Better Auth's `allowDifferentEmails`, which widens what a session alone can authorize — and the control that pays for that has to survive `/token/rotate`, which mints a session stamped `createdAt: now`. A gate on session age is therefore reset by an ordinary rotation, and by anyone holding a stolen refresh token. Doing it properly needs an `authenticatedAt` that rotation carries forward, which is a session-schema change and ships on its own.
+
+Until then, the remedy above stands: your GitHub primary is what signs you in.
+
+### Turning GitHub sign-up off
+
+`allowSignUp` is per provider, so a project can let email create accounts while GitHub may only sign existing ones in:
+
+```ts
+auth({
+  disableSignUp: false,                            // email may create an account
+  github: { enabled: true, allowSignUp: false },   // GitHub may not
+});
+```
+
+A GitHub sign-in matching no account then refuses and mints nothing. The kit's sign-in screen renders the three-sentence explanation for it — what GitHub told us, that a secondary will not do, and the remedy — because a bare refusal sends somebody to verify an address that is already correct.
+
+### If a GitHub sign-in already made a second account
+
+Before `allowSignUp` existed, a GitHub sign-in under a personal primary could mint an empty second user holding the GitHub link. Linking that GitHub to your real account then collides — the identity is taken.
+
+There is no merge, and there does not need to be one. The empty account holds an address you control, or magic link could not have created it:
+
+1. Sign in with a magic link to that address.
+2. Disconnect GitHub from it. A provider is never the last way in here, so this is allowed.
+3. Sign in to your real account and connect GitHub there.
+
+At no point does one account take an identity from another; one gives it up, authenticated as itself.
+
 ## When the credential will not read
 
 An enabled provider whose secret is missing, or whose stored value no longer matches its schema, costs
@@ -97,3 +149,4 @@ provisioning `auth-github-credentials` for that environment, or turn the provide
 - [ ] Mobile deep-link scheme listed in `trustedOrigins` (no deep link in GitHub).
 - [ ] `clientId` + `clientSecret` stored together via `pithy secrets create auth-github-credentials` (typed JSON); GitHub enabled in config with `github: { enabled: true }`.
 - [ ] GitHub primary email verified on GitHub (or plan for the magic-link verify-to-link step).
+- [ ] Decided whether GitHub may create accounts — `github: { allowSignUp: false }` if it may not.

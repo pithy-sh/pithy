@@ -17,6 +17,7 @@ afterEach(() => {
 function wiring(): AuthWiring {
   return {
     config: auth({ baseURL: "http://localhost:8787" }).authConfig,
+    resolveGithubUserInfo: undefined,
     enqueueEmail: undefined,
     turnstile: undefined,
   };

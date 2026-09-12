@@ -36,6 +36,13 @@ export const esScreens: MessageCatalog = {
   "auth/sign_in.provider.label": "Continuar con {provider}",
   "auth/sign_in.provider_unconfigured": "{provider} no está configurado aquí. Usa el enlace.",
   "auth/sign_in.provider_silent": "{provider} no respondió. Usa el enlace.",
+  "auth/sign_in.refused.title": "No hay ninguna cuenta para este {provider}.",
+  "auth/sign_in.refused.primary":
+    "{provider} nos da una sola dirección: la principal de tu cuenta. Esa no coincide con ninguna de aquí.",
+  "auth/sign_in.refused.secondary":
+    "Una dirección secundaria no sirve. Al entrar nunca miramos más allá de la principal, y es a propósito.",
+  "auth/sign_in.refused.remedy":
+    "Entra con tu correo y luego conecta {provider} desde tu perfil. A partir de ahí funciona sea cual sea tu principal.",
   "auth/sign_in.divider": "o",
   "auth/sign_in.email.label": "Correo electrónico",
   "auth/sign_in.submit": "Envíame un enlace",

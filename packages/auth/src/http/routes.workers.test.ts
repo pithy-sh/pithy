@@ -77,6 +77,7 @@ function buildWiring(turnstile?: { mode: "visible" }): AuthWiring {
   const emailCap = email({ fromAddress: "no@reply.test", fromName: "Test", baseUrl: "http://localhost" });
   return {
     config: AuthConfig.parse({ baseURL: "http://localhost", basePath: "/auth", trustedOrigins: ["http://localhost"] }),
+    resolveGithubUserInfo: undefined,
     enqueueEmail: emailCap.enqueue,
     turnstile,
   };
@@ -129,6 +130,7 @@ async function signIn(deviceHeaders: Record<string, string> = {}): Promise<{ tok
     verificationExpiresIn: 300,
     otpLength: 6,
     disableSignUp: false,
+    providerSignUp: { google: true, apple: true, facebook: true, github: true },
     emit: noopEmit,
     plugins: [],
   });
@@ -493,6 +495,7 @@ describe("auth HTTP routes", () => {
         facebook: { enabled: true },
         github: { enabled: true },
       }),
+      resolveGithubUserInfo: undefined,
       enqueueEmail: emailCap.enqueue,
       turnstile: undefined,
     };

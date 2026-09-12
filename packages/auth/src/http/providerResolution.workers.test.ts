@@ -110,6 +110,7 @@ function wiring(config: Partial<AuthConfigInput> = {}): AuthWiring {
       trustedOrigins: ["http://localhost"],
       ...config,
     }),
+    resolveGithubUserInfo: undefined,
     enqueueEmail: emailCap.enqueue,
     turnstile: undefined,
   };

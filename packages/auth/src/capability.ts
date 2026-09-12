@@ -17,6 +17,7 @@ import { authAdminRoutes } from "./http/guards";
 import { createSessionMiddleware } from "./http/middleware";
 import { createRateLimitMiddleware } from "./http/rateLimit";
 import { createAuthRoutes } from "./http/routes";
+import type { GithubUserInfoResolver } from "./instance/githubUserInfo";
 import { AuthPlugin, assertAdditivePlugins } from "./instance/plugins";
 import { authSecretsRegistry, inapplicableProviderSecrets } from "./instance/secrets";
 import { AUTH_MIGRATION_ORDER, auth_0001_init } from "./migrations/0001_init";
@@ -25,15 +26,30 @@ import { authDevSessionSeed } from "./seeds/devSession";
 import { authExampleSeed } from "./seeds/example";
 import { PACKAGE_VERSION } from "./version.generated";
 
-/** A social provider toggle. Credentials live in the secrets store, never config. */
+/**
+ * A social provider toggle. Credentials live in the secrets store, never config.
+ *
+ * **Defaulted with `.prefault({})` rather than `.default({ enabled: false })`, and the difference is not
+ * cosmetic.** Zod 4 hands a `.default` value back verbatim without parsing it, so a literal supplied the
+ * object's *shape* while silently skipping every inner field default — `allowSignUp` was `undefined` on
+ * all four providers until a caller wrote one out by hand, which is precisely the field whose absence
+ * must not read as "false". `.prefault` runs the value through the schema, so one place states the
+ * defaults and nothing has to restate them.
+ */
 const ProviderToggle = z
   .object({
     enabled: z
       .boolean()
       .default(false)
       .describe("Whether this social provider is enabled. Credentials are read from the secrets store, never config."),
+    allowSignUp: z
+      .boolean()
+      .default(true)
+      .describe(
+        "Whether signing in with this provider may create a new account. When false, a sign-in whose email matches no existing user is refused and nothing is minted — the caller signs in by email first, then connects this provider from their profile. Separate from the top-level `disableSignUp`, which governs magic link and OTP.",
+      ),
   })
-  .describe("A social provider's on/off toggle.");
+  .describe("A social provider's on/off toggle and its sign-up policy.");
 
 /** The auth capability's configuration — the thin surface an adopter owns in `pithy.config.ts`. */
 export const AuthConfig = z
@@ -65,16 +81,16 @@ export const AuthConfig = z
       .describe(
         "The Workers Rate Limiting binding for the coarse per-IP edge guard on the auth routes (tier 1). Its limit and window are set on the binding in wrangler.jsonc. Complements Better Auth's per-action limiter (tier 2).",
       ),
-    google: ProviderToggle.default({ enabled: false }).describe(
+    google: ProviderToggle.prefault({}).describe(
       "Google OAuth. Enable it, then store credentials as the `auth-google-credentials` secret. See docs/google-oauth.md.",
     ),
-    apple: ProviderToggle.default({ enabled: false }).describe(
+    apple: ProviderToggle.prefault({}).describe(
       "Apple Sign-In. Enable it, then store credentials as the `auth-apple-credentials` secret. See docs/apple-signin.md.",
     ),
-    facebook: ProviderToggle.default({ enabled: false }).describe(
+    facebook: ProviderToggle.prefault({}).describe(
       "Facebook Login. Enable it, then store credentials as the `auth-facebook-credentials` secret. See docs/facebook-oauth.md.",
     ),
-    github: ProviderToggle.default({ enabled: false }).describe(
+    github: ProviderToggle.prefault({}).describe(
       "GitHub OAuth. Enable it, then store credentials as the `auth-github-credentials` secret. See docs/github-oauth.md.",
     ),
     sessionExpiresIn: z
@@ -117,11 +133,39 @@ export type AuthConfigInput = z.input<typeof AuthConfig>;
  */
 export interface AuthWiring {
   config: AuthConfig;
+  /** The adopter's GitHub identity resolver, or `undefined` for the kit's own rule. See {@link AuthOptions}. */
+  resolveGithubUserInfo: GithubUserInfoResolver | undefined;
   /** The email capability's bound enqueue seam — how magic-link/OTP are delivered. Set by `compose`. */
   enqueueEmail: EmailCapability["enqueue"] | undefined;
   /** The turnstile login gate, when the turnstile capability is composed. Set by `compose`. */
   turnstile: { mode: TurnstileMode } | undefined;
 }
+
+/**
+ * What `auth()` takes: the config, plus the seams that are **behavior rather than data**.
+ *
+ * A function cannot live in the Zod schema — the schema is the self-documenting surface `pithy` renders
+ * and the config projection serializes, and neither can carry a closure. So the split follows
+ * `PaymentsOptions`: everything describable stays in {@link AuthConfig}, and a resolver is a sibling key
+ * destructured off before the parse.
+ */
+export type AuthOptions = AuthConfigInput & {
+  /**
+   * Resolve a GitHub identity yourself, replacing the kit's primary-only rule.
+   *
+   * The kit's default is deliberately conservative: it links on the **primary** address and nothing else,
+   * because GitHub never re-verifies and a verified secondary can only speak to the past. An adopter who
+   * wants a richer ladder — match a verified secondary, present a chooser on multiple matches — builds it
+   * here. `getUserInfo` is the only hook in this flow running before both fetches and before
+   * `mapProfileToUser`, and the only one holding the OAuth token.
+   *
+   * **Better Auth trusts what you return, verbatim.** It performs no independent check, so an
+   * `emailVerified: true` you did not read from GitHub is an account takeover: an attacker adds a
+   * victim's address to their own GitHub *unverified* and links to the victim's user. Return GitHub's
+   * real per-address flag, always.
+   */
+  resolveGithubUserInfo?: GithubUserInfoResolver;
+};
 
 /** The auth capability, with its resolved config attached for inspection. */
 export interface AuthCapability extends Capability {
@@ -165,7 +209,12 @@ function assertPluginTablesUnclaimed(
  * `AuthContext` seam. Depends on `secrets` and `email`; auto-gates its send routes with `turnstile`
  * and emits `auth/*` through `audit` when those are composed.
  */
-export function auth(config: AuthConfigInput): AuthCapability {
+export function auth(options: AuthOptions): AuthCapability {
+  // **Destructured before the parse, and that ordering is the whole reason this is not a config field.**
+  // Zod 4 objects strip unknown keys silently, so a `resolveGithubUserInfo` handed to `AuthConfig.parse`
+  // would vanish with no error and the adopter's override would simply never run. `payments()` splits
+  // its `resolveSubject` out for the same reason.
+  const { resolveGithubUserInfo, ...config } = options;
   const resolved = AuthConfig.parse(config);
   // Additivity, before anything is built from the list. The four the kit composes are the sign-in this
   // product promises and what the control-plane seam verifies against, so a list naming one of them is
@@ -174,7 +223,12 @@ export function auth(config: AuthConfigInput): AuthCapability {
   // And the tables those plugins imply, derived now so a collision is a config error at `auth()` rather
   // than a half-applied migration against a database with no transactional DDL.
   const pluginPlan = authPluginPlan(resolved.plugins);
-  const wiring: AuthWiring = { config: resolved, enqueueEmail: undefined, turnstile: undefined };
+  const wiring: AuthWiring = {
+    config: resolved,
+    resolveGithubUserInfo,
+    enqueueEmail: undefined,
+    turnstile: undefined,
+  };
 
   // Tier-1 edge rate limiter, contributed as middleware so it runs before session resolution.
   const rateLimitMiddleware: PithyMiddleware = (app) => {

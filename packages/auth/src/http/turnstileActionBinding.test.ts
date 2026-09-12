@@ -84,6 +84,7 @@ function app(): Hono<PithyHonoEnv> {
       basePath: BASE_PATH,
       trustedOrigins: ["http://localhost"],
     }),
+    resolveGithubUserInfo: undefined,
     enqueueEmail: undefined,
     turnstile: { mode: "visible" },
   };
