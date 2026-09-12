@@ -1,5 +1,12 @@
 # @pithy-sh/testers
 
+## 0.2.4
+
+### Patch Changes
+
+- Updated dependencies [[`e10c22b`](https://github.com/pithy-sh/pithy/commit/e10c22b9b22fe6307376bdaf95f98f268824a477)]:
+  - @pithy-sh/auth@0.5.0
+
 ## 0.2.3
 
 ### Patch Changes
