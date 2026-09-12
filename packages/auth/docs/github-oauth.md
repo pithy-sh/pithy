@@ -99,11 +99,13 @@ auth({
 
 Better Auth trusts what a resolver returns **verbatim**. Return GitHub's real per-address `verified` flag, never a literal `true`: an attacker who adds somebody else's address to their own GitHub *unverified* must never match it.
 
-### Connecting a GitHub whose primary differs is not yet supported
+### Connecting GitHub to an account you already hold
 
-Not an oversight. It needs Better Auth's `allowDifferentEmails`, which widens what a session alone can authorize — and the control that pays for that has to survive `/token/rotate`, which mints a session stamped `createdAt: now`. A gate on session age is therefore reset by an ordinary rotation, and by anyone holding a stolen refresh token. Doing it properly needs an `authenticatedAt` that rotation carries forward, which is a session-schema change and ships on its own.
+Signed in, you can connect a GitHub whose primary differs from the address you signed in as. Both sides are proven at that moment — you authenticated as the account, and you just authenticated with GitHub — and the address still has to be one GitHub has verified.
 
-Until then, the remedy above stands: your GitHub primary is what signs you in.
+**Connecting requires a recent sign-in, not merely a valid session.** Attaching a provider grants permanent access: once linked, sign-in resolves by account id and your primary stops mattering. So it is gated the way disconnecting one already is. Sign in more than fifteen minutes ago and the connect answers `auth/session_not_fresh` and asks you to sign in again. Nothing is changed when it refuses, and the attempt is recorded in the audit trail.
+
+That window measures time since you **authenticated**, not the age of your session row. A `/token/rotate` continues the same authentication and carries the instant forward, so ordinary refreshing does not reset the gate — and neither does anyone holding a stolen refresh token.
 
 ### Turning GitHub sign-up off
 

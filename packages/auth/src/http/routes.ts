@@ -22,6 +22,7 @@ import {
 } from "../token/rotation";
 import { registerAuthAdminRoutes } from "./adminRoutes";
 import { apiErrorToPithy } from "./errors";
+import { requireFreshAuthenticationToLink } from "./linkFreshness";
 import { requireAuth } from "./middleware";
 import { getAuthInstance, resolveDb } from "./resolve";
 import { RevokeDeviceBody } from "./schemas";
@@ -86,6 +87,13 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
     app.post(`${base}/devices/revoke`, requireAuth(), csrf, zValidator("json", RevokeDeviceBody, validationHook), (c) =>
       revokeMyDevice(c, wiring, c.req.valid("json")),
     );
+
+    // **Attaching a provider requires a recent authentication.** Mounted explicitly ahead of the
+    // catch-all, or the gate never runs. `http/linkFreshness.ts` carries the argument: Better Auth guards
+    // `/link-social` with a plain session and `/unlink-account` with a fresh one, so the operation that
+    // grants permanent access is the cheaper-guarded one. No kit validator — the body is Better Auth's,
+    // and `handleBetterAuth` hands it `c.req.raw`, which is the catch-all's own reason for taking none.
+    app.post(`${base}/link-social`, requireFreshAuthenticationToLink(), (c) => handleBetterAuth(c, wiring));
 
     // The control-plane management surface. Registered here, before the catch-all below, or it is dead.
     registerAuthAdminRoutes(wiring)(app);
@@ -254,10 +262,28 @@ async function rotateToken(c: Ctx, wiring: AuthWiring): Promise<Response> {
 
   const ip = headers.get("cf-connecting-ip") ?? undefined;
   const userAgent = headers.get("user-agent") ?? undefined;
-  const session = current.session as { token: string; deviceId?: string | null; familyId?: string | null };
+  const session = current.session as {
+    token: string;
+    deviceId?: string | null;
+    familyId?: string | null;
+    authenticatedAt?: Date | null;
+  };
   const deviceId = session.deviceId ?? undefined;
   // Carry the family forward across the rotation; a session that never had one starts a family now.
   const familyId = session.familyId ?? crypto.randomUUID();
+  // **And carry the authentication instant, which is the whole point of the column.** A rotation is the
+  // same authentication continuing, not a new one — `createSession` would otherwise stamp `createdAt`
+  // afresh and leave the freshness gate measuring nothing, resettable by anyone holding a stolen refresh
+  // token (#558).
+  //
+  // **A session predating the column carries `null` forward, and must not fall back to `createdAt`.**
+  // That looked like a reasonable lower bound and is the opposite: `internal-adapter.mjs:275` stamps
+  // `createdAt` *after* the caller's override, so a row's `created_at` is the moment of its most recent
+  // rotation. Substituting it would hand every legacy session an authentication instant minutes old —
+  // freshest for exactly the actor rotating a stolen token — turning the one control that fails closed
+  // into one that fails open, on upgrade day, for the whole pre-migration population. `null` travels
+  // instead, the gate keeps refusing, and one real sign-in fixes it permanently.
+  const authenticatedAt = session.authenticatedAt ?? null;
 
   // Mint the successor session and its access token BEFORE consuming the old one, so a transient signing
   // failure leaves the presented refresh token still valid (the successor simply expires unused) rather
@@ -266,6 +292,7 @@ async function rotateToken(c: Ctx, wiring: AuthWiring): Promise<Response> {
     ipAddress: ip,
     userAgent,
     familyId,
+    authenticatedAt,
     ...(deviceId ? { deviceId } : {}),
   });
   const access = await instance.api.getToken({ headers: new Headers({ authorization: `Bearer ${next.token}` }) });

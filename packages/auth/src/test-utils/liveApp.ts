@@ -24,7 +24,8 @@ import { createSessionMiddleware } from "../http/middleware";
 import { createRateLimitMiddleware } from "../http/rateLimit";
 import { createAuthRoutes } from "../http/routes";
 import { authSecretsRegistry } from "../instance/secrets";
-import { AUTH_MIGRATION_ORDER, auth_0001_init } from "../migrations/0001_init";
+import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
+import { AUTH_MIGRATIONS } from "../migrations/set";
 
 /**
  * A real auth Worker on a real port, for the live suites (#84).
@@ -243,7 +244,7 @@ async function migrate(db: D1Database): Promise<void> {
     await db.prepare(`drop table if exists ${table}`).run();
   }
   const provider = createMigrationRegistry([
-    { database: "app", namespace: "auth", order: AUTH_MIGRATION_ORDER, migrations: { "0001_init": auth_0001_init } },
+    { database: "app", namespace: "auth", order: AUTH_MIGRATION_ORDER, migrations: AUTH_MIGRATIONS },
     { database: "app", namespace: "email", order: 200, migrations: { "0001_init": email_0001_init } },
   ]).app;
   if (!provider) throw new Error('expected a migration provider for database "app"');

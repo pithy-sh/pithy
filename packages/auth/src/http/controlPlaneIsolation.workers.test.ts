@@ -30,7 +30,8 @@ import { authDatabase } from "../data/tables";
 import { makeAuth } from "../instance/auth";
 import { NO_SOCIAL_PROVIDERS } from "../instance/providers";
 import { authSecretsRegistry } from "../instance/secrets";
-import { AUTH_MIGRATION_ORDER, auth_0001_init } from "../migrations/0001_init";
+import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
+import { AUTH_MIGRATIONS } from "../migrations/set";
 import { requireAuth } from "./middleware";
 
 /**
@@ -279,7 +280,7 @@ beforeEach(async () => {
     await env.DB.prepare(`drop table if exists ${table}`).run();
   }
   const provider = createMigrationRegistry([
-    { database: "app", namespace: "auth", order: AUTH_MIGRATION_ORDER, migrations: { "0001_init": auth_0001_init } },
+    { database: "app", namespace: "auth", order: AUTH_MIGRATION_ORDER, migrations: AUTH_MIGRATIONS },
     {
       database: "app",
       namespace: "email",

@@ -107,7 +107,7 @@ const CODES = KitErrorPayload.options.map((member) => member.shape.code.value);
  * And the code itself also needs: the Spanish sentence in `packages/i18n/src/catalogs/es/errors.ts`,
  * and `bun run docs-catalog` to regenerate `docs/catalog.generated.json`.
  */
-const KIT_ERROR_CODE_COUNT = 122;
+const KIT_ERROR_CODE_COUNT = 123;
 
 /**
  * The domain segment a *catalog key* must carry: a capability's `name`, or `app`.
@@ -663,7 +663,7 @@ describe("a translated sentence interpolates what its English does", () => {
   test("the English side really has values and really has placeholders", () => {
     // Without this the comparison above is over an empty map, which is what a regex that stopped
     // capturing values would leave — and an empty map is indistinguishable from perfect agreement.
-    expect(ENGLISH.size).toBeGreaterThanOrEqual(122);
+    expect(ENGLISH.size).toBeGreaterThanOrEqual(123);
     expect([...ENGLISH.values()].filter((value) => value.includes("{")).length).toBeGreaterThanOrEqual(30);
   });
 });

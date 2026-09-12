@@ -7,11 +7,12 @@ import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { getSchema } from "better-auth/db";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, expect, test } from "vitest";
-import { AUTH_MIGRATION_ORDER, auth_0001_init } from "./0001_init";
+import { AUTH_MIGRATION_ORDER } from "./0001_init";
 import { authSchemaOptions } from "./pluginTables";
+import { AUTH_MIGRATIONS } from "./set";
 
 /**
- * Every column Better Auth declares for the kit's own tables exists in `0001_init` (#451).
+ * Every column Better Auth declares for the kit's own tables exists in the shipped migration chain (#451).
  *
  * **This is the gate that was missing, and its absence cost a silent break.** `@pithy-sh/auth` declared
  * `better-auth: ^1.6.29` while `1.7.1` was published, so an adopter installing the package resolved a
@@ -37,7 +38,7 @@ const SET = {
   database: "app",
   namespace: "auth",
   order: AUTH_MIGRATION_ORDER,
-  migrations: { "0001_init": auth_0001_init },
+  migrations: AUTH_MIGRATIONS,
 } as const;
 
 const ALL_TABLES = [

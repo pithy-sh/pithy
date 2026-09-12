@@ -40,6 +40,18 @@ export const AuthAuditActions = {
    * cost" is answerable from the same place every other auth question is.
    */
   providerUnavailable: "auth/provider_unavailable",
+  /**
+   * Somebody signed in tried to attach a social provider without having authenticated recently enough.
+   * Outcome `denied`, severity `warning`.
+   *
+   * Attaching an identity grants permanent access — after it, sign-in resolves by account id and the email
+   * stops mattering — so this is the row that answers "was somebody walking a stolen credential at the
+   * account-takeover step". One is a person who left a tab open; a run of them against one user id is the
+   * incident, and without the row there is nothing to count.
+   *
+   * Mirrors the error code, which is this file's one precedent for doing so.
+   */
+  sessionNotFresh: "auth/session_not_fresh",
 
   /**
    * The admin actions, emitted only from the control-plane surface (`http/adminRoutes.ts`) and always

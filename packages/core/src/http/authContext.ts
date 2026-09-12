@@ -24,6 +24,12 @@ export const AuthContext = z
     locale: Locale.nullish().describe(
       "The reader's own stored language, from `pithy_auth_users.locale`; null or absent when they have never chosen.",
     ),
+    authenticatedAt: z
+      .date()
+      .nullish()
+      .describe(
+        "When the holder of this session last actually authenticated — a sign-in, never a rotation, which carries the value forward unchanged. It rides here for the same reason `locale` does: the session lookup has already loaded the row, so a gate that needs it should not pay for a second read. Distinct from the session's own `createdAt`, which `/token/rotate` stamps fresh and is therefore resettable by anyone holding a stolen refresh token. Null or absent for a session written before the column existed, and for a Worker whose auth capability predates it.",
+      ),
   })
   .describe("Per-request authenticated identity; the seam other capabilities depend on.");
 export type AuthContext = z.infer<typeof AuthContext>;

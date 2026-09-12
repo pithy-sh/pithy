@@ -256,18 +256,43 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
       },
       session: {
         create: {
-          // Bind the session to its device (registering the device first, so the linkage is valid).
-          // Only fires when a request carried device headers — an internal rotation passes deviceId
-          // via override instead, so this hook leaves it untouched.
+          /**
+           * Stamp when this session's holder authenticated, and bind the session to its device.
+           *
+           * **`authenticatedAt` is stamped here and nowhere else.** A sign-in is the only event that is
+           * an authentication; `/token/rotate` carries the value forward through `createSession`'s
+           * override instead, which is why a rotated session keeps the original instant. A field
+           * `defaultValue` would have looked equivalent and is not: `getSessionDefaultFields` is spread
+           * into the row *after* the caller's override, so it would overwrite the carried value and
+           * silently restore the defect the column exists to fix (#558).
+           *
+           * A value already on the row is left alone — that is the rotation, passing its own.
+           *
+           * **Every other `createSession` is treated as an authentication, which is right for all of
+           * them the kit composes.** `better-auth/plugins/admin`'s `impersonateUser` would be the
+           * exception — an admin impersonating somebody would get a freshly-stamped session and could
+           * attach a provider to that account — but the kit composes no admin plugin, so it is a note
+           * for whoever does rather than a live path.
+           *
+           * Device binding only fires when the request carried device headers; a rotation passes
+           * `deviceId` by override for the same reason.
+           */
           before: async (session, ctx) => {
+            // **`undefined` and `null` are different answers here, and collapsing them is a hole.**
+            // Absent means nobody supplied one, which is a sign-in: stamp it. Present-and-null is a
+            // rotation of a session written before the column existed, and it must stay null so the gate
+            // keeps refusing rather than being handed a fresh instant. `??` would have treated both as
+            // "stamp now", which is the fail-open `routes.ts` describes at length.
+            const carried = (session as { authenticatedAt?: Date | null }).authenticatedAt;
+            const authenticatedAt = carried !== undefined ? carried : new Date();
             const meta = ctx?.headers ? parseDeviceMeta(ctx.headers) : undefined;
-            if (!meta) return;
+            if (!meta) return { data: { ...session, authenticatedAt } };
             await registerDevice(deps.db, meta, {
               userId: session.userId,
               lastIp: session.ipAddress ?? null,
               now: new Date(),
             });
-            return { data: { ...session, deviceId: meta.id } };
+            return { data: { ...session, deviceId: meta.id, authenticatedAt } };
           },
         },
       },
@@ -342,6 +367,22 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
         enabled: true,
         // Link a social sign-in to an existing magic-link user when the verified emails match.
         trustedProviders: ["google", "apple"],
+        /**
+         * **A signed-in user may attach a provider whose email differs from their account's.**
+         *
+         * Both sides are proven at that moment: they authenticated as the account, and they just
+         * authenticated with the provider. Without this, a GitHub account whose primary is not the
+         * sign-up address can never be attached at all.
+         *
+         * **This flag alone would be the wrong fix and is not the whole of it.** It permits *any*
+         * differing address, including one the provider never verified — and Better Auth performs no
+         * independent check on what a resolver hands back. The verified boundary is held by
+         * `githubUserInfo.ts`, which reports the provider's real per-address flag and never a literal;
+         * and `http/linkFreshness.ts` is what stops a stolen credential using this to attach an
+         * identity permanently. Neither is optional, and #558 records why the obvious version of that
+         * second guard — session age — was defeated by a single `/token/rotate`.
+         */
+        allowDifferentEmails: true,
         /**
          * **A provider is never the last way in, which is also what makes an orphaned link recoverable.**
          *

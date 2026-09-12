@@ -906,6 +906,10 @@
       "status": 503
     },
     {
+      "code": "auth/session_not_fresh",
+      "status": 403
+    },
+    {
       "code": "cloudflare/invalid_response",
       "status": 502
     },

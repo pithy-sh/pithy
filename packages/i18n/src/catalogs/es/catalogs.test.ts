@@ -92,7 +92,7 @@ describe("the catalogs are the size they are", () => {
     expect(
       Object.keys(esErrors),
       "the taxonomy size moved: update all four hand-written counts — core/src/error/payload.test.ts, cli/src/ci/catalogCoverage.test.ts, i18n/src/catalogs/es/errors.test.ts and this one — plus the Spanish sentence in i18n/src/catalogs/es/errors.ts, then run `bun run docs-catalog`",
-    ).toHaveLength(122);
+    ).toHaveLength(123);
     expect(ENTRIES.length).toBeGreaterThanOrEqual(191);
   });
 

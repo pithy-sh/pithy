@@ -20,7 +20,8 @@ import { authDatabase } from "../data/tables";
 import { makeAuth } from "../instance/auth";
 import { NO_SOCIAL_PROVIDERS } from "../instance/providers";
 import { authSecretsRegistry } from "../instance/secrets";
-import { AUTH_MIGRATION_ORDER, auth_0001_init } from "../migrations/0001_init";
+import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
+import { AUTH_MIGRATIONS } from "../migrations/set";
 import { publishSameOrigin } from "./csrf";
 import { createSessionMiddleware } from "./middleware";
 import { createRateLimitMiddleware } from "./rateLimit";
@@ -151,7 +152,7 @@ beforeEach(async () => {
     await env.DB.prepare(`drop table if exists ${t}`).run();
   }
   const provider = createMigrationRegistry([
-    { database: "app", namespace: "auth", order: AUTH_MIGRATION_ORDER, migrations: { "0001_init": auth_0001_init } },
+    { database: "app", namespace: "auth", order: AUTH_MIGRATION_ORDER, migrations: AUTH_MIGRATIONS },
     {
       database: "app",
       namespace: "email",
@@ -227,6 +228,135 @@ describe("auth HTTP routes", () => {
     expect(bound?.device_id).toBe("dev-1");
     // A family id is minted on first rotation, so a later replay of the old token can revoke the chain.
     expect(bound?.family_id).toBeTruthy();
+  });
+
+  test("a signed-in caller reaches link-social; the gate does not refuse a fresh authentication", async () => {
+    // **The seam, end to end, and the case two earlier shapes of this gate got wrong.** Both refused
+    // 100% of callers — a control that fails entirely closed is indistinguishable from a broken feature,
+    // and the obvious fix for a broken feature is to delete the control. A hand-built `AuthContext` in a
+    // unit test cannot catch that: it proves the predicate, not the wiring. This drives a real sign-in
+    // through `createSessionMiddleware` → `AuthContext.parse` → the mounted middleware, so the cast in
+    // `middleware.ts`, the `z.object` strip, and the mount order are all covered by one assertion.
+    //
+    // GitHub is not configured in this fixture, so the request cannot succeed — *how* it fails is the
+    // whole point.
+    const { token } = await signIn(DEVICE_HEADERS);
+    const app = buildApp(buildWiring());
+
+    const res = await app.request(
+      "/auth/link-social",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ provider: "github", callbackURL: "https://app.example/cb" }),
+      },
+      appEnv(),
+    );
+    expect(JSON.stringify(await res.json())).not.toContain("auth/session_not_fresh");
+  });
+
+  test("an authentication older than the window is refused, by this gate and with its own code", async () => {
+    const { token } = await signIn(DEVICE_HEADERS);
+    const app = buildApp(buildWiring());
+
+    // Age the authentication past the window without touching anything else about the session.
+    const stale = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    await env.DB.prepare("update pithy_auth_sessions set authenticated_at = ? where token = ?")
+      .bind(stale, token)
+      .run();
+
+    const res = await app.request(
+      "/auth/link-social",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ provider: "github", callbackURL: "https://app.example/cb" }),
+      },
+      appEnv(),
+    );
+    expect(res.status).toBe(403);
+    expect(JSON.stringify(await res.json())).toContain("auth/session_not_fresh");
+  });
+
+  test("a rotation carries the authentication instant forward rather than restamping it", async () => {
+    // **The fact the link-freshness gate rests on, and the defect it was written for.** `createSession`
+    // stamps `created_at` with the moment of the call, so session age is reset by every rotation —
+    // ordinary on the bearer path, and available on demand to anyone holding a stolen refresh token. If
+    // this value moved with it, the gate would be two requests from open (#558).
+    const { token } = await signIn(DEVICE_HEADERS);
+    const app = buildApp(buildWiring());
+
+    const before = await env.DB.prepare("select authenticated_at, created_at from pithy_auth_sessions where token = ?")
+      .bind(token)
+      .first<{ authenticated_at: string | null; created_at: string }>();
+    expect(before?.authenticated_at).toBeTruthy();
+
+    const res = await app.request(
+      "/auth/token/rotate",
+      { method: "POST", headers: { authorization: `Bearer ${token}` } },
+      appEnv(),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json<{ refreshToken: string }>();
+
+    const after = await env.DB.prepare("select authenticated_at, created_at from pithy_auth_sessions where token = ?")
+      .bind(body.refreshToken)
+      .first<{ authenticated_at: string | null; created_at: string }>();
+    // The authentication is the same one; only the row is new.
+    expect(after?.authenticated_at).toBe(before?.authenticated_at);
+  });
+
+  test("a session predating the column stays undated through a rotation — the gate keeps refusing", async () => {
+    // **The fail-open this exists to prevent.** Falling back to the row's own `created_at` looked like a
+    // sane lower bound and is an upper one: `createSession` stamps `created_at` at the moment of the
+    // call, so a legacy row rotated by somebody holding a stolen refresh token would present an
+    // authentication instant minutes old and walk straight through the gate — on upgrade day, for the
+    // entire pre-migration population. Null travels instead, and one real sign-in fixes it for good.
+    const { token } = await signIn(DEVICE_HEADERS);
+    const app = buildApp(buildWiring());
+
+    // Make it look like a row written before `auth_0002` ran.
+    await env.DB.prepare("update pithy_auth_sessions set authenticated_at = null where token = ?").bind(token).run();
+
+    const res = await app.request(
+      "/auth/token/rotate",
+      { method: "POST", headers: { authorization: `Bearer ${token}` } },
+      appEnv(),
+    );
+    expect(res.status).toBe(200);
+    const { refreshToken } = await res.json<{ refreshToken: string }>();
+
+    const after = await env.DB.prepare("select authenticated_at, created_at from pithy_auth_sessions where token = ?")
+      .bind(refreshToken)
+      .first<{ authenticated_at: string | null; created_at: string }>();
+    expect(after?.authenticated_at ?? null).toBeNull();
+    // And emphatically not the successor's own creation moment, which is what the fallback produced.
+    expect(after?.authenticated_at).not.toBe(after?.created_at);
+  });
+
+  test("the instant survives successive rotations, not just the first", async () => {
+    // A value carried once and dropped on the second hop would be the same hole one request further out.
+    const { token } = await signIn(DEVICE_HEADERS);
+    const app = buildApp(buildWiring());
+    const original = await env.DB.prepare("select authenticated_at from pithy_auth_sessions where token = ?")
+      .bind(token)
+      .first<{ authenticated_at: string | null }>();
+
+    let current = token;
+    for (let hop = 0; hop < 3; hop++) {
+      const res = await app.request(
+        "/auth/token/rotate",
+        { method: "POST", headers: { authorization: `Bearer ${current}` } },
+        appEnv(),
+      );
+      expect(res.status).toBe(200);
+      current = (await res.json<{ refreshToken: string }>()).refreshToken;
+    }
+
+    const final = await env.DB.prepare("select authenticated_at from pithy_auth_sessions where token = ?")
+      .bind(current)
+      .first<{ authenticated_at: string | null }>();
+    expect(final?.authenticated_at).toBe(original?.authenticated_at);
   });
 
   test("the refresh-token family id is preserved across successive rotations", async () => {

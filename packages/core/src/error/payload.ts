@@ -117,6 +117,22 @@ const AuthProviderUnavailablePublic = z
   })
   .describe("An enabled social sign-in provider could not be served (503).");
 
+const AuthSessionNotFreshPublic = z
+  .object({
+    code: z
+      .literal("auth/session_not_fresh")
+      .describe(
+        "The caller is signed in, but has not authenticated recently enough to attach a social provider to their account. Attaching one grants permanent access — after it, sign-in resolves by account id and the email stops mattering — so it is gated on a recent authentication the way unlinking already is. A separate code from `auth/forbidden` because the remedy is specific and cheap: sign in again, then retry. Nothing was changed.",
+      ),
+    status: z
+      .literal(403)
+      .describe(
+        "Forbidden — a real, current credential was presented and is not sufficient for this particular decision. Not 401, which is what a caller with no credential gets: a client that cannot tell the two apart does not know whether to re-authenticate or to retry.",
+      ),
+    ...publicFields,
+  })
+  .describe("The session is authentic but the holder authenticated too long ago to attach a provider (403).");
+
 const NotFoundPublic = z
   .object({
     code: z.literal("core/not_found").describe("The requested resource does not exist."),
@@ -1458,6 +1474,7 @@ export const KitPublicErrorPayload = z
     InvalidTokenPublic,
     ForbiddenPublic,
     AuthProviderUnavailablePublic,
+    AuthSessionNotFreshPublic,
     NotFoundPublic,
     ConflictPublic,
     RateLimitPublic,
@@ -1586,6 +1603,9 @@ const InvalidToken = InvalidTokenPublic.extend(internalFields).describe(InvalidT
 const Forbidden = ForbiddenPublic.extend(internalFields).describe(ForbiddenPublic.description ?? "");
 const AuthProviderUnavailable = AuthProviderUnavailablePublic.extend(internalFields).describe(
   AuthProviderUnavailablePublic.description ?? "",
+);
+const AuthSessionNotFresh = AuthSessionNotFreshPublic.extend(internalFields).describe(
+  AuthSessionNotFreshPublic.description ?? "",
 );
 const NotFound = NotFoundPublic.extend(internalFields).describe(NotFoundPublic.description ?? "");
 const Conflict = ConflictPublic.extend(internalFields).describe(ConflictPublic.description ?? "");
@@ -1923,6 +1943,7 @@ export const KitErrorPayload = z
     InvalidToken,
     Forbidden,
     AuthProviderUnavailable,
+    AuthSessionNotFresh,
     NotFound,
     Conflict,
     RateLimit,

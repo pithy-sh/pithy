@@ -13,6 +13,7 @@ import { Session, User } from "../data/betterAuth";
 import { Device } from "../data/device";
 import { type AuthDatabase, type AuthTables, authDatabase } from "../data/tables";
 import { auth_0001_init } from "../migrations/0001_init";
+import { auth_0002_session_authenticated_at } from "../migrations/0002_session_authenticated_at";
 import {
   findSessionById,
   getUser,
@@ -89,6 +90,7 @@ async function seedSession(id: string, userId: string, ageMinutes: number): Prom
         userAgent: "PithyTest/1.0",
         deviceId: null,
         familyId: null,
+        authenticatedAt: new Date(),
       }),
     )
     .execute();
@@ -131,6 +133,9 @@ beforeEach(async () => {
     await env.DB.exec(`DROP TABLE IF EXISTS ${table}`);
   }
   await auth_0001_init.up(untyped);
+  // The chain, not just its head: this suite inserts session rows, and a column the code writes must
+  // exist. See `migrations/set.ts` for why five harnesses each had this wrong.
+  await auth_0002_session_authenticated_at.up(untyped);
 });
 
 describe("listUsers", () => {

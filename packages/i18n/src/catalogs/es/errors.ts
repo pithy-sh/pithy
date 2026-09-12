@@ -44,6 +44,7 @@ export const esErrors: MessageCatalog = {
   "auth/invalid_token": "Tu sesión no es válida o ha caducado. Vuelve a iniciar sesión.",
   "auth/forbidden": "No tienes permiso para hacer esto.",
   "auth/provider_unavailable": "Este método de acceso no está disponible ahora. Prueba con otro.",
+  "auth/session_not_fresh": "Has entrado, pero no hace poco. Vuelve a entrar y reinténtalo. No se ha cambiado nada.",
   "core/not_found": "No existe el recurso solicitado.",
   "core/conflict": "La solicitud entra en conflicto con el estado actual.",
   "rate_limit/exceeded": "Demasiadas solicitudes. Inténtalo más tarde.",

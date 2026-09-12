@@ -286,8 +286,8 @@ describe("the advertised admin surface matches what is mounted", () => {
   });
 
   test("the probe reads the whole mounted surface, not a slice of it", () => {
-    // Anti-vacuity for the check above, exact rather than a floor: nine routes carry a method — the six
-    // admin ones and the three a signed-in person calls. A tenth is either a new admin route, which the
+    // Anti-vacuity for the check above, exact rather than a floor: ten routes carry a method — the six
+    // admin ones and the four a signed-in person calls. An eleventh is either a new admin route, which the
     // check above then demands a declaration for, or a new user route, which is a deliberate edit here.
     expect(
       mountedRoutes(makeApp())
@@ -302,6 +302,10 @@ describe("the advertised admin surface matches what is mounted", () => {
       "POST /auth/admin/users/:userId/devices/revoke",
       "POST /auth/admin/users/:userId/sessions/revoke",
       "POST /auth/devices/revoke",
+      // Better Auth's own endpoint, mounted explicitly ahead of the catch-all so the link-freshness gate
+      // can sit in front of it. It takes no kit validator for the catch-all's own reason: the body is
+      // Better Auth's, and reading it here would consume the stream `handleBetterAuth` forwards.
+      "POST /auth/link-social",
       "POST /auth/token/rotate",
     ]);
   });
