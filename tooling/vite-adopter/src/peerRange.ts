@@ -21,8 +21,23 @@ import { defineConfig as defineConfig8, type Plugin as Plugin8, type PluginOptio
  * recursive field, before the `plugins` array would compile.
  *
  * Proving the fix needs **two resolutions of Vite present at once**, which is why this is a package
- * rather than one more file in `packages/vite`. This one pins a copy of each major in the declared peer
- * range; `@pithy-sh/vite` next door resolves `^8.0.16`. TypeScript follows the realpath of a symlinked
+ * rather than one more file in `packages/vite`.
+ *
+ * **Each major is pinned to its oldest *patched* release, and that rule is doing two jobs.** The gap
+ * between the kit's copy and the adopter's is what breaks assignability, and type shapes drift across
+ * minors as well as majors — so the oldest version still inside the declared range is the widest gap
+ * this gate can test, and the strictest evidence that the range is not a lie. Pinning the latest of each
+ * major would test the narrowest gap instead and pass while the floor of the range was broken.
+ *
+ * "Patched" is the other half. The floors themselves — `7.0.0`, `8.0.0` — carry a standing set of Vite
+ * dev-server advisories that will never be fixed at those versions, and a permanent alert list is one
+ * people learn to scroll past. Nothing here runs a dev server (this package is private and its only
+ * script is `vitest run`), so the exposure was never real; the cost was the noise. The oldest release
+ * that is both in-range and unadvised gives up almost nothing and ends it. `6.4.3` was already exactly
+ * that, which is why it never appeared in an alert while the two floors carried twelve between them.
+ *
+ * The numbers move only when a new advisory raises a major's patched floor. This one pins a copy of each
+ * major in the declared peer range; `@pithy-sh/vite` next door resolves `^8.0.16`. TypeScript follows the realpath of a symlinked
  * package, so `plugin.ts` compiles here against the kit's Vite exactly as it does in the kit, while the
  * lines below are checked against three others. That is the adopter's install, reproduced.
  *

@@ -19,8 +19,8 @@
     "@vitest/coverage-v8": "^4.1.0",
     "typescript": "^7.0.2",
     "vite": "6.4.3",
-    "vite7": "npm:vite@7.0.0",
-    "vite8": "npm:vite@8.0.0",
+    "vite7": "npm:vite@7.3.5",
+    "vite8": "npm:vite@8.0.16",
     "vitest": "^4.1.0"
   }
 }
