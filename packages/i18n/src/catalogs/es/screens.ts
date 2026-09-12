@@ -49,6 +49,8 @@ export const esScreens: MessageCatalog = {
   "auth/sign_in.signup.prompt": "¿Aún no tienes cuenta?",
   "auth/sign_in.signup.answer": "Al entrar se crea una.",
   "auth/sign_in.signup.closed": "Solo cuentas existentes.",
+  "auth/sign_in.signup.email_only":
+    "Te enviamos un enlace y se crea una. Los botones de arriba solo entran en cuentas que ya existen.",
   "auth/sign_in.sent.title": "Mira tu correo.",
   "auth/sign_in.sent.body": "Si esa dirección puede entrar, el enlace ya va en camino. Caduca pronto.",
 

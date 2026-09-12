@@ -88,6 +88,11 @@ const EN = {
   "auth/sign_in.signup.prompt": "No account yet?",
   "auth/sign_in.signup.answer": "Signing in creates one.",
   "auth/sign_in.signup.closed": "Existing accounts only.",
+  // Said instead of `signup.answer` when a provider on this screen may sign people in but not create an
+  // account for them. The blanket promise is true of the link and false of that button, and the reader
+  // finds out by being refused after a round trip to the provider (#559).
+  "auth/sign_in.signup.email_only":
+    "Emailing you a link creates one. The buttons above sign in existing accounts only.",
   "auth/sign_in.sent.title": "Check your inbox.",
   "auth/sign_in.sent.body": "If that address can sign in, a link is on its way. The link expires shortly.",
 } satisfies MessageCatalog;
@@ -98,6 +103,13 @@ export interface AuthProjection {
   readonly basePath: string;
   /** Which social providers are switched on in `pithy.config.ts`. Credentials never reach a browser. */
   readonly providers: Readonly<Record<string, boolean>>;
+  /**
+   * Which of those may **create** an account, from each provider's `allowSignUp` toggle.
+   *
+   * Optional because a copy of this screen predating the field reads `undefined`, which means "no
+   * provider refuses" — the behavior every project had before it existed.
+   */
+  readonly providerSignUp?: Readonly<Record<string, boolean>>;
   /** Whether signing in may provision a new account. Drives one sentence of copy. */
   readonly signUpEnabled: boolean;
 }
@@ -313,6 +325,10 @@ function refusalText(t: Translator, refusal: NonNullable<Refusal>): string {
 /**
  * The refusal Better Auth sends back on the callback, read off the URL.
  *
+ * **`SOCIAL` is consulted here as well as rendered above**, so a fifth provider is two edits in this
+ * file, not one: add it to the table and it gets a button, a refusal, and a sign-up promise that knows
+ * about it. An id absent from the table renders no refusal at all.
+ *
  * `signup_disabled` is its own code for "this provider may not create an account", which is what
  * `github: { allowSignUp: false }` asks it to answer.
  *
@@ -394,6 +410,12 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
   const returned = urlRefusal(useSearchParam("error"), useSearchParam("provider"));
 
   const offered = SOCIAL.filter((provider) => auth.providers[provider.id]);
+  // Whether any button on this screen signs people in without being able to create an account for them.
+  // `signUpEnabled` answers for the link and says nothing about a provider, so on its own it promises
+  // what that button will refuse — after a full round trip to the provider and back (#559). Absent
+  // `providerSignUp` (a screen copied before it was projected) reads as "no provider refuses", which is
+  // what every project's behaviour was until then.
+  const providerRefuses = offered.some((provider) => auth.providerSignUp?.[provider.id] === false);
 
   async function sendLink(event: FormEvent): Promise<void> {
     event.preventDefault();
@@ -512,7 +534,8 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
       <p className="auth__signup">
         {auth.signUpEnabled ? (
           <>
-            {t.t("auth/sign_in.signup.prompt")} <strong>{t.t("auth/sign_in.signup.answer")}</strong>
+            {t.t("auth/sign_in.signup.prompt")}{" "}
+            <strong>{t.t(providerRefuses ? "auth/sign_in.signup.email_only" : "auth/sign_in.signup.answer")}</strong>
           </>
         ) : (
           t.t("auth/sign_in.signup.closed")

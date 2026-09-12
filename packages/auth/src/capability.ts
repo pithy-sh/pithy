@@ -325,6 +325,14 @@ export function auth(options: AuthOptions): AuthCapability {
         facebook: resolved.facebook.enabled,
         github: resolved.github.enabled,
       },
+      // Per provider, beside the global one. A project may let email create accounts while a provider
+      // may not, and a screen with only `signUpEnabled` promises what that provider will refuse (#559).
+      providerSignUp: {
+        google: resolved.google.allowSignUp,
+        apple: resolved.apple.allowSignUp,
+        facebook: resolved.facebook.allowSignUp,
+        github: resolved.github.allowSignUp,
+      },
       otpLength: resolved.otpLength,
       signUpEnabled: !resolved.disableSignUp,
     }),

@@ -207,16 +207,31 @@ describe("additional Better Auth plugins", () => {
 describe("auth client projection", () => {
   const context = { environment: "production" };
 
-  test("projects exactly the five keys a sign-in screen needs", () => {
+  test("projects exactly the six keys a sign-in screen needs", () => {
     const projection = resolveClientProjection(build(), context);
-    expect(Object.keys(projection).sort()).toEqual(["basePath", "enabled", "otpLength", "providers", "signUpEnabled"]);
+    expect(Object.keys(projection).sort()).toEqual([
+      "basePath",
+      "enabled",
+      "otpLength",
+      "providerSignUp",
+      "providers",
+      "signUpEnabled",
+    ]);
     expect(projection).toEqual({
       enabled: true,
       basePath: "/auth",
       providers: { google: false, apple: false, facebook: false, github: false },
+      // Per provider, beside the global one: a project may let email create accounts while a provider
+      // may not, and a screen with only `signUpEnabled` promises what that provider refuses (#559).
+      providerSignUp: { google: true, apple: true, facebook: true, github: true },
       otpLength: 6,
       signUpEnabled: true,
     });
+  });
+
+  test("a provider's sign-up policy reaches the browser, so the promise can be scoped", () => {
+    const projection = resolveClientProjection(build({ github: { enabled: true, allowSignUp: false } }), context);
+    expect(projection.providerSignUp).toEqual({ google: true, apple: true, facebook: true, github: false });
   });
 
   test("no deployment or sensitive config value reaches the bundle", () => {

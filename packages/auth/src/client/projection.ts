@@ -48,6 +48,28 @@ export type AuthClientProjection =
         /** Whether Sign in with GitHub is offered. */
         github: boolean;
       };
+      /**
+       * Whether each offered provider may create an account, from its `allowSignUp` toggle.
+       *
+       * **A second fact from {@link signUpEnabled}, and the screen needs both.** That one answers for
+       * magic link and OTP; this answers per provider. A project can let email create accounts while
+       * GitHub only signs existing ones in — which is the configuration #554 exists for — and with only
+       * the global flag a screen renders "Signing in creates one." directly beneath a button that will
+       * refuse (#559).
+       *
+       * Optional, so a screen copied before this landed keeps compiling and reads `undefined` as "no
+       * provider objects" — the state every project was in until now.
+       */
+      providerSignUp?: {
+        /** Whether a Google sign-in may create an account. */
+        google: boolean;
+        /** Whether an Apple sign-in may create an account. */
+        apple: boolean;
+        /** Whether a Facebook sign-in may create an account. */
+        facebook: boolean;
+        /** Whether a GitHub sign-in may create an account. */
+        github: boolean;
+      };
       /** How many digits an email OTP carries. */
       otpLength: number;
       /** Whether signing in may provision a new user. Drives the sign-up copy. */
