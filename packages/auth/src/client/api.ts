@@ -487,9 +487,16 @@ function isAuthorization(value: unknown): value is { url: string } {
  * **No humanity check, deliberately**: the redirect carries no token to check and the provider runs its
  * own bot defense, which is what `@pithy-sh/auth` already assumes when it stacks the check on the
  * magic-link route alone. Gating it would only stop people signing in.
+ *
+ * **`errorCallbackURL` is how a refusal gets back to a screen at all.** Absent it, Better Auth sends a
+ * refused callback to `${baseURL}${basePath}/error`, which in production redirects on to the adopter's
+ * home route carrying a query string no template reads — so the user lands on a page that says nothing
+ * about what just happened. Pass the sign-in screen's own path and the refusal returns to the control
+ * that started it, as `?error=<code>`. That is the transport the whole GitHub rejection copy depends on
+ * (pithy-sh/pithy#554); without it the sentence exists and is unreachable.
  */
 export async function startSocialSignIn(
-  input: { provider: string; callbackURL: string },
+  input: { provider: string; callbackURL: string; errorCallbackURL?: string },
   options?: AuthClientOptions,
 ): Promise<SocialSignIn> {
   // The gate is dropped rather than passed through, so a screen holding one client options object for

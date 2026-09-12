@@ -205,6 +205,42 @@ describe("the humanity check", () => {
     expect(calls[0]?.body["cf-turnstile-response"]).toBe("tok");
   });
 
+  test("the refusal renders from the URL alone, because the round trip destroys component state", async () => {
+    // **The bug this exists to catch.** A refused OAuth sign-in comes back after a full page navigation
+    // out to the provider and home again, so the component remounts with nothing: any provider name held
+    // in React state is gone by the time `?error=` arrives, and the copy would silently never render.
+    // Both halves therefore travel in the URL. No click precedes this — that is the whole point.
+    window.history.replaceState({}, "", "/sign-in?provider=github&error=signup_disabled");
+    try {
+      const container = mount(<SignInScreen auth={AUTH} fetch={recorder({}).fetch} origin="https://app.example" />);
+      const text = (container.querySelector(".auth__failed") as HTMLElement | null)?.textContent ?? "";
+      expect(text).toContain("No account for this GitHub.");
+      expect(text).toContain("A secondary address will not do it.");
+      expect(text).toContain("connect GitHub from your profile");
+    } finally {
+      window.history.replaceState({}, "", "/");
+    }
+  });
+
+  test("a provider nobody offers renders nothing, so the URL cannot dictate product copy", () => {
+    // `?provider=` is attacker-supplied: anyone can hand somebody this link, and the block beneath is
+    // four sentences of first-party copy ending in an instruction. Resolving through `SOCIAL` is what
+    // keeps the words ours.
+    window.history.replaceState({}, "", "/sign-in?provider=Support%20-%20call%205550100&error=signup_disabled");
+    try {
+      const container = mount(<SignInScreen auth={AUTH} fetch={recorder({}).fetch} origin="https://app.example" />);
+      expect(container.querySelector(".auth__failed")).toBeNull();
+    } finally {
+      window.history.replaceState({}, "", "/");
+    }
+  });
+
+  test("an ordinary visit shows no refusal", () => {
+    // The other side of it: the block is keyed on a code, so a bare `/sign-in` is unchanged.
+    const container = mount(<SignInScreen auth={AUTH} fetch={recorder({}).fetch} origin="https://app.example" />);
+    expect(container.querySelector(".auth__failed")).toBeNull();
+  });
+
   test("never gates a provider: the redirect carries no token to check", async () => {
     const followed: string[] = [];
     const { fetch: send, calls } = recorder({
@@ -221,7 +257,14 @@ describe("the humanity check", () => {
     );
     await click(all(container, ".auth__provider")[0] as Element);
     expect(followed).toEqual(["https://accounts.google.com/o/oauth2/auth?client_id=abc"]);
-    expect(calls[0]?.body).toEqual({ provider: "google", callbackURL: `https://app.example${callbackPath}` });
+    // `errorCallbackURL` is the screen's own path, so a refusal comes back to the control that caused it
+    // rather than to Better Auth's `/error` and on to a home route no template reads (#554).
+    expect(calls[0]?.body).toEqual({
+      provider: "google",
+      callbackURL: `https://app.example${callbackPath}`,
+      // Carries the provider, because the copy names it and React state cannot survive the round trip.
+      errorCallbackURL: "https://app.example/sign-in?provider=google",
+    });
   });
 });
 

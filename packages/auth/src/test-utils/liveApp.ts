@@ -190,6 +190,7 @@ export async function startLiveApp(options: LiveAppOptions): Promise<LiveApp> {
       trustedOrigins: [origin],
       google: { enabled: Boolean(options.google) },
     }),
+    resolveGithubUserInfo: undefined,
     enqueueEmail: emailCapability.enqueue,
     turnstile: options.turnstile ? { mode: options.turnstile.mode } : undefined,
   };

@@ -141,6 +141,16 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     verificationExpiresIn: cfg.verificationExpiresIn,
     otpLength: cfg.otpLength,
     disableSignUp: cfg.disableSignUp,
+    // Per provider, and separate from the line above on purpose: `disableSignUp` governs magic link and
+    // OTP, this governs one OAuth provider. A project wanting email sign-up and no GitHub sign-up could
+    // not say so before, which is how an orphan user appeared (#554).
+    providerSignUp: {
+      google: cfg.google.allowSignUp,
+      apple: cfg.apple.allowSignUp,
+      facebook: cfg.facebook.allowSignUp,
+      github: cfg.github.allowSignUp,
+    },
+    ...(wiring.resolveGithubUserInfo ? { resolveGithubUserInfo: wiring.resolveGithubUserInfo } : {}),
     // Read the emit seam lazily so a later-composed audit capability is honored regardless of the
     // capability order (the instance may be built before audit's middleware runs).
     emit: (event) => c.var.emit(event),

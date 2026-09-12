@@ -5,6 +5,7 @@ import type { Translator } from "@pithy-sh/core/src/i18n/translator";
 import { useTranslator } from "@pithy-sh/i18n/src/react/translator";
 import { type FormEvent, type ReactNode, useCallback, useMemo, useState } from "react";
 import { authConfig } from "../../pithy-config";
+import { useSearchParam } from "../../router";
 import { Turnstile, turnstilePending, turnstileRequest } from "../../turnstile";
 // The magic link's callback URL is built from this, never from a literal of the same shape. The two are
 // one statement for the reason #393 gives: renaming `callback.tsx`'s path is an edit that typechecks,
@@ -70,6 +71,17 @@ const EN = {
   "auth/sign_in.provider.label": "Continue with {provider}",
   "auth/sign_in.provider_unconfigured": "{provider} is not configured here. Use the link instead.",
   "auth/sign_in.provider_silent": "{provider} didn't answer. Use the link instead.",
+  // The three-point refusal, and the order is the point. This failure is counter-intuitive: the address
+  // genuinely *is* on the user's GitHub, so a bare "no account" sends them to verify something already
+  // correct, and they conclude the product is broken. Say what the provider told us, say that a
+  // secondary is refused on purpose, then say the remedy.
+  "auth/sign_in.refused.title": "No account for this {provider}.",
+  "auth/sign_in.refused.primary":
+    "{provider} gives us one address: the primary on your account. That one matches nothing here.",
+  "auth/sign_in.refused.secondary":
+    "A secondary address will not do it. Sign-in never looks past the primary, deliberately.",
+  "auth/sign_in.refused.remedy":
+    "Sign in with your email, then connect {provider} from your profile. After that, this works whatever your primary is.",
   "auth/sign_in.divider": "or",
   "auth/sign_in.email.label": "Email",
   "auth/sign_in.submit": "Email me a link",
@@ -283,12 +295,41 @@ const SOCIAL: readonly { id: string; label: string; mark: ReactNode }[] = [
   { id: "facebook", label: "Facebook", mark: <FacebookMark /> },
 ];
 
-/** Why a provider button did not take you anywhere. Two faults, because they need two sentences. */
-type Refusal = { provider: string; reason: "unconfigured" | "silent" } | null;
+/**
+ * Why a provider button did not take you anywhere.
+ *
+ * Three arms, and the third is unlike the other two: `unconfigured` and `silent` are learned from the
+ * pre-redirect call, while `no_account` comes *back from the round trip* as `?error=` — the user has
+ * been to the provider and returned. It renders three sentences rather than one line, because a refusal
+ * whose remedy is "do a different thing first" cannot be said in a clause.
+ */
+type Refusal = { provider: string; reason: "unconfigured" | "silent" | "no_account" } | null;
 
 function refusalText(t: Translator, refusal: NonNullable<Refusal>): string {
   const key = refusal.reason === "unconfigured" ? "auth/sign_in.provider_unconfigured" : "auth/sign_in.provider_silent";
   return t.t(key, { provider: refusal.provider });
+}
+
+/**
+ * The refusal Better Auth sends back on the callback, read off the URL.
+ *
+ * `signup_disabled` is its own code for "this provider may not create an account", which is what
+ * `github: { allowSignUp: false }` asks it to answer.
+ *
+ * **Both halves come from the URL, and the provider half has to.** Better Auth does not put the provider
+ * in the error redirect, so the screen has to carry it — and it cannot carry it in React state, because
+ * this refusal arrives after a *full page navigation* out to GitHub and back. State does not survive
+ * that; the component remounts with nothing. So the provider rides in the `errorCallbackURL` the screen
+ * hands Better Auth, which appends `&error=` to whatever query is already there (callback.mjs:82).
+ */
+function urlRefusal(error: string | null, providerId: string | null): Refusal {
+  if (error !== "signup_disabled") return null;
+  // Resolved through the table rather than rendered. `?provider=` is attacker-supplied — anyone can hand
+  // somebody a `/sign-in?provider=…&error=signup_disabled` link — and these four sentences are
+  // first-party product copy telling the reader what to do next. React escapes the markup; it does not
+  // stop the words. An id nobody offers resolves to nothing and the block does not render.
+  const known = SOCIAL.find((candidate) => candidate.id === providerId);
+  return known ? { provider: known.label, reason: "no_account" } : null;
 }
 
 /**
@@ -347,6 +388,10 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<Refusal>(null);
+  // A refusal that came back on the callback, rather than from the pre-redirect call. Both halves are
+  // read from the URL: `error` is Better Auth's, `provider` is the one this screen wrote into the
+  // `errorCallbackURL` before redirecting. See `urlRefusal` for why neither can be component state.
+  const returned = urlRefusal(useSearchParam("error"), useSearchParam("provider"));
 
   const offered = SOCIAL.filter((provider) => auth.providers[provider.id]);
 
@@ -364,7 +409,21 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
     setRefusal(null);
     // No humanity check here, deliberately: the redirect carries no token and the provider runs its own
     // bot defense. `startSocialSignIn` drops one even if it is passed, so this cannot be forgotten.
-    const started = await startSocialSignIn({ provider: provider.id, callbackURL: `${origin}${callbackPath}` }, client);
+    // `errorCallbackURL` returns a refusal to the screen that started it. Without it Better Auth sends
+    // it to its own `/error`, which redirects on to the adopter's home route with a query string no
+    // template reads — so the whole refusal copy below would be unreachable (#554). Built from this
+    // module's own `path` for the reason #393 gives about `callbackPath`: one statement, not a literal.
+    const started = await startSocialSignIn(
+      {
+        provider: provider.id,
+        callbackURL: `${origin}${callbackPath}`,
+        // The provider's *id*, resolved back through `SOCIAL` on return — never its label, which would
+        // be attacker-chosen text rendered as product copy. Better Auth appends `&error=` to this, so
+        // the parameter survives the round trip that component state cannot.
+        errorCallbackURL: `${origin}${path}?provider=${provider.id}`,
+      },
+      client,
+    );
     if (started.kind === "authorize") {
       redirect(started.url);
       return;
@@ -409,7 +468,16 @@ export function SignInScreen(props: SignInScreenProps): ReactNode {
               </button>
             ))}
           </div>
-          {refusal && <p className="auth__failed">{refusalText(t, refusal)}</p>}
+          {returned ? (
+            <div className="auth__failed">
+              <p>{t.t("auth/sign_in.refused.title", { provider: returned.provider })}</p>
+              <p>{t.t("auth/sign_in.refused.primary", { provider: returned.provider })}</p>
+              <p>{t.t("auth/sign_in.refused.secondary")}</p>
+              <p>{t.t("auth/sign_in.refused.remedy", { provider: returned.provider })}</p>
+            </div>
+          ) : (
+            refusal && <p className="auth__failed">{refusalText(t, refusal)}</p>
+          )}
           <div className="divider">{t.t("auth/sign_in.divider")}</div>
         </>
       )}

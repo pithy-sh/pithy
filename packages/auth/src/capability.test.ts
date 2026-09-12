@@ -99,6 +99,23 @@ describe("auth capability", () => {
     expect(cap.authConfig.github.enabled).toBe(false);
   });
 
+  test("a provider may create accounts by default, and each toggle says so independently", () => {
+    // `allowSignUp` defaults true so nothing about google/apple/facebook changes. It is the GitHub case
+    // that needed saying: the dashboard wants *email* sign-up and *no* GitHub sign-up, which was
+    // unexpressible — and that is exactly how an orphan user appeared (pithy-sh/pithy#554).
+    const cap = build();
+    expect(cap.authConfig.github.allowSignUp).toBe(true);
+    expect(cap.authConfig.google.allowSignUp).toBe(true);
+  });
+
+  test("a provider's sign-up policy is separate from the global one", () => {
+    // Two different questions. `disableSignUp` governs magic link and OTP; this governs one provider.
+    const cap = build({ disableSignUp: false, github: { enabled: true, allowSignUp: false } });
+    expect(cap.authConfig.disableSignUp).toBe(false);
+    expect(cap.authConfig.github.allowSignUp).toBe(false);
+    expect(cap.authConfig.google.allowSignUp).toBe(true);
+  });
+
   test("each provider toggle flips to enabled when set", () => {
     const cap = build({ facebook: { enabled: true }, github: { enabled: true } });
     expect(cap.authConfig.facebook.enabled).toBe(true);
