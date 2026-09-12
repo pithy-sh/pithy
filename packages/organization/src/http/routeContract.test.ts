@@ -444,7 +444,7 @@ describe("the registry says what it must", () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  test("the routes entitled by something other than a power are exactly these seven", () => {
+  test("the routes entitled by something other than a power are exactly these nine", () => {
     // Every route that acts inside the account in force asks the matrix. These do not, and each is
     // entitled by something a power could not express:
     //
@@ -461,18 +461,24 @@ describe("the registry says what it must", () => {
     //   `GET /current/ownership` — membership, because the nominee is by definition the person who does
     //     not hold the account yet. Gating the read on `billing:manage` would hide the offer from the
     //     only caller it was made for.
+    //   `POST /current/ownership` and `DELETE /current/ownership` — holding the account, or, where
+    //     nobody holds it, having volunteered yourself. That is `ownership.ts`'s own rule, and it is
+    //     conditional in a way a power is not: `billing:manage` here meant "the owner the account does
+    //     not have", which made a founded account permanently unownable in the kit's own catalog.
     //
-    // A ninth entry here is a route that let somebody in on a rule nobody wrote down.
+    // A tenth entry here is a route that let somebody in on a rule nobody wrote down.
     const ungated = ORGANIZATION_ROUTES.filter((route) => route.strategy === "session" && !route.power).map(
       (route) => `${route.method} ${route.path}`,
     );
     expect(ungated.sort()).toEqual([
+      "DELETE /current/ownership",
       "GET ",
       "GET /current/ownership",
       "GET /marks/organization/:organizationId",
       "POST ",
       "POST /acting",
       "POST /current/members/leave",
+      "POST /current/ownership",
       "POST /invitations/accept",
       "POST /ownership/accept",
     ]);

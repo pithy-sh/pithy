@@ -1007,6 +1007,114 @@ describe("ownership moves only by offer and acceptance", () => {
   });
 });
 
+describe("an unowned account acquiring an owner, through the routes and not the store", () => {
+  /*
+    **The acceptance criterion said "every route but billing", and it was true of the store and false of
+    the surface an adopter has.**
+
+    `POST {base}/current/ownership` used to gate on `billing:manage`. In the catalog this kit scaffolds
+    — and in the one its own README prints — the conferred role is the sole holder of that power, and a
+    founded account has no holder of it: the founder gets the first *assignable* administering role, and
+    the conferred role is unassignable by definition. So the gate narrowed "anybody in the account may
+    volunteer" to "the owner the account does not have", `changeRole` refused the role as unassignable,
+    and nothing could repair it.
+
+    These cases drive the whole sequence through the router, which is where the fault was and where no
+    test went: the store's own suite calls `nominate()` and `acceptNomination()` directly and asserts, in
+    passing, the very fact that made the HTTP path impossible.
+  */
+
+  test("a founder volunteers and accepts, with nobody holding the account", async () => {
+    const founded = await call("POST", BASE, {
+      as: CAI,
+      session: "session_cai",
+      body: { name: "Cai's Studio", slug: "cai-studio" },
+    });
+    expect(founded.status).toBe(201);
+    const { organization } = await json<{ organization: { id: string } }>(founded);
+
+    // Founded with an administering role, and nobody holds the account.
+    const mine = await db()
+      .selectFrom(MEMBERSHIPS_TABLE)
+      .select(["id", "role"])
+      .where("organizationId", "=", organization.id)
+      .where("userId", "=", CAI)
+      .executeTakeFirstOrThrow();
+    expect(mine.role).toBe("admin");
+
+    // Act in what was just founded. Founding does not choose for you — `POST /acting` is the one call
+    // that repoints a session, and the chooser spends it.
+    expect(
+      (
+        await call("POST", `${BASE}/acting`, {
+          as: CAI,
+          session: "session_cai",
+          body: { organizationId: organization.id },
+        })
+      ).status,
+    ).toBe(200);
+
+    const offered = await call("POST", `${BASE}/current/ownership`, {
+      as: CAI,
+      session: "session_cai",
+      body: { membershipId: mine.id },
+    });
+    expect(offered.status).toBe(201);
+
+    const accepted = await call("POST", `${BASE}/ownership/accept`, { as: CAI, session: "session_cai" });
+    expect(accepted.status).toBe(200);
+
+    const after = await db()
+      .selectFrom(MEMBERSHIPS_TABLE)
+      .select("role")
+      .where("id", "=", mine.id)
+      .executeTakeFirstOrThrow();
+    expect(after.role).toBe("owner");
+  });
+
+  test("and may take their own offer back before anybody accepts", async () => {
+    const founded = await call("POST", BASE, {
+      as: CAI,
+      session: "session_cai",
+      body: { name: "Cai's Other Studio", slug: "cai-other" },
+    });
+    const { organization } = await json<{ organization: { id: string } }>(founded);
+    const mine = await db()
+      .selectFrom(MEMBERSHIPS_TABLE)
+      .select("id")
+      .where("organizationId", "=", organization.id)
+      .where("userId", "=", CAI)
+      .executeTakeFirstOrThrow();
+    await call("POST", `${BASE}/acting`, {
+      as: CAI,
+      session: "session_cai",
+      body: { organizationId: organization.id },
+    });
+
+    await call("POST", `${BASE}/current/ownership`, {
+      as: CAI,
+      session: "session_cai",
+      body: { membershipId: mine.id },
+    });
+    const withdrawn = await call("DELETE", `${BASE}/current/ownership`, { as: CAI, session: "session_cai" });
+    expect(withdrawn.status).toBe(200);
+    expect((await json<{ nomination: unknown }>(withdrawn)).nomination).toBeNull();
+  });
+
+  test("while somebody does hold it, only they hand it on", async () => {
+    // The narrowing that survives: the store's rule is stronger than the power gate it replaced, because
+    // it names the holder rather than a power the holder happens to have.
+    await chooseActing(db(), { userId: BOB, sessionId: "session_bob", organizationId: ACME, now: NOW });
+    const target = await membershipIdOf(ACME, BOB);
+    const refused = await call("POST", `${BASE}/current/ownership`, {
+      as: BOB,
+      session: "session_bob",
+      body: { membershipId: target },
+    });
+    expect(refused.status).toBe(403);
+  });
+});
+
 describe("a nominee discovering the offer", () => {
   beforeEach(async () => {
     await chooseActing(db(), { userId: ADA, sessionId: SESSION, organizationId: ACME, now: NOW });

@@ -22,7 +22,7 @@ The three move at different speeds, and that is the point. The kit's five are fi
 | `organization:manage` | Renaming it, setting its mark, changing a role, removing somebody, and every invitation route |
 | `organization:delete` | Ending the account, and everything belonging to it |
 | `members:manage` | Handing somebody a role that administers — by invitation or by a role change |
-| `billing:manage` | Offering ownership, and withdrawing the offer |
+| `billing:manage` | Whatever this product's billing relationship is. **Not the ownership routes** — those are gated on holding the account rather than on a power, because in a catalog where the conferred role is the sole holder of this power a founded account would have nobody who could volunteer for it |
 
 **Reserved, not merely taken.** Declaring one of these in your own `powers` is refused, naming it, on the same rule that reserves the kit's error domains: an adopter redeclaring one would be writing a second definition of a power this capability's own handlers already gate on, and the two definitions would then be kept in step by hand.
 

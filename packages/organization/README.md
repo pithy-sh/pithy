@@ -148,8 +148,8 @@ No `unassignable`, so every role including `owner` may be handed to somebody, an
 | `DELETE {base}/current/invitations/:invitationId` | Withdraw an offer | session | `organization:manage` |
 | `GET {base}/invitations/:token` | What an invitation is offering, for the accept screen | public | — |
 | `POST {base}/invitations/accept` | Accept one, as the address it names | session | — |
-| `POST {base}/current/ownership` | Offer ownership to a member | session | `billing:manage` |
-| `DELETE {base}/current/ownership` | Withdraw the standing offer | session | `billing:manage` |
+| `POST {base}/current/ownership` | Offer ownership to a member | session | holding the account, or — where nobody does — volunteering yourself |
+| `DELETE {base}/current/ownership` | Withdraw the standing offer | session | holding the account, or the offer being your own |
 | `POST {base}/ownership/accept` | Accept ownership, and become the one who pays | session | — |
 | `GET {base}/marks/organization/:organizationId` | An organization's stored mark, cacheable | session | — (membership) |
 | `GET {base}/members/:membershipId/image` | A member's stored image | session | `organization:read` |

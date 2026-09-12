@@ -338,16 +338,62 @@ export async function standingNomination(
   return row ? OwnershipNomination.parse(row) : null;
 }
 
+/** What withdrawing takes: the account, and who is asking. */
+export interface WithdrawNominationOptions<Role extends string> {
+  /** The organization whose offer is being taken back. */
+  readonly organizationId: string;
+  /** Who is asking. Checked against the same rule {@link nominate} applies. */
+  readonly userId: string;
+  /** The roles this transfer moves, so the holder can be identified. */
+  readonly roles: OwnershipRoles<Role>;
+}
+
 /**
  * Withdraw the standing offer. Returns whether there was one.
  *
- * No catalog and no roles, because withdrawing grants nobody anything — which is also why the route in
- * front of it may be wider than the one in front of {@link nominate}.
+ * **The same conditional rule as {@link nominate}, and for the same reason.** While somebody holds the
+ * account, only they take an offer back; while nobody does, the person who volunteered may withdraw
+ * their own offer and nobody else may withdraw it for them. A flat power gate in front of this has the
+ * failure `nominate`'s docblock describes: in a catalog where the conferred role is the sole holder of
+ * `billing:manage`, an unheld account's volunteer could not take back their own offer.
+ *
+ * Withdrawing grants nobody anything, so the refusal is about who may speak for the account rather than
+ * about a blast radius.
  */
-export async function withdrawNomination(db: OrganizationDatabase, organizationId: string): Promise<boolean> {
+export async function withdrawNomination<Role extends string>(
+  db: OrganizationDatabase,
+  options: WithdrawNominationOptions<Role>,
+): Promise<boolean> {
+  const holders = await holdersOf(db, options.organizationId, options.roles.confers);
+  if (holders.length > 0) {
+    if (!holders.some((holder) => holder.userId === options.userId)) {
+      throw new OrganizationForbiddenError({
+        message: "Only somebody who holds this organization can take back its offer.",
+        action: "Ask the current holder.",
+        detail: `user ${options.userId} does not hold ${options.roles.confers} in organization ${options.organizationId}`,
+      });
+    }
+  } else {
+    // Unheld. The offer can only be somebody's own volunteering — `nominate` refuses any other shape —
+    // so the rule is that it is theirs to take back and nobody else's.
+    const standing = await db
+      .selectFrom(OWNERSHIP_NOMINATIONS_TABLE)
+      .innerJoin(MEMBERSHIPS_TABLE, `${MEMBERSHIPS_TABLE}.id`, `${OWNERSHIP_NOMINATIONS_TABLE}.membershipId`)
+      .select(`${MEMBERSHIPS_TABLE}.userId as userId`)
+      .where(`${OWNERSHIP_NOMINATIONS_TABLE}.organizationId`, "=", options.organizationId)
+      .executeTakeFirst();
+    if (standing && standing.userId !== options.userId) {
+      throw new OrganizationForbiddenError({
+        message: "That offer is not yours to take back.",
+        action: "Ask the person who made it.",
+        detail: `user ${options.userId} did not volunteer for organization ${options.organizationId}`,
+      });
+    }
+  }
+
   const deleted = await db
     .deleteFrom(OWNERSHIP_NOMINATIONS_TABLE)
-    .where("organizationId", "=", organizationId)
+    .where("organizationId", "=", options.organizationId)
     .executeTakeFirst();
   return (deleted.numDeletedRows ?? 0n) > 0n;
 }

@@ -332,9 +332,13 @@ describe("offering", () => {
   test("withdrawing says whether there was anything to withdraw", async () => {
     await join(OLIVE, "owner");
     const bob = await join(BOB, "member");
-    expect(await withdrawNomination(organizationDatabase(env.DB), acme)).toBe(false);
+    expect(
+      await withdrawNomination(organizationDatabase(env.DB), { organizationId: acme, userId: OLIVE, roles: TRANSFER }),
+    ).toBe(false);
     await offer(bob);
-    expect(await withdrawNomination(organizationDatabase(env.DB), acme)).toBe(true);
+    expect(
+      await withdrawNomination(organizationDatabase(env.DB), { organizationId: acme, userId: OLIVE, roles: TRANSFER }),
+    ).toBe(true);
     expect(await standingNomination(organizationDatabase(env.DB), acme, NOW)).toBeNull();
   });
 });
@@ -518,7 +522,7 @@ describe("an offer that stopped standing", () => {
 
     // The holder withdraws while the nominee is mid-accept. Serialized here rather than raced, because
     // what is under test is the condition and not the scheduler.
-    await withdrawNomination(organizationDatabase(env.DB), acme);
+    await withdrawNomination(organizationDatabase(env.DB), { organizationId: acme, userId: OLIVE, roles: TRANSFER });
 
     await expect(
       acceptNomination(env.DB, OWNED, { organizationId: acme, userId: BOB, now: NOW, roles: TRANSFER }),
@@ -660,7 +664,8 @@ describe("every route, every role", () => {
       });
     },
     standingNomination: () => standingNomination(organizationDatabase(env.DB), acme, NOW),
-    withdrawNomination: () => withdrawNomination(organizationDatabase(env.DB), acme),
+    withdrawNomination: () =>
+      withdrawNomination(organizationDatabase(env.DB), { organizationId: acme, userId: OLIVE, roles: TRANSFER }),
     "removeMember (the owner)": (actor, room) =>
       removeMember(env.DB, OWNED, { organizationId: acme, membershipId: room.olive, actor }),
     "removeMember (the admin)": (actor, room) =>

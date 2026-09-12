@@ -125,7 +125,7 @@ import {
  * | `GET    {base}/invitations/:token`             | public         | —                     | param `InvitationTokenParam`   |
  * | `POST   {base}/invitations/accept`             | session        | —                     | json `AcceptInvitation`        |
  * | `POST   {base}/current/ownership`              | session        | `billing:manage`      | json `NominateOwner`           |
- * | `DELETE {base}/current/ownership`              | session        | `billing:manage`      | none                           |
+ * | `DELETE {base}/current/ownership`              | session        | holder, or unheld     | none                           |
  * | `POST   {base}/ownership/accept`               | session        | —                     | none                           |
  * | `GET    {base}/marks/organization/:id`         | session        | — (membership)        | param `OrganizationMarkParam`  |
  * | `GET    {base}/members/:membershipId/image`    | session        | `organization:read`   | param `MemberMarkParam`        |
@@ -236,25 +236,26 @@ export const ORGANIZATION_ROUTES: readonly OrganizationRouteDeclaration[] = [
   // Public, and it grants nothing. The link in the mail resolves here; acceptance is the POST below.
   { method: "GET", path: "/invitations/:token", strategy: "public", mutating: false },
   { method: "POST", path: "/invitations/accept", strategy: "session", mutating: true },
-  // Membership alone, and not `billing:manage`. The nominee is by definition the person who does not
-  // hold the account yet, so a power gate would hide the offer from the one caller it exists for.
+  /*
+    **None of the three names a power, and that is the correction rather than an omission.**
+
+    The obvious gate — `billing:manage` on the two mutations — closes the account permanently in the
+    catalog this kit scaffolds: the conferred role holds that power and nothing else does, and a founded
+    account has no holder of it. So "anybody in the account may volunteer" became "the owner the account
+    does not have", and since the conferred role is unassignable there was no route that could repair it.
+
+    What replaces it is the rule `ownership.ts` already held, which is conditional in a way a power
+    cannot be: while somebody holds the account only they hand it on or take an offer back, and while
+    nobody does, anybody in it may volunteer themselves and appoint nobody else. On a held account that
+    is *stronger* than the power it replaced, because it names the holder rather than a power the holder
+    happens to have.
+
+    The read is membership alone for a different reason: the nominee is by definition the person who does
+    not hold the account yet, so any power gate would hide the offer from the one caller it exists for.
+  */
   { method: "GET", path: "/current/ownership", strategy: "session", mutating: false, ownership: true },
-  {
-    method: "POST",
-    path: "/current/ownership",
-    strategy: "session",
-    power: "billing:manage",
-    mutating: true,
-    ownership: true,
-  },
-  {
-    method: "DELETE",
-    path: "/current/ownership",
-    strategy: "session",
-    power: "billing:manage",
-    mutating: true,
-    ownership: true,
-  },
+  { method: "POST", path: "/current/ownership", strategy: "session", mutating: true, ownership: true },
+  { method: "DELETE", path: "/current/ownership", strategy: "session", mutating: true, ownership: true },
   { method: "POST", path: "/ownership/accept", strategy: "session", mutating: true, ownership: true },
   { method: "GET", path: `${MARKS_SEGMENT}/organization/:organizationId`, strategy: "session", mutating: false },
   {
@@ -1113,16 +1114,27 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
         `${base}/current/ownership`,
         csrf,
         requireOrganization(deps),
-        requirePower<Power, Role>("billing:manage", deps),
         zValidator("json", NominateOwner, validationHook),
         async (c) => {
           const acting = c.var.acting;
           const who = session(c);
           const now = clock();
-          // The route's gate is the narrower of two. `nominate` enforces the rules that do not depend on
-          // a power at all — while somebody holds the account only they hand it on, and while nobody does
-          // anybody may volunteer themselves and appoint nobody else — so a product may narrow who
-          // reaches this and cannot widen what it does.
+          /*
+            **Membership, and then the store's own rule — deliberately no `billing:manage` here.**
+
+            The obvious gate is the wrong one, and it closes the account permanently. In the catalog this
+            kit scaffolds, `billing:manage` is held by the conferred role and by nothing else, and a new
+            account has no holder of it: `provision.ts` gives the founder the first *assignable*
+            administering role, and the conferred role is unassignable by definition. So gating on
+            `billing:manage` narrows "anybody in the account may volunteer" to "the owner the account
+            does not have" — and since `changeRole` refuses the unassignable role too, nothing can ever
+            repair it.
+
+            `nominate` already holds the real rule, and it is conditional in a way a power cannot be:
+            while somebody holds the account only they hand it on, and while nobody does anybody in it
+            may volunteer themselves and appoint nobody else. That is stronger than `billing:manage`
+            where an account is held, and it is the only thing that works where it is not.
+          */
           const nomination = await nominate(db(c), catalog, {
             organizationId: acting.organizationId,
             membershipId: c.req.valid("json").membershipId,
@@ -1145,11 +1157,17 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
         `${base}/current/ownership`,
         csrf,
         requireOrganization(deps),
-        requirePower<Power, Role>("billing:manage", deps),
+        // Membership, and then the store's rule — the same correction the nominate route above carries,
+        // for the same reason. A `billing:manage` gate here would stop an unheld account's volunteer
+        // taking back their own offer, because nobody holds the power that would let them.
         async (c) => {
           const acting = c.var.acting;
           const who = session(c);
-          const withdrawn = await withdrawNomination(db(c), acting.organizationId);
+          const withdrawn = await withdrawNomination(db(c), {
+            organizationId: acting.organizationId,
+            userId: who.userId,
+            roles: ownership,
+          });
           // Only when there was one. Recording a withdrawal of nothing would put an act in the trail that
           // nobody took, and the answer to the caller is the same either way — there is no offer now.
           if (withdrawn) {
