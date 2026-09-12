@@ -189,6 +189,15 @@ export const esErrors: MessageCatalog = {
   "support/classification_failed": "No se ha podido clasificar el mensaje.",
   "support/reply_failed": "No se ha podido enviar la respuesta.",
 
+  // Organización: pertenencia, funciones, invitaciones y titularidad.
+  "organization/not_found": "Esa organización no existe.",
+  "organization/forbidden": "Tu función en esta organización no permite esta acción.",
+  "organization/invalid_role_catalog": "La declaración de funciones no es válida.",
+  "organization/invitation_invalid": "Esa invitación ya no se puede aceptar.",
+  "organization/last_administrator": "La organización se quedaría sin nadie que pueda administrarla.",
+  "organization/slug_taken": "Ese identificador ya está en uso.",
+  "organization/nomination_invalid": "No hay ninguna oferta de titularidad que puedas aceptar.",
+
   // Testers.
   "testers/cohort_not_found": "Ese grupo de pruebas no existe.",
   "testers/member_not_found": "No hay ningún participante con esos datos.",
