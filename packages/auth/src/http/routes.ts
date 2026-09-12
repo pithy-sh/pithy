@@ -22,8 +22,8 @@ import {
 } from "../token/rotation";
 import { registerAuthAdminRoutes } from "./adminRoutes";
 import { apiErrorToPithy } from "./errors";
-import { requireFreshAuthenticationToLink } from "./linkFreshness";
 import { requireAuth } from "./middleware";
+import { requireFreshAuthentication } from "./providerFreshness";
 import { getAuthInstance, resolveDb } from "./resolve";
 import { RevokeDeviceBody } from "./schemas";
 
@@ -88,12 +88,13 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
       revokeMyDevice(c, wiring, c.req.valid("json")),
     );
 
-    // **Attaching a provider requires a recent authentication.** Mounted explicitly ahead of the
-    // catch-all, or the gate never runs. `http/linkFreshness.ts` carries the argument: Better Auth guards
-    // `/link-social` with a plain session and `/unlink-account` with a fresh one, so the operation that
-    // grants permanent access is the cheaper-guarded one. No kit validator — the body is Better Auth's,
-    // and `handleBetterAuth` hands it `c.req.raw`, which is the catch-all's own reason for taking none.
-    app.post(`${base}/link-social`, requireFreshAuthenticationToLink(), (c) => handleBetterAuth(c, wiring));
+    // **Changing which providers can sign you in requires a recent authentication — both directions.**
+    // Mounted explicitly ahead of the catch-all, or neither gate runs. `http/providerFreshness.ts`
+    // carries the argument: Better Auth guards the two unevenly, and its guard on the unlink side reads
+    // `session.createdAt`, which `/token/rotate` resets. Neither takes a kit validator — the body is
+    // Better Auth's, and `handleBetterAuth` hands it `c.req.raw`, which is the catch-all's own reason.
+    app.post(`${base}/link-social`, requireFreshAuthentication("link"), (c) => handleBetterAuth(c, wiring));
+    app.post(`${base}/unlink-account`, requireFreshAuthentication("unlink"), (c) => handleBetterAuth(c, wiring));
 
     // The control-plane management surface. Registered here, before the catch-all below, or it is dead.
     registerAuthAdminRoutes(wiring)(app);

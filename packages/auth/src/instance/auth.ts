@@ -8,6 +8,7 @@ import { emitAfterRequest, emitProviderUnavailable } from "../audit/emit";
 import { KIT_SESSION_FIELDS, KIT_USER_FIELDS } from "../data/kitFields";
 import type { AuthDatabase } from "../data/tables";
 import { parseDeviceMeta, registerDevice } from "../device/registry";
+import { PROVIDER_CHANGE_FRESH_AGE_SECONDS } from "../http/providerFreshness";
 import { defaultGithubUserInfo, type GithubUserInfoResolver } from "./githubUserInfo";
 import { kitPlugins } from "./plugins";
 import {
@@ -357,6 +358,20 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
       modelName: "pithyAuthSessions",
       expiresIn: deps.sessionExpiresIn,
       updateAge: deps.sessionUpdateAge,
+      /**
+       * Better Auth's own re-authentication window, stated rather than inherited.
+       *
+       * Its default is 24 hours, which nobody here chose, and it is the number `freshSessionMiddleware`
+       * holds `/unlink-account` to. Bringing it to the kit's own window means the two checks on that
+       * endpoint agree instead of one silently permitting a day.
+       *
+       * **It is defense in depth, not the control.** `freshSessionMiddleware` measures
+       * `session.createdAt`, which `/token/rotate` restamps — so narrowing it narrows a window that is
+       * still resettable. The control is `http/providerFreshness.ts`, which reads the authentication
+       * instant a rotation carries forward, and it is strictly the stricter of the two: `createdAt` is
+       * never older than `authenticatedAt`, so anything our gate admits this one admits too.
+       */
+      freshAge: PROVIDER_CHANGE_FRESH_AGE_SECONDS,
       // Server-set session fields clients never supply: the bound device, and the refresh-token family
       // (carried across rotations via createSession override, like deviceId — see `token/rotation.ts`).
       additionalFields: KIT_SESSION_FIELDS,

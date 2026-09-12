@@ -207,16 +207,20 @@ export async function emitProviderUnavailable(
   });
 }
 
+/** Which direction of provider change was refused — the two read very differently in a trail. */
+export type ProviderChange = "link" | "unlink";
+
 /**
- * Emit a `session_not_fresh` event — an attempt to attach a provider on an authentic but stale session.
+ * Emit a `session_not_fresh` event — an attempt to change connected accounts on an authentic but stale
+ * credential.
  *
  * `actorType: "user"` rather than `anonymous`, unlike `emitProviderUnavailable`: this caller is
  * authenticated, and the user id is the whole value of the row. Counting these per user is how a stolen
- * credential being walked toward a link becomes visible.
+ * credential being walked toward an account change becomes visible.
  */
-export async function emitLinkSessionNotFresh(
+export async function emitProviderChangeNotFresh(
   emit: AuditEmit,
-  context: { userId: string; sessionId: string; headers: Headers | undefined },
+  context: { change: ProviderChange; userId: string; sessionId: string; headers: Headers | undefined },
 ): Promise<void> {
   await safeEmit(emit, {
     action: AuthAuditActions.sessionNotFresh,
@@ -227,6 +231,8 @@ export async function emitLinkSessionNotFresh(
     // The first-class column, not `metadata`. Counting these per user is the whole value of the row, and
     // an id buried in a JSON blob is one this action alone cannot be correlated by.
     sessionId: context.sessionId,
+    // Attaching an identity and stripping one are the same refusal and very different intentions.
+    metadata: { change: context.change },
     ...correlation(context.headers),
   });
 }

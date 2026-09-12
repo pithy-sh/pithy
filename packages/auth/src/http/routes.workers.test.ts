@@ -278,6 +278,49 @@ describe("auth HTTP routes", () => {
     expect(JSON.stringify(await res.json())).toContain("auth/session_not_fresh");
   });
 
+  test("unlinking is refused on a stale authentication, through the real route", async () => {
+    // Better Auth guards this endpoint itself — but against `session.createdAt`, which `/token/rotate`
+    // restamps, so its guard is reset by ordinary refreshing. This asserts the kit's own gate is what
+    // answers, and that it answers before Better Auth sees the request (#566).
+    const { token } = await signIn(DEVICE_HEADERS);
+    const app = buildApp(buildWiring());
+
+    const stale = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    await env.DB.prepare("update pithy_auth_sessions set authenticated_at = ? where token = ?")
+      .bind(stale, token)
+      .run();
+
+    const res = await app.request(
+      "/auth/unlink-account",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ providerId: "github" }),
+      },
+      appEnv(),
+    );
+    expect(res.status).toBe(403);
+    expect(JSON.stringify(await res.json())).toContain("auth/session_not_fresh");
+  });
+
+  test("a recent authentication reaches unlink-account, so the gate is not simply closed", async () => {
+    // The other half, and the one that catches a gate nobody can pass. Nothing is linked in this fixture,
+    // so Better Auth will refuse on its own grounds — what matters is that it is *reached*.
+    const { token } = await signIn(DEVICE_HEADERS);
+    const app = buildApp(buildWiring());
+
+    const res = await app.request(
+      "/auth/unlink-account",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ providerId: "github" }),
+      },
+      appEnv(),
+    );
+    expect(JSON.stringify(await res.json())).not.toContain("auth/session_not_fresh");
+  });
+
   test("a rotation carries the authentication instant forward rather than restamping it", async () => {
     // **The fact the link-freshness gate rests on, and the defect it was written for.** `createSession`
     // stamps `created_at` with the moment of the call, so session age is reset by every rotation —

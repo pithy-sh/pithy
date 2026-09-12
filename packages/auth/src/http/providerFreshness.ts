@@ -2,17 +2,22 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * **What pays for `allowDifferentEmails`.**
+ * **Changing which providers can sign you in requires a recent authentication.** Both directions.
  *
- * A signed-in user may attach a provider whose email differs from their own. That is the right behavior
- * and it widens something: before it, a provider could only be linked to an account holding the same
- * address, so a link was self-limiting. After it, a link is a decision the session alone authorizes.
+ * Attaching one grants permanent access — after it a sign-in resolves by account id and the email stops
+ * mattering — and it is what `allowDifferentEmails: true` widened: before that, a provider could only be
+ * linked to an account holding the same address, so a link was self-limiting. Detaching one is the
+ * smaller decision, but `allowUnlinkingAll: true` means an attacker inside the window can strip *every*
+ * provider from an account. Neither belongs behind a credential whose age nobody checked.
  *
- * And Better Auth guards that decision **less** than it guards undoing it. Read the two endpoints beside
- * each other in `better-auth/dist/api/routes/account.mjs`: `/link-social` takes `use: [sessionMiddleware]`
- * — any session, any age — while `/unlink-account` takes `use: [freshSessionMiddleware]`. Attaching an
- * identity grants *permanent* access, because once linked a sign-in resolves by account id and the email
- * stops mattering; detaching one does not. The cheaper-guarded operation is the more powerful one.
+ * **Better Auth guards the two unevenly, and neither guard is one the kit can use.** In
+ * `better-auth/dist/api/routes/account.mjs`, `/link-social` takes `use: [sessionMiddleware]` — any
+ * session, any age — while `/unlink-account` takes `use: [freshSessionMiddleware]`, which reads
+ * `session.createdAt` against a `freshAge` defaulting to 24 hours. So the more powerful operation was
+ * the cheaper-guarded one, and the guarded one was checked against a value `/token/rotate` resets:
+ * `internal-adapter.mjs:275` stamps `createdAt` after the caller's override, so a row's `created_at` is
+ * the moment of its most recent rotation. Ordinary refreshing resets it; so does anyone holding a stolen
+ * refresh token.
  *
  * **It reads `authenticatedAt`, not the session's `createdAt`, and that distinction is the whole of #558.**
  * The first version of this gate read session age. `/token/rotate` stamps a successor's `createdAt` with
@@ -35,10 +40,11 @@
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { PithyError, UnauthorizedError } from "@pithy-sh/core/src/error/pithyError";
 import type { MiddlewareHandler } from "hono";
-import { emitLinkSessionNotFresh } from "../audit/emit";
+import type { ProviderChange } from "../audit/emit";
+import { emitProviderChangeNotFresh } from "../audit/emit";
 
 /**
- * How recently the caller must have authenticated to attach a provider: **fifteen minutes.**
+ * How recently the caller must have authenticated to change which providers sign them in: **fifteen minutes.**
  *
  * Stated rather than inherited. Better Auth's `freshAge` default is 24 hours, which is the wrong order of
  * magnitude here — a day-old authentication is not evidence that the person at the keyboard holds the
@@ -46,10 +52,12 @@ import { emitLinkSessionNotFresh } from "../audit/emit";
  * trip that involves signing in to the provider first, and is short enough that a stolen credential is
  * unlikely to still be inside the window.
  *
- * The cost of being wrong is one re-authentication — exactly what `/unlink-account` already charges for
- * the smaller decision.
+ * **One number for both operations.** Asymmetry is arguable — linking grants access and unlinking
+ * removes it — but the argument cuts both ways once `allowUnlinkingAll` is on, and a second constant
+ * would be a second thing to keep true. The cost of being wrong in either direction is one
+ * re-authentication.
  */
-export const LINK_FRESH_AGE_SECONDS = 15 * 60;
+export const PROVIDER_CHANGE_FRESH_AGE_SECONDS = 15 * 60;
 
 /**
  * Whether an authentication is recent enough to authorize attaching a provider.
@@ -66,7 +74,7 @@ export function authenticationIsFresh(authenticatedAt: Date | string | null | un
   if (Number.isNaN(millis)) return false;
   const age = (now.getTime() - millis) / 1000;
   if (age < 0) return false;
-  return age <= LINK_FRESH_AGE_SECONDS;
+  return age <= PROVIDER_CHANGE_FRESH_AGE_SECONDS;
 }
 
 /**
@@ -101,14 +109,21 @@ export function sessionNotFresh(): PithyError {
   return new PithyError({
     code: "auth/session_not_fresh",
     status: 403,
-    message: "Sign in again to connect an account. Nothing was changed.",
+    message: "Sign in again to change your connected accounts. Nothing was changed.",
     action:
-      "A deliberate gate: connecting a provider grants permanent access, so it requires a recent sign-in the way disconnecting one already does. See `http/linkFreshness.ts`.",
-    detail: "session authenticatedAt is older than LINK_FRESH_AGE_SECONDS, absent, or unreadable",
+      "A deliberate gate: changing which providers can sign somebody in requires a recent authentication, in both directions. See `http/providerFreshness.ts`.",
+    detail: "session authenticatedAt is older than PROVIDER_CHANGE_FRESH_AGE_SECONDS, absent, or unreadable",
   });
 }
 
-export function requireFreshAuthenticationToLink(now: () => Date = () => new Date()): MiddlewareHandler<PithyHonoEnv> {
+/**
+ * Which direction is being refused. Carried into the audit row, because "somebody tried to attach an
+ * identity on a stale credential" and "somebody tried to strip one" are different things to read later.
+ */
+export function requireFreshAuthentication(
+  change: ProviderChange,
+  now: () => Date = () => new Date(),
+): MiddlewareHandler<PithyHonoEnv> {
   return async (c, next) => {
     const auth = c.var.auth;
     if (!auth) {
@@ -118,7 +133,8 @@ export function requireFreshAuthenticationToLink(now: () => Date = () => new Dat
       });
     }
     if (!authenticationIsFresh(auth.authenticatedAt, now())) {
-      await emitLinkSessionNotFresh(c.var.emit, {
+      await emitProviderChangeNotFresh(c.var.emit, {
+        change,
         userId: auth.userId,
         sessionId: auth.sessionId,
         headers: c.req.raw.headers,
