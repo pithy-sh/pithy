@@ -4,7 +4,11 @@
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { AuthContext } from "@pithy-sh/core/src/http/authContext";
 import { describe, expect, test } from "vitest";
-import { authenticationIsFresh, LINK_FRESH_AGE_SECONDS, requireFreshAuthenticationToLink } from "./linkFreshness";
+import {
+  authenticationIsFresh,
+  PROVIDER_CHANGE_FRESH_AGE_SECONDS,
+  requireFreshAuthentication,
+} from "./providerFreshness";
 
 const NOW = new Date("2026-09-11T12:00:00Z");
 const ago = (seconds: number) => new Date(NOW.getTime() - seconds * 1000);
@@ -15,11 +19,11 @@ describe("authenticationIsFresh", () => {
   });
 
   test("one older than the window is not", () => {
-    expect(authenticationIsFresh(ago(LINK_FRESH_AGE_SECONDS + 1), NOW)).toBe(false);
+    expect(authenticationIsFresh(ago(PROVIDER_CHANGE_FRESH_AGE_SECONDS + 1), NOW)).toBe(false);
   });
 
   test("the boundary is inclusive", () => {
-    expect(authenticationIsFresh(ago(LINK_FRESH_AGE_SECONDS), NOW)).toBe(true);
+    expect(authenticationIsFresh(ago(PROVIDER_CHANGE_FRESH_AGE_SECONDS), NOW)).toBe(true);
   });
 
   test("absent or unreadable is not fresh — the gate fails closed", () => {
@@ -41,11 +45,11 @@ describe("authenticationIsFresh", () => {
 
   test("the window is far shorter than a session's life, or it would gate nothing", () => {
     // The whole point is that a credential valid for days cannot silently attach a provider.
-    expect(LINK_FRESH_AGE_SECONDS).toBeLessThanOrEqual(60 * 60);
+    expect(PROVIDER_CHANGE_FRESH_AGE_SECONDS).toBeLessThanOrEqual(60 * 60);
   });
 });
 
-describe("requireFreshAuthenticationToLink", () => {
+describe("requireFreshAuthentication", () => {
   /** A Hono context stand-in carrying just the seam, the emit hook, and a request. */
   function ctx(auth: AuthContext | null) {
     const emitted: unknown[] = [];
@@ -66,7 +70,7 @@ describe("requireFreshAuthenticationToLink", () => {
 
   async function run(auth: AuthContext | null) {
     const { c, emitted } = ctx(auth);
-    const gate = requireFreshAuthenticationToLink(() => NOW);
+    const gate = requireFreshAuthentication("link", () => NOW);
     let reached = false;
     try {
       await gate(c, async () => {
@@ -85,7 +89,7 @@ describe("requireFreshAuthenticationToLink", () => {
   });
 
   test("a stale authentication is refused with its own code", async () => {
-    expect((await run(signedIn(ago(LINK_FRESH_AGE_SECONDS + 60)))).outcome).toBe("auth/session_not_fresh");
+    expect((await run(signedIn(ago(PROVIDER_CHANGE_FRESH_AGE_SECONDS + 60)))).outcome).toBe("auth/session_not_fresh");
   });
 
   test("no credential at all is 401, not the freshness 403", async () => {
@@ -101,17 +105,54 @@ describe("requireFreshAuthenticationToLink", () => {
   test("the refusal is recorded before it is thrown", async () => {
     // One is somebody who left a tab open; a run of them against one user id is the incident, and without
     // the row there is nothing to count.
-    const { emitted } = await run(signedIn(ago(LINK_FRESH_AGE_SECONDS + 60)));
+    const { emitted } = await run(signedIn(ago(PROVIDER_CHANGE_FRESH_AGE_SECONDS + 60)));
     expect(emitted).toHaveLength(1);
     expect(emitted[0]).toMatchObject({
       action: "auth/session_not_fresh",
       outcome: "denied",
       actorType: "user",
       actorId: "u-1",
+      sessionId: "s-1",
+      metadata: { change: "link" },
     });
   });
 
   test("a passing request records nothing", async () => {
     expect((await run(signedIn(ago(30)))).emitted).toHaveLength(0);
+  });
+});
+
+describe("both directions are gated", () => {
+  /** The same stand-in, for whichever direction a case is about. */
+  function ctx(authenticatedAt: Date | null) {
+    const emitted: { metadata?: unknown }[] = [];
+    const c = {
+      var: {
+        auth: { userId: "u-1", sessionId: "s-1", scopes: [], locale: null, authenticatedAt },
+        emit: async (event: { metadata?: unknown }) => void emitted.push(event),
+      },
+      req: { raw: new Request("https://app.example/auth/x", { method: "POST" }) },
+    } as never;
+    return { c, emitted };
+  }
+
+  test("unlinking is refused on a stale credential too, and says which direction it was", async () => {
+    // `allowUnlinkingAll: true` means an attacker inside the window can strip *every* provider from an
+    // account. Better Auth guards this endpoint itself, but against `session.createdAt` — which a
+    // `/token/rotate` resets, and which is therefore the signal #558 exists to replace.
+    const { c, emitted } = ctx(new Date(Date.now() - 2 * 60 * 60 * 1000));
+    const gate = requireFreshAuthentication("unlink");
+    await expect(gate(c, async () => {})).rejects.toMatchObject({ payload: { code: "auth/session_not_fresh" } });
+    expect(emitted[0]?.metadata).toEqual({ change: "unlink" });
+  });
+
+  test("a recent authentication unlinks without ceremony", async () => {
+    const { c, emitted } = ctx(new Date());
+    let reached = false;
+    await requireFreshAuthentication("unlink")(c, async () => {
+      reached = true;
+    });
+    expect(reached).toBe(true);
+    expect(emitted).toHaveLength(0);
   });
 });
