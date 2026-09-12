@@ -20,8 +20,9 @@ import { createAuthRoutes } from "./http/routes";
 import type { GithubUserInfoResolver } from "./instance/githubUserInfo";
 import { AuthPlugin, assertAdditivePlugins } from "./instance/plugins";
 import { authSecretsRegistry, inapplicableProviderSecrets } from "./instance/secrets";
-import { AUTH_MIGRATION_ORDER, auth_0001_init } from "./migrations/0001_init";
+import { AUTH_MIGRATION_ORDER } from "./migrations/0001_init";
 import { authPluginPlan } from "./migrations/pluginTables";
+import { AUTH_MIGRATIONS } from "./migrations/set";
 import { authDevSessionSeed } from "./seeds/devSession";
 import { authExampleSeed } from "./seeds/example";
 import { PACKAGE_VERSION } from "./version.generated";
@@ -273,7 +274,10 @@ export function auth(options: AuthOptions): AuthCapability {
         // is in `pithy.config.ts`, which is the file `pithy migrate` already imports to collect
         // capabilities, so the tables ride the migration model that exists rather than needing a new
         // one. A project that composes no plugins contributes exactly what it did before.
-        migrations: { "0001_init": auth_0001_init, ...pluginPlan.migrations },
+        // Every kit migration, from one definition — see `migrations/set.ts` for why it is not written
+        // out here. Appended, never folded into `0001`: this capability has shipped, so that migration is
+        // history and re-shaping it would re-shape a database somebody is already running (#558).
+        migrations: { ...AUTH_MIGRATIONS, ...pluginPlan.migrations },
       },
     },
     compose: ({ capabilities }) => {
@@ -324,6 +328,14 @@ export function auth(options: AuthOptions): AuthCapability {
         apple: resolved.apple.enabled,
         facebook: resolved.facebook.enabled,
         github: resolved.github.enabled,
+      },
+      // Per provider, beside the global one. A project may let email create accounts while a provider
+      // may not, and a screen with only `signUpEnabled` promises what that provider will refuse (#559).
+      providerSignUp: {
+        google: resolved.google.allowSignUp,
+        apple: resolved.apple.allowSignUp,
+        facebook: resolved.facebook.allowSignUp,
+        github: resolved.github.allowSignUp,
       },
       otpLength: resolved.otpLength,
       signUpEnabled: !resolved.disableSignUp,

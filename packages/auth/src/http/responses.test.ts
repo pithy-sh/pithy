@@ -45,6 +45,7 @@ const SESSION: Session = {
   token: "session-token-must-not-leak",
   deviceId: "d-1",
   familyId: "f-1",
+  authenticatedAt: new Date("2026-09-11T12:00:00Z"),
   ipAddress: "203.0.113.9",
   userAgent: "Pithy/1.0",
   createdAt: new Date("2026-06-01T00:00:00.000Z"),

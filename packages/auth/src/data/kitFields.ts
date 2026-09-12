@@ -57,13 +57,31 @@ export const KIT_USER_FIELDS = {
 } as const;
 
 /**
+ * **`authenticatedAt` carries three decisions a future author must not undo.**
+ *
+ * `type: "date"` rather than `"string"`: the adapter's `Date` ↔ ISO-8601 conversion is keyed on that
+ * literal (`@better-auth/core`'s `factory.mjs`, on write and on read), and the kysely adapter reports
+ * `supportsDates: false` for SQLite. `deviceId`/`familyId` are `"string"` because they are opaque ids; a
+ * timestamp is not.
+ *
+ * **No `defaultValue`, and this is the one that bites.** A function default would stamp every sign-in
+ * with no hook at all — but `getSessionDefaultFields` is spread into the row *after* the caller's
+ * override in `createSession`, so a fresh default would overwrite the value `rotateToken` carries
+ * forward, silently restoring the exact defect this column exists to fix (#558). It is stamped by the
+ * `session.create.before` hook instead.
+ *
+ * `input: false`, like its siblings: a client able to name its own authentication time would defeat the
+ * link-freshness gate outright. `required: false` because the column is nullable for rows written before
+ * it existed.
+ *
  * The extra `pithy_auth_sessions` columns — the bound device, and the refresh-token family carried
  * across rotations.
  *
- * `input: false` on both: these are server-set facts about a session, and a client able to name its own
+ * `input: false` on all three: these are server-set facts about a session, and a client able to name its own
  * device id or token family could name somebody else's.
  */
 export const KIT_SESSION_FIELDS = {
   deviceId: { type: "string", required: false, input: false },
   familyId: { type: "string", required: false, input: false },
+  authenticatedAt: { type: "date", required: false, input: false },
 } as const;

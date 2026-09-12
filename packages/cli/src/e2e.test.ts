@@ -197,7 +197,9 @@ test("pithy add auth --with-prerequisites composes secrets, email and auth, and 
   // run reports only `auth`'s, which is correct: each prerequisite applied its own inside its own add,
   // and there is nothing left for this one to do about them. Before the fix the list was empty.
   const applied = result.databases.flatMap((database) => database.results.map((entry) => entry.migrationName));
-  expect(applied).toEqual(["0300_auth_0001_init"]);
+  // Auth's whole chain, not just its head — a second kit migration landed with #558 and this list is
+  // every migration the add applied, so it grows with the capability.
+  expect(applied).toEqual(["0300_auth_0001_init", "0300_auth_0002_session_authenticated_at"]);
   expect(result.databases.every((database) => database.results.every((entry) => entry.status === "Success"))).toBe(
     true,
   );

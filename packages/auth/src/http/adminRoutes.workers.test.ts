@@ -27,7 +27,8 @@ import { Session, User } from "../data/betterAuth";
 import { Device } from "../data/device";
 import { authDatabase } from "../data/tables";
 import { authSecretsRegistry } from "../instance/secrets";
-import { AUTH_MIGRATION_ORDER, auth_0001_init } from "../migrations/0001_init";
+import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
+import { AUTH_MIGRATIONS } from "../migrations/set";
 import {
   AUTH_DEVICES_READ_SCOPE,
   AUTH_DEVICES_REVOKE_SCOPE,
@@ -240,6 +241,7 @@ async function seedSession(id: string, userId: string, deviceId: string | null =
         userAgent: "PithyTest/1.0",
         deviceId,
         familyId: null,
+        authenticatedAt: new Date(),
       }),
     )
     .execute();
@@ -314,7 +316,7 @@ beforeEach(async () => {
       database: "app",
       namespace: "auth",
       order: AUTH_MIGRATION_ORDER,
-      migrations: { "0001_init": auth_0001_init },
+      migrations: AUTH_MIGRATIONS,
     },
     { database: "app", namespace: "email", order: EMAIL_MIGRATION_ORDER, migrations: { "0001_init": email_0001_init } },
     {

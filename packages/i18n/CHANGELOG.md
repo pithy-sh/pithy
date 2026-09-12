@@ -1,5 +1,29 @@
 # @pithy-sh/i18n
 
+## 0.5.0
+
+### Patch Changes
+
+- [#565](https://github.com/pithy-sh/pithy/pull/565) [`0657549`](https://github.com/pithy-sh/pithy/commit/0657549d250a2f97c591d7ab1336f0e019d72831) Thanks [@kingmesal](https://github.com/kingmesal)! - Connect a provider whose email differs from your account's.
+  
+  A GitHub account whose primary address is not the one you signed up with could be signed in with but never attached. Signed in, you can now connect it: both sides are proven at that moment, and the address still has to be one the provider has verified.
+  
+  Connecting requires a recent sign-in rather than merely a valid session. Attaching a provider grants permanent access — afterwards sign-in resolves by account id and the email stops mattering — so it is gated the way disconnecting one already is, and the refusal is recorded.
+  
+  The window measures time since you authenticated, which is not the age of your session. Sessions carry a new `authenticated_at`, stamped at sign-in and carried forward verbatim by `/token/rotate`; a migration adds the column, and a session that predates it stays undated through every rotation, so it re-authenticates once and never fakes freshness. Gating on session age instead would have been reset by every ordinary refresh, and on demand by anyone holding a stolen refresh token.
+  
+  Security: attaching a social provider now requires an authentication from the last fifteen minutes, measured so that a token rotation cannot reset it.
+
+- [#562](https://github.com/pithy-sh/pithy/pull/562) [`f254c69`](https://github.com/pithy-sh/pithy/commit/f254c6920976cd0b01a4d97e78291f6ee2344469) Thanks [@kingmesal](https://github.com/kingmesal)! - The sign-in screen stops promising an account a provider will refuse.
+  
+  With email sign-up on and `github: { allowSignUp: false }` — the configuration per-provider sign-up exists for — the screen said "Signing in creates one." directly beneath a GitHub button that would refuse. True of the link, false of the button, and the reader found out after a full round trip to GitHub.
+  
+  Each provider's sign-up policy now reaches the browser, so the sentence can say which half it means. Nothing changes for a project where everything may sign up.
+  
+  A copied screen predating the field reads it as absent, which means "no provider refuses" — what every project's behavior was until now.
+- Updated dependencies [[`0657549`](https://github.com/pithy-sh/pithy/commit/0657549d250a2f97c591d7ab1336f0e019d72831)]:
+  - @pithy-sh/core@0.5.0
+
 ## 0.4.1
 
 ### Patch Changes

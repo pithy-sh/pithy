@@ -16,7 +16,8 @@ import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { AuthConfig, type AuthConfigInput, type AuthWiring } from "../capability";
 import { authSecretsRegistry } from "../instance/secrets";
-import { AUTH_MIGRATION_ORDER, auth_0001_init } from "../migrations/0001_init";
+import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
+import { AUTH_MIGRATIONS } from "../migrations/set";
 import { publishSameOrigin } from "./csrf";
 import { createSessionMiddleware } from "./middleware";
 import { createRateLimitMiddleware } from "./rateLimit";
@@ -182,7 +183,7 @@ beforeEach(async () => {
     await env.SECRETS.prepare(`drop table if exists ${table}`).run();
   }
   const provider = createMigrationRegistry([
-    { database: "app", namespace: "auth", order: AUTH_MIGRATION_ORDER, migrations: { "0001_init": auth_0001_init } },
+    { database: "app", namespace: "auth", order: AUTH_MIGRATION_ORDER, migrations: AUTH_MIGRATIONS },
     { database: "app", namespace: "email", order: 200, migrations: { "0001_init": email_0001_init } },
   ]).app;
   if (!provider) throw new Error('expected a provider for database "app"');

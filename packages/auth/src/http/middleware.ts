@@ -16,6 +16,12 @@ import { getAuthInstance } from "./resolve";
  * call covers mobile and web. A credential-less request stays anonymous (no instance build, no D1 hit).
  * Resolution never throws — an invalid credential simply leaves `auth` null for `requireAuth` to reject.
  */
+/** The session's authentication instant when it is a real `Date`, else `null`. Never anything else. */
+function authenticatedDate(session: unknown): Date | null {
+  const value = (session as { authenticatedAt?: unknown }).authenticatedAt;
+  return value instanceof Date ? value : null;
+}
+
 export function createSessionMiddleware(wiring: AuthWiring): PithyMiddleware {
   return (app) => {
     app.use("*", async (c, next) => {
@@ -38,6 +44,13 @@ export function createSessionMiddleware(wiring: AuthWiring): PithyMiddleware {
                 sessionId: session.session.id,
                 scopes: [],
                 locale: typeof stored === "string" && isLocale(stored) ? stored : null,
+                // Published for the same reason `locale` is: the session lookup has already loaded the
+                // row, so a gate that needs it should not pay for a second read. The adapter hands back
+                // a `Date`; a session predating the column hands back null, which reads as "cannot say".
+                // Guarded like `locale` beside it, and for a worse failure: `z.date()` throws on a
+                // string, the catch below swallows it, and every authenticated request in the Worker
+                // becomes anonymous — a total outage presenting as "everyone is logged out".
+                authenticatedAt: authenticatedDate(session.session),
               }),
             );
           }

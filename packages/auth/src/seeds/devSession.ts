@@ -193,6 +193,8 @@ export async function mintDevSession(input: MintDevSessionInput): Promise<Minted
     userAgent: "pithy seed (dev login)",
     deviceId: null,
     familyId: null,
+    // A dev session is a real sign-in, so it is authenticated now — what the live hook stamps.
+    authenticatedAt: now,
   };
 
   return {

@@ -1,5 +1,17 @@
 # @pithy-sh/cli
 
+## 0.6.2
+
+### Patch Changes
+
+- Updated dependencies [[`0657549`](https://github.com/pithy-sh/pithy/commit/0657549d250a2f97c591d7ab1336f0e019d72831), [`f254c69`](https://github.com/pithy-sh/pithy/commit/f254c6920976cd0b01a4d97e78291f6ee2344469)]:
+  - @pithy-sh/core@0.5.0
+  - @pithy-sh/ui-react@0.3.0
+  - @pithy-sh/cloudflare@0.2.1
+  - @pithy-sh/email@0.3.1
+  - @pithy-sh/secrets@0.2.1
+  - @pithy-sh/turnstile@0.2.1
+
 ## 0.6.1
 
 ### Patch Changes

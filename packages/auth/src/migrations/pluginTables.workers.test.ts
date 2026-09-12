@@ -8,8 +8,9 @@ import { admin } from "better-auth/plugins/admin";
 import { organization } from "better-auth/plugins/organization";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
-import { AUTH_MIGRATION_ORDER, auth_0001_init } from "./0001_init";
+import { AUTH_MIGRATION_ORDER } from "./0001_init";
 import { authPluginPlan } from "./pluginTables";
+import { AUTH_MIGRATIONS } from "./set";
 
 /**
  * The derived migrations against a real D1, composed exactly as `pithy migrate` composes them: the
@@ -23,7 +24,7 @@ function provider(plugins: Parameters<typeof authPluginPlan>[0]): MigrationProvi
       database: "app",
       namespace: "auth",
       order: AUTH_MIGRATION_ORDER,
-      migrations: { "0001_init": auth_0001_init, ...authPluginPlan(plugins).migrations },
+      migrations: { ...AUTH_MIGRATIONS, ...authPluginPlan(plugins).migrations },
     },
   ]);
   const found = registry.app;
@@ -69,13 +70,29 @@ beforeEach(async () => {
   }
 });
 
+/**
+ * Step back to, and including, the plugin's own migration.
+ *
+ * The kit's `0002_session_authenticated_at` sorts after a generated `0002_plugin_*` key, so it is the tip
+ * and one `rollbackMigration` undoes it rather than the plugin's. These cases are about what a *plugin's*
+ * down does, so they step past the kit's first and assert on the step they are about.
+ */
+async function rollbackToPlugin(p: MigrationProvider): Promise<Awaited<ReturnType<typeof rollbackMigration>>> {
+  await rollbackMigration(env.DB, p);
+  return await rollbackMigration(env.DB, p);
+}
+
 describe("a plugin's tables through pithy migrate", () => {
   test("organization's tables and its session column are created, keyed as one ledger entry", async () => {
     const results = await runMigrations(env.DB, provider([organization()]));
 
     expect(results.map((r) => [r.migrationName, r.status])).toEqual([
       ["0300_auth_0001_init", "Success"],
+      // A generated plugin key and a kit key share the `0002` band and sort lexicographically within it,
+      // so `plugin_*` precedes the kit's own. Harmless — no auth migration references another's schema —
+      // and deterministic, which is what the ledger needs. See `0002_session_authenticated_at.ts`.
       ["0300_auth_0002_plugin_organization", "Success"],
+      ["0300_auth_0002_session_authenticated_at", "Success"],
     ]);
     expect(await tables()).toEqual([...KIT_TABLES, "invitation", "member", "organization"].sort());
     // The half that is not a table: the plugin writes the active organization onto the session.
@@ -114,13 +131,19 @@ describe("a plugin's tables through pithy migrate", () => {
     await runMigrations(env.DB, p);
     const before = await columns("pithy_auth_sessions");
 
-    const results = await rollbackMigration(env.DB, p);
+    const results = await rollbackToPlugin(p);
 
     expect(results.map((r) => [r.migrationName, r.direction, r.status])).toEqual([
       ["0300_auth_0002_plugin_organization", "Down", "Success"],
     ]);
     expect(await tables()).toEqual(KIT_TABLES);
-    expect(await columns("pithy_auth_sessions")).toEqual(before.filter((c) => c !== "active_organization_id"));
+    // Two steps were taken, so two columns are gone: the plugin's and the kit's own tip. What the case is
+    // about is that each `down` removed exactly its own — nothing `0001` created is disturbed.
+    expect(await columns("pithy_auth_sessions")).toEqual(
+      before.filter((c) => c !== "active_organization_id" && c !== "authenticated_at"),
+    );
+    expect(await columns("pithy_auth_sessions")).toContain("family_id");
+    expect(await columns("pithy_auth_sessions")).toContain("device_id");
     expect(await indexes()).not.toContain("organization_slug_idx");
   });
 
@@ -136,11 +159,11 @@ describe("a plugin's tables through pithy migrate", () => {
       "insert into pithy_auth_users (id, name, email, created_at, updated_at) values ('u1', 'Ada', 'ada@example.com', 'now', 'now')",
     ).run();
 
-    await rollbackMigration(env.DB, p);
+    await rollbackToPlugin(p);
     expect(await columns("pithy_auth_users")).not.toContain("banned");
   });
 
-  test("two plugins are two ledger entries, and one step back leaves the other's schema standing", async () => {
+  test("two plugins are two ledger entries, and stepping back to one leaves the other's schema standing", async () => {
     const p = provider([organization(), admin()]);
     const results = await runMigrations(env.DB, p);
 
@@ -150,9 +173,12 @@ describe("a plugin's tables through pithy migrate", () => {
       "0300_auth_0001_init",
       "0300_auth_0002_plugin_admin",
       "0300_auth_0002_plugin_organization",
+      "0300_auth_0002_session_authenticated_at",
     ]);
 
-    await rollbackMigration(env.DB, p);
+    // Two steps back: past the kit's own tip, then the organization plugin's. `admin`'s stays applied,
+    // which is the point — one step back must not unwind a plugin nobody asked about.
+    await rollbackToPlugin(p);
     expect(await tables()).toEqual(KIT_TABLES);
     expect(await columns("pithy_auth_users")).toContain("banned");
   });

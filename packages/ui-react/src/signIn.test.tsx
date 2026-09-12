@@ -179,6 +179,51 @@ describe("one way in", () => {
   });
 });
 
+describe("the sign-up promise says only what is true", () => {
+  const text = (auth: AuthProjection) =>
+    (
+      mount(<SignInScreen auth={auth} fetch={recorder({}).fetch} origin="https://app.example" />).querySelector(
+        ".auth__signup",
+      ) as HTMLElement | null
+    )?.textContent ?? "";
+
+  test("a project where everything may sign up keeps the plain promise", () => {
+    expect(text(AUTH)).toContain("Signing in creates one.");
+  });
+
+  test("a provider that may not create an account scopes the promise to the link", () => {
+    // The configuration #554 exists for: email may create an account, GitHub may not. The blanket
+    // sentence is true of the link and false of the button beside it, and the reader used to find out
+    // by being refused after a full round trip to GitHub.
+    const scoped = text({ ...AUTH, providerSignUp: { google: true, github: false, apple: true, facebook: true } });
+    expect(scoped).toContain("Emailing you a link creates one.");
+    expect(scoped).not.toContain("Signing in creates one.");
+  });
+
+  test("a refusing provider that is switched off does not scope anything", () => {
+    // `apple` cannot sign up here, but it is not offered — so no button on this screen refuses, and
+    // qualifying the sentence would be answering a question nobody can ask.
+    const auth = { ...AUTH, providerSignUp: { google: true, github: true, apple: false, facebook: false } };
+    expect(text(auth)).toContain("Signing in creates one.");
+  });
+
+  test("a screen copied before the field existed reads as it always did", () => {
+    // `providerSignUp` is absent from an older copy of this template, and absent must mean "nothing
+    // refuses" — the behavior every project had before the field was projected.
+    const { providerSignUp: _dropped, ...older } = { ...AUTH, providerSignUp: undefined };
+    expect(text(older as AuthProjection)).toContain("Signing in creates one.");
+  });
+
+  test("sign-up closed everywhere still says so, whatever the providers allow", () => {
+    const closed = {
+      ...AUTH,
+      signUpEnabled: false,
+      providerSignUp: { google: true, github: false, apple: true, facebook: true },
+    };
+    expect(text(closed)).toContain("Existing accounts only.");
+  });
+});
+
 describe("the humanity check", () => {
   test("gates the link and leaves every provider alone", () => {
     const container = mount(
