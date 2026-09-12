@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, test } from "vitest";
+import { sourceFiles } from "../ci/sourceFiles";
 import { KIT_ROOT } from "../test-utils/kitRoot";
 
 /**
@@ -16,47 +16,41 @@ import { KIT_ROOT } from "../test-utils/kitRoot";
  * `@pithy-sh/core/src/image/storedImage`, and this fails the build when a second copy appears.
  *
  * **It describes what must be true rather than listing what is forbidden.** Not "auth must not declare
- * an allowlist" — the shape itself: any module outside core's that names two of the allowlisted media
- * types is a second copy of this decision, whatever its constant is called. A gate that enumerated
- * packages would be green on the third one.
+ * an allowlist" — the shape itself: any shipped module outside core's that names two of the allowlisted
+ * media types is a second copy of this decision, whatever its constant is called. A gate that
+ * enumerated packages would be green on the third one.
  *
- * This lives in the CLI package rather than in core because it reads the filesystem, and core's
- * tsconfig carries no node types — the same reason every other repo-wide parity gate is here.
+ * The walk is `ci/sourceFiles.ts`, which is the repository's one traversal — a private `readdirSync`
+ * here would be the seventh copy of a module four issues have spent removing, and it would carry none
+ * of the exclusions that keep `.worktrees/` and a vendored template copy out of the answer.
  */
 
 /** The one module allowed to name the allowlist. */
 const RULE = join("packages", "core", "src", "image", "storedImage.ts");
 
-/** Directories that hold no first-party source. */
-const SKIP = new Set(["node_modules", "dist", ".turbo", "coverage", ".wrangler"]);
+/** `packages/` — `KIT_ROOT` is `packages/cli`. */
+const PACKAGES = join(KIT_ROOT, "..");
 
-function sources(dir: string, found: string[] = []): string[] {
-  for (const entry of readdirSync(dir)) {
-    if (SKIP.has(entry)) continue;
-    const path = join(dir, entry);
-    if (statSync(path).isDirectory()) sources(path, found);
-    else if (entry.endsWith(".ts") && !entry.endsWith(".test.ts")) found.push(path);
-  }
-  return found;
-}
+/** The repository root, which every reported path is relative to. */
+const REPO = join(PACKAGES, "..");
 
 describe("the stored-image rule is declared once", () => {
-  const packages = join(KIT_ROOT, "..");
+  const shipped = sourceFiles(PACKAGES);
 
   test("the sweep is looking at the kit, not at nothing", () => {
     // The guard the gate itself needs: a walk that matched nothing would report no violations, and no
-    // violations is what passing looks like.
-    expect(sources(packages).length).toBeGreaterThan(500);
+    // violations is what passing looks like. Measured at well over a thousand shipped modules.
+    expect(shipped.length).toBeGreaterThan(500);
+    // And it reaches the module the rule lives in, which is the narrowest possible proof that the root
+    // is the right one.
+    expect(shipped.some((file) => relative(REPO, file.path) === RULE)).toBe(true);
   });
 
   test("no module outside core's rule names the image-type allowlist", () => {
-    const copies = sources(packages)
-      .map((path) => relative(join(KIT_ROOT, "..", ".."), path))
-      .filter((path) => path !== RULE)
-      .filter((path) => {
-        const text = readFileSync(join(KIT_ROOT, "..", "..", path), "utf8");
-        return text.includes('"image/svg+xml"') && text.includes('"image/webp"');
-      });
+    const copies = shipped
+      .filter((file) => file.text.includes('"image/svg+xml"') && file.text.includes('"image/webp"'))
+      .map((file) => relative(REPO, file.path))
+      .filter((path) => path !== RULE);
     expect(copies, copies.join("\n")).toEqual([]);
   });
 });

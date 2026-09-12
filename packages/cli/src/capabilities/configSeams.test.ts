@@ -65,12 +65,29 @@ describe("payments' manifest", () => {
 
 describe("seamsFor", () => {
   test("names a seam only for the choice that needs one", () => {
-    expect(seamsFor(payments.configOptions, { billingSubject: "organization" })).toEqual([
+    expect(seamsFor(payments, { billingSubject: "organization" })).toEqual([
       { seam: "paymentsSubject", option: "billingSubject" },
     ]);
     // The same option, the other value: `user` resolves from the authenticated caller and needs nothing.
-    expect(seamsFor(payments.configOptions, { billingSubject: "user" })).toEqual([]);
-    expect(seamsFor(payments.configOptions, {})).toEqual([]);
+    expect(seamsFor(payments, { billingSubject: "user" })).toEqual([]);
+    expect(seamsFor(payments, {})).toEqual([]);
+  });
+
+  test("a manifest-level seam is resolved whatever the values are", () => {
+    // `organization`'s role catalog is not conditional on anything: a tenancy capability has no answer
+    // to *who may do what* that is not the adopter's, so there is no configuration in which the module
+    // is unnecessary. Attributed to the capability, because no option named it.
+    const manifest = { name: "organization", seams: ["organizationRoles"] as const, configOptions: [] };
+    expect(seamsFor({ ...manifest, seams: [...manifest.seams] }, {})).toEqual([
+      { seam: "organizationRoles", option: "organization" },
+    ]);
+    expect(seamsFor({ ...manifest, seams: [...manifest.seams] }, { basePath: "/teams" })).toEqual([
+      { seam: "organizationRoles", option: "organization" },
+    ]);
+  });
+
+  test("a capability declaring none still resolves none", () => {
+    expect(seamsFor({ name: "audit", seams: [], configOptions: [] }, {})).toEqual([]);
   });
 });
 

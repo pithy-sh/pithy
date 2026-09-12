@@ -78,7 +78,7 @@ describe("where a face is drawn from", () => {
   });
 
   test("a value neither shape recognizes is drawn as nothing, not served", () => {
-    // Second line of defence: a row that reached the column past a bug still draws initials.
+    // Second line of defense: a row that reached the column past a bug still draws initials.
     expect(userImageSource("data:text/html;base64,AAAA", "/p", version)).toBeNull();
     expect(userImageSource("javascript:alert(1)", "/p", version)).toBeNull();
     expect(userImageSource("", "/p", version)).toBeNull();

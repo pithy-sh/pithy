@@ -63,6 +63,7 @@
     "@pithy-sh/matchmaking": "workspace:*",
     "@pithy-sh/media": "workspace:*",
     "@pithy-sh/multiplayer": "workspace:*",
+    "@pithy-sh/organization": "workspace:*",
     "@pithy-sh/payments": "workspace:*",
     "@pithy-sh/rating": "workspace:*",
     "@pithy-sh/storage": "workspace:*",
