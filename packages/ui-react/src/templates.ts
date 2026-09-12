@@ -120,7 +120,7 @@ export const TEMPLATE_GROUPS = {
     // every adopter the same three cases to get right — and the middle one, the single membership that
     // is entered without being asked *and still written*, is the one that gets written wrong.
     "src/routes/pithy/choose-organization.tsx",
-    // Seeded, for the reason the turnstile gate is: the behaviour it holds is one nobody already inside
+    // Seeded, for the reason the turnstile gate is: the behavior it holds is one nobody already inside
     // an account can test. Leaving the chooser by a document load rather than a route change is what
     // stops the previous account's roster, header and cached lists surviving the switch — and an in-app
     // `navigate` looks identical until somebody who belongs to two accounts uses it in production.

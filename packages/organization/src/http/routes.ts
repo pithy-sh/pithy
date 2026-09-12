@@ -423,6 +423,66 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
     });
   }
 
+  /**
+   * The refusals worth a row, and the reason each one is.
+   *
+   * Four, and every one is a refusal of somebody the account had already let in — which is what makes it
+   * different from a stranger's 404 and what makes it worth alerting on.
+   *
+   * `organization/forbidden` — a proved member reached above their role.
+   * `organization/last_administrator` — an attempt to leave the account unadministrable.
+   * `organization/invitation_invalid` — a token presented and refused, the wrong-address case included.
+   * `organization/nomination_invalid` — an ownership acceptance that was not this caller's to make.
+   */
+  const RECORDED_REFUSALS: ReadonlySet<string> = new Set([
+    "organization/forbidden",
+    "organization/last_administrator",
+    "organization/invitation_invalid",
+    "organization/nomination_invalid",
+  ]);
+
+  /**
+   * Record a refusal, when it is one of the four above.
+   *
+   * **`facts` carries the refusal's own code and nothing else from the error.** `detail` is the operator
+   * half and it is written to hold ids, a junk role, an organization somebody named — none of which the
+   * trail's own rule admits, and one of which (`invite`'s) would put an address in a register that
+   * refuses anything address-shaped. The code is the fact a reader filters on; the sentence stays in the
+   * log, where it already is.
+   *
+   * Swallows its own failure, as every emit here does: a trail that cannot be written must not turn a
+   * refusal into a 500 and tell the caller something different about themselves than the truth.
+   */
+  async function recordRefusal(c: Ctx, error: unknown): Promise<void> {
+    const code = (error as { payload?: { code?: unknown } } | null)?.payload?.code;
+    if (typeof code !== "string" || !RECORDED_REFUSALS.has(code)) return;
+    const who = c.var.auth;
+    if (!who) return;
+    /*
+      **An acting organization, or no row — and the one case that excludes is the interesting one to
+      state.** A trail event belongs to a tenant, and `organization/invitation_invalid` is reachable on
+      `POST /invitations/accept`, which has no acting selection by design: the caller is joining, so
+      there is nothing in force yet. The organization the token pointed at is known to the handler and
+      is exactly what the refusal exists to hide, so writing the row under it would say through the trail
+      what the response would not. There is no tenant to attribute it to, and inventing one is worse than
+      the gap.
+
+      The same refusal *inside* an account — an offer redeemed by the wrong address by somebody already a
+      member, which is the case worth alerting on — does have one, and is recorded.
+    */
+    const acting = c.get("acting");
+    if (!acting) return;
+    await record(c, {
+      action: OrganizationAuditActions.refused,
+      actor: { organizationId: acting.organizationId, userId: who.userId },
+      // The account itself. A refusal is about standing in the organization rather than about whichever
+      // row the caller happened to name — and the row they named is often the thing the refusal hides.
+      resource: { type: "organization", id: acting.organizationId },
+      outcome: "denied",
+      facts: { refusal: code, route: new URL(c.req.raw.url).pathname },
+    });
+  }
+
   /** One organization row, or null. Nothing is decided here — the caller says what absence means. */
   async function findOrganization(database: OrganizationDatabase, id: string): Promise<Organization | null> {
     const row = await database.selectFrom(ORGANIZATIONS_TABLE).selectAll().where("id", "=", id).executeTakeFirst();
@@ -502,6 +562,45 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
 
   return (backend) => {
     const app = backend as unknown as Hono<Env>;
+
+    /*
+      **Interesting refusals reach the trail, and this is the one place they do.**
+
+      `audit/emit.ts` argues that a refusal is worth recording where the refusal *is* the interesting
+      event — the last administrator somebody tried to remove, an invitation redeemed by the wrong
+      address — and that neither leaves a row if only successes are written. Nothing emitted one. A
+      `try`/`catch` per handler would have been twenty-odd chances to forget, so it is middleware over
+      the whole surface: every route this capability mounts passes through it, including the ones added
+      after this comment.
+
+      **Only refusals of somebody already inside.** `organization/not_found` is excluded and that
+      exclusion is the design rather than an omission: it is the answer to both "no such organization"
+      and "not one of yours", so it is the refusal a stranger can produce at will by naming a UUID.
+      Recording it would hand whoever is probing the ability to write this trail, and a real event buried
+      under a sweep of their noise is the failure the register exists to avoid.
+
+      **The error is re-thrown unchanged.** This observes; `pithyErrorHandler` still renders, and a
+      caller's answer is byte-for-byte what it was — which matters most for the one refusal that is
+      deliberately indistinguishable from another.
+    */
+    app.use(`${base}/*`, async (c, next) => {
+      try {
+        await next();
+      } catch (error) {
+        // A throw that reached here rather than Hono's own handling — a middleware above `onError`, or
+        // an app that registered none.
+        await recordRefusal(c, error);
+        throw error;
+      }
+      /*
+        **And the ordinary path, which is `c.error` rather than a rejection.** Hono's `compose` catches a
+        downstream throw, renders it through `app.onError`, and resolves `next()` — so a `try`/`catch`
+        here sees nothing at all on the route stack an adopter actually composes. That is not a detail to
+        leave to memory: the first version of this was a bare `try`/`catch`, it looked right, and it
+        recorded exactly zero refusals while every test around it passed.
+      */
+      await recordRefusal(c, c.error);
+    });
 
     // ── the chooser's two routes: what the caller may act in, and what they act in ──────────────
 

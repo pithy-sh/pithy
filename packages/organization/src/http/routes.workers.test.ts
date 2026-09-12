@@ -488,8 +488,10 @@ describe("the account in force", () => {
     const done = await call("PATCH", `${BASE}/current`, { as: ADA, body: { name: "Acme Interactive" } });
     expect(done.status).toBe(200);
     expect((await json<{ organization: { name: string } }>(done)).organization.name).toBe("Acme Interactive");
-    expect(actionsRecorded()).toEqual(["organization/renamed"]);
-    expect(events[0]?.metadata).toMatchObject({ name: "Acme Interactive" });
+    // The refusal above is on the trail too, ahead of the rename — a member reaching past their role is
+    // an event, and `the refusals that reach the trail` is where that is argued.
+    expect(actionsRecorded()).toEqual(["organization/refused", "organization/renamed"]);
+    expect(events[1]?.metadata).toMatchObject({ name: "Acme Interactive" });
   });
 
   test("absent leaves the mark; null takes it off — two instructions one nullable field could not carry", async () => {
@@ -567,7 +569,7 @@ describe("the roster", () => {
     const changed = await call("PATCH", `${BASE}/current/members/${target}`, { as: ADA, body: { role: "member" } });
     expect(changed.status).toBe(200);
     expect(await json(changed)).toEqual({ member: { membershipId: target, userId: BOB, role: "member" } });
-    expect(actionsRecorded()).toEqual(["organization/member_role_changed"]);
+    expect(actionsRecorded()).toEqual(["organization/refused", "organization/member_role_changed"]);
   });
 
   test("the role a transfer confers cannot be handed over by a role change, by anybody", async () => {
@@ -956,7 +958,7 @@ describe("ownership moves only by offer and acceptance", () => {
         role: "admin",
       },
     );
-    expect(actionsRecorded()).toEqual(["organization/ownership_nominated"]);
+    expect(actionsRecorded()).toEqual(["organization/refused", "organization/ownership_nominated"]);
   });
 
   test("only the nominee may accept, and accepting demotes the previous holder in the same write", async () => {
@@ -1155,6 +1157,79 @@ describe("a nominee discovering the offer", () => {
     await call("DELETE", `${BASE}/current/ownership`, { as: ADA });
     const body = await json<{ nomination: unknown }>(await call("GET", `${BASE}/current/ownership`, { as: ADA }));
     expect(body.nomination).toBeNull();
+  });
+});
+
+describe("the refusals that reach the trail", () => {
+  /*
+    **A refusal of somebody the account had already let in is what an intrusion looks like from inside**,
+    and none of them left a row until the middleware existed. `audit/emit.ts` argued for exactly this and
+    emitted nothing, which is the shape a claim takes when it lives only in prose.
+
+    What is *not* recorded is the half worth reading: `organization/not_found` is the answer to both "no
+    such organization" and "not one of yours", so it is the refusal a stranger produces at will by naming
+    a UUID. Recording it would let whoever is probing write this trail, and bury a real event under their
+    noise.
+  */
+
+  beforeEach(async () => {
+    await chooseActing(db(), { userId: BOB, sessionId: "session_bob", organizationId: ACME, now: NOW });
+    events.length = 0;
+  });
+
+  test("a member reaching above their role is recorded as denied", async () => {
+    const target = await membershipIdOf(ACME, ADA);
+    const refused = await call("DELETE", `${BASE}/current/members/${target}`, { as: BOB, session: "session_bob" });
+    expect(refused.status).toBe(403);
+
+    expect(actionsRecorded()).toEqual(["organization/refused"]);
+    // Read as the emitter writes it: `facts` become `metadata`, and the actor and the tenant are two
+    // fields rather than one object — the shape `@pithy-sh/audit` stores.
+    const event = events[0] as unknown as {
+      outcome: string;
+      metadata: { refusal: string; route: string };
+      actorId: string;
+      tenant: string;
+    };
+    expect(event.outcome).toBe("denied");
+    expect(event.metadata.refusal).toBe("organization/forbidden");
+    expect(event.metadata.route).toContain("/current/members/");
+    expect(event.actorId).toBe(BOB);
+    expect(event.tenant).toBe(ACME);
+  });
+
+  test("the trail carries the refusal's code and nothing the refusal was hiding", async () => {
+    // `detail` is the operator half and it holds ids and names; the register refuses anything
+    // address-shaped and a row is not the place to put back what the response withheld.
+    const target = await membershipIdOf(ACME, ADA);
+    await call("DELETE", `${BASE}/current/members/${target}`, { as: BOB, session: "session_bob" });
+    const written = JSON.stringify(events[0]);
+    expect(written).not.toContain("does not hold");
+    expect(written).toContain("organization/forbidden");
+  });
+
+  test("**a stranger's 404 writes nothing**, so nobody can fill the trail by guessing", async () => {
+    const absent = await call("GET", `${BASE}/current/members`, { as: CAI, session: "session_cai" });
+    expect(absent.status).toBe(404);
+    expect(actionsRecorded()).toEqual([]);
+  });
+
+  test("and neither does a successful call", async () => {
+    // The middleware is on every route. A wrapper that recorded the ordinary path would double every
+    // row in the register.
+    const listed = await call("GET", `${BASE}/current`, { as: BOB, session: "session_bob" });
+    expect(listed.status).toBe(200);
+    expect(actionsRecorded()).toEqual([]);
+  });
+
+  test("the caller's answer is unchanged — this observes and does not render", async () => {
+    // Most of all for the one refusal that is deliberately indistinguishable from another: a recorder
+    // that touched the response would be the oracle the model spent its design refusing to draw.
+    const target = await membershipIdOf(ACME, ADA);
+    const refused = await call("DELETE", `${BASE}/current/members/${target}`, { as: BOB, session: "session_bob" });
+    const body = await json<{ error: { code: string; message: string } }>(refused);
+    expect(body.error.code).toBe("organization/forbidden");
+    expect(body.error).not.toHaveProperty("detail");
   });
 });
 

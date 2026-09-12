@@ -85,6 +85,26 @@ export const OrganizationAuditActions = {
   ownershipWithdrawn: "organization/ownership_withdrawn",
   /** A nominee accepted, so the account and its bill changed hands. The heaviest membership event. */
   ownershipAccepted: "organization/ownership_accepted",
+  /**
+   * Somebody inside the account was refused.
+   *
+   * **One code for every interesting refusal, carrying the refusal's own code in `facts`.** A code per
+   * refusal would multiply with the error taxonomy and leave a reader filtering a union to ask one
+   * question; the question worth asking is *who was turned away here*, and the reason is a field.
+   *
+   * Recorded with `outcome: "denied"`, which is what an alert counts. What earns a row is a refusal that
+   * is interesting **because the caller was already inside** — a member reaching above their role, an
+   * invitation redeemed by the wrong address, an attempt to strip the account of its last administrator.
+   * Each of those is what an intrusion looks like from inside the trail, and none leaves a row if only
+   * successes are written.
+   *
+   * **`organization/not_found` is deliberately not among them**, and that is the one exclusion worth
+   * arguing. It is the answer to both "no such organization" and "not one of yours", so it is the
+   * refusal anybody can produce at will by naming a UUID — recording it would let a stranger write the
+   * trail, and burying a real event under a sweep is the failure this register exists to avoid. The
+   * distinction that would make it interesting lives in `detail`, which the log already keeps.
+   */
+  refused: "organization/refused",
 } as const;
 
 /** One of this capability's audit actions. */

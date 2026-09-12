@@ -70,6 +70,9 @@ describe("OrganizationAuditActions", () => {
       "organization/ownership_accepted",
       "organization/ownership_nominated",
       "organization/ownership_withdrawn",
+      // Not an act somebody took, but an act somebody was stopped from taking — recorded because a
+      // refusal of a caller the account had already let in is what an intrusion looks like from inside.
+      "organization/refused",
       "organization/renamed",
     ]);
   });
