@@ -1,6 +1,6 @@
 # Scoping your own tables
 
-_This capability answers *may this person act in this organization*. It does not, and cannot, answer *may they read this row of yours* — your tables are yours. This is the pattern that keeps the second answer honest, taken from the application this model was generalised from._
+_This capability answers *may this person act in this organization*. It does not, and cannot, answer *may they read this row of yours* — your tables are yours. This is the pattern that keeps the second answer honest, taken from the application this model was generalized from._
 
 `requireOrganization()` proves a membership and puts it on `c.var.acting`. That is the first line. **This document is about the second**, and the second is the one that holds when a handler is refactored, a route is added by somebody who did not read the middleware, or an organization id arrives from a log line rather than from a resolved session.
 

@@ -73,7 +73,7 @@ const ALAN_AT_FERRANTI_ID = "b3052d7f-8146-4a09-95ec-6f27d1b48c0a";
 const ACME_INVITATION_ID = "42c7e9b3-15a8-4d60-8f92-3ab06e5c7d18";
 
 /**
- * Acme's mark: a 1×1 PNG of one flat colour, which a chooser draws as a filled square.
+ * Acme's mark: a 1×1 PNG of one flat color, which a chooser draws as a filled square.
  *
  * Obviously a placeholder, and deliberately: a fixture mark that looked like a real logo is a fixture
  * nobody notices is still there. One account has it and the other does not, so a screen that renders a

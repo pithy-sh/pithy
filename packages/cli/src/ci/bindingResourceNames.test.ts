@@ -143,6 +143,7 @@ const DECLARED: readonly Declared[] = [
     why: "the queue's KV namespace — the generic rule is its only writer",
   },
   { capability: "media", binding: "DB", kind: "d1", namer: null, why: "the app database" },
+  { capability: "organization", binding: "DB", kind: "d1", namer: null, why: "the app database" },
   {
     capability: "media",
     binding: "MEDIA_BUCKET",

@@ -32,7 +32,7 @@ const db = () => createDatabase(env.DB, {}) as unknown as Kysely<unknown>;
  * than an omission.** A named unique constraint in `CREATE TABLE` becomes an auto-index SQLite names
  * `sqlite_autoindex_<table>_<n>` — the name in the DDL is not carried into `sqlite_master` at all — so
  * the slug, the `(organizationId, userId)` pair and the token digest are enforced under names this
- * prefix query cannot see. `uniqueness` below asserts them by behaviour instead, which is the only way
+ * prefix query cannot see. `uniqueness` below asserts them by behavior instead, which is the only way
  * to assert them at all.
  */
 const EXPECTED_CATALOG = [

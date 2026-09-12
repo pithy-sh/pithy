@@ -500,7 +500,7 @@ export async function acceptNomination<Power extends string, Role extends string
       Everything above is a read, and three awaits separate the read of the nomination from this batch.
       In that window the holder can withdraw the offer, or replace it by nominating somebody else — both
       are single statements on the same row, and both return to their caller saying the offer is gone.
-      An unconditional `delete … where organization_id = ?` honours an offer that no longer stands, and
+      An unconditional `delete … where organization_id = ?` honors an offer that no longer stands, and
       in the replaced case deletes the *replacement* while promoting the person it superseded.
 
       So the delete names the membership as well as the organization, and the batch is refused unless it
