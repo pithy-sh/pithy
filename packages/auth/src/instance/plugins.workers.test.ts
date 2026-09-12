@@ -7,8 +7,9 @@ import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { organization } from "better-auth/plugins/organization";
 import { beforeEach, describe, expect, test } from "vitest";
 import { authDatabase } from "../data/tables";
-import { AUTH_MIGRATION_ORDER, auth_0001_init } from "../migrations/0001_init";
+import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { authPluginPlan } from "../migrations/pluginTables";
+import { AUTH_MIGRATIONS } from "../migrations/set";
 import { type AuthEmailMessage, makeAuth } from "./auth";
 import { NO_SOCIAL_PROVIDERS } from "./providers";
 
@@ -44,7 +45,7 @@ async function migrate(): Promise<void> {
       database: "app",
       namespace: "auth",
       order: AUTH_MIGRATION_ORDER,
-      migrations: { "0001_init": auth_0001_init, ...authPluginPlan(PLUGINS).migrations },
+      migrations: { ...AUTH_MIGRATIONS, ...authPluginPlan(PLUGINS).migrations },
     },
   ]).app;
   if (!provider) throw new Error('expected a provider for database "app"');

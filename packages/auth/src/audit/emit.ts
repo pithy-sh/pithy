@@ -207,6 +207,30 @@ export async function emitProviderUnavailable(
   });
 }
 
+/**
+ * Emit a `session_not_fresh` event — an attempt to attach a provider on an authentic but stale session.
+ *
+ * `actorType: "user"` rather than `anonymous`, unlike `emitProviderUnavailable`: this caller is
+ * authenticated, and the user id is the whole value of the row. Counting these per user is how a stolen
+ * credential being walked toward a link becomes visible.
+ */
+export async function emitLinkSessionNotFresh(
+  emit: AuditEmit,
+  context: { userId: string; sessionId: string; headers: Headers | undefined },
+): Promise<void> {
+  await safeEmit(emit, {
+    action: AuthAuditActions.sessionNotFresh,
+    outcome: "denied",
+    severity: "warning",
+    actorType: "user",
+    actorId: context.userId,
+    // The first-class column, not `metadata`. Counting these per user is the whole value of the row, and
+    // an id buried in a JSON blob is one this action alone cannot be correlated by.
+    sessionId: context.sessionId,
+    ...correlation(context.headers),
+  });
+}
+
 /** A blocked/failed auth attempt — recorded as `denied` (first-class). */
 export async function emitDenied(
   emit: AuditEmit,

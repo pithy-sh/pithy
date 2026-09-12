@@ -6,7 +6,8 @@ import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry"
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { beforeEach, describe, expect, test } from "vitest";
 import { authDatabase } from "../data/tables";
-import { AUTH_MIGRATION_ORDER, auth_0001_init } from "../migrations/0001_init";
+import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
+import { AUTH_MIGRATIONS } from "../migrations/set";
 import { type DeviceMeta, deleteDevice, deviceSessionTokens, listDevices, registerDevice } from "./registry";
 
 const TABLES = [
@@ -29,7 +30,7 @@ beforeEach(async () => {
     await env.DB.prepare(`drop table if exists ${table}`).run();
   }
   const provider = createMigrationRegistry([
-    { database: "app", namespace: "auth", order: AUTH_MIGRATION_ORDER, migrations: { "0001_init": auth_0001_init } },
+    { database: "app", namespace: "auth", order: AUTH_MIGRATION_ORDER, migrations: AUTH_MIGRATIONS },
   ]).app;
   if (!provider) throw new Error('expected a provider for database "app"');
   await runMigrations(env.DB, provider);

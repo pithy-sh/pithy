@@ -49,7 +49,7 @@ describe("auth capability", () => {
 
   test("ships both migrations in one namespace, at the one declared order", () => {
     const db = build().databases?.app;
-    expect(Object.keys(db?.migrations ?? {})).toEqual(["0001_init"]);
+    expect(Object.keys(db?.migrations ?? {})).toEqual(["0001_init", "0002_session_authenticated_at"]);
     // A second migration never gets a second order. Renumbering would rename `0300_auth_0001_init`, and
     // Kysely would then read every applied auth migration as unapplied and run it again.
     expect(db?.migrationOrder).toBe(AUTH_MIGRATION_ORDER);
@@ -128,15 +128,19 @@ describe("auth capability", () => {
 
 // What an adopter can add, what they cannot displace, and what happens to the tables either way.
 describe("additional Better Auth plugins", () => {
-  test("a project that adds none is byte-identical to before — one migration, no extensions", () => {
+  test("a project that adds none is byte-identical to before — the kit's own chain, no extensions", () => {
     const cap = build();
-    expect(Object.keys(cap.databases?.app?.migrations ?? {})).toEqual(["0001_init"]);
+    expect(Object.keys(cap.databases?.app?.migrations ?? {})).toEqual(["0001_init", "0002_session_authenticated_at"]);
     expect(cap.extensions).toEqual([]);
   });
 
   test("a composed plugin contributes its migration, keyed by its id", () => {
     const cap = build({ plugins: [organization()] });
-    expect(Object.keys(cap.databases?.app?.migrations ?? {})).toEqual(["0001_init", "0002_plugin_organization"]);
+    expect(Object.keys(cap.databases?.app?.migrations ?? {})).toEqual([
+      "0001_init",
+      "0002_session_authenticated_at",
+      "0002_plugin_organization",
+    ]);
   });
 
   test("a composed plugin is declared as an extension, with the tables it brought", () => {
