@@ -1302,7 +1302,10 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
       zValidator("query", AdminListQuery, validationHook),
       async (c) => {
         const limit = c.req.valid("query").limit ?? MAX_PAGE_SIZE;
-        const memberships = await listMembers(db(c), c.req.valid("param").organizationId);
+        // The limit goes to the statement, the way the accounts listing above does it. One row past the
+        // bound comes back, so `truncated` is a fact the page carries rather than an inference from a
+        // full one — and D1 is never asked for a whole tenant's roster to throw most of it away.
+        const memberships = await listMembers(db(c), c.req.valid("param").organizationId, limit);
         const page = memberships.slice(0, limit);
         const people = await readPeople(
           auth(c),

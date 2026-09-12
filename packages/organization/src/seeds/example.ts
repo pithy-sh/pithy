@@ -89,7 +89,7 @@ const ACME_MARK =
  * a dev database reads like the rows beside it. Nothing hashes to it, which is the property that keeps
  * the seeded offer un-redeemable. See the module note.
  */
-const ACME_INVITATION_DIGEST = "seed-invitation-digest-no-token-produces-it-";
+const ACME_INVITATION_DIGEST = "seed-invitation-digest-no-token-produces-it";
 
 /**
  * The fixture's timeline, anchored to the day it is seeded rather than to a fixed calendar date.

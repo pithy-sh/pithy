@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { Kysely } from "kysely";
+import { type Kysely, sql } from "kysely";
 import type { Migration } from "kysely/migration";
 
 /**
@@ -92,13 +92,33 @@ export const organization_0001_init: Migration = {
       .addUniqueConstraint("pithyOrganizationInvitationsTokenIdx", ["tokenDigest"])
       .execute();
 
-    // "What is outstanding for this account", and the lookup that refuses a second live offer to an
-    // address already invited.
+    // "What is outstanding for this account" — the roster of offers, and the lookup a resend names.
     await db.schema
       .createIndex("pithyOrganizationInvitationsOrgStatusIdx")
       .on("pithyOrganizationInvitations")
       .columns(["organizationId", "status", "email"])
       .execute();
+
+    /*
+      **One live offer per address, as a constraint rather than as care in a handler.**
+
+      `invite()` supersedes a standing offer before writing a new one, and that is two statements. Two
+      concurrent invitations to one mailbox — a double-clicked button, a retried POST — both find nothing
+      to supersede and both insert, and the account then holds two live tokens for one person. Withdrawing
+      the one a pane happens to show is then a revoke that does not revoke: whichever copy the recipient
+      kept still works, for the whole remaining TTL.
+
+      Partial, on `status = 'pending'`, because the whole point is that spent and withdrawn offers
+      accumulate as history — a plain unique index would refuse the second invitation anybody ever sent to
+      an address, which is a legitimate act.
+
+      Written as raw SQL because Kysely's `createIndex` has no partial-index builder. The identifiers are
+      snake_case here rather than camelCase for the same reason: `CamelCasePlugin` rewrites what the query
+      builder emits, and this string goes past it.
+    */
+    await sql`create unique index "pithy_organization_invitations_one_live_idx" on "pithy_organization_invitations" ("organization_id", "email") where "status" = 'pending'`.execute(
+      db,
+    );
 
     await db.schema
       .createTable("pithyOrganizationOwnershipNominations")

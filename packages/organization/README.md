@@ -12,7 +12,7 @@ pithy add organization
 
 _Everything else is on the site. `pithy.sh/docs` is canonical — new prose goes there, not here._
 
-Two pages ship in the package as well, because both have to be readable from the code rather than only from a website: [`docs/roles.md`](docs/roles.md), where roles are defined, how two unrelated role sets coexist, and which parts of a catalog can still be changed after somebody has joined; and [`docs/why-not-better-auth-organization.md`](docs/why-not-better-auth-organization.md), the record of why this model rather than Better Auth's plugin.
+Three pages ship in the package as well, because each has to be readable from the code rather than only from a website: [`docs/roles.md`](docs/roles.md), where roles are defined, how two unrelated role sets coexist, and which parts of a catalog can still be changed after somebody has joined; [`docs/scoping-your-own-tables.md`](docs/scoping-your-own-tables.md), the pattern that keeps *your* tenanted tables scoped — which this capability cannot do for you, because it has no view of them; and [`docs/why-not-better-auth-organization.md`](docs/why-not-better-auth-organization.md), the record of why this model rather than Better Auth's plugin.
 
 ## The seam
 

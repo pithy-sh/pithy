@@ -196,13 +196,23 @@ function administeringRoles<Power extends string, Role extends string>(
  * otherwise in whatever order SQLite felt like, and a roster that reshuffles between reads is a roster
  * nobody trusts.
  */
-export async function listMembers(db: OrganizationDatabase, organizationId: string): Promise<readonly Membership[]> {
+export async function listMembers(
+  db: OrganizationDatabase,
+  organizationId: string,
+  limit?: number,
+): Promise<readonly Membership[]> {
   const rows = await db
     .selectFrom(MEMBERSHIPS_TABLE)
     .selectAll()
     .where("organizationId", "=", organizationId)
     .orderBy("createdAt", "asc")
     .orderBy("id", "asc")
+    // **The bound reaches the statement, or it is not a bound.** A `slice` after the fact still asked
+    // D1 for every membership in the account, which is the cost the limit exists to refuse — and the
+    // reason `AdminListQuery` gives for having one is that a verified client can still have a bug. One
+    // past the limit, so "was there more" is a fact the rows carry rather than an inference from a full
+    // page. Optional because a roster pane wants the whole account and says so by passing nothing.
+    .$if(limit !== undefined, (query) => query.limit((limit as number) + 1))
     .execute();
   return rows.map((row) => Membership.parse(row));
 }

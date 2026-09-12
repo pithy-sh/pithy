@@ -203,7 +203,7 @@ export const OrganizationMarkParam = z
   .describe("Which organization's mark a chooser is drawing.");
 export type OrganizationMarkParam = z.output<typeof OrganizationMarkParam>;
 
-/** The path parameters of `GET {base}/marks/member/:membershipId`. */
+/** The path parameters of `GET {base}/members/:membershipId/image`. */
 export const MemberMarkParam = z
   .object({
     membershipId: z

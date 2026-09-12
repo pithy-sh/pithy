@@ -211,6 +211,57 @@ describe("invite", () => {
   });
 });
 
+describe("one live offer per address", () => {
+  test("two concurrent invitations to one mailbox leave one live token, not two", async () => {
+    /*
+      A double-clicked button, or a retried POST. Both calls find nothing to supersede — the supersede
+      and the insert are two statements — and without the constraint both insert. The account then holds
+      two live tokens for one person, and withdrawing the one a pane happens to show is a revoke that
+      does not revoke: whichever copy the recipient kept still works for the rest of the TTL.
+
+      So the table refuses it. A partial unique index on `(organizationId, email) where status =
+      'pending'` means one of the two loses, and the rule stops depending on whoever writes the handler.
+    */
+    const settled = await Promise.allSettled([
+      invite(db, catalog, {
+        organizationId: ORG,
+        email: "ada@example.com",
+        role: "member",
+        invitedByUserId: INVITER,
+        ttlDays: TTL_DAYS,
+        now: NOW,
+      }),
+      invite(db, catalog, {
+        organizationId: ORG,
+        email: "ada@example.com",
+        role: "member",
+        invitedByUserId: INVITER,
+        ttlDays: TTL_DAYS,
+        now: NOW,
+      }),
+    ]);
+    expect(settled.filter((result) => result.status === "fulfilled").length).toBeGreaterThanOrEqual(1);
+
+    const live = await db
+      .selectFrom(INVITATIONS_TABLE)
+      .select(["id"])
+      .where("organizationId", "=", ORG)
+      .where("email", "=", "ada@example.com")
+      .where("status", "=", "pending")
+      .execute();
+    expect(live).toHaveLength(1);
+  });
+
+  test("and a second offer after the first is spent is still allowed", async () => {
+    // Partial, on `pending`, because spent and withdrawn offers are history. A plain unique index would
+    // refuse the second invitation anybody ever sent to an address, which is a legitimate act.
+    const first = await offer({ email: "ada@example.com" });
+    await withdrawInvitation(db, { organizationId: ORG, invitationId: first.invitation.id, now: NOW });
+    const second = await offer({ email: "ada@example.com" });
+    expect(second.invitation.id).not.toBe(first.invitation.id);
+  });
+});
+
 describe("listInvitations", () => {
   test("lists what is outstanding, newest first, and nothing that has been spent", async () => {
     const older = await offer({ email: "ada@example.com", now: new Date(NOW.getTime() - 60_000) });
