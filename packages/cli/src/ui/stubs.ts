@@ -31,6 +31,16 @@ export interface UiStubContext {
    * files over one layout.
    */
   payments: boolean;
+  /**
+   * Whether to write the account chooser — the screen somebody who belongs to more than one account
+   * lands on.
+   *
+   * A third capability-gated set, chosen exactly as the two above are. It ships one screen and its
+   * seeded gate, because the three-arrival logic behind it is the part that gets written wrong: a
+   * single membership is entered without asking *and still recorded*, several draw the picker, and none
+   * is a different answer entirely.
+   */
+  organization: boolean;
   /** The project's package manager — what the generated docs and commands tell the adopter to run. */
   packageManager: PackageManager;
 }

@@ -30,6 +30,25 @@ export {
   type OrganizationOptions,
   organization,
 } from "./capability";
+/*
+  The browser half. Exported by name rather than reached by deep path like everything else, because a
+  screen `pithy ui add` copies into an adopter's repository imports it — and a copied file's imports are
+  frozen at the moment it was copied.
+*/
+export {
+  type ActableOrganization,
+  type ActableOrganizations,
+  type ChosenOrganization,
+  chooseOrganization,
+  listOrganizations,
+  ORGANIZATION_BASE_PATH,
+  ORGANIZATION_CROSS_ORIGIN,
+  ORGANIZATION_UNREACHABLE,
+  ORGANIZATION_UNREADABLE,
+  type OrganizationClientOptions,
+  type OrganizationFailure,
+  type OrganizationResult,
+} from "./client/api";
 export { OrganizationConfig, type OrganizationConfigInput } from "./config/config";
 export { ActingOrganization } from "./data/actingOrganization";
 export { Invitation, InvitationStatus } from "./data/invitation";

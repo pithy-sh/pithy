@@ -115,6 +115,17 @@ export const TEMPLATE_GROUPS = {
     "src/routes/pithy/otp.tsx",
     "src/routes/pithy/callback.tsx",
   ],
+  organization: [
+    // One screen, and the three-arrival logic is the reason it ships at all. A headless hook would hand
+    // every adopter the same three cases to get right — and the middle one, the single membership that
+    // is entered without being asked *and still written*, is the one that gets written wrong.
+    "src/routes/pithy/choose-organization.tsx",
+    // Seeded, for the reason the turnstile gate is: the behaviour it holds is one nobody already inside
+    // an account can test. Leaving the chooser by a document load rather than a route change is what
+    // stops the previous account's roster, header and cached lists surviving the switch — and an in-app
+    // `navigate` looks identical until somebody who belongs to two accounts uses it in production.
+    "src/routes/pithy/choose-organization.test.tsx",
+  ],
   payments: [
     "src/payments.tsx",
     "src/routes/pithy/paywall.tsx",

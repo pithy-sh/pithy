@@ -163,12 +163,17 @@ describe("pithy ui", () => {
         return false;
       },
     });
+    // Every capability-gated set, in the order `runUiAdd` resolves them — and `organization` is asked
+    // about even on a worker that does not compose it, because the suggestion is what carries that
+    // fact, not whether the question is put. `suggestion: false` is the honest default there.
     expect(asked).toEqual([
       { screens: "auth", suggestion: true },
       { screens: "payments", suggestion: true },
+      { screens: "organization", suggestion: false },
     ]);
     expect(report.auth).toBe(false);
     expect(report.payments).toBe(false);
+    expect(report.organization).toBe(false);
   });
 
   test("a worker composing payments gets the paywall and the subscription screen", async () => {

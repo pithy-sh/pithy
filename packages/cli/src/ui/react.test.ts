@@ -32,10 +32,34 @@ let PAY: Record<string, string>;
 let BOTH: Record<string, string>;
 
 beforeAll(async () => {
-  BARE = await loadStubFiles(reactStub, { worker: "api", auth: false, payments: false, packageManager: "bun" });
-  AUTH = await loadStubFiles(reactStub, { worker: "api", auth: true, payments: false, packageManager: "bun" });
-  PAY = await loadStubFiles(reactStub, { worker: "api", auth: false, payments: true, packageManager: "bun" });
-  BOTH = await loadStubFiles(reactStub, { worker: "api", auth: true, payments: true, packageManager: "bun" });
+  BARE = await loadStubFiles(reactStub, {
+    worker: "api",
+    auth: false,
+    payments: false,
+    organization: false,
+    packageManager: "bun",
+  });
+  AUTH = await loadStubFiles(reactStub, {
+    worker: "api",
+    auth: true,
+    payments: false,
+    organization: false,
+    packageManager: "bun",
+  });
+  PAY = await loadStubFiles(reactStub, {
+    worker: "api",
+    auth: false,
+    payments: true,
+    organization: false,
+    packageManager: "bun",
+  });
+  BOTH = await loadStubFiles(reactStub, {
+    worker: "api",
+    auth: true,
+    payments: true,
+    organization: false,
+    packageManager: "bun",
+  });
 });
 
 /** Every route module the stub writes, by path. */
@@ -47,7 +71,13 @@ function routeModules(files: Record<string, string>): [string, string][] {
 
 describe("the React 19 stub", () => {
   test("manifest() is pure — the same context yields the same declaration", () => {
-    const context = { worker: "api", auth: false, payments: false, packageManager: "bun" } as const;
+    const context = {
+      worker: "api",
+      auth: false,
+      payments: false,
+      organization: false,
+      packageManager: "bun",
+    } as const;
     const once = reactStub.manifest(context);
     const again = reactStub.manifest(context);
     expect(again).toEqual(once);
@@ -56,8 +86,20 @@ describe("the React 19 stub", () => {
 
   test("every declared template exists on disk — a packaging fault fails here, not in an adopter's repo", async () => {
     for (const auth of [false, true]) {
-      const files = await loadStubFiles(reactStub, { worker: "api", auth, payments: false, packageManager: "bun" });
-      for (const file of reactStub.manifest({ worker: "api", auth, payments: false, packageManager: "bun" })) {
+      const files = await loadStubFiles(reactStub, {
+        worker: "api",
+        auth,
+        payments: false,
+        organization: false,
+        packageManager: "bun",
+      });
+      for (const file of reactStub.manifest({
+        worker: "api",
+        auth,
+        payments: false,
+        organization: false,
+        packageManager: "bun",
+      })) {
         expect(files[file.target], file.source).toBeTypeOf("string");
       }
     }
@@ -68,6 +110,7 @@ describe("the React 19 stub", () => {
       worker: "acme-api",
       auth: true,
       payments: false,
+      organization: false,
       packageManager: "bun",
     });
     expect(files["index.html"]).toContain("acme-api");

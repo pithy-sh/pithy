@@ -22,6 +22,7 @@ import { targetWorker } from "./add";
 const SCREEN_QUESTIONS: Record<UiScreenSet, string> = {
   auth: "Scaffold the passwordless sign-in screens?",
   payments: "Scaffold the paywall and subscription screens?",
+  organization: "Scaffold the account chooser?",
 };
 
 /** Ask whether to scaffold one capability's screens. Attached only when a human can answer. */
@@ -52,6 +53,10 @@ const add = defineCommand({
     // capability is composed on that worker.
     auth: { type: "boolean", description: "Include the passwordless sign-in screens (--no-auth for the bare SPA)" },
     payments: { type: "boolean", description: "Include the paywall and subscription screens (--no-payments to skip)" },
+    organization: {
+      type: "boolean",
+      description: "Include the account chooser (--no-organization to skip)",
+    },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
@@ -71,6 +76,7 @@ const add = defineCommand({
         framework: args.framework,
         ...(args.auth === undefined ? {} : { auth: args.auth }),
         ...(args.payments === undefined ? {} : { payments: args.payments }),
+        ...(args.organization === undefined ? {} : { organization: args.organization }),
         ...(interactive ? { prompt: promptScreens } : {}),
       });
 
@@ -78,9 +84,11 @@ const add = defineCommand({
         process.stdout.write(`${formatJsonLine({ command: "ui.add", ...report, ...workerIdentity(target) })}\n`);
         return;
       }
-      const screens = [report.auth ? "sign-in" : null, report.payments ? "paywall" : null].filter(
-        (name) => name !== null,
-      );
+      const screens = [
+        report.auth ? "sign-in" : null,
+        report.payments ? "paywall" : null,
+        report.organization ? "choose-organization" : null,
+      ].filter((name) => name !== null);
       const template = screens.length === 0 ? "Bare template." : `Screens included: ${screens.join(", ")}.`;
       process.stdout.write(`Scaffolded a ${report.framework} front end into ${report.worker}. ${template}\n`);
       if (report.skipped.length > 0) {
