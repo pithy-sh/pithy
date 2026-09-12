@@ -4,6 +4,7 @@
 import { JsonDate, SQLiteBoolean } from "@pithy-sh/core/src/data/codecs";
 import { Locale } from "@pithy-sh/core/src/i18n/locale";
 import { z } from "zod";
+import { UserImage } from "../profile/profile";
 
 /**
  * The Better-Auth-managed tables, one Zod object per table.
@@ -37,7 +38,9 @@ export const User = z
     emailVerified: SQLiteBoolean.describe(
       "Whether the email has been verified. Stored as `0|1`; magic-link/OTP sign-in sets it true.",
     ),
-    image: z.string().nullable().describe("URL of the user's avatar from a social profile, or null."),
+    image: UserImage.nullable().describe(
+      "The user's picture: a URL on the provider that signed them in, or bytes this application stores as a bounded `data:` URL. Null when nobody has set one — and then a caller draws initials, which is a real answer and not a placeholder. See `../profile/profile.ts` for why the column takes two shapes.",
+    ),
     locale: Locale.nullable().describe(
       "The reader's chosen language as a BCP-47 tag, or null when they have never chosen. Null is not the default locale: it means negotiate from `Accept-Language`, so an unchosen reader follows their device. A stored tag outranks the header.",
     ),

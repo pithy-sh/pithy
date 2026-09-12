@@ -298,6 +298,8 @@ describe("the advertised admin surface matches what is mounted", () => {
       "GET /auth/admin/users",
       "GET /auth/admin/users/:userId",
       "GET /auth/devices",
+      // The caller's own stored picture. No id in the path — `routes.ts`'s `serveMyImage` says why.
+      "GET /auth/profile/image",
       "POST /auth/admin/sessions/revoke",
       "POST /auth/admin/users/:userId/devices/revoke",
       "POST /auth/admin/users/:userId/sessions/revoke",

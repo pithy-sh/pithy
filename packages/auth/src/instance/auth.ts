@@ -8,6 +8,7 @@ import { emitAfterRequest, emitProviderUnavailable } from "../audit/emit";
 import { KIT_SESSION_FIELDS, KIT_USER_FIELDS } from "../data/kitFields";
 import type { AuthDatabase } from "../data/tables";
 import { parseDeviceMeta, registerDevice } from "../device/registry";
+import { refuseUnsafeProfile, sanitizeProfile } from "../profile/profile";
 import { defaultGithubUserInfo, type GithubUserInfoResolver } from "./githubUserInfo";
 import { kitPlugins } from "./plugins";
 import {
@@ -110,6 +111,21 @@ export function socialProviders(deps: AuthInstanceDeps): Record<string, unknown>
  */
 export function isUnverifiedSignup(user: { emailVerified?: boolean | null }): boolean {
   return user.emailVerified !== true;
+}
+
+/**
+ * Refuse a write whose `name` or `image` is not a shape this kit will render, with a 400 naming the
+ * field.
+ *
+ * The decision is `../profile/profile.ts`'s and is pure; this is the half that needs `APIError`, which
+ * is what turns a refusal into a 400 instead of a row that throws on every later read. That failure
+ * mode is the one `../data/kitFields.ts` already documents for `locale`: a bad value written once makes
+ * the *listing* fail for every operator rather than only for its author.
+ */
+function refuseUnsafeProfileFields(user: { name?: unknown; image?: unknown }): void {
+  const refusal = refuseUnsafeProfile(user);
+  if (!refusal) return;
+  throw new APIError("BAD_REQUEST", { code: "INVALID_PROFILE_FIELD", message: refusal.message });
 }
 
 /**
@@ -251,6 +267,21 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
                   "This email isn't verified by the provider. Sign in with a magic link to verify it, then connect the provider.",
               });
             }
+            // **Sanitized, not refused.** This is a provider's profile arriving mid-sign-in, and the
+            // person signing in did not choose it — see `../profile/profile.ts`. A long name is
+            // truncated, an avatar this kit will not hold becomes initials, and they get in.
+            const safe = sanitizeProfile(user);
+            if (Object.keys(safe).length > 0) return { data: { ...user, ...safe } };
+          },
+        },
+        update: {
+          // The profile gate. **Every** write to `name` or `image` passes through here — Better Auth's
+          // own `/update-user`, an adopter's route, an admin tool — because the hook is at the adapter
+          // rather than at any one door. `../profile/profile.ts` records why a validator declared
+          // beside the column would not have run: `parseUserInput` reaches the additional fields only,
+          // and these two are Better Auth's own.
+          before: async (user) => {
+            refuseUnsafeProfileFields(user);
           },
         },
       },

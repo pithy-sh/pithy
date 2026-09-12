@@ -3,9 +3,10 @@
 
 import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
-import { UnauthorizedError } from "@pithy-sh/core/src/error/pithyError";
+import { NotFoundError, UnauthorizedError } from "@pithy-sh/core/src/error/pithyError";
 import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
 import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { STORED_IMAGE_HEADERS, storedImageBytes } from "@pithy-sh/core/src/image/storedImage";
 import { TURNSTILE_LOGIN_ACTION } from "@pithy-sh/turnstile/src/config/config";
 import { turnstile } from "@pithy-sh/turnstile/src/http/middleware";
 import type { Context, Hono } from "hono";
@@ -13,6 +14,7 @@ import { correlation, emitDenied, emitDeviceRevoked, emitTokenRefresh, emitToken
 import type { AuthWiring } from "../capability";
 import { authDatabase } from "../data/tables";
 import { deleteDevice, deviceSessionTokens, listDevices } from "../device/registry";
+import { PROFILE_IMAGE_PATH } from "../profile/profile";
 import {
   consumeSession,
   findConsumedToken,
@@ -86,6 +88,10 @@ export function createAuthRoutes(wiring: AuthWiring): (app: Hono<PithyHonoEnv>) 
     app.post(`${base}/devices/revoke`, requireAuth(), csrf, zValidator("json", RevokeDeviceBody, validationHook), (c) =>
       revokeMyDevice(c, wiring, c.req.valid("json")),
     );
+
+    // The caller's own stored picture, as bytes a browser can cache. No id in the path — see
+    // `serveMyImage`, which is where the reason lives.
+    app.get(`${base}${PROFILE_IMAGE_PATH}`, requireAuth(), (c) => serveMyImage(c, wiring));
 
     // The control-plane management surface. Registered here, before the catch-all below, or it is dead.
     registerAuthAdminRoutes(wiring)(app);
@@ -322,4 +328,50 @@ async function revokeMyDevice(c: Ctx, wiring: AuthWiring, body: RevokeDeviceBody
   await deleteDevice(database, userId, deviceId);
   await emitDeviceRevoked(c.var.emit, { userId, ...correlation(c.req.raw.headers) });
   return c.json({ revoked: tokens.length });
+}
+
+/**
+ * Serve the signed-in caller's own stored picture.
+ *
+ * **There is no id in the path, and that is the security design rather than a simplification.** A
+ * serving route addressed by user id has to answer *is this caller entitled to see this person*, and
+ * this capability has no such notion — everyone signed in is a peer, so any answer it invented would be
+ * either an enumeration oracle or a guess. The subject here is the session, so there is nothing to
+ * enumerate. A roster of *other* people's faces is a tenancy question, and `@pithy-sh/organization`
+ * answers it with membership, through the same core helpers.
+ *
+ * **A vector is refused rather than served with headers.** `storedImageBytes` answers null for one and
+ * this 404s on null — so there is no arrangement of parameters that makes this origin return an SVG by
+ * navigation, which would run script in it. `@pithy-sh/core/src/image/storedImage` carries the full
+ * argument.
+ *
+ * A provider link 404s too, for the same reason it is not this origin's to serve: it is already a URL
+ * somewhere else, and `userImageSource` hands the client that URL directly rather than this path.
+ *
+ * The response is `immutable` because `userImageSource` puts the row's `updatedAt` in the query, and
+ * `private` because it was authorized against a session.
+ */
+async function serveMyImage(c: Ctx, wiring: AuthWiring): Promise<Response> {
+  const auth = c.var.auth;
+  if (!auth) throw new UnauthorizedError({ message: "Sign in to see this." });
+  // Named columns, never `select *`: this table sits beside `pithy_auth_accounts`, and a habit of
+  // widening a select on the auth schema is how a provider token reaches a log.
+  const row = await db(c, wiring)
+    .selectFrom("pithyAuthUsers")
+    .select(["image"])
+    .where("id", "=", auth.userId)
+    .executeTakeFirst();
+  const bytes = storedImageBytes(row?.image ?? null);
+  if (!bytes) {
+    // One answer for four different facts — no row, no picture, a linked one, a vector. The caller is
+    // asking about themselves, so none of them is a secret; they are one answer because the route has
+    // exactly one thing to say, which is *nothing to serve here*.
+    throw new NotFoundError({
+      message: "No picture to show.",
+      detail: `user ${auth.userId}: ${row === undefined || row.image === null ? "no stored picture" : "picture is linked or a vector, neither served by URL"}`,
+    });
+  }
+  return new Response(bytes.body as unknown as BodyInit, {
+    headers: { "content-type": bytes.type, ...STORED_IMAGE_HEADERS },
+  });
 }
