@@ -139,6 +139,10 @@ export type OrganizationOptions<Power extends string, Role extends string> = Org
    * capability's own, so a failure in any of them rolls the account back too. A function that deleted
    * for itself could not be in that transaction, and its failure mode is exactly the bug.
    *
+   * You are handed the **binding**, so build a Kysely over your own schema — `myDatabase(d1)
+   * .deleteFrom("projects")`. An earlier draft passed this capability's own handle and every adopter
+   * naming their own table had to cast it away.
+   *
    * Ordered first, so a statement may still read a membership while composing itself.
    */
   readonly onDelete?: OrganizationDeleteSweep;

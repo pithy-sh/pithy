@@ -6,7 +6,9 @@ import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types"
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import { CamelCasePlugin, Kysely } from "kysely";
 import type { MigrationProvider } from "kysely/migration";
+import { D1Dialect } from "kysely-d1";
 import { beforeEach, describe, expect, test } from "vitest";
 import { ORGANIZATION_MIGRATION_ORDER, organization_0001_init } from "../migrations/0001_init";
 import { defineRoles } from "../roles/roles";
@@ -590,6 +592,16 @@ describe("the adopter's own tenanted rows go with the account", () => {
     precisely the state the issue is about.
   */
 
+  /**
+   * A Kysely over the adopter's own schema, which is what the seam's binding is for.
+   *
+   * This is the shape the seam exists to make possible: their table names, their columns, checked by
+   * their own types rather than cast past this capability's.
+   */
+  function theirs(d1: D1Database): Kysely<{ adopterConnections: { id: string; organizationId: string } }> {
+    return new Kysely({ dialect: new D1Dialect({ database: d1 }), plugins: [new CamelCasePlugin()] });
+  }
+
   /** A table of the adopter's, keyed the way every tenanted table of theirs is. */
   async function theirTable(): Promise<void> {
     await env.DB.prepare("drop table if exists adopter_connections").run();
@@ -615,8 +627,8 @@ describe("the adopter's own tenanted rows go with the account", () => {
       .run();
     expect(await theirRows(created.organization.id)).toBe(1);
 
-    await deleteOrganization(env.DB, created.organization.id, (db, organizationId) => [
-      db.deleteFrom("adopterConnections" as never).where("organizationId" as never, "=", organizationId),
+    await deleteOrganization(env.DB, created.organization.id, (d1, organizationId) => [
+      theirs(d1).deleteFrom("adopterConnections").where("organizationId", "=", organizationId),
     ]);
 
     expect(await theirRows(created.organization.id)).toBe(0);
@@ -649,8 +661,8 @@ describe("the adopter's own tenanted rows go with the account", () => {
     });
 
     await expect(
-      deleteOrganization(failing, created.organization.id, (db, organizationId) => [
-        db.deleteFrom("adopterConnections" as never).where("organizationId" as never, "=", organizationId),
+      deleteOrganization(failing, created.organization.id, (d1, organizationId) => [
+        theirs(d1).deleteFrom("adopterConnections").where("organizationId", "=", organizationId),
       ]),
     ).rejects.toThrow();
 
@@ -687,8 +699,8 @@ describe("the adopter's own tenanted rows go with the account", () => {
       .bind(membership.id, created.organization.id)
       .run();
 
-    await deleteOrganization(env.DB, created.organization.id, (db) => [
-      db.deleteFrom("adopterConnections" as never).where("id" as never, "=", membership.id),
+    await deleteOrganization(env.DB, created.organization.id, (d1) => [
+      theirs(d1).deleteFrom("adopterConnections").where("id", "=", membership.id),
     ]);
     expect(await theirRows(created.organization.id)).toBe(0);
   });

@@ -333,9 +333,21 @@ async function changeOrganization(
   }
 }
 
-/** What an adopter contributes to a deletion: their own statements, against their own tables. */
+/**
+ * What an adopter contributes to a deletion: their own statements, against **their own** tables.
+ *
+ * **The binding, not a Kysely** — and the first version of this handed over `OrganizationDatabase`,
+ * which was wrong in a way that only showed when somebody tried to use it. That handle is typed over
+ * this capability's five tables, so an adopter naming `projects` had to cast every table name and every
+ * column to `never` to get past the compiler. A seam whose correct use requires defeating the type
+ * system is a seam that will be used incorrectly.
+ *
+ * Handed the binding, an adopter builds their own typed Kysely — `dashDatabase(d1).deleteFrom("projects")`
+ * — and gets their schema checked rather than erased. This capability only ever compiles what it is
+ * given, which is all it needs to know.
+ */
 export type OrganizationDeleteSweep = (
-  db: OrganizationDatabase,
+  d1: D1Database,
   organizationId: string,
 ) => readonly { compile(): CompiledQuery }[];
 
@@ -355,8 +367,9 @@ export type OrganizationDeleteSweep = (
  * adopter's rows behind for an account that no longer existed. For the first adopter those rows are
  * connections to customers' production Workers, so what outlived the deletion was a credential.
  *
- * `sweep` returns statements and they are appended **ahead** of this capability's own, so an adopter may
- * still read a membership while composing them. Because they join the batch rather than running after it,
+ * `sweep` is handed the **binding** so an adopter can build a Kysely over their own schema, and returns
+ * statements that are appended **ahead** of this capability's own — so one may still name a membership
+ * this batch is about to remove. Because they join the batch rather than running after it,
  * a failure in any one of them rolls the account back too — which is the only arrangement in which "the
  * account is gone" and "its data is gone" cannot come apart. A callback after the delete would be a
  * second failure point whose failure mode is exactly the bug.
@@ -387,7 +400,7 @@ export async function deleteOrganization(
   await withD1Retry(() =>
     d1.batch([
       // The adopter's, first — they may name a membership this batch is about to remove.
-      ...(sweep?.(db, organizationId) ?? []).map((query) => compile(d1, query)),
+      ...(sweep?.(d1, organizationId) ?? []).map((query) => compile(d1, query)),
       compile(d1, db.deleteFrom(ACTING_TABLE).where("organizationId", "=", organizationId)),
       compile(d1, db.deleteFrom(OWNERSHIP_NOMINATIONS_TABLE).where("organizationId", "=", organizationId)),
       compile(d1, db.deleteFrom(INVITATIONS_TABLE).where("organizationId", "=", organizationId)),

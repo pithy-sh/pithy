@@ -66,13 +66,14 @@ So hand it the statements:
 ```ts
 organization({
   roles,
-  onDelete: (db, organizationId) => [
-    db.deleteFrom("connections").where("organizationId", "=", organizationId),
-    db.deleteFrom("environments").where("organizationId", "=", organizationId),
-    db.deleteFrom("projects").where("organizationId", "=", organizationId),
+  // You are handed the binding, so this is *your* Kysely and your schema is type-checked.
+  onDelete: (d1, organizationId) => [
+    myDatabase(d1).deleteFrom("projects").where("organizationId", "=", organizationId),
   ],
 })
 ```
+
+Name only the head of each chain — a foreign key between two tables of *yours* still cascades, and that is the case the boundary rule was never about.
 
 **Statements, not work.** They join the same `d1.batch` as this capability's own deletes, so a failure anywhere rolls all of it back — the account and your rows end together or neither does. A function that deleted for itself could not be in that transaction, and what it would leave behind on a bad day is exactly the state this seam exists to prevent.
 
