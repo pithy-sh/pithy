@@ -111,23 +111,38 @@ export const organization_0001_init: Migration = {
     /*
       **One live offer per address, as a constraint rather than as care in a handler.**
 
-      `invite()` supersedes a standing offer before writing a new one, and that is two statements. Two
-      concurrent invitations to one mailbox — a double-clicked button, a retried POST — both find nothing
-      to supersede and both insert, and the account then holds two live tokens for one person. Withdrawing
-      the one a pane happens to show is then a revoke that does not revoke: whichever copy the recipient
-      kept still works, for the whole remaining TTL.
+      `invite()` supersedes a standing offer and mints the new one in a single `d1.batch`, so that path is
+      atomic on its own. This is the backstop underneath it: a property of the table, so it holds for a
+      writer that never came through there — a bulk invite, an admin tool, a repair script. Two live
+      tokens for one mailbox would make withdrawing the one a pane happens to show a revoke that does not
+      revoke, because whichever copy the recipient kept still works for the rest of its TTL.
 
       Partial, on `status = 'pending'`, because the whole point is that spent and withdrawn offers
       accumulate as history — a plain unique index would refuse the second invitation anybody ever sent to
       an address, which is a legitimate act.
 
-      Written as raw SQL because Kysely's `createIndex` has no partial-index builder. The identifiers are
-      snake_case here rather than camelCase for the same reason: `CamelCasePlugin` rewrites what the query
-      builder emits, and this string goes past it.
+      **This was raw SQL, on the stated grounds that Kysely has no partial-index builder. It has one** —
+      `CreateIndexBuilder.where`, whose own documentation says it "effectively turns the index partial" —
+      and the claim was wrong when it was written. Going through the builder means `CamelCasePlugin`
+      renders the identifiers, so the names here are camelCase like every other index in this file rather
+      than the one snake_case string somebody had to remember to keep in step with the columns.
+
+      Kysely's doc for `where` names PostgreSQL and MS SQL Server; SQLite supports partial indexes too and
+      the SQLite compiler emits the clause. `migrations.workers.test.ts` asserts this index exists by name
+      and `invite/invite.workers.test.ts` asserts what its partial-ness buys — a second offer to an
+      address whose first was canceled — so both halves are held by a test rather than by that sentence.
     */
-    await sql`create unique index "pithy_organization_invitations_one_live_idx" on "pithy_organization_invitations" ("organization_id", "email") where "status" = 'pending'`.execute(
-      db,
-    );
+    await db.schema
+      .createIndex("pithyOrganizationInvitationsOneLiveIdx")
+      .unique()
+      .on("pithyOrganizationInvitations")
+      .columns(["organizationId", "email"])
+      // `sql.ref`, not the plain string. `CreateIndexBuilder` narrows its column type from `.columns()`,
+      // so a bare `"status"` is refused as "not one of the indexed columns" — which is a limitation of
+      // the type rather than of partial indexes, since the whole point is to filter on a column that is
+      // not in the key. The documented overload takes an expression, and the emitted SQL is identical.
+      .where(sql.ref("status"), "=", "pending")
+      .execute();
 
     await db.schema
       .createTable("pithyOrganizationOwnershipNominations")
@@ -168,6 +183,27 @@ export const organization_0001_init: Migration = {
   },
 
   down: async (db: Kysely<unknown>): Promise<void> => {
+    /*
+      **Every index this migration creates is dropped, in reverse.**
+
+      SQLite takes an index with the table it is on, so the six below are redundant against the five
+      drops that follow — and they are here anyway, because every other capability in this kit writes its
+      `down` as the inverse of its `up`, index for index. `@pithy-sh/auth`, `@pithy-sh/audit`,
+      `@pithy-sh/payments`, `@pithy-sh/support` and nine more all do; this file and `@pithy-sh/secrets`
+      were the two that did not, which made them look considered rather than overlooked.
+
+      Redundancy is also the cheaper side to be wrong on. The day a `down` here stops dropping a table —
+      a column moved to its own table, a drop reordered — an index left behind is a name that collides on
+      the next `up`, and `up after down is clean` is the test that would have to catch it. This makes it
+      not arise.
+    */
+    await db.schema.dropIndex("pithyOrganizationActingOrgIdx").ifExists().execute();
+    await db.schema.dropIndex("pithyOrganizationOwnershipNominationsMembershipIdx").ifExists().execute();
+    await db.schema.dropIndex("pithyOrganizationInvitationsOneLiveIdx").ifExists().execute();
+    await db.schema.dropIndex("pithyOrganizationInvitationsOrgStatusIdx").ifExists().execute();
+    await db.schema.dropIndex("pithyOrganizationMembershipsOrgRoleIdx").ifExists().execute();
+    await db.schema.dropIndex("pithyOrganizationMembershipsUserIdx").ifExists().execute();
+
     // Children first, and the acting rows before the organizations they name — the reverse of the
     // order above, so a partial `down` on a database D1 cannot roll back leaves nothing pointing at a
     // table that is already gone.

@@ -951,7 +951,8 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
         // nothing has been minted yet rather than one statement later with an unsendable offer on disk.
         invitationAcceptUrl(config, "preflight");
 
-        const minted = await invite(database, catalog, {
+        // The binding, not the database: superseding and minting are one transaction — `invite()` says why.
+        const minted = await invite(d1(c), catalog, {
           organizationId: acting.organizationId,
           email: body.email,
           role: body.role as Role,

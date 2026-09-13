@@ -91,7 +91,7 @@ beforeEach(async () => {
 
 /** Mint one offer, with everything uninteresting left at a sensible default. */
 async function offer(seed: { email?: string; role?: "member" | "admin"; now?: Date; organizationId?: string } = {}) {
-  return await invite(db, catalog, {
+  return await invite(env.DB, catalog, {
     organizationId: seed.organizationId ?? ORG,
     email: seed.email ?? "Ada@Example.com",
     role: seed.role ?? "member",
@@ -130,7 +130,7 @@ describe("invite", () => {
     // `owner` is a declared role. It is excluded from assignment because ownership moves by a two-party
     // transfer, and this is the door that would otherwise hand it over in one call.
     const error = await refusal(() =>
-      invite(db, catalog, {
+      invite(env.DB, catalog, {
         organizationId: ORG,
         email: "ada@example.com",
         // Deliberately cast: the type already refuses this, and the runtime has to as well for the day
@@ -147,7 +147,7 @@ describe("invite", () => {
 
   test("refuses a role no catalog declares, with the same refusal as an excluded one", async () => {
     const unknown = await refusal(() =>
-      invite(db, catalog, {
+      invite(env.DB, catalog, {
         organizationId: ORG,
         email: "ada@example.com",
         role: "sysadmin" as "member",
@@ -223,7 +223,7 @@ describe("one live offer per address", () => {
       'pending'` means one of the two loses, and the rule stops depending on whoever writes the handler.
     */
     const settled = await Promise.allSettled([
-      invite(db, catalog, {
+      invite(env.DB, catalog, {
         organizationId: ORG,
         email: "ada@example.com",
         role: "member",
@@ -231,7 +231,7 @@ describe("one live offer per address", () => {
         ttlDays: TTL_DAYS,
         now: NOW,
       }),
-      invite(db, catalog, {
+      invite(env.DB, catalog, {
         organizationId: ORG,
         email: "ada@example.com",
         role: "member",
@@ -757,5 +757,97 @@ describe("the refusals are one refusal", () => {
     const details = refusals.map((error) => error.payload.detail);
     expect(new Set(details).size).toBe(refusals.length);
     for (const detail of details) expect(detail).toBeTruthy();
+  });
+});
+
+describe("two invitations to one mailbox at once", () => {
+  test("**leave one live offer, not two** — the supersede and the mint are one transaction", async () => {
+    // The double-clicked Send, and the retried POST. These were two awaits: both calls found nothing to
+    // supersede, both inserted, and the account held two live tokens for one person. Withdrawing the one
+    // a pane happened to show was then a revoke that did not revoke.
+    const both = await Promise.allSettled([offer({ email: "ada@example.com" }), offer({ email: "ada@example.com" })]);
+
+    // One may lose to the index underneath — that is the backstop working, not a second defect — but at
+    // least one has to have written an offer, or this asserts nothing about a table nobody wrote to.
+    expect(both.some((settled) => settled.status === "fulfilled")).toBe(true);
+
+    const live = await db
+      .selectFrom(INVITATIONS_TABLE)
+      .select(["id", "tokenDigest"])
+      .where("organizationId", "=", ORG)
+      .where("email", "=", "ada@example.com")
+      .where("status", "=", "pending")
+      .execute();
+    expect(live).toHaveLength(1);
+
+    /*
+      And the offer that is live is one somebody was handed a token for.
+
+      **Which of the two wins is not asserted, because it is not knowable and not the invariant.** Both
+      calls can succeed — the later batch supersedes the earlier one's row, which is the ordinary
+      behavior arriving out of order rather than a defect. What must be true is that the surviving row
+      is one of the two that were minted: a live offer nobody holds a token for would be an invitation
+      that can never be accepted and never be withdrawn from the pane that lists it.
+    */
+    const minted = both.flatMap((settled) => (settled.status === "fulfilled" ? [settled.value.invitation.id] : []));
+    expect(minted).toContain(live[0]?.id);
+  });
+
+  test("**the supersede and the mint reach D1 as one batch** — which is what makes them one act", async () => {
+    /*
+      **The assertion that actually bites, and the first one here did not.**
+
+      "One live offer" was already true before this change: the partial unique index refuses the second
+      insert, so the old two-statement shape produced one row too. Planting the old shape back left the
+      count assertion green, which is a test that describes the outcome without testing the change.
+
+      What batching fixes is the *failure*: without it, the loser of the race gets a raw constraint
+      violation — a 500 on a double-clicked Send — instead of a supersede. With it, two batches serialize,
+      the later cancels the earlier's row, and both callers get the offer they asked for.
+
+      That race is not deterministic at this level, so it is not what is asserted. The structural fact
+      under it is: the two statements leave here together or not at all. A spy on the binding is how that
+      is observed, and it fails the moment somebody splits them again.
+    */
+    const batches: number[] = [];
+    const watched = new Proxy(env.DB, {
+      get(target, property, receiver) {
+        if (property === "batch") {
+          return (statements: unknown[]) => {
+            batches.push(statements.length);
+            return (target as D1Database).batch(statements as never);
+          };
+        }
+        return Reflect.get(target, property, receiver) as unknown;
+      },
+    }) as D1Database;
+
+    await invite(watched, catalog, {
+      organizationId: ORG,
+      email: "ada@example.com",
+      role: "member",
+      invitedByUserId: INVITER,
+      ttlDays: TTL_DAYS,
+      now: NOW,
+    });
+
+    expect(batches).toEqual([2]);
+  });
+
+  test("a second invitation after the first has settled still supersedes it", async () => {
+    // Sequential, which is the ordinary path — the transaction must not have made superseding conditional
+    // on losing a race.
+    const first = await offer({ email: "ada@example.com" });
+    const second = await offer({ email: "ada@example.com" });
+
+    const rows = await db
+      .selectFrom(INVITATIONS_TABLE)
+      .select(["id", "status"])
+      .where("organizationId", "=", ORG)
+      .where("email", "=", "ada@example.com")
+      .execute();
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.id === first.invitation.id)?.status).toBe("canceled");
+    expect(rows.find((row) => row.id === second.invitation.id)?.status).toBe("pending");
   });
 });

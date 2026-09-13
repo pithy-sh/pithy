@@ -9,6 +9,7 @@ import * as ledger from "@pithy-sh/ledger/src/http/schemas";
 import * as matchmaking from "@pithy-sh/matchmaking/src/http/schemas";
 import * as media from "@pithy-sh/media/src/http/schemas";
 import * as multiplayer from "@pithy-sh/multiplayer/src/http/schemas";
+import * as organization from "@pithy-sh/organization/src/http/schemas";
 import * as payments from "@pithy-sh/payments/src/http/schemas";
 import * as rating from "@pithy-sh/rating/src/http/schemas";
 import * as secrets from "@pithy-sh/secrets/src/http/schemas";
@@ -53,6 +54,7 @@ export const EVERY_REQUEST_SCHEMA_MODULE: readonly object[] = [
   matchmaking,
   media,
   multiplayer,
+  organization,
   payments,
   rating,
   secrets,

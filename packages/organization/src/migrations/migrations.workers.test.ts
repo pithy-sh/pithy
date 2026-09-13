@@ -88,11 +88,19 @@ describe("down", () => {
     // cannot roll back must leave nothing pointing at a table that is already gone — so the acting rows
     // and the nominations go before the organizations and memberships they reference.
     const dropped: string[] = [];
+    const indexes: string[] = [];
+    const chain = { ifExists: () => ({ execute: async () => {} }) };
     const recording = {
       schema: {
         dropTable(name: string) {
           dropped.push(name);
-          return { ifExists: () => ({ execute: async () => {} }) };
+          return chain;
+        },
+        // Recorded separately, and it must be *recorded*: a stub that knew only `dropTable` threw the
+        // moment the `down` grew index drops, which is the right failure and the wrong sentence.
+        dropIndex(name: string) {
+          indexes.push(name);
+          return chain;
         },
       },
     } as unknown as Kysely<unknown>;
@@ -104,6 +112,16 @@ describe("down", () => {
       "pithyOrganizationInvitations",
       "pithyOrganizationMemberships",
       "pithyOrganizationOrganizations",
+    ]);
+    // Every index, before any table — the inverse of the `up`, which is the shape every capability in
+    // this kit writes. `cli/src/migrations/downIsTheInverse.test.ts` holds that across all of them.
+    expect(indexes).toEqual([
+      "pithyOrganizationActingOrgIdx",
+      "pithyOrganizationOwnershipNominationsMembershipIdx",
+      "pithyOrganizationInvitationsOneLiveIdx",
+      "pithyOrganizationInvitationsOrgStatusIdx",
+      "pithyOrganizationMembershipsOrgRoleIdx",
+      "pithyOrganizationMembershipsUserIdx",
     ]);
   });
 

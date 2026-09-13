@@ -126,10 +126,11 @@ export interface MintedInvitation {
  * insert.
  */
 export async function invite<Power extends string, Role extends string>(
-  db: OrganizationDatabase,
+  d1: D1Database,
   catalog: RoleCatalog<Power, Role>,
   options: InviteOptions<Role>,
 ): Promise<MintedInvitation> {
+  const db = organizationDatabase(d1);
   const email = normalizeAddress(options.email);
 
   const role = catalog.AssignableRole.safeParse(options.role);
@@ -140,17 +141,6 @@ export async function invite<Power extends string, Role extends string>(
       detail: `role ${JSON.stringify(options.role)} is not in the catalog's assignable set (${catalog.assignableRoles.join(", ")})`,
     });
   }
-
-  // Supersede, rather than leave two live tokens for one mailbox. Unconditional on expiry: an expired
-  // pending row cannot be redeemed anyway, and moving it to `canceled` keeps "what is outstanding"
-  // answerable by status alone.
-  await db
-    .updateTable(INVITATIONS_TABLE)
-    .set({ status: "canceled" })
-    .where("organizationId", "=", options.organizationId)
-    .where("email", "=", email)
-    .where("status", "=", "pending")
-    .execute();
 
   const token = (options.mintToken ?? mintInvitationToken)();
   const invitation: Invitation = {
@@ -165,7 +155,42 @@ export async function invite<Power extends string, Role extends string>(
     acceptedAt: null,
     createdAt: options.now,
   };
-  await db.insertInto(INVITATIONS_TABLE).values(Invitation.encode(invitation)).execute();
+  /*
+    **Supersede and mint in one `d1.batch`, which D1 runs as a transaction.**
+
+    These were two awaits, and two concurrent invitations to one mailbox — a double-clicked button, a
+    retried POST — both found nothing to supersede and both inserted. The account then held two live
+    tokens for one person, and withdrawing the one a pane happened to show was a revoke that did not
+    revoke: whichever copy the recipient kept still worked for the rest of its TTL.
+
+    One batch makes "replace the standing offer" a single act, which is the same shape and the same
+    reason `acceptInvitation` below takes the binding rather than the database. Taking `D1Database` here
+    is the second of the two asymmetries in this module, and the note on that function explains why a
+    transaction cannot be got out of a Kysely instance that never had one.
+
+    The cancel is unconditional on expiry: an expired pending row cannot be redeemed anyway, and moving
+    it to `canceled` keeps "what is outstanding" answerable by status alone.
+  */
+  const supersede = db
+    .updateTable(INVITATIONS_TABLE)
+    .set({ status: "canceled" })
+    .where("organizationId", "=", options.organizationId)
+    .where("email", "=", email)
+    .where("status", "=", "pending");
+  const mint = db.insertInto(INVITATIONS_TABLE).values(Invitation.encode(invitation));
+
+  /*
+    **The partial unique index stays underneath this, and it is not redundant.**
+
+    `pithy_organization_invitations_one_live_idx` is a property of the database, so it holds for a writer
+    that never came through here — a bulk invite, an admin tool, a repair script. A transaction makes
+    *this* path atomic; the index is what makes the invariant true of the table.
+
+    A violation reaching here means such a writer exists and raced us, so it is reported as itself rather
+    than swallowed: the caller learns the offer was not written, which is true, instead of being handed a
+    token that is not the live one.
+  */
+  await withD1Retry(() => d1.batch([prepared(d1, supersede.compile()), prepared(d1, mint.compile())]));
 
   return { invitation, token };
 }
