@@ -206,10 +206,22 @@ export interface SanitizedProfile {
  */
 export function sanitizeProfile(fields: { name?: unknown; image?: unknown }): SanitizedProfile {
   const sanitized: { name?: string; image?: string | null } = {};
-  if (typeof fields.name === "string" && !DisplayName.safeParse(fields.name).success) {
-    // Truncated rather than dropped: Better Auth's user model requires a name, and an empty one is a
-    // row every roster renders as a blank. A slice of a long name is still recognisably them.
-    sanitized.name = fields.name.slice(0, MAX_DISPLAY_NAME_CHARS) || "—";
+  if (fields.name !== undefined && !DisplayName.safeParse(fields.name).success) {
+    /*
+      **Every value that is not a name, not only the long ones.**
+
+      The guard was `typeof fields.name === "string" && …`, so a `name` that arrived as a number or an
+      object failed the first clause and was neither truncated nor replaced — it fell through untouched
+      and was spread into the row by the `create.before` hook. The `image` branch below never had that
+      gap, because `UserImage.safeParse` fails for any non-string, and `refuseUnsafeProfile` covers the
+      update path. This was the one way in that did not.
+
+      Truncated rather than dropped where there is something to truncate: Better Auth's user model
+      requires a name, and an empty one is a row every roster renders as a blank. A slice of a long name
+      is still recognisably them; a value that was never a string has nothing to slice, so it becomes the
+      same placeholder an empty slice would.
+    */
+    sanitized.name = typeof fields.name === "string" ? fields.name.slice(0, MAX_DISPLAY_NAME_CHARS) || "—" : "—";
   }
   if (fields.image !== undefined && fields.image !== null && !UserImage.safeParse(fields.image).success) {
     sanitized.image = null;

@@ -156,7 +156,7 @@ They are two settings because they are two things: one is where this capability'
 | `DELETE {base}/current/invitations/:invitationId` | Withdraw an offer | session | `organization:manage` |
 | `GET {base}/invitations/:token` | What an invitation is offering, for the accept screen | public | — |
 | `POST {base}/invitations/accept` | Accept one, as the address it names | session | — |
-| `POST {base}/current/ownership` | Offer ownership to a member | session | holding the account, or — where nobody does — volunteering yourself |
+| `POST {base}/current/ownership` | Offer ownership to a member | session | holding the account, or — where nobody does — volunteering yourself, if you administer it |
 | `DELETE {base}/current/ownership` | Withdraw the standing offer | session | holding the account, or the offer being your own |
 | `POST {base}/ownership/accept` | Accept ownership, and become the one who pays | session | — |
 | `GET {base}/marks/organization/:organizationId` | An organization's stored mark, cacheable | session | — (membership) |

@@ -494,6 +494,27 @@ export async function acceptInvitation<Power extends string, Role extends string
         { cause },
       );
     }
+    /*
+      **The offer is spent here, and it was not before.**
+
+      `d1.batch` is a transaction, so the collision that brought us into this catch rolled the whole
+      batch back — including the `update … set status = 'accepted'` beside the insert. The row is still
+      `pending`. Reporting `accepted(invitation, …)` on top of that told the caller and the audit trail
+      that an offer had been consumed while it sat live in `listInvitations`, redeemable for the rest of
+      its TTL, with this module's own rule — *"consume the offer anyway, so no live token is left
+      pointing at an account this person is already in"* — stated and not held.
+
+      Conditional on `pending`, so the concurrent redemption that beat us here is not overwritten, and
+      unguarded on its result: if it matched nothing the other call has already spent it, which is the
+      same end state.
+    */
+    await db
+      .updateTable(INVITATIONS_TABLE)
+      .set({ status: "accepted", acceptedAt: SQLiteDate.encode(options.now) })
+      .where("id", "=", invitation.id)
+      .where("status", "=", "pending")
+      .execute();
+
     return {
       invitation: accepted(invitation, options.now),
       membershipId: settled.id,

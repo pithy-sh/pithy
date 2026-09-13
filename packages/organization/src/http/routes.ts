@@ -130,7 +130,7 @@ import {
  * | `DELETE {base}/current/invitations/:id`        | session        | `organization:manage` | param `InvitationParam`        |
  * | `GET    {base}/invitations/:token`             | public         | —                     | param `InvitationTokenParam`   |
  * | `POST   {base}/invitations/accept`             | session        | —                     | json `AcceptInvitation`        |
- * | `POST   {base}/current/ownership`              | session        | `billing:manage`      | json `NominateOwner`           |
+ * | `POST   {base}/current/ownership`              | session        | holder, or administers | json `NominateOwner`          |
  * | `DELETE {base}/current/ownership`              | session        | holder, or unheld     | none                           |
  * | `POST   {base}/ownership/accept`               | session        | —                     | none                           |
  * | `GET    {base}/marks/organization/:id`         | session        | — (membership)        | param `OrganizationMarkParam`  |
@@ -252,7 +252,7 @@ export const ORGANIZATION_ROUTES: readonly OrganizationRouteDeclaration[] = [
 
     What replaces it is the rule `ownership.ts` already held, which is conditional in a way a power
     cannot be: while somebody holds the account only they hand it on or take an offer back, and while
-    nobody does, anybody in it may volunteer themselves and appoint nobody else. On a held account that
+    nobody does, somebody who already administers it may volunteer themselves and appoint nobody else. On a held account that
     is *stronger* than the power it replaced, because it names the holder rather than a power the holder
     happens to have.
 
@@ -1240,9 +1240,18 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
             repair it.
 
             `nominate` already holds the real rule, and it is conditional in a way a power cannot be:
-            while somebody holds the account only they hand it on, and while nobody does anybody in it
-            may volunteer themselves and appoint nobody else. That is stronger than `billing:manage`
-            where an account is held, and it is the only thing that works where it is not.
+            while somebody holds the account only they hand it on, and while nobody does, somebody who
+            already **administers** it may volunteer themselves and appoint nobody else. That is stronger
+            than `billing:manage` where an account is held, and it is the only thing that works where it
+            is not — `founderRole` is an administering role, so a fresh account always has somebody who
+            can take it on.
+
+            **The administering half was missing and it was an escalation.** "Anybody in it may
+            volunteer" meant any member of any account that had never transferred, which is every account
+            from the moment it is founded; two requests took a reader to `members:manage`,
+            `billing:manage` and `organization:delete`, irreversibly, because the conferred role is
+            unassignable and so cannot be demoted, removed or left. The rule lives in `nominate` rather
+            than as middleware here so that an adopter calling the store directly gets it too.
           */
           const nomination = await nominate(db(c), catalog, {
             organizationId: acting.organizationId,

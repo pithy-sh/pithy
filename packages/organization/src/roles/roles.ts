@@ -151,6 +151,19 @@ function refuse(message: string, action: string, detail: string): never {
 }
 
 /**
+ * What one role holds, or nothing at all.
+ *
+ * `Object.hasOwn` rather than a bare index, so a name that happens to exist on `Object.prototype` is
+ * absent here exactly as any other undeclared name is. See the note at the accessors that call it.
+ */
+function held<Power extends string, Role extends string>(
+  matrix: Record<Role, readonly Power[]>,
+  role: Role,
+): readonly Power[] {
+  return Object.hasOwn(matrix, role) ? matrix[role] : [];
+}
+
+/**
  * Declare this project's roles and the powers they hold.
  *
  * Validated here, at the moment the constant is written, rather than at the first refusal. Everything
@@ -292,13 +305,23 @@ export function defineRoles<const Power extends string = never, const Role exten
     roles,
     administrativePower: input.administrativePower,
     assignableRoles,
-    // Total in the role, deliberately. The types say a role is one of the declared names, and D1 says
-    // it is text — so a row written past a bug, or by a build that knew a role this one does not, would
-    // otherwise throw here. **Unknown holds nothing**, which denies; the caller that wants a refusal
-    // with a reason parses through `Role` first, and `acting` does exactly that.
-    powersOf: (role) => input.roles[role] ?? [],
-    roleAllows: (role, power) => (input.roles[role] ?? []).includes(power),
-    administers: (role) => (input.roles[role] ?? []).includes(input.administrativePower),
+    /*
+      Total in the role, deliberately. The types say a role is one of the declared names, and D1 says it
+      is text — so a row written past a bug, or by a build that knew a role this one does not, would
+      otherwise throw here. **Unknown holds nothing**, which denies; the caller that wants a refusal with
+      a reason parses through `Role` first, and `acting` does exactly that.
+
+      **`held` rather than `input.roles[role] ?? []`, and the difference is not pedantry.** That
+      expression reaches `Object.prototype` for `"toString"`, `"constructor"`, `"valueOf"` and their
+      neighbors — the lookup finds a *function*, `??` does not fire because the value is not nullish,
+      and `.includes` throws a `TypeError`. Every role name inside this package is decoded through `Role`
+      first so it was unreachable here, but the catalog is the adopter's to call directly and
+      `catalog.roleAllows(someRole, power)` from their own handler is the advertised use. A gate that
+      throws where it documents a denial is the wrong failure for an authorization question.
+    */
+    powersOf: (role) => held(input.roles, role),
+    roleAllows: (role, power) => held(input.roles, role).includes(power),
+    administers: (role) => held(input.roles, role).includes(input.administrativePower),
     Role: asEnum(roles).describe(
       "One of this project's declared roles, as `defineRoles` named them. Decoded off a membership row, never asserted — a value this catalog does not know refuses rather than falling through the matrix.",
     ) as z.ZodEnum<Record<Role, Role>>,

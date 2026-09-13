@@ -259,3 +259,25 @@ describe("the literal types flow through", () => {
     >();
   });
 });
+
+describe("a role name that is also a property of Object.prototype", () => {
+  test("**denies, rather than throwing** — which is what the accessors document", () => {
+    // `input.roles["toString"]` finds `Object.prototype.toString`, a function, so `?? []` never fired
+    // and `.includes` threw a TypeError. Every role name inside this package is decoded through `Role`
+    // first, so it was unreachable here — but the catalog is the adopter's to call directly, and a gate
+    // that throws where it documents a denial is the wrong failure for an authorization question.
+    for (const hostile of ["toString", "constructor", "valueOf", "hasOwnProperty"]) {
+      const role = hostile as "member";
+      expect(() => dashboard.powersOf(role), hostile).not.toThrow();
+      expect(dashboard.powersOf(role), hostile).toEqual([]);
+      expect(dashboard.roleAllows(role, "organization:read"), hostile).toBe(false);
+      expect(dashboard.administers(role), hostile).toBe(false);
+    }
+  });
+
+  test("and a declared role is unaffected, so the fix did not deny everything", () => {
+    expect(dashboard.administers("admin")).toBe(true);
+    expect(dashboard.administers("member")).toBe(false);
+    expect(dashboard.roleAllows("member", "organization:read")).toBe(true);
+  });
+});

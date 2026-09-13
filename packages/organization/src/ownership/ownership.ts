@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types";
+import type { D1Database, D1PreparedStatement, D1Result } from "@cloudflare/workers-types";
 import { SQLiteDate } from "@pithy-sh/core/src/data/codecs";
 import { withD1Retry } from "@pithy-sh/core/src/data/withD1Retry";
 import type { CompiledQuery } from "kysely";
@@ -70,7 +70,7 @@ import type { RoleCatalog } from "../roles/roles";
  * capability that let a power-holder do it would let two administrators pass an account between
  * themselves over the head of the person who signed for it.
  *
- * **While nobody holds it, anybody in the account may volunteer — themselves, and nobody else.** That is
+ * **While nobody holds it, somebody who administers it may volunteer — themselves, and nobody else.** That is
  * not a hole in the two-party rule: it is a person taking on an obligation, which is exactly the consent
  * the rule exists to require. What it refuses is somebody *else* volunteering them, and the refusal is
  * load-bearing rather than decorative: an administrator who could nominate a colleague could invite a
@@ -284,14 +284,47 @@ export async function nominate<Power extends string, Role extends string>(
       detail: `membership ${options.membershipId} is not in organization ${options.organizationId}`,
     });
   }
-  // **While nobody holds it, you may volunteer and may not appoint.** Reachable only in an unheld
-  // account — the rule above refused a non-holder otherwise.
-  if (holders.length === 0 && nominee.userId !== options.nominatedByUserId) {
-    throw new OrganizationForbiddenError({
-      message: "You cannot hand this organization to somebody else.",
-      action: "Take it on yourself, or wait until somebody holds it and ask them.",
-      detail: `user ${options.nominatedByUserId} may nominate only themselves while organization ${options.organizationId} has no holder of ${options.roles.confers}`,
-    });
+  /*
+    **While nobody holds it, somebody who administers it may volunteer, and may appoint nobody.**
+
+    Reachable only in an unheld account — the rule above refused a non-holder otherwise. Two conditions,
+    and the second was missing.
+
+    *You may not appoint.* An administrator who could nominate a colleague could invite a fourth party
+    and install them as the holder of an account that belongs to neither of them.
+
+    *And you must already administer.* `founderRole` gives the founder the first **assignable**
+    administering role while the conferred role is unassignable by definition, so every account is
+    ownerless from the moment it is founded and stays so until somebody completes a transfer. "Anybody in
+    it may volunteer" therefore meant *any member of almost every account* — and since
+    {@link requireTransferableRoles} guarantees the conferred role administers, that self-transfer took
+    a reader with `organization:read` to `members:manage`, `billing:manage` and `organization:delete` in
+    two requests. It could not be undone either: the conferred role is unassignable, so demote, remove
+    and leave all refuse it, and the founder had no route that reversed it.
+
+    Requiring the volunteer to administer closes that without closing the account: `founderRole` is
+    defined as an administering role, so a fresh account always has somebody who can take it on. That is
+    the condition the `billing:manage` gate this replaced could not meet — that power is held by the
+    conferred role and by nothing else, so it demanded the owner the account does not yet have.
+  */
+  if (holders.length === 0) {
+    if (nominee.userId !== options.nominatedByUserId) {
+      throw new OrganizationForbiddenError({
+        message: "You cannot hand this organization to somebody else.",
+        action: "Take it on yourself, or wait until somebody holds it and ask them.",
+        detail: `user ${options.nominatedByUserId} may nominate only themselves while organization ${options.organizationId} has no holder of ${options.roles.confers}`,
+      });
+    }
+    // The volunteer's own role — this branch has already proved the nominee *is* the nominator, so the
+    // row read above is theirs and no second query is needed.
+    const volunteer = catalog.Role.safeParse(nominee.role);
+    if (!volunteer.success || !catalog.administers(volunteer.data)) {
+      throw new OrganizationForbiddenError({
+        message: "Only somebody who runs this organization can take it on.",
+        action: `Ask an ${options.roles.demotesTo} of this organization to take it on.`,
+        detail: `user ${options.nominatedByUserId} holds ${nominee.role}, which does not administer organization ${options.organizationId}, so they may not volunteer for ${options.roles.confers}`,
+      });
+    }
   }
   if (nominee.role === options.roles.confers) {
     throw new OrganizationNominationInvalidError({
@@ -520,8 +553,23 @@ export async function acceptNomination<Power extends string, Role extends string
     ),
   );
 
-  const written = await withD1Retry(() => d1.batch(statements));
-  const spent = written.at(-1);
+  const written = await withD1Retry<D1Result<unknown>[] | undefined>(() => d1.batch(statements));
+  /*
+    **`undefined` is `withD1Retry`'s idempotency guard, and it has to be read before `.at`.**
+
+    That wrapper returns `undefined as T` when a unique-constraint failure lands on a *retry* — it reads
+    that as "my own earlier attempt committed before its transport hiccup". Dereferencing the result
+    without checking turned a transient `database is locked` followed by a constraint failure into
+    `Cannot read properties of undefined`, a 500 where the intended answer is the refusal below. Every
+    sibling batch in this package already guards it — `members.ts`'s `endMembership`, `invite.ts`,
+    `provision.ts` — and this was the one that did not.
+
+    Treated as *not spent*, deliberately. The guard's inference is sound where the colliding key is the
+    row this call is creating; here the batch's last statement is a conditional delete of a nomination,
+    which collides with nothing, so an `undefined` means the transfer did not demonstrably happen. The
+    caller is told the offer was not theirs to accept, which is the safe direction.
+  */
+  const spent = written?.at(-1);
   if (spent?.meta?.changes !== 1) {
     // Withdrawn, or replaced with somebody else, between the read and the write. The batch rolled back,
     // so nothing moved — and the caller is told the offer is not theirs to accept, which is now true.

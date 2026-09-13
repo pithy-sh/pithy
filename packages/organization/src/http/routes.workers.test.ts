@@ -1029,6 +1029,67 @@ describe("an unowned account acquiring an owner, through the routes and not the 
     passing, the very fact that made the HTTP path impossible.
   */
 
+  test("**a member cannot volunteer, so two requests do not turn a reader into an owner**", async () => {
+    /*
+      The escalation, over HTTP, because that is how it was reachable.
+
+      Every account is ownerless from the moment it is founded — `founderRole` gives the first
+      *assignable* administering role and the conferred one is unassignable — so "while nobody holds it,
+      anybody in it may volunteer" applied to every member of almost every account. `POST
+      /current/ownership` carries no power gate by design, so a plain member with `organization:read`
+      reached `members:manage`, `billing:manage` and `organization:delete` in two calls, irreversibly:
+      the conferred role cannot be demoted, removed or left.
+    */
+    const founded = await call("POST", BASE, {
+      as: CAI,
+      session: "session_cai",
+      body: { name: "Cai's Studio", slug: "cai-studio" },
+    });
+    const { organization } = await json<{ organization: { id: string } }>(founded);
+    await call("POST", `${BASE}/acting`, {
+      as: CAI,
+      session: "session_cai",
+      body: { organizationId: organization.id },
+    });
+
+    // A plain member of the account Cai just founded.
+    const mallory = await db()
+      .insertInto(MEMBERSHIPS_TABLE)
+      .values(
+        Membership.encode({
+          id: crypto.randomUUID(),
+          organizationId: organization.id,
+          userId: BOB,
+          role: "member",
+          createdAt: NOW,
+        }),
+      )
+      .returning("id")
+      .executeTakeFirstOrThrow();
+    await call("POST", `${BASE}/acting`, {
+      as: BOB,
+      session: "session_bob",
+      body: { organizationId: organization.id },
+    });
+
+    const volunteered = await call("POST", `${BASE}/current/ownership`, {
+      as: BOB,
+      session: "session_bob",
+      body: { membershipId: mallory.id },
+    });
+    expect(volunteered.status).toBe(403);
+
+    // And nothing was written, so the second request has nothing to accept.
+    const accepted = await call("POST", `${BASE}/ownership/accept`, { as: BOB, session: "session_bob" });
+    expect(accepted.status).not.toBe(200);
+    const after = await db()
+      .selectFrom(MEMBERSHIPS_TABLE)
+      .select("role")
+      .where("id", "=", mallory.id)
+      .executeTakeFirstOrThrow();
+    expect(after.role).toBe("member");
+  });
+
   test("a founder volunteers and accepts, with nobody holding the account", async () => {
     const founded = await call("POST", BASE, {
       as: CAI,

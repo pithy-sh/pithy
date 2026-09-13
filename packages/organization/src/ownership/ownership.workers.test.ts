@@ -267,6 +267,48 @@ describe("offering", () => {
     expect((await roles())[ADA]).toBe("admin");
   });
 
+  test("**a member may not volunteer — volunteering takes standing over the account**", async () => {
+    /*
+      The escalation this closes, and it was open.
+
+      `founderRole` gives the founder the first *assignable* administering role, and the conferred role
+      is unassignable by definition — so **every account is ownerless from the moment it is founded** and
+      stays so until somebody completes a transfer. "Anybody in it may volunteer" therefore meant any
+      member of any account that had never transferred, and `requireTransferableRoles` guarantees the
+      conferred role administers, so the volunteer lands on `members:manage`, `billing:manage` and
+      `organization:delete` from `organization:read`.
+
+      And it is not reversible: `owner` is unassignable, so demote, remove and leave all refuse it. The
+      founder would have had no route that undid it.
+    */
+    const ada = await join(ADA, "admin");
+    const bob = await join(BOB, "member");
+
+    await expect(
+      nominate(organizationDatabase(env.DB), OWNED, {
+        organizationId: acme,
+        membershipId: bob,
+        nominatedByUserId: BOB,
+        expiresAt: new Date(NOW.getTime() + DAY),
+        roles: TRANSFER,
+        now: NOW,
+      }),
+    ).rejects.toThrow(/Only somebody who runs this organization can take it on/);
+    expect(await standingNomination(organizationDatabase(env.DB), acme, NOW)).toBeNull();
+
+    // And the founder still can, which is the property that must survive the fix: an account that could
+    // never acquire an owner would be a worse defect than the one being closed.
+    const volunteered = await nominate(organizationDatabase(env.DB), OWNED, {
+      organizationId: acme,
+      membershipId: ada,
+      nominatedByUserId: ADA,
+      expiresAt: new Date(NOW.getTime() + DAY),
+      roles: TRANSFER,
+      now: NOW,
+    });
+    expect(volunteered.membershipId).toBe(ada);
+  });
+
   test("**and may not appoint anybody else.** That is the escalation the rule closes", async () => {
     // An administrator who could nominate a colleague could invite a fourth party and install them as
     // the holder of an account that belongs to neither of them.
