@@ -576,3 +576,120 @@ describe("deleteOrganization", () => {
     expect(codeOf(failure)).toBe("organization/not_found");
   });
 });
+
+describe("the adopter's own tenanted rows go with the account", () => {
+  /*
+    **`#570`.** Every adopter who composes this has tables keyed on `organizationId` — that is what
+    tenancy is — and this capability cannot see them. It swept its own five and stopped, which left their
+    rows behind for an account that no longer existed. For the first adopter those rows are connections
+    to customers' production Workers, so what outlived the deletion was a credential.
+
+    The seam takes statements rather than doing the work, and they join the same batch. That is the half
+    worth testing: not that the rows go, but that when one of the adopter's statements fails, the
+    *account* is still there. A callback after the delete could not offer that, and its failure mode is
+    precisely the state the issue is about.
+  */
+
+  /** A table of the adopter's, keyed the way every tenanted table of theirs is. */
+  async function theirTable(): Promise<void> {
+    await env.DB.prepare("drop table if exists adopter_connections").run();
+    await env.DB.prepare("create table adopter_connections (id text primary key, organization_id text not null)").run();
+  }
+
+  async function theirRows(organizationId: string): Promise<number> {
+    const { results } = await env.DB.prepare("select count(*) as n from adopter_connections where organization_id = ?")
+      .bind(organizationId)
+      .all<{ n: number }>();
+    return results[0]?.n ?? 0;
+  }
+
+  test("they are deleted in the same transaction", async () => {
+    await theirTable();
+    const created = await createOrganization(env.DB, NESTING, {
+      name: "Acme Games",
+      slug: "acme-games",
+      founderUserId: FOUNDER,
+    });
+    await env.DB.prepare("insert into adopter_connections (id, organization_id) values ('c1', ?)")
+      .bind(created.organization.id)
+      .run();
+    expect(await theirRows(created.organization.id)).toBe(1);
+
+    await deleteOrganization(env.DB, created.organization.id, (db, organizationId) => [
+      db.deleteFrom("adopterConnections" as never).where("organizationId" as never, "=", organizationId),
+    ]);
+
+    expect(await theirRows(created.organization.id)).toBe(0);
+    expect(await count("pithy_organization_organizations")).toBe(0);
+  });
+
+  test("**their rows survive a failure anywhere in the delete**", async () => {
+    /*
+      The property the batch buys, and the one an "after the fact" sweep cannot offer.
+
+      The naive version of this test failed the adopter's *own* statement — which proves nothing, because
+      that fails before the batch either way and the account survives under both arrangements. I wrote
+      that first, planted the bug it was supposed to catch, and watched it pass. The distinction only
+      shows when the adopter's statement **succeeds** and something later goes wrong: in the batch, their
+      delete rolls back with the account; outside it, their rows are gone and the account is not.
+    */
+    await theirTable();
+    const created = await createOrganization(env.DB, NESTING, {
+      name: "Acme Games",
+      slug: "acme-games",
+      founderUserId: FOUNDER,
+    });
+    await env.DB.prepare("insert into adopter_connections (id, organization_id) values ('c1', ?)")
+      .bind(created.organization.id)
+      .run();
+
+    // Fails the whole batch after it has been composed, which is where a partial delete would show.
+    const failing = wrapping(env.DB, async () => {
+      throw new Error("the batch did not commit");
+    });
+
+    await expect(
+      deleteOrganization(failing, created.organization.id, (db, organizationId) => [
+        db.deleteFrom("adopterConnections" as never).where("organizationId" as never, "=", organizationId),
+      ]),
+    ).rejects.toThrow();
+
+    // Nothing moved: not the account, not its memberships, and not the adopter's row.
+    expect(await count("pithy_organization_organizations")).toBe(1);
+    expect(await count("pithy_organization_memberships")).toBe(1);
+    expect(await theirRows(created.organization.id)).toBe(1);
+  });
+
+  test("composing without the seam is unchanged", async () => {
+    const created = await createOrganization(env.DB, NESTING, {
+      name: "Acme Games",
+      slug: "acme-games",
+      founderUserId: FOUNDER,
+    });
+    await deleteOrganization(env.DB, created.organization.id);
+    expect(await count("pithy_organization_organizations")).toBe(0);
+  });
+
+  test("their statements run before the memberships go, so one may still read a membership", async () => {
+    // Ordered first, deliberately: an adopter's sweep may need to resolve something through a membership
+    // the batch is about to remove. Proved by deleting *by* a membership id rather than by organization.
+    await theirTable();
+    const created = await createOrganization(env.DB, NESTING, {
+      name: "Acme Games",
+      slug: "acme-games",
+      founderUserId: FOUNDER,
+    });
+    const membership = await env.DB.prepare("select id from pithy_organization_memberships where organization_id = ?")
+      .bind(created.organization.id)
+      .first<{ id: string }>();
+    if (!membership) throw new Error("expected the founder's membership");
+    await env.DB.prepare("insert into adopter_connections (id, organization_id) values (?, ?)")
+      .bind(membership.id, created.organization.id)
+      .run();
+
+    await deleteOrganization(env.DB, created.organization.id, (db) => [
+      db.deleteFrom("adopterConnections" as never).where("id" as never, "=", membership.id),
+    ]);
+    expect(await theirRows(created.organization.id)).toBe(0);
+  });
+});

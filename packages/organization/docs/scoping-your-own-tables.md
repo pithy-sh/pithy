@@ -54,3 +54,28 @@ A row the caller may not see and a row that does not exist are one answer. A dis
 ## What this capability does not do for you
 
 It ships `requireOrganization()` and `requirePower()`. It has no view of your tables, so it cannot add the join for you, and a helper that tried would have to know your schema. What it can do is make the rule cheap to follow: `c.var.acting` already carries `{ organizationId, userId }`, which is exactly the pair every one of these queries needs, so passing it whole is less typing than passing the id alone.
+
+## Deleting is the other half, and it is the half that bites later
+
+Scoping a read keeps another tenant's rows away from this caller. It says nothing about what happens to *your* rows when the account they belong to is deleted — and this capability cannot answer that for you, because it has no view of your schema.
+
+Without help it deletes its own five tables and stops. Yours stay, keyed to an organization that no longer exists. If what they hold is inert, that is untidy. If it is a credential, the act everybody believes revoked it did not.
+
+So hand it the statements:
+
+```ts
+organization({
+  roles,
+  onDelete: (db, organizationId) => [
+    db.deleteFrom("connections").where("organizationId", "=", organizationId),
+    db.deleteFrom("environments").where("organizationId", "=", organizationId),
+    db.deleteFrom("projects").where("organizationId", "=", organizationId),
+  ],
+})
+```
+
+**Statements, not work.** They join the same `d1.batch` as this capability's own deletes, so a failure anywhere rolls all of it back — the account and your rows end together or neither does. A function that deleted for itself could not be in that transaction, and what it would leave behind on a bad day is exactly the state this seam exists to prevent.
+
+They run **before** the memberships go, so a statement may still resolve something through one.
+
+**A foreign key is not the alternative.** D1 does enforce them — `pithy-sh/pithy#569` measured it — so the cascade you may be used to is real. It is real only while both tables are yours. Pointing one at `pithy_organization_organizations` binds your schema to this capability's release cadence and breaks the day either moves to its own database, which is the same boundary every other rule on this page is drawn around.

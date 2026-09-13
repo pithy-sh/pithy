@@ -14,6 +14,7 @@ import {
   INVITATIONS_TABLE,
   MEMBERSHIPS_TABLE,
   ORGANIZATIONS_TABLE,
+  type OrganizationDatabase,
   OWNERSHIP_NOMINATIONS_TABLE,
   organizationDatabase,
 } from "../data/tables";
@@ -332,19 +333,43 @@ async function changeOrganization(
   }
 }
 
+/** What an adopter contributes to a deletion: their own statements, against their own tables. */
+export type OrganizationDeleteSweep = (
+  db: OrganizationDatabase,
+  organizationId: string,
+) => readonly { compile(): CompiledQuery }[];
+
 /**
- * Delete an organization, and everything that pointed at it.
+ * Delete an organization, and everything that pointed at it — **including the adopter's own rows.**
  *
- * **Children first, in one batch.** D1 enforces no foreign keys, so referential integrity is held by the
- * writers — and a partial delete is the worst of the two outcomes: a membership naming an account that is
- * gone still answers *yes* to "is this person a member of `X`", and an acting row still points a live
- * session at it. One transaction means the account and every claim on it end together.
+ * **Children first, in one batch.** Referential integrity across a capability boundary is held by the
+ * writers rather than by a constraint (see the migration, and `#569` for what D1 actually enforces), and
+ * a partial delete is the worst of the two outcomes: a membership naming an account that is gone still
+ * answers *yes* to "is this person a member of `X`", and an acting row still points a live session at it.
+ * One transaction means the account and every claim on it end together.
  *
- * The order mirrors the migration's `down`: the selections and the standing offer before the memberships
- * they name, the memberships before the organization. Within one transaction the order changes nothing,
- * and keeping it means the two places that tear this schema down read the same way.
+ * ## The adopter's tables go in the same transaction, and that is the whole point of the seam
+ *
+ * Every adopter who composes this has tables keyed on `organizationId` — that is what tenancy *is* — and
+ * this capability cannot see them. Until `#570` it swept its own five and stopped, which left an
+ * adopter's rows behind for an account that no longer existed. For the first adopter those rows are
+ * connections to customers' production Workers, so what outlived the deletion was a credential.
+ *
+ * `sweep` returns statements and they are appended **ahead** of this capability's own, so an adopter may
+ * still read a membership while composing them. Because they join the batch rather than running after it,
+ * a failure in any one of them rolls the account back too — which is the only arrangement in which "the
+ * account is gone" and "its data is gone" cannot come apart. A callback after the delete would be a
+ * second failure point whose failure mode is exactly the bug.
+ *
+ * The order otherwise mirrors the migration's `down`: the selections and the standing offer before the
+ * memberships they name, the memberships before the organization. Within one transaction the order
+ * changes nothing, and keeping it means the two places that tear this schema down read the same way.
  */
-export async function deleteOrganization(d1: D1Database, organizationId: string): Promise<void> {
+export async function deleteOrganization(
+  d1: D1Database,
+  organizationId: string,
+  sweep?: OrganizationDeleteSweep,
+): Promise<void> {
   const db = organizationDatabase(d1);
 
   // Asked first, so deleting an account that is not there refuses rather than reporting success for five
@@ -361,6 +386,8 @@ export async function deleteOrganization(d1: D1Database, organizationId: string)
 
   await withD1Retry(() =>
     d1.batch([
+      // The adopter's, first — they may name a membership this batch is about to remove.
+      ...(sweep?.(db, organizationId) ?? []).map((query) => compile(d1, query)),
       compile(d1, db.deleteFrom(ACTING_TABLE).where("organizationId", "=", organizationId)),
       compile(d1, db.deleteFrom(OWNERSHIP_NOMINATIONS_TABLE).where("organizationId", "=", organizationId)),
       compile(d1, db.deleteFrom(INVITATIONS_TABLE).where("organizationId", "=", organizationId)),

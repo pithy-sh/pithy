@@ -54,7 +54,13 @@ import {
   withdrawNomination,
 } from "../ownership/ownership";
 import { MEMBERS_PATH_SEGMENT, readPeople } from "../people/people";
-import { createOrganization, deleteOrganization, renameOrganization, setLogo } from "../provision/provision";
+import {
+  createOrganization,
+  deleteOrganization,
+  type OrganizationDeleteSweep,
+  renameOrganization,
+  setLogo,
+} from "../provision/provision";
 import type { KitPower, RoleCatalog } from "../roles/roles";
 import { type OrganizationGuardDeps, type OrganizationHonoEnv, requireOrganization, requirePower } from "./guard";
 import type {
@@ -311,6 +317,8 @@ export interface OrganizationRoutesOptions<Power extends string, Role extends st
    * reading the constant from here is what does.
    */
   readonly ownership?: OwnershipRoles<Role>;
+  /** The adopter's own tenanted deletes, run in the transaction that deletes the account. */
+  readonly onDelete?: OrganizationDeleteSweep;
   /**
    * The email enqueue seam.
    *
@@ -773,7 +781,8 @@ export function registerOrganizationRoutes<Power extends string, Role extends st
       async (c) => {
         const acting = c.var.acting;
         const who = session(c);
-        await deleteOrganization(d1(c), acting.organizationId);
+        // The adopter's own tenanted rows go in the same transaction — `#570`.
+        await deleteOrganization(d1(c), acting.organizationId, options.onDelete);
         // Recorded against the account that no longer exists, which is the only record that it ever did.
         await record(c, {
           action: OrganizationAuditActions.deleted,

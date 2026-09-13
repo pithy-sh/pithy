@@ -15,7 +15,7 @@ import { organizationAdminRoutes } from "./http/scopes";
 import type { EnqueueInvitation } from "./mail/invitation";
 import { ORGANIZATION_MIGRATION_ORDER, organization_0001_init } from "./migrations/0001_init";
 import { type OwnershipRoles, requireTransferableRoles } from "./ownership/ownership";
-import { founderRole } from "./provision/provision";
+import { founderRole, type OrganizationDeleteSweep } from "./provision/provision";
 import type { RoleCatalog } from "./roles/roles";
 import { organizationExampleSeed } from "./seeds/example";
 import { PACKAGE_VERSION } from "./version.generated";
@@ -127,6 +127,21 @@ export type OrganizationOptions<Power extends string, Role extends string> = Org
    * to the wrong thing.
    */
   readonly ownership?: OwnershipRoles<Role>;
+  /**
+   * Your own tenanted rows, deleted in the transaction that deletes the account — `#570`.
+   *
+   * Every adopter who composes this has tables keyed on `organizationId`; that is what tenancy is, and
+   * this capability cannot see them. Without this it swept its own five and stopped, leaving your rows
+   * behind for an account that no longer exists — and for the first adopter those rows were connections
+   * to customers' production Workers, so what outlived the deletion was a credential.
+   *
+   * Return statements rather than doing the work: they join the same `d1.batch`, ahead of this
+   * capability's own, so a failure in any of them rolls the account back too. A function that deleted
+   * for itself could not be in that transaction, and its failure mode is exactly the bug.
+   *
+   * Ordered first, so a statement may still read a membership while composing itself.
+   */
+  readonly onDelete?: OrganizationDeleteSweep;
 };
 
 /** The tenancy capability, with its resolved config and the catalog it was composed with attached. */
@@ -160,7 +175,7 @@ export function isOrganizationCapability(capability: Capability): capability is 
 export function organization<const Power extends string = never, const Role extends string = string>(
   options: OrganizationOptions<Power, Role>,
 ): OrganizationCapability<Power, Role> {
-  const { roles, ownership, ...configInput } = options;
+  const { roles, ownership, onDelete, ...configInput } = options;
   const resolved = OrganizationConfig.parse(configInput);
 
   // The transfer's roles, checked against the catalog they will be spent against. `nominate` and
@@ -227,6 +242,7 @@ export function organization<const Power extends string = never, const Role exte
       catalog: roles,
       config: resolved,
       ownership,
+      onDelete,
       enqueue: (env) => {
         const enqueue = wiring.enqueue;
         if (!enqueue) return undefined;
