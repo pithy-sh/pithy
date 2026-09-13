@@ -71,11 +71,6 @@ export function registerDevLoginRoute(
   };
 }
 
-/** How long the browser is told to keep the cookie: whatever is left of the seeded session, never longer. */
-function _maxAgeSeconds(expiresAt: Date, now: Date): number {
-  return Math.floor((expiresAt.getTime() - now.getTime()) / 1000);
-}
-
 /**
  * The refusal when there is nothing to sign in as. A 404, because the honest answer is that this
  * composition has no seeded session — not that the caller got something wrong.
@@ -95,17 +90,6 @@ function noSeededSession(): NotFoundError {
   });
 }
 
-/**
- * Serve the seeded session as a `Set-Cookie` and a redirect to `/`.
- *
- * The row is found by the prefix every seeded session carries and **verified against the current
- * signing secret's fingerprint**, which the seed puts in the token for this exact purpose. A session
- * minted before a rotation is a cookie Better Auth will reject, so handing it over would sign nobody in
- * and send the developer hunting through auth for a bug that is a stale seed. Unfound is unfound.
- *
- * Nothing about the cookie is logged, and nothing is written to a response body: the value exists in
- * this handler and in the browser, and in no third place.
- */
 /**
  * What the route takes: the claim, in the query.
  *
@@ -127,6 +111,14 @@ const DevLoginQuery = z
   })
   .describe("The dev-login route's query: a claim, or nothing and the same refusal as a wrong one.");
 
+/**
+ * Exchange a claim for a session, as a `Set-Cookie` and a redirect to `/`.
+ *
+ * Nothing about the cookie is logged, and nothing is written to a response body: the value exists in
+ * this handler and in the browser, and in no third place. The claim that bought it is in the URL, which
+ * is the one place it has to be — `dev/devLogin.ts` in the CLI carries why, and keeps it out of every
+ * printed line it can.
+ */
 async function serveDevLogin(
   c: Context<PithyHonoEnv>,
   wiring: AuthWiring,

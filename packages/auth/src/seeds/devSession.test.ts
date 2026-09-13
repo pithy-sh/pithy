@@ -236,6 +236,14 @@ describe("verifyDevLoginClaim", () => {
     expect(await verifyDevLoginClaim(minted.login.claim, SECRET, after)).toBeNull();
   });
 
+  test("a user id outside Latin-1 round-trips, because the payload is encoded as UTF-8 bytes", async () => {
+    // `btoa` on the JSON string threw `InvalidCharacterError` above U+00FF, and a user id is the
+    // adopter's to choose. A seed must not die on somebody's name.
+    const named = { id: "user-Ωменя-日本", email: "omega@example.com" };
+    const minted = await mintDevLogin({ user: named, secret: SECRET, now: new Date(1_800_000_000_000) });
+    expect((await verifyDevLoginClaim(minted.login.claim, SECRET))?.userId).toBe(named.id);
+  });
+
   test("a user id holding the separator round-trips, because the payload is base64 of JSON", async () => {
     // An adopter picks their own user ids. A delimited payload would have split this one in the middle.
     const awkward = { id: 'a.b|c:d"e', email: "awkward@example.com" };

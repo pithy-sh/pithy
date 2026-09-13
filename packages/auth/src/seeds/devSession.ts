@@ -150,7 +150,11 @@ export interface MintDevLoginInput {
  * ours. Two consumers, two formats, no shared spelling to break one by fixing the other.
  */
 export async function signDevLoginClaim(input: MintDevLoginInput & { expiresAt: Date }): Promise<string> {
-  const body = btoa(JSON.stringify({ u: input.user.id, e: input.expiresAt.getTime() }));
+  // **`TextEncoder`, not `btoa` on the string.** `btoa` throws `InvalidCharacterError` for any code
+  // point above U+00FF, and a user id is the adopter's to choose — this module already reasons about
+  // ids holding a separator, and a non-ASCII one is no stranger. Encoding to UTF-8 bytes first makes
+  // the payload total in the id, which is what a seed that must not die on somebody's name requires.
+  const body = base64Of(new TextEncoder().encode(JSON.stringify({ u: input.user.id, e: input.expiresAt.getTime() })));
   const key = await claimKey(input.secret, ["sign"]);
   const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
   return encodeURIComponent(`${body}.${base64Of(signature)}`);
@@ -205,9 +209,9 @@ function claimKey(secret: string, usages: readonly ("sign" | "verify")[]): Promi
   ]);
 }
 
-/** Base64 of a signature. */
-function base64Of(signature: ArrayBuffer): string {
-  return btoa(String.fromCharCode(...new Uint8Array(signature)));
+/** Base64 of bytes — a signature, or a UTF-8 payload. */
+function base64Of(bytes: ArrayBuffer | Uint8Array): string {
+  return btoa(String.fromCharCode(...new Uint8Array(bytes)));
 }
 
 /** `decodeURIComponent`, or null. A malformed escape throws, and a throw here is just "not a claim". */
@@ -228,10 +232,11 @@ function safeBytes(value: string): Uint8Array | null {
   }
 }
 
-/** Base64 JSON to a value, or null. */
+/** Base64 UTF-8 JSON to a value, or null. Decoded as bytes, to match how {@link base64Of} wrote it. */
 function safeJson(body: string): unknown {
   try {
-    return JSON.parse(atob(body));
+    const bytes = Uint8Array.from(atob(body), (character) => character.charCodeAt(0));
+    return JSON.parse(new TextDecoder().decode(bytes));
   } catch {
     return null;
   }
