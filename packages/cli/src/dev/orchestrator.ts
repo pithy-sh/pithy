@@ -613,14 +613,20 @@ export async function startDev(options: StartDevOptions): Promise<DevHandle> {
     options.account,
     options.baseEnv ?? process.env,
   );
-  // A shell that exported a token for other work is ordinary and is not a fault, so this is a line rather
-  // than a refusal. But it is the line that was missing: `wrangler whoami` answers for the shell, `pithy
-  // doctor` answers for the project, and nothing said that every Worker started here uses the second.
-  if (cloudflare.overridden.length > 0) {
-    emitLine(
-      `Cloudflare: using this project's account${cloudflare.identity.accountId ? ` (${cloudflare.identity.accountId})` : ""}, not the ${cloudflare.overridden.join(" and ")} your shell exported.`,
-    );
-  }
+  /*
+    **Nothing is printed about which account this is. Using the project's is the expectation.**
+
+    A line used to say so whenever the shell had exported `CLOUDFLARE_*` — on the grounds that `wrangler
+    whoami` answers for the shell and nothing said the Workers use the project's. True, and the wrong
+    place to say it: a developer whose shell holds a token for other work sees that line on every single
+    run, forever, reporting that the normal thing happened. A banner that states the expectation is a
+    banner people stop reading, which costs more than it buys on the lines that matter.
+
+    **The refusal above is the part that had to stay**, and it is a throw rather than a line: a pinned
+    `cloudflare.accountId` the credentials contradict stops the run before a Worker spawns. That is the
+    case where the account is genuinely in question. `pithy doctor` reports the resolved account for
+    anyone who wants to look, which is the place to answer a question rather than to volunteer one.
+  */
 
   if (project !== null && selectedHosts.length > 0) {
     // The app's address: the first started Worker that is not a host. Callback links point at the

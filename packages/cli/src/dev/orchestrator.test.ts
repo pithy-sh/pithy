@@ -549,7 +549,11 @@ describe("startDev — spawn commands and env", () => {
     expect(env.PATH).toBe("/usr/bin");
   });
 
-  test("says so when it overrode what the shell exported, because whoami is about to disagree", async () => {
+  test("**says nothing about overriding what the shell exported — the project's account is the expectation**", async () => {
+    // This used to print a line whenever the shell held `CLOUDFLARE_*`, and a developer whose shell holds
+    // a token for other work saw it on every run, forever, announcing that the normal thing happened.
+    // The environment still overrides — the test above asserts the child gets the project's credentials —
+    // and the case where the account is genuinely in question is the refusal below, which is a throw.
     const h = harness({
       devCloudflareEnv: (_account, base) => ({
         env: { ...(base as Record<string, string>), CLOUDFLARE_ACCOUNT_ID: "acct-1", CLOUDFLARE_API_TOKEN: "t" },
@@ -558,8 +562,9 @@ describe("startDev — spawn commands and env", () => {
       }),
     });
     await startDev(h.options);
-    expect(h.stdoutLines.join("")).toContain("CLOUDFLARE_API_TOKEN");
-    expect(h.stdoutLines.join("")).toContain("acct-1");
+    const said = [...h.stdoutLines, ...h.logLines].join("");
+    expect(said).not.toContain("CLOUDFLARE_API_TOKEN");
+    expect(said).not.toContain("acct-1");
   });
 
   test("a pinned account the credentials contradict refuses before a single worker spawns", async () => {
