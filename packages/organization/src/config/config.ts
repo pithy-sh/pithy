@@ -18,13 +18,20 @@ export const OrganizationConfig = z
       .startsWith("/")
       .default("/organizations")
       .describe(
-        "Where the tenancy routes mount, the invitation accept link included. Change it and the links in already-sent invitations break, so pick it before you invite anybody.",
+        "Where the tenancy routes mount. **Not where an invitation link points** — the routes here answer JSON, and a person clicking a link needs a page; `invitationAcceptPath` is that. Changing this changes every API address this capability serves.",
       ),
     baseUrl: z
       .url()
       .optional()
       .describe(
         "The absolute origin an invitation link is built from, e.g. `https://app.example.com`. Required before an invitation can be sent, because an email cannot carry a relative URL.",
+      ),
+    invitationAcceptPath: z
+      .string()
+      .startsWith("/")
+      .default("/invitations")
+      .describe(
+        "Where an invited person is **sent** — a page in this project's own app, never an API route. Separate from `basePath` because everything mounted there answers JSON, and an invitation link is read by a person in a mail client: built from `basePath`, every invitation this capability sent landed on a response body (`pithy-sh/pithy#571`). The token is appended as a path segment. Change it and the links in already-sent invitations break, so pick it before you invite anybody.",
       ),
     invitationTtlDays: z
       .number()

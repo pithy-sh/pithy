@@ -9,7 +9,7 @@ import { noopLogger } from "@pithy-sh/core/src/logger/logger";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { OrganizationConfig } from "../config/config";
-import { INVITATION_ACCEPT_SEGMENT } from "../mail/invitation";
+import { INVITATIONS_ROUTE_SEGMENT } from "../mail/invitation";
 import type { OwnershipRoles } from "../ownership/ownership";
 import { defineRoles } from "../roles/roles";
 import { ORGANIZATION_ROUTES, registerOrganizationRoutes } from "./routes";
@@ -371,8 +371,8 @@ describe("the surface a client is told about", () => {
     // `invitationAcceptUrl` mints `{base}/{segment}/{token}` and an already-sent mail cannot be moved,
     // so nothing but this assertion stands between a renamed route and a dead link in somebody's inbox.
     const paths = new Set(mounted(makeApp()).map((route) => route.path));
-    expect(paths.has(`${BASE}/${INVITATION_ACCEPT_SEGMENT}/:token`)).toBe(true);
-    expect(paths.has(`${BASE}/${INVITATION_ACCEPT_SEGMENT}/accept`)).toBe(true);
+    expect(paths.has(`${BASE}/${INVITATIONS_ROUTE_SEGMENT}/:token`)).toBe(true);
+    expect(paths.has(`${BASE}/${INVITATIONS_ROUTE_SEGMENT}/accept`)).toBe(true);
   });
 
   test("every advertised admin route is mounted, with its declared scope", () => {

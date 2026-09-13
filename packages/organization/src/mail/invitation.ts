@@ -76,13 +76,13 @@ export type EnqueueInvitation = (input: {
 export const INVITATION_TEMPLATE = "invite";
 
 /**
- * The path segment the accept link ends in, under the capability's `basePath`.
+ * The path segment the **JSON** invitation routes live under, inside `basePath`.
  *
- * A constant because the link in an already-sent mail cannot be moved. It has to equal the route the
- * capability mounts for acceptance; nothing here can enforce that, so the route module is where the
- * assertion belongs.
+ * It was `INVITATION_ACCEPT_SEGMENT` and it no longer names the accept link — `pithy-sh/pithy#571` moved
+ * that to `invitationAcceptPath`, a page in the adopter's own app. A constant still called *accept*
+ * would point the next reader at exactly the conflation that bug was.
  */
-export const INVITATION_ACCEPT_SEGMENT = "invitations";
+export const INVITATIONS_ROUTE_SEGMENT = "invitations";
 
 /** What an invitation mail says. Three facts, and a link that carries the token. */
 export interface InvitationMail {
@@ -111,6 +111,16 @@ export interface InvitationMail {
  * sentence naming the setting — rather than mailing `/organizations/invitations/…` to somebody whose
  * mail client will render it as nothing.
  *
+ * **Built from `invitationAcceptPath`, never from `basePath` — `pithy-sh/pithy#571`.** It was the latter,
+ * and that was the defect: `GET {basePath}/invitations/:token` is a real route on this capability and it
+ * answers `c.json(...)`, so every invitation ever sent pointed a person at a response body in their
+ * browser. No composition could avoid it — aiming `basePath` at a page path does not help, because the
+ * JSON route mounts there too and the Worker answers before any client router sees the request.
+ *
+ * The two are now different settings because they are different things: one is where this capability's
+ * API lives, the other is where a person is sent. The JSON read stays where it was, for the page at the
+ * other end to call.
+ *
  * **The token is a path segment, not a query parameter.** A query string reaches `Referer` headers,
  * access logs and analytics that record a full query without being asked, and none of those is somewhere
  * a live invitation token should turn up. Neither form is a breach on its own — the mail carries the
@@ -119,7 +129,10 @@ export interface InvitationMail {
  * `encodeURIComponent` is belt and braces: `mintInvitationToken` is base64url and has nothing to escape.
  * It stays because the day that changes, this is the line that would have to have been remembered.
  */
-export function invitationAcceptUrl(config: Pick<OrganizationConfig, "baseUrl" | "basePath">, token: string): string {
+export function invitationAcceptUrl(
+  config: Pick<OrganizationConfig, "baseUrl" | "invitationAcceptPath">,
+  token: string,
+): string {
   if (config.baseUrl === undefined) {
     throw new InternalError({
       message: "That invitation could not be sent.",
@@ -129,7 +142,7 @@ export function invitationAcceptUrl(config: Pick<OrganizationConfig, "baseUrl" |
   }
   // One trailing slash on the origin and one leading slash on the base path would otherwise meet.
   const origin = config.baseUrl.replace(/\/+$/, "");
-  return `${origin}${config.basePath}/${INVITATION_ACCEPT_SEGMENT}/${encodeURIComponent(token)}`;
+  return `${origin}${config.invitationAcceptPath}/${encodeURIComponent(token)}`;
 }
 
 /** The three facts the `invite` template takes, built once so the subject and the send cannot differ. */

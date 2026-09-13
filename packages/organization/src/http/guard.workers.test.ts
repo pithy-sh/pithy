@@ -14,7 +14,7 @@ import { Hono } from "hono";
 import type { MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { z } from "zod";
-import { type ActingMembership, chooseActing } from "../acting/acting";
+import { chooseActing } from "../acting/acting";
 import { Membership } from "../data/membership";
 import { Organization } from "../data/organization";
 import { MEMBERSHIPS_TABLE, ORGANIZATIONS_TABLE, organizationDatabase } from "../data/tables";

@@ -682,7 +682,10 @@ describe("invitations", () => {
         app: own,
       }),
     );
-    expect(body.acceptUrl).toContain("https://app.example.test/organizations/invitations/");
+    // The page path, not the API base — `#571`. A project that mails its own invitations is handed the
+    // same link the capability would have sent, and that link has to land somewhere a person can read.
+    expect(body.acceptUrl).toContain("https://app.example.test/invitations/");
+    expect(body.acceptUrl).not.toContain("/organizations/invitations/");
     expect(mailed).toHaveLength(0);
   });
 

@@ -6,7 +6,6 @@ import { describe, expect, test } from "vitest";
 import { OrganizationConfig } from "../config/config";
 import {
   type EnqueueInvitation,
-  INVITATION_ACCEPT_SEGMENT,
   INVITATION_TEMPLATE,
   type InvitationMail,
   invitationAcceptUrl,
@@ -34,27 +33,52 @@ const mail: InvitationMail = {
 
 describe("invitationAcceptUrl", () => {
   test("is absolute, and puts the token in the path", () => {
-    expect(invitationAcceptUrl(config, "abc123")).toBe(
-      `https://app.example.com/organizations/${INVITATION_ACCEPT_SEGMENT}/abc123`,
-    );
+    expect(invitationAcceptUrl(config, "abc123")).toBe("https://app.example.com/invitations/abc123");
   });
 
-  test("honors a project's own basePath", () => {
-    const moved = OrganizationConfig.parse({ baseUrl: "https://app.example.com", basePath: "/teams" });
-    expect(invitationAcceptUrl(moved, "abc123")).toBe(`https://app.example.com/teams/invitations/abc123`);
+  test("**the link is not under `basePath`, because the route there answers JSON** — `#571`", () => {
+    /*
+      The defect this replaced. `invitationAcceptUrl` built the link from `basePath`, and
+      `GET {basePath}/invitations/:token` is a real route that answers `c.json(...)` — so every
+      invitation this capability ever sent pointed a person at a blob of JSON in their browser. Not a
+      page, not an actionable error: the offer read out as a response body.
+
+      No composition could avoid it. Pointing `basePath` at a page path does not help, because the JSON
+      route mounts there too and the Worker answers before any SPA can.
+    */
+    const composed = OrganizationConfig.parse({ baseUrl: "https://app.example.com", basePath: "/api/organizations" });
+    const minted = invitationAcceptUrl(composed, "abc123");
+
+    expect(minted).toBe("https://app.example.com/invitations/abc123");
+    // Stated as an absence as well, because that is the property rather than the string: the link a
+    // person clicks must not be under the prefix the JSON routes mount on.
+    expect(minted.startsWith(`https://app.example.com${composed.basePath}`)).toBe(false);
+  });
+
+  test("honors a project's own invitationAcceptPath", () => {
+    const moved = OrganizationConfig.parse({
+      baseUrl: "https://app.example.com",
+      basePath: "/api/organizations",
+      invitationAcceptPath: "/join",
+    });
+    expect(invitationAcceptUrl(moved, "abc123")).toBe("https://app.example.com/join/abc123");
+  });
+
+  test("moving basePath does not move the link, which is the whole point of the split", () => {
+    const here = OrganizationConfig.parse({ baseUrl: "https://app.example.com", basePath: "/teams" });
+    const there = OrganizationConfig.parse({ baseUrl: "https://app.example.com", basePath: "/api/v2/orgs" });
+    expect(invitationAcceptUrl(here, "abc123")).toBe(invitationAcceptUrl(there, "abc123"));
   });
 
   test("does not double the slash when the origin carries one", () => {
     const trailing = OrganizationConfig.parse({ baseUrl: "https://app.example.com/" });
-    expect(invitationAcceptUrl(trailing, "abc123")).toBe("https://app.example.com/organizations/invitations/abc123");
+    expect(invitationAcceptUrl(trailing, "abc123")).toBe("https://app.example.com/invitations/abc123");
   });
 
   test("escapes the token into the path segment", () => {
     // Nothing a minted token contains needs this. It is here for the day the token's alphabet changes,
     // because that is the day a link stops being a link.
-    expect(invitationAcceptUrl(config, "a/b?c#d")).toBe(
-      "https://app.example.com/organizations/invitations/a%2Fb%3Fc%23d",
-    );
+    expect(invitationAcceptUrl(config, "a/b?c#d")).toBe("https://app.example.com/invitations/a%2Fb%3Fc%23d");
   });
 
   test("refuses, by name, when the project declared no origin", () => {

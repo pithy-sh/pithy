@@ -14,7 +14,6 @@ import {
   INVITATIONS_TABLE,
   MEMBERSHIPS_TABLE,
   ORGANIZATIONS_TABLE,
-  type OrganizationDatabase,
   OWNERSHIP_NOMINATIONS_TABLE,
   organizationDatabase,
 } from "../data/tables";

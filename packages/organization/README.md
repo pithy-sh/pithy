@@ -129,7 +129,15 @@ No `unassignable`, so every role including `owner` may be handed to somebody, an
 
 ## Routes
 
-`{base}` is the configured `basePath`, `/organizations` by default. Change it after an invitation has been sent and the link in that mail breaks, so pick it first.
+`{base}` is the configured `basePath`, `/organizations` by default. Everything under it answers JSON.
+
+## The one page you have to serve
+
+**An invitation email links to your app, not to this capability.** `invitationAcceptPath` says where — `/invitations` by default — and the token arrives as the last segment, so the page you serve is `/invitations/:token`.
+
+That page reads `GET {base}/invitations/:token` to show the offer, and posts the token to `POST {base}/invitations/accept` to redeem it. Both are in the table below.
+
+They are two settings because they are two things: one is where this capability's API lives, the other is where a person is sent. Building the link from `basePath` is what `pithy-sh/pithy#571` was — every invitation pointed at the JSON route, so the recipient got a response body in their browser. Change `invitationAcceptPath` after an invitation has been sent and the link in that mail breaks, so pick it first.
 
 | Route | Purpose | Verification | Power |
 | --- | --- | --- | --- |
