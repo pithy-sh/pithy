@@ -9,7 +9,7 @@ import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { requireSameOrigin } from "@pithy-sh/core/src/http/sameOrigin";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
-import { DevLogin } from "@pithy-sh/core/src/seed/devLogin";
+import { DEV_LOGIN_CLAIM_PARAM, DEV_LOGIN_ROUTE, DevLogin } from "@pithy-sh/core/src/seed/devLogin";
 import { EXAMPLE_ADA } from "@pithy-sh/core/src/seed/exampleIdentities";
 import type { SeedSet } from "@pithy-sh/core/src/seed/seed";
 import { collectSeededRows } from "@pithy-sh/core/src/seed/seededRows";
@@ -121,8 +121,25 @@ async function seedDevLogin(): Promise<DevLogin> {
     preferences: { user: EXAMPLE_ADA.email },
     seeded: collectSeededRows(userSets),
   });
+  // No `d1` since `#572` — the set writes a file and nothing else. Kept as a loop rather than deleted
+  // so this helper keeps working if a later set does declare rows.
   for (const group of prepared.d1 ?? []) await seedD1Group(database, group, Session);
   return DevLogin.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
+}
+
+/**
+ * Sign in the way a browser does, and hand back the cookie it was given.
+ *
+ * **The artifact no longer holds a cookie — `#572`** — so a test that needs one asks the route for it,
+ * which is what the browser does and is the only thing that produces one. That makes these tests read
+ * the whole path rather than a value the seed happened to compute.
+ */
+async function signedInCookie(app: Hono<PithyHonoEnv>, login: DevLogin): Promise<string> {
+  const href = `http://localhost:9339${DEV_LOGIN_ROUTE}?${DEV_LOGIN_CLAIM_PARAM}=${login.claim}`;
+  const response = await app.request(href, {}, appEnv());
+  const setCookie = response.headers.get("Set-Cookie");
+  if (!setCookie) throw new Error(`expected the dev-login route to set a cookie, got ${response.status}`);
+  return setCookie.split(";")[0] ?? "";
 }
 
 beforeEach(async () => {
@@ -142,31 +159,25 @@ afterEach(() => {
   delete process.env.ENVIRONMENT;
 });
 
-test("a dev composition with an HTTPS baseURL reads the session the dev seed wrote", async () => {
+test("a dev composition with an HTTPS baseURL reads the session the dev login minted", async () => {
   const login = await seedDevLogin();
   const app = compose("dev");
+  const cookie = await signedInCookie(app, login);
 
-  const response = await app.request(
-    "http://localhost:9339/auth/get-session",
-    { headers: { cookie: `${login.cookieName}=${login.cookieValue}` } },
-    appEnv(),
-  );
+  const response = await app.request("http://localhost:9339/auth/get-session", { headers: { cookie } }, appEnv());
 
   expect(response.status).toBe(200);
   const session = await response.json<{ user: { email: string } } | null>();
   expect(session?.user.email).toBe(EXAMPLE_ADA.email);
 });
 
-test("the seeded cookie follows the port, whichever one this run was assigned", async () => {
+test("the cookie follows the port, whichever one this run was assigned", async () => {
   const login = await seedDevLogin();
   const app = compose("dev");
+  const cookie = await signedInCookie(app, login);
 
   for (const port of [9339, 41011, 8787]) {
-    const response = await app.request(
-      `http://localhost:${port}/auth/get-session`,
-      { headers: { cookie: `${login.cookieName}=${login.cookieValue}` } },
-      appEnv(),
-    );
+    const response = await app.request(`http://localhost:${port}/auth/get-session`, { headers: { cookie } }, appEnv());
     const session = await response.json<{ user: { email: string } } | null>();
     expect(session?.user.email, `port ${port}`).toBe(EXAMPLE_ADA.email);
   }

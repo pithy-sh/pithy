@@ -7,21 +7,21 @@ import { createDatabase } from "@pithy-sh/core/src/data/db";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
-import { DEV_LOGIN_ROUTE } from "@pithy-sh/core/src/seed/devLogin";
+import { DEV_LOGIN_CLAIM_PARAM, DEV_LOGIN_ROUTE } from "@pithy-sh/core/src/seed/devLogin";
 import { seedD1Group } from "@pithy-sh/core/src/seed/writeD1";
 import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
 import { type SecretFixture, seedSecrets } from "@pithy-sh/secrets/src/test-utils/secretFixtures";
 import { Hono } from "hono";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { AuthConfig, type AuthWiring } from "../capability";
-import { Session, User } from "../data/betterAuth";
+import { User } from "../data/betterAuth";
 import { authDatabase, authTables } from "../data/tables";
 import { type AuthEmailMessage, makeAuth } from "../instance/auth";
 import { NO_SOCIAL_PROVIDERS } from "../instance/providers";
 import { authSecretsRegistry } from "../instance/secrets";
 import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { AUTH_MIGRATIONS } from "../migrations/set";
-import { mintDevSession } from "../seeds/devSession";
+import { mintDevLogin } from "../seeds/devSession";
 import { registerDevLoginRoute } from "./devLoginRoute";
 
 const SECRET = "test-secret-please-rotate-0000000000";
@@ -84,12 +84,24 @@ function instance(secret = SECRET) {
   });
 }
 
-/** Write the user and one minted dev session, through the same validated writer `pithy seed` uses. */
+/** The claim this suite presents. Set by {@link seedDevSession}, the way the artifact carries it. */
+let claim = "";
+
+/**
+ * Write the user and mint a dev login, through the same path `pithy seed` takes.
+ *
+ * **No session row — `#572`.** The seed writes a file; the route mints a session when the link is
+ * opened. So this helper leaves `pithy_auth_sessions` empty, which is what the tests below now assume.
+ */
 async function seedDevSession(secret = SECRET, now = new Date()): Promise<void> {
   const db = createDatabase(env.DB, authTables);
   await seedD1Group(db, { database: "app", table: "pithyAuthUsers", rows: [ADA] }, User);
-  const minted = await mintDevSession({ user: { id: ADA.id, email: ADA.email }, secret, now });
-  await seedD1Group(db, { database: "app", table: "pithyAuthSessions", rows: [minted.session] }, Session);
+  claim = (await mintDevLogin({ user: { id: ADA.id, email: ADA.email }, secret, now })).login.claim;
+}
+
+/** Where the browser goes: the route, carrying the claim the seed minted. */
+function devLoginHref(presented = claim): string {
+  return `${DEV_LOGIN_ROUTE}?${DEV_LOGIN_CLAIM_PARAM}=${presented}`;
 }
 
 beforeEach(async () => {
@@ -123,7 +135,7 @@ afterEach(() => {
 test("redirects to the app root with a cookie Better Auth accepts as a real session", async () => {
   await seedDevSession();
 
-  const response = await devApp().request(DEV_LOGIN_ROUTE, {}, env);
+  const response = await devApp().request(devLoginHref(), {}, env);
 
   expect(response.status).toBe(302);
   expect(response.headers.get("Location")).toBe("/");
@@ -143,7 +155,7 @@ test("redirects to the app root with a cookie Better Auth accepts as a real sess
 test("the cookie value is never in the body — the browser is the only place it lands", async () => {
   await seedDevSession();
 
-  const response = await devApp().request(DEV_LOGIN_ROUTE, {}, env);
+  const response = await devApp().request(devLoginHref(), {}, env);
   const setCookie = response.headers.get("Set-Cookie") ?? "";
   const value = setCookie.split(";")[0]?.split("=")[1] ?? "";
 
@@ -152,7 +164,7 @@ test("the cookie value is never in the body — the browser is the only place it
 });
 
 test("says there is nothing seeded, and names the command that seeds one", async () => {
-  const response = await devApp().request(DEV_LOGIN_ROUTE, {}, env);
+  const response = await devApp().request(devLoginHref(), {}, env);
 
   expect(response.status).toBe(404);
   const body = (await response.json()) as { error?: { message?: string; action?: string } };
@@ -169,7 +181,7 @@ test("a session minted before a secret rotation is not offered — it would sign
   // handing it over would set a cookie Better Auth rejects and send someone hunting through auth.
   await seedDevSession(`${SECRET}-previous`);
 
-  const response = await devApp().request(DEV_LOGIN_ROUTE, {}, env);
+  const response = await devApp().request(devLoginHref(), {}, env);
 
   expect(response.status).toBe(404);
   expect(response.headers.get("Set-Cookie")).toBeNull();
@@ -179,7 +191,7 @@ test("an expired seeded session is refused rather than handed over as a dead coo
   const twoYearsAgo = new Date(Date.now() - 2 * 365 * 24 * 60 * 60 * 1000 - 1000);
   await seedDevSession(SECRET, twoYearsAgo);
 
-  const response = await devApp().request(DEV_LOGIN_ROUTE, {}, env);
+  const response = await devApp().request(devLoginHref(), {}, env);
 
   expect(response.status).toBe(404);
   expect(response.headers.get("Set-Cookie")).toBeNull();
@@ -195,4 +207,26 @@ test("no route means no handler: a staging composition 404s with nothing mounted
 
   expect(response.status).toBe(404);
   expect(response.headers.get("Set-Cookie")).toBeNull();
+});
+
+test("survives a sign-out, because what the link carries is not the session it hands over", async () => {
+  // **The defect this route was rebuilt for — `#572`.** Signing out is an ordinary thing to do while
+  // developing a product that has sign-out in it, and it revoked the one seeded session the route had to
+  // give. From then on the dev login 404'd and the only way back in was a reseed, in another terminal.
+  await seedDevSession();
+
+  const first = await devApp().request(devLoginHref(), {}, env);
+  expect(first.status).toBe(302);
+  const cookie = (first.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+
+  // Through Better Auth, exactly as the product's own menu does it.
+  await instance().api.signOut({ headers: new Headers({ cookie }) });
+  expect(await instance().api.getSession({ headers: new Headers({ cookie }) })).toBeNull();
+
+  const second = await devApp().request(devLoginHref(), {}, env);
+  expect(second.status).toBe(302);
+  const again = (second.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+  expect(await instance().api.getSession({ headers: new Headers({ cookie: again }) })).not.toBeNull();
+  // A fresh session, not the revoked one handed back.
+  expect(again).not.toBe(cookie);
 });

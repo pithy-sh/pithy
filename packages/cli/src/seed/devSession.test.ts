@@ -5,7 +5,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { auth } from "@pithy-sh/auth/src/capability";
 import { AUTH_SESSION_SECRET } from "@pithy-sh/auth/src/instance/secrets";
-import { mintDevSession } from "@pithy-sh/auth/src/seeds/devSession";
+import { verifyDevLoginClaim } from "@pithy-sh/auth/src/seeds/devSession";
 import { DEV_LOGIN_PATH } from "@pithy-sh/core/src/seed/devLogin";
 import { EXAMPLE_ADA } from "@pithy-sh/core/src/seed/exampleIdentities";
 import { describe, expect, test } from "vitest";
@@ -66,20 +66,18 @@ describe("the dev-session seed, through the real secret reader", () => {
       preferences: async () => ({ user: EXAMPLE_ADA.email }),
     });
 
-    // The cookie is signed with the secret, so this asserts the reader resolved that exact value —
-    // not merely that something was found.
-    const expected = await mintDevSession({ user: { id: EXAMPLE_ADA.id, email: EXAMPLE_ADA.email }, secret: SECRET });
+    // The claim is signed with the secret, so verifying it asserts the reader resolved that exact value —
+    // not merely that something was written.
     const login: unknown = JSON.parse(await readFile(join(h.projectDir, DEV_LOGIN_PATH), "utf8"));
-    expect((login as { cookieValue: string }).cookieValue).toBe(expected.login.cookieValue);
+    const claim = (login as { claim: string }).claim;
+    expect(await verifyDevLoginClaim(claim, SECRET)).toMatchObject({ userId: EXAMPLE_ADA.id });
 
-    // And the row landed, so the cookie is one the running Worker would accept.
+    // **And no session row landed — `#572`.** The seed writes a file; the route mints the session when
+    // the link is opened, which is what keeps signing out of the app from destroying the way back in.
     const store = await h.openLocal();
     try {
-      const row = await store.d1
-        .prepare("SELECT user_id FROM pithy_auth_sessions WHERE id = ?")
-        .bind(expected.session.id)
-        .first<{ user_id: string }>();
-      expect(row?.user_id).toBe(EXAMPLE_ADA.id);
+      const row = await store.d1.prepare("SELECT count(*) AS n FROM pithy_auth_sessions").first<{ n: number }>();
+      expect(row?.n).toBe(0);
     } finally {
       await store.dispose();
     }

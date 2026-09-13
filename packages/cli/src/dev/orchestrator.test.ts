@@ -593,15 +593,20 @@ async function signalReady(h: ReturnType<typeof harness>): Promise<void> {
   await flush();
 }
 
-/** The one value that must never reach a line — asserted directly rather than left to review. */
-const COOKIE_VALUE = "dev-session-example-ada-abcd.c2ln";
+/**
+ * The claim the seed minted — a credential, and the value these tests hold the output against.
+ *
+ * `#572` put it in the URL, because the artifact is a file and a Worker has no filesystem to read it
+ * from. It stays out of the terminal in every run that can open a browser itself, which is what the
+ * assertions below are about; `dev/devLogin.ts` carries the boundary and `claimIsPrinted` names it.
+ */
+const CLAIM = "eyJ1IjoiZXhhbXBsZS1hZGEifQ%3D%3D.c2ln";
 
 /** What `pithy seed` wrote, as `readDevLogin` hands it over. */
 const seededLogin = async () => ({
   email: "ada@example.com",
   userId: "example-ada",
-  cookieName: "better-auth.session_token",
-  cookieValue: COOKIE_VALUE,
+  claim: CLAIM,
   expiresAt: new Date("2027-07-27T00:00:00.000Z"),
 });
 
@@ -643,8 +648,9 @@ describe("startDev — the l keypress", () => {
 
     await keys.press("l");
 
-    expect(opened).toEqual(["http://localhost:8787/__pithy/dev-login"]);
-    expect(h.stdoutLines).toContain("Opening http://localhost:8787/__pithy/dev-login as ada@example.com.");
+    // The claim rides in the URL the browser is handed, and in nothing the terminal prints — `#572`.
+    expect(opened).toEqual([`http://localhost:8787/__pithy/dev-login?t=${CLAIM}`]);
+    expect(h.stdoutLines).toContain("Opening the dev login for ada@example.com.");
   });
 
   test("names pithy seed rather than opening a URL that 404s", async () => {
@@ -784,23 +790,34 @@ describe("startDev — ready banner", () => {
 
     // No terminal in this harness, so the URL is what the banner can honestly offer.
     expect(h.stdoutLines).toContain(
-      "Dev login: ada@example.com — open http://localhost:8787/__pithy/dev-login to sign in.",
+      `Dev login: ada@example.com — open http://localhost:8787/__pithy/dev-login?t=${CLAIM} to sign in.`,
     );
   });
 
-  test("the cookie reaches neither the terminal nor logs/dev.log", async () => {
+  test("no session cookie reaches the terminal or logs/dev.log", async () => {
     // The reason this feature exists. `pithy dev`'s output is read, piped, tee'd and screenshotted, so a
-    // session token printed once is a session token at rest.
+    // session token printed once is a session token at rest. Since `#572` the seed mints none at all.
     const h = harness({ readDevLogin: seededLogin });
     const handle = await startDev(h.options);
     await signalReady(h);
     await handle.ready;
 
     for (const line of [...h.stdoutLines, ...h.logLines]) {
-      expect(line).not.toContain(COOKIE_VALUE);
       expect(line).not.toContain("better-auth.session_token");
       expect(line).not.toContain("document.cookie");
     }
+  });
+
+  test("**and neither does the claim, on the run that can open a browser itself**", async () => {
+    // The interactive single-worker run — the ordinary one. The URL goes to `openUrl`; the terminal is
+    // told a name. A non-interactive run has no keypress and must print a link, which is the documented
+    // boundary rather than a leak.
+    const h = harness({ readDevLogin: seededLogin, readKeys: () => ({ active: true, stop: () => {} }) });
+    const handle = await startDev(h.options);
+    await signalReady(h);
+    await handle.ready;
+
+    for (const line of [...h.stdoutLines, ...h.logLines]) expect(line).not.toContain(CLAIM);
   });
 
   test("offers the keypress where there is a terminal to press it on", async () => {

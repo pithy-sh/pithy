@@ -9,7 +9,7 @@ import type { SeedPrepareContext, SeedSet } from "@pithy-sh/core/src/seed/seed";
 import { collectSeededRows } from "@pithy-sh/core/src/seed/seededRows";
 import { describe, expect, test } from "vitest";
 import { AUTH_SESSION_SECRET } from "../instance/secrets";
-import { authDevSessionSeed, DEV_SESSION_COOKIE_NAME, mintDevSession } from "./devSession";
+import { authDevSessionSeed, mintDevLogin, verifyDevLoginClaim } from "./devSession";
 import { authExampleSeed } from "./example";
 
 const SECRET = "dev-secret-please-rotate-000000000000";
@@ -70,17 +70,17 @@ describe("the dev-session seed set", () => {
     expect(prepared).toEqual({});
   });
 
-  test("mints a session and the login artifact for the named example user", async () => {
+  test("mints the login artifact for the named example user, and no rows at all", async () => {
     const prepared = await prepare(context());
 
-    expect(prepared.d1?.[0]?.table).toBe("pithyAuthSessions");
-    expect(prepared.d1?.[0]?.rows).toHaveLength(1);
+    // **No `d1` — `#572`.** A seeded session was what the product's own sign-out revoked, taking the dev
+    // login with it. The set writes a file; the route mints the session when somebody opens the link.
+    expect(prepared.d1).toBeUndefined();
     expect(prepared.artifacts?.[0]?.file).toBe(DEV_LOGIN_FILE);
 
     const login = DevLogin.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
     expect(login.email).toBe(EXAMPLE_ADA.email);
     expect(login.userId).toBe(EXAMPLE_ADA.id);
-    expect(login.cookieName).toBe(DEV_SESSION_COOKIE_NAME);
     expect(login.expiresAt.getTime()).toBeGreaterThan(Date.now());
   });
 
@@ -143,8 +143,8 @@ describe("the dev-session seed set", () => {
     expect(action).toContain("dev secrets file");
   });
 
-  test("never puts the secret or the cookie in an error a human or a log will see", async () => {
-    const minted = await mintDevSession({ user: APP_USER, secret: SECRET });
+  test("never puts the secret or the claim in an error a human or a log will see", async () => {
+    const minted = await mintDevLogin({ user: APP_USER, secret: SECRET });
     const failures = await Promise.all(
       [{ user: "nobody@example.com" }, { user: 7 }, { user: APP_USER.email }].map((preferences) =>
         prepare(context({ preferences, seeded: seededRows(), secret: async () => undefined })).catch(
@@ -157,43 +157,89 @@ describe("the dev-session seed set", () => {
       if (!(failure instanceof PithyError)) continue;
       const text = JSON.stringify(failure.payload);
       expect(text).not.toContain(SECRET);
-      expect(text).not.toContain(minted.login.cookieValue);
+      expect(text).not.toContain(minted.login.claim);
     }
   });
 });
 
-describe("mintDevSession", () => {
-  test("is deterministic for one secret, so the same cookie survives a reseed", async () => {
-    const first = await mintDevSession({ user: EXAMPLE_ADA, secret: SECRET, now: new Date(1_800_000_000_000) });
-    const second = await mintDevSession({ user: EXAMPLE_ADA, secret: SECRET, now: new Date(1_900_000_000_000) });
-    expect(second.session.token).toBe(first.session.token);
-    expect(second.session.id).toBe(first.session.id);
-    expect(second.login.cookieValue).toBe(first.login.cookieValue);
+describe("mintDevLogin", () => {
+  test("is deterministic for one secret and one moment, so a reseed is not a new login", async () => {
+    const at = new Date(1_800_000_000_000);
+    const first = await mintDevLogin({ user: EXAMPLE_ADA, secret: SECRET, now: at });
+    const second = await mintDevLogin({ user: EXAMPLE_ADA, secret: SECRET, now: at });
+    expect(second.login.claim).toBe(first.login.claim);
   });
 
-  test("rotating the secret invalidates every previously seeded cookie", async () => {
-    const before = await mintDevSession({ user: EXAMPLE_ADA, secret: SECRET, now: new Date(1_800_000_000_000) });
-    const after = await mintDevSession({
-      user: EXAMPLE_ADA,
-      secret: `${SECRET}-rotated`,
-      now: new Date(1_800_000_000_000),
+  test("a claim verifies against the secret that signed it, and names the user it was minted for", async () => {
+    const minted = await mintDevLogin({ user: EXAMPLE_ADA, secret: SECRET, now: new Date(1_800_000_000_000) });
+    expect(await verifyDevLoginClaim(minted.login.claim, SECRET, new Date(1_800_000_001_000))).toEqual({
+      userId: EXAMPLE_ADA.id,
+      expiresAt: minted.login.expiresAt,
     });
-    expect(after.session.token).not.toBe(before.session.token);
-    expect(after.session.id).not.toBe(before.session.id);
-    expect(after.login.cookieValue).not.toBe(before.login.cookieValue);
   });
 
-  test("carries neither the secret nor its fingerprint in plain sight", async () => {
-    const minted = await mintDevSession({ user: EXAMPLE_ADA, secret: SECRET, now: new Date(1_800_000_000_000) });
-    expect(minted.session.token).not.toContain(SECRET);
-    expect(minted.login.cookieValue).not.toContain(SECRET);
+  test("rotating the secret refuses every claim minted under the old one", async () => {
+    const minted = await mintDevLogin({ user: EXAMPLE_ADA, secret: SECRET, now: new Date(1_800_000_000_000) });
+    expect(await verifyDevLoginClaim(minted.login.claim, `${SECRET}-rotated`)).toBeNull();
   });
 
-  test("signs the cookie as `<token>.<signature>`, URI-encoded", async () => {
-    const minted = await mintDevSession({ user: EXAMPLE_ADA, secret: SECRET, now: new Date(1_800_000_000_000) });
-    const decoded = decodeURIComponent(minted.login.cookieValue);
-    expect(decoded.startsWith(`${minted.session.token}.`)).toBe(true);
+  test("carries neither the secret nor the user's address in plain sight", async () => {
+    const minted = await mintDevLogin({ user: EXAMPLE_ADA, secret: SECRET, now: new Date(1_800_000_000_000) });
+    expect(minted.login.claim).not.toContain(SECRET);
+  });
+
+  test("signs the claim as `<payload>.<signature>`, URI-encoded", async () => {
+    const minted = await mintDevLogin({ user: EXAMPLE_ADA, secret: SECRET, now: new Date(1_800_000_000_000) });
+    const decoded = decodeURIComponent(minted.login.claim);
+    const cut = decoded.lastIndexOf(".");
+    expect(cut).toBeGreaterThan(0);
     // A base64 HMAC-SHA-256 is always 44 characters, padding included.
-    expect(decoded.slice(minted.session.token.length + 1)).toHaveLength(44);
+    expect(decoded.slice(cut + 1)).toHaveLength(44);
+  });
+});
+
+describe("verifyDevLoginClaim", () => {
+  /** One claim, minted the ordinary way, for the refusals below to mutate. */
+  async function claim(): Promise<string> {
+    return (await mintDevLogin({ user: EXAMPLE_ADA, secret: SECRET, now: new Date(1_800_000_000_000) })).login.claim;
+  }
+
+  test("**every refusal is null — nothing tells them apart**", async () => {
+    // A route that answered differently for "malformed", "wrong secret" and "expired" would be a probe
+    // against the running secret. One answer, and the route turns it into the one 404 it already had.
+    const good = await claim();
+    const decoded = decodeURIComponent(good);
+    const cut = decoded.lastIndexOf(".");
+
+    for (const [name, presented] of [
+      ["empty", ""],
+      ["not a claim at all", "hello"],
+      ["no signature", encodeURIComponent(decoded.slice(0, cut))],
+      [
+        "a tampered payload",
+        encodeURIComponent(
+          `${btoa(JSON.stringify({ u: "somebody-else", e: 4_000_000_000_000 }))}.${decoded.slice(cut + 1)}`,
+        ),
+      ],
+      ["a signature that is not base64", encodeURIComponent(`${decoded.slice(0, cut)}.not-base64!`)],
+      ["a malformed escape", "%E0%A4%A"],
+    ] as const) {
+      expect(await verifyDevLoginClaim(presented, SECRET), name).toBeNull();
+    }
+  });
+
+  test("an expired claim is refused, and its own expiry is what decides", async () => {
+    const minted = await mintDevLogin({ user: EXAMPLE_ADA, secret: SECRET, now: new Date(1_800_000_000_000) });
+    const justBefore = new Date(minted.login.expiresAt.getTime() - 1_000);
+    const after = new Date(minted.login.expiresAt.getTime() + 1_000);
+    expect(await verifyDevLoginClaim(minted.login.claim, SECRET, justBefore)).not.toBeNull();
+    expect(await verifyDevLoginClaim(minted.login.claim, SECRET, after)).toBeNull();
+  });
+
+  test("a user id holding the separator round-trips, because the payload is base64 of JSON", async () => {
+    // An adopter picks their own user ids. A delimited payload would have split this one in the middle.
+    const awkward = { id: 'a.b|c:d"e', email: "awkward@example.com" };
+    const minted = await mintDevLogin({ user: awkward, secret: SECRET, now: new Date(1_800_000_000_000) });
+    expect((await verifyDevLoginClaim(minted.login.claim, SECRET))?.userId).toBe(awkward.id);
   });
 });
