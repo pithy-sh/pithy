@@ -61,6 +61,7 @@ function wiring(): AuthWiring {
     // The instance will not build without the email seam — it is what a magic link is sent through.
     enqueueEmail: email({ fromAddress: "no@reply.test", fromName: "Test", baseUrl: "http://localhost" }).enqueue,
     turnstile: undefined,
+    onSessionRevoked: undefined,
   };
 }
 

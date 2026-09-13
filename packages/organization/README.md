@@ -131,6 +131,25 @@ No `unassignable`, so every role including `owner` may be handed to somebody, an
 
 `{base}` is the configured `basePath`, `/organizations` by default. Everything under it answers JSON.
 
+## Clear the acting selection when a session ends
+
+The acting selection is keyed by session id, so it has to go when the session does. Nothing here can
+see a sign-out — tenancy depends on auth, not the reverse — so the project that composes both wires it:
+
+```ts
+auth({
+  // Fires on a sign-out, a revoke, an admin ending somebody's devices: anything that deletes the row.
+  onSessionRevoked: async ({ id }) => {
+    await clearActing(organizationDatabase(env.DB), { sessionId: id });
+  },
+}),
+```
+
+Without it the row outlives the credential that made it, one per sign-in, in a table with no TTL and no
+sweep. It confers nothing — every read re-joins memberships and matches the user id too — so this is
+growth rather than an access question, and it is still the kind of growth nobody notices until it is
+large.
+
 ## The one page you have to serve
 
 **An invitation email links to your app, not to this capability.** `invitationAcceptPath` says where — `/invitations` by default — and the token arrives as the last segment, so the page you serve is `/invitations/:token`.

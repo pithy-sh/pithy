@@ -63,7 +63,11 @@ export const MEMBERS_PATH_SEGMENT = "/members";
  * exists to give.
  */
 export function memberImagePath(basePath: string, membershipId: string): string {
-  return `${basePath}${MEMBERS_PATH_SEGMENT}/${membershipId}/image`;
+  // Encoded, like `organizationMarkPath`. A membership id is a UUID at the column and at every route
+  // param that carries one, so nothing here needs escaping today — and the sibling that mints the other
+  // image path already does it. Two functions stating two rules for the same kind of value is how the
+  // one that skipped it becomes the one that breaks first.
+  return `${basePath}${MEMBERS_PATH_SEGMENT}/${encodeURIComponent(membershipId)}/image`;
 }
 
 /** What a roster row needs about the membership it draws: its id, and whose it is. */

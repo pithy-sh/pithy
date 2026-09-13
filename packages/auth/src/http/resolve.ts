@@ -111,8 +111,14 @@ async function buildAuthInstance(c: Context<PithyHonoEnv>, wiring: AuthWiring): 
     resolveProvider(cfg.github.enabled, () => resolveGithubCredentials(env)),
   ]);
   const expiresMinutes = Math.max(1, Math.round(cfg.verificationExpiresIn / 60));
+  const d1 = resolveDb(c.env, cfg.database);
+  const listener = wiring.onSessionRevoked;
   return makeAuth({
-    db: authDatabase(resolveDb(c.env, cfg.database)),
+    db: authDatabase(d1),
+    // The adopter's listener, bound to *this* request's binding. The instance is built per request, so
+    // there is a real binding to hand over here and nowhere earlier — `auth()` runs at compose time and
+    // has none.
+    ...(listener ? { onSessionRevoked: (session: { id: string; userId: string }) => listener(session, d1) } : {}),
     secret,
     // Never `cfg.baseURL` directly. The instance derives the session cookie's name, the OAuth callback
     // URLs, and the magic-link URL from whatever base URL it is handed, so in a `dev` composition every

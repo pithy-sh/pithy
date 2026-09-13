@@ -671,6 +671,7 @@ describe("auth HTTP routes", () => {
       resolveGithubUserInfo: undefined,
       enqueueEmail: emailCap.enqueue,
       turnstile: undefined,
+      onSessionRevoked: undefined,
     };
     const res = await buildApp(wiring).request(
       "/auth/email-otp/send-verification-otp",

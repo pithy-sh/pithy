@@ -51,6 +51,7 @@ function wiring(): AuthWiring {
     resolveGithubUserInfo: undefined,
     enqueueEmail: undefined,
     turnstile: undefined,
+    onSessionRevoked: undefined,
   };
 }
 

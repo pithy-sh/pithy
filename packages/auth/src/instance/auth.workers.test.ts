@@ -58,6 +58,31 @@ function instanceWithMailbox() {
   return { auth: makeAuth(deps), mailbox, events };
 }
 
+/** The same instance, with the session-revoked seam wired so a test can watch it fire. */
+function instanceWatchingRevocations() {
+  const revoked: { id: string; userId: string }[] = [];
+  const mailbox: AuthEmailMessage[] = [];
+  const deps: AuthInstanceDeps = {
+    db: authDatabase(env.DB),
+    secret: "test-secret-please-rotate-0000000000",
+    baseURL: "http://localhost:8787",
+    basePath: "/api/auth",
+    trustedOrigins: ["http://localhost:8787"],
+    ...NO_SOCIAL_PROVIDERS,
+    sendEmail: async (message) => void mailbox.push(message),
+    sessionExpiresIn: 60 * 60 * 24 * 7,
+    sessionUpdateAge: 60 * 60 * 24,
+    verificationExpiresIn: 300,
+    otpLength: 6,
+    disableSignUp: false,
+    providerSignUp: { google: true, apple: true, facebook: true, github: true },
+    emit: async () => {},
+    onSessionRevoked: async (session) => void revoked.push(session),
+    plugins: [],
+  };
+  return { auth: makeAuth(deps), mailbox, revoked };
+}
+
 beforeEach(async () => {
   for (const table of [...TABLES, "pithy_migrations", "pithy_migrations_lock"]) {
     await env.DB.prepare(`drop table if exists ${table}`).run();
@@ -301,5 +326,43 @@ describe("social providers and account linking, via instance.options", () => {
 
   test("the seeding guard is wired as a user create.before hook", () => {
     expect(typeof instanceWith({}).options.databaseHooks?.user?.create?.before).toBe("function");
+  });
+});
+
+describe("onSessionRevoked", () => {
+  /** Sign in and hand back the session token, the way the suites above do. */
+  async function signedIn(auth: ReturnType<typeof makeAuth>, mailbox: AuthEmailMessage[], email: string) {
+    await auth.api.sendVerificationOTP({ body: { email, type: "sign-in" }, headers: new Headers() });
+    const otp = mailbox.find((message) => message.template === "otp");
+    if (otp?.template !== "otp") throw new Error("no OTP sent");
+    const result = await auth.api.signInEmailOTP({ body: { email, otp: otp.code }, headers: new Headers() });
+    return result.token;
+  }
+
+  test("**fires when a session is revoked, so state keyed on it can be cleared**", async () => {
+    /*
+      The seam `@pithy-sh/organization` needed and did not have. Its acting selection is keyed by session
+      id and its own schema says "signing out must take it with it" — but nothing told it a session had
+      gone, so every sign-in/sign-out cycle left an orphan row in a table with no TTL and no sweep.
+
+      On the row rather than on the sign-out endpoint, because a revoke, an admin ending somebody's
+      devices and an expiry all delete the same row and a handler wired to one endpoint would miss them.
+    */
+    const { auth, mailbox, revoked } = instanceWatchingRevocations();
+    const token = await signedIn(auth, mailbox, "revoked@example.test");
+    expect(revoked).toHaveLength(0);
+
+    await auth.api.signOut({ headers: new Headers({ authorization: `Bearer ${token}` }) });
+
+    expect(revoked).toHaveLength(1);
+    expect(revoked[0]?.userId).toBeTruthy();
+  });
+
+  test("a composition that wires nothing is unaffected, and signing out still works", async () => {
+    // The seam is optional: `@pithy-sh/auth` composed alone must not require a listener.
+    const { auth, mailbox } = instanceWithMailbox();
+    const token = await signedIn(auth, mailbox, "unwired@example.test");
+    const out = await auth.api.signOut({ headers: new Headers({ authorization: `Bearer ${token}` }) });
+    expect(out.success).toBe(true);
   });
 });
