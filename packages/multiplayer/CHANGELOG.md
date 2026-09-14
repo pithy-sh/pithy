@@ -1,5 +1,21 @@
 # @pithy-sh/multiplayer
 
+## 0.2.3
+
+### Patch Changes
+
+- [#576](https://github.com/pithy-sh/pithy/pull/576) [`7d9a7c4`](https://github.com/pithy-sh/pithy/commit/7d9a7c48e26dffd9d1062af0b743049b967e78e1) Thanks [@kingmesal](https://github.com/kingmesal)! - A release now publishes what it built.
+  
+  `release:local` never ran a build. It versioned the packages and published whatever `dist/` was lying in the checkout, so the 2026-09-14 release put twenty-two packages of weeks-old compiled code on npm under fresh version numbers — and `@pithy-sh/organization`, never built in that checkout at all, with no `dist/` and every deep import resolving to nothing.
+  
+  This is those twenty-two, republished from a build. Nothing in the source changed; the artifact did.
+  
+  The release builds now, after the bump and before the publish, and packs every tarball through the gate CI already ran. `packFaults` gains the one question a tarball can answer about how old its build is: the version compiled into `dist/version.generated.js` must be the version being published.
+- Updated dependencies [[`7d9a7c4`](https://github.com/pithy-sh/pithy/commit/7d9a7c48e26dffd9d1062af0b743049b967e78e1)]:
+  - @pithy-sh/core@0.6.1
+  - @pithy-sh/leaderboard@0.2.3
+  - @pithy-sh/ledger@0.2.3
+
 ## 0.2.2
 
 ### Patch Changes

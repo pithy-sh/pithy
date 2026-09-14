@@ -1,6 +1,6 @@
 {
   "name": "@pithy-sh/email",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -42,8 +42,8 @@
     "postal-mime": "^3.0.0"
   },
   "peerDependencies": {
-    "@pithy-sh/core": "^0.6.0",
-    "@pithy-sh/secrets": "^0.2.2",
+    "@pithy-sh/core": "^0.6.1",
+    "@pithy-sh/secrets": "^0.2.3",
     "hono": "^4.13.2",
     "kysely": "^0.29.0",
     "zod": "^4.4.0"
