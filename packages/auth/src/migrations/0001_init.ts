@@ -14,8 +14,16 @@ import type { Migration } from "kysely/migration";
  * every identifier in the emitted DDL (CLAUDE.md §Data layer) — and the same plugin lets Better
  * Auth's camelCase queries land on these snake_case columns. Better-Auth `date` columns are **text**
  * (it stores ISO-8601 strings on SQLite; ISO sorts chronologically); Pithy's own device timestamps
- * are **integer** ms-epoch. Foreign keys are omitted to match the repo convention (D1 does not enforce
- * them without a per-connection PRAGMA); linkage is by indexed id columns.
+ * are **integer** ms-epoch. Linkage is by indexed id columns.
+ *
+ * **No foreign keys across a capability boundary — a choice, not a limitation.** D1 *does* enforce
+ * them: `PRAGMA foreign_keys` is on, a cascade fires, and an orphan insert is refused with
+ * `FOREIGN KEY constraint failed`. `packages/core/src/data/foreignKeys.workers.test.ts` measures both
+ * directions, because this is the kind of claim that rots quietly. What is traded away is real, and the
+ * reason is the boundary rather than the platform: a constraint from one capability's table to another's
+ * binds two release cadences together and breaks the day either moves to its own database. Within a
+ * single capability's own tables a foreign key is available and is simply not used here — worth
+ * revisiting per table rather than as a rule.
  *
  * `down` is the tested inverse — indexes then tables, in reverse creation order (D1 has no
  * transactional DDL, so order matters).

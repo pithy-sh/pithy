@@ -93,6 +93,7 @@ const SHIPPED_MANIFESTS = [
   "matchmaking",
   "media",
   "multiplayer",
+  "organization",
   "payments",
   "rating",
   "secrets",

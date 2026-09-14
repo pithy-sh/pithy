@@ -3,7 +3,8 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
-import { CONFIG_SEAMS, type ConfigOption, type ConfigSeam } from "@pithy-sh/core/src/capability/manifest";
+import type { CapabilityManifest, ConfigSeam } from "@pithy-sh/core/src/capability/manifest";
+import { CONFIG_SEAMS } from "@pithy-sh/core/src/capability/manifest";
 import { readOptionalFile } from "../project/readOptionalFile";
 import type { ConfigValue } from "./add";
 
@@ -45,12 +46,58 @@ const SEAM_MODULES: Record<ConfigSeam, string> = {
 // Replace the line below with yours.
 export const resolveSubject: PaymentsSubjectResolver = unimplementedSubject;
 `,
+  organizationRoles: `import { defineRoles } from "@pithy-sh/organization/src/index";
+
+// Who may do what in an organization.
+//
+// A module rather than a line in pithy.config.ts, because your own route handlers import these powers —
+// \`requirePower("connections:manage")\` reads from here — and importing a handler's vocabulary out of a
+// config file is backwards.
+//
+// Five power names are the kit's and are already in force: organization:read, organization:manage,
+// organization:delete, members:manage and billing:manage. The capability's own routes gate on them, so
+// they cannot be redeclared — declare yours beside them.
+//
+// This starter matrix is three roles that nest. Yours need not: a coaching academy's \`coach\` and
+// \`student\` are parallel and each holds what the other does not, which is legal and is why \`nests\` is
+// something you state rather than something assumed. State it only where it is true — a claim that does
+// not hold is refused at boot, naming both roles.
+//
+// \`administrativePower\` is what "this account always keeps somebody who can administer it" counts over.
+// It is named rather than inferred from a role spelled admin, so an owner who administers too means an
+// account with one owner and one admin does not become unadministrable when the admin leaves.
+//
+// **A role name is stable forever once a membership holds one.** Renaming one orphans every row carrying
+// it and nothing in the capability can repair that. The same class of rule as the project name.
+export const roles = defineRoles({
+  // Your own powers, under your own vocabulary. Add what this product actually gates on.
+  powers: [],
+  roles: {
+    member: ["organization:read"],
+    admin: ["organization:read", "organization:manage", "members:manage"],
+    owner: [
+      "organization:read",
+      "organization:manage",
+      "members:manage",
+      "billing:manage",
+      "organization:delete",
+    ],
+  },
+  administrativePower: "organization:manage",
+  // These three nest, and saying so is what makes a promotion and a demotion predictable.
+  nests: ["member", "admin", "owner"],
+  // Ownership is never handed over by a form field: it moves by offer and acceptance.
+  unassignable: ["owner"],
+});
+`,
 };
 
 /** The note `pithy add` prints for one seam it wrote — what the adopter still owes the Worker. */
 const SEAM_NOTES: Record<ConfigSeam, (path: string) => string> = {
   paymentsSubject: (path) =>
     `${path} is scaffolded, not written. This Worker refuses to boot until resolveSubject answers which organization a caller is acting for.`,
+  organizationRoles: (path) =>
+    `${path} is a starter matrix, not your matrix. Edit it before anybody signs in — a role name is stable forever once a membership holds one.`,
 };
 
 /** One seam a run resolved: which it is, and the option value that asked for it. */
@@ -69,11 +116,16 @@ export interface ResolvedSeam {
  * being written is what decides, which means this is asked after `--set` and any prompt have settled it.
  */
 export function seamsFor(
-  options: readonly ConfigOption[],
+  manifest: Pick<CapabilityManifest, "name" | "seams" | "configOptions">,
   values: Readonly<Record<string, ConfigValue>>,
 ): ResolvedSeam[] {
-  const resolved: ResolvedSeam[] = [];
-  for (const option of options) {
+  // The capability's unconditional seams first, so a module every configuration needs is written and
+  // wired before anything a value asked for. `organization`'s role catalog is the case: a tenancy
+  // capability has no answer to *who may do what* that is not the adopter's, so there is no choice to
+  // make it conditional on. Attributed to the capability rather than to an option, because no option
+  // named it.
+  const resolved: ResolvedSeam[] = manifest.seams.map((seam) => ({ seam, option: manifest.name }));
+  for (const option of manifest.configOptions) {
     const value = values[option.key];
     if (typeof value !== "string") continue;
     const seam = option.choicesNeedingSeam?.[value];

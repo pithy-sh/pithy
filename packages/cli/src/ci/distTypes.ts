@@ -192,9 +192,11 @@ export const SIDES: readonly Side[] = ["input", "output"];
  *
  * So the count is exact and moves only when a person decides it should: adding or removing a table is a
  * one-line edit here, in the same commit, and any other movement is the walk having lost the tree.
- * Measured on 2026-09-09.
+ * Measured on 2026-09-09, and moved on 2026-09-13: `@pithy-sh/organization` is the seventeenth package
+ * and brings five tables — organizations, memberships, invitations, ownership nominations, and the
+ * per-session acting selection.
  */
-export const CENSUS = { tables: 46, packages: 16 };
+export const CENSUS = { tables: 51, packages: 17 };
 
 /**
  * Where the generated programs are written — **outside the checkout, and that is forced**.

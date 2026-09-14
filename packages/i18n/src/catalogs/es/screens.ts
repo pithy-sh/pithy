@@ -67,6 +67,20 @@ export const esScreens: MessageCatalog = {
   "auth/callback.title": "Entrando.",
   "auth/callback.body": "Un momento.",
 
+  // ── organization: the account chooser ──────────────────────────────────────
+  //
+  // "Cuenta" rather than "organización" throughout, and it is the same call the English makes in the
+  // other direction. The reader is picking between two things they belong to; naming the data model at
+  // them is the kind of precision that reads as a form. "Organización" survives where the product's own
+  // noun is the subject — an invitation to one, a name on a record — and not here.
+  "organization/choose.title": "Elige una cuenta",
+  "organization/choose.subtitle": "Perteneces a más de una.",
+  "organization/choose.role": "Aquí eres {role}.",
+  "organization/choose.empty.title": "Todavía no tienes cuentas",
+  "organization/choose.empty.body": "No eres miembro de ninguna cuenta. Pide que alguien te invite.",
+  "organization/choose.failed": "No hemos podido cargar tus cuentas.",
+  "organization/choose.retry": "Reintentar",
+
   // ── payments: the paywall ──────────────────────────────────────────────────
   "payments/paywall.title": "Ve más lejos.",
   "payments/paywall.body": "Elige lo que necesitas. Puedes cambiar de idea más tarde.",

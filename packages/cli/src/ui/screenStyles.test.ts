@@ -8,7 +8,13 @@ import { loadStubFiles } from "./templates";
 
 /** Every file `pithy ui add react --auth --payments` writes, contents and all. */
 async function everyScreen(): Promise<Record<string, string>> {
-  return loadStubFiles(reactStub, { worker: "board", auth: true, payments: true, packageManager: "bun" });
+  return loadStubFiles(reactStub, {
+    worker: "board",
+    auth: true,
+    payments: true,
+    organization: false,
+    packageManager: "bun",
+  });
 }
 
 describe("renderedClassNames", () => {

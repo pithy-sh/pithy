@@ -42,6 +42,10 @@
       "package": "@pithy-sh/multiplayer"
     },
     {
+      "name": "organization",
+      "package": "@pithy-sh/organization"
+    },
+    {
       "name": "payments",
       "package": "@pithy-sh/payments"
     },
@@ -757,6 +761,8 @@
         "--no-auth",
         "--payments",
         "--no-payments",
+        "--organization",
+        "--no-organization",
         "--json",
         "--no-json"
       ]
@@ -1128,6 +1134,34 @@
     {
       "code": "multiplayer/session_not_found",
       "status": 404
+    },
+    {
+      "code": "organization/forbidden",
+      "status": 403
+    },
+    {
+      "code": "organization/invalid_role_catalog",
+      "status": 400
+    },
+    {
+      "code": "organization/invitation_invalid",
+      "status": 400
+    },
+    {
+      "code": "organization/last_administrator",
+      "status": 409
+    },
+    {
+      "code": "organization/nomination_invalid",
+      "status": 400
+    },
+    {
+      "code": "organization/not_found",
+      "status": 404
+    },
+    {
+      "code": "organization/slug_taken",
+      "status": 409
     },
     {
       "code": "payments/clawback_failed",

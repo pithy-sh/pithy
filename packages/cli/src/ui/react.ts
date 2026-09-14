@@ -40,6 +40,7 @@ function manifest(context: UiStubContext): UiStubFile[] {
   // composing both auth and payments gets both screen sets and no path moves.
   if (context.auth) files.push(...inPlace(TEMPLATE_GROUPS.auth));
   if (context.payments) files.push(...inPlace(TEMPLATE_GROUPS.payments));
+  if (context.organization) files.push(...inPlace(TEMPLATE_GROUPS.organization));
   return files;
 }
 

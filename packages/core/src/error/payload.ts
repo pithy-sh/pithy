@@ -1275,6 +1275,90 @@ const ControlPlaneKeyConflictPublic = z
   })
   .describe("A key operation conflicts with the connection's current state (409).");
 
+// --- @pithy-sh/organization: tenancy, roles, invitations and ownership codes ---
+
+const OrganizationNotFoundPublic = z
+  .object({
+    code: z
+      .literal("organization/not_found")
+      .describe(
+        "The named organization does not exist, **or** the caller is not a member of it. One code for two facts, deliberately: a distinguishable refusal is an existence oracle, and iterating it produces the customer list. Which of the two it was survives in `detail`, which the HTTP codec strips and the log keeps.",
+      ),
+    status: z.literal(404).describe("Not Found."),
+    ...publicFields,
+  })
+  .describe("No such organization, or none this caller belongs to — the same answer for both (404).");
+
+const OrganizationForbiddenPublic = z
+  .object({
+    code: z
+      .literal("organization/forbidden")
+      .describe(
+        "The caller is a proved member whose role does not hold the power the route asked for. A 403 rather than the 404 above, and the difference is earned: by the time this is raised they already know the organization exists, because they belong to it.",
+      ),
+    status: z.literal(403).describe("Forbidden — a member, but not one who may do this."),
+    ...publicFields,
+  })
+  .describe("A member's role does not hold the required power (403).");
+
+const OrganizationInvalidRoleCatalogPublic = z
+  .object({
+    code: z
+      .literal("organization/invalid_role_catalog")
+      .describe(
+        "A role catalog failed validation. Raised by `defineRoles` at author time — a redeclared kit power, an `administrativePower` nobody holds, a kit power no role holds, or a claimed nesting that does not hold — so a mistake fails where the catalog is written rather than the first time somebody is refused by it.",
+      ),
+    status: z.literal(400).describe("Bad Request — the catalog declaration is malformed."),
+    ...publicFields,
+  })
+  .describe("A role catalog declaration is invalid (400).");
+
+const OrganizationInvitationInvalidPublic = z
+  .object({
+    code: z
+      .literal("organization/invitation_invalid")
+      .describe(
+        "An invitation cannot be redeemed: no such token, already used, withdrawn, past its date, or presented by a session whose own address is not the one invited. One code for all five, because telling somebody which it was tells whoever forwarded the link the same thing.",
+      ),
+    status: z.literal(400).describe("Bad Request — the offer is not redeemable by this caller."),
+    ...publicFields,
+  })
+  .describe("An invitation is not redeemable (400).");
+
+const OrganizationLastAdministratorPublic = z
+  .object({
+    code: z
+      .literal("organization/last_administrator")
+      .describe(
+        "The write would leave the account with nobody holding `administrativePower`. Counted over the power rather than over a role spelled `admin`, so a catalog where an owner also administers does not become unadministrable when its one admin leaves.",
+      ),
+    status: z.literal(409).describe("Conflict — an account nobody can administer is not a state to arrive at."),
+    ...publicFields,
+  })
+  .describe("The last administrator cannot be demoted, removed, or leave (409).");
+
+const OrganizationSlugTakenPublic = z
+  .object({
+    code: z
+      .literal("organization/slug_taken")
+      .describe("Another organization already holds that slug. A slug addresses one account, so it is unique."),
+    status: z.literal(409).describe("Conflict."),
+    ...publicFields,
+  })
+  .describe("That slug is already in use (409).");
+
+const OrganizationNominationInvalidPublic = z
+  .object({
+    code: z
+      .literal("organization/nomination_invalid")
+      .describe(
+        "An ownership offer cannot be accepted: none stands, it was replaced, it has expired, or it was made to somebody else. Ownership moves only by offer and acceptance, so a refusal here is the transfer declining to happen rather than a permission being short.",
+      ),
+    status: z.literal(400).describe("Bad Request — no offer this caller may accept."),
+    ...publicFields,
+  })
+  .describe("No standing ownership offer this caller may accept (400).");
+
 // --- @pithy-sh/support: inbound inbox, taxonomy, and classification codes ---
 
 const SupportNotFoundPublic = z
@@ -1577,6 +1661,13 @@ export const KitPublicErrorPayload = z
     ControlPlaneInsufficientScopePublic,
     ControlPlaneKeyNotFoundPublic,
     ControlPlaneKeyConflictPublic,
+    OrganizationNotFoundPublic,
+    OrganizationForbiddenPublic,
+    OrganizationInvalidRoleCatalogPublic,
+    OrganizationInvitationInvalidPublic,
+    OrganizationLastAdministratorPublic,
+    OrganizationSlugTakenPublic,
+    OrganizationNominationInvalidPublic,
     SupportNotFoundPublic,
     SupportInvalidCategoryPublic,
     SupportUnparseableMessagePublic,
@@ -1917,6 +2008,28 @@ const TestersNotConfigured = TestersNotConfiguredPublic.extend(internalFields).d
   TestersNotConfiguredPublic.description ?? "",
 );
 
+const OrganizationNotFound = OrganizationNotFoundPublic.extend(internalFields).describe(
+  OrganizationNotFoundPublic.description ?? "",
+);
+const OrganizationForbidden = OrganizationForbiddenPublic.extend(internalFields).describe(
+  OrganizationForbiddenPublic.description ?? "",
+);
+const OrganizationInvalidRoleCatalog = OrganizationInvalidRoleCatalogPublic.extend(internalFields).describe(
+  OrganizationInvalidRoleCatalogPublic.description ?? "",
+);
+const OrganizationInvitationInvalid = OrganizationInvitationInvalidPublic.extend(internalFields).describe(
+  OrganizationInvitationInvalidPublic.description ?? "",
+);
+const OrganizationLastAdministrator = OrganizationLastAdministratorPublic.extend(internalFields).describe(
+  OrganizationLastAdministratorPublic.description ?? "",
+);
+const OrganizationSlugTaken = OrganizationSlugTakenPublic.extend(internalFields).describe(
+  OrganizationSlugTakenPublic.description ?? "",
+);
+const OrganizationNominationInvalid = OrganizationNominationInvalidPublic.extend(internalFields).describe(
+  OrganizationNominationInvalidPublic.description ?? "",
+);
+
 const SupportNotFound = SupportNotFoundPublic.extend(internalFields).describe(SupportNotFoundPublic.description ?? "");
 const SupportInvalidCategory = SupportInvalidCategoryPublic.extend(internalFields).describe(
   SupportInvalidCategoryPublic.description ?? "",
@@ -2046,6 +2159,13 @@ export const KitErrorPayload = z
     ControlPlaneInsufficientScope,
     ControlPlaneKeyNotFound,
     ControlPlaneKeyConflict,
+    OrganizationNotFound,
+    OrganizationForbidden,
+    OrganizationInvalidRoleCatalog,
+    OrganizationInvitationInvalid,
+    OrganizationLastAdministrator,
+    OrganizationSlugTaken,
+    OrganizationNominationInvalid,
     SupportNotFound,
     SupportInvalidCategory,
     SupportUnparseableMessage,

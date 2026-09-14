@@ -9,6 +9,7 @@ import { KIT_SESSION_FIELDS, KIT_USER_FIELDS } from "../data/kitFields";
 import type { AuthDatabase } from "../data/tables";
 import { parseDeviceMeta, registerDevice } from "../device/registry";
 import { PROVIDER_CHANGE_FRESH_AGE_SECONDS } from "../http/providerFreshness";
+import { refuseUnsafeProfile, sanitizeProfile } from "../profile/profile";
 import { defaultGithubUserInfo, type GithubUserInfoResolver } from "./githubUserInfo";
 import { kitPlugins } from "./plugins";
 import {
@@ -114,6 +115,21 @@ export function isUnverifiedSignup(user: { emailVerified?: boolean | null }): bo
 }
 
 /**
+ * Refuse a write whose `name` or `image` is not a shape this kit will render, with a 400 naming the
+ * field.
+ *
+ * The decision is `../profile/profile.ts`'s and is pure; this is the half that needs `APIError`, which
+ * is what turns a refusal into a 400 instead of a row that throws on every later read. That failure
+ * mode is the one `../data/kitFields.ts` already documents for `locale`: a bad value written once makes
+ * the *listing* fail for every operator rather than only for its author.
+ */
+function refuseUnsafeProfileFields(user: { name?: unknown; image?: unknown }): void {
+  const refusal = refuseUnsafeProfile(user);
+  if (!refusal) return;
+  throw new APIError("BAD_REQUEST", { code: "INVALID_PROFILE_FIELD", message: refusal.message });
+}
+
+/**
  * What the instance hands to Pithy's email seam to deliver. The route never sends inline — the hook
  * enqueues an `@pithy-sh/email` job (`magicLink`/`otp` template) which a Workflow delivers.
  */
@@ -185,6 +201,21 @@ export interface AuthInstanceDeps<Plugins extends readonly BetterAuthPlugin[] = 
   /** Audit seam — emits `auth/*` events. A no-op when the audit capability is absent. */
   emit: AuditEmit;
   /**
+   * Called when a session row is deleted — a sign-out, a revoke, an admin ending somebody's devices.
+   *
+   * **The seam exists because a session id is a key other capabilities hang state on**, and nothing
+   * else tells them it has gone. `@pithy-sh/organization` keys its acting selection by session id and
+   * states that signing out must take it with it; without this there was no moment at which it could,
+   * so every sign-in/sign-out cycle left an orphan row in a table with no TTL and no sweep.
+   *
+   * Wired by the project that composes both — a capability does not reach into another, and the
+   * direction is wrong anyway: tenancy depends on auth, not the reverse.
+   *
+   * **Non-fatal by contract.** By the time this runs the session is already gone; a failure here must
+   * not turn a completed sign-out into an error the caller retries. Implementations swallow their own.
+   */
+  onSessionRevoked?: (session: { id: string; userId: string }) => Promise<void>;
+  /**
    * The adopter's additional Better Auth plugins, from `auth({ plugins: [...] })`. Composed **after**
    * the kit's own, never in place of one — `assertAdditivePlugins` has already refused a list that
    * names one of them.
@@ -252,6 +283,21 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
                   "This email isn't verified by the provider. Sign in with a magic link to verify it, then connect the provider.",
               });
             }
+            // **Sanitized, not refused.** This is a provider's profile arriving mid-sign-in, and the
+            // person signing in did not choose it — see `../profile/profile.ts`. A long name is
+            // truncated, an avatar this kit will not hold becomes initials, and they get in.
+            const safe = sanitizeProfile(user);
+            if (Object.keys(safe).length > 0) return { data: { ...user, ...safe } };
+          },
+        },
+        update: {
+          // The profile gate. **Every** write to `name` or `image` passes through here — Better Auth's
+          // own `/update-user`, an adopter's route, an admin tool — because the hook is at the adapter
+          // rather than at any one door. `../profile/profile.ts` records why a validator declared
+          // beside the column would not have run: `parseUserInput` reaches the additional fields only,
+          // and these two are Better Auth's own.
+          before: async (user) => {
+            refuseUnsafeProfileFields(user);
           },
         },
       },
@@ -294,6 +340,27 @@ export function makeAuth<const Plugins extends readonly BetterAuthPlugin[]>(deps
               now: new Date(),
             });
             return { data: { ...session, deviceId: meta.id, authenticatedAt } };
+          },
+        },
+        delete: {
+          /**
+           * Tell whoever keyed state on this session that it has gone.
+           *
+           * A sign-out, a revoke, an admin ending somebody's devices — all of them land here, which is
+           * why the seam is on the row rather than on the sign-out endpoint. A handler wired to one
+           * endpoint would miss the other three, and the row is what the state was keyed by.
+           *
+           * **After, not before.** The session is already gone when this runs, so a slow or failing
+           * listener cannot hold up or refuse a sign-out — and it swallows its own failure for the same
+           * reason the audit emit does: the thing it reports has already happened.
+           */
+          after: async (session) => {
+            if (!deps.onSessionRevoked) return;
+            try {
+              await deps.onSessionRevoked({ id: String(session.id), userId: String(session.userId) });
+            } catch {
+              // Swallowed by contract. The sign-out succeeded; a listener's failure is not the caller's.
+            }
           },
         },
       },

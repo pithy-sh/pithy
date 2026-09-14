@@ -102,6 +102,42 @@
     gap: 0.75rem;
   }
 
+  /* The chooser's list. A hook you are meant to style: this is one of the first screens somebody who
+     belongs to two accounts sees, and it should look like your product rather than like the kit. */
+  .organizations {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .organization {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    width: 100%;
+    text-align: left;
+  }
+
+  /* Square, because it holds either an image or one letter and the two must not disagree about size. */
+  .organization__mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 0.25rem;
+    object-fit: cover;
+    background: var(--pithy-surface);
+  }
+
+  .organization__name {
+    flex: 1 1 auto;
+  }
+
   :is(.screen, .auth) label {
     display: block;
     font-size: 0.875rem;

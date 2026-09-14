@@ -114,6 +114,7 @@ function wiring(config: Partial<AuthConfigInput> = {}): AuthWiring {
     resolveGithubUserInfo: undefined,
     enqueueEmail: emailCap.enqueue,
     turnstile: undefined,
+    onSessionRevoked: undefined,
   };
 }
 

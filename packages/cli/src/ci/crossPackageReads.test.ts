@@ -57,6 +57,10 @@ const RECORD: Record<string, string> = {
     "`project/config.test.ts` asserts core's record of how Bun reports a build failure — that it wraps two or more diagnostics in an `AggregateError`, and re-throws it emptied on every import after the first (#223). The assertion belongs beside the classifier that depends on it, and the fact belongs in core, so the read crosses.",
   packages:
     "Every package's shipped files, read from the source tree rather than `node_modules`: the manifest-width sweep (#173), the migration-order scan, the capability catalog, and the stamped versions.",
+  "packages/auth/src/capability.ts":
+    "`@pithy-sh/organization`'s `capability.test.ts` reads the extension vocabulary auth *emits* — the literal `kind: \"better-auth-plugin\"`. Tenancy refuses to compose alongside Better Auth's `organization()` plugin by matching that string and the plugin's id, and `CapabilityExtension.kind` and `.id` are free text by design, so nothing in the type system ties the two packages together. The failure mode is silent and serious: auth renames its kind, the refusal stops firing, and a Worker with two membership models boots and serves. So the string is pinned against the file that writes it, and renaming it has to re-run the suite that depends on it.",
+  "packages/organization/pithy.manifest.json":
+    "`capabilities/organizationSeam.test.ts` names this one manifest rather than sweeping them all, because it carries the first **manifest-level** `seams` entry the kit ships — a seam with no choice to hang off, since a tenancy capability has no answer to *who may do what* that is not the adopter's. The repo-wide sweep proves every manifest parses; this proves `pithy add organization` still scaffolds a role catalog and still refuses to overwrite one, which is the feature.",
   "packages/payments/pithy.manifest.json":
     "`capabilities/manifests.test.ts` names this one manifest rather than sweeping them all, because `billingSubject` is the first **required** config option the kit ships — no default, a closed set of two — and it is the whole reason a manifest can express one (#412). The repo-wide sweep above proves every manifest still parses; this proves that this option is still required, which is the feature. Editing the manifest must therefore re-run the CLI's suite, and `packages` alone does not say so specifically enough to survive somebody narrowing it.",
   "packages/ui-react/templates/src":
@@ -108,10 +112,16 @@ describe("the cross-package reads CI plans from", () => {
     // `.changeset/*.md`, every published `package.json`, and every `CHANGELOG.md`. Its gates are only
     // true as a set — a package landing without a `repository` field publishes with no provenance at
     // all, silently — so a change anywhere in `packages/` has to re-run them.
+    //
+    // `@pithy-sh/organization` is the seventh, and it reads exactly one file: `packages/auth/src/capability.ts`.
+    // Its refusal to compose alongside Better Auth's `organization()` plugin is keyed on two strings auth
+    // emits as free text, so the gate holds only while those strings do — and if they move, the refusal
+    // fails open into a Worker with two membership models.
     expect([...new Set((await reads()).map((read) => read.package))].sort()).toEqual([
       "@pithy-sh/browser-scopes",
       "@pithy-sh/cli",
       "@pithy-sh/cloudflare",
+      "@pithy-sh/organization",
       "@pithy-sh/release",
       "@pithy-sh/ui-react",
       "@pithy-sh/vite-adopter",

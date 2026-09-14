@@ -277,7 +277,7 @@ async function updateConfig({ workerDir, manifest, configValues }: AddCapability
 
   // The seams this run's chosen values ask for — none on a re-run, which writes nothing at all. See this
   // function's header for why they ride with the registration rather than with the run.
-  const seams = alreadyRegistered ? [] : seamsFor(manifest.configOptions, configValues ?? {});
+  const seams = alreadyRegistered ? [] : seamsFor(manifest, configValues ?? {});
   // Ahead of the capability's own import so the two land in the order a reader expects, and ahead of the
   // write so a seam whose binding is taken leaves the file untouched rather than half-wired.
   for (const seam of seams) {

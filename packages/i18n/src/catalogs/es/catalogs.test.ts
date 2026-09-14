@@ -92,7 +92,7 @@ describe("the catalogs are the size they are", () => {
     expect(
       Object.keys(esErrors),
       "the taxonomy size moved: update all four hand-written counts — core/src/error/payload.test.ts, cli/src/ci/catalogCoverage.test.ts, i18n/src/catalogs/es/errors.test.ts and this one — plus the Spanish sentence in i18n/src/catalogs/es/errors.ts, then run `bun run docs-catalog`",
-    ).toHaveLength(123);
+    ).toHaveLength(130);
     expect(ENTRIES.length).toBeGreaterThanOrEqual(191);
   });
 
@@ -126,15 +126,16 @@ describe("every key is a catalog key", () => {
   });
 
   test("the screens write under a screen's domain, never under `email/` or a code's", () => {
-    // Screens are `auth/`, `payments/` and the adopter's own `app/` — the three trees `pithy ui add`
-    // writes. A key that drifted into the email file's domain would be shadowed by it at merge.
+    // Screens are `auth/`, `payments/`, `organization/` and the adopter's own `app/` — the trees
+    // `pithy ui add` writes. A key that drifted into the email file's domain would be shadowed by it
+    // at merge.
     //
-    // `client/` is the fourth and the only one with no capability behind it: the codes a browser SDK
-    // mints when the request never reached a Worker at all. They belong here because a screen is what
-    // renders them, and they are pinned by `./client.test.ts` against the exported sentinels rather
-    // than against a list — see that file for why the two SDKs share two of the four codes.
+    // `client/` is the one with no capability behind it: the codes a browser SDK mints when the request
+    // never reached a Worker at all. They belong here because a screen is what renders them, and they
+    // are pinned by `./client.test.ts` against the exported sentinels rather than against a list — see
+    // that file for why the two SDKs share two of the four codes.
     const domains = [...new Set(Object.keys(esScreens).map((key) => key.split("/")[0]))].sort();
-    expect(domains).toEqual(["app", "auth", "client", "payments"]);
+    expect(domains).toEqual(["app", "auth", "client", "organization", "payments"]);
   });
 });
 

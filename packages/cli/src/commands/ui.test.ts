@@ -50,7 +50,7 @@ describe("ui command", () => {
   });
 
   test("add takes a framework positional, --worker, one flag per screen set, and --json", () => {
-    expect(Object.keys(args("add"))).toEqual(["framework", "worker", "auth", "payments", "json"]);
+    expect(Object.keys(args("add"))).toEqual(["framework", "worker", "auth", "payments", "organization", "json"]);
     expect(args("add").framework).toMatchObject({ type: "positional", required: true });
     expect(args("add").worker).toMatchObject({ type: "string" });
     expect(args("add").json).toMatchObject({ type: "boolean", default: false });
@@ -59,7 +59,7 @@ describe("ui command", () => {
   test("no screen-set flag carries a default, so `neither flag given` stays distinguishable", () => {
     // A default of false would make --no-auth unobservable and kill the "default to yes when the
     // capability is composed" rule; a default of true would scaffold broken imports on a worker without it.
-    for (const screens of ["auth", "payments"]) {
+    for (const screens of ["auth", "payments", "organization"]) {
       expect(args("add")[screens], screens).toMatchObject({ type: "boolean" });
       expect(args("add")[screens]?.default, screens).toBeUndefined();
     }

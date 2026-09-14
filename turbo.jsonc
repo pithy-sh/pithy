@@ -805,6 +805,32 @@
     // no line at all (#106) — and that is only true if editing the document re-runs the gate, which is
     // the same seam as the block above, one document wide. The register records the read; the guard in
     // `packages/cli/src/ci/turboInputs.test.ts` fails if this line goes missing.
+    // `@pithy-sh/organization`'s refusal to compose alongside Better Auth's `organization()` plugin is
+    // keyed on two strings `@pithy-sh/auth` emits as free text — `CapabilityExtension.kind` and `.id` are
+    // untyped by design — so `capability.test.ts` pins the literal against the file that writes it. Named
+    // here or the cache lies about it: auth renames its kind, this suite replays a pass from before the
+    // rename, and a Worker with two membership models boots and serves.
+    "@pithy-sh/organization#test": {
+      // `dependsOn` restated — see the note on `@pithy-sh/cli#typecheck`. An override replaces the
+      // base task, so a task named here for one package inherits nothing.
+      "dependsOn": ["^build", "build"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/packages/auth/src/capability.ts"]
+    },
+    // The same key, for the task CI runs. See the block above.
+    "@pithy-sh/organization#test:node": {
+      // `dependsOn` restated — see the note on `@pithy-sh/cli#typecheck`. An override replaces the
+      // base task, so a task named here for one package inherits nothing.
+      "dependsOn": ["^build", "build"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/packages/auth/src/capability.ts"]
+    },
+    // And `test:workers`, keyed identically. The three tasks of one package share a key on purpose: a
+    // suite split across them is one suite, and a key that differed by task would replay one half of it.
+    "@pithy-sh/organization#test:workers": {
+      // `dependsOn` restated — see the note on `@pithy-sh/cli#typecheck`. An override replaces the
+      // base task, so a task named here for one package inherits nothing.
+      "dependsOn": ["^build", "build"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/packages/auth/src/capability.ts"]
+    },
     "@pithy-sh/cloudflare#test": {
       // `dependsOn` restated — see the note on `@pithy-sh/cli#typecheck`. An override replaces the
       // base task, so a task named here for one package inherits nothing.

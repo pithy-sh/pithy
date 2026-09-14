@@ -120,7 +120,7 @@ const DECLARED_ONLY: Record<string, string> = {
  */
 const IMPORTERS: Record<string, number> = {
   "packages/audit": 2,
-  "packages/auth": 3,
+  "packages/auth": 4,
   "packages/cli": 10,
   "packages/cloudflare": 2,
   "packages/core": 12,
@@ -130,6 +130,7 @@ const IMPORTERS: Record<string, number> = {
   "packages/matchmaking": 8,
   "packages/media": 7,
   "packages/multiplayer": 5,
+  "packages/organization": 6,
   "packages/payments": 14,
   "packages/rating": 2,
   "packages/secrets": 4,
@@ -529,10 +530,10 @@ describe("the Workers types are declared the way they are used", () => {
     ).toBeDefined();
     stated.push({ where: scaffold, range: literal });
 
-    // Twenty workspace manifests, the starter Worker `pithy init` copies, and the scaffolder literal.
+    // Twenty-one workspace manifests, the starter Worker `pithy init` copies, and the scaffolder literal.
     // Pinned rather than floored: a walk that read nothing would satisfy any floor, and a declaration
     // landing or leaving is a change whose author should confirm the number rather than inherit it.
-    expect(stated.length, "the set of declarations moved — count them, then say so here").toBe(22);
+    expect(stated.length, "the set of declarations moved — count them, then say so here").toBe(23);
     expect(
       stated.filter((entry) => entry.range !== RANGE),
       "these state a different range. Two versions of an ambient global type in one adopter's program are duplicate-identifier errors, so all of them dedupe to one copy or none of them do",

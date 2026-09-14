@@ -102,6 +102,7 @@ describe("an adopter's route wears auth's same-origin policy", () => {
           resolveGithubUserInfo: undefined,
           enqueueEmail: undefined,
           turnstile: undefined,
+          onSessionRevoked: undefined,
         },
         dev,
       )(app);

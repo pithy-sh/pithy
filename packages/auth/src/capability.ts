@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import type { D1Database } from "@cloudflare/workers-types";
 import type { Capability, PithyMiddleware } from "@pithy-sh/core/src/capability/capability";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
@@ -140,7 +141,24 @@ export interface AuthWiring {
   enqueueEmail: EmailCapability["enqueue"] | undefined;
   /** The turnstile login gate, when the turnstile capability is composed. Set by `compose`. */
   turnstile: { mode: TurnstileMode } | undefined;
+  /**
+   * The adopter's session-revoked listener, or absent. See {@link AuthOptions.onSessionRevoked}.
+   *
+   * Optional on the wiring rather than required-and-undefined, because a composition without a listener
+   * is the ordinary case and every harness that builds this shape by hand would otherwise have to say so.
+   */
+  onSessionRevoked?: SessionRevokedListener | undefined;
 }
+
+/**
+ * Called when a session row is deleted — a sign-out, a revoke, an admin ending somebody's devices.
+ *
+ * **Handed this request's D1 binding**, because the auth instance is built per request and the listener
+ * almost certainly wants to write to the same database under a different capability's view of it. Taking
+ * the binding rather than a typed database keeps this seam out of the business of knowing whose tables
+ * the listener is about to touch.
+ */
+export type SessionRevokedListener = (session: { id: string; userId: string }, d1: D1Database) => Promise<void>;
 
 /**
  * What `auth()` takes: the config, plus the seams that are **behavior rather than data**.
@@ -166,6 +184,22 @@ export type AuthOptions = AuthConfigInput & {
    * real per-address flag, always.
    */
   resolveGithubUserInfo?: GithubUserInfoResolver;
+  /**
+   * Told when a session is revoked, so state another capability keyed on it can go with it.
+   *
+   * **On the row, not on the sign-out route.** A sign-out, a revoke and an admin ending somebody's
+   * devices all delete the same row, so a listener hung off one endpoint would miss the others.
+   *
+   * The case this exists for is `@pithy-sh/organization`: its acting selection is keyed by session id
+   * and its schema says signing out must take it with it. Tenancy depends on auth and not the reverse,
+   * so the composition holding both is what joins them, and this is the join.
+   *
+   * **Non-fatal by contract.** The session is already gone when this runs; a failure here must not turn
+   * a completed sign-out into an error the caller retries, so the instance swallows what it throws.
+   *
+   * A function, so it is destructured off before `AuthConfig.parse` for the reason above.
+   */
+  onSessionRevoked?: SessionRevokedListener;
 };
 
 /** The auth capability, with its resolved config attached for inspection. */
@@ -215,7 +249,7 @@ export function auth(options: AuthOptions): AuthCapability {
   // Zod 4 objects strip unknown keys silently, so a `resolveGithubUserInfo` handed to `AuthConfig.parse`
   // would vanish with no error and the adopter's override would simply never run. `payments()` splits
   // its `resolveSubject` out for the same reason.
-  const { resolveGithubUserInfo, ...config } = options;
+  const { resolveGithubUserInfo, onSessionRevoked, ...config } = options;
   const resolved = AuthConfig.parse(config);
   // Additivity, before anything is built from the list. The four the kit composes are the sign-in this
   // product promises and what the control-plane seam verifies against, so a list naming one of them is
@@ -229,6 +263,7 @@ export function auth(options: AuthOptions): AuthCapability {
     resolveGithubUserInfo,
     enqueueEmail: undefined,
     turnstile: undefined,
+    onSessionRevoked,
   };
 
   // Tier-1 edge rate limiter, contributed as middleware so it runs before session resolution.

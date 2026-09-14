@@ -37,7 +37,12 @@ export const User = z
     emailVerified: SQLiteBoolean.describe(
       "Whether the email has been verified. Stored as `0|1`; magic-link/OTP sign-in sets it true.",
     ),
-    image: z.string().nullable().describe("URL of the user's avatar from a social profile, or null."),
+    image: z
+      .string()
+      .nullable()
+      .describe(
+        "The user's picture: a URL on the provider that signed them in, or bytes this application stores as a bounded `data:` URL — see `../profile/profile.ts` for why the column takes two shapes. Null when nobody has set one, and then a caller draws initials, which is a real answer and not a placeholder.\n\n**Permissive here and strict on the write, exactly as `name` is, and the asymmetry is the point.** `UserImage` runs at the database hook, so nothing this kit writes can put an unacceptable value in the column. What this schema decodes is what is *already there* — a row a provider wrote before the rule existed, a repair script, a restored backup. A strict column turns one such row into a `ZodError` on every read that touches it, and `getUsers` parses a page of rows at once: one poisoned row would take down the whole roster for every operator rather than drawing one gap. That is the failure mode `./kitFields.ts` records for `locale`, and it is worse here, because a roster is read by people who did not write the row.\n\nThe value is made safe on the way **out** instead. `userImageSource` answers null for anything the rule does not recognize, so an unrecognized value renders as initials; and the serving route refuses to hand out bytes it cannot type.",
+      ),
     locale: Locale.nullable().describe(
       "The reader's chosen language as a BCP-47 tag, or null when they have never chosen. Null is not the default locale: it means negotiate from `Accept-Language`, so an unchosen reader follows their device. A stored tag outranks the header.",
     ),

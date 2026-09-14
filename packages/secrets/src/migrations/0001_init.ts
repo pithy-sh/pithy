@@ -47,6 +47,11 @@ export const secrets_0001_init: Migration = {
     await db.schema.createIndex("pithySecretsRotationsNameIdx").on("pithySecretsRotations").column("name").execute();
   },
   down: async (db: Kysely<unknown>): Promise<void> => {
+    // The inverse of the `up`, index for index — the shape every capability in this kit writes. SQLite
+    // takes an index with its table, so this is redundant today and stays because a `down` that reads as
+    // the reverse of its `up` is one a reader can check against it.
+    await db.schema.dropIndex("pithySecretsRotationsNameIdx").ifExists().execute();
+
     await db.schema.dropTable("pithySecretsRotations").execute();
     await db.schema.dropTable("pithySecretsSystemSecrets").execute();
   },

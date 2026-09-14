@@ -497,6 +497,13 @@ export const CONFIG_SEAMS = {
     describe:
       "Which organization this caller is acting for. Scaffolded unimplemented — this Worker refuses to boot until src/billing/subject.ts answers it.",
   },
+  organizationRoles: {
+    binding: "roles",
+    module: "src/organization/roles.ts",
+    specifier: "./src/organization/roles",
+    describe:
+      "Who may do what here. Scaffolded with a starter matrix — the role names and the powers they hold are this product's, and only this project's code can state them.",
+  },
 } as const satisfies Record<string, ConfigSeamSpec>;
 
 /** Which scaffolded seam a choice needs, by key. */
@@ -680,6 +687,12 @@ export const CapabilityManifest = z
       .default([])
       .describe(
         "Every secret from this capability's registry that declares how it comes to exist and how it is replaced. The route `devSecrets` proved: a client reads it without executing the package, so `pithy doctor` says *not set — run this* or *not set — get it here*, and no client keeps its own table of names. A secret declaring neither axis is absent, which reads as *nothing is known*, not as *nothing can help*.",
+      ),
+    seams: z
+      .array(ConfigSeam)
+      .default([])
+      .describe(
+        "Seams this capability needs **always**, rather than under one choice of one option. `pithy add` writes each module into the Worker, imports it, and passes it to the factory beside the config values — the same machinery `choicesNeedingSeam` drives, without the condition. `organization`'s role catalog is the one: a tenancy capability has no answer to *who may do what* that is not the adopter's, so there is no configuration under which the module is unnecessary and nothing to make it conditional on. Named from `CONFIG_SEAMS`, so nothing a manifest states is written into generated source unquoted (#183).",
       ),
     scaffold: z.array(z.string()).default([]).describe("Human-readable scaffold steps the CLI performs or explains."),
     configOptions: z

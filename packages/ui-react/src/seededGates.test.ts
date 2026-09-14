@@ -51,6 +51,21 @@ type Held =
    */
   | { readonly gate: string; readonly expectation: "canary" }
   /**
+   * A seeded gate whose expectation is **which mechanism ran**, not what value it produced.
+   *
+   * The rule the canary arm enforces is that a gate must not restate the value it checks, because a
+   * restated value passes against the exact drift the gate exists to catch. A mechanism assertion
+   * cannot fail that way, because there is no value in it to drift: the chooser's gate asserts that
+   * leaving happened through `window.location.assign` and that `history.pushState` was *not* called,
+   * and neither half has a real value a copyist could paste in.
+   *
+   * The arm exists because the sweep below would otherwise demand a canary from a gate that has nothing
+   * to invent one about — and the available ways to satisfy it are worse than the rule: a canary
+   * destination proves the screen navigates somewhere, which is not the property. `why` is required, so
+   * reaching for this rather than a canary costs an argument.
+   */
+  | { readonly gate: string; readonly expectation: "mechanism"; readonly why: string }
+  /**
    * Held by a gate the kit **keeps**, named by its path from the repository root, with the reason it
    * cannot travel. Two reasons have turned up so far and both are walls rather than judgments: the
    * party who can break the invariant is the kit rather than the adopter, or the gate cannot run where
@@ -122,6 +137,13 @@ const LEDGER: Record<string, Held> = {
     ungated:
       "Its own `path` is the single statement of where it is, and it navigates through `navigate` rather than to a literal. Nothing outside it holds a copy of anything in it.",
   },
+  // ── organization ────────────────────────────────────────────────────────────────────────────────
+  "src/routes/pithy/choose-organization.tsx": {
+    gate: "src/routes/pithy/choose-organization.test.tsx",
+    expectation: "mechanism",
+    why: "Leaving by `window.location.assign` rather than `navigate` is the invariant, and it is one an adopter can break with a one-word edit that looks like a correction — every other screen here uses `navigate`, correctly. What it protects is invisible in every manual test: the first account somebody switches to is the one whose data is already on screen, so a route change that keeps the React tree alive looks identical until a customer with two accounts sees the other one's roster in production. There is no value to invent a canary for; the assertion is that one API ran and the other did not.",
+  },
+
   "src/routes/pithy/callback.tsx": {
     ungated:
       "Held from the other end. Its `path` is the one statement of where a magic link returns, and sign-in.test.tsx is the gate that keeps sign-in.tsx reading it rather than restating it (#393). A second gate here would assert the file agrees with itself.",
@@ -253,7 +275,7 @@ describe("a seeded gate does not write down the value it is checking", () => {
   test("every canary gate invents its expectation and refuses it having drifted", async () => {
     let checked = 0;
     for (const [subject, held] of Object.entries(LEDGER)) {
-      if (!("gate" in held) || !("expectation" in held)) continue;
+      if (!("gate" in held) || !("expectation" in held) || held.expectation !== "canary") continue;
       const text = await readFile(join(TEMPLATE_DIR, held.gate), "utf8");
       expect(
         refusesDrift(text),
