@@ -1,5 +1,169 @@
 # @pithy-sh/cli
 
+## 0.8.0
+
+### Minor Changes
+
+- [#585](https://github.com/pithy-sh/pithy/pull/585) [`9b7573f`](https://github.com/pithy-sh/pithy/commit/9b7573f64a863ac22680465b221d6f229568ee33) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy doctor` now reports an `env.<name>` stanza that silently goes without something its own top level declares.
+  
+  Most of a `wrangler.jsonc` flows down into an environment. A minority does not — `vars`, `version_metadata`, and
+  every binding block among them — and a key in that minority declared at the top and left out of a stanza is simply
+  **absent** in that environment, with no error and one warning inside a deploy whose output nobody is reading. The
+  kit's own first adopter shipped staging and prod with no `CF_VERSION_METADATA` binding that way, which left
+  `pithy deploy`'s post-deploy version check permanently inconclusive on both.
+  
+  The new `Environment inheritance:` block names the Worker, the key, the environment, and what that environment goes
+  without — the binding or variable names, read out of your own config rather than from a description of what the key
+  is for. It **reports and never fails the exit**: every project scaffolded before this landed is in this state for
+  `version_metadata`, and an upgrade that turns a green `pithy doctor` red in CI is a surprise rather than a
+  diagnosis. `--json` carries it as `environmentInheritance`.
+  
+  **The rule is wrangler's, and a test says so.** The kit states the non-inherited keys once, in
+  `project/wranglerInheritance.ts`, and `wranglerInheritance.test.ts` holds that list to wrangler's own
+  `notInheritable(…)` call sites and to its `EnvironmentNonInheritable` interface — so a wrangler release that adds a
+  key, or moves one across the line, fails the build instead of quietly narrowing the check. That gate exists because
+  the first hand-written version of this rule was wrong about two of its four names within a day: `observability` and
+  `triggers` read like per-environment settings and are both inherited.
+  
+  `pithy init` and `pithy worker add` now repeat what they must. Both scaffolders read the list rather than restating
+  it, so the next key wrangler adds reaches them without anybody remembering to come back.
+
+- [#585](https://github.com/pithy-sh/pithy/pull/585) [`9b7573f`](https://github.com/pithy-sh/pithy/commit/9b7573f64a863ac22680465b221d6f229568ee33) Thanks [@kingmesal](https://github.com/kingmesal)! - The Worker you deploy now carries the environment in the middle too — `<project>-<env>-<worker>`.
+  
+  Every other resource the kit names puts the environment second. The adopter's own Worker put it last, because
+  wrangler appends `--env` to the top-level `name` and nothing ever wrote one. So `acme-staging-db` and
+  `acme-board-staging` sat nowhere near each other in an account holding two environments. `pithy init` and
+  `pithy worker add` now stamp `env.<name>.name` in the kit's shape, and `scaffoldParity.test.ts` holds both
+  producers to it.
+  
+  **Nothing existing is renamed.** The fallback stays wrangler's suffix, so a project that never declared a name
+  deploys exactly where it always did, and `pithy provision` now *reads* a declared name instead of recomputing
+  one over it — that reversal is argued in `provisionScope.ts`, because recompute would have renamed every
+  adopter who took the new shape, on their next provision, taking routes and service bindings with it. Service
+  bindings resolve to the callee's declared name for the same reason. `pithy doctor` reports a project still on
+  the suffix as an optional convention, never a fault, and says what a rename costs.
+  
+  **And eight worker names are now reserved.** Under this shape `apps/email` would deploy `acme-staging-email` —
+  byte-identical to the email capability's own host Worker, which `wrangler deploy` would replace in silence.
+  `pithy init --worker`, `pithy worker add` and `pithy worker rename` refuse any name a capability's host owns,
+  and `pithy doctor` reports a project that already declares one. The set is read from the host registry at run
+  time, so a capability that ships a host later is covered the day it is registered.
+
+- [#585](https://github.com/pithy-sh/pithy/pull/585) [`9b7573f`](https://github.com/pithy-sh/pithy/commit/9b7573f64a863ac22680465b221d6f229568ee33) Thanks [@kingmesal](https://github.com/kingmesal)! - Long commands narrate themselves.
+  
+  `pithy deploy` printed nothing at all until it had finished. For minutes, while it built front ends and
+  uploaded Workers. Someone who knows the command works waits it out; someone who does not cannot tell a
+  slow upload from a hung one, and the first thing they reach for is Ctrl-C in the middle of a deploy.
+  
+  This was solved once already, for `pithy provision` ([#515](https://github.com/pithy-sh/pithy/issues/515), [#531](https://github.com/pithy-sh/pithy/issues/531)) — and `deploy` never inherited it,
+  because the seam was called `ProvisionProgress` and lived in `provision/environment.ts`. Nothing about
+  either said *this is how a long command narrates itself*. It said *this is how provisioning narrates
+  itself*, which is why the second long command decided the question again and decided it differently.
+  
+  So the vocabulary moved to `terminal/progress.ts`, under no capability and no command, and it is ambient
+  rather than threaded. A producer raises a step; the span decides whether anyone hears it. That is what
+  lets `capabilities/hostDeploy.ts` — the one path every kit Worker is deployed through — narrate the
+  upload for `pithy deploy --kit` **and** for every `pithy <capability> provision`, through two kit
+  packages that carry no progress parameter and should not grow one.
+  
+  `withErrorReporting` opens the span, which is the wrapper every command body already runs inside. A
+  command written next year narrates without deciding to.
+  
+  **The gate is `--json`, and only `--json`.** A machine reads exactly one line, exactly as it did. It is
+  deliberately not the TTY: a run in CI is the run whose log most needs to say where it got to, and these
+  are plain lines printed once and never redrawn — no spinner, no cursor movement — so a redirected stdout
+  takes them unharmed.
+  
+  **A human `pithy deploy`'s output shape changed.** The per-Worker line each Worker settles as is printed
+  as that Worker settles rather than in a block after the last upload; it **moved**, so it is not printed
+  twice, and the same is true of each kit capability's row. The migration warning now comes first, before
+  the first upload. The `--json` payload, its keys, and every exit code are unchanged.
+  
+  Fixes [#578](https://github.com/pithy-sh/pithy/issues/578).
+
+### Patch Changes
+
+- [#585](https://github.com/pithy-sh/pithy/pull/585) [`9b7573f`](https://github.com/pithy-sh/pithy/commit/9b7573f64a863ac22680465b221d6f229568ee33) Thanks [@kingmesal](https://github.com/kingmesal)! - A deploy to a named environment publishes that environment.
+  
+  `pithy deploy --env staging` shipped a Worker composed as `dev`, publicly, and reported success. Two
+  mechanisms met. The front end's build was handed `ENVIRONMENT`, which `@cloudflare/vite-plugin` does not
+  read to select a wrangler environment — it reads **`CLOUDFLARE_ENV`** — so every build emitted the
+  top-level stanza. And `vite build` writes `.wrangler/deploy/config.json`, which redirects the following
+  `wrangler deploy` to that flattened output, where `--env staging` matched nothing and was silently
+  ignored. The Worker that landed carried dev bindings, dev vars, no routes, and `workers.dev` open, with
+  `registerDevLoginRoute` mounted on it.
+  
+  The build is now told both names, because they are two variables with two jobs. A feature environment is
+  told a third, `CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH`, so the build reads the generated config its ids
+  live in — which is what lets the feature path stop passing `--config` for a Worker with a front end. That
+  branch was broken in the opposite direction: an explicit `--config` beats the redirect, and the source
+  config carries no `assets.directory` because only the build writes one, so a feature deploy of a UI
+  Worker failed on exactly that, every time.
+  
+  **The gate is the point, and it is not "`CLOUDFLARE_ENV` is set".** After the build and before the
+  upload, deploy resolves the configuration wrangler will actually read — an explicit `--config`, else the
+  redirect, else the Worker's own `wrangler.jsonc` — and holds it to what the project declares for the
+  environment that was asked for: the script name, and `vars.ENVIRONMENT`. They disagree and that Worker is
+  not deployed, naming the file it was about to ship. The class has now produced two mechanisms in one
+  command, so the invariant is stated about the file that ships rather than about either of them.
+  
+  `--env dev` no longer passes `--env` to wrangler or `CLOUDFLARE_ENV` to the build: `dev` is the top-level
+  stanza, and `DeclaredEnvironments` forbids a project from writing an `env.dev` for wrangler to find.
+  
+  A probe that cannot reach the declared origin now reads as a failure — `deployed, and not verified.` —
+  rather than as an indented note under a `deployed.` line. It already failed the command; it did not say
+  so, and an operator was told to check a route while the wrong Worker sat on a public URL.
+  
+  `@pithy-sh/vite` also resolves its environment from `CLOUDFLARE_ENV` when `ENVIRONMENT` is unset, so a
+  hand-run or CI `CLOUDFLARE_ENV=staging vite build` no longer inlines dev projections beside staging's
+  Worker config.
+  
+  **The gate reads both of wrangler's inputs, not just the argv.** wrangler resolves the environment as
+  `args.env ?? CLOUDFLARE_ENV`, so an operator with `CLOUDFLARE_ENV=prod` exported in their shell who runs
+  a bare `pithy deploy` publishes the **prod** stanza — and a gate reading the argv alone expects the
+  top-level one and approves it, blessing exactly the class of mistake it exists to refuse. The same two
+  inputs are read here now, in the same precedence, and a refusal names the variable when the variable is
+  what selected the stanza, because an operator told to rebuild would never find it.
+  
+  **A scaffolded Worker's deploy scripts name the Worker's own configuration.** `vite build` leaves a
+  `.wrangler/deploy/config.json` redirect, and wrangler searches for it upwards — so
+  `bun run build && bun run deploy:staging` reproduced this defect in a script the kit wrote, and a Worker
+  with no front end could be redirected by a sibling's build higher in the tree. `wrangler deploy --config
+  wrangler.jsonc --env <name>` deploys the tracked file or nothing. Once a Worker has a front end those
+  scripts fail rather than ship, because the tracked `assets` stanza carries no `directory` — that Worker
+  is `pithy deploy`'s to ship, which builds what it deploys and holds the result to the environment asked
+  for.
+  
+  **And a capability host Worker publishes the name the kit gave it.** `pithy <capability> provision` — and
+  `pithy deploy --kit` with it — shelled `wrangler deploy --config <generated>` with no stanza named and no
+  gate at all, so `args.env ?? CLOUDFLARE_ENV` reached the operator's shell. A generated host config has no
+  `env` section, wrangler's missing-stanza branch only *warns*, and `appendEnvName` runs anyway: an
+  exported `CLOUDFLARE_ENV=prod` published `acme-prod-email-prod` instead of `acme-prod-email`. A Worker
+  under a name nothing references, while every binding pointing at the real one resolves to the old script
+  or to nothing — and no symptom at all on a machine that exports nothing, which is the third time this
+  class has arrived by a new route.
+  
+  The argv states its stanza now, in wrangler's own spelling for the top level (`--env=`), and a gate holds
+  it to the Worker its configuration declares: the name that ships must be the declared one, **and** the
+  argv must say so rather than leaving it to a shell, because an assertion about the name alone is green on
+  the machine that writes the defect. A deploy that would publish something else refuses and names
+  `CLOUDFLARE_ENV` when the variable is what chose.
+  
+  `pithy deploy` keeps refusing rather than suppressing, and that difference is deliberate: there,
+  `CLOUDFLARE_ENV` also steers the front-end build whose output is what ships, so silencing it on the
+  upload alone would point the build at one stanza and the deploy at another. A host deploy runs no build.
+
+- [#585](https://github.com/pithy-sh/pithy/pull/585) [`9b7573f`](https://github.com/pithy-sh/pithy/commit/9b7573f64a863ac22680465b221d6f229568ee33) Thanks [@kingmesal](https://github.com/kingmesal)! - The upgrade command the notifier prints now resolves the registry's `latest` tag.
+  
+  `bun update`, `pnpm update` and `yarn global upgrade` each honor the version range an earlier global install
+  recorded — and for a `0.x` release a caret pins the minor, so `^0.5.0` could never reach `0.7.1`. The command
+  ran, reported success, installed nothing, and the notice came back on the next invocation. Those three rows
+  now use the install verbs, which name no range: `bun install -g`, `pnpm add -g`, `yarn global add`. The deno
+  row gains `-f`, without which it refuses to replace an existing shim and exits 1 — and an upgrade is always
+  run against an existing shim. Homebrew and npm are unchanged; neither records a range to respect.
+- Updated dependencies [[`9b7573f`](https://github.com/pithy-sh/pithy/commit/9b7573f64a863ac22680465b221d6f229568ee33)]:
+  - @pithy-sh/core@0.6.2
+
 ## 0.7.1
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # @pithy-sh/i18n
 
+## 0.6.2
+
+### Patch Changes
+
+- Updated dependencies [[`9b7573f`](https://github.com/pithy-sh/pithy/commit/9b7573f64a863ac22680465b221d6f229568ee33)]:
+  - @pithy-sh/core@0.6.2
+
 ## 0.6.1
 
 ### Patch Changes

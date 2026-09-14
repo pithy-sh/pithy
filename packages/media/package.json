@@ -39,7 +39,7 @@
   },
   "peerDependencies": {
     "@pithy-sh/cloudflare": "^0.2.3",
-    "@pithy-sh/core": "^0.6.1",
+    "@pithy-sh/core": "^0.6.2",
     "@pithy-sh/secrets": "^0.2.3",
     "@pithy-sh/storage": "^0.2.3",
     "hono": "^4.13.2",
