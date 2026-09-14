@@ -104,8 +104,15 @@ export interface PithyPluginOptions {
   configFile?: string;
   /**
    * The environment this bundle is built for. Defaults to `ENVIRONMENT` in the process env, then
-   * `dev`. `pithy deploy --env <name>` is what threads a real value in, so a production bundle sees
-   * production's projection and a dev bundle sees dev's.
+   * `CLOUDFLARE_ENV`, then `dev`. `pithy deploy --env <name>` is what threads a real value in, so a
+   * production bundle sees production's projection and a dev bundle sees dev's.
+   *
+   * **`CLOUDFLARE_ENV` is in that chain because it is the name Cloudflare's own tooling uses (#579).**
+   * It is what `@cloudflare/vite-plugin` reads to select the wrangler stanza, so a hand-run
+   * `CLOUDFLARE_ENV=staging vite build` — the Cloudflare-native spelling, and what CI reaches for —
+   * produced staging's Worker config and this plugin's **dev** projections, silently. That is the same
+   * class of miss as the deploy defect itself: one environment, two names, and only one of them read.
+   * `ENVIRONMENT` stays first, so nothing that already sets it changes behavior.
    */
   environment?: string;
 }
@@ -120,7 +127,7 @@ export interface PithyPluginOptions {
  * heard of: a screen branches on `enabled`, it does not guard on whether the module exists.
  */
 export function pithy(options: PithyPluginOptions = {}): PithyPlugin {
-  const environment = options.environment ?? process.env.ENVIRONMENT ?? "dev";
+  const environment = options.environment ?? process.env.ENVIRONMENT ?? process.env.CLOUDFLARE_ENV ?? "dev";
   let configFile = "";
   // Memoize the promise, not the value: `load` runs concurrently for every virtual module a bundle
   // imports, and each `runnerImport` builds a fresh environment. One promise means one config load.

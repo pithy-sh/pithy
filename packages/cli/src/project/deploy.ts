@@ -10,6 +10,7 @@ import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/co
 import { isSourceEnvironment, wranglerConfigPath } from "../provision/featureConfig";
 import { red } from "../terminal/style";
 import { loadWorkerConfig, loadWorkerDomains } from "./config";
+import { assertDeploysRequestedEnvironment, wranglerEnvironment } from "./effectiveConfig";
 import { detectPackageManager, execArgs, type PackageManager } from "./packageManager";
 import type { DeployVerification, VerifyDeployResult } from "./verifyDeploy";
 import { isDeployFailure, verifyDeployedVersion } from "./verifyDeploy";
@@ -24,18 +25,48 @@ export type RunDeploy = (target: WorkerTarget, args: string[]) => Promise<string
 /**
  * The UI build runner for one worker — injectable so tests exercise orchestration without a real build.
  *
- * `environment` is not optional decoration. `@pithy-sh/vite` resolves each capability's client-safe
- * projection *for a named environment* at build time — a Turnstile sitekey differs per environment, and
- * the plugin falls back to `dev` when nothing says otherwise. A build that does not carry the deploy's
- * `--env` therefore inlines dev values into a production bundle, which for Turnstile means shipping
- * Cloudflare's always-passes test sitekey. It is silent, and it defeats the gate entirely.
+ * `buildEnv` is not optional decoration, and it is a *set* of variables rather than one because the build
+ * has to be told two different things by two different names — see {@link uiBuildEnvironment}.
  */
 export type RunBuild = (
   target: WorkerTarget,
   command: string,
   args: string[],
-  environment: string | undefined,
+  buildEnv: Readonly<Record<string, string>>,
 ) => Promise<void>;
+
+/**
+ * **What a front end's build has to be told, and why one variable was never enough (#579).**
+ *
+ * `ENVIRONMENT` is the name the deployed Worker answers to, and it is what `@pithy-sh/vite` resolves each
+ * capability's client-safe projection against — a Turnstile sitekey differs per environment, and a build
+ * that does not carry the deploy's `--env` inlines Cloudflare's always-passes test sitekey into a
+ * production bundle. That much was already true.
+ *
+ * **`CLOUDFLARE_ENV` is the one that selects the wrangler stanza**, and nothing set it. It is what
+ * `@cloudflare/vite-plugin` reads — `getEnvironmentVariableFactory({ variableName: "CLOUDFLARE_ENV" })`,
+ * verified in 1.54.7 — so a build handed only `ENVIRONMENT` emitted the **top-level** stanza however
+ * loudly `--env staging` was typed. The build output is then what `wrangler deploy` follows, through the
+ * `.wrangler/deploy/config.json` redirect it writes, so the dev stanza is what shipped. Two variables,
+ * two jobs; assuming one did both is the defect.
+ *
+ * **`CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH` is how a feature environment reaches the build at all.** Its
+ * ids are generated under `.wrangler/` rather than written into the tracked `wrangler.jsonc` (#242), so
+ * the plugin has to be pointed at that file — and pointing it there is what lets the feature path stop
+ * passing `--config` to wrangler. It had to: an explicit `--config` beats the redirect, and the source
+ * config carries no `assets.directory`, so a feature deploy of a Worker with a front end failed outright.
+ *
+ * `dev` sets no `CLOUDFLARE_ENV`, because `dev` is the top-level stanza rather than an `env.dev` — see
+ * `wranglerEnvironment`.
+ */
+export function uiBuildEnvironment(env: string | undefined, workerDir: string): Record<string, string> {
+  if (env === undefined) return {};
+  const overlay: Record<string, string> = { ENVIRONMENT: env };
+  const stanza = wranglerEnvironment(env);
+  if (stanza !== undefined) overlay.CLOUDFLARE_ENV = stanza;
+  if (!isSourceEnvironment(env)) overlay.CLOUDFLARE_VITE_WRANGLER_CONFIG_PATH = wranglerConfigPath(workerDir, env);
+  return overlay;
+}
 
 export interface DeployProjectOptions {
   /** The project root — the parent of `apps/`, where every Worker lives. */
@@ -165,14 +196,14 @@ const runProcess = promisify(execFile);
  * as the failure `detail`. A build's chunk table can be long, so the buffer is generous; truncation would
  * turn a real failure into a confusing one.
  */
-const defaultRunBuild: RunBuild = async (target, command, args, environment) => {
+const defaultRunBuild: RunBuild = async (target, command, args, buildEnv) => {
   try {
     await runProcess(command, args, {
       cwd: target.dir,
       maxBuffer: 16 * 1024 * 1024,
-      // `ENVIRONMENT` is the same signal the deployed Worker reads (wrangler.jsonc `vars`), and it is
-      // what the Vite plugin resolves each capability's projection against. Absent, it builds `dev`.
-      ...(environment ? { env: { ...process.env, ENVIRONMENT: environment } } : {}),
+      // Overlaid on the real environment rather than replacing it: a build needs PATH, and CI needs
+      // whatever else it exported. What each name does is {@link uiBuildEnvironment}'s sentence to say.
+      env: { ...process.env, ...buildEnv },
     });
   } catch (cause) {
     throw new InternalError({
@@ -263,12 +294,26 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
   const run = options.runDeploy ?? defaultRunDeploy(options.account);
   const build = options.runBuild ?? defaultRunBuild;
   const packageManager = await detectPackageManager(options.projectDir);
-  // `--config` for a feature environment, and only there. Provisioning writes a feature's ids into a
-  // generated config under `.wrangler/` rather than into the tracked `wrangler.jsonc` (#242), so wrangler
-  // has to be told where they are. A declared environment's ids are in the file wrangler already reads.
-  const configFor = (worker: WorkerTarget): string[] =>
-    options.env && !isSourceEnvironment(options.env) ? ["--config", wranglerConfigPath(worker.dir, options.env)] : [];
-  const args = options.env ? ["deploy", "--env", options.env] : ["deploy"];
+  // **`--config` for a feature environment, and only where nothing has already built one.** Provisioning
+  // writes a feature's ids into a generated config under `.wrangler/` rather than into the tracked
+  // `wrangler.jsonc` (#242), so wrangler has to be told where they are. A declared environment's ids are
+  // in the file wrangler already reads.
+  //
+  // **Not for a Worker with a front end, and that reverses what this line used to do (#579).** An
+  // explicit `--config` beats the `.wrangler/deploy/config.json` redirect — measured — and the source
+  // config carries no `assets.directory`, because only the build writes one. So a feature deploy of a UI
+  // Worker failed on exactly that, every time. The build is pointed at the generated config instead
+  // (`uiBuildEnvironment`), which puts the feature's ids *and* the asset wiring in one file, and the
+  // redirect hands wrangler that file.
+  const configFor = (worker: WorkerTarget, hasUi: boolean): string[] =>
+    options.env && !isSourceEnvironment(options.env) && !hasUi
+      ? ["--config", wranglerConfigPath(worker.dir, options.env)]
+      : [];
+  // Through `wranglerEnvironment`, so the argv, the build and the gate cannot disagree about which stanza
+  // is being asked for — and so `dev`, which is the top-level stanza rather than an `env.dev`, does not
+  // ask wrangler for an environment that no project is allowed to declare.
+  const stanza = wranglerEnvironment(options.env);
+  const args = stanza ? ["deploy", "--env", stanza] : ["deploy"];
   const audit = options.audit ?? (async () => {});
   const probe = options.verifyDeploy ?? ((probeOptions) => verifyDeployedVersion(probeOptions));
   const severity = deploySeverity(options.env);
@@ -278,14 +323,26 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
     // Stays undefined for an API-only worker, turns false while a UI worker's build is in flight: a
     // `built: false` row is how a `--json` consumer reads "the build failed, the deploy never ran".
     let built: boolean | undefined;
+    // Which step a failure belongs to, stated rather than inferred from `built` — the refusal below is a
+    // third step, and it happens after a successful build and before any upload.
+    let stage: "build" | "config" | "deploy" = "deploy";
     try {
       const ui = await uiBuild(worker, packageManager);
       if (ui) {
+        stage = "build";
         built = false;
-        await build(worker, ui.command, ui.args, options.env);
+        await build(worker, ui.command, ui.args, uiBuildEnvironment(options.env, worker.dir));
         built = true;
       }
-      const stdout = await run(worker, [...args, ...configFor(worker)]);
+      const argv = [...args, ...configFor(worker, ui !== undefined)];
+      // **The last moment this is still recoverable.** The configuration wrangler is about to read is a
+      // file on disk now, and what it deploys as is written in it — so it is asked, and a deploy that
+      // would publish something other than the requested environment refuses instead (#579). After the
+      // upload the only remedy is deleting a live Worker.
+      stage = "config";
+      await assertDeploysRequestedEnvironment({ workerDir: worker.dir, env: options.env, args: argv });
+      stage = "deploy";
+      const stdout = await run(worker, argv);
       const deploy: WorkerDeploy = {
         name: worker.name,
         ok: true,
@@ -326,10 +383,7 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
         resourceId: worker.name,
         // Same as the success path: `worker` is `resourceId` and `env` is the `environment` column.
         // What stays is what is genuinely per-event — which stage failed, and why.
-        metadata: {
-          stage: built === false ? "build" : "deploy",
-          error: reason,
-        },
+        metadata: { stage, error: reason },
       });
     }
   }
@@ -344,15 +398,24 @@ export function summarizeDeploy(deploy: WorkerDeploy): string {
     return red(`${deploy.name}: ${problem}`) + (deploy.error ? ` ${deploy.error}` : "");
   }
   const detail = [deploy.url, deploy.versionId].filter(Boolean).join(" ");
-  const line = detail ? `${deploy.name}: deployed. ${detail}` : `${deploy.name}: deployed.`;
-  // Wrangler's own URL keeps appearing above, as it always did — it tells a human where their deploy
+  // Wrangler's own URL keeps appearing here, as it always did — it tells a human where their deploy
   // went. The verification line below is the separate question of whether the *declared* address is now
   // serving what was just shipped, and it is the only one that can fail the command.
-  if (!deploy.verification || deploy.verification === "verified") return line;
+  if (!deploy.verification || deploy.verification === "verified") {
+    return detail ? `${deploy.name}: deployed. ${detail}` : `${deploy.name}: deployed.`;
+  }
   const note = deploy.verificationDetail ?? "";
-  // Red for the two that fail the command, plain for the two that do not — one rule, `isDeployFailure`,
-  // so the color and the exit code can never disagree about which is which.
-  return isDeployFailure(deploy.verification) ? `${line}\n  ${red(note)}` : `${line}\n  ${note}`;
+  // **A verification that fails the command reads as a failure, not as a note under a success (#579).**
+  // `deployed.` followed by an indented hint is how "nothing answers at the address this project claims"
+  // was reported while a dev-composed Worker sat on a public URL — the operator was told to check a
+  // route. The upload did happen, and the line still says so, but the headline is the fact that failed.
+  // One rule, `isDeployFailure`, decides that and the exit code, so they can never disagree.
+  if (!isDeployFailure(deploy.verification)) {
+    const line = detail ? `${deploy.name}: deployed. ${detail}` : `${deploy.name}: deployed.`;
+    return `${line}\n  ${note}`;
+  }
+  const failed = red(`${deploy.name}: deployed, and not verified.`);
+  return `${detail ? `${failed} ${detail}` : failed}\n  ${red(note)}`;
 }
 
 /** Whether any Worker's declared address is consistently serving something other than what just shipped. */

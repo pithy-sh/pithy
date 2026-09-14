@@ -146,8 +146,14 @@ function isId(value: string | undefined): boolean {
  * the generated config under `.wrangler/` for a feature.
  *
  * Provisioning writes a feature's ids into a generated config rather than into the tracked file
- * (#242), which is also why `pithy deploy` passes `--config` there. Reading the tracked file for a
- * feature would find placeholders and report every kit Worker as unprovisioned.
+ * (#242). Reading the tracked file for a feature would find placeholders and report every kit Worker
+ * as unprovisioned.
+ *
+ * **The same resolver decides which file, and that is now the only thing the two halves share (#579).**
+ * `pithy deploy` used to hand wrangler `--config <generated>` for every feature deploy; it does so only
+ * for a Worker with no front end now, because an explicit `--config` beats the build-output redirect and
+ * the source config carries no `assets.directory`. A kit Worker is never built by Vite and has no
+ * redirect, so nothing about this reader changes — it just no longer describes the deploy argv.
  */
 async function stanzaFor(worker: WorkerTarget, env: string): Promise<KitStanza | undefined> {
   if (!isSourceEnvironment(env)) {
