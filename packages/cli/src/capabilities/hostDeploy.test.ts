@@ -8,6 +8,7 @@ import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { DEPLOY_STAMP_VAR, deployStamp } from "../provision/deployStamp";
+import { narrate, type ProgressEvent } from "../terminal/progress";
 import { deployHostWorker, type HostDeployOptions } from "./hostDeploy";
 
 /**
@@ -229,5 +230,48 @@ describe("deployHostWorker", () => {
       await run({ vars: { [DEPLOY_STAMP_VAR]: CURRENT } });
       expect(await readdir(dir)).toEqual([]);
     });
+  });
+});
+
+/**
+ * **One place, and every command that ships a kit Worker inherits it (#578).**
+ *
+ * `pithy deploy --kit` reaches here, and so does every `pithy <capability> provision` — through an
+ * orchestrator and a provisioner class in a kit package, neither of which carries a progress parameter
+ * and neither of which should grow one. Narrating at the spawn is what enrolls all of them at once,
+ * which is the opposite of what #531 did: it named the seam for provisioning, filed it under
+ * `provision/`, and `deploy` never found it.
+ */
+describe("a kit Worker's upload announces itself", () => {
+  /** Every progress event one run raised. */
+  async function narrated(work: () => Promise<unknown>): Promise<ProgressEvent[]> {
+    const events: ProgressEvent[] = [];
+    await narrate(
+      (event) => events.push(event),
+      async () => {
+        await work();
+      },
+    );
+    return events;
+  }
+
+  test("names the Worker it is about to upload", async () => {
+    expect(await narrated(() => run({ vars: null }))).toEqual([{ phase: "start", what: "acme-prod-email" }]);
+  });
+
+  /**
+   * **Nothing is said for a Worker that was already current.** A `▸` line in front of an upload that
+   * never happens is narration an operator learns to distrust, and the skip has its own sentence in the
+   * row the caller settles.
+   */
+  test("says nothing when the stamp matched and no wrangler ran", async () => {
+    expect(await narrated(() => run({ vars: { [DEPLOY_STAMP_VAR]: CURRENT } }))).toEqual([]);
+    expect(deploys).toEqual([]);
+  });
+
+  /** Outside a narrated span — every `--json` run — the spawn is as quiet as it ever was. */
+  test("is silent where no span was opened", async () => {
+    const outcome = await run({ vars: null });
+    expect(outcome.outcome).toBe("deployed");
   });
 });

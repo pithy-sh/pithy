@@ -209,6 +209,8 @@ That is a real cost and it is worth stating the alternative rather than implying
 
 `provision` stands up the per-environment infrastructure for every managed environment in order: the manager's own least-privilege token first, then per environment a dedicated D1, a minted master key, the migrated schema, and the deployed manager Worker. Every step is idempotent — running it again is a no-op. `deprovision` reverses it, and keeps the master keys unless `--keys` says otherwise.
 
+**`provision` says where it got to.** Each environment's manager Worker is named as it is about to be uploaded — `▸ acme-staging-secrets...` — the same plain line `pithy deploy`, `pithy provision` and `pithy email provision` print, from the one seam they all share. A manager the deploy gate skipped as already current says nothing, because nothing was uploaded for it. `--json` silences the lot and still writes exactly one line; a missing TTY does not. `deprovision` deletes over the API and spawns nothing, so it has nothing to narrate.
+
 Credentials for every subcommand above that reaches an account come from `<config>/cloudflare.json`, or `<config>/cloudflare.<accountName>.json` when the root `pithy.config.ts` names an account — account-scoped, not per project. `provision` and `deprovision` additionally need `SECRETS_STORE_ID`, which `pithy add secrets` records. `PITHY_OFFLINE` refuses ambient credentials outright, so an offline run of a Cloudflare-touching subcommand fails rather than reaching an account nobody named.
 
 ## `--json`

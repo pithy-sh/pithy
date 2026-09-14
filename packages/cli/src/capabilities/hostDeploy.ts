@@ -8,6 +8,7 @@ import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { kitImport } from "../project/kitResolve";
 import { runWrangler, type WranglerAccount } from "../project/wrangler";
 import { DEPLOY_STAMP_VAR, type DeployedStamp, stampConfig, stampVerdict } from "../provision/deployStamp";
+import { startStep } from "../terminal/progress";
 
 /**
  * **The one path a kit Worker is deployed through, and therefore the one place the gate lives.**
@@ -182,6 +183,12 @@ export async function deployHostWorker(options: HostDeployOptions): Promise<Host
   }
 
   const run = options.runDeploy ?? defaultRunDeploy(options.account ?? null);
+  // **The one place a kit Worker's upload is announced, so every command that ships one inherits it
+  // (#578).** `pithy deploy --kit` reaches here, and so does every `pithy <capability> provision` —
+  // through two packages that carry no progress parameter and should not grow one. Raised after the
+  // stamp verdict, because a Worker that is already current is not work in flight, and a `▸` line for
+  // an upload that never happens is the kind of narration nobody trusts twice.
+  startStep(worker);
   const configPath = join(options.dir, `.wrangler.${options.env}.json`);
   await writeFile(configPath, `${JSON.stringify(stamped, null, 2)}\n`);
   try {

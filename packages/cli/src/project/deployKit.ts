@@ -17,6 +17,7 @@ import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { discoverHostWorkers, type HostWorker } from "../dev/hostWorkers";
 import { isSourceEnvironment, wranglerConfigPath } from "../provision/featureConfig";
+import { settleStep } from "../terminal/progress";
 import { red } from "../terminal/style";
 import { loadWorkerConfig, loadWorkerDomains } from "./config";
 import { readOptionalFile } from "./readOptionalFile";
@@ -290,20 +291,24 @@ async function runKitDeploy(options: DeployKitOptions, rows: KitWorkerDeploy[], 
 
   for (const host of hosts) {
     const source = workers.find((worker) => worker.dir === host.sourceDir);
-    rows.push(
-      await deployOneKitWorker({
-        host,
-        source,
-        options,
-        readTemplate,
-        readVars,
-        databaseIds,
-        kvNamespaceIds,
-        stanza: stanzas.get(host.sourceDir),
-        storeId: vars.SECRETS_STORE_ID,
-        accountId: vars.CLOUDFLARE_ACCOUNT_ID,
-      }),
-    );
+    const row = await deployOneKitWorker({
+      host,
+      source,
+      options,
+      readTemplate,
+      readVars,
+      databaseIds,
+      kvNamespaceIds,
+      stanza: stanzas.get(host.sourceDir),
+      storeId: vars.SECRETS_STORE_ID,
+      accountId: vars.CLOUDFLARE_ACCOUNT_ID,
+    });
+    rows.push(row);
+    // **The row, as it settles (#578).** The `▸` line for the ones that actually upload comes from
+    // `deployHostWorker`, which is where the spawn is; this is the outcome, and it covers the three
+    // that never reach a spawn at all — unchanged, skipped, failed — so every capability in the set
+    // accounts for itself while the run is still going rather than in a block at the end.
+    settleStep(summarizeKitDeploy(row));
   }
 }
 

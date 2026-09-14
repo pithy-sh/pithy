@@ -37,7 +37,8 @@ import { AUDIT_DESTINATION_ENV, cloudflareProvisioners, type ResourceProvisioner
 import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
 import { storeEntryRemedy } from "../provision/secretEntryRemedy";
 import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
-import { formatDone, formatJsonLine, formatStep, withErrorReporting } from "../terminal/output";
+import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
+import { commandProgress } from "../terminal/progress";
 
 /**
  * `pithy provision --env <name>` and `pithy provision --feature` — **one command, because provisioning is
@@ -187,20 +188,28 @@ function resourceLine(resource: ProvisionedResource): string {
 }
 
 /**
- * **Where a run narrates itself, or nothing at all.**
+ * **Where a provisioning run narrates itself, or nothing at all.**
  *
  * The gate is `--json` and only `--json`: every command is agent-drivable, and a machine reads exactly one
  * line. It is deliberately **not** the `interactive` boolean the confirm prompt uses — that one also asks
  * whether a TTY is attached, and a run in CI is the run whose log most needs to say where it got to. A
  * non-TTY simply renders these lines plain, which is what the whole terminal seam already does with color.
+ *
+ * **The decision and the lines are `terminal/progress.ts`'s now, and this is the adapter (#578).** What
+ * was here was the whole vocabulary, named and filed under provisioning — which is exactly why `pithy
+ * deploy` never inherited it and printed nothing for minutes. What is left here is the only part that is
+ * genuinely about provisioning: a resource has a name, and it was created or it already existed.
  */
 export function provisionProgress(options: { json: boolean }): ProvisionProgress | undefined {
-  if (options.json) return undefined;
-  return (event) => {
+  const progress = commandProgress(options);
+  if (!progress) return undefined;
+  return (event) =>
     // `▸ <name>...` before the find, then the settled line the summary used to hold until the end.
-    const line = event.phase === "start" ? formatStep(event.name) : resourceLine(event.resource);
-    process.stdout.write(`${line}\n`);
-  };
+    progress(
+      event.phase === "start"
+        ? { phase: "start", what: event.name }
+        : { phase: "settled", line: resourceLine(event.resource) },
+    );
 }
 
 /**

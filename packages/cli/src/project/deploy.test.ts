@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { InternalError, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
+import { narrate, type ProgressEvent } from "../terminal/progress";
 import {
   deployProject,
   deploySeverity,
@@ -123,6 +124,82 @@ describe("deployProject", () => {
       { name: "pithy-api", ok: true, versionId: "ver-pithy-api", url: "https://pithy-api.acme.workers.dev" },
       { name: "pithy-web", ok: true, versionId: "ver-pithy-web", url: "https://pithy-web.acme.workers.dev" },
     ]);
+  });
+
+  /**
+   * **`pithy deploy` printed nothing at all until it had finished. For minutes (#578).**
+   *
+   * The wrangler spawn under each of these is captured on purpose — its output is summarized, not
+   * streamed, which is the brand voice — and capturing it removed the only evidence the command was
+   * alive. So the loop says what it is on before it starts, and says how it went as it settles: the
+   * pair is what an interrupted run is read back from, and the settled line **moves** here out of the
+   * command's end-of-run block rather than being printed twice.
+   */
+  test("says which worker it is on before it starts, and how it went as it settles", async () => {
+    await writeWorker("api", "pithy-api");
+    await writeWorker("web", "pithy-web");
+    const events: ProgressEvent[] = [];
+
+    await narrate(
+      (event) => events.push(event),
+      async () => {
+        await deployProject({
+          account: null,
+          projectDir: dir,
+          env: "prod",
+          runDeploy: async (target) => wranglerOutput(target.name, `ver-${target.name}`),
+        });
+      },
+    );
+
+    expect(events).toEqual([
+      { phase: "start", what: "pithy-api" },
+      { phase: "settled", line: "pithy-api: deployed. https://pithy-api.acme.workers.dev ver-pithy-api" },
+      { phase: "start", what: "pithy-web" },
+      { phase: "settled", line: "pithy-web: deployed. https://pithy-web.acme.workers.dev ver-pithy-web" },
+    ]);
+  });
+
+  /** A failure settles too — the one Worker that broke must not wait behind every one that worked. */
+  test("a worker that fails settles as it fails, not after the rest have shipped", async () => {
+    await writeWorker("api", "pithy-api");
+    await writeWorker("web", "pithy-web");
+    const events: ProgressEvent[] = [];
+
+    await narrate(
+      (event) => events.push(event),
+      async () => {
+        await deployProject({
+          account: null,
+          projectDir: dir,
+          runDeploy: async (target) => {
+            if (target.name === "pithy-api")
+              throw new InternalError({ message: "wrangler exited 1.", action: "Look." });
+            return wranglerOutput(target.name, "v1");
+          },
+        });
+      },
+    );
+
+    const settled = events.filter((event) => event.phase === "settled");
+    expect(settled[0]).toEqual({
+      phase: "settled",
+      line: summarizeDeploy({ name: "pithy-api", ok: false, error: "wrangler exited 1." }),
+    });
+    expect(events.indexOf(settled[0] as ProgressEvent)).toBe(1);
+  });
+
+  /** Outside a narrated span — which is every `--json` run — the loop is exactly as quiet as it was. */
+  test("narrates nothing when nobody installed a sink", async () => {
+    await writeWorker("api", "pithy-api");
+
+    const results = await deployProject({
+      account: null,
+      projectDir: dir,
+      runDeploy: async (target) => wranglerOutput(target.name, "v1"),
+    });
+
+    expect(results.map((deploy) => deploy.ok)).toEqual([true]);
   });
 
   test("omits --env when no environment is given (each worker's top-level config)", async () => {

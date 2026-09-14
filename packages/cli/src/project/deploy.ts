@@ -8,6 +8,7 @@ import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { isSourceEnvironment, wranglerConfigPath } from "../provision/featureConfig";
+import { settleStep, startStep } from "../terminal/progress";
 import { red } from "../terminal/style";
 import { loadWorkerConfig, loadWorkerDomains } from "./config";
 import { assertDeploysRequestedEnvironment, wranglerEnvironment } from "./effectiveConfig";
@@ -320,6 +321,12 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
 
   const deploys: WorkerDeploy[] = [];
   for (const worker of workers) {
+    // **What this run is on, said before it starts rather than after it ends (#578).** Everything below
+    // is captured on purpose — the build's chunk table and wrangler's upload chatter are summarized, not
+    // streamed — and capturing them removed the only evidence the command was alive. One Worker can hold
+    // this line for minutes, which is the point: a slow upload and a hung one are otherwise the same
+    // blank terminal, and the remedy an operator reaches for is Ctrl-C mid-deploy.
+    startStep(worker.name);
     // Stays undefined for an API-only worker, turns false while a UI worker's build is in flight: a
     // `built: false` row is how a `--json` consumer reads "the build failed, the deploy never ran".
     let built: boolean | undefined;
@@ -359,6 +366,11 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
         deploy.verificationDetail = verified.detail;
       }
       deploys.push(deploy);
+      // The summary line, streamed as it settles rather than held to the end (#578). It **moves**: the
+      // command no longer prints it a second time, because two copies of one sentence drift the first
+      // time either is reworded, and an operator comparing them has no way to tell a rewording from a
+      // different Worker.
+      settleStep(summarizeDeploy(deploy));
       await audit({
         action: "deploy/worker_deployed",
         outcome: "success",
@@ -373,7 +385,16 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
       });
     } catch (error) {
       const reason = reasonOf(error);
-      deploys.push({ name: worker.name, ok: false, ...(built === undefined ? {} : { built }), error: reason });
+      const failure: WorkerDeploy = {
+        name: worker.name,
+        ok: false,
+        ...(built === undefined ? {} : { built }),
+        error: reason,
+      };
+      deploys.push(failure);
+      // A failure settles too. The one thing worse than a silent deploy is a silent deploy whose one
+      // broken Worker is reported after every other upload has finished.
+      settleStep(summarizeDeploy(failure));
       // A failed deploy is exactly what an audit trail is for — record it too, not just successes.
       await audit({
         action: "deploy/worker_deployed",
