@@ -63,6 +63,8 @@ describe("shouldNotify", () => {
 });
 
 describe("formatUpdateNotice", () => {
+  // The command literal here is a change-detector for the notice's shape, not a gate on the command being
+  // right. What each installer's command must be TRUE of lives in `installer.test.ts`.
   test("minor form: two lines with the installer's update command", () => {
     const notice = formatUpdateNotice({
       installed: "1.2.0",
@@ -72,7 +74,7 @@ describe("formatUpdateNotice", () => {
       accent: mark,
     });
     expect(notice).toBe(
-      ["", "pithy «1.3.0» «available». You have 1.2.0.", "Update: bun update -g @pithy-sh/cli"].join("\n"),
+      ["", "pithy «1.3.0» «available». You have 1.2.0.", "Update: bun install -g @pithy-sh/cli"].join("\n"),
     );
   });
 

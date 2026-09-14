@@ -29,7 +29,7 @@ $ pithy doctor
 
 pithy 1.2.0 (installed via bun)
 Update available: 1.3.0
-Run: bun update -g @pithy-sh/cli
+Run: bun install -g @pithy-sh/cli
 
 Shell: zsh (~/.zshrc)
 Alias: installed (`p.` → `pithy`)

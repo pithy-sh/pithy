@@ -8,6 +8,7 @@ import { ConflictError, ValidationError } from "@pithy-sh/core/src/error/pithyEr
 import { assertValidProjectName, kebab } from "@pithy-sh/core/src/naming/resource";
 import { z } from "zod";
 import { writeFileAtomic } from "../project/atomic";
+import { INSTALLERS } from "./installer";
 
 /**
  * The update-notifier state file (docs/CLI.md §5.1). One small JSON document under the user's config dir
@@ -27,7 +28,9 @@ export const NotifierState = z
       .nullable()
       .describe("The latest CLI version the last successful check saw, or null before any check succeeded."),
     installer: z
-      .enum(["npm", "pnpm", "yarn", "bun", "deno", "brew", "unknown"])
+      // Read off INSTALLERS rather than repeated here: two hand-written copies of this list is two places a
+      // seventh installer has to be remembered, and the schema is the one that would reject it silently.
+      .enum(INSTALLERS)
       .describe("The package manager that installed the binary — detected once, cached, drives the upgrade command."),
     notifier: z
       .boolean()
