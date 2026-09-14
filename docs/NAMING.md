@@ -24,7 +24,8 @@ Provisioning finds a resource by name and reuses it. Without a project segment, 
 | KV (namespace title) | `<project>-<env>-<binding>` | `acme-prod-sessions` |
 | R2 (`bucket_name`) | `<project>-<env>-<capability>` | `acme-prod-storage` |
 | Vectorize (`index_name`) | `<project>-<env>-vector-<index>` | `acme-prod-vector-docs` |
-| Worker script | `<project>-<env>-<capability>` | `acme-prod-email` |
+| Worker script (capability host) | `<project>-<env>-<capability>` | `acme-prod-email` |
+| Worker script (your own, per environment) | `<project>-<env>-<worker>` | `acme-prod-api` |
 | Workflow | `<project>-<env>-<capability>-<job>` | `acme-prod-email-send` |
 | Secrets Store entry | `<project>-<env>-<secret>` | `acme-prod-secrets-encryption-keys` |
 | CF API token | `<project>-<env>-<profile>` | `acme-prod-ci-system` |
@@ -40,6 +41,14 @@ Three things are deliberately **not** on this list, because they are not Cloudfl
 **Secret registry keys** (`defineSecretRegistry({ … })`) never carry the project either. For a `cf-secrets-store` secret the registry key *is* the Worker binding name and the `.dev.vars` variable name; only the store entry it resolves to is scoped.
 
 **Table names** stay `pithy_<capability>_<table>`. They live inside one database, which is already project-scoped by the database's own name.
+
+## Your own Worker, and the eight names it may not take
+
+The Worker you deploy is named by **wrangler**, not by the kit: `wrangler deploy --env staging` appends the environment to the top-level `name` unless the stanza declares one. So this is the one name here the kit reads rather than composes — and `pithy init` and `pithy worker add` write it out, `<project>-<env>-<worker>`, so the read finds the kit's shape. Everything belonging to one environment then sorts together in an account listing, which is how an account is actually read and how blast radius is actually reasoned about. You compare an environment's whole set; you do not compare one app's two environments.
+
+**A project that never declared a name keeps the one it has.** The fallback is still wrangler's `<name>-<env>`, unchanged and deliberately so: recomputing it would rename the deployed Worker of every existing adopter, and a Worker script is a name you cannot change without leaving the old one live, serving, and billing. New projects get the convention; existing ones keep theirs, and `pithy doctor` says so once, as a convention rather than a fault. `pithy provision` reads a declared name and writes one only where there is none, for the same reason.
+
+**And that is why a worker may not be called `email`.** Under this shape `apps/email` deploys as `<project>-<env>-email` — byte-identical to the host Worker the email capability's own `provision` creates. Cloudflare's script namespace is account-flat, so a deploy replaces it silently and the capability's Workflows stop running. Every capability that ships a host Worker owns its name: `pithy init --worker`, `pithy worker add` and `pithy worker rename` refuse it, and `pithy doctor` reports an existing project that declares one. The set is read from the host registry at run time rather than written down, so a capability that ships a host later is covered the day it is registered. `email-api` is fine; the collision is with the exact name, not with a prefix.
 
 ## Two stores a name cannot reach
 

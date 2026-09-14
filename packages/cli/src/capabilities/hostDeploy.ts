@@ -5,9 +5,11 @@ import { unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { messageOf, PithyError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
+import { assertPublishesDeclaredWorker, TOP_LEVEL_STANZA_ARG } from "../project/effectiveConfig";
 import { kitImport } from "../project/kitResolve";
 import { runWrangler, type WranglerAccount } from "../project/wrangler";
 import { DEPLOY_STAMP_VAR, type DeployedStamp, stampConfig, stampVerdict } from "../provision/deployStamp";
+import { startStep } from "../terminal/progress";
 
 /**
  * **The one path a kit Worker is deployed through, and therefore the one place the gate lives.**
@@ -47,8 +49,17 @@ export interface HostDeployOutcome {
   reason: string;
 }
 
-/** Ship one resolved config. The seam tests replace so nothing here spawns wrangler. */
-export type RunHostDeploy = (configPath: string, dir: string) => Promise<void>;
+/**
+ * Ship one resolved config. The seam tests replace so nothing here spawns wrangler.
+ *
+ * **It takes the argv, not the config path (#584).** The stanza a deploy publishes under is decided by
+ * the argv — `--env ?? CLOUDFLARE_ENV`, so an argv that names none hands the decision to the operator's
+ * shell — and a runner handed only a path could not carry that decision, which is how the one call site
+ * that built its own argv built it without a stanza and without anything able to observe the omission.
+ * {@link hostDeployArgs} is where it is built and {@link assertPublishesDeclaredWorker} is what holds it;
+ * an injected runner receives exactly what the real one spawns.
+ */
+export type RunHostDeploy = (args: readonly string[], dir: string) => Promise<void>;
 
 /** Read a deployed Worker's plain-text vars. `null` means the account holds no Worker of that name. */
 export type ReadWorkerVars = (scriptName: string) => Promise<Record<string, string> | null>;
@@ -75,7 +86,7 @@ export interface HostDeployOptions {
   env: string;
   /** Read the deployed Worker's vars. Omitted, nothing is known and the Worker deploys. */
   readVars?: ReadWorkerVars;
-  /** Ship it. Defaults to `wrangler deploy --config <path>` for the account below. */
+  /** Ship it. Defaults to {@link hostDeployArgs}, spawned for the account below. */
   runDeploy?: RunHostDeploy;
   /**
    * Who wrangler authenticates as. Required by the default runner, unused when one is injected.
@@ -97,6 +108,30 @@ export interface HostDeployOptions {
   account?: WranglerAccount;
   /** `--force`: ship regardless of the stamp, and read nothing. For a recovery run. */
   force?: boolean;
+  /**
+   * The environment wrangler will inherit. Defaults to `process.env`, which is what a provisioner runs in.
+   *
+   * Half of what selects a wrangler stanza — `--env ?? CLOUDFLARE_ENV` — and therefore an input to the
+   * name this Worker is published under, which is why {@link assertPublishesDeclaredWorker} reads it
+   * rather than reading the argv alone. A test states it; nothing else should.
+   */
+  processEnv?: NodeJS.ProcessEnv;
+}
+
+/**
+ * **The argv one kit Worker is deployed with, and the one place its stanza is stated.**
+ *
+ * A generated host config is one complete file per environment: its `name` already carries the
+ * environment (`acme-prod-email`) and it has no `env` section at all. So the stanza it publishes is
+ * always the top level — and {@link TOP_LEVEL_STANZA_ARG} is how an argv says that out loud.
+ *
+ * Saying it is not decoration (#584). wrangler resolves `args.env ?? CLOUDFLARE_ENV`, its missing-stanza
+ * branch only *warns* when the config has no `env` section, and `appendEnvName` runs regardless — so the
+ * argv that omitted this published `acme-prod-email-prod` for every operator with `CLOUDFLARE_ENV=prod`
+ * exported, and `acme-prod-email` for everyone else. A Worker under a name nothing references.
+ */
+export function hostDeployArgs(configPath: string): string[] {
+  return ["deploy", "--config", configPath, TOP_LEVEL_STANZA_ARG];
 }
 
 /**
@@ -138,7 +173,10 @@ async function readDeployedStamp(read: ReadWorkerVars | undefined, scriptName: s
 }
 
 /**
- * The default runner: `wrangler deploy --config <resolved>`, in the installed package's worker dir.
+ * The default runner: {@link hostDeployArgs}'s argv, in the installed package's worker dir.
+ *
+ * It spawns the argv it is handed and builds none of its own, so the stanza a reviewer can see in
+ * `hostDeployArgs` is the stanza wrangler is told, and the argv the gate held is the argv that runs.
  *
  * The environment comes from `cloudflareChildEnv`, inside `runWrangler` — so a host Worker ships to the
  * account the project claims, and a pin the credentials contradict refuses rather than deploying to
@@ -146,8 +184,8 @@ async function readDeployedStamp(read: ReadWorkerVars | undefined, scriptName: s
  * why what arrives here is the selection or the pair, and never the pair flattened to `null`.
  */
 function defaultRunDeploy(account: WranglerAccount): RunHostDeploy {
-  return async (configPath, dir) => {
-    await runWrangler(["deploy", "--config", configPath], { account, cwd: dir });
+  return async (args, dir) => {
+    await runWrangler([...args], { account, cwd: dir });
   };
 }
 
@@ -183,9 +221,26 @@ export async function deployHostWorker(options: HostDeployOptions): Promise<Host
 
   const run = options.runDeploy ?? defaultRunDeploy(options.account ?? null);
   const configPath = join(options.dir, `.wrangler.${options.env}.json`);
+  const args = hostDeployArgs(configPath);
+  // **The last moment this is still recoverable, and it is ahead of the narration and the write.** After
+  // the upload the only remedy is deleting a live Worker; before it, a refusal is a sentence. Asked of
+  // the argv about to be spawned rather than of the code that built it, so a call site that starts
+  // building its own is covered on the day it does (#584).
+  assertPublishesDeclaredWorker({
+    configPath,
+    config: stamped,
+    args,
+    processEnv: options.processEnv ?? process.env,
+  });
+  // **The one place a kit Worker's upload is announced, so every command that ships one inherits it
+  // (#578).** `pithy deploy --kit` reaches here, and so does every `pithy <capability> provision` —
+  // through two packages that carry no progress parameter and should not grow one. Raised after the
+  // stamp verdict, because a Worker that is already current is not work in flight, and a `▸` line for
+  // an upload that never happens is the kind of narration nobody trusts twice.
+  startStep(worker);
   await writeFile(configPath, `${JSON.stringify(stamped, null, 2)}\n`);
   try {
-    await run(configPath, options.dir);
+    await run(args, options.dir);
   } finally {
     await unlink(configPath).catch(() => {});
   }

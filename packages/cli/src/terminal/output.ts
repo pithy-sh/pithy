@@ -4,26 +4,12 @@
 import type { ErrorPayload } from "@pithy-sh/core/src/error/payload";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { operatorError, renderTerminal } from "@pithy-sh/core/src/error/terminal";
+import { commandProgress, narrate } from "./progress";
 import { red, saffron } from "./style";
 
 /** Completion, brand voice: `Done.` with the saffron period (docs/CLI.md §3.2). */
 export function formatDone(): string {
   return `Done${saffron(".")}`;
-}
-
-/**
- * An operation in progress: `▸ <what>...` (docs/CLI.md §3.1).
- *
- * The arrow and the body stay in the terminal's own foreground — §3.4 gives this line no tier, because
- * a color forced here is a color wrong in somebody's theme. The trailing `...` is what marks it as
- * unfinished, and it never appears on a line that reports a completed thing.
- *
- * **A plain line, printed once, never redrawn.** A repainting spinner collapses a run's history into one
- * line, which is precisely the history these exist to leave behind, and writes cursor escapes into every
- * CI log. Saffron's spinner glyphs stay reserved for a single indivisible wait.
- */
-export function formatStep(what: string): string {
-  return `▸ ${what}...`;
 }
 
 /** One machine-readable line — every command's `--json` output shape. */
@@ -74,10 +60,17 @@ export function formatErrorJson(payload: ErrorPayload): string {
  * Run a command body; on `PithyError`, report it to stderr and exit 1 — as the
  * `{ error: … }` JSON line when `json` is set, otherwise the problem/action
  * lines. Anything else is a CLI bug and keeps its stack trace.
+ *
+ * **And it opens the run's narrated span (#578).** Every command body goes through here and every
+ * command body already hands over the one thing the narration gate consults, so this is where a long
+ * command inherits the ability to say where it got to — rather than deciding for itself, which is how
+ * `pithy deploy` came to print nothing at all for minutes after `pithy provision` had solved this once
+ * already. A producer raises a step; the span installed here decides who hears it, and `--json` installs
+ * silence so a machine still reads exactly one line.
  */
 export async function withErrorReporting(json: boolean, work: () => Promise<void>): Promise<void> {
   try {
-    await work();
+    await narrate(commandProgress({ json }), work);
   } catch (error) {
     if (!(error instanceof PithyError)) throw error;
     process.stderr.write(`${json ? formatErrorJson(error.payload) : formatError(error.payload)}\n`);

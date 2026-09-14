@@ -17,6 +17,7 @@ import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { discoverHostWorkers, type HostWorker } from "../dev/hostWorkers";
 import { isSourceEnvironment, wranglerConfigPath } from "../provision/featureConfig";
+import { settleStep } from "../terminal/progress";
 import { red } from "../terminal/style";
 import { loadWorkerConfig, loadWorkerDomains } from "./config";
 import { readOptionalFile } from "./readOptionalFile";
@@ -146,8 +147,14 @@ function isId(value: string | undefined): boolean {
  * the generated config under `.wrangler/` for a feature.
  *
  * Provisioning writes a feature's ids into a generated config rather than into the tracked file
- * (#242), which is also why `pithy deploy` passes `--config` there. Reading the tracked file for a
- * feature would find placeholders and report every kit Worker as unprovisioned.
+ * (#242). Reading the tracked file for a feature would find placeholders and report every kit Worker
+ * as unprovisioned.
+ *
+ * **The same resolver decides which file, and that is now the only thing the two halves share (#579).**
+ * `pithy deploy` used to hand wrangler `--config <generated>` for every feature deploy; it does so only
+ * for a Worker with no front end now, because an explicit `--config` beats the build-output redirect and
+ * the source config carries no `assets.directory`. A kit Worker is never built by Vite and has no
+ * redirect, so nothing about this reader changes — it just no longer describes the deploy argv.
  */
 async function stanzaFor(worker: WorkerTarget, env: string): Promise<KitStanza | undefined> {
   if (!isSourceEnvironment(env)) {
@@ -284,20 +291,24 @@ async function runKitDeploy(options: DeployKitOptions, rows: KitWorkerDeploy[], 
 
   for (const host of hosts) {
     const source = workers.find((worker) => worker.dir === host.sourceDir);
-    rows.push(
-      await deployOneKitWorker({
-        host,
-        source,
-        options,
-        readTemplate,
-        readVars,
-        databaseIds,
-        kvNamespaceIds,
-        stanza: stanzas.get(host.sourceDir),
-        storeId: vars.SECRETS_STORE_ID,
-        accountId: vars.CLOUDFLARE_ACCOUNT_ID,
-      }),
-    );
+    const row = await deployOneKitWorker({
+      host,
+      source,
+      options,
+      readTemplate,
+      readVars,
+      databaseIds,
+      kvNamespaceIds,
+      stanza: stanzas.get(host.sourceDir),
+      storeId: vars.SECRETS_STORE_ID,
+      accountId: vars.CLOUDFLARE_ACCOUNT_ID,
+    });
+    rows.push(row);
+    // **The row, as it settles (#578).** The `▸` line for the ones that actually upload comes from
+    // `deployHostWorker`, which is where the spawn is; this is the outcome, and it covers the three
+    // that never reach a spawn at all — unchanged, skipped, failed — so every capability in the set
+    // accounts for itself while the run is still going rather than in a block at the end.
+    settleStep(summarizeKitDeploy(row));
   }
 }
 

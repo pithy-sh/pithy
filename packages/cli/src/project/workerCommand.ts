@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { ConflictError, InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { generateDevVars } from "../devSecrets/generate";
@@ -15,7 +15,7 @@ import { syncFeatureDevConfig } from "../feature/sync";
 import { defaultGit, type GitRunner, mainRepoRoot, currentBranch as sharedCurrentBranch } from "../feature/worktree";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "./config";
 import { detectPackageManager } from "./packageManager";
-import { ensureScaffoldPath, pathExists, removeScaffoldPath, WORKER_NAME } from "./scaffold";
+import { assertWorkerName, ensureScaffoldPath, pathExists, removeScaffoldPath } from "./scaffold";
 import { type WorkerIdentity, workerIdentity } from "./workerIdentity";
 import { scaffoldWorker } from "./workerScaffold";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "./workers";
@@ -479,14 +479,11 @@ export interface RenameWorkerOptions extends WorkerContext {
  * re-runs every migration under a name the database has never seen.
  */
 export async function renameWorker(options: RenameWorkerOptions): Promise<RenameWorkerReport> {
-  // The same rule `scaffoldWorker` holds a new worker to, imported rather than restated: a name this
-  // refuses is a directory `pithy worker add` could not have created in the first place.
-  if (!WORKER_NAME.test(options.to)) {
-    throw new ValidationError({
-      message: `Worker name must be kebab-case (got "${options.to}").`,
-      action: "Use lowercase words joined by hyphens, e.g. web or admin-api.",
-    });
-  }
+  // The same rule `scaffoldWorker` holds a new worker to, **called** rather than restated: a name this
+  // refuses is a directory `pithy worker add` could not have created in the first place. It used to be a
+  // second copy of the regex, so the reserved capability-host names of #580 would have been refused at
+  // `worker add` and waved through here — the one path that renames a worker onto a name after the fact.
+  assertWorkerName(options.to);
 
   const discoverWorkers = options.discoverWorkers ?? discoverWorkersDefault;
   const appsDir = join(options.projectDir, "apps");

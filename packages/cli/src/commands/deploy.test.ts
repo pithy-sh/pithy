@@ -26,6 +26,15 @@ const counted = vi.hoisted(() => ({ calls: [] as unknown[] }));
 /** What each half of the deploy was asked to do this run — the two named steps, observed. */
 const ran = vi.hoisted(() => ({ apps: 0, kit: [] as unknown[] }));
 
+/**
+ * Whether the stubbed app half narrates the way the real one does (#578).
+ *
+ * Off for every case that asserts an exact transcript, on for the cases about narration — so what the
+ * real `project/deploy.ts` raises is exercised through this command without every other expectation in
+ * the file having to carry it.
+ */
+const narrating = vi.hoisted(() => ({ on: false }));
+
 /** The account the stubbed project names — a nickname *and* a pin, so both halves are asserted. */
 const ACCOUNT = { accountName: "leed", accountId: "acct-leed" };
 
@@ -52,6 +61,11 @@ vi.mock("../project/deploy", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../project/deploy")>()),
   deployProject: async () => {
     ran.apps += 1;
+    if (narrating.on) {
+      const { settleStep, startStep } = await import("../terminal/progress");
+      startStep("acme-api");
+      settleStep("acme-api: deployed. https://api.acme.example v1");
+    }
     return [];
   },
 }));
@@ -403,3 +417,60 @@ function restoreEnv(before: { config?: string; offline?: string; account?: strin
     else process.env[key] = value;
   }
 }
+
+/**
+ * **`pithy deploy` printed nothing at all until it had finished. For minutes (#578).**
+ *
+ * The narration itself belongs to the two producers — `project/deploy.ts` and `project/deployKit.ts`
+ * raise it, and `terminal/output.ts` opens the span every command body already runs inside. What this
+ * command owes is the other end of the same decision: the per-Worker lines **moved** out of the block it
+ * used to print after the last upload, so they are not printed twice, and `--json` still writes exactly
+ * one line.
+ */
+describe("what the command says while it works", () => {
+  /** One run, with the app half narrating as the real one does. */
+  async function narratedRun(args: Record<string, unknown>): Promise<string> {
+    narrating.on = true;
+    ran.apps = 0;
+    ran.kit.length = 0;
+    const before = process.exitCode;
+    process.exitCode = 0;
+    const written: string[] = [];
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+      written.push(String(chunk));
+      return true;
+    }) as never);
+    try {
+      await deploy.run?.({
+        args: { json: false, apps: true, kit: false, force: false, ...args },
+        rawArgs: [],
+      } as never);
+    } finally {
+      stdout.mockRestore();
+      narrating.on = false;
+      process.exitCode = before;
+    }
+    return written.join("");
+  }
+
+  test("a Worker is named as it is reached, and its line is printed once", async () => {
+    const out = await narratedRun({ env: "staging" });
+
+    expect(out).toBe("▸ acme-api...\nacme-api: deployed. https://api.acme.example v1\nDone.\n");
+    // Once. The line the summary used to hold moved here rather than being copied, so there is no second
+    // spelling of it to drift out of step with this one.
+    expect(out.split("acme-api: deployed.").length - 1).toBe(1);
+  });
+
+  /**
+   * **The gate is `--json`, and it is the only gate.** No TTY question: a run in CI is the run whose log
+   * most needs to say where it got to, and these are plain lines rather than an animation.
+   */
+  test("--json is exactly one line, narration and all", async () => {
+    const out = await narratedRun({ env: "staging", json: true });
+
+    expect(out.trimEnd().split("\n")).toHaveLength(1);
+    expect(JSON.parse(out).command).toBe("deploy");
+    expect(out).not.toContain("▸");
+  });
+});

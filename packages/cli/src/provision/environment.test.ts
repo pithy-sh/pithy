@@ -649,6 +649,49 @@ describe("provisionEnvironment, for a declared environment", () => {
     ]);
   });
 
+  /**
+   * The other half of #580. A service binding has to name the script the callee *actually* deploys under,
+   * and since #580 that is whatever the callee's own `env.<name>.name` says — `<project>-<env>-<worker>`
+   * in every scaffolded project. Composing wrangler's suffix here instead would write a binding pointing
+   * at a script nobody deploys: RPC through it fails at runtime and provisioning reports success, which
+   * is exactly the failure `resolveServiceTarget` exists to prevent, arriving one step later.
+   */
+  test("points a service binding at the name the callee's own stanza declares", async () => {
+    const { provisioners } = fakeProvisioners();
+    const webDir = join(dir, "apps", "web");
+    await mkdir(webDir, { recursive: true });
+    await writeFile(join(webDir, "wrangler.jsonc"), '{\n  "name": "replay-web"\n}\n');
+    // The callee names its staging script in the kit's shape, the way `pithy init` now scaffolds it.
+    await writeFile(
+      join(workerDir, "wrangler.jsonc"),
+      '{\n  "name": "replay-board",\n  "env": { "staging": { "name": "replay-staging-board" } }\n}\n',
+    );
+
+    const calling = defineCapability({
+      name: "calling",
+      requiredBindings: [{ type: "service", name: "BOARD", service: "board" }] satisfies BindingSpecInput[],
+    });
+
+    const report = await provisionEnvironment({
+      projectDir: dir,
+      scope,
+      capabilities: [calling],
+      provisioners,
+      resolveWorkers: async () => [
+        { name: "replay-board", dir: workerDir, capabilities: [calling] },
+        { name: "replay-web", dir: webDir, capabilities: [calling] },
+      ],
+      ...noBackend,
+    });
+
+    expect(report.services).toEqual([{ binding: "BOARD", service: "replay-staging-board" }]);
+    expect((await readStanza(webDir, "staging"))?.services).toEqual([
+      { binding: "BOARD", service: "replay-staging-board" },
+    ]);
+    // And the report names each Worker where it really lands, for the same reason.
+    expect(report.workers).toContainEqual({ worker: "replay-board", name: "replay-staging-board" });
+  });
+
   test("migrates and seeds the environment it provisioned", async () => {
     const { provisioners } = fakeProvisioners();
     const calls: string[] = [];

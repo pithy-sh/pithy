@@ -7,6 +7,7 @@ import { hostWorkflowsFor } from "@pithy-sh/core/src/workflow/host";
 import type { WorkflowHostNameParts } from "@pithy-sh/core/src/workflow/naming";
 import type { WorkflowRegistry } from "@pithy-sh/core/src/workflow/spec";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
+import { stanzaFor } from "./wranglerInheritance";
 
 /**
  * The bindings a capability's **provisioner** writes into the app's `wrangler.jsonc` — the ones
@@ -128,12 +129,10 @@ export async function applyAppBindings(projectDir: string, env: string, bindings
     env?: Record<string, AppBindingStanza | undefined>;
   };
 
-  let stanza: AppBindingStanza = config;
-  if (env !== "dev") {
-    config.env ??= {};
-    stanza = config.env[env] ?? {};
-    config.env[env] = stanza;
-  }
+  // The one reader (#581). It answers `dev` with the top level — wrangler has no `env.dev` — and a stanza
+  // it creates already repeats what an environment does not inherit, so a Worker whose first `staging`
+  // stanza is written here is not published without its `vars`.
+  const stanza = stanzaFor(config, env) as AppBindingStanza;
 
   if (bindings.workflows?.length) {
     stanza.workflows ??= [];

@@ -8,14 +8,8 @@ import { createProjectCliAudit } from "../audit/cliAudit";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { readProjectLedger } from "../migrations/run";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
-import { deployProject, deployVerificationFailed, pendingWarning, summarizeDeploy } from "../project/deploy";
-import {
-  deployKitWorkers,
-  type KitDeployReport,
-  kitDeployFailed,
-  summarizeKitDeploy,
-  summarizeKitProblem,
-} from "../project/deployKit";
+import { deployProject, deployVerificationFailed, pendingWarning } from "../project/deploy";
+import { deployKitWorkers, type KitDeployReport, kitDeployFailed, summarizeKitProblem } from "../project/deployKit";
 import { assertOriginsDeclared } from "../project/domains";
 import { optionalEnvArg, requireEnvironment } from "../project/environment";
 import { assertWorkflowsBound } from "../project/workflows";
@@ -221,6 +215,13 @@ export default defineCommand({
       const pending = env ? await pendingFor(projectDir, env, account) : undefined;
       const audit = await buildAudit(projectDir, env ?? "dev", account);
 
+      // **Before the uploads, not after them (#578).** The count is about the schema this deploy is
+      // shipping code against, so it is worth reading before the first Worker goes up rather than in a
+      // block underneath the last one — and it is the first thing this command has ever printed, which
+      // is what tells an operator the run is alive. `--json` still writes one line and nothing else.
+      const warning = env && !args.json ? pendingWarning(pending, env) : undefined;
+      if (warning) process.stdout.write(`${warning}\n`);
+
       // **Step one: the adopter's Workers, ungated.** Their code is the thing that changed.
       const deploys = selection.apps ? await deployProject({ projectDir, account, env, audit }) : [];
       // A deploy that shipped but is not the thing answering at the declared address is a failure too,
@@ -263,11 +264,10 @@ export default defineCommand({
         return;
       }
 
-      const warning = env ? pendingWarning(pending, env) : undefined;
-      if (warning) process.stdout.write(`${warning}\n`);
-      for (const deploy of deploys) process.stdout.write(`${summarizeDeploy(deploy)}\n`);
+      // Every per-Worker line has already been written, as that Worker settled — `project/deploy.ts`
+      // and `project/deployKit.ts` stream them through the narration seam. What is left here is what is
+      // true of the run as a whole.
       if (kit) {
-        for (const row of kit.workers) process.stdout.write(`${summarizeKitDeploy(row)}\n`);
         // After the rows, because a problem explains a set that is short rather than a Worker that
         // failed — and because an operator scanning red lines must find it whether the set was short
         // by one capability or by all of them.

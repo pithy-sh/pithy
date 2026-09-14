@@ -7,9 +7,9 @@
   },
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "deploy:staging": "wrangler deploy --env staging",
-    "deploy:prod": "wrangler deploy --env prod"
+    "deploy": "wrangler deploy --config wrangler.jsonc --env=",
+    "deploy:staging": "wrangler deploy --config wrangler.jsonc --env staging",
+    "deploy:prod": "wrangler deploy --config wrangler.jsonc --env prod"
   },
   "dependencies": {
     "@pithy-sh/core": "^0.0.0",

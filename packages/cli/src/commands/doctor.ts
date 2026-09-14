@@ -38,6 +38,11 @@ import {
   describeEnvironmentConfigs,
   type EnvironmentConfigsCheck,
 } from "../doctor/environmentConfigs";
+import {
+  checkEnvironmentInheritance,
+  describeEnvironmentInheritance,
+  type EnvironmentInheritanceCheck,
+} from "../doctor/environmentInheritance";
 import { checkEnvironments, describeEnvironmentDrift, type EnvironmentsCheck } from "../doctor/environments";
 import {
   buildProjectHealth,
@@ -63,7 +68,13 @@ import {
 } from "../doctor/settings";
 import { doctorSettingsCheck } from "../doctor/settingsSources";
 import { checkSharedRuntimes, describeSharedRuntimes, type SharedRuntimesCheck } from "../doctor/sharedRuntimes";
-import { checkWorkerNames, describeWorkerName, type WorkerNameCheck } from "../doctor/workerName";
+import {
+  checkWorkerNames,
+  describeReservedWorkerName,
+  describeWorkerName,
+  describeWorkerNameConvention,
+  type WorkerNameCheck,
+} from "../doctor/workerName";
 import { describeUndeclared, undeclaredRemedy } from "../migrations/ledger";
 import { type FetchLike, fetchLatestVersion } from "../notifier/check";
 import { detectInstaller, type Installer, upgradeCommandFor } from "../notifier/installer";
@@ -76,6 +87,7 @@ import { checkOrigins, describeOriginDrift, type OriginsCheck } from "../project
 import { checkExtensions, describeExtension, type ExtensionsCheck } from "../project/extensions";
 import { type ResolvedWorker, resolveWorkers } from "../project/workerScope";
 import { checkWorkflows, describeWorkflowDrift, type WorkflowsCheck } from "../project/workflows";
+import { describeUnrepeatedKey } from "../project/wranglerInheritance";
 import { formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -228,6 +240,20 @@ export interface DoctorReport {
    * nothing to compare a stanza to.
    */
   environments: EnvironmentsCheck | null;
+  /**
+   * Whether every `env.<name>` stanza repeats the top-level keys wrangler does not give it (#581). `null`
+   * outside a project — with no `apps/` there is no `wrangler.jsonc` to read.
+   *
+   * The block above asks whether the *stanzas* are the right set; this asks what is inside one. A key
+   * wrangler does not inherit — `vars`, `version_metadata`, every binding block — is absent in an
+   * environment that does not repeat it, whatever the top level says.
+   *
+   * **It reports and never fails the exit**, on the same rule `devVars`, `devSecrets` and `secretBindings`
+   * follow. Every project scaffolded before this landed is in violation for `version_metadata`, because
+   * the template they copied from was, and an upgrade that turns a green `pithy doctor` red in CI is a
+   * surprise rather than a diagnosis.
+   */
+  environmentInheritance: EnvironmentInheritanceCheck | null;
   /**
    * Whether every declared environment's `pithy.config.ts` **loads** (#548) — the question the block above
    * does not ask, because comparing a stanza to a declaration never evaluates either config. `null`
@@ -605,6 +631,11 @@ export interface DoctorReportOptions {
   checkWorkerNames?: (projectDir: string) => Promise<WorkerNameCheck>;
   /** Environment-declaration seam; defaults to {@link checkEnvironments}. Reads files only — no account call. */
   checkEnvironments?: (projectDir: string) => Promise<EnvironmentsCheck>;
+  /**
+   * Environment-inheritance seam; defaults to {@link checkEnvironmentInheritance}. Reads files only — the
+   * same `wrangler.jsonc` the seam above reads, asked what is inside a stanza rather than which exist.
+   */
+  checkEnvironmentInheritance?: (projectDir: string) => Promise<EnvironmentInheritanceCheck>;
   /** Origin-declaration seam; defaults to {@link checkOrigins}. Reads files only — no account call. */
   checkOrigins?: (projectDir: string) => Promise<OriginsCheck>;
   /** App-Workflow binding seam; defaults to {@link checkWorkflows}. Reads files only — no account call. */
@@ -767,6 +798,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeProjectName = options.checkProjectName ?? checkProjectName;
   const probeWorkerNames = options.checkWorkerNames ?? checkWorkerNames;
   const probeEnvironments = options.checkEnvironments ?? checkEnvironments;
+  const probeEnvironmentInheritance = options.checkEnvironmentInheritance ?? checkEnvironmentInheritance;
   const probeOrigins = options.checkOrigins ?? checkOrigins;
   const probeWorkflows = options.checkWorkflows ?? checkWorkflows;
   const probeDevPreferences =
@@ -974,6 +1006,8 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     ? await probed<WorkerNameCheck>(() => probeWorkerNames(options.projectDir), {
         state: "could-not-check",
         mismatches: [],
+        reserved: [],
+        convention: [],
       })
     : null;
   // And once more, one level out: the declaration is project-wide, so with no readable config there is
@@ -983,6 +1017,15 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
         state: "could-not-check",
         declared: [],
         drift: [],
+      })
+    : null;
+  // The same stanzas, asked what is inside them (#581). It needs no declaration and no account — a
+  // Worker's own `wrangler.jsonc` contradicts itself or it does not — so it is gated on `inProject` alone
+  // and answers offline like its neighbors.
+  const environmentInheritance = inProject
+    ? await probed<EnvironmentInheritanceCheck>(() => probeEnvironmentInheritance(options.projectDir), {
+        state: "could-not-check",
+        unrepeated: [],
       })
     : null;
   // The same declaration, asked the question the block above cannot: comparing a stanza to a declaration
@@ -1096,6 +1139,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     projectName,
     workerNames,
     environments,
+    environmentInheritance,
     environmentConfigs,
     origins,
     workflows,
@@ -1153,8 +1197,11 @@ export function doctorExitCode(report: DoctorReport): number {
   const state = report.projectName?.state;
   if (state === "invalid" || state === "drifted" || state === "orphaned") return 1;
   // Same standard once more, and it is met from local files alone: a Worker's directory and its own
-  // wrangler.jsonc contradict each other about which Worker this is. Nothing is inferred about the
-  // account, and `could-not-check` establishes nothing, so only `drifted` gates.
+  // wrangler.jsonc contradict each other about which Worker this is, or a stanza names a script a
+  // capability's own host Worker already deploys under (#580) — `drifted` covers both. Nothing is
+  // inferred about the account, and `could-not-check` establishes nothing, so only `drifted` gates.
+  // The convention note this check also carries is deliberately not here: a Worker's name is the
+  // adopter's, so being on wrangler's suffix is a report line, never a reason to exit 1.
   if (report.workerNames?.state === "drifted") return 1;
   // Same standard again, and met the same way: the root config and a Worker's own wrangler.jsonc
   // contradict each other about which environments this project has. Nothing about the account is
@@ -2047,6 +2094,27 @@ function environmentsBlock(check: EnvironmentsCheck): string {
 }
 
 /**
+ * The `Environment inheritance:` lines — shown only when a stanza silently goes without something its top
+ * level declares (#581).
+ *
+ * Its own block rather than a line inside `Environments:`, because it is the opposite question about the
+ * same file: that block is whether the right stanzas exist, this is what is inside one. A project can pass
+ * that one and fail this — the kit's own first adopter did, on both deployed environments.
+ *
+ * Each line carries its own remedy, because each names a different key. The closing sentence is the rule
+ * they share, and it is stated as the mechanism rather than as a list of key names: a list here would be a
+ * second copy of `NOT_INHERITED_BY_ENVIRONMENTS`, kept in step with nothing, which is how #581's own table
+ * came to be wrong about half its rows.
+ */
+function environmentInheritanceBlock(check: EnvironmentInheritanceCheck): string {
+  return [
+    "Environment inheritance:",
+    ...describeEnvironmentInheritance(check).map((line) => `  ${line}`),
+    `${HEALTH_INDENT}Repetition is the mechanism: a stanza replaces these keys rather than extending them.`,
+  ].join("\n");
+}
+
+/**
  * The `Environment configs:` lines — shown only when a declared environment's `pithy.config.ts` throws
  * when it is composed (#548). Silence is the healthy answer, as everywhere in this half of the report.
  *
@@ -2238,10 +2306,25 @@ function workerNamesBlock(check: WorkerNameCheck): string {
       if (mismatch.envs.length > 0) lines.push(`${HEALTH_CONT}env: ${mismatch.envs.join(", ")}`);
     }
   }
-  // No command is offered to fix this one, because none of them can: the directory has already moved, and
-  // `pithy worker rename` refuses a destination that exists. The fix is the two edits named above. The
-  // command is named anyway, for the next rename — it moves all three at once and this block stays empty.
-  lines.push(`${HEALTH_INDENT}Make wrangler.jsonc agree with the directory. Next time: pithy worker rename.`);
+  if (workers.length > 0) {
+    // No command is offered to fix this one, because none of them can: the directory has already moved, and
+    // `pithy worker rename` refuses a destination that exists. The fix is the two edits named above. The
+    // command is named anyway, for the next rename — it moves all three at once and this block stays empty.
+    lines.push(`${HEALTH_INDENT}Make wrangler.jsonc agree with the directory. Next time: pithy worker rename.`);
+  }
+  // The clash, before the convention note, because it is the only half that is a fault: the deploy this
+  // stanza describes replaces a capability's own host Worker, and nothing on the account would say so.
+  for (const clash of check.reserved) {
+    lines.push(`  ${clash.worker}:`);
+    lines.push(healthLine(clash.env, describeReservedWorkerName(clash)));
+  }
+  if (check.reserved.length > 0) {
+    lines.push(`${HEALTH_INDENT}Rename that stanza, or the Worker. pithy worker rename moves all three names.`);
+  }
+  // And last, the half that is not a fault at all — see {@link WorkerNameConvention}.
+  for (const note of check.convention) {
+    for (const line of describeWorkerNameConvention(note)) lines.push(`${HEALTH_INDENT}${line}`);
+  }
   return lines.join("\n");
 }
 
@@ -2287,10 +2370,21 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   const projectNameOk = report.projectName === null || report.projectName.state === "ok";
   // `could-not-check` keeps its silence here rather than forcing verbose: unlike an unreadable name, an
   // unreadable `wrangler.jsonc` is already the health block's line to say, and it says it louder.
-  const workerNamesOk = !report.workerNames || report.workerNames.mismatches.length === 0;
+  // The convention note is deliberately absent from this conjunction: it is not a finding, so it must not
+  // drag a healthy project's whole report verbose. It still prints — see the block below, which is gated
+  // on having something to say rather than on `terse`.
+  const workerNamesOk =
+    !report.workerNames || (report.workerNames.mismatches.length === 0 && report.workerNames.reserved.length === 0);
   // Same silence for `could-not-check` and the same reason: an unreadable config is the `Project:` block's
   // line, and a second block repeating it is how a report starts contradicting itself.
   const environmentsOk = !report.environments || report.environments.drift.length === 0;
+  // Worth the ink, not worth a red CI — the rule `secretBindings` below follows, and for the same reason:
+  // an environment deploying without a binding its own top level declares is a real fault, and every
+  // project scaffolded before the check existed has one. `could-not-check` keeps its silence here, like
+  // the block above: an unreadable `wrangler.jsonc` is the health block's line to say, and it says it
+  // louder.
+  const environmentInheritanceOk =
+    !report.environmentInheritance || report.environmentInheritance.unrepeated.length === 0;
   // Its own answer, because it is its own question — see {@link DoctorReport.environmentConfigs}. A config
   // that does not load for a declared environment is never terse: it is the loudest finding this report has
   // about a file the adopter owns.
@@ -2345,6 +2439,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     projectNameOk &&
     workerNamesOk &&
     environmentsOk &&
+    environmentInheritanceOk &&
     environmentConfigsOk &&
     originsOk &&
     workflowsOk &&
@@ -2502,13 +2597,23 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
 
   // The Workers' own names, and only when they disagree. A Worker whose three stamps agree has nothing to
   // report — the block is the finding, the way `Project health` is.
-  if (report.workerNames && report.workerNames.mismatches.length > 0) {
+  if (
+    report.workerNames &&
+    report.workerNames.mismatches.length + report.workerNames.reserved.length + report.workerNames.convention.length > 0
+  ) {
     blocks.push(workerNamesBlock(report.workerNames));
   }
 
   // The environment declaration, and only when a Worker disagrees with it. The block is the finding.
   if (report.environments && report.environments.drift.length > 0) {
     blocks.push(environmentsBlock(report.environments));
+  }
+
+  // Straight after it, because it is the same file asked what is inside a stanza rather than which ones
+  // exist. A project passes the block above and fails this one whenever a top-level key an environment
+  // does not inherit was never repeated. The block is the finding.
+  if (report.environmentInheritance && report.environmentInheritance.unrepeated.length > 0) {
+    blocks.push(environmentInheritanceBlock(report.environmentInheritance));
   }
 
   // Straight after it, because it is the same declaration asked whether it *works*: one of these
@@ -2651,6 +2756,19 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
             ...mismatch,
             detail: describeWorkerName(mismatch),
           })),
+          // Its own key, not a mismatch: a clash is established against the host registry rather than
+          // against the directory, and its remedy is a different one. It is part of `drifted`, so a
+          // consumer reading `state` alone still sees the fault.
+          reserved: report.workerNames.reserved.map((clash) => ({
+            ...clash,
+            detail: describeReservedWorkerName(clash),
+          })),
+          // And its own key for the opposite reason: this one never reaches `state`, so a consumer that
+          // only reads `state` must not see it, and a consumer that wants it must be able to ask.
+          convention: report.workerNames.convention.map((note) => ({
+            ...note,
+            detail: describeWorkerNameConvention(note).join(" "),
+          })),
         }
       : null,
     // Same `null` discipline once more, and each drift carries its own sentence — the remedy for an
@@ -2662,6 +2780,18 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
           drift: report.environments.drift.map((drift) => ({
             ...drift,
             detail: describeEnvironmentDrift(drift, report.environments?.declared ?? []),
+          })),
+        }
+      : null,
+    // The same stanzas asked what is inside them (#581). Its own key rather than a field on the one
+    // above, and each finding carries its own sentence — the cost of a missing `version_metadata` is not
+    // the cost of a missing `vars`, and a script must not have to reconstruct which from a key name.
+    environmentInheritance: report.environmentInheritance
+      ? {
+          state: report.environmentInheritance.state,
+          unrepeated: report.environmentInheritance.unrepeated.map((found) => ({
+            ...found,
+            detail: describeUnrepeatedKey(found),
           })),
         }
       : null,

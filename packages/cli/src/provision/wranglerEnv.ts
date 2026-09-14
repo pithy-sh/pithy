@@ -7,6 +7,7 @@ import type { ProvisionScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { parse } from "comment-json";
 import type { FeatureResource } from "../feature/manifest";
 import { writeJsonc } from "../project/jsonc";
+import { stanzaFor } from "../project/wranglerInheritance";
 import { absolutizePaths, provisionConfigPath } from "./featureConfig";
 import type { SecretStoreBinding } from "./secretBindings";
 
@@ -85,8 +86,11 @@ const KIND_TO_WRANGLER: Record<
  * callee.
  *
  * The stanza is created when absent and reused when present, so this is also what makes provisioning the
- * creator of a stanza for an environment declared after the project was scaffolded. Idempotent, and every
- * comment in the file survives the round trip.
+ * creator of a stanza for an environment declared after the project was scaffolded — and creating one is
+ * why it goes through `stanzaFor` rather than `config.env[key] ??= {}`: an `env.<name>` stanza inherits
+ * none of `vars`, `version_metadata` or their forty-odd siblings from the top level, so a stanza that
+ * holds nothing but ids deploys without every one of them (#581). Idempotent, and every comment in the
+ * file survives the round trip.
  */
 async function editStanza(
   workerDir: string,
@@ -102,11 +106,13 @@ async function editStanza(
   mutate: (stanza: EnvBindings) => void,
 ): Promise<string> {
   const raw = await readFile(join(workerDir, "wrangler.jsonc"), "utf8");
-  const config = parse(raw) as unknown as { env?: Record<string, EnvBindings | undefined> };
+  const config = parse(raw) as unknown as Record<string, unknown>;
 
-  config.env ??= {};
-  const stanza: EnvBindings = config.env[stanzaKey] ?? {};
-  config.env[stanzaKey] = stanza;
+  // Through the one stanza reader (#581), never `config.env[key] ??= {}`. A stanza this creates — and for
+  // `feature` it always creates one, since `env.feature` is unwritable in a tracked config — starts with
+  // everything the top level declares that an environment does not inherit. Filling in ids on an otherwise
+  // empty stanza is what shipped every feature deploy with no `vars` at all.
+  const stanza = stanzaFor(config, stanzaKey) as EnvBindings;
 
   mutate(stanza);
 
@@ -117,7 +123,7 @@ async function editStanza(
   if (!source) {
     // Generated, so every path in it is rewritten against the directory it came from — wrangler
     // resolves a config's paths relative to the config, and this one lives two levels deeper.
-    absolutizePaths(config as Record<string, unknown>, workerDir);
+    absolutizePaths(config, workerDir);
     await mkdir(dirname(destination), { recursive: true });
     await writeJsonc(destination, config);
     return destination;
@@ -188,7 +194,11 @@ export async function applyProvisionedEnv(options: {
   secrets: readonly SecretStoreBinding[];
 }): Promise<string> {
   const destination = await editStanza(options.workerDir, options.scope.stanza, options.scope.source, (stanza) => {
-    stanza.name = options.scope.worker(options.worker);
+    // The scope decides, and it is handed what the stanza already says (#580). A declared environment
+    // reads a name it finds and composes one only when there is none; a feature ignores it, because a
+    // feature's name is recomputed on teardown. Deciding here instead would put that asymmetry in a
+    // writer, which is how one used to get it wrong.
+    stanza.name = options.scope.worker(options.worker, stanza.name);
     for (const resource of options.resources) {
       const { array, fields } = KIND_TO_WRANGLER[resource.kind];
       // Reuse the existing comment-json array (preserving its comments) or start a fresh one, then

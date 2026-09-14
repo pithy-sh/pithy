@@ -7,7 +7,9 @@ import { join } from "node:path";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { configFromArgs, TOP_LEVEL_STANZA_ARG } from "../project/effectiveConfig";
 import { DEPLOY_STAMP_VAR, deployStamp } from "../provision/deployStamp";
+import { narrate, type ProgressEvent } from "../terminal/progress";
 import { deployHostWorker, type HostDeployOptions } from "./hostDeploy";
 
 /**
@@ -19,8 +21,8 @@ import { deployHostWorker, type HostDeployOptions } from "./hostDeploy";
 /** The directory the temp config is written into — an installed package's worker dir, in real life. */
 let dir: string;
 
-/** Every `wrangler deploy --config` this run made, in order. */
-let deploys: { configPath: string; dir: string; config: WorkflowHostTemplate }[];
+/** Every `wrangler deploy` this run made, in order — the argv, and the config that argv names. */
+let deploys: { args: readonly string[]; configPath: string; dir: string; config: WorkflowHostTemplate }[];
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "pithy-host-deploy-"));
@@ -53,8 +55,11 @@ function run(options: Partial<HostDeployOptions> & { vars?: Record<string, strin
     dir,
     env: "prod",
     readVars: async () => vars ?? null,
-    runDeploy: async (configPath, cwd) => {
-      deploys.push({ configPath, dir: cwd, config: JSON.parse(await readFile(configPath, "utf8")) });
+    runDeploy: async (args, cwd) => {
+      // Read back through the argv, the way wrangler resolves it, rather than through a path this test
+      // rebuilt: an argv that stopped naming the generated config would otherwise still look like one.
+      const configPath = configFromArgs(args) as string;
+      deploys.push({ args, configPath, dir: cwd, config: JSON.parse(await readFile(configPath, "utf8")) });
     },
     ...rest,
   });
@@ -85,7 +90,7 @@ describe("the account a host deploy ships under", () => {
       env: "prod",
       account: { accountName: "acme", accountId: "acct-1" },
       force: true,
-      runDeploy: async (_configPath, _dir) => {
+      runDeploy: async (_args, _dir) => {
         seen.push("ran");
       },
     });
@@ -229,5 +234,98 @@ describe("deployHostWorker", () => {
       await run({ vars: { [DEPLOY_STAMP_VAR]: CURRENT } });
       expect(await readdir(dir)).toEqual([]);
     });
+  });
+});
+
+/**
+ * **One place, and every command that ships a kit Worker inherits it (#578).**
+ *
+ * `pithy deploy --kit` reaches here, and so does every `pithy <capability> provision` — through an
+ * orchestrator and a provisioner class in a kit package, neither of which carries a progress parameter
+ * and neither of which should grow one. Narrating at the spawn is what enrolls all of them at once,
+ * which is the opposite of what #531 did: it named the seam for provisioning, filed it under
+ * `provision/`, and `deploy` never found it.
+ */
+describe("a kit Worker's upload announces itself", () => {
+  /** Every progress event one run raised. */
+  async function narrated(work: () => Promise<unknown>): Promise<ProgressEvent[]> {
+    const events: ProgressEvent[] = [];
+    await narrate(
+      (event) => events.push(event),
+      async () => {
+        await work();
+      },
+    );
+    return events;
+  }
+
+  test("names the Worker it is about to upload", async () => {
+    expect(await narrated(() => run({ vars: null }))).toEqual([{ phase: "start", what: "acme-prod-email" }]);
+  });
+
+  /**
+   * **Nothing is said for a Worker that was already current.** A `▸` line in front of an upload that
+   * never happens is narration an operator learns to distrust, and the skip has its own sentence in the
+   * row the caller settles.
+   */
+  test("says nothing when the stamp matched and no wrangler ran", async () => {
+    expect(await narrated(() => run({ vars: { [DEPLOY_STAMP_VAR]: CURRENT } }))).toEqual([]);
+    expect(deploys).toEqual([]);
+  });
+
+  /** Outside a narrated span — every `--json` run — the spawn is as quiet as it ever was. */
+  test("is silent where no span was opened", async () => {
+    const outcome = await run({ vars: null });
+    expect(outcome.outcome).toBe("deployed");
+  });
+});
+
+/**
+ * **#584: the third producer of one class, and the one with no symptom in the shell that wrote it.**
+ *
+ * The argv was `["deploy", "--config", <generated>]` — no stanza named, no gate. wrangler resolves its
+ * environment as `args.env ?? CLOUDFLARE_ENV` and the child inherits the operator's shell, so an
+ * exported `CLOUDFLARE_ENV=prod` published `acme-prod-email-prod`: `appendEnvName` runs whether or not
+ * the stanza exists, and a generated host config has no `env` section for wrangler to complain about.
+ * A Worker under a name nothing references, while every binding pointing at `acme-prod-email` resolves
+ * to the old script or to nothing.
+ *
+ * The stanza is stated on the argv now, in wrangler's own spelling for the top level, and the gate reads
+ * the argv rather than its own answer — so a build that stopped stating it reddens these in any shell.
+ */
+describe("the stanza a kit Worker is published under", () => {
+  test("is stated on the argv, so the shell is not what decides it", async () => {
+    await run({ vars: null, processEnv: { CLOUDFLARE_ENV: "prod" } });
+    // The literal argv, not a re-derivation of it. `--env=` is wrangler's own spelling for the top-level
+    // stanza — it names that form in the warning it prints when a command specifies no environment.
+    expect(deploys[0]?.args).toEqual(["deploy", "--config", join(dir, ".wrangler.prod.json"), "--env="]);
+    expect(TOP_LEVEL_STANZA_ARG).toBe("--env=");
+  });
+
+  /**
+   * Acceptance, in the shell the issue names: `CLOUDFLARE_ENV=prod` exported, and the Worker that ships
+   * is the one the kit named. What wrangler makes of that argv is `identityOf`'s to answer and
+   * `effectiveConfig.test.ts`'s to assert — this seam can say what it handed over, and it hands over a
+   * config naming `acme-prod-email` and an argv selecting no stanza.
+   */
+  test("publishes the name the kit gave it, with CLOUDFLARE_ENV exported in the real environment", async () => {
+    const restore = process.env.CLOUDFLARE_ENV;
+    process.env.CLOUDFLARE_ENV = "prod";
+    try {
+      const outcome = await run({ vars: null });
+      expect(outcome).toMatchObject({ worker: "acme-prod-email", outcome: "deployed" });
+      expect(deploys[0]?.config.name).toBe("acme-prod-email");
+      expect(deploys[0]?.args).toContain(TOP_LEVEL_STANZA_ARG);
+    } finally {
+      if (restore === undefined) delete process.env.CLOUDFLARE_ENV;
+      else process.env.CLOUDFLARE_ENV = restore;
+    }
+  });
+
+  test("refuses, and writes no temporary config, when the configuration names no Worker", async () => {
+    // The half of the gate a caller can still reach. Nothing can hold a deploy to a name that is not
+    // there, and a deploy nothing holds is the shape every producer of this class has arrived in.
+    await expect(run({ vars: null, config: { ...config(), name: "" } })).rejects.toThrowError(/names no Worker/);
+    expect(await readdir(dir)).toEqual([]);
   });
 });

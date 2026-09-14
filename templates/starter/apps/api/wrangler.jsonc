@@ -14,14 +14,17 @@
     "head_sampling_rate": 1
   },
 
-  // The deployed version of this Worker, injected by Cloudflare. Top level, so every environment
-  // inherits it — this is metadata about the build, not a per-environment setting.
+  // The deployed version of this Worker, injected by Cloudflare.
   // It answers the first question anyone asks when a deploy goes wrong: which build produced this?
   // The id reaches five places from here — the `version` field on every log record, the
   // control-plane manifest, a header on every control-plane response, every audit event, and the
   // check `pithy deploy` runs to prove the Worker it just shipped is the one answering at your
   // domain. `CF_VERSION_METADATA` is the name the code reads; renaming it binds something nothing
   // consumes.
+  // Every environment repeats it, and must: an env.<name> stanza does NOT inherit version_metadata
+  // from the top level. Leave it out of a stanza and that environment deploys with no binding at all —
+  // no error, one warning inside a deploy — and `pithy deploy`'s post-deploy version check is left
+  // permanently inconclusive there. `pithy doctor` reports a stanza that does not repeat it.
   "version_metadata": { "binding": "CF_VERSION_METADATA" },
 
   // The top level is the dev environment — what `wrangler dev` runs locally.
@@ -43,24 +46,40 @@
   "d1_databases": [],
   "kv_namespaces": [],
 
-  // Staging serves test users; production serves paid users. Deployed names get the
-  // environment suffix automatically (pithy-app-staging, pithy-app-prod).
+  // Staging serves test users; production serves paid users. Each environment names its Worker
+  // explicitly, in the shape every other Pithy resource takes: <project>-<env>-<worker>. wrangler
+  // would otherwise suffix the top-level name (pithy-app-api-staging), which sorts this Worker away
+  // from the D1, KV, buckets and capability Workers of the environment it belongs to. Grouping by
+  // environment is how an account is read and how blast radius is reasoned about.
+  // Rename one and it deploys as a new script: the old name keeps answering until you delete it.
+  //
+  // Each stanza repeats what it must, and the repetition is the mechanism rather than an oversight.
+  // A minority of wrangler keys are NOT inherited by an environment — `vars`, `version_metadata`, and
+  // every binding block among them. Declared above and left out of a stanza, they are simply absent in
+  // that environment, whatever the top level says. `observability` and `compatibility_date` are not on
+  // that list and are inherited, which is why they are declared once and never repeated.
+  // `pithy doctor` reads the file and reports any stanza that goes without something the top level
+  // declares.
   "env": {
     "staging": {
+      "name": "pithy-app-staging-api",
       "vars": {
         "ENVIRONMENT": "staging",
         "PROJECT": "pithy-app",
         "WORKER": "api"
       },
+      "version_metadata": { "binding": "CF_VERSION_METADATA" },
       "d1_databases": [],
       "kv_namespaces": []
     },
     "prod": {
+      "name": "pithy-app-prod-api",
       "vars": {
         "ENVIRONMENT": "prod",
         "PROJECT": "pithy-app",
         "WORKER": "api"
       },
+      "version_metadata": { "binding": "CF_VERSION_METADATA" },
       "d1_databases": [],
       "kv_namespaces": []
     }

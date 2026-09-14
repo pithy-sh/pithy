@@ -30,6 +30,7 @@ import { removeDevSecrets, writeDevSecrets } from "../devSecrets/file";
 import { resolveDevSecretsFile } from "../devSecrets/location";
 import { renderDevVarsNotes } from "../devSecrets/report";
 import { readWranglerConfig, type WranglerEnvVars, writeWranglerConfig } from "../project/wrangler";
+import { stanzaFor } from "../project/wranglerInheritance";
 
 /** The message of an unknown thrown value, for surfacing both legs of a failed upsert. */
 function errorMessage(error: unknown): string {
@@ -371,12 +372,11 @@ async function editEnvVars(
   mutate: (vars: Record<string, string>) => void,
 ): Promise<void> {
   const config = (await readWranglerConfig(workerDir)) as WranglerEnvVars;
-  config.env ??= {};
-  config.env[env] ??= {};
-  const stanza = config.env[env];
-  if (stanza) {
-    stanza.vars ??= {};
-    mutate(stanza.vars);
-  }
+  // The one reader (#581). `staging` and `prod` are often not in the file yet when a managed sitekey is
+  // first minted, and a stanza created to hold one var alone is a Worker deployed without every other key
+  // an environment does not inherit.
+  const stanza = stanzaFor(config, env) as { vars?: Record<string, string> };
+  stanza.vars ??= {};
+  mutate(stanza.vars);
   await writeWranglerConfig(workerDir, config);
 }

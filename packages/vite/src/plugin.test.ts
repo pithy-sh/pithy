@@ -182,6 +182,29 @@ describe("pithy() virtual modules", () => {
     expect(production.baseUrl).toBe("https://acme.com");
   });
 
+  /**
+   * #579. `CLOUDFLARE_ENV` is the name Cloudflare's own tooling selects a wrangler environment with, so a
+   * `CLOUDFLARE_ENV=staging vite build` run by hand or by CI has said which environment it is. Reading
+   * only `ENVIRONMENT` meant that build emitted staging's Worker config beside dev's projections — one
+   * environment, two names, and only one of them read.
+   */
+  test("CLOUDFLARE_ENV names the environment too, and ENVIRONMENT still wins", async () => {
+    const dir = await workerDir({ "pithy.config.ts": AUTH_CONFIG });
+    const previous = { env: process.env.ENVIRONMENT, cf: process.env.CLOUDFLARE_ENV };
+    try {
+      process.env.CLOUDFLARE_ENV = "production";
+      delete process.env.ENVIRONMENT;
+      expect(defaultExport(await driver(pithy(), dir).loadCapability("auth")).baseUrl).toBe("https://acme.com");
+      process.env.ENVIRONMENT = "dev";
+      expect(defaultExport(await driver(pithy(), dir).loadCapability("auth")).baseUrl).toBe("http://localhost:8787");
+    } finally {
+      if (previous.env === undefined) delete process.env.ENVIRONMENT;
+      else process.env.ENVIRONMENT = previous.env;
+      if (previous.cf === undefined) delete process.env.CLOUDFLARE_ENV;
+      else process.env.CLOUDFLARE_ENV = previous.cf;
+    }
+  });
+
   test("a non-JSON projection value fails the build instead of being inlined", async () => {
     const dir = await workerDir({
       "pithy.config.ts": `

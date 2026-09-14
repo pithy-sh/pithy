@@ -847,7 +847,7 @@ $ pithy add auth
 Done.
 
 pithy 1.3.0 available. You have 1.2.0.
-Update: bun update -g @pithy-sh/cli
+Update: bun install -g @pithy-sh/cli
 ```
 
 The word `available` and the new version number render in saffron when color is supported. Everything else uses the dim/default conventions from Section 3.4.
@@ -875,7 +875,11 @@ Version comparison comes from `parseSemver` and `compareSemver` in `@pithy-sh/co
 Pithy detects which package manager installed the binary by inspecting `process.argv[1]`. The detection is path-based:
 
 ```ts
-type Installer = 'npm' | 'pnpm' | 'yarn' | 'bun' | 'deno' | 'brew' | 'unknown';
+const INSTALLERS = ['npm', 'pnpm', 'yarn', 'bun', 'deno', 'brew', 'unknown'] as const;
+type Installer = (typeof INSTALLERS)[number];
+
+// Deno's npm cache: `$DENO_DIR/npm/<registry host>/<package>/<version>/…`.
+const DENO_NPM_CACHE = /\/npm\/[^/]*[a-z]\.[a-z]{2,}\//i;
 
 function detectInstaller(): Installer {
   const binPath = (process.argv[1] || '').replace(/\\/g, '/');
@@ -885,6 +889,7 @@ function detectInstaller(): Installer {
   if (/\/pnpm\/|\/\.pnpm\//.test(binPath)) return 'pnpm';
   if (/\/(?:home|linux)brew\/|\/Cellar\//.test(binPath)) return 'brew';
   if (/\/\.yarn\/|\/yarn\/global\//.test(binPath)) return 'yarn';
+  if (DENO_NPM_CACHE.test(binPath)) return 'deno';
   if (/\/npm\/|\/node_modules\//.test(binPath)) return 'npm';
 
   return 'unknown';
@@ -892,10 +897,10 @@ function detectInstaller(): Installer {
 
 function upgradeCommandFor(installer: Installer): string {
   switch (installer) {
-    case 'bun':  return 'bun update -g @pithy-sh/cli';
-    case 'pnpm': return 'pnpm update -g @pithy-sh/cli';
-    case 'yarn': return 'yarn global upgrade @pithy-sh/cli';
-    case 'deno': return 'deno install --reload -g -A -n pithy npm:@pithy-sh/cli';
+    case 'bun':  return 'bun install -g @pithy-sh/cli';
+    case 'pnpm': return 'pnpm add -g @pithy-sh/cli';
+    case 'yarn': return 'yarn global add @pithy-sh/cli';
+    case 'deno': return 'deno install --reload -f -g -A -n pithy npm:@pithy-sh/cli';
     case 'brew': return 'brew upgrade pithy';
     case 'npm':
     case 'unknown':
@@ -905,6 +910,31 @@ function upgradeCommandFor(installer: Installer): string {
 ```
 
 The detection runs once and is cached in the state file. Unknown installs default to `npm` — anyone with Node has npm, so the fallback is universal.
+
+**Deno is detected by its cache, not by its install root.** `deno install -g npm:@pithy-sh/cli` writes a
+shim at `$DENO_INSTALL_ROOT/bin/pithy`, but the module deno executes — and so `process.argv[1]` — is the one
+it resolved into `$DENO_DIR/npm/<registry host>/@pithy-sh/cli/<version>/dist/bin.js`. That directory is
+literally named `npm`, so the generic npm test claims it unless the deno test runs first, and a deno user is
+told to run `npm i -g`: a second copy under npm's prefix, and the shim they actually invoke left stale. The
+`/.deno/` test only ever matched the shim. `DENO_DIR` is user-settable and its platform defaults
+(`~/.cache/deno`, `~/Library/Caches/deno`, `%LOCALAPPDATA%\deno`) share no segment, so the mark is the
+layout below it: a directory named `npm` whose child is a registry hostname — matched by shape, because an
+adopter on a mirror caches under their own host. See #582.
+
+**Every one of those commands must resolve the registry's `latest` tag, never a range an earlier install
+recorded.** That rules out the update verbs. `bun update`, `pnpm update` and `yarn global upgrade` each honor
+the range written into the global manifest when the binary was first installed — and for a `0.x` release a
+caret pins the *minor*, so `^0.5.0` can never reach `0.7.1`. They run, report success, and install nothing.
+The install verbs name no range: they resolve `latest` and rewrite what is recorded. Deno needs `-f` for the
+same reason in a different shape — without it, it refuses to replace an existing shim and exits 1. Homebrew
+and npm keep their upgrade verbs because neither records a range to respect: brew has a formula, and npm's
+global prefix has no `package.json`.
+
+`yarn global add` is Yarn 1 spelling with no modern equivalent — Yarn 2+ removed `yarn global` outright, so a
+binary that arrived via `yarn global add` is on Yarn 1 by construction.
+
+`Installer` is derived from the `INSTALLERS` array rather than written beside it, so the test that asks this
+question asks it of every installer. A seventh is enrolled by existing, not by somebody remembering.
 
 ### 5.4 Homebrew tap
 
@@ -1021,6 +1051,8 @@ $ pithy add --list --json
 - [ ] Non-TTY stderr (piped, CI) suppresses the notification
 - [ ] Patch version bumps don't trigger notifications (unless flagged)
 - [ ] Installer detection returns correct command for npm, pnpm, yarn, bun, deno, brew
+- [ ] A deno install is detected as `deno` at the path deno runs it from, under `$DENO_DIR/npm/`, not only at `/.deno/`
+- [ ] Every installer's command resolves the registry's `latest` tag, not a range a prior install recorded
 - [ ] Unknown installer falls back to `npm i -g @pithy-sh/cli`
 - [ ] `pithy doctor` always performs a fresh check, bypassing cache
 - [ ] Homebrew tap formula updates automatically on npm release

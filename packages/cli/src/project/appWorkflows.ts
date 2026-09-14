@@ -8,6 +8,7 @@ import { composeWorkflows } from "@pithy-sh/core/src/workflow/register";
 import { stringify } from "comment-json";
 import { incompleteBindings } from "./appBindings";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
+import { stanzaFor } from "./wranglerInheritance";
 
 /**
  * Workflows the adopter's **own app capability** declares, reconciled into that Worker's `wrangler.jsonc`.
@@ -159,15 +160,6 @@ function environmentsOf(config: WorkflowConfig, env: string | undefined): string
   return ["dev", ...Object.keys(config.env ?? {})];
 }
 
-/** The stanza for an environment, created when absent. `dev` is the top-level one — wrangler has no `env.dev`. */
-function stanzaFor(config: WorkflowConfig, env: string): WorkflowStanza {
-  if (env === "dev") return config;
-  config.env ??= {};
-  const existing = config.env[env] ?? {};
-  config.env[env] = existing;
-  return existing;
-}
-
 /**
  * Replace the app's own entries in one stanza, leaving every provisioned one in place.
  *
@@ -236,7 +228,10 @@ export async function reconcileAppWorkflows(options: ReconcileAppWorkflowsOption
   const runs: AppWorkflowRun[] = [];
   for (const target of environmentsOf(config, env)) {
     const plan = planAppWorkflows(app, { project, env: target });
-    const stanza = stanzaFor(config, target);
+    // The one reader (#581): `dev` is the top-level stanza and an `env.<name>` this creates carries what
+    // an environment does not inherit. This module had written that `dev` branch out for itself, which is
+    // three lines each of four writers had, and the one place the seeding rule could be skipped.
+    const stanza = stanzaFor(config, target) as WorkflowStanza;
     const stanzaBefore = stringify(stanza);
 
     replaceOwnWorkflows(stanza, plan);

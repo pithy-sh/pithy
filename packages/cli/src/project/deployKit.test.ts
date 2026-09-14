@@ -13,6 +13,7 @@ import { media } from "@pithy-sh/media/src/capability";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { readHostTemplate } from "../capabilities/hostRegistry";
 import { DEPLOY_STAMP_VAR } from "../provision/deployStamp";
+import { narrate, type ProgressEvent } from "../terminal/progress";
 import { linkKitPackages } from "../test-utils/linkKit";
 import {
   deployKitWorkers,
@@ -148,9 +149,12 @@ async function runReport(options: RunOptions = {}): Promise<KitDeployReport> {
     capabilitiesFor: options.capabilitiesFor ?? (async () => options.composes ?? [EMAIL]),
     readTemplate: options.readTemplate ?? (async () => structuredClone(template)),
     readVars: async () => options.vars ?? null,
-    runDeploy: async (configPath) => {
+    runDeploy: async (args) => {
       const { readFile } = await import("node:fs/promises");
-      deployed.push(JSON.parse(await readFile(configPath, "utf8")));
+      const { configFromArgs } = await import("./effectiveConfig");
+      // Through the argv, the way wrangler resolves it: an argv that stopped naming the generated
+      // config would otherwise still read back as a deploy of it (#584).
+      deployed.push(JSON.parse(await readFile(configFromArgs(args) as string, "utf8")));
     },
   });
 }
@@ -527,5 +531,40 @@ describe("summarizeKitDeploy", () => {
     expect(summarizeKitProblem("admin: its capabilities could not be read.")).toBe(
       "admin: its capabilities could not be read.",
     );
+  });
+});
+
+/**
+ * **The kit half accounts for itself while the run is still going (#578).**
+ *
+ * The `▸` line for a Worker that actually uploads comes from `capabilities/hostDeploy.ts`, at the spawn.
+ * This is the other half: the row, as it settles — and it covers the three outcomes that never reach a
+ * spawn at all, `unchanged`, `skipped` and `failed`, so an operator reads every capability's answer
+ * beside the work rather than in a block after the last upload finished.
+ */
+describe("each capability settles as it is decided", () => {
+  test("streams the row it would otherwise have held to the end", async () => {
+    const events: ProgressEvent[] = [];
+    const rows = await narrate(
+      (event) => events.push(event),
+      async () => run({ vars: null }),
+    );
+
+    expect(events.filter((event) => event.phase === "settled")).toEqual(
+      rows.map((row) => ({ phase: "settled", line: summarizeKitDeploy(row) })),
+    );
+    // Not an empty set dressed up as agreement: the fixture composes email, so there is a row to settle.
+    expect(rows).toHaveLength(1);
+  });
+
+  test("a capability this project cannot deploy yet settles too, with the reason", async () => {
+    const events: ProgressEvent[] = [];
+    const rows = await narrate(
+      (event) => events.push(event),
+      async () => run({ bindings: [{ binding: "DB", database_id: "db-1" }] }),
+    );
+
+    expect(rows[0]?.outcome).toBe("skipped");
+    expect(events).toEqual([{ phase: "settled", line: summarizeKitDeploy(rows[0] as KitWorkerDeploy) }]);
   });
 });

@@ -81,7 +81,15 @@ const RELATIVE_PATHS = ["main"] as const;
  * does not exist and the deploy would fail on it — the exact class of quiet breakage this whole thread
  * is about, so it is fixed here rather than left to the first adopter to hit it.
  *
- * `assets.directory` gets the same treatment when a Worker carries a UI.
+ * **`assets.directory` is rewritten only if it is already there, and for a Worker with a front end it
+ * never is (#579).** That key is written by the *build*, not by the adopter: a UI Worker's tracked
+ * `assets` stanza carries `not_found_handling` and `run_worker_first` and no directory at all, because
+ * only `vite build` knows where the client output landed. So this rewrite is for a Worker that sets the
+ * directory by hand, and nothing here can supply one for a Worker that does not. The docstring said
+ * otherwise, and believing it is how `pithy deploy --env feature/<x>` came to fail on every UI Worker
+ * with `The "assets" property in your configuration is missing the required "directory" property.` —
+ * the build is what supplies it, so the build is what is pointed at this file (`uiBuildEnvironment`),
+ * and the config it writes is the one wrangler deploys.
  */
 export function absolutizePaths(config: Record<string, unknown>, workerDir: string): void {
   for (const key of RELATIVE_PATHS) {

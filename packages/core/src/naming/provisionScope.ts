@@ -133,8 +133,14 @@ export interface ProvisionScope {
    * is created, judged to be the project's, kept out of the teardown record, and orphaned.
    */
   readonly honorsGlobal: boolean;
-  /** The script name a Worker deploys under in this scope. */
-  worker(worker: string): string;
+  /**
+   * The script name a Worker deploys under in this scope.
+   *
+   * `declared` is the name that scope's stanza already carries, when it carries one. A scope may honor it
+   * or compose its own; see {@link environmentScope} and {@link featureScope}, which answer differently
+   * and say why. Passing it is how a caller asks the scope rather than deciding for itself.
+   */
+  worker(worker: string, declared?: string): string;
   /**
    * This scope's CF Secrets Store entry name for a declared secret.
    *
@@ -228,13 +234,25 @@ export function bindingResourceName(
  * every name below, so an illegal one must fail before anything is created rather than at the fourth
  * getter that happened to use it.
  *
- * **A Worker's script name is wrangler's own, `<script>-<env>`, deliberately.** It is the one name here
- * that is not `<project>-<env>-<thing>`, because `wrangler deploy --env staging` has always appended the
- * environment to the top-level `name` — so every project that ever deployed is already at that address.
- * A Worker script is a `refuse`-policy namespace precisely because renaming one orphans the deployment
- * and every `service` binding pointing at it; composing a "more correct" name here would do exactly
- * that, silently, on the next deploy. The name is written out rather than left implicit so a service
- * binding and a deploy agree on one string that is in the file.
+ * **A declared name wins; the fallback is wrangler's own, `<script>-<env>`.**
+ *
+ * This reverses the rule that stood here until #580, and the reversal is worth reading rather than
+ * assuming. The old rule *recomputed* `<script>-<env>` on every provision and wrote it over whatever the
+ * stanza said, on the argument that wrangler has always appended the environment to the top-level `name`,
+ * so every project that ever deployed is already at that address.
+ *
+ * That argument is still true about the **fallback**, and the fallback is unchanged: a stanza that names
+ * nothing gets `<script>-<env>` and every existing adopter deploys exactly where they always did. What was
+ * wrong was recomputing over a name somebody wrote down. Since #580 the starter template writes one —
+ * `<project>-<env>-<worker>`, the shape every other resource here takes — so recompute would have made the
+ * template's stamp pointless, and worse: it would have silently renamed the Worker of every project that
+ * had taken the new shape, on their next `pithy provision`. A Worker script is a `refuse`-policy namespace
+ * precisely because renaming one orphans the deployment, its routes, and every `service` binding pointing
+ * at it. Doing that as a side effect of provisioning is the failure the old rule was written to prevent,
+ * arriving from the other direction.
+ *
+ * So the name is read, not composed, when the file already holds one — and written out when it does not,
+ * so a service binding and a deploy still agree on one string that is in the file.
  */
 export function environmentScope(project: string, environment: string): ProvisionScope {
   assertValidEnvironment(environment);
@@ -247,7 +265,7 @@ export function environmentScope(project: string, environment: string): Provisio
     honorsGlobal: true,
     resource: (binding, kind, naming) =>
       bindingResourceName(project, binding, kind, naming, (thing) => names[KIND_NAMER[kind]](thing)),
-    worker: (worker) => `${worker}-${environment}`,
+    worker: (worker, declared) => declared ?? `${worker}-${environment}`,
     secretEntry: (secret, secretScope) =>
       secretEntryName(project, secret, secretScope, () => names.secretEntry(secret)),
   };
@@ -272,6 +290,12 @@ export function environmentScope(project: string, environment: string): Provisio
  * `resource` is ignored for the same reason it is moot: a feature's `<thing>` segment is the binding plus
  * the kind, and the whole name is recomputed on teardown rather than looked up, so nothing outside the
  * feature reads the string.
+ *
+ * **And a declared Worker name is ignored here too — the other half of the #580 asymmetry.** A declared
+ * environment's script name is the adopter's, written in a tracked file, and provisioning reads it. A
+ * feature's is the kit's: it is composed from the branch, written into a generated config nobody commits,
+ * and **recomputed on teardown**. Honoring a declared one would leave `pithy feature destroy` computing a
+ * name the deployment does not answer to, which is a Worker nothing deletes.
  */
 export function featureScope(identity: FeatureIdentity): ProvisionScope {
   return {

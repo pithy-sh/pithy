@@ -3,10 +3,9 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
-import { ensureEmptyTarget, kitRange, WORKER_NAME, workerNamespace } from "./scaffold";
+import { assertWorkerName, ensureEmptyTarget, environmentWorkerName, kitRange, workerNamespace } from "./scaffold";
 
 /**
  * The wrangler every producer of a Worker manifest pins.
@@ -34,16 +33,27 @@ export const WRANGLER_RANGE = "^4.123.0";
  */
 function workerFiles(name: string, project: string, environments: readonly string[]): Record<string, string> {
   // Built before the template rather than inside it: one stanza per declared environment, in declaration
-  // order. `env.<name>.vars` REPLACES the top-level block, so every stanza repeats all three vars.
+  // order. `env.<name>.vars` REPLACES the top-level block, so every stanza repeats all three vars — and
+  // each stanza names the script it deploys under, `<project>-<env>-<worker>` (#580), rather than letting
+  // wrangler suffix the top-level name. The same shape `pithy init` stamps into the first Worker;
+  // `scaffoldParity.test.ts` holds the two producers to it.
+  //
+  // `version_metadata` repeats for the same reason `vars` does and not a different one (#581): wrangler
+  // does not inherit it into an environment either, so a stanza without it deploys with no
+  // `CF_VERSION_METADATA` binding and leaves `pithy deploy`'s post-deploy version check permanently
+  // inconclusive there. `observability` above is inherited and is deliberately not repeated.
+  // `pithy doctor` reports any stanza that goes without something the top level declares.
   const envStanzas = environments
     .map((environment) =>
       [
         `    "${environment}": {`,
+        `      "name": "${environmentWorkerName(project, environment, name)}",`,
         `      "vars": {`,
         `        "ENVIRONMENT": "${environment}",`,
         `        "PROJECT": "${project}",`,
         `        "WORKER": "${name}"`,
-        `      }`,
+        `      },`,
+        `      "version_metadata": { "binding": "CF_VERSION_METADATA" }`,
         `    }`,
       ].join("\n"),
     )
@@ -61,9 +71,10 @@ function workerFiles(name: string, project: string, environments: readonly strin
     "head_sampling_rate": 1
   },
 
-  // The deployed version of this Worker, injected by Cloudflare. Top level, so every environment
-  // inherits it. It is what puts a build id on every log record and audit event, and what
-  // \`pithy deploy\` reads back to prove this Worker is the one answering at your domain.
+  // The deployed version of this Worker, injected by Cloudflare. It is what puts a build id on every
+  // log record and audit event, and what \`pithy deploy\` reads back to prove this Worker is the one
+  // answering at your domain. Every environment repeats it below, and must: an env.<name> stanza does
+  // NOT inherit version_metadata from the top level.
   "version_metadata": { "binding": "CF_VERSION_METADATA" },
 
   // The top level is the dev environment; each \`env.<name>\` is one this project declares.
@@ -116,11 +127,21 @@ ${envStanzas}
       // and that template are the project's two Worker producers, and only one of them is ever the file
       // somebody remembers to edit — which is how the pins here fell a major version behind.
       engines: { node: ">=22" },
+      // **`--config wrangler.jsonc`, and it is not decoration (#579).** `vite build` writes a
+      // `.wrangler/deploy/config.json` that redirects the next `wrangler deploy` to its flattened output,
+      // and wrangler searches for that file **upwards** from the Worker's directory — so
+      // `bun run build && bun run deploy:staging` shipped a dev-composed Worker as staging, and even a
+      // Worker with no front end can be redirected by a sibling's build higher in the tree. An explicit
+      // `--config` beats the redirect, so these scripts deploy this Worker's tracked configuration or
+      // nothing. Once the Worker has a front end they are the wrong tool and say so by failing: the
+      // tracked `assets` stanza carries no `directory`, because only the build knows where the client
+      // output landed. `pithy deploy --env <name>` is what ships that Worker — it builds what it
+      // deploys, and refuses anything that is not the environment asked for.
       scripts: {
         dev: "wrangler dev",
-        deploy: "wrangler deploy",
-        "deploy:staging": "wrangler deploy --env staging",
-        "deploy:prod": "wrangler deploy --env prod",
+        deploy: "wrangler deploy --config wrangler.jsonc --env=",
+        "deploy:staging": "wrangler deploy --config wrangler.jsonc --env staging",
+        "deploy:prod": "wrangler deploy --config wrangler.jsonc --env prod",
       },
       // `zod`, `kysely` and `hono` beside the kit, because every capability declares them as
       // `peerDependencies` — one copy is one type (#477) — and a peer is a requirement the *consumer*
@@ -270,12 +291,10 @@ export async function scaffoldWorker(options: {
   environments?: readonly string[];
 }): Promise<{ dir: string }> {
   const environments = options.environments ?? DEFAULT_ENVIRONMENTS;
-  if (!WORKER_NAME.test(options.name)) {
-    throw new ValidationError({
-      message: `Worker name must be kebab-case (got "${options.name}").`,
-      action: "Use lowercase words joined by hyphens, e.g. web or admin-api.",
-    });
-  }
+  // The one judge of a worker name, imported rather than restated. It was restated here and in
+  // `renameWorker`, which is how a rule added to it — the reserved capability-host names of #580 —
+  // reached one producer out of three.
+  assertWorkerName(options.name);
 
   // The gate runs **before** the directory is made, not after. A symlink anywhere between the project and
   // `apps/<name>` is refused rather than created through (see `ensureScaffoldPath`), and a *dangling* one

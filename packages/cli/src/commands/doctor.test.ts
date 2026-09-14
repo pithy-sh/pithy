@@ -175,7 +175,8 @@ describe("renderDoctorText", () => {
         "",
         "pithy 1.2.0 (installed via bun)",
         "Update available: 1.3.0",
-        "Run: bun update -g @pithy-sh/cli",
+        // Literal echoed from `upgradeCommandFor`; the gate on what it must be TRUE of is in installer.test.ts.
+        "Run: bun install -g @pithy-sh/cli",
         "",
         "Shell: zsh (~/.zshrc)",
         "Alias: installed (`p.` → `pithy`)",
@@ -2490,6 +2491,8 @@ describe("worker names", () => {
         envs: ["dev", "staging", "prod"],
       },
     ],
+    reserved: [],
+    convention: [],
   };
 
   test("agreeing names stay out of the terse report and do not fail the exit", async () => {
@@ -2518,7 +2521,9 @@ describe("worker names", () => {
 
   test("could-not-check never fails the exit — an unreadable config establishes nothing", async () => {
     const report = await buildDoctorReport(
-      baseOptions({ checkWorkerNames: async () => ({ state: "could-not-check", mismatches: [] }) }),
+      baseOptions({
+        checkWorkerNames: async () => ({ state: "could-not-check", mismatches: [], reserved: [], convention: [] }),
+      }),
     );
     expect(doctorExitCode(report)).toBe(0);
   });
@@ -2543,6 +2548,66 @@ describe("worker names", () => {
     expect(json.workerNames.state).toBe("drifted");
     expect(json.workerNames.mismatches).toHaveLength(2);
     expect(json.workerNames.mismatches[0]?.detail).toBe("deploys as acme-api, not acme-board");
+  });
+
+  /**
+   * #580's two additions, at the command's own seams: the clash that fails the exit, and the note that
+   * must not. They are asserted together because the whole point of the pair is that they are not the
+   * same kind of finding, and one block prints both.
+   */
+  const clashing = {
+    state: "drifted" as const,
+    mismatches: [],
+    reserved: [{ worker: "api", env: "staging", name: "acme-staging-email", capability: "email" }],
+    convention: [],
+  };
+
+  const suffixed = {
+    state: "ok" as const,
+    mismatches: [],
+    reserved: [],
+    convention: [
+      {
+        worker: "board",
+        environments: [{ env: "prod", current: "acme-board-prod", convention: "acme-prod-board" }],
+      },
+    ],
+  };
+
+  test("a stanza named after a capability's host Worker fails the exit and says whose it is", async () => {
+    const report = await buildDoctorReport(baseOptions({ checkWorkerNames: async () => clashing }));
+    expect(doctorExitCode(report)).toBe(1);
+    expect(renderDoctorText(report, "/home/u")).toContain(
+      [
+        "Worker names:",
+        "  api:",
+        "    staging      deploys as acme-staging-email — the email capability's own host Worker. Deploying replaces it.",
+        "    Rename that stanza, or the Worker. pithy worker rename moves all three names.",
+      ].join("\n"),
+    );
+  });
+
+  test("a worker on wrangler's suffix prints its line, exits 0, and keeps the report terse", async () => {
+    // `healthyOptions`, because the claim is about *this* check keeping the report terse — a base report
+    // is already verbose for reasons of its own, and would have proved nothing.
+    const report = await buildDoctorReport(healthyOptions({ checkWorkerNames: async () => suffixed }));
+    expect(doctorExitCode(report)).toBe(0);
+    const text = renderDoctorText(report, "/home/u");
+    expect(text).toContain("acme-prod-board");
+    expect(text).toContain("Optional.");
+    // The note is not a finding, so it must not drag the rest of the report verbose.
+    expect(text).not.toContain("Config dir:");
+  });
+
+  test("--json separates the fault from the note, so a script can gate on one and not the other", async () => {
+    const report = await buildDoctorReport(baseOptions({ checkWorkerNames: async () => clashing }));
+    const json = renderDoctorJson(report) as {
+      workerNames: { state: string; reserved: { capability: string; detail: string }[]; convention: unknown[] };
+    };
+    expect(json.workerNames.state).toBe("drifted");
+    expect(json.workerNames.reserved[0]?.capability).toBe("email");
+    expect(json.workerNames.reserved[0]?.detail).toContain("host Worker");
+    expect(json.workerNames.convention).toEqual([]);
   });
 });
 
