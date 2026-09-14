@@ -4,8 +4,9 @@
 /**
  * Detect which package manager installed the `pithy` binary and, from that, the exact upgrade command to
  * offer. Ships docs/CLI.md §5.3 verbatim: path-based detection over `process.argv[1]`, order-sensitive so
- * the `.bun`/`.deno` install roots win before the generic `node_modules` npm test. Detection runs once and
- * is cached in the notifier state file — a binary's install location doesn't change under it.
+ * the `.bun`/`.deno` install roots and deno's npm cache win before the generic `node_modules` npm test.
+ * Detection runs once and is cached in the notifier state file — a binary's install location doesn't change
+ * under it.
  */
 
 /**
@@ -19,9 +20,21 @@ export const INSTALLERS = ["npm", "pnpm", "yarn", "bun", "deno", "brew", "unknow
 export type Installer = (typeof INSTALLERS)[number];
 
 /**
+ * Deno's npm cache, which is where the module deno runs actually lives: `$DENO_DIR/npm/<registry host>/
+ * <package>/<version>/…`. `DENO_DIR` is user-settable and its defaults (`~/.cache/deno`,
+ * `~/Library/Caches/deno`, `%LOCALAPPDATA%\deno`) share no segment, so the only reliable mark is the layout
+ * below it — a directory named exactly `npm` whose child is a registry hostname. The hostname is matched by
+ * shape, not by name, because an adopter on a mirror caches under their own host.
+ *
+ * Requiring a dotted, alphabetic-tailed segment is what keeps npm's own `/node_modules/npm/bin/` and a
+ * versioned `/npm/0.1.2/` out: `bin` has no dot, and `0.1.2` has no letters.
+ */
+const DENO_NPM_CACHE = /\/npm\/[^/]*[a-z]\.[a-z]{2,}\//i;
+
+/**
  * Detect the installer from a binary path (defaults to `process.argv[1]`). Backslashes are normalized to
- * forward slashes first so a Windows path matches the same tests. Order matters: `.bun`/`.deno` roots are
- * tested before the generic npm `node_modules` catch, and Homebrew before yarn.
+ * forward slashes first so a Windows path matches the same tests. Order matters: `.bun`/`.deno` roots and
+ * deno's npm cache are tested before the generic npm `node_modules` catch, and Homebrew before yarn.
  */
 export function detectInstaller(argv1: string = process.argv[1] ?? ""): Installer {
   const binPath = argv1.replace(/\\/g, "/");
@@ -31,6 +44,10 @@ export function detectInstaller(argv1: string = process.argv[1] ?? ""): Installe
   if (/\/pnpm\/|\/\.pnpm\//.test(binPath)) return "pnpm";
   if (/\/(?:home|linux)brew\/|\/Cellar\//.test(binPath)) return "brew";
   if (/\/\.yarn\/|\/yarn\/global\//.test(binPath)) return "yarn";
+  // Before the npm test, not after: deno's cache directory is *named* `npm`, so the generic test below
+  // claims a deno install unless this one runs first. That is #582 — a deno user told to `npm i -g`, which
+  // installed a second copy under npm's prefix and left the deno shim they invoke stale.
+  if (DENO_NPM_CACHE.test(binPath)) return "deno";
   if (/\/npm\/|\/node_modules\//.test(binPath)) return "npm";
 
   return "unknown";
@@ -82,7 +99,3 @@ export function upgradeCommandFor(installer: Installer): string {
     }
   }
 }
-
-// NOTE: `detectInstaller` may never actually return "deno" — a deno-installed shim can resolve under DENO_DIR
-// and match the generic npm `node_modules` test first. That is a detection defect, separate from this one,
-// and is filed on its own. The deno row is fixed here regardless; being unreachable is not being right.

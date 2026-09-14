@@ -878,6 +878,9 @@ Pithy detects which package manager installed the binary by inspecting `process.
 const INSTALLERS = ['npm', 'pnpm', 'yarn', 'bun', 'deno', 'brew', 'unknown'] as const;
 type Installer = (typeof INSTALLERS)[number];
 
+// Deno's npm cache: `$DENO_DIR/npm/<registry host>/<package>/<version>/…`.
+const DENO_NPM_CACHE = /\/npm\/[^/]*[a-z]\.[a-z]{2,}\//i;
+
 function detectInstaller(): Installer {
   const binPath = (process.argv[1] || '').replace(/\\/g, '/');
 
@@ -886,6 +889,7 @@ function detectInstaller(): Installer {
   if (/\/pnpm\/|\/\.pnpm\//.test(binPath)) return 'pnpm';
   if (/\/(?:home|linux)brew\/|\/Cellar\//.test(binPath)) return 'brew';
   if (/\/\.yarn\/|\/yarn\/global\//.test(binPath)) return 'yarn';
+  if (DENO_NPM_CACHE.test(binPath)) return 'deno';
   if (/\/npm\/|\/node_modules\//.test(binPath)) return 'npm';
 
   return 'unknown';
@@ -906,6 +910,16 @@ function upgradeCommandFor(installer: Installer): string {
 ```
 
 The detection runs once and is cached in the state file. Unknown installs default to `npm` — anyone with Node has npm, so the fallback is universal.
+
+**Deno is detected by its cache, not by its install root.** `deno install -g npm:@pithy-sh/cli` writes a
+shim at `$DENO_INSTALL_ROOT/bin/pithy`, but the module deno executes — and so `process.argv[1]` — is the one
+it resolved into `$DENO_DIR/npm/<registry host>/@pithy-sh/cli/<version>/dist/bin.js`. That directory is
+literally named `npm`, so the generic npm test claims it unless the deno test runs first, and a deno user is
+told to run `npm i -g`: a second copy under npm's prefix, and the shim they actually invoke left stale. The
+`/.deno/` test only ever matched the shim. `DENO_DIR` is user-settable and its platform defaults
+(`~/.cache/deno`, `~/Library/Caches/deno`, `%LOCALAPPDATA%\deno`) share no segment, so the mark is the
+layout below it: a directory named `npm` whose child is a registry hostname — matched by shape, because an
+adopter on a mirror caches under their own host. See #582.
 
 **Every one of those commands must resolve the registry's `latest` tag, never a range an earlier install
 recorded.** That rules out the update verbs. `bun update`, `pnpm update` and `yarn global upgrade` each honor
@@ -1037,6 +1051,7 @@ $ pithy add --list --json
 - [ ] Non-TTY stderr (piped, CI) suppresses the notification
 - [ ] Patch version bumps don't trigger notifications (unless flagged)
 - [ ] Installer detection returns correct command for npm, pnpm, yarn, bun, deno, brew
+- [ ] A deno install is detected as `deno` at the path deno runs it from, under `$DENO_DIR/npm/`, not only at `/.deno/`
 - [ ] Every installer's command resolves the registry's `latest` tag, not a range a prior install recorded
 - [ ] Unknown installer falls back to `npm i -g @pithy-sh/cli`
 - [ ] `pithy doctor` always performs a fresh check, bypassing cache

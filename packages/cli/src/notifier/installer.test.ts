@@ -37,6 +37,104 @@ describe("detectInstaller", () => {
 });
 
 /**
+ * THE GATE for detecting a deno install.
+ *
+ * The invariant, stated once: **a pithy installed with `deno install -g npm:@pithy-sh/cli` is detected as
+ * `deno`, and so is told the deno upgrade command — at the path deno actually runs it from.**
+ *
+ * That last clause is the whole finding (#582). `deno install` writes a shim at
+ * `$DENO_INSTALL_ROOT/bin/pithy`, but the module deno executes — and therefore `process.argv[1]` — is the
+ * one it resolved into `$DENO_DIR/npm/<registry host>/@pithy-sh/cli/<version>/dist/bin.js`. That cache
+ * directory is literally named `npm`, so the generic `/\/npm\//` test claimed it and a deno user was told to
+ * run `npm i -g @pithy-sh/cli`: a second copy under npm's prefix, and the deno shim they actually invoke
+ * left stale at the old version. The upgrade appeared to work and changed nothing.
+ *
+ * So the paths below are the **observed** shapes, not shapes chosen to match the code. A test written
+ * against `/.deno/` passes against the old implementation and proves nothing, which is how this defect
+ * survived a green suite. `containsNpmSegment` below is the part that keeps it honest: every measured path
+ * is asserted to contain the `/npm/` segment the old test won on, so a future reordering that puts the npm
+ * test first goes red here rather than silently.
+ *
+ * The gate ends at `upgradeCommandFor`, not at `detectInstaller`, because the harm is the advice, not the
+ * label.
+ */
+describe("a deno install is told the deno command", () => {
+  /** A path deno can put in `process.argv[1]`, and how we know. */
+  type DenoPath = {
+    /** The path, as deno produces it. */
+    readonly path: string;
+    /** Where this shape came from. Measured means observed on disk after a real `deno install`. */
+    readonly provenance: string;
+  };
+
+  /**
+   * Measured in #582 with deno 2.2.7, `DENO_INSTALL_ROOT` and `DENO_DIR` both pointed at a scratch
+   * directory, then re-expressed at the default `DENO_DIR` for each platform.
+   */
+  const DENO_PATHS: readonly DenoPath[] = [
+    {
+      path: "/home/u/.cache/deno/npm/registry.npmjs.org/@pithy-sh/cli/0.7.1/dist/bin.js",
+      provenance: "Measured cache layout, at the default DENO_DIR on Linux (`~/.cache/deno`).",
+    },
+    {
+      path: "/Users/u/Library/Caches/deno/npm/registry.npmjs.org/@pithy-sh/cli/0.7.1/dist/bin.js",
+      provenance: "Measured cache layout, at the default DENO_DIR on macOS (`~/Library/Caches/deno`).",
+    },
+    {
+      path: "/tmp/fk-582/denodir/npm/registry.npmjs.org/@pithy-sh/cli/0.7.1/dist/bin.js",
+      provenance:
+        "Measured verbatim, with DENO_DIR set to a scratch directory. The one that matters: nothing in it says `deno`, so detection cannot key on the word.",
+    },
+    {
+      path: "C:\\Users\\u\\AppData\\Local\\deno\\npm\\registry.npmjs.org\\@pithy-sh\\cli\\0.7.1\\dist\\bin.js",
+      provenance:
+        "The measured cache layout under deno's documented Windows default (`%LOCALAPPDATA%\\deno`); the platform default is documented, the layout below it is measured.",
+    },
+    {
+      path: "/home/u/.cache/deno/npm/registry.corp.example/@pithy-sh/cli/0.7.1/dist/bin.js",
+      provenance:
+        "Inferred, not measured: deno keys the cache by registry host, so an adopter on a mirror lands the same shape under a different hostname. Here to stop the fix hard-coding registry.npmjs.org.",
+    },
+  ];
+
+  /** The test the old implementation won with. Every path above must still be one it would have claimed. */
+  const containsNpmSegment = (path: string) => /\/npm\/|\/node_modules\//.test(path.replace(/\\/g, "/"));
+
+  for (const { path, provenance } of DENO_PATHS) {
+    test(`${path} → the deno upgrade command`, () => {
+      expect(
+        containsNpmSegment(path),
+        `${path} does not contain the \`/npm/\` segment this gate exists to beat. Either it is not a path deno produces, or the measurement changed — re-measure before editing it.`,
+      ).toBe(true);
+
+      expect(detectInstaller(path), provenance).toBe("deno");
+      expect(upgradeCommandFor(detectInstaller(path))).toBe(
+        "deno install --reload -f -g -A -n pithy npm:@pithy-sh/cli",
+      );
+    });
+  }
+
+  /**
+   * The shim `deno install` writes, kept on purpose. It is **not** known to reach `process.argv[1]` — the
+   * shim is `$0` to `/bin/sh` and `exec`s `deno run npm:@pithy-sh/cli`, so deno's main module is the cached
+   * file above. It stays because `$DENO_INSTALL_ROOT` defaults to `~/.deno`, a directory no other installer
+   * writes to: if a wrapper, an alias, or a future deno ever does surface the shim path, the answer is
+   * already right, and until then the arm is inert rather than wrong. Being unreachable is not being wrong;
+   * being reachable and wrong is what #582 was.
+   */
+  test("the install shim, if it is ever the path we are handed", () => {
+    expect(detectInstaller("/home/u/.deno/bin/pithy")).toBe("deno");
+  });
+
+  test("an npm install is still npm — the deno test may not swallow it", () => {
+    // A directory named `npm` whose child is not a registry host is npm's own layout, not deno's cache.
+    expect(detectInstaller("/usr/local/lib/node_modules/npm/bin/pithy")).toBe("npm");
+    expect(detectInstaller("/usr/local/npm/0.1.2/bin/pithy")).toBe("npm");
+    expect(detectInstaller("/usr/local/lib/node_modules/@pithy-sh/cli/dist/bin.js")).toBe("npm");
+  });
+});
+
+/**
  * THE GATE for `upgradeCommandFor`.
  *
  * The invariant, stated once: **every command `upgradeCommandFor` returns resolves the registry's `latest`
