@@ -1,5 +1,44 @@
 # @pithy-sh/cli
 
+## 0.7.0
+
+### Minor Changes
+
+- [#574](https://github.com/pithy-sh/pithy/pull/574) [`afc4235`](https://github.com/pithy-sh/pithy/commit/afc4235968d9d6b31470a356da1a95936a6fe98c) Thanks [@kingmesal](https://github.com/kingmesal)! - Signing out of your app no longer destroys the dev login.
+  
+  `pithy seed` used to mint a session row and the dev-login route handed that one row to a browser. A session is consumed by ordinary use, so the product's own sign-out revoked it — and from then on pressing `l` answered `404 No dev login has been seeded`, with a reseed in another terminal as the only way back in. Any sign-out did it, and testing sign-out is a normal thing to do while building a product that has one.
+  
+  The seed now mints a signed **claim** naming the user, and the route exchanges it for a fresh session each time the link is opened. Sign-out revokes the session it should and leaves the way back in alone.
+  
+  Three things follow from it. `pithy_auth_sessions` holds no row until somebody actually signs in, so a seeded session no longer appears in admin panes as a device nobody used. The fingerprint that made a stored token stale after a secret rotation is gone, because nothing is stored to go stale. And a rotation now invalidates the claim instead — reseed after one, which was already the expected move.
+  
+  **Breaking: `logs/dev-login.json` changes shape.** `cookieName` and `cookieValue` are replaced by `claim`. Anything reading that file for a cookie must instead open `DEV_LOGIN_ROUTE` with the claim in the `t` parameter; `pithy dev` already does. Reseed once after upgrading — an artifact from an older release has no claim in it and is refused as unreadable rather than half-honored.
+  
+  The claim is a credential, and `pithy dev` keeps it out of the terminal on every run that can open a browser itself. A non-interactive run, or one with two workers composing auth, must print a link somebody clicks, so it prints one — `claimIsPrinted` in `dev/devLogin.ts` is where that boundary is stated and asserted.
+
+- [#573](https://github.com/pithy-sh/pithy/pull/573) [`814bc25`](https://github.com/pithy-sh/pithy/commit/814bc25fb852dc6397c1824ca8cbd82f52f52be2) Thanks [@kingmesal](https://github.com/kingmesal)! - Tenancy, out of the box.
+  
+  Organizations, memberships, roles you define with the powers they hold, invitations bound to an address, ownership that moves only when somebody accepts it, and an acting selection proved against a live membership on every request. The model the Pithy dashboard itself runs on.
+  
+  **You declare the roles**, because a coaching academy's `coach` and `student` are parallel where a dashboard's `owner`, `admin` and `member` nest — and a capability that assumed either shape would refuse the other. Nesting is asserted only where you claim it. Five power names are the kit's, because it ships the routes that gate on them; yours sit beside them under your own vocabulary, and your handlers import them as typed values rather than reading strings out of a config file. `pithy add organization` scaffolds the catalog and never overwrites one.
+  
+  `administrativePower` is named rather than inferred from a role spelled `admin`, so an account with one owner and one admin does not become unadministrable when the admin leaves. Assignability is derived by exclusion, so a role you add is assignable by default and excluding it is the deliberate act.
+  
+  **What a membership is worth is what makes the refusals load-bearing.** A caller naming an organization they do not belong to gets a 404 byte-identical to the one for an organization that does not exist, because a distinguishable refusal is an existence oracle and iterating it produces your customer list. A role is decoded off the row and refused when the catalog does not know it, never asserted against a matrix that would deny everything today and allow it after one refactor. Nothing about a role rides on the session — only the id of the chosen organization — so removing a membership row is the whole of revocation and takes effect on the next request with no sign-out.
+  
+  The acting membership lands on its own context variable rather than on the auth one, because "signed in" and "a member of this organization" are two conditions and merging them makes them one. Composing this alongside Better Auth's `organization()` plugin is refused at boot, and `docs/why-not-better-auth-organization.md` is the record of why this model rather than that one — checked against `better-auth@1.7.1` line by line, including where the comparison has been stated wrongly before.
+  
+  `@pithy-sh/core` gains a manifest-level `seams` field, for a capability that needs a scaffolded module under every configuration rather than under one choice of one option.
+
+### Patch Changes
+
+- Updated dependencies [[`814bc25`](https://github.com/pithy-sh/pithy/commit/814bc25fb852dc6397c1824ca8cbd82f52f52be2), [`814bc25`](https://github.com/pithy-sh/pithy/commit/814bc25fb852dc6397c1824ca8cbd82f52f52be2), [`814bc25`](https://github.com/pithy-sh/pithy/commit/814bc25fb852dc6397c1824ca8cbd82f52f52be2), [`afc4235`](https://github.com/pithy-sh/pithy/commit/afc4235968d9d6b31470a356da1a95936a6fe98c), [`814bc25`](https://github.com/pithy-sh/pithy/commit/814bc25fb852dc6397c1824ca8cbd82f52f52be2)]:
+  - @pithy-sh/core@0.6.0
+  - @pithy-sh/secrets@0.2.2
+  - @pithy-sh/cloudflare@0.2.2
+  - @pithy-sh/email@0.3.2
+  - @pithy-sh/turnstile@0.2.2
+
 ## 0.6.2
 
 ### Patch Changes

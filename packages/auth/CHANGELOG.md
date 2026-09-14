@@ -1,5 +1,86 @@
 # @pithy-sh/auth
 
+## 0.6.0
+
+### Minor Changes
+
+- [#573](https://github.com/pithy-sh/pithy/pull/573) [`814bc25`](https://github.com/pithy-sh/pithy/commit/814bc25fb852dc6397c1824ca8cbd82f52f52be2) Thanks [@kingmesal](https://github.com/kingmesal)! - Your users get a name and a face they chose.
+  
+  `pithy_auth_users.image` held a link to whoever signed somebody in, written once and never again. So a page of twenty people was twenty requests to hosts the viewer did not choose, and somebody who signed in with GitHub was called whatever GitHub calls them, forever.
+  
+  The column now takes a second shape: bytes, stored in your own D1 as a bounded `data:` URL. The provider link it already holds still works and existing rows are untouched.
+  
+  The column was also unvalidated, and Better Auth's own `/update-user` passes `name` and `image` straight to the adapter — the `validator.input` mechanism reaches additional fields only, so a validator declared beside the column would have been a validator nothing ran. The rule now sits at the database hook, which every writer goes through: your route, Better Auth's, a social sign-in, an admin tool. `data:text/html` is a `data:` URL too, and that is the difference the allowlist exists to draw.
+  
+  A sign-in is treated differently from a person's own edit, and the asymmetry is deliberate: a provider's over-long name is truncated and an avatar the kit will not hold becomes initials, because nobody should fail to sign in over a display name Google gave them. A person setting their own gets a 400 telling them what to send.
+  
+  Rasters are served by URL from your own origin, versioned and `immutable`, so a roster costs one request per face once instead of its bytes on every read. **A vector never gets a URL and the route refuses to serve one** — an `<img src>` is inert by specification, but a URL is navigable and a navigated SVG runs script in the origin that served it. The attack is removed rather than managed with headers.
+  
+  The whole rule — allowlist, ceiling, the derived byte figure, and the serving split — is one module in `@pithy-sh/core`, because `@pithy-sh/organization` holds an account's mark under the identical one and two answers to *what may be stored as an image* is one of them being wrong.
+
+- [#573](https://github.com/pithy-sh/pithy/pull/573) [`814bc25`](https://github.com/pithy-sh/pithy/commit/814bc25fb852dc6397c1824ca8cbd82f52f52be2) Thanks [@kingmesal](https://github.com/kingmesal)! - A session ending now takes the acting selection with it.
+  
+  `clearActing` existed, was exported, and **nothing called it** — so the acting selection outlived the credential that made it, one orphan row per sign-in, in a table with no TTL and no sweep. The capability's own schema says "signing out must take it with it"; there was no moment at which it could.
+  
+  Nothing in `@pithy-sh/organization` can see a sign-out, and the dependency runs the wrong way to fix that there. So `@pithy-sh/auth` grows an `onSessionRevoked` seam, and the project composing both joins them:
+  
+  ```ts
+  auth({
+    onSessionRevoked: async ({ id }, d1) => {
+      await clearActing(organizationDatabase(d1), { sessionId: id });
+    },
+  }),
+  ```
+  
+  **On the row, not on the sign-out route.** A sign-out, a revoke and an admin ending somebody's devices all delete the same row, so a listener hung off one endpoint would miss the others. It is handed this request's D1 binding because the auth instance is built per request, and it swallows what it throws — the session is already gone, and a listener's failure must not turn a completed sign-out into an error the caller retries.
+  
+  Composing `@pithy-sh/auth` without a listener is unchanged and requires nothing.
+  
+  The orphan row never conferred anything — every read re-joins memberships and matches the user id too — so this is growth rather than an access question.
+
+- [#574](https://github.com/pithy-sh/pithy/pull/574) [`afc4235`](https://github.com/pithy-sh/pithy/commit/afc4235968d9d6b31470a356da1a95936a6fe98c) Thanks [@kingmesal](https://github.com/kingmesal)! - Signing out of your app no longer destroys the dev login.
+  
+  `pithy seed` used to mint a session row and the dev-login route handed that one row to a browser. A session is consumed by ordinary use, so the product's own sign-out revoked it — and from then on pressing `l` answered `404 No dev login has been seeded`, with a reseed in another terminal as the only way back in. Any sign-out did it, and testing sign-out is a normal thing to do while building a product that has one.
+  
+  The seed now mints a signed **claim** naming the user, and the route exchanges it for a fresh session each time the link is opened. Sign-out revokes the session it should and leaves the way back in alone.
+  
+  Three things follow from it. `pithy_auth_sessions` holds no row until somebody actually signs in, so a seeded session no longer appears in admin panes as a device nobody used. The fingerprint that made a stored token stale after a secret rotation is gone, because nothing is stored to go stale. And a rotation now invalidates the claim instead — reseed after one, which was already the expected move.
+  
+  **Breaking: `logs/dev-login.json` changes shape.** `cookieName` and `cookieValue` are replaced by `claim`. Anything reading that file for a cookie must instead open `DEV_LOGIN_ROUTE` with the claim in the `t` parameter; `pithy dev` already does. Reseed once after upgrading — an artifact from an older release has no claim in it and is refused as unreadable rather than half-honored.
+  
+  The claim is a credential, and `pithy dev` keeps it out of the terminal on every run that can open a browser itself. A non-interactive run, or one with two workers composing auth, must print a link somebody clicks, so it prints one — `claimIsPrinted` in `dev/devLogin.ts` is where that boundary is stated and asserted.
+
+### Patch Changes
+
+- [#573](https://github.com/pithy-sh/pithy/pull/573) [`814bc25`](https://github.com/pithy-sh/pithy/commit/814bc25fb852dc6397c1824ca8cbd82f52f52be2) Thanks [@kingmesal](https://github.com/kingmesal)! - Three migrations said D1 does not enforce foreign keys. It does.
+  
+  `PRAGMA foreign_keys` is on, a cascade fires, and an orphan insert is refused with `FOREIGN KEY constraint failed` — measured against a real binding in two separately configured pools, and now pinned by a test in `@pithy-sh/core` that checks both directions.
+  
+  The convention those docblocks describe is unchanged and still right: no foreign key crosses a capability boundary, because a constraint from one capability's table to another's binds two release cadences together and breaks the day either moves to its own database. What changes is the reason given for it. A false reason is worse than none, because it ends the conversation — and it was ending it on the platform rather than on the boundary, which is where the real trade is.
+  
+  Nothing about any schema moves. Within a single capability's own tables a foreign key is available and is still not used; that is worth revisiting per table rather than as a rule.
+
+- [#573](https://github.com/pithy-sh/pithy/pull/573) [`814bc25`](https://github.com/pithy-sh/pithy/commit/814bc25fb852dc6397c1824ca8cbd82f52f52be2) Thanks [@kingmesal](https://github.com/kingmesal)! - Volunteering for an ownerless account now takes standing over it.
+  
+  **Security: a member of any account that had never transferred ownership could make themselves its owner, in two requests, irreversibly.** `nominate()` allowed a self-nomination whenever nobody held the account and checked nothing else, and the route that reaches it carries membership and no power — deliberately, because the obvious `billing:manage` gate demands the owner the account does not yet have.
+  
+  The reachability is the part worth stating: `founderRole` gives a founder the first *assignable* administering role and the conferred role is unassignable by definition, so **every account is ownerless from the moment it is founded** and stays so until somebody completes a transfer. So "anybody in it may volunteer" meant any member of almost every account — and since a transferable role must administer, that self-transfer took a reader holding `organization:read` to `members:manage`, `billing:manage` and `organization:delete`. Nothing undid it: the conferred role is unassignable, so demote, remove and leave all refuse it.
+  
+  A volunteer must now already administer the account. That closes it without closing the account, because `founderRole` is defined as an administering role — a fresh account always has somebody who can take it on. The rule lives in `nominate()` rather than as route middleware, so an adopter calling the store directly gets it too.
+  
+  Three other defects found in the same pass:
+  
+  - `acceptNomination` dereferenced `withD1Retry`'s result without checking it. That wrapper returns `undefined` when a unique-constraint failure lands on a retry, so a transient fault could surface as a `TypeError` and a 500 rather than the refusal the code intends.
+  - `acceptInvitation` reported an invitation as accepted while its row was still `pending`. `d1.batch` is a transaction, so the membership collision that reaches the fallback rolls the status update back with it — leaving a live redeemable token, an offer still listed as outstanding, and an audit row saying otherwise. The offer is now consumed on that path, which is what the module already documented.
+  - `catalog.powersOf`, `roleAllows` and `administers` threw a `TypeError` for a role named `toString`, `constructor` or `valueOf` — the lookup reached `Object.prototype`, so `?? []` never fired. They deny now, which is what their own comment claimed. Unreachable from inside this package, which decodes every role through `Role` first, and reachable from an adopter's own handler, which is the advertised use.
+  
+  And in `@pithy-sh/auth`, `sanitizeProfile` let a `name` that was not a string through untouched, so a provider sending a number or an object at sign-up reached the column. It is replaced now, as an over-long one already was.
+- Updated dependencies [[`814bc25`](https://github.com/pithy-sh/pithy/commit/814bc25fb852dc6397c1824ca8cbd82f52f52be2), [`814bc25`](https://github.com/pithy-sh/pithy/commit/814bc25fb852dc6397c1824ca8cbd82f52f52be2), [`814bc25`](https://github.com/pithy-sh/pithy/commit/814bc25fb852dc6397c1824ca8cbd82f52f52be2), [`afc4235`](https://github.com/pithy-sh/pithy/commit/afc4235968d9d6b31470a356da1a95936a6fe98c), [`814bc25`](https://github.com/pithy-sh/pithy/commit/814bc25fb852dc6397c1824ca8cbd82f52f52be2)]:
+  - @pithy-sh/core@0.6.0
+  - @pithy-sh/secrets@0.2.2
+  - @pithy-sh/email@0.3.2
+  - @pithy-sh/turnstile@0.2.2
+
 ## 0.5.0
 
 ### Minor Changes

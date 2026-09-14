@@ -1,5 +1,15 @@
 # @pithy-sh/media
 
+## 0.2.2
+
+### Patch Changes
+
+- Updated dependencies [[`814bc25`](https://github.com/pithy-sh/pithy/commit/814bc25fb852dc6397c1824ca8cbd82f52f52be2), [`814bc25`](https://github.com/pithy-sh/pithy/commit/814bc25fb852dc6397c1824ca8cbd82f52f52be2), [`814bc25`](https://github.com/pithy-sh/pithy/commit/814bc25fb852dc6397c1824ca8cbd82f52f52be2), [`afc4235`](https://github.com/pithy-sh/pithy/commit/afc4235968d9d6b31470a356da1a95936a6fe98c), [`814bc25`](https://github.com/pithy-sh/pithy/commit/814bc25fb852dc6397c1824ca8cbd82f52f52be2)]:
+  - @pithy-sh/core@0.6.0
+  - @pithy-sh/secrets@0.2.2
+  - @pithy-sh/cloudflare@0.2.2
+  - @pithy-sh/storage@0.2.2
+
 ## 0.2.1
 
 ### Patch Changes
