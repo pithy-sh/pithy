@@ -40,6 +40,29 @@ import { sourceFiles } from "./sourceFiles";
  * The extractor **refuses what it cannot name**. An assignment whose target is an `env` member, in a form
  * it does not recognize, throws rather than answering "not a writer" — a sweep whose unrecognized case is
  * silently empty cannot observe the thing it was built for.
+ *
+ * ## What it does not see, said plainly because a gate claiming more reach than it has is worse than a
+ * ## narrow one
+ *
+ * It matches on the **assignment target's text containing `env`**, so it sees a stanza written through
+ * `config.env[...]` and misses one written through an alias. Three shapes were planted against it and all
+ * three left it green:
+ *
+ * ```ts
+ * const stanzas = config.env; stanzas[name] = { … };   // the target says `stanzas`, not `env`
+ * const { env } = config;     env[name] = { … };       // likewise
+ * Object.assign(config.env, { [name]: { … } });        // no assignment operator on the line at all
+ * ```
+ *
+ * None of those shapes is in this tree, and every one of the six writers uses the spelling this does see.
+ * But "a seventh writer is caught by its first assignment" is true of that spelling and not of the others,
+ * and the difference is worth a reader knowing rather than discovering. Closing it wants a real binding
+ * analysis rather than a wider regex — a regex for `stanzas` would be the enumerate-the-verbs shape this
+ * repository has been bitten by four times, and would go stale against the fifth alias somebody picks.
+ *
+ * The behavioral half above is what actually holds the line: it runs the real scaffolder and the real
+ * `pithy worker add` and checks the result, so a writer reached through any spelling still has to produce
+ * a stanza that passes `checkEnvironmentInheritance`.
  */
 
 const CLI_SRC = join(import.meta.dirname, "..");
