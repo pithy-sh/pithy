@@ -139,7 +139,7 @@ ${envStanzas}
       // deploys, and refuses anything that is not the environment asked for.
       scripts: {
         dev: "wrangler dev",
-        deploy: "wrangler deploy --config wrangler.jsonc",
+        deploy: "wrangler deploy --config wrangler.jsonc --env=",
         "deploy:staging": "wrangler deploy --config wrangler.jsonc --env staging",
         "deploy:prod": "wrangler deploy --config wrangler.jsonc --env prod",
       },

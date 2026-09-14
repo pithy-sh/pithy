@@ -225,6 +225,17 @@ describe("both package.json producers", () => {
       expect(deploys.length, producer).toBeGreaterThan(0);
       for (const [name, command] of deploys) {
         expect(command, `${producer}: ${name}`).toContain("--config wrangler.jsonc");
+        // **And every one states which stanza it means — #584's confirmation.** `--config` settles
+        // *which file*; it says nothing about *which environment inside it*. wrangler resolves that as
+        // `args.env ?? CLOUDFLARE_ENV`, so a script naming no stanza means whatever the adopter's shell
+        // happens to export. Measured against wrangler 4.125.0: the bare `deploy` script under
+        // `CLOUDFLARE_ENV=prod` published the prod Worker, which is exactly the defect #584 closed inside
+        // the CLI — reproduced here in text the kit hands the adopter.
+        //
+        // `--env=` is wrangler's own spelling for the top level, quoted from its own warning: "simply
+        // pass an empty string to the flag". So each script says what it means and the shell cannot
+        // change it: `--env=` for the top level, `--env staging`, `--env prod`.
+        expect(command, `${producer}: ${name} states no stanza`).toMatch(/--env[= ]/);
       }
     }
   });

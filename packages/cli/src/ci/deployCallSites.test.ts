@@ -57,7 +57,10 @@ import { sourceFiles } from "./sourceFiles";
  *   `templates/starter/apps/api/package.json` write `wrangler deploy` as *text*, for the adopter to run
  *   in the adopter's own shell against the adopter's own tracked `wrangler.jsonc` — where those stanzas
  *   really are declared, and where `CLOUDFLARE_ENV` is a control wrangler documents. They are not
- *   deploys this CLI issues, and `project/scaffoldParity.test.ts` is what holds their `--config`.
+ *   deploys this CLI issues, and `project/scaffoldParity.test.ts` is what holds their `--config` — and,
+ *   since #584's confirmation, their stanza: the bare `deploy` script named none, and
+ *   `CLOUDFLARE_ENV=prod` turned it into a prod publish against a real wrangler. `--env=` is
+ *   wrangler's own spelling for "the top level, and I mean it".
  *
  * It reads comment-blanked source, because every docblock on this subject quotes the argv it is about.
  */
@@ -73,8 +76,19 @@ const CLI_SRC = join(import.meta.dirname, "..");
  */
 const ISSUES_DEPLOY = /\[\s*"deploy"/;
 
-/** A call to the one wrangler spawn seam. The declaration in the seam itself is excluded by name. */
-const RUNS_WRANGLER = /\brunWrangler\s*\(/;
+/**
+ * A module that reaches the one wrangler spawn seam, by **name rather than by call shape**.
+ *
+ * It matched `runWrangler(` until an aliased import walked straight past it —
+ * `import { runWrangler as ship } from "./wrangler"` then `await ship(argv, …)` issues a real, ungated
+ * deploy and left every half of this sweep green. Matching the identifier catches the import that has to
+ * exist for any spelling of the call, because the seam cannot be reached without naming it once.
+ *
+ * The trade is that a module importing the seam and never calling it is flagged. That is the same trade
+ * `cloudflareChildEnv` already accepts, and it fails in the safe direction: a false positive is a line in
+ * a table, a false negative is an ungated deploy.
+ */
+const RUNS_WRANGLER = /\brunWrangler\b/;
 
 /** The seam. It defines `runWrangler`; it does not call it, and it issues no argv of its own. */
 const SEAM = "project/wrangler.ts";
@@ -218,7 +232,11 @@ describe("every wrangler deploy this CLI issues is held to the Worker it will pu
     expect(ISSUES_DEPLOY.test('await runWrangler([ "deploy" ], options);')).toBe(true);
     expect(ISSUES_DEPLOY.test('await runWrangler(["d1", "execute"], options);')).toBe(false);
     expect(RUNS_WRANGLER.test("await runWrangler(argv, { account, cwd });")).toBe(true);
-    expect(RUNS_WRANGLER.test("import { runWrangler } from './wrangler';")).toBe(false);
+    // An import counts, and that is the point: the alias `import { runWrangler as ship }` is how a
+    // producer reached the seam invisibly. Naming the seam is the one thing it cannot avoid.
+    expect(RUNS_WRANGLER.test("import { runWrangler } from './wrangler';")).toBe(true);
+    expect(RUNS_WRANGLER.test("import { runWrangler as ship } from './wrangler';")).toBe(true);
+    expect(RUNS_WRANGLER.test("await somethingElse(argv, { account, cwd });")).toBe(false);
     // The three shapes it does not see, planted rather than asserted about in prose. Each is a real
     // deploy and each leaves this extractor green; each is caught by the caller half above instead.
     expect(ISSUES_DEPLOY.test("const argv = [DEPLOY, ...configArgs];")).toBe(false);
