@@ -6,11 +6,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { HOST_WORKERS } from "../capabilities/hostRegistry";
+import { assertWorkerName } from "../project/scaffold";
 import {
   checkWorkerNames,
   describeReservedWorkerName,
   describeWorkerName,
   describeWorkerNameConvention,
+  type WorkerNameCheck,
 } from "./workerName";
 
 let dir: string;
@@ -155,6 +157,21 @@ describe("describeWorkerName", () => {
  * it is silent and takes a capability's Workflows down with it. A Worker still on wrangler's suffix is a
  * Worker whose name is simply the adopter's; it is reported and nothing more.
  */
+/**
+ * **Every name this report recommends is a name the kit would let you create.**
+ *
+ * The convention note is advice, and `<project>-<env>-<worker>` is byte-identical to a capability's own
+ * host Worker when the worker is called `email` — so the friendly optional suggestion was the exact string
+ * the reserved check two blocks up fails you for, and an adopter who took it created the collision.
+ *
+ * The refusal is the oracle, not a restatement of it: this asks the one function `pithy init --worker`,
+ * `pithy worker add` and `pithy worker rename` ask, so the ninth capability to ship a host Worker holds
+ * doctor's advice to the same rule the day it is registered.
+ */
+function everyRecommendationIsCreatable(check: WorkerNameCheck): void {
+  for (const note of check.convention) expect(() => assertWorkerName(note.worker)).not.toThrow();
+}
+
 describe("environment names", () => {
   test.each(HOST_WORKERS.map((spec) => spec.capability))(
     "a stanza named after the %s host Worker is a fault, not a note",
@@ -188,6 +205,7 @@ describe("environment names", () => {
         ],
       },
     ]);
+    everyRecommendationIsCreatable(check);
   });
 
   test("a scaffolded worker is already on the convention and says nothing", async () => {
@@ -206,6 +224,47 @@ describe("environment names", () => {
     const check = await checkWorkerNames(dir);
     expect(check.state).toBe("ok");
     expect(check.reserved).toEqual([]);
+    expect(check.convention).toEqual([]);
+  });
+
+  test.each(HOST_WORKERS.map((spec) => spec.capability))(
+    "a worker directory called %s is never advised onto the name that would replace that host Worker",
+    async (capability) => {
+      // An `apps/<capability>` that predates the refusal, or was migrated in. It deploys as
+      // `acme-<capability>-staging` today, which collides with nothing. The convention would put it on
+      // `acme-staging-<capability>` — the capability's own host Worker, and the one name the block above
+      // fails the exit over. There is no advice to give here, so none is given.
+      await writeWorker(capability, { name: `acme-${capability}`, env: { staging: {}, prod: {} } });
+
+      const check = await checkWorkerNames(dir);
+      expect(check.state).toBe("ok");
+      expect(check.reserved).toEqual([]);
+      expect(check.convention).toEqual([]);
+      everyRecommendationIsCreatable(check);
+    },
+  );
+
+  test("a config with no top-level name still has its stanzas judged against the host registry", async () => {
+    // Legal, and the shape this repo's own dashboard prod stanza takes: every stanza names itself, so
+    // there is no top-level name to suffix. Only the convention half ever needed one — the reserved half
+    // composes `<project>-<env>-<capability>` and compares it to a name the stanza declares.
+    await writeWorker("api", { env: { staging: { name: "acme-staging-email" } } });
+
+    const check = await checkWorkerNames(dir);
+    expect(check.state).toBe("drifted");
+    expect(check.reserved).toEqual([
+      { worker: "api", env: "staging", name: "acme-staging-email", capability: "email" },
+    ]);
+    expect(check.convention).toEqual([]);
+  });
+
+  test("with no top-level name there is no suffix to report", async () => {
+    // Wrangler suffixes the top-level name, so with none there is nowhere for a nameless stanza to land
+    // and nothing to say about where it lands.
+    await writeWorker("api", { env: { staging: {} } });
+
+    const check = await checkWorkerNames(dir);
+    expect(check.state).toBe("ok");
     expect(check.convention).toEqual([]);
   });
 

@@ -3,8 +3,9 @@
 
 import { basename } from "node:path";
 import { kebab } from "@pithy-sh/core/src/naming/resource";
-import { HOST_WORKERS } from "../capabilities/hostRegistry";
+import { HOST_WORKERS, hostWorkerFor } from "../capabilities/hostRegistry";
 import { loadProject } from "../project/config";
+import { environmentWorkerName } from "../project/scaffold";
 import { discoverWorkers, type WorkerTarget } from "../project/workers";
 import { readWranglerConfig } from "../project/wrangler";
 
@@ -82,6 +83,13 @@ export interface ReservedWorkerName {
  * kit's shape is a convention rather than a requirement: a rename means a new script, a route moved onto
  * it, and a window where the old name is still answering. That is a deploy-time change somebody makes
  * when it is cheap, not a thing a diagnostic should refuse to go green over.
+ *
+ * **And it is only ever written for a Worker the kit would let you create under that name.** The note
+ * composes {@link environmentWorkerName}, which is byte-identical to a capability's host Worker when the
+ * worker is called `email` — so for an `apps/email` this block recommended, as a friendly optional
+ * suggestion, the exact string {@link ReservedWorkerName} fails the exit over, and an adopter who took
+ * the advice created the collision the other half exists to find. A Worker there is no legal convention
+ * name for gets no note: its suffixed name collides with nothing, and there is no advice to give.
  */
 export interface WorkerNameConvention {
   /** The `apps/<dir>` basename. */
@@ -124,21 +132,35 @@ function environmentNameFindings(
   config: NamedWorkerConfig,
   project: string | null,
 ): { reserved: ReservedWorkerName[]; convention: WorkerNameConvention | null } {
-  const top = config.name;
   const reserved: ReservedWorkerName[] = [];
   const suffixed: WorkerNameConvention["environments"] = [];
   // No project name is no basis for either answer: both compose `<project>-<env>-…`, and a check that
   // guessed the project would report a clash with a capability host this project does not have.
-  if (project === null || top === undefined) return { reserved: [], convention: null };
+  if (project === null) return { reserved: [], convention: null };
+
+  // The top-level name a nameless stanza is suffixed from, or `undefined` when there is no note to write.
+  // **Two conditions, and neither of them is the reserved half's** — that half reads a name the stanza
+  // declares and compares it to `<project>-<env>-<capability>`, so it needs the project and nothing else.
+  // A config with no top-level `name` is legal — wrangler takes the name from each stanza, which is the
+  // shape the dashboard's prod stanza has — and the whole check used to return empty on it, so the one
+  // finding that stops an adopter silently replacing a capability's Worker never ran. And a worker the
+  // kit refuses to create under its own directory name has no convention to be put on: the name the
+  // convention composes for it is the reserved one.
+  const suffixFrom = hostWorkerFor(worker) === undefined ? config.name : undefined;
 
   for (const [env, stanza] of Object.entries(config.env ?? {})) {
     const declared = stanza?.name;
     if (declared === undefined) {
-      suffixed.push({ env, current: `${top}-${env}`, convention: `${project}-${env}-${worker}` });
+      if (suffixFrom !== undefined)
+        suffixed.push({
+          env,
+          current: `${suffixFrom}-${env}`,
+          convention: environmentWorkerName(project, env, worker),
+        });
       continue;
     }
     const capability = HOST_WORKERS.map((spec) => spec.capability).find(
-      (name) => declared === `${project}-${env}-${name}`,
+      (name) => declared === environmentWorkerName(project, env, name),
     );
     if (capability !== undefined) reserved.push({ worker, env, name: declared, capability });
   }
