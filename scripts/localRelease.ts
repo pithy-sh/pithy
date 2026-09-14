@@ -8,7 +8,8 @@
  * version of each package has to be published some other way. `.github/workflows/release.yml` takes
  * over permanently afterwards — see `docs/RELEASING.md`.
  *
- * The sequence is the workflow's, exactly: snapshot, version, build the records, publish, tag, push.
+ * The sequence is the workflow's, exactly: snapshot, version, build, verify the tarballs, build the
+ * records, publish, tag, push.
  * The reasoning for each step lives in `@pithy-sh/release/src/localRelease` and in the workflow.
  */
 
@@ -125,6 +126,28 @@ run("bun", ["scripts/releaseRecords.ts", "snapshot"]);
 
 process.stdout.write("\nVersioning the packages.\n");
 run("bun", ["run", "version"]);
+
+// **After the bump and never before it — #476, and the release that proved a comment is not a gate.**
+// This step did not exist. The header above and `@pithy-sh/release/src/localRelease` both said the
+// sequence was the workflow's — "snapshot, version, build, publish, tag, push" — and the workflow does
+// build; this script went straight from the bump to the publish and shipped whatever `dist/` happened
+// to be lying in the checkout. On 2026-09-14 that was 22 packages of weeks-old compiled code under
+// fresh version numbers, and `@pithy-sh/organization`, which had never been built there at all, went
+// to npm with no `dist/` and every deep import resolving to nothing.
+//
+// Both halves of the bump are build inputs: Changesets rewrites every `package.json`, and the root
+// `version` script chains `stampVersions.ts`, which rewrites each capability's `src/version.generated.ts`.
+// Built before them, `dist/version.generated.js` reports the version this release replaces to every
+// customer reading `GET /control-plane/manifest`.
+process.stdout.write("\nBuilding the packages.\n");
+run("bun", ["run", "build"]);
+
+// The artifact gate, on the one path that reaches an adopter. It is what CI runs on a pull request, and
+// running it there and not here is how the laptop release became the only unchecked way out of this
+// repository: `packFaults` already refuses a tarball with no `dist/`, so the organization case was a
+// caught fault nobody had asked the question of. Around twenty seconds for twenty-three packages.
+process.stdout.write("\nPacking every package, and holding it to what an adopter must receive.\n");
+run("bun", ["run", "verify-published"]);
 
 process.stdout.write("\nBuilding the release records.\n");
 run("bun", ["scripts/releaseRecords.ts", "build"]);

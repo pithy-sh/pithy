@@ -32,7 +32,7 @@ Before anything is published, see what a release would produce. This needs no np
 GITHUB_TOKEN=$(gh auth token) bun run release:local -- --dry-run
 ```
 
-It versions the packages, prints one line each, and restores the tree.
+It versions the packages, builds them, packs every tarball and holds it to what an adopter must receive, prints one line each, and restores the tree. The build and the packing are why it takes a minute or two rather than seconds — and they are the point: a dry run that skipped them would tell you the plan and nothing about the artifact.
 
 Read that list carefully — **a version, once published, is permanent.** npm allows unpublishing only within 72 hours, and a name-plus-version can never be reused afterwards.
 
@@ -50,7 +50,9 @@ GITHUB_TOKEN=$(gh auth token) bun run release:local -- --dry-run # see it; chang
 GITHUB_TOKEN=$(gh auth token) bun run release:local              # publish it
 ```
 
-The dry run versions the packages, prints one line per package, and then **puts the tree back exactly as it was** — manifests, changesets, generated changelogs and all. The real run prints the same plan and stops for a typed `yes` before it publishes anything.
+The dry run versions the packages, builds them, packs each one through the same gate CI runs, prints one line per package, and then **puts the tree back exactly as it was** — manifests, changesets, generated changelogs and all. (`dist/` is gitignored, so the build it just made stays; that is what the real run publishes.) The real run prints the same plan and stops for a typed `yes` before it publishes anything.
+
+**The build is after the version bump, and that order is load-bearing.** Both halves of the bump are build inputs — Changesets rewrites every `package.json`, and the root `version` script chains `stampVersions.ts`, which rewrites each capability's `src/version.generated.ts`. Built before them, `dist/version.generated.js` reports the version this release *replaces* to every customer reading `GET /control-plane/manifest`. `verify-published` refuses a tarball whose stamp disagrees with the version being published, which is how the order is held rather than remembered — see `#575`.
 
 It refuses to start on a checkout that is not ready, and reports every reason at once: not on `main`, anything uncommitted, behind `origin/main`, nobody logged in to npm, no `GITHUB_TOKEN`, no changesets. A dry run is held to less, because it publishes nothing — it needs only a clean tree, a token, and something to release.
 

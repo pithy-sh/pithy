@@ -57,6 +57,23 @@ export interface PackedPackage {
    */
   declared?: string[];
   /**
+   * What the manifest says this release is, and what the build inside the tarball says it is.
+   *
+   * **The only question a tarball can answer about how old its build is.** Every other fault here is
+   * structural — a file is there or it is not — and a `dist/` built from last month's source is
+   * structurally perfect. `stampVersions.ts` writes each capability's own version into
+   * `src/version.generated.ts` at `changeset version`, so the constant compiled into
+   * `dist/version.generated.js` is a fingerprint of *when the build ran relative to the bump*. Built
+   * after it, the two agree. Built before it — or not built at all for this release — the artifact
+   * carries the version it is replacing, and says so.
+   *
+   * `built` is `null` for the four packages that are not capabilities and carry no stamp: `cli`,
+   * `cloudflare`, `ui-react`, `vite`. Nothing here reaches them, and nothing else can — they have no
+   * constant whose value depends on the release. Supplied by the caller, like `heads`, because opening
+   * the tarball is the caller's job.
+   */
+  stamp?: { manifest: string; built: string | null };
+  /**
    * The manifest as it appears **inside the tarball**, for the fields a consumer installs from.
    *
    * Read from the packed artifact rather than from the source tree, because the two can differ — that
@@ -187,6 +204,17 @@ export function packFaults(packed: PackedPackage): string[] {
   if (halfBuilt.length > 0) {
     faults.push(
       `${packed.name} ships ${halfBuilt.length === 1 ? "a published module" : `${halfBuilt.length} published modules`} missing a half: ${list(halfBuilt)}. A module needs its .js and its .d.ts, or it must be kept out of the tarball too.`,
+    );
+  }
+
+  // **A build is only this release's build if it was made after the bump — #476, and the release that
+  // proved the comment was not a gate.** The 2026-09-14 release published 22 packages whose `src/` was
+  // current and whose `dist/` was weeks old, because `release:local` versioned and published and never
+  // built. Everything above passed: the files were there, the halves matched, the notices were stamped.
+  // Only the constant disagreed, and nothing was reading it.
+  if (packed.stamp && packed.stamp.built !== null && packed.stamp.built !== packed.stamp.manifest) {
+    faults.push(
+      `${packed.name} ships a build stamped ${packed.stamp.built} while publishing ${packed.stamp.manifest}. Its dist was built before the version bump — build after changeset version, never before.`,
     );
   }
 
