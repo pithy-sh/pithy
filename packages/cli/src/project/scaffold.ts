@@ -15,6 +15,7 @@ import {
   RESERVED_TEST_PREFIX,
 } from "@pithy-sh/core/src/naming/resource";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
+import { hostWorkerFor } from "../capabilities/hostRegistry";
 import { errnoOf } from "./atomic";
 import { loadProjectEnvironments } from "./config";
 import { committedFiles } from "./templateFiles";
@@ -747,6 +748,13 @@ export function workerNamespace(name: string): string {
 export const DEFAULT_WORKER = "api";
 
 /**
+ * The project name the starter template ships under — the string every stamp in {@link scaffoldProject}
+ * replaces. Named once here because it appears in the template's `name`, its `PROJECT` vars, and, since
+ * #580, in each environment stanza's own `name`; a literal per stamp is a literal per chance to miss one.
+ */
+const TEMPLATE_PROJECT = "pithy-app";
+
+/**
  * A worker name is a kebab-case directory under `apps/` — the same shape a package name takes.
  *
  * **Deliberately looser than `NAME_SEGMENT`** (`@pithy-sh/core/src/naming/segment`), which every
@@ -759,17 +767,59 @@ export const DEFAULT_WORKER = "api";
 export const WORKER_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /**
- * Refuse a worker name that could not be a directory under `apps/`.
+ * The name one Worker deploys under in one environment — **`<project>-<env>-<worker>`** (#580).
+ *
+ * The same shape every other Cloudflare name this kit composes takes, and the reason it exists as a
+ * function rather than as three template literals: three producers write it — the starter template's
+ * stamps, `pithy worker add`, and `pithy doctor`'s report — and a fourth reads it back.
+ *
+ * **Deliberately not `resourceNames(project).env(env).worker(worker)`**, which composes the identical
+ * string for a capability's host. That path asserts every segment against `NAME_SEGMENT`, which requires
+ * a leading letter, and a worker directory is allowed to lead with a digit ({@link WORKER_NAME}) — so
+ * routing through it would refuse `apps/2fa`, a name that is legal everywhere it is actually used. The
+ * composed name still leads with the project, which does answer to the strict rule, so what reaches
+ * Cloudflare is legal either way.
+ *
+ * That the two composers agree on the string is exactly the hazard {@link assertWorkerName} closes.
+ */
+export function environmentWorkerName(project: string, environment: string, worker: string): string {
+  return `${project}-${environment}-${worker}`;
+}
+
+/**
+ * Refuse a worker name that could not be a directory under `apps/`, or that a capability's host Worker
+ * already deploys under.
  *
  * Called by {@link ensureScaffoldable} as well as by {@link scaffoldProject}, because the gate builds
  * `apps/<worker>/…` out of the name before anything else has looked at it: `--worker ../../etc` had it
- * probing paths outside the project and reporting the hits back.
+ * probing paths outside the project and reporting the hits back. `scaffoldWorker` and `renameWorker`
+ * call it too — it is the one place a worker name is judged, so the ninth capability to ship a host is
+ * refused by all three the day it is registered.
+ *
+ * ## Why a capability's name is not available
+ *
+ * Since #580 a worker deploys as `<project>-<env>-<worker>` ({@link environmentWorkerName}), and a
+ * capability's host Worker deploys as `<project>-<env>-<capability>`. Those are the same string when the
+ * worker is called `email`, so `wrangler deploy --env staging` in an `apps/email` would replace the email
+ * capability's own host Worker on the account — silently, with an app, and the capability's Workflows
+ * would stop running. Cloudflare's script namespace is account-flat and offers nothing to prevent it.
+ *
+ * **The set is read from the host registry (`HOST_WORKERS`) at call time, never restated here.** A hard-coded eight is
+ * a list that goes stale the moment a ninth capability ships a host, and the failure it lets through is
+ * the silent one this refusal exists to stop.
  */
-function assertWorkerName(worker: string): void {
-  if (WORKER_NAME.test(worker)) return;
+export function assertWorkerName(worker: string): void {
+  if (!WORKER_NAME.test(worker)) {
+    throw new ValidationError({
+      message: `Worker name must be kebab-case (got "${worker}").`,
+      action: "Use lowercase words joined by hyphens, e.g. api or admin-api.",
+    });
+  }
+  if (hostWorkerFor(worker) === undefined) return;
   throw new ValidationError({
-    message: `Worker name must be kebab-case (got "${worker}").`,
-    action: "Use lowercase words joined by hyphens, e.g. api or admin-api.",
+    message: `"${worker}" is reserved — the ${worker} capability's own host Worker deploys under that name.`,
+    action: `Pick another name, e.g. ${worker}-api.`,
+    detail: `A worker deploys as <project>-<env>-${worker}, which is byte-identical to the host Worker \`pithy ${worker} provision\` creates. Cloudflare's script namespace is account-flat, so a deploy would replace it.`,
   });
 }
 
@@ -914,6 +964,11 @@ async function stampEnvironmentStanzas(
     declared.map((environment) => [
       environment,
       {
+        // The script this environment deploys under, in the kit's shape (#580). Written here as well as
+        // in the template's own stanzas, because this rewrite REPLACES them: a stanza rebuilt without it
+        // falls back to wrangler's `<name>-<env>` suffix, and one project's environments end up named two
+        // different ways depending on which environments it declared.
+        name: environmentWorkerName(identity.project, environment, identity.worker),
         // All three repeat per stanza: `env.<name>.vars` REPLACES the top-level block, never merges it.
         vars: { ENVIRONMENT: environment, PROJECT: identity.project, WORKER: identity.worker },
         d1_databases: [],
@@ -1005,27 +1060,36 @@ export async function scaffoldProject(options: ScaffoldOptions): Promise<void> {
       .replace(ENVIRONMENTS_PLACEHOLDER, () => renderEnvironmentsBlock(environments)),
   );
 
-  // Three stamps into the worker's wrangler.jsonc. `name` is the deploy name (project + worker);
-  // `PROJECT` is the project alone; `WORKER` is this Worker's own directory name. `PROJECT` and the
-  // deploy name are the kebabed form — the string `requireProjectName` hands every command that composes
-  // a `<project>-<env>-<thing>` name. A `PROJECT` that differed would attribute the Worker's
-  // Images/Stream assets to a project no sweep filters on, and a `name` that differed would not deploy.
+  // Four kinds of stamp into the worker's wrangler.jsonc. The top-level `name` is the dev deploy name
+  // (project + worker); each `env.<name>.name` is that environment's, in the kit's own shape
+  // ({@link environmentWorkerName}); `PROJECT` is the project alone; `WORKER` is this Worker's own
+  // directory name. `PROJECT` and every deploy name are the kebabed form — the string
+  // `requireProjectName` hands every command that composes a `<project>-<env>-<thing>` name. A `PROJECT`
+  // that differed would attribute the Worker's Images/Stream assets to a project no sweep filters on, and
+  // a `name` that differed would not deploy.
   //
-  // `WORKER` is keyed off `DEFAULT_WORKER` rather than a literal, because the template ships that name
-  // and the directory has just been renamed to `worker` above — a literal here would be two places to
-  // change and one of them would be forgotten.
+  // `WORKER` and the environment names are keyed off `DEFAULT_WORKER` and `DEFAULT_ENVIRONMENTS` rather
+  // than literals, because the template ships those and the directory has just been renamed to `worker`
+  // above — a literal here would be two places to change and one of them would be forgotten.
   //
   // `replaceAll`, because `env.<name>.vars` replaces rather than merges, so each placeholder appears once
   // per environment stanza and a first-occurrence replace would leave staging and prod owned by `pithy-app`.
+  // The top-level `"name": "pithy-app"` carries its closing quote, so it cannot match the longer
+  // `"name": "pithy-app-staging-api"` the environment stamps below rewrite.
   const wranglerPath = join(workerDir, "wrangler.jsonc");
   const wrangler = await readFile(wranglerPath, "utf8");
-  await writeFile(
-    wranglerPath,
-    wrangler
-      .replace('"name": "pithy-app"', () => `"name": "${project}-${worker}"`)
-      .replaceAll('"PROJECT": "pithy-app"', () => `"PROJECT": "${project}"`)
-      .replaceAll(`"WORKER": "${DEFAULT_WORKER}"`, () => `"WORKER": "${worker}"`),
-  );
+  let stamped = wrangler
+    .replace('"name": "pithy-app"', () => `"name": "${project}-${worker}"`)
+    .replaceAll('"PROJECT": "pithy-app"', () => `"PROJECT": "${project}"`)
+    .replaceAll(`"WORKER": "${DEFAULT_WORKER}"`, () => `"WORKER": "${worker}"`);
+  for (const environment of DEFAULT_ENVIRONMENTS) {
+    const shipped = environmentWorkerName(TEMPLATE_PROJECT, environment, DEFAULT_WORKER);
+    stamped = stamped.replaceAll(
+      `"name": "${shipped}"`,
+      () => `"name": "${environmentWorkerName(project, environment, worker)}"`,
+    );
+  }
+  await writeFile(wranglerPath, stamped);
 
   await stampEnvironmentStanzas(workerDir, { project, worker, environments });
 

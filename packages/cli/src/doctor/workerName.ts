@@ -3,6 +3,7 @@
 
 import { basename } from "node:path";
 import { kebab } from "@pithy-sh/core/src/naming/resource";
+import { HOST_WORKERS } from "../capabilities/hostRegistry";
 import { loadProject } from "../project/config";
 import { discoverWorkers, type WorkerTarget } from "../project/workers";
 import { readWranglerConfig } from "../project/wrangler";
@@ -52,10 +53,51 @@ export interface WorkerNameMismatch {
   envs: string[];
 }
 
+/**
+ * A declared environment name that is **byte-identical to a capability's own host Worker** (#580).
+ *
+ * `<project>-<env>-<worker>` is the shape a Worker takes now, and `<project>-<env>-<capability>` is the
+ * shape a capability's host Worker has always taken. When the worker is called `email` those are the same
+ * string, and Cloudflare's script namespace is account-flat: `wrangler deploy --env staging` replaces the
+ * capability's host with an app, the capability's Workflows stop running, and nothing says so.
+ *
+ * `assertWorkerName` refuses to *create* such a worker. This is the same rule asked of a project that
+ * already exists — a hand-written stanza, or a directory renamed before the refusal shipped.
+ */
+export interface ReservedWorkerName {
+  /** The `apps/<dir>` basename whose config declares it. */
+  worker: string;
+  /** The environment stanza declaring it. */
+  env: string;
+  /** The declared script name — the same string the capability's host deploys under. */
+  name: string;
+  /** The capability whose host Worker owns that name, from the host registry. */
+  capability: string;
+}
+
+/**
+ * A Worker whose environment stanzas name no script, so wrangler suffixes the top-level one (#580).
+ *
+ * **Reported, never a fault, and it never fails the exit.** A Worker's name is the adopter's, and the
+ * kit's shape is a convention rather than a requirement: a rename means a new script, a route moved onto
+ * it, and a window where the old name is still answering. That is a deploy-time change somebody makes
+ * when it is cheap, not a thing a diagnostic should refuse to go green over.
+ */
+export interface WorkerNameConvention {
+  /** The `apps/<dir>` basename. */
+  worker: string;
+  /** Each environment that declares no name: where it lands today, and where the convention would put it. */
+  environments: { env: string; current: string; convention: string }[];
+}
+
 /** What `doctor` learned about this project's worker names. */
 export interface WorkerNameCheck {
   state: WorkerNameState;
   mismatches: WorkerNameMismatch[];
+  /** Declared names a capability's host Worker already owns. Non-empty is a fault — see {@link ReservedWorkerName}. */
+  reserved: ReservedWorkerName[];
+  /** Workers still on wrangler's suffix. A report line and nothing more — see {@link WorkerNameConvention}. */
+  convention: WorkerNameConvention[];
 }
 
 /** The `wrangler.jsonc` keys this reads: the script name, and the `WORKER` var in every stanza. */
@@ -63,6 +105,45 @@ interface NamedWorkerConfig {
   name?: string;
   vars?: Record<string, string | undefined>;
   env?: Record<string, NamedWorkerConfig | undefined>;
+}
+
+/**
+ * The reserved-name clashes one Worker's config declares, and the environments still on wrangler's suffix.
+ *
+ * Both answers come from the same walk of `env.<name>`, because they are the two halves of one question —
+ * what does this Worker deploy as in each environment, and is that a name it may have. A stanza that
+ * names nothing cannot clash, and a stanza that names something is not on the suffix, so no environment
+ * ever appears in both.
+ *
+ * **The reserved set is read from the host registry, never restated.** A ninth capability shipping a host
+ * Worker joins this check the day it is registered; a literal list here would go stale silently, and the
+ * failure it would let through is the one this check exists to find.
+ */
+function environmentNameFindings(
+  worker: string,
+  config: NamedWorkerConfig,
+  project: string | null,
+): { reserved: ReservedWorkerName[]; convention: WorkerNameConvention | null } {
+  const top = config.name;
+  const reserved: ReservedWorkerName[] = [];
+  const suffixed: WorkerNameConvention["environments"] = [];
+  // No project name is no basis for either answer: both compose `<project>-<env>-…`, and a check that
+  // guessed the project would report a clash with a capability host this project does not have.
+  if (project === null || top === undefined) return { reserved: [], convention: null };
+
+  for (const [env, stanza] of Object.entries(config.env ?? {})) {
+    const declared = stanza?.name;
+    if (declared === undefined) {
+      suffixed.push({ env, current: `${top}-${env}`, convention: `${project}-${env}-${worker}` });
+      continue;
+    }
+    const capability = HOST_WORKERS.map((spec) => spec.capability).find(
+      (name) => declared === `${project}-${env}-${name}`,
+    );
+    if (capability !== undefined) reserved.push({ worker, env, name: declared, capability });
+  }
+
+  return { reserved, convention: suffixed.length > 0 ? { worker, environments: suffixed } : null };
 }
 
 /** Every environment's stanza: the top-level one (the dev environment) plus each `env.<name>`. */
@@ -134,11 +215,13 @@ export async function checkWorkerNames(projectDir: string): Promise<WorkerNameCh
   try {
     workers = await discoverWorkers(projectDir);
   } catch {
-    return { state: "could-not-check", mismatches: [] };
+    return { state: "could-not-check", mismatches: [], reserved: [], convention: [] };
   }
 
   const project = await configuredProject(projectDir);
   const mismatches: WorkerNameMismatch[] = [];
+  const reserved: ReservedWorkerName[] = [];
+  const convention: WorkerNameConvention[] = [];
   let unreadable = false;
   for (const target of workers) {
     if (!target.hasWrangler) continue; // a non-Worker process in the dev set has no script name at all
@@ -160,10 +243,17 @@ export async function checkWorkerNames(projectDir: string): Promise<WorkerNameCh
       });
     }
     mismatches.push(...workerVarMismatches(worker, config));
+    const findings = environmentNameFindings(worker, config, project);
+    reserved.push(...findings.reserved);
+    if (findings.convention) convention.push(findings.convention);
   }
 
-  if (mismatches.length > 0) return { state: "drifted", mismatches };
-  return { state: unreadable ? "could-not-check" : "ok", mismatches: [] };
+  // Two kinds of fault, one verdict. `drifted` means this project's own files positively establish
+  // something wrong — a stamp that contradicts the directory, or a name a capability's host already owns
+  // — and either fails the exit. `convention` is not one of them: it is a report line, and a project
+  // carrying nothing but convention notes is `ok`.
+  if (mismatches.length > 0 || reserved.length > 0) return { state: "drifted", mismatches, reserved, convention };
+  return { state: unreadable ? "could-not-check" : "ok", mismatches: [], reserved: [], convention };
 }
 
 /** One mismatch in a sentence — what the stamp does with the wrong name, and what the directory says. */
@@ -171,4 +261,25 @@ export function describeWorkerName(mismatch: WorkerNameMismatch): string {
   return mismatch.stamp === "name"
     ? `deploys as ${mismatch.declared}, not ${mismatch.expected}`
     : `stamps events as ${mismatch.declared}, not ${mismatch.expected}`;
+}
+
+/** One reserved-name clash in a sentence — the name, and whose it already is. The env is the line's label. */
+export function describeReservedWorkerName(clash: ReservedWorkerName): string {
+  return `deploys as ${clash.name} — the ${clash.capability} capability's own host Worker. Deploying replaces it.`;
+}
+
+/**
+ * One Worker still on wrangler's suffix, in two sentences: where it lands, and where the convention puts it.
+ *
+ * The second sentence is the price, and it is said every time the first one is: this is the line that
+ * stops the note reading like an instruction. A rename is a new script, a route moved onto it, and a
+ * window where the old name is still answering — so it is a thing to do when it is cheap, or never.
+ */
+export function describeWorkerNameConvention(note: WorkerNameConvention): string[] {
+  const current = note.environments.map((entry) => entry.current).join(", ");
+  const convention = note.environments.map((entry) => entry.convention).join(", ");
+  return [
+    `${note.worker} deploys as ${current}. The kit's shape is <project>-<env>-<worker>: ${convention}.`,
+    "Optional. A rename is a new script, a route move, and a window where the old name still answers.",
+  ];
 }

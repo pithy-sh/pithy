@@ -188,7 +188,11 @@ export async function applyProvisionedEnv(options: {
   secrets: readonly SecretStoreBinding[];
 }): Promise<string> {
   const destination = await editStanza(options.workerDir, options.scope.stanza, options.scope.source, (stanza) => {
-    stanza.name = options.scope.worker(options.worker);
+    // The scope decides, and it is handed what the stanza already says (#580). A declared environment
+    // reads a name it finds and composes one only when there is none; a feature ignores it, because a
+    // feature's name is recomputed on teardown. Deciding here instead would put that asymmetry in a
+    // writer, which is how one used to get it wrong.
+    stanza.name = options.scope.worker(options.worker, stanza.name);
     for (const resource of options.resources) {
       const { array, fields } = KIND_TO_WRANGLER[resource.kind];
       // Reuse the existing comment-json array (preserving its comments) or start a fresh one, then

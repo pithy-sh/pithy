@@ -5,7 +5,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { checkWorkerNames, describeWorkerName } from "./workerName";
+import { HOST_WORKERS } from "../capabilities/hostRegistry";
+import {
+  checkWorkerNames,
+  describeReservedWorkerName,
+  describeWorkerName,
+  describeWorkerNameConvention,
+} from "./workerName";
 
 let dir: string;
 
@@ -26,20 +32,22 @@ async function writeWorker(name: string, config: Record<string, unknown>): Promi
 
 /** The scaffolded shape: `<project>-<dir>` deployed, `WORKER` equal to the directory in every stanza. */
 function scaffolded(project: string, worker: string): Record<string, unknown> {
+  const stanza = (env: string) => ({
+    // The name `pithy init` stamps since #580 — `<project>-<env>-<worker>`, not wrangler's suffix.
+    name: `${project}-${env}-${worker}`,
+    vars: { ENVIRONMENT: env, PROJECT: project, WORKER: worker },
+  });
   return {
     name: `${project}-${worker}`,
     vars: { ENVIRONMENT: "dev", PROJECT: project, WORKER: worker },
-    env: {
-      staging: { vars: { ENVIRONMENT: "staging", PROJECT: project, WORKER: worker } },
-      prod: { vars: { ENVIRONMENT: "prod", PROJECT: project, WORKER: worker } },
-    },
+    env: { staging: stanza("staging"), prod: stanza("prod") },
   };
 }
 
 describe("checkWorkerNames", () => {
   test("a scaffolded worker agrees with itself", async () => {
     await writeWorker("api", scaffolded("acme", "api"));
-    expect(await checkWorkerNames(dir)).toEqual({ state: "ok", mismatches: [] });
+    expect(await checkWorkerNames(dir)).toEqual({ state: "ok", mismatches: [], reserved: [], convention: [] });
   });
 
   test("catches the hand-rename: the directory moved, the script name and WORKER stayed", async () => {
@@ -73,12 +81,12 @@ describe("checkWorkerNames", () => {
     // The migrate-an-existing-Worker-in path: `my-service` was never composed from this project's name,
     // so nothing local establishes that it should have been. Shape narrows; it does not find.
     await writeWorker("api", { name: "my-service", vars: { WORKER: "api" } });
-    expect(await checkWorkerNames(dir)).toEqual({ state: "ok", mismatches: [] });
+    expect(await checkWorkerNames(dir)).toEqual({ state: "ok", mismatches: [], reserved: [], convention: [] });
   });
 
   test("a worker declaring no WORKER var declares nothing to disagree with", async () => {
     await writeWorker("api", { name: "acme-api", vars: { ENVIRONMENT: "dev" } });
-    expect(await checkWorkerNames(dir)).toEqual({ state: "ok", mismatches: [] });
+    expect(await checkWorkerNames(dir)).toEqual({ state: "ok", mismatches: [], reserved: [], convention: [] });
   });
 
   test("an unreadable wrangler.jsonc is could-not-check, not a pass", async () => {
@@ -86,7 +94,12 @@ describe("checkWorkerNames", () => {
     await mkdir(workerDir, { recursive: true });
     await writeFile(join(workerDir, "wrangler.jsonc"), "{ not json");
 
-    expect(await checkWorkerNames(dir)).toEqual({ state: "could-not-check", mismatches: [] });
+    expect(await checkWorkerNames(dir)).toEqual({
+      state: "could-not-check",
+      mismatches: [],
+      reserved: [],
+      convention: [],
+    });
   });
 
   test("a mismatch it could read outranks a worker it could not", async () => {
@@ -110,7 +123,7 @@ describe("checkWorkerNames", () => {
   });
 
   test("a project with no workers has nothing to disagree", async () => {
-    expect(await checkWorkerNames(dir)).toEqual({ state: "ok", mismatches: [] });
+    expect(await checkWorkerNames(dir)).toEqual({ state: "ok", mismatches: [], reserved: [], convention: [] });
   });
 });
 
@@ -131,5 +144,107 @@ describe("describeWorkerName", () => {
         envs: ["dev"],
       }),
     ).toBe("stamps events as api, not board");
+  });
+});
+
+/**
+ * The two things #580 asks of an existing project: the name it must not have, and the name it need not have.
+ *
+ * Both read the same `env.<name>.name` field, and they are held apart on purpose. A clash with a
+ * capability's host Worker is established by the project's own files and fails the exit — deploying over
+ * it is silent and takes a capability's Workflows down with it. A Worker still on wrangler's suffix is a
+ * Worker whose name is simply the adopter's; it is reported and nothing more.
+ */
+describe("environment names", () => {
+  test.each(HOST_WORKERS.map((spec) => spec.capability))(
+    "a stanza named after the %s host Worker is a fault, not a note",
+    async (capability) => {
+      await writeWorker("api", {
+        name: "acme-api",
+        env: { staging: { name: `acme-staging-${capability}` } },
+      });
+
+      const check = await checkWorkerNames(dir);
+      expect(check.state).toBe("drifted");
+      expect(check.reserved).toEqual([
+        { worker: "api", env: "staging", name: `acme-staging-${capability}`, capability },
+      ]);
+      expect(check.convention).toEqual([]);
+    },
+  );
+
+  test("a worker still on wrangler's suffix is reported and stays ok", async () => {
+    await writeWorker("board", { name: "acme-board", env: { staging: {}, prod: {} } });
+
+    const check = await checkWorkerNames(dir);
+    expect(check.state).toBe("ok");
+    expect(check.reserved).toEqual([]);
+    expect(check.convention).toEqual([
+      {
+        worker: "board",
+        environments: [
+          { env: "staging", current: "acme-board-staging", convention: "acme-staging-board" },
+          { env: "prod", current: "acme-board-prod", convention: "acme-prod-board" },
+        ],
+      },
+    ]);
+  });
+
+  test("a scaffolded worker is already on the convention and says nothing", async () => {
+    await writeWorker("board", scaffolded("acme", "board"));
+
+    const check = await checkWorkerNames(dir);
+    expect(check.convention).toEqual([]);
+    expect(check.reserved).toEqual([]);
+  });
+
+  test("a name that clashes with nothing is neither", async () => {
+    // `acme-staging-emailer` is not `acme-staging-email`. A prefix is not a collision, and reporting one
+    // would refuse a legitimate worker on the strength of a shared first seven characters.
+    await writeWorker("emailer", { name: "acme-emailer", env: { staging: { name: "acme-staging-emailer" } } });
+
+    const check = await checkWorkerNames(dir);
+    expect(check.state).toBe("ok");
+    expect(check.reserved).toEqual([]);
+    expect(check.convention).toEqual([]);
+  });
+
+  test("with no readable project name, no environment name is judged either way", async () => {
+    // Both answers compose `<project>-<env>-…`. Guessing the project would invent a clash with a host
+    // Worker this project may not even have.
+    await rm(join(dir, "pithy.config.ts"));
+    await writeWorker("api", { name: "acme-api", env: { staging: { name: "acme-staging-email" }, prod: {} } });
+
+    const check = await checkWorkerNames(dir);
+    expect(check.reserved).toEqual([]);
+    expect(check.convention).toEqual([]);
+  });
+});
+
+describe("describeWorkerNameConvention", () => {
+  test("says where it lands, where the convention puts it, and what moving costs", () => {
+    const lines = describeWorkerNameConvention({
+      worker: "board",
+      environments: [{ env: "prod", current: "acme-board-prod", convention: "acme-prod-board" }],
+    });
+    expect(lines[0]).toContain("acme-board-prod");
+    expect(lines[0]).toContain("acme-prod-board");
+    // The price is said every time the shape is, or the note reads as an instruction.
+    expect(lines[1]).toContain("Optional");
+    expect(lines[1]).toContain("old name still answers");
+  });
+});
+
+describe("describeReservedWorkerName", () => {
+  test("names the capability whose Worker the deploy would replace", () => {
+    const sentence = describeReservedWorkerName({
+      worker: "api",
+      env: "staging",
+      name: "acme-staging-email",
+      capability: "email",
+    });
+    expect(sentence).toContain("email capability's own host Worker");
+    // The environment is the line's label in the report, so the sentence must not repeat it.
+    expect(sentence.startsWith("staging")).toBe(false);
   });
 });

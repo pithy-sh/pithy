@@ -43,10 +43,15 @@
   "d1_databases": [],
   "kv_namespaces": [],
 
-  // Staging serves test users; production serves paid users. Deployed names get the
-  // environment suffix automatically (pithy-app-staging, pithy-app-prod).
+  // Staging serves test users; production serves paid users. Each environment names its Worker
+  // explicitly, in the shape every other Pithy resource takes: <project>-<env>-<worker>. wrangler
+  // would otherwise suffix the top-level name (pithy-app-api-staging), which sorts this Worker away
+  // from the D1, KV, buckets and capability Workers of the environment it belongs to. Grouping by
+  // environment is how an account is read and how blast radius is reasoned about.
+  // Rename one and it deploys as a new script: the old name keeps answering until you delete it.
   "env": {
     "staging": {
+      "name": "pithy-app-staging-api",
       "vars": {
         "ENVIRONMENT": "staging",
         "PROJECT": "pithy-app",
@@ -56,6 +61,7 @@
       "kv_namespaces": []
     },
     "prod": {
+      "name": "pithy-app-prod-api",
       "vars": {
         "ENVIRONMENT": "prod",
         "PROJECT": "pithy-app",

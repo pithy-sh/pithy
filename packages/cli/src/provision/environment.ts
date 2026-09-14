@@ -17,6 +17,7 @@ import type { FeatureResource } from "../feature/manifest";
 import { migrateProject } from "../migrations/run";
 import { loadProject, loadProjectCloudflare, requireProjectName, type WorkerConfig } from "../project/config";
 import { resolveWorkers } from "../project/workerScope";
+import { readWranglerConfig } from "../project/wrangler";
 import { seedProject } from "../seed/run";
 import { AUDIT_RESOURCE_TYPE, ProvisionAuditActions, type ResourceProvisioners } from "./resources";
 import type { MissingSecretBinding, SecretStoreBinding } from "./secretBindings";
@@ -407,6 +408,41 @@ function resolveServiceTarget(workers: readonly ProvisionWorker[], target: strin
 }
 
 /**
+ * The script name each Worker deploys under **in this scope**, keyed by the name the Worker set reports.
+ *
+ * Built once per run, from each Worker's own `wrangler.jsonc`, because a service binding has to name the
+ * script the callee actually deploys under and since #580 a scaffolded Worker declares that name itself
+ * (`env.<name>.name`, `<project>-<env>-<worker>`). Composing wrangler's `<name>-<env>` suffix for a
+ * callee that declares something else writes a binding pointing at a script nobody deploys: RPC through
+ * it fails at runtime while provisioning reports success — the same class of silent miss
+ * {@link resolveServiceTarget} exists to close, one step further along.
+ *
+ * The scope still decides: the declared name is only ever *offered* to `scope.worker`, and a feature
+ * scope ignores it, because a feature's name is recomputed on teardown.
+ *
+ * Never throws. A Worker whose config will not parse — or a test double pointing at a directory with no
+ * config at all — falls back to the scope's composed name, which is exactly what this returned before the
+ * declared name existed.
+ */
+async function scopedWorkerNames(
+  workers: readonly ProvisionWorker[],
+  scope: ProvisionScope,
+): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  for (const worker of workers) {
+    let declared: string | undefined;
+    try {
+      const config = (await readWranglerConfig(worker.dir)) as { env?: Record<string, { name?: string } | undefined> };
+      declared = config.env?.[scope.stanza]?.name;
+    } catch {
+      declared = undefined;
+    }
+    names.set(worker.name, scope.worker(worker.name, declared));
+  }
+  return names;
+}
+
+/**
  * Provision (or resume provisioning) one environment's Cloudflare resources. For each provisionable
  * binding: compute its name from the scope, adopt the resource if one of that name already exists, else
  * create it, and record it. Then write the ids, the scoped script name, and the retargeted service
@@ -425,9 +461,13 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
     workers,
     scope,
   });
+  // Where each Worker lands in this scope, resolved once. Every `service` binding below and the report's
+  // own worker list read it, so the three can never disagree about one Worker's address (#580).
+  const scopedNames = await scopedWorkerNames(workers, scope);
+  const scopedName = (worker: string): string => scopedNames.get(worker) ?? scope.worker(worker);
   const services = serviceBindings(options.capabilities).map((service) => ({
     binding: service.binding,
-    service: scope.worker(resolveServiceTarget(workers, service.target)),
+    service: scopedName(resolveServiceTarget(workers, service.target)),
   }));
 
   const recorded: FeatureResource[] = options.record ? await options.record.load() : [];
@@ -513,7 +553,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       // Likewise: only the service bindings this Worker declares, retargeted at this environment's copy.
       services: serviceBindings(worker.capabilities).map((service) => ({
         binding: service.binding,
-        service: scope.worker(resolveServiceTarget(workers, service.target)),
+        service: scopedName(resolveServiceTarget(workers, service.target)),
       })),
     });
     // The path the writer wrote, taken from the writer — never recomputed here. A report that names one
@@ -531,7 +571,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   return {
     env: scope.stanza,
     resources,
-    workers: workers.map((worker) => ({ worker: worker.name, name: scope.worker(worker.name) })),
+    workers: workers.map((worker) => ({ worker: worker.name, name: scopedName(worker.name) })),
     services,
     secretBindings: secrets,
     declined: reportedDeclines(declines, wantedPerWorker),

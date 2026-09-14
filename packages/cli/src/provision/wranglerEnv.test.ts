@@ -227,3 +227,60 @@ describe("applyProvisionedEnv", () => {
     ]);
   });
 });
+
+/**
+ * The name in an environment stanza is the adopter's, and provisioning reads it rather than writing over it.
+ *
+ * This reverses what `environmentScope` argued (#580). The old rule recomputed `<name>-<env>` — wrangler's
+ * own suffix — on every provision, which was harmless only while nothing else ever wrote a name there. Since
+ * #580 the starter template writes one, `<project>-<env>-<worker>`, so recomputing would have made the
+ * template's stamp pointless *and* renamed the Worker of every project that had taken it — on the next
+ * provision, silently, taking its routes and every `service` binding pointing at it along.
+ *
+ * The fallback is untouched: a stanza that names nothing still gets wrangler's suffix, so a project that
+ * never declared a name deploys exactly where it always did.
+ */
+describe("applyProvisionedEnv and a declared environment name", () => {
+  let dir: string;
+  let wranglerPath: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-envname-"));
+    wranglerPath = join(dir, "wrangler.jsonc");
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const provision = () =>
+    applyProvisionedEnv({
+      workerDir: dir,
+      worker: "replay-board",
+      scope: environmentScope("replay", "staging"),
+      resources: [],
+      services: [],
+      secrets: [],
+    });
+
+  test("keeps the name the stanza declares", async () => {
+    await writeFile(
+      wranglerPath,
+      JSON.stringify({ name: "replay-board", env: { staging: { name: "replay-staging-board" } } }, null, 2),
+    );
+
+    await provision();
+    await provision(); // idempotent: a second run must not drift the name either.
+
+    const config = parse(await readFile(wranglerPath, "utf8")) as unknown as Parsed;
+    expect(config.env.staging?.name).toBe("replay-staging-board");
+  });
+
+  test("writes wrangler's own suffix when the stanza declares none", async () => {
+    await writeFile(wranglerPath, JSON.stringify({ name: "replay-board", env: { staging: {} } }, null, 2));
+
+    await provision();
+
+    const config = parse(await readFile(wranglerPath, "utf8")) as unknown as Parsed;
+    expect(config.env.staging?.name).toBe("replay-board-staging");
+  });
+});

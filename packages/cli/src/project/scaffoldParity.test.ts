@@ -1,17 +1,21 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "@pithy-sh/core/src/version.generated";
 import { VERSION_METADATA_BINDING } from "@pithy-sh/core/src/worker/identity";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { HOST_WORKERS } from "../capabilities/hostRegistry";
 import { reactStub } from "../ui/react";
-import { kitRange, scaffoldProject } from "./scaffold";
+import { environmentWorkerName, kitRange, scaffoldProject } from "./scaffold";
 import { hasVersionMetadata } from "./versionMetadata";
+import { renameWorker } from "./workerCommand";
 import { scaffoldWorker, WRANGLER_RANGE } from "./workerScaffold";
 
 /**
@@ -235,4 +239,89 @@ describe("both pithy.config.ts producers", () => {
       expect(source).not.toContain('name: "app"');
     }
   });
+});
+
+/**
+ * The environment Worker names, in both producers, plus the one name no Worker may take.
+ *
+ * `<project>-<env>-<worker>` is the kit's shape for every other Cloudflare resource, and until #580 the
+ * one Worker an adopter deploys was the single exception — wrangler's `<name>-<env>` suffix, inherited
+ * because no producer wrote a name at all. Both write one now, so both are held to it here: a producer
+ * that forgets the stamp puts one project's environments back in two places in the account listing.
+ *
+ * The reserved half is the cost of that shape. `<project>-<env>-email` is byte-identical to what the
+ * email capability's own host Worker deploys under, so an `apps/email` would have `wrangler deploy`
+ * silently replace it. The set comes from {@link HOST_WORKERS} at runtime, never a literal list: the
+ * ninth capability to ship a host joins this test the day it is registered.
+ */
+describe("environment Worker names", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-envnames-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("both producers name every environment's Worker <project>-<env>-<worker>", async () => {
+    const { dir: addedDir } = await scaffoldWorker({ projectDir: dir, name: "web", project: "acme" });
+    const added = parse(await readFile(join(addedDir, "wrangler.jsonc"), "utf8")) as unknown as Record<string, unknown>;
+    // The template is read as it ships — unstamped, so its parts are the template's own two.
+    const template = parse(await readFile(STARTER_WRANGLER, "utf8")) as unknown as Record<string, unknown>;
+
+    for (const [config, project, worker] of [
+      [template, "pithy-app", "api"],
+      [added, "acme", "web"],
+    ] as const) {
+      const envs = (config.env ?? {}) as Record<string, { name?: string }>;
+      expect(Object.keys(envs).length).toBeGreaterThan(0);
+      for (const [env, stanza] of Object.entries(envs)) {
+        expect(stanza.name, `${project}/${env}`).toBe(environmentWorkerName(project, env, worker));
+      }
+    }
+  });
+
+  test("`pithy init` stamps the project and worker it was given into every stanza name", async () => {
+    // Project and worker deliberately unlike the template's, and unlike each other: `pithy-app-staging-api`
+    // left unstamped would pass any assertion that only checked the shape.
+    await scaffoldProject({ targetDir: dir, appName: "replay", worker: "board" });
+    const config = parse(await readFile(join(dir, "apps", "board", "wrangler.jsonc"), "utf8")) as unknown as {
+      env?: Record<string, { name?: string }>;
+    };
+    expect(Object.keys(config.env ?? {})).toEqual([...DEFAULT_ENVIRONMENTS]);
+    for (const env of DEFAULT_ENVIRONMENTS) {
+      expect(config.env?.[env]?.name, env).toBe(`replay-${env}-board`);
+    }
+  });
+
+  test("a project that declares its own environments gets the same shape", async () => {
+    // The other writer: declared environments that are not the template's pair make
+    // `stampEnvironmentStanzas` rebuild the stanzas outright, and it has to carry the name too.
+    await scaffoldProject({ targetDir: dir, appName: "replay", worker: "board", environments: ["qa", "live"] });
+    const config = parse(await readFile(join(dir, "apps", "board", "wrangler.jsonc"), "utf8")) as unknown as {
+      env?: Record<string, { name?: string }>;
+    };
+    expect(Object.keys(config.env ?? {})).toEqual(["qa", "live"]);
+    expect(config.env?.qa?.name).toBe("replay-qa-board");
+    expect(config.env?.live?.name).toBe("replay-live-board");
+  });
+
+  test.each(HOST_WORKERS.map((spec) => spec.capability))(
+    "no producer will make a worker called %s — a capability's host Worker already deploys under that name",
+    async (capability) => {
+      await expect(
+        scaffoldProject({ targetDir: join(dir, "init"), appName: "replay", worker: capability }),
+      ).rejects.toThrow(/reserved|capability/i);
+      await expect(scaffoldWorker({ projectDir: dir, name: capability, project: "replay" })).rejects.toThrow(
+        /reserved|capability/i,
+      );
+      await expect(renameWorker({ projectDir: dir, from: "api", to: capability })).rejects.toThrow(
+        /reserved|capability/i,
+      );
+      // A refusal leaves nothing behind — the same rule `assertNotReserved` is held to.
+      expect(existsSync(join(dir, "init"))).toBe(false);
+      expect(existsSync(join(dir, "apps", capability))).toBe(false);
+    },
+  );
 });
