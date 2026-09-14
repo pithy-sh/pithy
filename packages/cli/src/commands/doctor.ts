@@ -1021,7 +1021,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     : null;
   // The same stanzas, asked what is inside them (#581). It needs no declaration and no account — a
   // Worker's own `wrangler.jsonc` contradicts itself or it does not — so it is gated on `inProject` alone
-  // and answers offline like its neighbours.
+  // and answers offline like its neighbors.
   const environmentInheritance = inProject
     ? await probed<EnvironmentInheritanceCheck>(() => probeEnvironmentInheritance(options.projectDir), {
         state: "could-not-check",

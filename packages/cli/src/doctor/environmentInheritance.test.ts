@@ -74,7 +74,7 @@ describe("checkEnvironmentInheritance", () => {
   });
 
   test("an empty collection at the top level costs an environment nothing", async () => {
-    // The judgement call, stated as a test. Wrangler warns on this; doctor does not, because there is no
+    // The judgment call, stated as a test. Wrangler warns on this; doctor does not, because there is no
     // cost to name — and this is the shape every scaffolded project ships with.
     await worker("api", { d1_databases: [], kv_namespaces: [], env: { staging: {}, prod: {} } });
     expect(await checkEnvironmentInheritance(dir)).toEqual({ state: "ok", unrepeated: [] });

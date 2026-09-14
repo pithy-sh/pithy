@@ -27,7 +27,7 @@ import { describeUnrepeatedKey, unrepeatedKeys } from "../project/wranglerInheri
  *
  * Every project scaffolded before this landed is in violation for `version_metadata`, because the template
  * they copied from was. That is a step not yet taken rather than a contradiction the project's own files
- * establish, and it takes the same verdict its neighbours do — `devVars`, `devSecrets` and `secretBindings`
+ * establish, and it takes the same verdict its neighbors do — `devVars`, `devSecrets` and `secretBindings`
  * all report without gating, for exactly this reason. An upgrade that turns a green `pithy doctor` red in
  * CI is a surprise rather than a diagnosis.
  *
@@ -93,7 +93,7 @@ export async function checkEnvironmentInheritance(projectDir: string): Promise<E
     for (const found of unrepeatedKeys(config)) unrepeated.push({ worker, ...found });
   }
 
-  // A finding is reported even when a neighbouring file would not parse: one unreadable Worker must cost
+  // A finding is reported even when a neighboring file would not parse: one unreadable Worker must cost
   // its own verdict and nothing else. The `could-not-check` state is only for a run that found nothing,
   // where silence would otherwise read as a pass.
   if (unrepeated.length > 0) return { state: "unrepeated", unrepeated };
