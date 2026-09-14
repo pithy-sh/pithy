@@ -84,8 +84,8 @@ Now that the packages exist, point each one at this workflow. Requires npm **11.
 npm install -g npm@latest
 
 for pkg in audit auth cli cloudflare core email i18n leaderboard ledger \
-           matchmaking media multiplayer payments rating secrets storage \
-           support testers turnstile ui-react vector vite; do
+           matchmaking media multiplayer organization payments rating secrets \
+           storage support testers turnstile ui-react vector vite; do
   npm trust github "@pithy-sh/$pkg" \
     --repo pithy-sh/pithy \
     --file release.yml \
@@ -98,7 +98,17 @@ done
 npm trust list @pithy-sh/core   # confirm one landed
 ```
 
-`--file` is the workflow **filename only**, not a path. It must stay `release.yml`: renaming the workflow breaks publishing for all 22 packages until every trust is re-pointed.
+`--file` is the workflow **filename only**, not a path. It must stay `release.yml`: renaming the workflow breaks publishing for all 23 packages until every trust is re-pointed.
+
+**A package added later needs its own trust, and until it has one CI cannot cut a release at all** — `changeset publish` publishes the set or fails. `@pithy-sh/organization` was the first to arrive after setup, which is why its first version was cut from a laptop: there was no package for a publisher to attach to. Now that it exists, run the one-package form and the loop above is whole again:
+
+```bash
+npm trust github "@pithy-sh/organization" \
+  --repo pithy-sh/pithy --file release.yml --env npm-publish --allow-publish --yes
+npm trust list @pithy-sh/organization
+```
+
+It needs 2FA, so it is a person's step and not a script's. Set the new package's publishing access to **"Require two-factor authentication and disallow tokens"** on npm as well, or it is the one package in the scope still publishable with a token.
 
 `--env npm-publish` is what makes step 4 load-bearing — it tells npm to verify the environment claim, so a run from any other ref is refused even though the repository and filename match.
 
