@@ -74,8 +74,25 @@ const ENVIRONMENT_VAR = "ENVIRONMENT";
  */
 export const CLOUDFLARE_ENV_VAR = "CLOUDFLARE_ENV";
 
+/**
+ * **wrangler's own spelling for "the top-level stanza, and I mean it."**
+ *
+ * `args.env ?? getCloudflareEnv()` is a `??`, so an `--env` parsed as the empty string suppresses the
+ * variable outright, and the branch that follows is `if (envName)` rather than a presence test — the
+ * empty string then resolves to the top level. wrangler names this exact form itself, in the warning it
+ * prints for a command that specified no environment: *"If your intention is to use the top-level
+ * environment of your configuration simply pass an empty string to the flag."* Read out of
+ * `wrangler-dist/cli.js` at 4.125.0, alongside the `??` at its `normalizeAndValidateConfig`.
+ *
+ * It is a constant rather than a literal at a call site because the whole of #584 is that **an argv
+ * which omits it is indistinguishable from one that meant to**: the omission publishes the right Worker
+ * on a machine that exports nothing and `<name>-prod` on the next one. A name is something a reader can
+ * find, and something {@link assertPublishesDeclaredWorker} can name in a refusal.
+ */
+export const TOP_LEVEL_STANZA_ARG = "--env=";
+
 /** The slice of a wrangler config this module reads. Everything else in the file is wrangler's business. */
-interface WranglerShape {
+export interface WranglerShape {
   name?: unknown;
   vars?: Record<string, unknown>;
   env?: Record<string, WranglerShape | undefined>;
@@ -391,4 +408,91 @@ export async function assertDeploysRequestedEnvironment(
     // diagnostic. A refusal an operator cannot act on is a refusal they will route around.
     detail: `${effective.path} deploys ${shipping.name ?? "an unnamed Worker"} as ENVIRONMENT=${shipping.environment ?? "unset"}; ${declarationPath} declares ${named} as ${wanted.name ?? "an unnamed Worker"} with ENVIRONMENT=${wanted.environment ?? "unset"}.`,
   });
+}
+
+/** What {@link assertPublishesDeclaredWorker} needs to answer. */
+export interface AssertPublishesDeclaredWorkerOptions {
+  /** Where the configuration is written — named in the refusal, because it is the thing about to ship. */
+  readonly configPath: string;
+  /** The configuration itself, already in hand. Generated configs are built, not read back off disk. */
+  readonly config: WranglerShape;
+  /** The exact argv about to be handed to wrangler. */
+  readonly args: readonly string[];
+  /**
+   * The environment wrangler will inherit — `process.env` at the one real call site.
+   *
+   * Required, with no default, for {@link AssertDeploysRequestedEnvironmentOptions.processEnv}'s reason:
+   * it is half of what selects a stanza, and a gate reaching for `process.env` itself is a gate whose
+   * answer a test cannot state and a developer's exported shell variable can change.
+   */
+  readonly processEnv: NodeJS.ProcessEnv;
+}
+
+/**
+ * **Refuse unless this spawn publishes the Worker its configuration names — in every shell, not this one.**
+ *
+ * The sibling of {@link assertDeploysRequestedEnvironment}, for the deploys that have no second file to
+ * be held against. A capability host's configuration is *generated*: one complete file per environment,
+ * whose `name` already carries the environment (`acme-prod-email`) and whose `env` section does not
+ * exist. There is no declaration to compare it with, so the invariant is stated about the file itself.
+ *
+ * ## Two checks, because one of them is green on the machine that writes the defect
+ *
+ * 1. **The name this spawn publishes is the name the configuration declares.** wrangler's
+ *    `appendEnvName` runs whether or not the stanza exists — a generated config has no `env` section, so
+ *    the missing-stanza branch only *warns* and appends anyway — which is how `CLOUDFLARE_ENV=prod`
+ *    published `acme-prod-email-prod` (#584). {@link identityOf} and {@link selectedEnvironment} answer
+ *    this; neither rule is restated here.
+ * 2. **And it is that name whatever the shell says.** An argv naming no stanza leaves the choice to
+ *    `CLOUDFLARE_ENV`, which means check 1 passes on a clean machine and fails on an operator's. That is
+ *    precisely how #584 survived a green suite: the defect had no symptom in the shell it was written
+ *    in. So the argv must *state* its stanza — `--env <name>`, or {@link TOP_LEVEL_STANZA_ARG} for the
+ *    top level — and an argv that states none is refused before any shell is consulted.
+ *
+ * Check 1 runs first so that an operator who already has the variable exported is handed the sentence
+ * about their shell rather than one about an argv they did not write.
+ *
+ * **Not the rule `pithy deploy` follows, and deliberately.** A bare `pithy deploy` states no stanza and
+ * refuses instead, because `CLOUDFLARE_ENV` also steers the front-end build whose output is what ships:
+ * suppressing it on the upload alone would leave the build pointed at one stanza and the deploy at
+ * another, which is #579 with the halves swapped. A host deploy runs no build, so there is nothing for
+ * the variable to be an input to.
+ */
+export function assertPublishesDeclaredWorker(options: AssertPublishesDeclaredWorkerOptions): void {
+  const { configPath, config, args, processEnv } = options;
+  const declared = text(config.name);
+  if (declared === null) {
+    throw new ConflictError({
+      message: `${configPath} names no Worker, so nothing was deployed.`,
+      action: `Give that configuration a "name", then run the command again.`,
+      detail: `A generated host configuration is held to the Worker name it declares; this one declares none.`,
+    });
+  }
+
+  const selected = selectedEnvironment(args, processEnv);
+  const shipping = identityOf(configPath, config, selected, false);
+  const stated = environmentFromArgs(args);
+
+  if (shipping.name !== declared) {
+    // The variable is what selected it exactly when the argv named nothing and something was selected
+    // anyway. Anything else would tell an operator to unset a variable they never set.
+    const fromVariable = stated === undefined && selected !== undefined;
+    throw new ConflictError({
+      message: `${configPath} would not publish ${declared}, so nothing was deployed.`,
+      action: fromVariable
+        ? `${CLOUDFLARE_ENV_VAR}=${selected} in this shell is what appends that suffix. Unset it, then run the command again.`
+        : `Deploy ${configPath} with ${TOP_LEVEL_STANZA_ARG}, which is wrangler's spelling for the top-level stanza.`,
+      // Repeated in the detail rather than left to the message, because a `--json` row carries the
+      // detail alone and the name about to be published is the whole diagnostic.
+      detail: `${configPath} declares ${declared} and this deploy would publish ${shipping.name ?? "an unnamed Worker"}; wrangler resolves its environment as --env ?? ${CLOUDFLARE_ENV_VAR} and appends the result to the name.`,
+    });
+  }
+
+  if (stated === undefined) {
+    throw new ConflictError({
+      message: `${configPath} would publish ${declared} here and something else in another shell, so nothing was deployed.`,
+      action: `Deploy ${configPath} with ${TOP_LEVEL_STANZA_ARG}, which is wrangler's spelling for the top-level stanza.`,
+      detail: `This argv states no stanza, so wrangler selects one from ${CLOUDFLARE_ENV_VAR} and appends it to ${declared}. An argv that states its own stanza publishes the same Worker on every machine.`,
+    });
+  }
 }

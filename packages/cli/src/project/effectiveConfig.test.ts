@@ -8,12 +8,14 @@ import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   assertDeploysRequestedEnvironment,
+  assertPublishesDeclaredWorker,
   configFromArgs,
   effectiveDeployConfig,
   environmentFromArgs,
   identityOf,
   redirectedConfig,
   selectedEnvironment,
+  TOP_LEVEL_STANZA_ARG,
   wranglerEnvironment,
 } from "./effectiveConfig";
 
@@ -387,5 +389,89 @@ describe("assertDeploysRequestedEnvironment", () => {
         processEnv: {},
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * **The other half of the class, on the path that has no declaration to be held to.**
+ *
+ * A capability host's configuration is generated, not tracked: one complete file per environment, whose
+ * `name` already carries the environment (`acme-prod-email`) and whose `env` section does not exist. So
+ * there is no second file to compare it against, and the invariant has to be stated about the file
+ * itself — the Worker it declares is the Worker that gets published, whatever shell the command was run
+ * from.
+ *
+ * Two checks, because one of them is green in the shell the defect was written in. #584's `hostDeploy`
+ * published `<name>-prod` for anyone with `CLOUDFLARE_ENV=prod` exported and `<name>` for everyone else,
+ * and an assertion about the name alone would have passed on the machine that wrote it.
+ */
+describe("assertPublishesDeclaredWorker", () => {
+  /** One resolved host config, as `deployHostWorker` writes it. No `env` section — there never is one. */
+  const host = { name: "acme-prod-email", vars: { ENVIRONMENT: "prod" } };
+  const path = "/pkg/worker/.wrangler.prod.json";
+
+  /** The refusal one argv raises under one shell, or `null` when the gate let it through. */
+  function refused(args: readonly string[], processEnv: NodeJS.ProcessEnv): PithyError | null {
+    try {
+      assertPublishesDeclaredWorker({ configPath: path, config: host, args, processEnv });
+      return null;
+    } catch (thrown) {
+      return thrown as PithyError;
+    }
+  }
+
+  test("holds an argv that states the top-level stanza, whatever the shell exported", () => {
+    expect(refused(["deploy", "--config", path, TOP_LEVEL_STANZA_ARG], { CLOUDFLARE_ENV: "prod" })).toBeNull();
+    expect(refused(["deploy", "--config", path, TOP_LEVEL_STANZA_ARG], {})).toBeNull();
+  });
+
+  test("refuses when an exported CLOUDFLARE_ENV would append itself to the declared name", () => {
+    // #584 exactly. wrangler's `appendEnvName` runs whether or not the stanza exists, so a generated
+    // config with no `env` section publishes `acme-prod-email-prod` — a Worker nothing references.
+    const error = refused(["deploy", "--config", path], { CLOUDFLARE_ENV: "prod" });
+    expect(error).toBeInstanceOf(PithyError);
+    expect(error?.payload.detail).toContain("acme-prod-email-prod");
+    expect(error?.payload.action).toContain("CLOUDFLARE_ENV=prod");
+  });
+
+  test("refuses an argv that states no stanza even in a shell that exports none", () => {
+    // The half that has a symptom everywhere. An argv leaving the stanza to `CLOUDFLARE_ENV` publishes
+    // the right Worker on the machine it was written on and the wrong one on the next, which is how this
+    // survived a green suite twice. The gate reads the argv, so there is no shell it passes in.
+    const error = refused(["deploy", "--config", path], {});
+    expect(error).toBeInstanceOf(PithyError);
+    expect(error?.payload.action).toContain(TOP_LEVEL_STANZA_ARG);
+  });
+
+  test("holds an argv that states a stanza whose name is the declared one", () => {
+    // Not a shape the kit writes, and the gate is about the published name rather than about a flag: a
+    // host config that grew an `env.prod` naming the same Worker is deployed, not refused.
+    const staged = { name: "acme-prod-email", env: { prod: { name: "acme-prod-email" } } };
+    expect(() =>
+      assertPublishesDeclaredWorker({
+        configPath: path,
+        config: staged,
+        args: ["deploy", "--config", path, "--env", "prod"],
+        processEnv: {},
+      }),
+    ).not.toThrow();
+  });
+
+  test("refuses a configuration that names no Worker, rather than holding it to nothing", () => {
+    const error = (() => {
+      try {
+        assertPublishesDeclaredWorker({
+          configPath: path,
+          config: { vars: {} },
+          args: ["deploy", "--config", path, TOP_LEVEL_STANZA_ARG],
+          processEnv: {},
+        });
+        return null;
+      } catch (thrown) {
+        return thrown as PithyError;
+      }
+    })();
+    expect(error).toBeInstanceOf(PithyError);
+    expect(error?.payload.message).toContain("names no Worker");
   });
 });

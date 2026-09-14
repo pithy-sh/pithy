@@ -149,9 +149,12 @@ async function runReport(options: RunOptions = {}): Promise<KitDeployReport> {
     capabilitiesFor: options.capabilitiesFor ?? (async () => options.composes ?? [EMAIL]),
     readTemplate: options.readTemplate ?? (async () => structuredClone(template)),
     readVars: async () => options.vars ?? null,
-    runDeploy: async (configPath) => {
+    runDeploy: async (args) => {
       const { readFile } = await import("node:fs/promises");
-      deployed.push(JSON.parse(await readFile(configPath, "utf8")));
+      const { configFromArgs } = await import("./effectiveConfig");
+      // Through the argv, the way wrangler resolves it: an argv that stopped naming the generated
+      // config would otherwise still read back as a deploy of it (#584).
+      deployed.push(JSON.parse(await readFile(configFromArgs(args) as string, "utf8")));
     },
   });
 }

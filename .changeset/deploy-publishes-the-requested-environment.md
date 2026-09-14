@@ -53,3 +53,22 @@ wrangler.jsonc --env <name>` deploys the tracked file or nothing. Once a Worker 
 scripts fail rather than ship, because the tracked `assets` stanza carries no `directory` — that Worker
 is `pithy deploy`'s to ship, which builds what it deploys and holds the result to the environment asked
 for.
+
+**And a capability host Worker publishes the name the kit gave it.** `pithy <capability> provision` — and
+`pithy deploy --kit` with it — shelled `wrangler deploy --config <generated>` with no stanza named and no
+gate at all, so `args.env ?? CLOUDFLARE_ENV` reached the operator's shell. A generated host config has no
+`env` section, wrangler's missing-stanza branch only *warns*, and `appendEnvName` runs anyway: an
+exported `CLOUDFLARE_ENV=prod` published `acme-prod-email-prod` instead of `acme-prod-email`. A Worker
+under a name nothing references, while every binding pointing at the real one resolves to the old script
+or to nothing — and no symptom at all on a machine that exports nothing, which is the third time this
+class has arrived by a new route.
+
+The argv states its stanza now, in wrangler's own spelling for the top level (`--env=`), and a gate holds
+it to the Worker its configuration declares: the name that ships must be the declared one, **and** the
+argv must say so rather than leaving it to a shell, because an assertion about the name alone is green on
+the machine that writes the defect. A deploy that would publish something else refuses and names
+`CLOUDFLARE_ENV` when the variable is what chose.
+
+`pithy deploy` keeps refusing rather than suppressing, and that difference is deliberate: there,
+`CLOUDFLARE_ENV` also steers the front-end build whose output is what ships, so silencing it on the
+upload alone would point the build at one stanza and the deploy at another. A host deploy runs no build.
