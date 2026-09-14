@@ -37,6 +37,12 @@ function workerFiles(name: string, project: string, environments: readonly strin
   // each stanza names the script it deploys under, `<project>-<env>-<worker>` (#580), rather than letting
   // wrangler suffix the top-level name. The same shape `pithy init` stamps into the first Worker;
   // `scaffoldParity.test.ts` holds the two producers to it.
+  //
+  // `version_metadata` repeats for the same reason `vars` does and not a different one (#581): wrangler
+  // does not inherit it into an environment either, so a stanza without it deploys with no
+  // `CF_VERSION_METADATA` binding and leaves `pithy deploy`'s post-deploy version check permanently
+  // inconclusive there. `observability` above is inherited and is deliberately not repeated.
+  // `pithy doctor` reports any stanza that goes without something the top level declares.
   const envStanzas = environments
     .map((environment) =>
       [
@@ -46,7 +52,8 @@ function workerFiles(name: string, project: string, environments: readonly strin
         `        "ENVIRONMENT": "${environment}",`,
         `        "PROJECT": "${project}",`,
         `        "WORKER": "${name}"`,
-        `      }`,
+        `      },`,
+        `      "version_metadata": { "binding": "CF_VERSION_METADATA" }`,
         `    }`,
       ].join("\n"),
     )
@@ -64,9 +71,10 @@ function workerFiles(name: string, project: string, environments: readonly strin
     "head_sampling_rate": 1
   },
 
-  // The deployed version of this Worker, injected by Cloudflare. Top level, so every environment
-  // inherits it. It is what puts a build id on every log record and audit event, and what
-  // \`pithy deploy\` reads back to prove this Worker is the one answering at your domain.
+  // The deployed version of this Worker, injected by Cloudflare. It is what puts a build id on every
+  // log record and audit event, and what \`pithy deploy\` reads back to prove this Worker is the one
+  // answering at your domain. Every environment repeats it below, and must: an env.<name> stanza does
+  // NOT inherit version_metadata from the top level.
   "version_metadata": { "binding": "CF_VERSION_METADATA" },
 
   // The top level is the dev environment; each \`env.<name>\` is one this project declares.

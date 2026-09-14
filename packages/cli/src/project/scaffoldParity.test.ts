@@ -80,13 +80,31 @@ describe("both wrangler.jsonc producers", () => {
     expect(VERSION_METADATA_BINDING).toBe("CF_VERSION_METADATA");
   });
 
-  test("declare it at the top level, so every environment inherits one copy", () => {
-    // `env.<name>` stanzas REPLACE rather than merge. A per-environment copy would be three places for
-    // one build fact to drift in, and Cloudflare inherits the top-level declaration anyway.
+  test("repeat it in every environment stanza, because no environment inherits it", () => {
+    // **This test used to assert the opposite**, on the belief that a top-level declaration is inherited
+    // and a per-environment copy is three places for one build fact to drift in. The first half of that
+    // is false: `version_metadata` is one of the keys wrangler does NOT inherit — see
+    // `wranglerInheritance.ts`, whose declaration is gated against wrangler's own `notInheritable` call
+    // sites — so a stanza without it deploys with no `CF_VERSION_METADATA` binding at all. Both
+    // producers shipped that, and so did the kit's first adopter, on both deployed environments (#581).
+    // Repetition is the only mechanism there is.
     for (const config of [starter, added]) {
       const envs = (config.env ?? {}) as Record<string, Record<string, unknown>>;
       expect(Object.keys(envs).length).toBeGreaterThan(0);
-      for (const stanza of Object.values(envs)) expect(stanza.version_metadata).toBeUndefined();
+      for (const stanza of Object.values(envs)) {
+        expect(stanza.version_metadata).toEqual({ binding: VERSION_METADATA_BINDING });
+      }
+    }
+  });
+
+  test("do not repeat what an environment does inherit", () => {
+    // The other half, and the reason this is not "repeat everything": `observability` IS inherited, and a
+    // stanza repeating it is a second place for one logging setting to drift. #581 opened claiming the
+    // opposite about this exact key. Both producers declare it once, at the top, and nowhere else.
+    for (const config of [starter, added]) {
+      expect(config.observability).toBeDefined();
+      const envs = (config.env ?? {}) as Record<string, Record<string, unknown>>;
+      for (const stanza of Object.values(envs)) expect(stanza.observability).toBeUndefined();
     }
   });
 

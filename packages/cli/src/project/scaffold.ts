@@ -20,6 +20,7 @@ import { errnoOf } from "./atomic";
 import { loadProjectEnvironments } from "./config";
 import { committedFiles } from "./templateFiles";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
+import { topLevelKeysToRepeat } from "./wranglerInheritance";
 
 export interface ScaffoldOptions {
   /** Directory to scaffold into. Created if missing; must hold none of the paths the template writes. */
@@ -954,6 +955,13 @@ async function stampEnvironmentStanzas(
 ): Promise<void> {
   const config = (await readWranglerConfig(workerDir)) as { env?: Record<string, unknown> };
   const declared = [...identity.environments];
+  // What the top level declares that an environment does not inherit (#581). Read rather than listed:
+  // this rewrite REPLACES every stanza, so a key the template declares once above and this loop forgets
+  // is a key the rewritten environments silently go without — which is exactly how the kit's own first
+  // adopter shipped staging and prod with no `CF_VERSION_METADATA` binding. The declaration lives in
+  // `wranglerInheritance.ts` and is gated against wrangler's own `notInheritable` call sites, so a
+  // wrangler release that adds a key reaches here without anybody remembering to come back.
+  const repeated = topLevelKeysToRepeat(config);
   // The template already ships the default pair, comments and all. Rewriting it to produce the same
   // names would only cost the prose that explains them.
   if (JSON.stringify(Object.keys(config.env ?? {})) === JSON.stringify(declared)) return;
@@ -969,6 +977,10 @@ async function stampEnvironmentStanzas(
         // falls back to wrangler's `<name>-<env>` suffix, and one project's environments end up named two
         // different ways depending on which environments it declared.
         name: environmentWorkerName(identity.project, environment, identity.worker),
+        // Everything the top level declares and an environment does not inherit, carried down verbatim.
+        // The three keys below then override what is theirs to override: `vars` is this environment's,
+        // not a copy of dev's, and the two binding arrays start empty because nothing is provisioned yet.
+        ...structuredClone(repeated),
         // All three repeat per stanza: `env.<name>.vars` REPLACES the top-level block, never merges it.
         vars: { ENVIRONMENT: environment, PROJECT: identity.project, WORKER: identity.worker },
         d1_databases: [],
