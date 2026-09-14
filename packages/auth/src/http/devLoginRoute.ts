@@ -1,24 +1,21 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { zValidator } from "@hono/zod-validator";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
-import { JsonDate } from "@pithy-sh/core/src/data/codecs";
 import { type AmbientEnv, ambientEnv, compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
 import { isContinuousIntegration } from "@pithy-sh/core/src/env/ci";
-import { fromZodError, NotFoundError } from "@pithy-sh/core/src/error/pithyError";
-import { DEV_LOGIN_ROUTE } from "@pithy-sh/core/src/seed/devLogin";
+import { NotFoundError } from "@pithy-sh/core/src/error/pithyError";
+import { validationHook } from "@pithy-sh/core/src/http/validation";
+import { DEV_LOGIN_CLAIM_PARAM, DEV_LOGIN_ROUTE } from "@pithy-sh/core/src/seed/devLogin";
 import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import type { Context, Hono } from "hono";
 import { z } from "zod";
 import type { AuthWiring } from "../capability";
+import { Session } from "../data/betterAuth";
 import { authDatabase } from "../data/tables";
 import { resolveSessionSecret } from "../instance/secrets";
-import {
-  DEV_SESSION_COOKIE_NAME,
-  DEV_SESSION_TOKEN_PREFIX,
-  secretFingerprint,
-  signCookieValue,
-} from "../seeds/devSession";
+import { DEV_SESSION_COOKIE_NAME, signCookieValue, verifyDevLoginClaim } from "../seeds/devSession";
 import { resolveDb } from "./resolve";
 
 /**
@@ -66,28 +63,12 @@ export function registerDevLoginRoute(
     if (compositionEnvironment(env) !== "dev") return;
     // Gate two: continuous integration, independently. A `dev` composition in CI gets no route either.
     if (isContinuousIntegration(env)) return;
-    app.get(DEV_LOGIN_ROUTE, (c) => serveDevLogin(c, wiring));
+    // The claim is read here rather than inside the handler: `c.req.valid` is typed off the chain it was
+    // declared on, and a handler taking a bare `Context` has no validator to read from.
+    app.get(DEV_LOGIN_ROUTE, zValidator("query", DevLoginQuery, validationHook), (c) =>
+      serveDevLogin(c, wiring, c.req.valid("query")[DEV_LOGIN_CLAIM_PARAM]),
+    );
   };
-}
-
-/**
- * The seeded session row, narrowed to what handing it to a browser needs — and validated, because a D1
- * row is a boundary like any other. `z.input` is the stored row (ISO-8601 text); `z.output` the app shape.
- */
-const DevSessionRow = z
-  .object({
-    token: z
-      .string()
-      .min(1)
-      .describe("The seeded session's opaque token — signed with this environment's secret to make the cookie."),
-    expiresAt: JsonDate.describe("When the seeded session expires. ISO-8601 text in SQLite; a `Date` here."),
-  })
-  .describe("A seeded dev session, narrowed to the two columns the dev-login redirect needs.");
-type DevSessionRow = z.output<typeof DevSessionRow>;
-
-/** How long the browser is told to keep the cookie: whatever is left of the seeded session, never longer. */
-function maxAgeSeconds(expiresAt: Date, now: Date): number {
-  return Math.floor((expiresAt.getTime() - now.getTime()) / 1000);
 }
 
 /**
@@ -110,48 +91,92 @@ function noSeededSession(): NotFoundError {
 }
 
 /**
- * Serve the seeded session as a `Set-Cookie` and a redirect to `/`.
+ * What the route takes: the claim, in the query.
  *
- * The row is found by the prefix every seeded session carries and **verified against the current
- * signing secret's fingerprint**, which the seed puts in the token for this exact purpose. A session
- * minted before a rotation is a cookie Better Auth will reject, so handing it over would sign nobody in
- * and send the developer hunting through auth for a bug that is a stale seed. Unfound is unfound.
+ * **Optional, and that is deliberate.** A required field would make a missing claim a 400 and a wrong one
+ * a 404, and the difference between those two answers is exactly what this route must not tell anybody.
+ * Declaring it optional puts every refusal in the handler, where there is one of them.
+ *
+ * Bounded because an unbounded query parameter is an unbounded read. The ceiling is far above any claim
+ * this seed mints; a value past it is refused for its length, which tells the sender only about the
+ * request they just made.
+ */
+const DevLoginQuery = z
+  .object({
+    [DEV_LOGIN_CLAIM_PARAM]: z
+      .string()
+      .max(4096)
+      .optional()
+      .describe("The signed claim naming the user to sign in as, as `pithy seed` wrote it into the URL."),
+  })
+  .describe("The dev-login route's query: a claim, or nothing and the same refusal as a wrong one.");
+
+/**
+ * Exchange a claim for a session, as a `Set-Cookie` and a redirect to `/`.
  *
  * Nothing about the cookie is logged, and nothing is written to a response body: the value exists in
- * this handler and in the browser, and in no third place.
+ * this handler and in the browser, and in no third place. The claim that bought it is in the URL, which
+ * is the one place it has to be — `dev/devLogin.ts` in the CLI carries why, and keeps it out of every
+ * printed line it can.
  */
-async function serveDevLogin(c: Context<PithyHonoEnv>, wiring: AuthWiring): Promise<Response> {
+async function serveDevLogin(
+  c: Context<PithyHonoEnv>,
+  wiring: AuthWiring,
+  presented: string | undefined,
+): Promise<Response> {
+  if (!presented) throw noSeededSession();
+
   const secret = await resolveSessionSecret(c.env as unknown as SecretsStoreEnv);
-  const fingerprint = await secretFingerprint(secret);
+  const now = new Date();
+  // One answer for malformed, for signed-by-another-secret, and for expired. Telling them apart would
+  // make this route a probe against the running secret.
+  const claim = await verifyDevLoginClaim(presented, secret, now);
+  if (!claim) throw noSeededSession();
 
   const db = authDatabase(resolveDb(c.env, wiring.config.database));
-  const found = await db
-    .selectFrom("pithyAuthSessions")
-    .select(["token", "expiresAt"])
-    .where("token", "like", `${DEV_SESSION_TOKEN_PREFIX}%-${fingerprint}`)
-    .orderBy("createdAt", "desc")
-    .limit(1)
-    .executeTakeFirst();
-  if (!found) throw noSeededSession();
+  // The user is proved to exist rather than assumed from the claim. A claim outliving the seed that
+  // named it — a reseed with a different `dev.json`, a user removed — must not mint a session pointing
+  // at nobody, which `get-session` would answer `null` for while the cookie looked like a way in.
+  const user = await db.selectFrom("pithyAuthUsers").select("id").where("id", "=", claim.userId).executeTakeFirst();
+  if (!user) throw noSeededSession();
 
-  const parsed = DevSessionRow.safeParse(found);
-  if (!parsed.success) {
-    throw fromZodError(parsed.error, {
-      // Same reason as `noSeededSession`: this route's caller is the developer who can run the command.
-      message: "The seeded dev session is not readable. Run pithy seed to mint a fresh one.",
-    });
-  }
-  const row: DevSessionRow = parsed.data;
-  const maxAge = maxAgeSeconds(row.expiresAt, new Date());
-  // An expired session is worse than none: the cookie looks like a way in and fails silently in the
-  // browser. Same answer, same action — reseeding is what fixes both.
-  if (maxAge <= 0) throw noSeededSession();
+  /*
+    A real session, minted now — `#572`.
 
-  const value = await signCookieValue(row.token, secret);
+    **Random, not derived.** The token this replaced was `dev-session-<userId>-<fingerprint>`, which made
+    it reproducible across reseeds and made every dev sign-in the same row. This one is a session like any
+    other: its own id, its own token, revoked on its own when somebody signs out, and leaving the claim
+    that produced it untouched. Nothing about it says "seeded", because nothing about it is — a person
+    opened a link and a session was created, which is what sign-in means.
+  */
+  const token = crypto.randomUUID();
+  const expiresAt = new Date(now.getTime() + wiring.config.sessionExpiresIn * 1000);
+  await db
+    .insertInto("pithyAuthSessions")
+    .values(
+      Session.encode({
+        id: crypto.randomUUID(),
+        token,
+        userId: claim.userId,
+        expiresAt,
+        createdAt: now,
+        updatedAt: now,
+        ipAddress: "127.0.0.1",
+        userAgent: "pithy dev login",
+        deviceId: null,
+        familyId: null,
+        // A dev login is a real sign-in, so it is authenticated now — what the live hook stamps.
+        authenticatedAt: now,
+      }),
+    )
+    .execute();
+
+  const value = await signCookieValue(token, secret);
   // The attributes Better Auth's own session cookie carries in a `dev` composition: `HttpOnly` (a
   // session token has no business in `document.cookie`, which is also the habit this route retires),
   // `SameSite=Lax`, root path. No `Secure` — a `dev` base URL is `http://localhost`, and a `Secure`
   // cookie there is one the browser accepts and never sends back.
+  const maxAge = Math.floor((expiresAt.getTime() - now.getTime()) / 1000);
   const cookie = `${DEV_SESSION_COOKIE_NAME}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`;
   // 302 to the app root rather than 200 with a page: the developer asked to be signed in, not to read a
   // confirmation, and a redirect leaves the address bar on the app instead of on this route.

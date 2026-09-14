@@ -19,7 +19,7 @@ import { NO_SOCIAL_PROVIDERS } from "../instance/providers";
 import { AUTH_SESSION_SECRET } from "../instance/secrets";
 import { AUTH_MIGRATION_ORDER } from "../migrations/0001_init";
 import { AUTH_MIGRATIONS } from "../migrations/set";
-import { authDevSessionSeed, DEV_SESSION_COOKIE_NAME } from "./devSession";
+import { authDevSessionSeed, DEV_SESSION_COOKIE_NAME, verifyDevLoginClaim } from "./devSession";
 import { authExampleSeed } from "./example";
 
 const SECRET = "dev-secret-please-rotate-000000000000";
@@ -119,29 +119,40 @@ beforeEach(async () => {
   await migrate();
 });
 
-test("Better Auth accepts the seeded cookie as a real session", async () => {
+test("the seeded claim names the user it was minted for", async () => {
+  // **This asserted that the artifact's cookie signed you in, and there is no cookie in it any more —
+  // `#572`.** The artifact carries a claim about *who*; the route is what turns one into a session, and
+  // `http/devLoginRoute.workers.test.ts` is where that end-to-end assertion lives now. What is this
+  // file's to prove is that the seed signs a claim the running secret verifies, naming the right person.
   const prepared = await seedDevLogin(EXAMPLE_ADA.email);
   const artifact = DevLogin.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
 
-  const session = await instance().api.getSession({
-    headers: new Headers({ cookie: `${artifact.cookieName}=${artifact.cookieValue}` }),
+  expect(artifact.email).toBe(EXAMPLE_ADA.email);
+  expect(await verifyDevLoginClaim(artifact.claim, SECRET)).toEqual({
+    userId: EXAMPLE_ADA.id,
+    expiresAt: artifact.expiresAt,
   });
-
-  expect(session?.user.email).toBe(EXAMPLE_ADA.email);
-  expect(session?.user.id).toBe(EXAMPLE_ADA.id);
 });
 
-test("Better Auth accepts the seeded cookie for a user no example set creates", async () => {
+test("the seeded claim names a user no example set creates", async () => {
   // The case that matters to an adopter: the dev login is their own user, and the fictional cast is absent.
   const prepared = await seedDevLogin(APP_USER.email, [appUserSeed]);
   const artifact = DevLogin.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
 
-  const session = await instance().api.getSession({
-    headers: new Headers({ cookie: `${artifact.cookieName}=${artifact.cookieValue}` }),
+  expect(artifact.email).toBe(APP_USER.email);
+  expect(await verifyDevLoginClaim(artifact.claim, SECRET)).toEqual({
+    userId: APP_USER.id,
+    expiresAt: artifact.expiresAt,
   });
+});
 
-  expect(session?.user.email).toBe(APP_USER.email);
-  expect(session?.user.id).toBe(APP_USER.id);
+test("**the seed writes no session — nothing is in that table until somebody signs in**", async () => {
+  // The whole of `#572` in one assertion. A row here was what the product's own sign-out revoked, and
+  // what every surface built over `pithy_auth_sessions` drew as a device nobody used.
+  await seedDevLogin(EXAMPLE_ADA.email);
+
+  const sessions = await env.DB.prepare("select count(*) as n from pithy_auth_sessions").first<{ n: number }>();
+  expect(sessions?.n).toBe(0);
 });
 
 test("the cookie name matches the one this Better Auth version reads", async () => {
@@ -174,13 +185,13 @@ test("the same config deployed reads the __Secure- cookie, and the seed's name i
   expect(context.authCookies.sessionToken.name).toBe(`__Secure-${DEV_SESSION_COOKIE_NAME}`);
 });
 
-test("a cookie signed with the previous secret is rejected after a rotation", async () => {
+test("a claim signed with the previous secret is refused after a rotation", async () => {
+  // Rotating the signing secret invalidates the claim, and reseeding is what mints a fresh one. That is
+  // the cost `#572` accepted deliberately: surviving a rotation would have meant a durable marker, and a
+  // marker means a table in every adopter's production schema for a `dev`-only affordance.
   const prepared = await seedDevLogin(EXAMPLE_ADA.email);
   const artifact = DevLogin.parse(JSON.parse(prepared.artifacts?.[0]?.contents ?? "{}"));
 
-  const session = await instance(`${SECRET}-rotated`).api.getSession({
-    headers: new Headers({ cookie: `${artifact.cookieName}=${artifact.cookieValue}` }),
-  });
-
-  expect(session).toBeNull();
+  expect(await verifyDevLoginClaim(artifact.claim, SECRET)).not.toBeNull();
+  expect(await verifyDevLoginClaim(artifact.claim, `${SECRET}-rotated`)).toBeNull();
 });

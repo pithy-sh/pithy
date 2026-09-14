@@ -6,18 +6,26 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEV_LOGIN_PATH, type DevLogin } from "@pithy-sh/core/src/seed/devLogin";
 import { describe, expect, test } from "vitest";
-import { type DevLoginTarget, devLoginKeyAction, devLoginLines, devLoginUrl, readDevLogin } from "./devLogin";
+import {
+  claimIsPrinted,
+  type DevLoginTarget,
+  devLoginKeyAction,
+  devLoginLines,
+  devLoginUrl,
+  readDevLogin,
+} from "./devLogin";
 
 const NOW = new Date("2026-08-06T00:00:00.000Z");
 const API: DevLoginTarget = { name: "api", origin: "http://localhost:8787" };
 const ADMIN: DevLoginTarget = { name: "admin", origin: "http://localhost:8788" };
 
+const CLAIM = "eyJ1IjoiZXhhbXBsZS1hZGEiLCJlIjoxODAwMH0%3D.c2lnbmF0dXJl";
+
 function login(overrides: Partial<DevLogin> = {}): DevLogin {
   return {
     email: "ada@example.com",
     userId: "example-ada",
-    cookieName: "better-auth.session_token",
-    cookieValue: "dev-session-example-ada-abcd.c2ln",
+    claim: CLAIM,
     expiresAt: new Date("2027-08-06T00:00:00.000Z"),
     ...overrides,
   };
@@ -39,21 +47,57 @@ function everyLine(): string[] {
   ];
 }
 
-describe("the cookie", () => {
-  test("reaches no line this module can print", () => {
+describe("the credential", () => {
+  test("no session cookie reaches any line this module can print", () => {
     // The reason the feature exists. `pithy dev`'s output is tee'd, read, pasted and screenshotted, so a
-    // session token printed once is a session token at rest. It now travels over HTTP or not at all.
+    // session token printed once is a session token at rest. It travels over HTTP or not at all — and
+    // since `#572` the terminal never sees one at all, because the seed no longer mints one.
     for (const line of everyLine()) {
-      expect(line).not.toContain(login().cookieValue);
       expect(line).not.toContain("document.cookie");
-      expect(line).not.toContain(login().cookieName);
+      expect(line).not.toContain("better-auth.session_token");
     }
+  });
+
+  test("**the claim is printed only where the CLI cannot open the browser itself**", () => {
+    // `#572` puts a claim in the URL, and a claim is a credential. It is kept out of every line the CLI
+    // can avoid printing; where a person must click a link — no keypress, or more than one worker — a
+    // link without it would 404, so it is printed and this is the boundary that says where.
+    const held = login().claim;
+    for (const [interactive, targets, where] of [
+      [true, [API], "interactive, one worker"],
+      [false, [API], "non-interactive, one worker"],
+      [true, [API, ADMIN], "interactive, two workers"],
+      [false, [API, ADMIN], "non-interactive, two workers"],
+      [true, [], "nothing composes auth"],
+    ] as const) {
+      const banner = devLoginLines(login(), NOW, { interactive, targets, ci: false });
+      expect({ where, printed: banner.some((line) => line.includes(held)) }).toEqual({
+        where,
+        printed: claimIsPrinted("banner", interactive, targets.length),
+      });
+
+      // The keypress is the other surface, and it prints under a different condition: with one worker it
+      // opens the browser itself, so nothing is printed however interactive the run is.
+      const press = devLoginKeyAction(login(), NOW, targets);
+      expect({ where, printed: press.lines.some((line) => line.includes(held)) }).toEqual({
+        where,
+        printed: claimIsPrinted("keypress", interactive, targets.length),
+      });
+    }
+  });
+
+  test("pressing `l` with one worker opens the claim and prints none of it", () => {
+    // The ordinary case, and the one worth protecting: the URL goes to the browser, the terminal gets a
+    // name. `openUrl` is handed the credential; nothing a human reads is.
+    const action = devLoginKeyAction(login(), NOW, [API]);
+    expect(action.url).toContain(login().claim);
+    for (const line of action.lines) expect(line).not.toContain(login().claim);
   });
 });
 
 describe("devLoginUrl", () => {
-  test("is the origin plus the route both ends share", () => {
-    expect(devLoginUrl(API.origin)).toBe("http://localhost:8787/__pithy/dev-login");
+  test("is the origin, the route both ends share, and the claim", () => {
+    expect(devLoginUrl(API.origin, "abc")).toBe("http://localhost:8787/__pithy/dev-login?t=abc");
   });
 });
 
@@ -66,7 +110,7 @@ describe("devLoginLines", () => {
 
   test("prints the URL, never the cookie, where there is no keypress to offer", () => {
     expect(devLoginLines(login(), NOW, { interactive: false, targets: [API], ci: false })).toEqual([
-      "Dev login: ada@example.com — open http://localhost:8787/__pithy/dev-login to sign in.",
+      `Dev login: ada@example.com — open http://localhost:8787/__pithy/dev-login?t=${CLAIM} to sign in.`,
     ]);
   });
 
@@ -76,8 +120,8 @@ describe("devLoginLines", () => {
     ]);
     expect(devLoginLines(login(), NOW, { interactive: false, targets: [API, ADMIN], ci: false })).toEqual([
       "Dev login: ada@example.com — open one of these to sign in.",
-      "  api: http://localhost:8787/__pithy/dev-login",
-      "  admin: http://localhost:8788/__pithy/dev-login",
+      `  api: http://localhost:8787/__pithy/dev-login?t=${CLAIM}`,
+      `  admin: http://localhost:8788/__pithy/dev-login?t=${CLAIM}`,
     ]);
   });
 
@@ -108,8 +152,10 @@ describe("devLoginLines", () => {
 describe("devLoginKeyAction", () => {
   test("opens the one worker that carries the route", () => {
     const action = devLoginKeyAction(login(), NOW, [API]);
-    expect(action.url).toBe("http://localhost:8787/__pithy/dev-login");
-    expect(action.lines).toEqual(["Opening http://localhost:8787/__pithy/dev-login as ada@example.com."]);
+    expect(action.url).toBe(`http://localhost:8787/__pithy/dev-login?t=${CLAIM}`);
+    // The URL is opened, not printed — it carries the claim, and `#572` keeps that out of the terminal
+    // on every run where the CLI can hand it to a browser itself.
+    expect(action.lines).toEqual(["Opening the dev login for ada@example.com."]);
   });
 
   test("prints the choices rather than guessing between workers", () => {
@@ -117,8 +163,8 @@ describe("devLoginKeyAction", () => {
     expect(action.url).toBeUndefined();
     expect(action.lines).toEqual([
       "More than one worker composes auth. Open the one you want:",
-      "  api: http://localhost:8787/__pithy/dev-login",
-      "  admin: http://localhost:8788/__pithy/dev-login",
+      `  api: http://localhost:8787/__pithy/dev-login?t=${CLAIM}`,
+      `  admin: http://localhost:8788/__pithy/dev-login?t=${CLAIM}`,
     ]);
   });
 
@@ -156,8 +202,7 @@ describe("readDevLogin", () => {
       JSON.stringify({
         email: "ada@example.com",
         userId: "example-ada",
-        cookieName: "better-auth.session_token",
-        cookieValue: "value",
+        claim: "a-claim",
         expiresAt: "2027-08-06T00:00:00.000Z",
       }),
     );

@@ -5,15 +5,8 @@ import { normalizeAddress } from "@pithy-sh/core/src/address/address";
 import { fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { MAX_SEED_ORDER } from "@pithy-sh/core/src/seed/compose";
 import { DEV_LOGIN_FILE, DEV_LOGIN_PATH, DevLogin } from "@pithy-sh/core/src/seed/devLogin";
-import {
-  d1SeedGroup,
-  defineSeed,
-  type SeedPreparation,
-  type SeedPrepareContext,
-  type SeedSet,
-} from "@pithy-sh/core/src/seed/seed";
+import { defineSeed, type SeedPreparation, type SeedPrepareContext, type SeedSet } from "@pithy-sh/core/src/seed/seed";
 import { z } from "zod";
-import { Session } from "../data/betterAuth";
 import { DEV_PROTOCOL, sessionCookieName } from "../http/baseUrl";
 import { AUTH_SESSION_SECRET } from "../instance/secrets";
 
@@ -71,20 +64,12 @@ const USERS_TABLE = "pithyAuthUsers";
 export const DEV_SESSION_COOKIE_NAME = sessionCookieName(DEV_PROTOCOL);
 
 /**
- * The prefix every seeded dev session's id and token carry.
+ * How long a dev login stays usable. Long, because reseeding to restore one is the friction this removes.
  *
- * It is what makes a dev session **findable without being told**, which is what the dev-login route
- * needs: the route reads the session out of D1 and has no artifact to consult (a Worker has no
- * filesystem). And it is what makes one identifiable at all — a `pithy_auth_sessions` row minted by a
- * seed is otherwise indistinguishable from one a real sign-in created.
+ * It bounds the *claim*, not a session — `#572`. The session the route mints from it lives by the auth
+ * config's own `sessionExpiresIn`, exactly as a real sign-in does, because it *is* one.
  */
-export const DEV_SESSION_TOKEN_PREFIX = "dev-session-";
-
-/** How long a seeded session lives. Long, because reseeding to restore a dev login is the friction this removes. */
-const DEV_SESSION_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000;
-
-/** Bytes of the secret digest kept as the token's fingerprint — enough to separate secrets, short enough to read. */
-const FINGERPRINT_BYTES = 4;
+const DEV_LOGIN_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000;
 
 /** The developer's machine-local preferences for this project, read from `~/.config/pithy/<project>/dev.json`. */
 export const DevPreferences = z
@@ -115,11 +100,9 @@ export const SeededUser = z
   .describe("A seeded `pithy_auth_users` row, narrowed to what minting a dev session for it requires.");
 export type SeededUser = z.output<typeof SeededUser>;
 
-/** What {@link mintDevSession} produces: the row to write, and the artifact the browser is handed. */
-export interface MintedDevSession {
-  /** The `pithy_auth_sessions` row, in app shape — re-encoded and validated by the seed writer. */
-  session: Session;
-  /** The dev-login artifact, written to `logs/dev-login.json` once the row lands. */
+/** What {@link mintDevLogin} produces. One field, because a dev login is no longer a row — `#572`. */
+export interface MintedDevLogin {
+  /** The dev-login artifact, written to `logs/dev-login.json`. */
   login: DevLogin;
 }
 
@@ -145,65 +128,139 @@ export async function signCookieValue(value: string, secret: string): Promise<st
   return encodeURIComponent(`${value}.${base64}`);
 }
 
-/**
- * A short, stable fingerprint of the auth secret.
- *
- * Putting it in the session token makes the token deterministic across reseeds — the same cookie keeps
- * working in every worktree once each is seeded, which is the whole point — while rotating the secret
- * changes the token *and* invalidates every cookie signed with the old one, for free. A truncated digest,
- * never the secret: the token is written to a file and read back by tooling.
- */
-export async function secretFingerprint(secret: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
-  return Array.from(new Uint8Array(digest).slice(0, FINGERPRINT_BYTES))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-/** Inputs to {@link mintDevSession}. `now` is a seam so the determinism tests do not depend on the clock. */
-export interface MintDevSessionInput {
+/** Inputs to {@link mintDevLogin}. `now` is a seam so the tests do not depend on the clock. */
+export interface MintDevLoginInput {
   /** The seeded user to sign in as. */
   user: SeededUser;
   /** The Better Auth signing secret for this environment — never logged, never stored, never in an error. */
   secret: string;
-  /** The moment the session is minted. Defaults to now. */
+  /** The moment the claim is minted. Defaults to now. */
   now?: Date;
 }
 
 /**
- * Mint one deterministic dev session: the `pithy_auth_sessions` row and the signed cookie for it.
+ * Sign a claim naming the user a dev login signs in as — `#572`.
  *
- * The row id carries the fingerprint too, not just the token. Seed writes are `INSERT OR IGNORE`, so an
- * id that ignored a rotation would keep the stale token alive under a row the next run refuses to replace.
+ * **The payload is base64 of JSON, not a delimited string.** A user id is an adopter's to choose and may
+ * hold any character at all, including whichever one a hand-rolled format picked as its separator. JSON
+ * inside base64 has no separator to collide with, and the whole of it is what the signature covers.
+ *
+ * The same HMAC-SHA-256 construction {@link signCookieValue} uses, deliberately not the same function:
+ * that one mirrors better-call's cookie format because Better Auth has to accept its output, and this is
+ * ours. Two consumers, two formats, no shared spelling to break one by fixing the other.
  */
-export async function mintDevSession(input: MintDevSessionInput): Promise<MintedDevSession> {
+export async function signDevLoginClaim(input: MintDevLoginInput & { expiresAt: Date }): Promise<string> {
+  // **`TextEncoder`, not `btoa` on the string.** `btoa` throws `InvalidCharacterError` for any code
+  // point above U+00FF, and a user id is the adopter's to choose — this module already reasons about
+  // ids holding a separator, and a non-ASCII one is no stranger. Encoding to UTF-8 bytes first makes
+  // the payload total in the id, which is what a seed that must not die on somebody's name requires.
+  const body = base64Of(new TextEncoder().encode(JSON.stringify({ u: input.user.id, e: input.expiresAt.getTime() })));
+  const key = await claimKey(input.secret, ["sign"]);
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
+  return encodeURIComponent(`${body}.${base64Of(signature)}`);
+}
+
+/**
+ * What a claim says, once it has been proved to say it.
+ *
+ * `null` for every failure and never a reason: a malformed claim, one signed by another secret, and one
+ * naming a user who has since gone are the same answer to whoever presented it, because distinguishing
+ * them is a probe. The route turns all three into the one 404 it already had.
+ */
+export async function verifyDevLoginClaim(
+  claim: string,
+  secret: string,
+  now: Date = new Date(),
+): Promise<{ userId: string; expiresAt: Date } | null> {
+  const raw = safeDecode(claim);
+  if (raw === null) return null;
+  // The last dot, because base64 never contains one and a payload might have been anything.
+  const cut = raw.lastIndexOf(".");
+  if (cut <= 0) return null;
+  const body = raw.slice(0, cut);
+  const signature = safeBytes(raw.slice(cut + 1));
+  if (signature === null) return null;
+
+  // `crypto.subtle.verify` rather than comparing strings: the comparison is the part that has to be
+  // constant-time, and this is the primitive that already is.
+  const key = await claimKey(secret, ["verify"]);
+  if (!(await crypto.subtle.verify("HMAC", key, signature, new TextEncoder().encode(body)))) return null;
+
+  const decoded = safeJson(body);
+  const parsed = DevLoginClaim.safeParse(decoded);
+  if (!parsed.success) return null;
+  const expiresAt = new Date(parsed.data.e);
+  if (expiresAt.getTime() <= now.getTime()) return null;
+  return { userId: parsed.data.u, expiresAt };
+}
+
+/** The claim's payload, as it is signed. Two letters, because it is written into a URL a person may see. */
+const DevLoginClaim = z
+  .object({
+    u: z.string().min(1).describe("The user id the route mints a session for."),
+    e: z.number().int().positive().describe("When the claim stops being accepted, in ms since the epoch."),
+  })
+  .describe("What a dev-login claim asserts: which seeded user, and until when.");
+
+/** The HMAC key for a claim. Imported per call — a key object is not something to cache across requests. */
+function claimKey(secret: string, usages: readonly ("sign" | "verify")[]): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [
+    ...usages,
+  ]);
+}
+
+/** Base64 of bytes — a signature, or a UTF-8 payload. */
+function base64Of(bytes: ArrayBuffer | Uint8Array): string {
+  return btoa(String.fromCharCode(...new Uint8Array(bytes)));
+}
+
+/** `decodeURIComponent`, or null. A malformed escape throws, and a throw here is just "not a claim". */
+function safeDecode(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
+/** Base64 to bytes, or null. Same reason: unparseable input is not an error, it is a refusal. */
+function safeBytes(value: string): Uint8Array | null {
+  try {
+    return Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+  } catch {
+    return null;
+  }
+}
+
+/** Base64 UTF-8 JSON to a value, or null. Decoded as bytes, to match how {@link base64Of} wrote it. */
+function safeJson(body: string): unknown {
+  try {
+    const bytes = Uint8Array.from(atob(body), (character) => character.charCodeAt(0));
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Mint one dev login: the signed claim, and the artifact that carries it.
+ *
+ * **No `pithy_auth_sessions` row — `#572`.** This used to write one and hand it over on every open, which
+ * meant the product's own sign-out revoked the dev login along with the session, and the only way back was
+ * a reseed. It also meant a row in that table which was, by this module's own admission, indistinguishable
+ * from a real sign-in — so it showed up in every surface built over sessions as a device nobody used.
+ *
+ * What is minted here is a claim about *who*. The route exchanges it for a session at the moment somebody
+ * opens the link, so the session is real, is theirs, and is the only thing a sign-out takes away.
+ */
+export async function mintDevLogin(input: MintDevLoginInput): Promise<MintedDevLogin> {
   const now = input.now ?? new Date();
-  const expiresAt = new Date(now.getTime() + DEV_SESSION_LIFETIME_MS);
-  const fingerprint = await secretFingerprint(input.secret);
-  const token = `${DEV_SESSION_TOKEN_PREFIX}${input.user.id}-${fingerprint}`;
-
-  const session: Session = {
-    id: token,
-    token,
-    userId: input.user.id,
-    expiresAt,
-    createdAt: now,
-    updatedAt: now,
-    ipAddress: "127.0.0.1",
-    userAgent: "pithy seed (dev login)",
-    deviceId: null,
-    familyId: null,
-    // A dev session is a real sign-in, so it is authenticated now — what the live hook stamps.
-    authenticatedAt: now,
-  };
-
+  const expiresAt = new Date(now.getTime() + DEV_LOGIN_LIFETIME_MS);
   return {
-    session,
     login: {
       email: input.user.email,
       userId: input.user.id,
-      cookieName: DEV_SESSION_COOKIE_NAME,
-      cookieValue: await signCookieValue(token, input.secret),
+      claim: await signDevLoginClaim({ ...input, expiresAt }),
       expiresAt,
     },
   };
@@ -279,9 +336,11 @@ export const authDevSessionSeed: SeedSet = defineSeed({
       });
     }
 
-    const minted = await mintDevSession({ user, secret });
+    const minted = await mintDevLogin({ user, secret });
+    // **No `d1` — `#572`.** This set writes a file and nothing else now. Nothing reaches
+    // `pithy_auth_sessions` until somebody opens the link and the route mints a session for them, which
+    // is what makes signing out of the app harmless to the way back in.
     return {
-      d1: [d1SeedGroup("app", "pithyAuthSessions", Session, [minted.session])],
       artifacts: [{ file: DEV_LOGIN_FILE, contents: `${JSON.stringify(DevLogin.encode(minted.login), null, 2)}\n` }],
     };
   },

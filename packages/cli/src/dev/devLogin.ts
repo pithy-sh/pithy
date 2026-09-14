@@ -3,7 +3,7 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DEV_LOGIN_PATH, DEV_LOGIN_ROUTE, DevLogin } from "@pithy-sh/core/src/seed/devLogin";
+import { DEV_LOGIN_CLAIM_PARAM, DEV_LOGIN_PATH, DEV_LOGIN_ROUTE, DevLogin } from "@pithy-sh/core/src/seed/devLogin";
 
 /**
  * The `pithy dev` end of the dev login: say that there is one, and how to use it — **without ever
@@ -22,12 +22,24 @@ import { DEV_LOGIN_PATH, DEV_LOGIN_ROUTE, DevLogin } from "@pithy-sh/core/src/se
  * places nobody chose. `core/src/seed/seed.ts` already treats the login artifact as sensitive for
  * exactly this reason, so printing it was the one place the rule was suspended by design.
  *
- * Now the credential travels over HTTP, from the Worker to the browser, and the terminal carries a
- * keypress and a URL. Neither is a secret: {@link DEV_LOGIN_ROUTE} is registered only in a `dev`
- * composition that is not CI, and it hands out only what `pithy seed` already minted on this machine.
+ * Now the session travels over HTTP, from the Worker to the browser, and the terminal carries a keypress.
  *
- * **A cookie value must never appear in a string this module returns.** That is asserted directly, over
- * every line every function here can produce, rather than trusted to review.
+ * ## The claim, and the one place it is unavoidable — `#572`
+ *
+ * The URL carries a signed claim naming the user to sign in as, because the seed writes a file and a
+ * Worker has no filesystem to read it from. **That claim is a credential**: presenting it to a `dev`
+ * composition mints a session. So it is kept out of printed output wherever the CLI can open the browser
+ * itself, which is every interactive run with one worker — the ordinary case, where nothing is printed
+ * but a name.
+ *
+ * It cannot be kept out of the rest. A non-interactive run has no keypress, and a run with two workers
+ * has no defensible guess about which one to open, so both must print a link a person can click — and a
+ * link that omitted the claim would 404. {@link claimIsPrinted} names those cases in one place so the
+ * test can assert the boundary rather than the wording.
+ *
+ * **A session cookie must still never appear in a string this module returns**, and neither must the
+ * claim in any line outside that boundary. Both are asserted directly, over every line every function
+ * here can produce, rather than trusted to review.
  */
 
 /** A started worker the dev-login route can be opened on — one that composes auth. */
@@ -74,9 +86,16 @@ export async function readDevLogin(projectDir: string): Promise<DevLogin | undef
   }
 }
 
-/** Where a worker serves the dev login. The route is core's, so both ends spell it the same way once. */
-export function devLoginUrl(origin: string): string {
-  return `${origin}${DEV_LOGIN_ROUTE}`;
+/**
+ * Where a worker serves the dev login, carrying the claim that says who to sign in as.
+ *
+ * The route and the parameter are both core's, so both ends spell them the same way once. **The claim
+ * travels in the URL because the artifact is a file and a Worker has no filesystem — `#572`.** It used
+ * to need nothing: the route found the one seeded session in D1. That session is what the product's own
+ * sign-out revoked, which is the whole of the bug this replaced.
+ */
+export function devLoginUrl(origin: string, claim: string): string {
+  return `${origin}${DEV_LOGIN_ROUTE}?${DEV_LOGIN_CLAIM_PARAM}=${claim}`;
 }
 
 /**
@@ -91,9 +110,25 @@ function usable(login: DevLogin | undefined, now: Date): DevLogin | undefined {
   return login.expiresAt.getTime() > now.getTime() ? login : undefined;
 }
 
+/**
+ * Whether a claim has to be printed, for one surface and one shape of run.
+ *
+ * **The two surfaces differ, and a single predicate hid that.** The banner prints a link only when there
+ * is no keypress to offer instead — with a terminal it says *press l* and names no URL, however many
+ * workers are running. The keypress prints links only when there is more than one worker, because with
+ * one it opens the browser itself and with several there is no defensible guess.
+ *
+ * Stated here rather than at the call sites so the boundary is a thing a test can assert and a reader
+ * can find. True means a person has to click a link themselves, and the claim rides in it; false means
+ * the terminal sees a name and nothing else.
+ */
+export function claimIsPrinted(where: "banner" | "keypress", interactive: boolean, targets: number): boolean {
+  return where === "banner" ? targets > 0 && !interactive : targets > 1;
+}
+
 /** One indented `name: url` line per target — the shape both the banner and the keypress list choices in. */
-function choices(targets: readonly DevLoginTarget[]): string[] {
-  return targets.map((target) => `  ${target.name}: ${devLoginUrl(target.origin)}`);
+function choices(targets: readonly DevLoginTarget[], claim: string): string[] {
+  return targets.map((target) => `  ${target.name}: ${devLoginUrl(target.origin, claim)}`);
 }
 
 /**
@@ -118,9 +153,9 @@ export function devLoginLines(login: DevLogin | undefined, now: Date, banner: De
   }
   const first = targets[0];
   if (targets.length === 1 && first) {
-    return [`Dev login: ${live.email} — open ${devLoginUrl(first.origin)} to sign in.`];
+    return [`Dev login: ${live.email} — open ${devLoginUrl(first.origin, live.claim)} to sign in.`];
   }
-  return [`Dev login: ${live.email} — open one of these to sign in.`, ...choices(targets)];
+  return [`Dev login: ${live.email} — open one of these to sign in.`, ...choices(targets, live.claim)];
 }
 
 /**
@@ -146,10 +181,11 @@ export function devLoginKeyAction(
 
   const first = targets[0];
   if (targets.length === 1 && first) {
-    const url = devLoginUrl(first.origin);
-    return { url, lines: [`Opening ${url} as ${login.email}.`] };
+    // **The URL is opened, not printed.** It carries the claim, and this is the path where the CLI can
+    // hand it to a browser without it passing through a terminal somebody tees, pastes or screenshots.
+    return { url: devLoginUrl(first.origin, login.claim), lines: [`Opening the dev login for ${login.email}.`] };
   }
   // More than one worker carries the route, and they are separate origins — a cookie set on one signs
   // nobody into the other. There is no defensible guess, so the choice is printed.
-  return { lines: ["More than one worker composes auth. Open the one you want:", ...choices(targets)] };
+  return { lines: ["More than one worker composes auth. Open the one you want:", ...choices(targets, login.claim)] };
 }
