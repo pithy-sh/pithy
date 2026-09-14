@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { describePlan, generatedChangelogs, type PreflightInputs, preflight } from "./localRelease";
 import type { ReleaseRecord } from "./records";
@@ -178,5 +180,54 @@ describe("generatedChangelogs", () => {
 
   it("never names a file that disappeared", () => {
     expect(generatedChangelogs(["packages/auth/CHANGELOG.md"], [])).toEqual([]);
+  });
+});
+
+/**
+ * **The order is the whole of it, and prose said so for months while the script did something else.**
+ *
+ * This module's own header and the entry script's both described the sequence as the workflow's —
+ * "snapshot, version, build, publish" — and the script went from the bump straight to the publish. The
+ * 2026-09-14 release shipped 22 packages of stale compiled output under fresh version numbers because
+ * of it, and one package with no `dist/` at all.
+ *
+ * `verify-published` is the gate that catches the artifact; this is the gate that catches the recipe,
+ * and it is here because a step is one line and a line is what gets dropped in a rebase. Read from the
+ * file the operator actually runs, in order, because *after the bump* is the part that matters: built
+ * first, every capability's `dist/version.generated.js` reports the version this release replaces.
+ */
+describe("scripts/localRelease.ts", () => {
+  const source = readFileSync(join(import.meta.dirname, "..", "..", "..", "scripts", "localRelease.ts"), "utf8");
+
+  /** Every `run("bun", [...])` in the file, in the order the release performs them. */
+  const steps = [...source.matchAll(/run\("bun", \[([^\]]*)\]/g)].map(([, argv]) =>
+    (argv ?? "")
+      .split(",")
+      .map((arg) => arg.trim().replace(/^"|"$/g, ""))
+      .join(" "),
+  );
+
+  it("builds after the version bump, so the stamp compiled into dist is this release's", () => {
+    expect(steps.indexOf("run build")).toBeGreaterThan(steps.indexOf("run version"));
+  });
+
+  it("builds before it publishes, so what is packed is what was just built", () => {
+    expect(steps.indexOf("run build")).toBeLessThan(steps.indexOf("run release"));
+  });
+
+  it("holds every tarball to what an adopter must receive before asking to publish it", () => {
+    expect(steps.indexOf("run verify-published")).toBeGreaterThan(steps.indexOf("run build"));
+    expect(steps.indexOf("run verify-published")).toBeLessThan(steps.indexOf("run release"));
+  });
+
+  it("runs the sequence the workflow runs", () => {
+    expect(steps).toEqual([
+      "scripts/releaseRecords.ts snapshot",
+      "run version",
+      "run build",
+      "run verify-published",
+      "scripts/releaseRecords.ts build",
+      "run release",
+    ]);
   });
 });

@@ -293,6 +293,22 @@ describe("packFaults", () => {
     expect(packFaults(packed({ expectsManifest: true }))).toEqual([]);
   });
 
+  // ---- the stamp, which is the only thing a tarball can say about how old its build is ----
+
+  it("reports a build stamped with the version this release is replacing", () => {
+    expect(packFaults(packed({ stamp: { manifest: "0.6.0", built: "0.5.0" } }))).toEqual([
+      "@pithy-sh/auth ships a build stamped 0.5.0 while publishing 0.6.0. Its dist was built before the version bump — build after changeset version, never before.",
+    ]);
+  });
+
+  it("accepts a build stamped with the version being published", () => {
+    expect(packFaults(packed({ stamp: { manifest: "0.6.0", built: "0.6.0" } }))).toEqual([]);
+  });
+
+  it("asks nothing of a package that ships no stamp, which is the four that are not capabilities", () => {
+    expect(packFaults(packed({ stamp: { manifest: "0.6.0", built: null } }))).toEqual([]);
+  });
+
   it("names the package in every fault it reports", () => {
     const faults = packFaults(packed({ name: "@pithy-sh/core", entries: ["src/a.test.ts"], expectsManifest: false }));
 

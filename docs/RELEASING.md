@@ -32,7 +32,7 @@ Before anything is published, see what a release would produce. This needs no np
 GITHUB_TOKEN=$(gh auth token) bun run release:local -- --dry-run
 ```
 
-It versions the packages, prints one line each, and restores the tree.
+It versions the packages, builds them, packs every tarball and holds it to what an adopter must receive, prints one line each, and restores the tree. The build and the packing are why it takes a minute or two rather than seconds — and they are the point: a dry run that skipped them would tell you the plan and nothing about the artifact.
 
 Read that list carefully — **a version, once published, is permanent.** npm allows unpublishing only within 72 hours, and a name-plus-version can never be reused afterwards.
 
@@ -50,7 +50,9 @@ GITHUB_TOKEN=$(gh auth token) bun run release:local -- --dry-run # see it; chang
 GITHUB_TOKEN=$(gh auth token) bun run release:local              # publish it
 ```
 
-The dry run versions the packages, prints one line per package, and then **puts the tree back exactly as it was** — manifests, changesets, generated changelogs and all. The real run prints the same plan and stops for a typed `yes` before it publishes anything.
+The dry run versions the packages, builds them, packs each one through the same gate CI runs, prints one line per package, and then **puts the tree back exactly as it was** — manifests, changesets, generated changelogs and all. (`dist/` is gitignored, so the build it just made stays; that is what the real run publishes.) The real run prints the same plan and stops for a typed `yes` before it publishes anything.
+
+**The build is after the version bump, and that order is load-bearing.** Both halves of the bump are build inputs — Changesets rewrites every `package.json`, and the root `version` script chains `stampVersions.ts`, which rewrites each capability's `src/version.generated.ts`. Built before them, `dist/version.generated.js` reports the version this release *replaces* to every customer reading `GET /control-plane/manifest`. `verify-published` refuses a tarball whose stamp disagrees with the version being published, which is how the order is held rather than remembered — see `#575`.
 
 It refuses to start on a checkout that is not ready, and reports every reason at once: not on `main`, anything uncommitted, behind `origin/main`, nobody logged in to npm, no `GITHUB_TOKEN`, no changesets. A dry run is held to less, because it publishes nothing — it needs only a clean tree, a token, and something to release.
 
@@ -82,8 +84,8 @@ Now that the packages exist, point each one at this workflow. Requires npm **11.
 npm install -g npm@latest
 
 for pkg in audit auth cli cloudflare core email i18n leaderboard ledger \
-           matchmaking media multiplayer payments rating secrets storage \
-           support testers turnstile ui-react vector vite; do
+           matchmaking media multiplayer organization payments rating secrets \
+           storage support testers turnstile ui-react vector vite; do
   npm trust github "@pithy-sh/$pkg" \
     --repo pithy-sh/pithy \
     --file release.yml \
@@ -96,7 +98,17 @@ done
 npm trust list @pithy-sh/core   # confirm one landed
 ```
 
-`--file` is the workflow **filename only**, not a path. It must stay `release.yml`: renaming the workflow breaks publishing for all 22 packages until every trust is re-pointed.
+`--file` is the workflow **filename only**, not a path. It must stay `release.yml`: renaming the workflow breaks publishing for all 23 packages until every trust is re-pointed.
+
+**A package added later needs its own trust, and until it has one CI cannot cut a release at all** — `changeset publish` publishes the set or fails. `@pithy-sh/organization` was the first to arrive after setup, which is why its first version was cut from a laptop: there was no package for a publisher to attach to. Now that it exists, run the one-package form and the loop above is whole again:
+
+```bash
+npm trust github "@pithy-sh/organization" \
+  --repo pithy-sh/pithy --file release.yml --env npm-publish --allow-publish --yes
+npm trust list @pithy-sh/organization
+```
+
+It needs 2FA, so it is a person's step and not a script's. Set the new package's publishing access to **"Require two-factor authentication and disallow tokens"** on npm as well, or it is the one package in the scope still publishable with a token.
 
 `--env npm-publish` is what makes step 4 load-bearing — it tells npm to verify the environment claim, so a run from any other ref is refused even though the repository and filename match.
 
