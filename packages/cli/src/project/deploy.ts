@@ -90,6 +90,17 @@ export interface DeployProjectOptions {
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
   /**
+   * The environment the build and `wrangler deploy` will inherit. Defaults to `process.env`, which is
+   * what they actually inherit.
+   *
+   * **Here because `CLOUDFLARE_ENV` selects a wrangler stanza, and a shell can export it.** wrangler
+   * resolves `args.env ?? CLOUDFLARE_ENV`, so the variable is a second input to what this command
+   * publishes and the gate has to read the same one wrangler will. The seam exists so a suite states
+   * that input rather than inheriting the developer's shell — a test asserting which stanza shipped
+   * would otherwise pass or fail on what the operator happened to export.
+   */
+  processEnv?: NodeJS.ProcessEnv;
+  /**
    * Test seam: probe a declared domain for the version just shipped. Defaults to the real HTTP probe.
    *
    * Injected rather than reached for, so the deploy tests never touch the network and the retry/backoff
@@ -347,7 +358,12 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
       // would publish something other than the requested environment refuses instead (#579). After the
       // upload the only remedy is deleting a live Worker.
       stage = "config";
-      await assertDeploysRequestedEnvironment({ workerDir: worker.dir, env: options.env, args: argv });
+      await assertDeploysRequestedEnvironment({
+        workerDir: worker.dir,
+        env: options.env,
+        args: argv,
+        processEnv: options.processEnv ?? process.env,
+      });
       stage = "deploy";
       const stdout = await run(worker, argv);
       const deploy: WorkerDeploy = {

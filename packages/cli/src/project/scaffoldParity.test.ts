@@ -204,6 +204,31 @@ describe("both package.json producers", () => {
     }
   });
 
+  test("every deploy script names the Worker's own configuration, so no build can substitute one", () => {
+    // **#579, reproduced in a script the kit writes.** `vite build` leaves a `.wrangler/deploy/config.json`
+    // that redirects the next `wrangler deploy` to the flattened build output, and wrangler searches for
+    // that file **upwards** — so `bun run build && bun run deploy:staging` published a dev-composed
+    // Worker as staging, silently, and a Worker with no front end could be redirected by a sibling's
+    // build higher in the tree. An explicit `--config` beats the redirect (measured on the binary in
+    // #579), so a script that names the tracked file deploys the tracked file or nothing.
+    //
+    // "Or nothing" is the other half, and it is deliberate: a Worker that has since gained a front end
+    // has an `assets` stanza with no `directory` — only the build knows where the client output landed —
+    // so this argv fails outright rather than shipping assets from whatever was built last. That Worker
+    // is `pithy deploy`'s to ship, which builds what it deploys and holds the result to the environment
+    // that was asked for.
+    for (const [producer, pkg] of [
+      ["pithy init", starter],
+      ["pithy worker add", added],
+    ] as const) {
+      const deploys = Object.entries(pkg.scripts ?? {}).filter(([name]) => name.startsWith("deploy"));
+      expect(deploys.length, producer).toBeGreaterThan(0);
+      for (const [name, command] of deploys) {
+        expect(command, `${producer}: ${name}`).toContain("--config wrangler.jsonc");
+      }
+    }
+  });
+
   test("name the package `<project>-<worker>` in both, never the bare worker", () => {
     // A workspace holding two projects would otherwise hold two packages called `board`.
     expect(starter.name).toBe("replay-board");

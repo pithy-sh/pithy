@@ -13,6 +13,7 @@ import {
   environmentFromArgs,
   identityOf,
   redirectedConfig,
+  selectedEnvironment,
   wranglerEnvironment,
 } from "./effectiveConfig";
 
@@ -75,6 +76,35 @@ describe("configFromArgs / environmentFromArgs", () => {
     expect(environmentFromArgs(["deploy", "--env=staging"])).toBe("staging");
     expect(environmentFromArgs(["deploy", "-e", "staging"])).toBe("staging");
     expect(environmentFromArgs(["deploy"])).toBeUndefined();
+  });
+});
+
+/**
+ * **wrangler's own precedence, `args.env ?? getCloudflareEnv()`, read out of wrangler 4.131.2.**
+ *
+ * The argv is one of two inputs and was the only one this module read. `CLOUDFLARE_ENV` is the other,
+ * and it is the one an operator exports once and forgets — so a bare `pithy deploy` in that shell
+ * publishes the exported stanza while an argv-only reading expects the top level.
+ */
+describe("selectedEnvironment", () => {
+  test("the argv wins, whatever the environment says", () => {
+    expect(selectedEnvironment(["deploy", "--env", "staging"], { CLOUDFLARE_ENV: "prod" })).toBe("staging");
+    expect(selectedEnvironment(["deploy", "-e", "staging"], { CLOUDFLARE_ENV: "prod" })).toBe("staging");
+  });
+
+  test("CLOUDFLARE_ENV selects the stanza when the argv names none", () => {
+    expect(selectedEnvironment(["deploy"], { CLOUDFLARE_ENV: "prod" })).toBe("prod");
+  });
+
+  test("nothing selected is the top-level stanza", () => {
+    expect(selectedEnvironment(["deploy"], {})).toBeUndefined();
+  });
+
+  test("an empty value selects nothing, because wrangler branches on truthiness", () => {
+    // `if (envName)` in wrangler's `normalizeAndValidateConfig`, not `!== undefined`. An empty string
+    // is how a script says "the top level" without unsetting an inherited variable.
+    expect(selectedEnvironment(["deploy"], { CLOUDFLARE_ENV: "" })).toBeUndefined();
+    expect(selectedEnvironment(["deploy", "--env="], { CLOUDFLARE_ENV: "prod" })).toBeUndefined();
   });
 });
 
@@ -164,19 +194,37 @@ describe("assertDeploysRequestedEnvironment", () => {
     return built;
   }
 
-  const refusal = (args: string[], env: string | undefined = "staging"): Promise<unknown> =>
-    assertDeploysRequestedEnvironment({ workerDir: dir, env, args }).catch((error: unknown) => error);
+  /**
+   * The gate, with nothing in the environment. Every case states the environment wrangler will inherit,
+   * so what a case proves is the code's behavior and not the developer's exported `CLOUDFLARE_ENV`.
+   */
+  const refusal = (
+    args: string[],
+    env: string | undefined = "staging",
+    processEnv: NodeJS.ProcessEnv = {},
+  ): Promise<unknown> =>
+    assertDeploysRequestedEnvironment({ workerDir: dir, env, args, processEnv }).catch((error: unknown) => error);
 
   test("holds when nothing has substituted a configuration", async () => {
     await expect(
-      assertDeploysRequestedEnvironment({ workerDir: dir, env: "staging", args: ["deploy", "--env", "staging"] }),
+      assertDeploysRequestedEnvironment({
+        workerDir: dir,
+        env: "staging",
+        args: ["deploy", "--env", "staging"],
+        processEnv: {},
+      }),
     ).resolves.toBeUndefined();
   });
 
   test("holds when the build output is the requested environment's", async () => {
     await writeBuilt({ name: "acme-web-staging", vars: { ENVIRONMENT: "staging" } });
     await expect(
-      assertDeploysRequestedEnvironment({ workerDir: dir, env: "staging", args: ["deploy", "--env", "staging"] }),
+      assertDeploysRequestedEnvironment({
+        workerDir: dir,
+        env: "staging",
+        args: ["deploy", "--env", "staging"],
+        processEnv: {},
+      }),
     ).resolves.toBeUndefined();
   });
 
@@ -215,6 +263,60 @@ describe("assertDeploysRequestedEnvironment", () => {
     expect((await refusal(["deploy", "--env", "prod"])) as PithyError).toBeInstanceOf(PithyError);
   });
 
+  test("refuses a bare deploy that an exported CLOUDFLARE_ENV turns into another environment's", async () => {
+    // The gate's own subject, reached by the input the gate did not read. wrangler resolves
+    // `args.env ?? getCloudflareEnv()`, so this argv publishes `env.staging` while a reading of the argv
+    // alone expects the top-level stanza — and blesses it.
+    const error = (await assertDeploysRequestedEnvironment({
+      workerDir: dir,
+      env: undefined,
+      args: ["deploy"],
+      processEnv: { CLOUDFLARE_ENV: "staging" },
+    }).catch((thrown: unknown) => thrown)) as PithyError;
+    expect(error).toBeInstanceOf(PithyError);
+    expect(error.payload.detail).toContain("acme-web-staging");
+    expect(error.payload.action).toContain("CLOUDFLARE_ENV=staging");
+  });
+
+  test("refuses a dev deploy the same way, because dev is the top-level stanza", async () => {
+    // `--env dev` reaches wrangler as no `--env` at all, so the exported variable is what selects. The
+    // requested environment is dev's top-level stanza; `env.prod` is not it.
+    const error = (await refusal(["deploy"], "dev", { CLOUDFLARE_ENV: "prod" })) as PithyError;
+    expect(error).toBeInstanceOf(PithyError);
+    expect(error.payload.detail).toContain("acme-web-prod");
+  });
+
+  test("holds when the argv names the environment, whatever the shell exported", async () => {
+    // wrangler's precedence, not a preference of ours: `--env` on the argv is read before the variable,
+    // so an operator with `CLOUDFLARE_ENV=prod` exported still deploys staging when they ask for it.
+    await expect(
+      assertDeploysRequestedEnvironment({
+        workerDir: dir,
+        env: "staging",
+        args: ["deploy", "--env", "staging"],
+        processEnv: { CLOUDFLARE_ENV: "prod" },
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  test("holds when CLOUDFLARE_ENV is empty, which wrangler reads as the top-level stanza", async () => {
+    await expect(
+      assertDeploysRequestedEnvironment({
+        workerDir: dir,
+        env: undefined,
+        args: ["deploy"],
+        processEnv: { CLOUDFLARE_ENV: "" },
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  test("names the argv, not the variable, when the argv is what disagrees", async () => {
+    // The action an operator is handed has to be the one that fixes their deploy. Telling someone to
+    // unset a variable they never set is a refusal they will route around.
+    const error = (await refusal(["deploy", "--env", "prod"])) as PithyError;
+    expect(error.payload.action).not.toContain("CLOUDFLARE_ENV");
+  });
+
   test("refuses when the effective configuration is not there at all", async () => {
     await mkdir(join(dir, ".wrangler", "deploy"), { recursive: true });
     await writeFile(
@@ -229,12 +331,15 @@ describe("assertDeploysRequestedEnvironment", () => {
   test("a bare deploy is held to the top-level stanza, which is the environment it asked for", async () => {
     await writeBuilt({ name: "acme-web", vars: { ENVIRONMENT: "dev" } });
     await expect(
-      assertDeploysRequestedEnvironment({ workerDir: dir, env: undefined, args: ["deploy"] }),
+      assertDeploysRequestedEnvironment({ workerDir: dir, env: undefined, args: ["deploy"], processEnv: {} }),
     ).resolves.toBeUndefined();
     await writeBuilt({ name: "acme-web-staging", vars: { ENVIRONMENT: "staging" } });
-    const error = await assertDeploysRequestedEnvironment({ workerDir: dir, env: undefined, args: ["deploy"] }).catch(
-      (thrown: unknown) => thrown,
-    );
+    const error = await assertDeploysRequestedEnvironment({
+      workerDir: dir,
+      env: undefined,
+      args: ["deploy"],
+      processEnv: {},
+    }).catch((thrown: unknown) => thrown);
     expect(error).toBeInstanceOf(PithyError);
   });
 
@@ -249,7 +354,12 @@ describe("assertDeploysRequestedEnvironment", () => {
     );
     await writeBuilt({ name: "acme-web-pr-7", vars: { ENVIRONMENT: "feature" } });
     await expect(
-      assertDeploysRequestedEnvironment({ workerDir: dir, env: "feature", args: ["deploy", "--env", "feature"] }),
+      assertDeploysRequestedEnvironment({
+        workerDir: dir,
+        env: "feature",
+        args: ["deploy", "--env", "feature"],
+        processEnv: {},
+      }),
     ).resolves.toBeUndefined();
 
     await writeBuilt({ name: "acme-web", vars: { ENVIRONMENT: "dev" } });
@@ -270,7 +380,12 @@ describe("assertDeploysRequestedEnvironment", () => {
     const empty = join(dir, "nothing");
     await mkdir(empty, { recursive: true });
     await expect(
-      assertDeploysRequestedEnvironment({ workerDir: empty, env: "staging", args: ["deploy", "--env", "staging"] }),
+      assertDeploysRequestedEnvironment({
+        workerDir: empty,
+        env: "staging",
+        args: ["deploy", "--env", "staging"],
+        processEnv: {},
+      }),
     ).resolves.toBeUndefined();
   });
 });

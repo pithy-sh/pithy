@@ -65,8 +65,32 @@ writeFileSync(
 );
 `;
 
+/**
+ * **Take `CLOUDFLARE_ENV` out of the shell for the cases below, and put it back after.**
+ *
+ * The variable selects a wrangler stanza — `args.env ?? CLOUDFLARE_ENV` — so it is an input to what
+ * `deployProject` publishes, read by the stand-in build and by the gate. A developer who exports one for
+ * other work would otherwise be running a different test than CI is: a bare deploy would be held to
+ * `env.prod` and refuse, correctly, in a case about something else entirely.
+ *
+ * Every case that means something by the variable states it, through `processEnv`. This is what makes
+ * that statement complete rather than an overlay on whatever was already there.
+ */
+function statesItsOwnEnvironment(): void {
+  let exported: string | undefined;
+  beforeEach(() => {
+    exported = process.env.CLOUDFLARE_ENV;
+    delete process.env.CLOUDFLARE_ENV;
+  });
+  afterEach(() => {
+    if (exported === undefined) delete process.env.CLOUDFLARE_ENV;
+    else process.env.CLOUDFLARE_ENV = exported;
+  });
+}
+
 describe("deployProject", () => {
   let dir: string;
+  statesItsOwnEnvironment();
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "pithy-deploy-"));
   });
@@ -498,6 +522,7 @@ describe("deployProject", () => {
 describe("deployProject refuses a configuration that is not the requested environment's", () => {
   let dir: string;
   let standin: string;
+  statesItsOwnEnvironment();
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "pithy-deploy-env-"));
     standin = join(dir, "vite-build-standin.mjs");
@@ -625,6 +650,38 @@ describe("deployProject refuses a configuration that is not the requested enviro
     expect(argv).toEqual([["deploy"]]);
     const built = JSON.parse(await readFile(join(at, "dist", "worker", "wrangler.json"), "utf8")) as { name: string };
     expect(built.name).toBe("acme-web");
+  });
+
+  test("refuses a bare deploy an exported CLOUDFLARE_ENV would publish as another environment", async () => {
+    // **The hole this gate shipped with, end to end.** No front end, so no build, no redirect, and the
+    // Worker's own `wrangler.jsonc` is what wrangler reads — everything the gate looked at agrees. The
+    // only thing that moved the stanza is the shell, and wrangler resolves `args.env ?? CLOUDFLARE_ENV`,
+    // so a bare `pithy deploy` here publishes `acme-api-prod` while an argv-only reading approves it.
+    const at = join(dir, "apps", "api");
+    await mkdir(at, { recursive: true });
+    await writeFile(
+      join(at, "wrangler.jsonc"),
+      JSON.stringify({
+        name: "acme-api",
+        vars: { ENVIRONMENT: "dev" },
+        env: { prod: { name: "acme-api-prod", vars: { ENVIRONMENT: "prod" } } },
+      }),
+    );
+    let uploaded = 0;
+
+    const results = await deployProject({
+      account: null,
+      projectDir: dir,
+      processEnv: { CLOUDFLARE_ENV: "prod" },
+      runDeploy: async (target) => {
+        uploaded += 1;
+        return wranglerOutput(target.name, "v1");
+      },
+    });
+
+    expect(uploaded).toBe(0);
+    expect(results[0]).toMatchObject({ name: "acme-api", ok: false });
+    expect(results[0]?.error).toContain("acme-api-prod");
   });
 
   test("a Worker with no front end writes no redirect, so nothing about it changes", async () => {

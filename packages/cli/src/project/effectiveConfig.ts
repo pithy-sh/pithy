@@ -40,6 +40,12 @@
  *   the build that produced #579 recorded none, which is exactly why nothing complained.
  * - **Otherwise the script name is `env.<name>.name`, or `<top-level name>-<name>`**, via wrangler's
  *   `appendEnvName`, whether or not the `env.<name>` section exists.
+ * - **The environment is `args.env ?? CLOUDFLARE_ENV`**, so the argv is only half of what selects a
+ *   stanza. The other half is the shell the spawn inherits — see {@link selectedEnvironment}. This gate
+ *   shipped reading the argv alone, which meant a bare `pithy deploy` under an exported
+ *   `CLOUDFLARE_ENV=prod` published prod while the gate checked the top-level stanza and approved it:
+ *   the gate blessing exactly the class of mistake it exists to refuse. A gate that models fewer inputs
+ *   than the thing it gates is not a narrow gate, it is a hole shaped like its own subject.
  *
  * ## `dev` is the top level, so it is not a wrangler environment
  *
@@ -59,6 +65,14 @@ export const DEPLOY_CONFIG_REDIRECT = join(".wrangler", "deploy", "config.json")
 
 /** The var every Pithy stanza carries, and the one the running Worker reads to know what it is. */
 const ENVIRONMENT_VAR = "ENVIRONMENT";
+
+/**
+ * Wrangler's own name for the variable that selects a stanza when the argv names none.
+ *
+ * Not a Pithy name and not an alias of `ENVIRONMENT`: they are two variables doing two jobs, which is
+ * the whole of #579. This one is read here because wrangler reads it — see {@link selectedEnvironment}.
+ */
+export const CLOUDFLARE_ENV_VAR = "CLOUDFLARE_ENV";
 
 /** The slice of a wrangler config this module reads. Everything else in the file is wrangler's business. */
 interface WranglerShape {
@@ -204,6 +218,27 @@ export function environmentFromArgs(args: readonly string[]): string | undefined
   return undefined;
 }
 
+/**
+ * **The stanza a wrangler spawn will actually select — the argv *and* the environment it inherits.**
+ *
+ * `args.env ?? getCloudflareEnv()`, read out of wrangler 4.131.2's own `normalizeAndValidateConfig`.
+ * Both halves matter, and reading only the first is how a gate blesses the mistake it exists to refuse:
+ * an operator with `CLOUDFLARE_ENV=prod` exported in their shell who runs a bare `pithy deploy` gets the
+ * **prod** stanza published, while an argv-only reading expects the top-level one and sees nothing wrong.
+ *
+ * **Empty is unset**, because wrangler branches on `if (envName)` rather than on `!== undefined` — so a
+ * `CLOUDFLARE_ENV=` that a script exports to mean "the top level" means exactly that here too. The `??`
+ * chain is wrangler's own precedence verbatim: an `--env=` on the argv suppresses the variable, then
+ * resolves to the top level, which is what wrangler does with the empty string it parses out.
+ *
+ * Every caller that asks "what will this spawn publish" asks here. Answering it twice is how the argv
+ * and the environment come to disagree about one deploy.
+ */
+export function selectedEnvironment(args: readonly string[], processEnv: NodeJS.ProcessEnv): string | undefined {
+  const selected = environmentFromArgs(args) ?? processEnv[CLOUDFLARE_ENV_VAR];
+  return selected === undefined || selected === "" ? undefined : selected;
+}
+
 /** What one worker's deploy will actually read, before it reads it. */
 export interface EffectiveConfig {
   /** The file wrangler will resolve its configuration from. */
@@ -236,6 +271,49 @@ export interface AssertDeploysRequestedEnvironmentOptions {
   readonly env: string | undefined;
   /** The exact argv about to be handed to wrangler. */
   readonly args: readonly string[];
+  /**
+   * The environment wrangler will inherit — `process.env` at the one real call site.
+   *
+   * **Stated by the caller, with no default.** It is half of what selects the stanza
+   * ({@link selectedEnvironment}), so a gate that reached for `process.env` itself would be a gate whose
+   * answer a test cannot state and a developer's exported shell variable can change. Passing `{}` is the
+   * deliberate "nothing was inherited", and it is visible in a diff.
+   */
+  readonly processEnv: NodeJS.ProcessEnv;
+}
+
+/** What {@link refusalAction} needs to name the one thing that would fix this deploy. */
+interface RefusalActionOptions {
+  /** The Worker's own directory. */
+  readonly workerDir: string;
+  /** The declaration this deploy was held to. */
+  readonly declarationPath: string;
+  /** How the requested environment reads in a sentence. */
+  readonly named: string;
+  /** Whether wrangler reached its configuration through a build's redirect. */
+  readonly redirected: boolean;
+  /** The stanza actually selected, and `true` when the inherited variable is what selected it. */
+  readonly selected: string | undefined;
+  readonly fromVariable: boolean;
+}
+
+/**
+ * **The one move that fixes this deploy, named after the thing that actually chose the wrong stanza.**
+ *
+ * Three causes, three sentences, because an operator handed the wrong one acts on it and watches the
+ * same refusal come back — which is how a gate teaches people to route around it. A build that emitted
+ * another stanza is rebuilt; a shell that exported `CLOUDFLARE_ENV` is the shell's to fix, and an
+ * operator told to rebuild would never find it; anything else is the configuration itself.
+ */
+function refusalAction(options: RefusalActionOptions): string {
+  const { workerDir, declarationPath, named, redirected, selected, fromVariable } = options;
+  if (redirected) {
+    return `Build ${workerDir} for ${named} — ${CLOUDFLARE_ENV_VAR} is what selects the stanza — then run the deploy again.`;
+  }
+  if (fromVariable) {
+    return `${CLOUDFLARE_ENV_VAR}=${selected} in this shell is what selects that stanza. Unset it, or deploy ${selected}.`;
+  }
+  return `Deploy ${workerDir} against ${declarationPath}, or point the configuration at ${named}.`;
 }
 
 /**
@@ -258,7 +336,7 @@ export interface AssertDeploysRequestedEnvironmentOptions {
 export async function assertDeploysRequestedEnvironment(
   options: AssertDeploysRequestedEnvironmentOptions,
 ): Promise<void> {
-  const { workerDir, env, args } = options;
+  const { workerDir, env, args, processEnv } = options;
   const declarationPath = wranglerConfigPath(workerDir, env ?? LOCAL_ENVIRONMENT);
   const declaration = await readConfig(declarationPath);
   // Nothing declared, nothing to hold a deploy to. `discoverWorkers` only yields Workers with a config,
@@ -276,7 +354,10 @@ export async function assertDeploysRequestedEnvironment(
   }
 
   const wanted = identityOf(declarationPath, declaration, wranglerEnvironment(env), false);
-  const shipping = identityOf(effective.path, config, environmentFromArgs(args), effective.redirected);
+  // Both of wrangler's inputs, in wrangler's own precedence. Reading the argv alone was this gate's own
+  // hole: the argv is what `deployProject` writes, and the variable is what the operator's shell did.
+  const selected = selectedEnvironment(args, processEnv);
+  const shipping = identityOf(effective.path, config, selected, effective.redirected);
   const named = env ?? "the top-level stanza";
 
   if (wanted.name === null && wanted.environment === null) {
@@ -295,9 +376,16 @@ export async function assertDeploysRequestedEnvironment(
 
   throw new ConflictError({
     message: `${effective.path} is not ${named}'s configuration, so nothing was deployed.`,
-    action: effective.redirected
-      ? `Build ${workerDir} for ${named} — CLOUDFLARE_ENV is what selects the stanza — then run the deploy again.`
-      : `Deploy ${workerDir} against ${declarationPath}, or point the configuration at ${named}.`,
+    action: refusalAction({
+      workerDir,
+      declarationPath,
+      named,
+      redirected: effective.redirected,
+      selected,
+      // The variable is what selected it exactly when the argv named nothing and something was selected
+      // anyway. Anything else would tell an operator to unset a variable they never set.
+      fromVariable: environmentFromArgs(args) === undefined && selected !== undefined,
+    }),
     // The effective path is repeated here rather than left to `message`, because a deploy row and a
     // `--json` payload carry the `detail` alone — and the file about to be shipped is the whole
     // diagnostic. A refusal an operator cannot act on is a refusal they will route around.

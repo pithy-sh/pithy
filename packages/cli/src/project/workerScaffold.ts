@@ -127,11 +127,21 @@ ${envStanzas}
       // and that template are the project's two Worker producers, and only one of them is ever the file
       // somebody remembers to edit — which is how the pins here fell a major version behind.
       engines: { node: ">=22" },
+      // **`--config wrangler.jsonc`, and it is not decoration (#579).** `vite build` writes a
+      // `.wrangler/deploy/config.json` that redirects the next `wrangler deploy` to its flattened output,
+      // and wrangler searches for that file **upwards** from the Worker's directory — so
+      // `bun run build && bun run deploy:staging` shipped a dev-composed Worker as staging, and even a
+      // Worker with no front end can be redirected by a sibling's build higher in the tree. An explicit
+      // `--config` beats the redirect, so these scripts deploy this Worker's tracked configuration or
+      // nothing. Once the Worker has a front end they are the wrong tool and say so by failing: the
+      // tracked `assets` stanza carries no `directory`, because only the build knows where the client
+      // output landed. `pithy deploy --env <name>` is what ships that Worker — it builds what it
+      // deploys, and refuses anything that is not the environment asked for.
       scripts: {
         dev: "wrangler dev",
-        deploy: "wrangler deploy",
-        "deploy:staging": "wrangler deploy --env staging",
-        "deploy:prod": "wrangler deploy --env prod",
+        deploy: "wrangler deploy --config wrangler.jsonc",
+        "deploy:staging": "wrangler deploy --config wrangler.jsonc --env staging",
+        "deploy:prod": "wrangler deploy --config wrangler.jsonc --env prod",
       },
       // `zod`, `kysely` and `hono` beside the kit, because every capability declares them as
       // `peerDependencies` — one copy is one type (#477) — and a peer is a requirement the *consumer*

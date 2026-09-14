@@ -37,3 +37,19 @@ so, and an operator was told to check a route while the wrong Worker sat on a pu
 `@pithy-sh/vite` also resolves its environment from `CLOUDFLARE_ENV` when `ENVIRONMENT` is unset, so a
 hand-run or CI `CLOUDFLARE_ENV=staging vite build` no longer inlines dev projections beside staging's
 Worker config.
+
+**The gate reads both of wrangler's inputs, not just the argv.** wrangler resolves the environment as
+`args.env ?? CLOUDFLARE_ENV`, so an operator with `CLOUDFLARE_ENV=prod` exported in their shell who runs
+a bare `pithy deploy` publishes the **prod** stanza — and a gate reading the argv alone expects the
+top-level one and approves it, blessing exactly the class of mistake it exists to refuse. The same two
+inputs are read here now, in the same precedence, and a refusal names the variable when the variable is
+what selected the stanza, because an operator told to rebuild would never find it.
+
+**A scaffolded Worker's deploy scripts name the Worker's own configuration.** `vite build` leaves a
+`.wrangler/deploy/config.json` redirect, and wrangler searches for it upwards — so
+`bun run build && bun run deploy:staging` reproduced this defect in a script the kit wrote, and a Worker
+with no front end could be redirected by a sibling's build higher in the tree. `wrangler deploy --config
+wrangler.jsonc --env <name>` deploys the tracked file or nothing. Once a Worker has a front end those
+scripts fail rather than ship, because the tracked `assets` stanza carries no `directory` — that Worker
+is `pithy deploy`'s to ship, which builds what it deploys and holds the result to the environment asked
+for.
