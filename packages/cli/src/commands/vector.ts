@@ -12,6 +12,7 @@ import { loadProject, projectCloudflareAccount, requireProjectName } from "../pr
 import { ENV_ARG, requireEnvironment } from "../project/environment";
 import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
+import { stanzaFor } from "../project/wranglerInheritance";
 import { assertResetConfirmed, resetConfirmPhrase } from "../seed/safety";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -186,18 +187,11 @@ async function recordProvisioned(
   const value = JSON.stringify(toProvisionRecord(result));
 
   const config = (await readWranglerConfig(workerDir)) as WranglerVarsConfig;
-  if (env === "dev") {
-    config.vars ??= {};
-    config.vars[VECTOR_PROVISIONED_VAR] = value;
-  } else {
-    config.env ??= {};
-    config.env[env] ??= {};
-    const stanza = config.env[env];
-    if (stanza) {
-      stanza.vars ??= {};
-      stanza.vars[VECTOR_PROVISIONED_VAR] = value;
-    }
-  }
+  // The one reader (#581). `dev` comes back as the top level, and an `env.<name>` it creates carries what
+  // an environment does not inherit — so the drift record never lands in a stanza that holds it alone.
+  const stanza = stanzaFor(config, env) as { vars?: Record<string, string> };
+  stanza.vars ??= {};
+  stanza.vars[VECTOR_PROVISIONED_VAR] = value;
   await writeWranglerConfig(workerDir, config);
 }
 

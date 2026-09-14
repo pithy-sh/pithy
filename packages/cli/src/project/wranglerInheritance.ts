@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { InternalError } from "@pithy-sh/core/src/error/pithyError";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import { ENVIRONMENT_VAR } from "@pithy-sh/core/src/worker/identity";
+
 /**
  * **What an `env.<name>` stanza does not inherit from the top level of a `wrangler.jsonc`** (#581).
  *
@@ -221,4 +225,84 @@ export function unrepeatedKeys(config: unknown): UnrepeatedKey[] {
 export function describeUnrepeatedKey(found: UnrepeatedKey): string {
   const without = found.carries.length > 0 ? found.carries.join(", ") : "it";
   return `${found.key} is at the top level and not in env.${found.env}. Environments do not inherit it, so ${found.env} deploys without ${without}. Repeat it in env.${found.env}.`;
+}
+
+/**
+ * **The value a brand-new stanza starts that key at** — the top level's, with every list of entries
+ * emptied.
+ *
+ * Repeating a key is not the same as duplicating its value, and the difference is the whole of this
+ * function. `vars` and `version_metadata` say the same thing in every environment, so they come down
+ * verbatim. A `d1_databases` entry does not: it names one Cloudflare database by id, and carrying dev's
+ * id into a stanza for `staging` would point staging at the database dev writes to. That is a *worse*
+ * defect than the absent binding this module exists to fix — an absent binding fails loudly on the first
+ * request, a shared one corrupts quietly — so a list starts empty and the writer fills in this
+ * environment's own entries.
+ *
+ * **Shape, not a table of key names.** "A list of entries is a list of this environment's resources" is
+ * read off the value, so it holds for the forty-one keys wrangler has today and for the one it adds next.
+ * The nested pass is for the two shapes that wrap their list in an object — `durable_objects.bindings`,
+ * `queues.producers` / `.consumers` — which are lists by any other name.
+ */
+function seedValue(value: unknown): unknown {
+  if (Array.isArray(value)) return [];
+  const record = asRecord(value);
+  if (record === null) return value;
+  return Object.fromEntries(
+    Object.entries(record).map(([key, entry]) => [key, Array.isArray(entry) ? [] : structuredClone(entry)]),
+  );
+}
+
+/** A config far enough to reach its stanzas. The caller casts back to whatever slice it cares about. */
+interface StanzaHost {
+  env?: Record<string, Record<string, unknown> | undefined>;
+  [key: string]: unknown;
+}
+
+/**
+ * **The one way to get at an environment's stanza — and the only place a stanza is created.**
+ *
+ * #581 taught two of the kit's stanza writers to repeat what an environment does not inherit and missed
+ * the third, `provision/wranglerEnv.ts`, which is the one every `pithy provision` and every feature deploy
+ * goes through. Its stanzas repeated nothing, so a feature's Worker deployed with no `vars` at all — and
+ * four more modules had the same three lines. Six writers of one thing is the defect; this is the one
+ * thing, and `ci/envStanzaWriters.test.ts` is what keeps a seventh from being written.
+ *
+ * A stanza that is already there is handed back untouched — **an adopter's stanza is theirs** (#142), and a
+ * key they deliberately left out is a decision, not an omission. `pithy doctor` reports it; nothing here
+ * writes over it. Only a stanza that did not exist a moment ago is seeded, because that one has no author
+ * to disagree with.
+ *
+ * **`dev` is the top level.** Wrangler has no `env.dev` — the local environment *is* the outer object
+ * ({@link LOCAL_ENVIRONMENT}) — so this hands it back, and a caller that loops over every environment a
+ * project has needs no branch of its own. Three writers had spelled that branch out for themselves; the
+ * fourth would have got it wrong.
+ *
+ * The seeded `ENVIRONMENT` var is this environment's own, where the top level stamps one at all. Copying
+ * `ENVIRONMENT: "dev"` into `env.staging` would leave every composition in staging reporting itself as dev
+ * — repeating the key while breaking the thing it is read for. Where an adopter stamps no `ENVIRONMENT`,
+ * none is invented.
+ *
+ * Mutates `config` and returns the live stanza, so the caller goes on writing into it as it always did.
+ */
+export function stanzaFor(config: unknown, env: string): Record<string, unknown> {
+  const host = asRecord(config) as StanzaHost | null;
+  if (host === null) {
+    throw new InternalError({
+      message: "A wrangler.jsonc stanza could not be read.",
+      detail: `stanzaFor was asked for env.${env} of a config that is not an object.`,
+    });
+  }
+  if (env === LOCAL_ENVIRONMENT) return host;
+  host.env ??= {};
+  // `asRecord`, not `!== undefined`: a hand-edited `"staging": null` is a stanza in name only, and handing
+  // it back would put every caller's `stanza.vars ??= {}` on a null. It is treated as the absence it is.
+  const existing = asRecord(host.env[env]);
+  if (existing !== null) return existing;
+  const seeded: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(topLevelKeysToRepeat(host))) seeded[key] = seedValue(value);
+  const vars = asRecord(seeded.vars);
+  if (vars !== null && typeof vars[ENVIRONMENT_VAR] === "string") vars[ENVIRONMENT_VAR] = env;
+  host.env[env] = seeded;
+  return seeded;
 }

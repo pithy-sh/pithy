@@ -4,10 +4,12 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import type { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import {
   describeUnrepeatedKey,
   NOT_INHERITED_BY_ENVIRONMENTS,
+  stanzaFor,
   topLevelKeysToRepeat,
   unrepeatedKeys,
 } from "./wranglerInheritance";
@@ -225,5 +227,90 @@ describe("topLevelKeysToRepeat", () => {
       [...NOT_INHERITED_BY_ENVIRONMENTS, "observability", "triggers", "name", "main"].map((key) => [key, { a: 1 }]),
     );
     expect(Object.keys(topLevelKeysToRepeat(everything)).sort()).toEqual([...NOT_INHERITED_BY_ENVIRONMENTS].sort());
+  });
+});
+
+/**
+ * **The one place a stanza is created**, and what a created one starts out holding.
+ *
+ * #581 taught two of the kit's stanza writers to repeat what an environment does not inherit and missed
+ * the third — `provision/wranglerEnv.ts`, the one every `pithy provision` and every feature deploy goes
+ * through, which built its stanza as `config.env[key] ?? {}` and filled in ids. Four more modules had the
+ * same three lines. `ci/envStanzaWriters.test.ts` is what keeps a seventh from being written.
+ */
+describe("stanzaFor", () => {
+  const starter = () => ({
+    name: "acme-api",
+    observability: { enabled: true },
+    vars: { ENVIRONMENT: "dev", PROJECT: "acme", WORKER: "api" },
+    version_metadata: { binding: "CF_VERSION_METADATA" },
+    d1_databases: [{ binding: "DB", database_name: "acme-dev-db", database_id: "dev-uuid" }],
+    env: {} as Record<string, Record<string, unknown> | undefined>,
+  });
+
+  test("goes without nothing the top level declares", () => {
+    // The invariant, read back by the check that reports violations of it — not a list of key names.
+    const config = starter();
+    stanzaFor(config, "staging");
+    expect(unrepeatedKeys(config)).toEqual([]);
+  });
+
+  test("names its own environment rather than carrying dev's", () => {
+    const config = starter();
+    expect(stanzaFor(config, "staging").vars).toEqual({ ENVIRONMENT: "staging", PROJECT: "acme", WORKER: "api" });
+  });
+
+  test("invents no ENVIRONMENT where the top level stamps none", () => {
+    const config = { vars: { API_BASE: "https://acme.test" } };
+    expect(stanzaFor(config, "staging").vars).toEqual({ API_BASE: "https://acme.test" });
+  });
+
+  test("starts every list empty, so a stanza never binds the resource another environment writes to", () => {
+    // The reason a stanza is seeded rather than copied. An absent `d1_databases` fails staging's first
+    // request; a copied one points staging at the database dev writes to, and nothing ever says so.
+    const config = starter();
+    expect(stanzaFor(config, "staging").d1_databases).toEqual([]);
+  });
+
+  test("empties a list wrapped in an object too", () => {
+    // `durable_objects.bindings`, `queues.producers` — lists by another name, and a `script_name` inside
+    // one points at the Worker of the environment it was copied from.
+    const config = {
+      durable_objects: { bindings: [{ name: "ROOM", class_name: "Room", script_name: "acme-api" }] },
+      env: {} as Record<string, Record<string, unknown> | undefined>,
+    };
+    expect(stanzaFor(config, "prod").durable_objects).toEqual({ bindings: [] });
+  });
+
+  test("leaves a stanza that is already there exactly as it is", () => {
+    // An adopter's stanza is theirs (#142). A key they left out is a decision; `pithy doctor` reports it
+    // and nothing here writes over it.
+    const config = starter();
+    const theirs = { name: "acme-prod-api" };
+    config.env.prod = theirs;
+    expect(stanzaFor(config, "prod")).toBe(theirs);
+    expect(theirs).toEqual({ name: "acme-prod-api" });
+  });
+
+  test("reads a null stanza as the absence it is", () => {
+    const config = { ...starter(), env: { prod: null } as unknown as Record<string, Record<string, unknown>> };
+    expect(stanzaFor(config, "prod").version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });
+  });
+
+  test("answers dev with the top level, because wrangler has no env.dev", () => {
+    const config = starter();
+    expect(stanzaFor(config, "dev")).toBe(config);
+    expect(config.env).toEqual({});
+  });
+
+  test("refuses a config it cannot read rather than inventing one", () => {
+    expect(() => stanzaFor(null, "staging")).toThrow(/stanza could not be read/);
+    // And the throw-site context says which environment, in `detail` rather than in the message.
+    try {
+      stanzaFor("wrangler.jsonc", "staging");
+      expect.unreachable("stanzaFor accepted a string as a config");
+    } catch (error) {
+      expect((error as PithyError).payload.detail).toContain("env.staging");
+    }
   });
 });

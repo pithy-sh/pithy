@@ -8,6 +8,7 @@ import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provis
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { FeatureResource } from "../feature/manifest";
+import { unrepeatedKeys } from "../project/wranglerInheritance";
 import { featureConfigPath } from "./featureConfig";
 import { applyProvisionedEnv } from "./wranglerEnv";
 
@@ -282,5 +283,114 @@ describe("applyProvisionedEnv and a declared environment name", () => {
 
     const config = parse(await readFile(wranglerPath, "utf8")) as unknown as Parsed;
     expect(config.env.staging?.name).toBe("replay-board-staging");
+  });
+});
+
+/**
+ * **A stanza provisioning creates repeats what an environment does not inherit** (#581).
+ *
+ * #581 taught the two scaffolders — `project/scaffold.ts` and `project/workerScaffold.ts` — and this is
+ * the third writer of the same thing, the one every `pithy provision` and every feature deploy goes
+ * through. Its stanza is created empty and filled with ids, so a `feature` stanza (which never pre-exists,
+ * `env.feature` being unwritable in a tracked config) repeated nothing: the Worker deployed with no `vars`
+ * at all — no `ENVIRONMENT`, no `PROJECT`, no `WORKER` — and no `CF_VERSION_METADATA`.
+ *
+ * Stated as the invariant rather than as a list of key names. `unrepeatedKeys` reads the config the writer
+ * produced and answers for **every** non-inherited key it declares, so a wrangler release that adds one
+ * reaches this assertion without anybody coming back to extend it.
+ */
+describe("a stanza applyProvisionedEnv creates", () => {
+  let dir: string;
+  let wranglerPath: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-envseed-"));
+    wranglerPath = join(dir, "wrangler.jsonc");
+    // The shape `pithy init` stamps: identity vars and the version binding at the top level, an empty
+    // binding array, and no stanza for the environment about to be provisioned.
+    await writeFile(
+      wranglerPath,
+      JSON.stringify(
+        {
+          name: "replay-board",
+          vars: { ENVIRONMENT: "dev", PROJECT: "replay", WORKER: "board" },
+          version_metadata: { binding: "CF_VERSION_METADATA" },
+          d1_databases: [{ binding: "DB", database_name: "replay-dev-db", database_id: "dev-uuid" }],
+        },
+        null,
+        2,
+      ),
+    );
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const staging = environmentScope("replay", "staging");
+
+  test("goes without nothing the top level declares", async () => {
+    await applyProvisionedEnv({
+      workerDir: dir,
+      worker: "replay-board",
+      scope: staging,
+      resources: [{ kind: "d1", binding: "DB", name: "replay-staging-db", id: "staging-uuid" }],
+      services: [],
+      secrets: [],
+    });
+
+    const config = parse(await readFile(wranglerPath, "utf8"));
+    expect(unrepeatedKeys(config)).toEqual([]);
+  });
+
+  test("names its own environment rather than carrying dev's", async () => {
+    await applyProvisionedEnv({
+      workerDir: dir,
+      worker: "replay-board",
+      scope: staging,
+      resources: [],
+      services: [],
+      secrets: [],
+    });
+
+    const config = parse(await readFile(wranglerPath, "utf8")) as unknown as {
+      env: Record<string, { vars?: Record<string, string> }>;
+    };
+    expect(config.env.staging?.vars).toEqual({ ENVIRONMENT: "staging", PROJECT: "replay", WORKER: "board" });
+  });
+
+  test("binds this environment's database and never dev's", async () => {
+    // The reason a new stanza is seeded rather than copied: a `d1_databases` entry carried down verbatim
+    // would point staging at the database dev writes to, which is worse than the absent binding it fixes.
+    await applyProvisionedEnv({
+      workerDir: dir,
+      worker: "replay-board",
+      scope: staging,
+      resources: [{ kind: "d1", binding: "DB", name: "replay-staging-db", id: "staging-uuid" }],
+      services: [],
+      secrets: [],
+    });
+
+    const config = parse(await readFile(wranglerPath, "utf8")) as unknown as Parsed;
+    expect(config.env.staging?.d1_databases).toEqual([
+      { binding: "DB", database_name: "replay-staging-db", database_id: "staging-uuid" },
+    ]);
+  });
+
+  test("leaves a feature's generated stanza carrying the vars its Worker reads", async () => {
+    const feature = featureScope({ project: "replay", issue: "69", slug: "demo" });
+    await applyProvisionedEnv({
+      workerDir: dir,
+      worker: "replay-board",
+      scope: feature,
+      resources: [],
+      services: [],
+      secrets: [],
+    });
+
+    const config = parse(await readFile(featureConfigPath(dir), "utf8"));
+    expect(unrepeatedKeys(config)).toEqual([]);
+    expect((config as unknown as { env: Record<string, { vars?: Record<string, string> }> }).env.feature?.vars).toEqual(
+      { ENVIRONMENT: "feature", PROJECT: "replay", WORKER: "board" },
+    );
   });
 });

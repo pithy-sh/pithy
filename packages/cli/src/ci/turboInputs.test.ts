@@ -793,6 +793,8 @@ describe("a gate is keyed on what it reads", () => {
     //
     // Everything not named here is covered by the tree key, which the first two tests hold turbo to.
     const PACKAGE_SCOPED: Record<string, string> = {
+      "envStanzaWriters.test.ts":
+        "It sweeps `packages/cli/src` for modules that write an `env.<name>` stanza into a wrangler config, and the population really is one package's: `@pithy-sh/cli` is the only thing in this repository that edits an adopter's `wrangler.jsonc`. Turbo's default inputs are already exactly right for it.",
       "jsoncWriters.test.ts":
         "It sweeps `packages/cli/src` for modules that write JSONC, which is inside its own package. Turbo's default inputs are already exactly right for it.",
       "environmentSkips.test.ts":

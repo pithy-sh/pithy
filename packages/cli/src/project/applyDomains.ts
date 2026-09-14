@@ -3,6 +3,7 @@
 
 import { DOMAIN_ENVIRONMENTS, domainFor, originFor, type WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { readWranglerConfig, writeWranglerConfig } from "./wrangler";
+import { stanzaFor } from "./wranglerInheritance";
 
 /**
  * Generate a Worker's `routes` and `vars.BASE_URL` from its `domains` declaration.
@@ -136,15 +137,16 @@ export async function applyDomains(workerDir: string, domains: WorkerDomains): P
     const domain = domainFor(domains, env);
     if (!domain) continue;
 
-    // `dev` is never in `DOMAIN_ENVIRONMENTS`, so this only ever reaches an `env.<name>` stanza — which is
-    // also the only place the values would be read from, since env stanzas replace the top level.
-    config.env ??= {};
     // Structural, before anything is touched. `JSON.stringify` sees none of comment-json's symbol-keyed
     // comment properties, which is exactly right here: a run that changes no value changed nothing, and
     // an adopter's comments are not a diff.
-    const before = JSON.stringify(config.env[env] ?? null);
-    config.env[env] ??= {};
-    const stanza = config.env[env];
+    const before = JSON.stringify(config.env?.[env] ?? null);
+    // `dev` is never in `DOMAIN_ENVIRONMENTS`, so this only ever reaches an `env.<name>` stanza — which is
+    // also the only place the values would be read from, since env stanzas replace the top level. Through
+    // the one reader, so a stanza this creates carries what an environment does not inherit (#581): a
+    // Worker that first got a route here would otherwise be published with no `vars` and no version
+    // binding, from a stanza holding a route and nothing else.
+    const stanza = stanzaFor(config, env) as DomainStanza;
 
     upsertRoute(stanza, domain.pattern, domain.zone);
     stanza.vars ??= {};
