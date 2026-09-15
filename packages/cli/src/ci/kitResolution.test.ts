@@ -121,7 +121,7 @@ const RESIDUE_PACKAGES: Record<string, string> = {
   "@pithy-sh/email":
     "The suppressions migration and the template engine. The CLI writes rows and renders samples the adopter's Worker then reads with its own copy.",
   "@pithy-sh/turnstile":
-    "`TURNSTILE_SECRET_NAME` is the D1 row key the adopter's Worker reads through its own copy while `pithy turnstile provision` writes it through the CLI's — the join-key exposure in its plainest form. `isTurnstileCapability` is structural (`name === \"turnstile\"` plus a config field), so there is no cross-realm identity bug beside it.",
+    "`TURNSTILE_SECRET_NAME` is the D1 row key the adopter's Worker reads through its own copy while `pithy turnstile provision` writes it through the CLI's — the join-key exposure in its plainest form. `isTurnstileCapability` is structural (`name === \"turnstile\"` plus a config field), so there is no cross-realm identity bug beside it. The sitekey writer and doctor's `Turnstile:` block read which environments have a sitekey slot off the CLI's `TurnstileSitekeys`, while the build projects through the adopter's: a slot added in a newer kit is reported as unreachable until the CLI is upgraded too (#590). The writer's read-back goes through the adopter's config, so what it proves is the adopter's copy.",
   "@pithy-sh/ui-react":
     "`TEMPLATE_DIR` and the screen manifests. The screens are **copied** into the adopter's repo rather than composed (CLAUDE.md §I18n), so the CLI's copy is the correct source and this one is residue by shape only.",
 };
@@ -148,6 +148,7 @@ const STATIC_RESIDUE: Record<string, readonly string[]> = {
   "capabilities/storageProvisioner.ts": ["@pithy-sh/secrets"],
   "capabilities/storeSecretWrites.ts": ["@pithy-sh/secrets"],
   "capabilities/turnstileProvisioner.ts": ["@pithy-sh/secrets", "@pithy-sh/turnstile"],
+  "capabilities/turnstileSitekeys.ts": ["@pithy-sh/turnstile"],
   "commands/email.ts": ["@pithy-sh/email", "@pithy-sh/secrets"],
   "commands/media.ts": ["@pithy-sh/secrets"],
   "commands/payments.ts": ["@pithy-sh/secrets"],
@@ -164,6 +165,7 @@ const STATIC_RESIDUE: Record<string, readonly string[]> = {
   "devSecrets/targets.ts": ["@pithy-sh/secrets"],
   "doctor/devSecrets.ts": ["@pithy-sh/secrets"],
   "doctor/secretBindings.ts": ["@pithy-sh/secrets"],
+  "doctor/turnstileSitekeys.ts": ["@pithy-sh/turnstile"],
   "feature/destroy.ts": ["@pithy-sh/secrets"],
   "feature/provision.ts": ["@pithy-sh/secrets"],
   "migrations/run.ts": ["@pithy-sh/secrets"],

@@ -19,6 +19,7 @@ import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/acc
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
+import { resolveCapabilityWorker } from "../project/capabilityWorker";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireTeardownEnvironment, TEARDOWN_ENV_ARG } from "../project/environment";
 import {
@@ -30,7 +31,6 @@ import {
   requireReadyEnvironments,
 } from "../project/environmentReadiness";
 import { confineTeardown } from "../project/teardown";
-import { projectCapabilities, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -55,21 +55,6 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
   // `env` selects the audit database only, and defaults to `dev`: this command spans environments, so no
   // single value is true for the run; each event states the environment it acted on.
   return createProjectCliAudit({ projectDir, accountId, apiToken });
-}
-
-/** Load the storage capability's resolved config from `pithy.config.ts`. */
-async function loadStorageConfig(projectDir: string) {
-  const { isStorageCapability } = await loadStorage(projectDir);
-  // Capabilities live in each Worker's `apps/<name>/pithy.config.ts`; provisioning is one
-  // project-wide decision, so the first Worker composing this capability provides it.
-  const capability = (await resolveWorkers({ projectDir }).then(projectCapabilities)).find(isStorageCapability);
-  if (!capability) {
-    throw new ValidationError({
-      message: "The storage capability is not configured.",
-      action: "Add `storage({ ... })` to pithy.config.ts (run `pithy add storage`).",
-    });
-  }
-  return capability.storageConfig;
 }
 
 /**
@@ -201,12 +186,17 @@ const provision = defineCommand({
       const { account, accountId, apiToken, storeId, r2Raw } = loadCloudflareCreds(
         await projectCloudflareAccount(projectDir),
       );
-      const storageConfig = await loadStorageConfig(projectDir);
       const r2Credentials = resolveR2Credentials(args["r2-access-key-id"], args["r2-secret-access-key"], r2Raw);
-      const appWorker = await resolveSingleWorker({
+      // One resolution for the config and every write: the bucket and sweep are provisioned for the Worker
+      // whose stanza gets the binding, never from a sibling that composes storage (#590 review).
+      const { isStorageCapability } = await loadStorage(projectDir);
+      const { worker: appWorker, capability } = await resolveCapabilityWorker({
         projectDir,
         ...(args.worker !== undefined ? { worker: args.worker } : {}),
+        name: "storage",
+        is: isStorageCapability,
       });
+      const storageConfig = capability.storageConfig;
       // Which environments this run can act on, decided once and before a single bucket exists. An
       // environment whose app database is not provisioned yet is skipped and reported, never fatal — the
       // old refusal fired from inside the fan-out, after every environment's bucket and secret (#512).

@@ -337,6 +337,28 @@ describe("runAdd", () => {
     expect(await readFile(join(worker, "pithy.config.ts"), "utf8")).toContain('billingSubject: "user",');
   });
 
+  test("a re-run over a registration that spreads its options in is not refused for a required option", async () => {
+    // The spread may carry `billingSubject`, and the text cannot say it does not. `add` asks the question
+    // `upgrade` asks, through the one answer (`statesKey`), so it neither refuses nor rewrites (#590 review).
+    const path = join(worker, "pithy.config.ts");
+    const scaffolded = await readFile(path, "utf8");
+    const marker = "    // pithy:capabilities";
+    expect(scaffolded).toContain(marker);
+    await writeFile(path, scaffolded.replace(marker, `    payments({ ...billing }),\n${marker}`));
+
+    await runAdd({
+      account: null,
+      projectDir: dir,
+      workerDir: worker,
+      project: "acme",
+      capability: "payments",
+      install: installManifest(requiredManifest),
+      migrate: async () => noMigrations,
+    });
+
+    expect(await readFile(path, "utf8")).not.toContain("billingSubject");
+  });
+
   test("mints the secrets dev master key and reports it — `pithy dev` serves the moment add finishes", async () => {
     const secrets = CapabilityManifest.parse({
       name: "secrets",

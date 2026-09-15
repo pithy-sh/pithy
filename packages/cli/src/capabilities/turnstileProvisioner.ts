@@ -11,9 +11,12 @@ import type { SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { TurnstileMode } from "@pithy-sh/turnstile/src/config/config";
 import {
+  isStrandedSitekeyVar,
   type ManagedTurnstileEnv,
+  type PlannedSitekeys,
+  type ProvisionedSitekeys,
   productionWidgetName,
-  sitekeyVarName,
+  type StrandedSitekeyVar,
   type TurnstileDeprovisioner,
   type TurnstileProvisioner,
 } from "@pithy-sh/turnstile/src/provision/provisionTurnstile";
@@ -24,13 +27,14 @@ import {
 } from "@pithy-sh/turnstile/src/secret/registry";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { answerOnConfirmedAccount, type ConfirmedAccount, unconfirmedAccount } from "../cloudflare/accountAnswer";
-import { removeBootstrapVars } from "../devSecrets/bootstrapVars";
+import { readBootstrapVars, removeBootstrapVars } from "../devSecrets/bootstrapVars";
 import { writeDevVars } from "../devSecrets/devVars";
 import { removeDevSecrets, writeDevSecrets } from "../devSecrets/file";
 import { resolveDevSecretsFile } from "../devSecrets/location";
 import { renderDevVarsNotes } from "../devSecrets/report";
-import { readWranglerConfig, type WranglerEnvVars, writeWranglerConfig } from "../project/wrangler";
-import { stanzaFor } from "../project/wranglerInheritance";
+import { envStanzas, type WranglerStanza } from "../project/bindingEntries";
+import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
+import { assertTurnstileSitekeysWritable, writeTurnstileSitekeys } from "./turnstileSitekeys";
 
 /** The message of an unknown thrown value, for surfacing both legs of a failed upsert. */
 function errorMessage(error: unknown): string {
@@ -84,14 +88,13 @@ export interface CloudflareTurnstileProvisionerOptions {
    * teardown deletes — another project's widget (docs/NAMING.md).
    */
   project: string;
-  /**
-   * The project root — owner of the one shared `.dev.vars` every worker symlinks to, so a dev sitekey
-   * written here reaches every worker at once.
-   */
+  /** The project root — owner of `apps/`, and the key the dev secrets file and `dev.json` are found by. */
   projectDir: string;
   /**
-   * The web-facing Worker's directory — its `wrangler.jsonc` is where the per-environment sitekey vars are
-   * written. Per-Worker, because the widget is bound to the domain *that* Worker serves (`BASE_URL`).
+   * The web-facing Worker's directory — the `--worker` target, and the only Worker this writes. Its
+   * `pithy.config.ts` is where the sitekeys are written, because that is what its front-end build projects
+   * from; its `wrangler.jsonc` is where an older provisioner stranded sitekey vars. Per-Worker, because the
+   * widget is bound to the domain *that* Worker serves.
    */
   workerDir: string;
   /** The secrets manager dispatcher — writes/deletes the secret in a deployed env's managed store. */
@@ -112,6 +115,57 @@ export interface CloudflareTurnstileProvisionerOptions {
   notes?: (line: string) => void;
   /** Every environment this project declares, from the root `pithy.config.ts` — the fan-out set for a `global` secret. */
   environments: DeclaredEnvironments | readonly string[];
+}
+
+/** The stderr sink a delivery note goes to when a caller names none. See `notes` above. */
+function stderrNotes(line: string): void {
+  process.stderr.write(`${line}\n`);
+}
+
+/**
+ * Remove every `TURNSTILE_SITEKEY_*` var #53's provisioner left behind, from the one Worker's `wrangler.jsonc`
+ * (every stanza, the top level included) and from the project's `dev.json` — and regenerate the Worker
+ * `.dev.vars` files when `dev.json` changed, so the stale line leaves the file wrangler reads.
+ *
+ * **Shared by provision and teardown**, because both have to leave the same state: no sitekey anywhere but
+ * the registration. A var is recognized by {@link isStrandedSitekeyVar} — by prefix, so one left for a mode
+ * the config has since dropped is found too.
+ */
+async function removeStranded(
+  projectDir: string,
+  workerDir: string,
+  notes: (line: string) => void,
+): Promise<StrandedSitekeyVar[]> {
+  const removed: StrandedSitekeyVar[] = [];
+  const seen = new Set<string>();
+  const record = (name: string, environment: string) => {
+    const key = `${environment}\u0000${name}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    removed.push({ name, environment });
+  };
+
+  const config = (await readWranglerConfig(workerDir)) as WranglerStanza & { vars?: Record<string, unknown> };
+  let wranglerChanged = false;
+  for (const { env, stanza } of envStanzas(config)) {
+    const vars = (stanza as { vars?: Record<string, unknown> }).vars;
+    if (vars === undefined || vars === null || typeof vars !== "object") continue;
+    for (const name of Object.keys(vars).filter(isStrandedSitekeyVar)) {
+      delete vars[name];
+      record(name, env);
+      wranglerChanged = true;
+    }
+  }
+  if (wranglerChanged) await writeWranglerConfig(workerDir, config);
+
+  const devNames = Object.keys(await readBootstrapVars(projectDir)).filter(isStrandedSitekeyVar);
+  if (devNames.length > 0) {
+    await removeBootstrapVars(projectDir, devNames);
+    for (const name of devNames) record(name, "dev");
+    const wrote = await writeDevVars({ projectDir, values: {} });
+    for (const note of renderDevVarsNotes(wrote)) notes(note);
+  }
+  return removed;
 }
 
 /**
@@ -144,7 +198,7 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
     this.#dispatcher = options.dispatcher;
     this.#environments = options.environments;
     this.#audit = options.audit ?? (async () => {});
-    this.#notes = options.notes ?? ((line: string) => void process.stderr.write(`${line}\n`));
+    this.#notes = options.notes ?? stderrNotes;
   }
 
   /**
@@ -176,26 +230,18 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
   }
 
   /**
-   * The dev widget's secret and its public sitekeys, each into the file its namespace belongs to.
+   * The dev widget's secret, into the dev secrets file.
    *
    * **The secret is a `d1` registry secret, so it goes into the dev secrets file (#149)** — through
    * `writeDevSecrets`, the one funnel every dev secret passes through, at `<config>/<project>/` since
-   * #156. Writing it straight into `.dev.vars` bypassed the format and the mode both, and made this the
-   * fifth producer of the same defect. `replace`, because Cloudflare issued this value: keeping an older
-   * one because a value is already there leaves the project verifying against a widget it no longer has.
+   * #156. `replace`, because Cloudflare issued this value: keeping an older one because a value is already
+   * there leaves the project verifying against a widget it no longer has.
    *
-   * The sitekeys are public, `UPPER_SNAKE`, and wrangler's — they stay in `.dev.vars`, and they are now
-   * the only thing this writes there. The secret itself was copied alongside them until #153, because
-   * dev resolved every secret from its binding whatever its backend; dev reads the seeded row now, so
-   * the copy is gone and a public sitekey no longer shares a file with a widget secret.
-   *
-   * **And what that write says is said, not dropped.** This call took no result at all, so a provision
-   * announced a delivery that may never have happened: a Worker with a `.dev.vars` of its own gets no
-   * sitekey and no secret, and `pithy turnstile provision` still printed "Test secret wired for dev".
-   * The same defect fixed at `pithy add`'s two call sites, in the third one nobody checked — three
-   * producers again, so it goes through the one renderer they share.
+   * **No sitekey is written here any more (#590).** This used to record the dev sitekey in `dev.json` and
+   * regenerate `.dev.vars` with it, where nothing read it: the front end gets its sitekey from the build,
+   * which reads `pithy.config.ts`. {@link writeSitekeys} writes it there, for every environment at once.
    */
-  async writeDev(secret: TurnstileSecrets, sitekeys: Record<string, string>): Promise<void> {
+  async writeDev(secret: TurnstileSecrets): Promise<void> {
     // Through the registry entry, like every other writer: the entry is what says whether this
     // secret's destination takes an envelope or the value itself (#323), and — since #535 — whether
     // the value inside it is validated before a byte is written. The object, never a serialization of
@@ -205,10 +251,6 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
     const envelope = initialDevSecret(entry ?? {}, secret);
     const path = await resolveDevSecretsFile(this.#projectDir);
     await writeDevSecrets(path, { [TURNSTILE_SECRET_NAME]: envelope }, { replace: true });
-    // The sitekeys alone, through `writeDevVars` — so each is quoted for dotenv and reaches the Worker's
-    // own directory rather than the project root alone. The secret goes to the store, on the next seed.
-    const wrote = await writeDevVars({ projectDir: this.#projectDir, values: { ...sitekeys } });
-    for (const note of renderDevVarsNotes(wrote)) this.#notes(note);
   }
 
   /**
@@ -250,8 +292,32 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
     }
   }
 
-  async writeManagedSitekeys(env: ManagedTurnstileEnv, sitekeys: Record<string, string>): Promise<void> {
-    await editEnvVars(this.#workerDir, env, (vars) => Object.assign(vars, sitekeys));
+  /**
+   * Every environment's sitekey, into the target Worker's `turnstile(...)` registration — the build input
+   * its front end projects from. Through {@link writeTurnstileSitekeys}, which writes string literals only
+   * and refuses unless the loaded config then resolves exactly these values.
+   */
+  async writeSitekeys(sitekeys: ProvisionedSitekeys): Promise<void> {
+    await writeTurnstileSitekeys({ workerDir: this.#workerDir, sitekeys });
+  }
+
+  /** See {@link removeStranded}. */
+  async removeStrandedSitekeyVars(): Promise<StrandedSitekeyVar[]> {
+    return removeStranded(this.#projectDir, this.#workerDir, this.#notes);
+  }
+
+  /**
+   * The questions {@link writeSitekeys} refuses on, asked of the target Worker's config with nothing written —
+   * through {@link assertTurnstileSitekeysWritable}, the writer's own planning step.
+   */
+  async assertSitekeysWritable(sitekeys: PlannedSitekeys): Promise<void> {
+    await assertTurnstileSitekeysWritable({ workerDir: this.#workerDir, sitekeys });
+  }
+
+  /** This project's production widget for a mode, by name, or `null`. A lookup: it creates nothing. */
+  async findProductionWidget(mode: TurnstileMode): Promise<{ sitekey: string } | null> {
+    const existing = await this.#cf.turnstile().getTurnstile(productionWidgetName(this.#project, mode));
+    return existing ? { sitekey: existing.sitekey } : null;
   }
 
   async ensureProductionWidget(
@@ -276,8 +342,8 @@ export class CloudflareTurnstileProvisioner implements TurnstileProvisioner {
 
 /**
  * The live {@link TurnstileDeprovisioner} — deletes each production widget, the managed secret in every
- * deployed environment, and every config entry (dev-vars + managed sitekey vars). Each step is guarded so
- * a missing resource is a no-op: teardown is idempotent.
+ * deployed environment and the dev secret, blanks the production sitekeys in `pithy.config.ts`, and removes
+ * any stranded sitekey var. Each step is guarded so a missing resource is a no-op: teardown is idempotent.
  */
 export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner {
   readonly #cf: CloudflareClients;
@@ -291,6 +357,7 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
    */
   readonly #environments: DeclaredEnvironments | readonly string[];
   readonly #audit: CliAuditEmit;
+  readonly #notes: (line: string) => void;
 
   constructor(options: CloudflareTurnstileProvisionerOptions) {
     this.#cf = options.cf;
@@ -300,6 +367,12 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
     this.#dispatcher = options.dispatcher;
     this.#environments = options.environments;
     this.#audit = options.audit ?? (async () => {});
+    this.#notes = options.notes ?? stderrNotes;
+  }
+
+  /** See {@link CloudflareTurnstileProvisioner.assertSitekeysWritable}. */
+  async assertSitekeysWritable(sitekeys: PlannedSitekeys): Promise<void> {
+    await assertTurnstileSitekeysWritable({ workerDir: this.#workerDir, sitekeys });
   }
 
   async deleteProductionWidget(mode: TurnstileMode): Promise<void> {
@@ -336,47 +409,32 @@ export class CloudflareTurnstileDeprovisioner implements TurnstileDeprovisioner 
   }
 
   /**
-   * Both halves of what {@link CloudflareTurnstileProvisioner.writeDev} wrote — the secret in the dev
-   * secrets file, and the sitekeys in `.dev.vars`. Leaving the value in the secrets file would have the
-   * next `pithy dev` seed a key for a widget that no longer exists.
+   * What {@link CloudflareTurnstileProvisioner.writeDev} wrote — the secret in the dev secrets file. Leaving
+   * the value there would have the next `pithy dev` seed a key for a widget that no longer exists.
    *
-   * The secret's name is still passed to the removal, and that is deliberate: a project provisioned
+   * The secret's name is still passed to the bootstrap removal, and that is deliberate: a project provisioned
    * before #153 recorded the transitional copy, and teardown is the run that should take it. A name that
-   * is not recorded is a no-op.
+   * is not recorded is a no-op. The stranded sitekey vars are {@link removeStrandedSitekeyVars}'s.
    *
    * **The adopter's own `.dev.vars` is not touched.** Each Worker's is generated from the bootstrap set,
    * so taking the names out of that set is what drops the lines — and the project root's file, if there
    * is one, is theirs. See #154.
    */
-  async clearDev(modes: TurnstileMode[]): Promise<void> {
-    const keys = [TURNSTILE_SECRET_NAME, ...modes.map((mode) => sitekeyVarName(mode))];
-    await removeBootstrapVars(this.#projectDir, keys);
+  async clearDev(_modes: TurnstileMode[]): Promise<void> {
+    await removeBootstrapVars(this.#projectDir, [TURNSTILE_SECRET_NAME]);
     await writeDevVars({ projectDir: this.#projectDir, values: {} });
     await removeDevSecrets(await resolveDevSecretsFile(this.#projectDir), [TURNSTILE_SECRET_NAME]);
   }
 
-  async clearManagedSitekeys(modes: TurnstileMode[]): Promise<void> {
-    const keys = modes.map((mode) => sitekeyVarName(mode));
-    for (const env of ["staging", "prod"] as const) {
-      await editEnvVars(this.#workerDir, env, (vars) => {
-        for (const key of keys) delete vars[key];
-      });
-    }
+  /** Blank each mode's production sitekey in the target Worker's registration — the widget it named is gone. */
+  async clearProductionSitekeys(modes: TurnstileMode[]): Promise<void> {
+    const sitekeys: Partial<Record<TurnstileMode, { prod: string }>> = {};
+    for (const mode of modes) sitekeys[mode] = { prod: "" };
+    await writeTurnstileSitekeys({ workerDir: this.#workerDir, sitekeys });
   }
-}
 
-/** Read the Worker's `wrangler.jsonc`, mutate its `env.<env>.vars` map, and write it back comment-preserving. */
-async function editEnvVars(
-  workerDir: string,
-  env: ManagedTurnstileEnv,
-  mutate: (vars: Record<string, string>) => void,
-): Promise<void> {
-  const config = (await readWranglerConfig(workerDir)) as WranglerEnvVars;
-  // The one reader (#581). `staging` and `prod` are often not in the file yet when a managed sitekey is
-  // first minted, and a stanza created to hold one var alone is a Worker deployed without every other key
-  // an environment does not inherit.
-  const stanza = stanzaFor(config, env) as { vars?: Record<string, string> };
-  stanza.vars ??= {};
-  mutate(stanza.vars);
-  await writeWranglerConfig(workerDir, config);
+  /** See {@link removeStranded}. */
+  async removeStrandedSitekeyVars(): Promise<StrandedSitekeyVar[]> {
+    return removeStranded(this.#projectDir, this.#workerDir, this.#notes);
+  }
 }

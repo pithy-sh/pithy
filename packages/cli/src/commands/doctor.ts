@@ -70,6 +70,13 @@ import {
 import { doctorSettingsCheck } from "../doctor/settingsSources";
 import { checkSharedRuntimes, describeSharedRuntimes, type SharedRuntimesCheck } from "../doctor/sharedRuntimes";
 import {
+  type ComposeWorkerFor,
+  checkTurnstileSitekeys,
+  describeTurnstileSitekeys,
+  type TurnstileSitekeysCheck,
+  type TurnstileSitekeysOptions,
+} from "../doctor/turnstileSitekeys";
+import {
   checkWorkerNames,
   describeReservedWorkerName,
   describeWorkerName,
@@ -256,6 +263,14 @@ export interface DoctorReport {
    * surprise rather than a diagnosis.
    */
   environmentInheritance: EnvironmentInheritanceCheck | null;
+  /**
+   * Where this project's Turnstile renders no widget, and which `TURNSTILE_SITEKEY_*` vars an older
+   * provisioner stranded where nothing reads them (#590). `null` outside a project.
+   *
+   * **It reports and never fails the exit.** Every project provisioned before the sitekey moved into
+   * `pithy.config.ts` is in this state by construction.
+   */
+  turnstileSitekeys: TurnstileSitekeysCheck | null;
   /**
    * Whether every declared environment's `pithy.config.ts` **loads** (#548) — the question the block above
    * does not ask, because comparing a stanza to a declaration never evaluates either config. `null`
@@ -648,6 +663,11 @@ export interface DoctorReportOptions {
    * same `wrangler.jsonc` the seam above reads, asked what is inside a stanza rather than which exist.
    */
   checkEnvironmentInheritance?: (projectDir: string) => Promise<EnvironmentInheritanceCheck>;
+  /**
+   * Turnstile sitekey seam; defaults to {@link checkTurnstileSitekeys}. Files and each Worker's composition per
+   * environment — no account call. Handed the compositions this report took, when it took them.
+   */
+  checkTurnstileSitekeys?: (projectDir: string, options?: TurnstileSitekeysOptions) => Promise<TurnstileSitekeysCheck>;
   /** Origin-declaration seam; defaults to {@link checkOrigins}. Reads files only — no account call. */
   checkOrigins?: (projectDir: string) => Promise<OriginsCheck>;
   /** App-Workflow binding seam; defaults to {@link checkWorkflows}. Reads files only — no account call. */
@@ -815,6 +835,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const probeWorkerNames = options.checkWorkerNames ?? checkWorkerNames;
   const probeEnvironments = options.checkEnvironments ?? checkEnvironments;
   const probeEnvironmentInheritance = options.checkEnvironmentInheritance ?? checkEnvironmentInheritance;
+  const probeTurnstileSitekeys = options.checkTurnstileSitekeys ?? checkTurnstileSitekeys;
   const probeOrigins = options.checkOrigins ?? checkOrigins;
   const probeWorkflows = options.checkWorkflows ?? checkWorkflows;
   const probeDevPreferences =
@@ -945,6 +966,10 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // The same Workers, as composed for every environment the report answers — `dev`'s, then each declared
   // one's. Filled beside `resolvedWorkers`, for the probes below that judge a composition's values.
   let everyComposition: readonly ResolvedWorker[] = [];
+  // The one resolution every per-environment composition below comes from, kept for the probes that run after
+  // the health block (#595): the Turnstile check reads each environment's widget from it rather than composing
+  // again, or composing for none. Unset when the project would not resolve; that probe then composes its own.
+  let composeWorkerFor: ComposeWorkerFor | undefined;
   // Whether that list is the project's composition or merely the value it was initialized to. An empty
   // list is a legitimate answer and an unresolved one is not, and the settings probe is the one reader
   // that cannot tell them apart on its own: over `[]` it answers `null`, which the JSON contract defines
@@ -1011,6 +1036,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
       compositions.set(key, composition);
       return composition;
     };
+    composeWorkerFor = composedFor;
     // Every composition, in environment order, each Worker once per environment it composed for. Taken
     // here, ahead of the health block that reads the same ones, so the probes below have them however
     // that block ends. An environment a Worker did not compose for contributes nothing: `Environment configs:`
@@ -1115,6 +1141,22 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
         state: "could-not-check",
         unrepeated: [],
       })
+    : null;
+  // Where the front end renders no Turnstile widget, and the sitekey vars nothing reads (#590). Files, and each
+  // Worker's composition for each environment its build is for — the ones taken above (#595); no account.
+  const turnstileSitekeys = inProject
+    ? await probed<TurnstileSitekeysCheck>(
+        () =>
+          probeTurnstileSitekeys(
+            options.projectDir,
+            composeWorkerFor !== undefined ? { composeWorker: composeWorkerFor } : {},
+          ),
+        {
+          state: "could-not-check",
+          stranded: [],
+          unrendered: [],
+        },
+      )
     : null;
   // The same declaration, asked the question the block above cannot: comparing a stanza to a declaration
   // never evaluates a config, and a `pithy.config.ts` is code that may load under one environment and
@@ -1228,6 +1270,7 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     workerNames,
     environments,
     environmentInheritance,
+    turnstileSitekeys,
     environmentConfigs,
     origins,
     workflows,
@@ -2278,6 +2321,15 @@ function environmentInheritanceBlock(check: EnvironmentInheritanceCheck): string
 }
 
 /**
+ * The `Turnstile:` lines — shown only when a Worker's front end renders no widget somewhere, or a sitekey var
+ * nothing reads is still in a file. The block is the finding; each line carries its own remedy, because a
+ * blank sitekey and an environment no sitekey can reach are two facts with two different answers.
+ */
+function turnstileSitekeysBlock(check: TurnstileSitekeysCheck): string {
+  return ["Turnstile:", ...describeTurnstileSitekeys(check).map((line) => `  ${line}`)].join("\n");
+}
+
+/**
  * The `Environment configs:` lines — shown only when a declared environment's `pithy.config.ts` throws
  * when it is composed (#548). Silence is the healthy answer, as everywhere in this half of the report.
  *
@@ -2548,6 +2600,9 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
   // louder.
   const environmentInheritanceOk =
     !report.environmentInheritance || report.environmentInheritance.unrepeated.length === 0;
+  // A blocked sign-in is worth the ink and not a red CI, on the rule above: every project provisioned before
+  // #590 is in this state by construction.
+  const turnstileSitekeysOk = report.turnstileSitekeys?.state !== "findings";
   // Its own answer, because it is its own question — see {@link DoctorReport.environmentConfigs}. A config
   // that does not load for a declared environment is never terse: it is the loudest finding this report has
   // about a file the adopter owns.
@@ -2603,6 +2658,7 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     workerNamesOk &&
     environmentsOk &&
     environmentInheritanceOk &&
+    turnstileSitekeysOk &&
     environmentConfigsOk &&
     originsOk &&
     workflowsOk &&
@@ -2779,6 +2835,10 @@ export function renderDoctorText(report: DoctorReport, home = process.env.HOME ?
     blocks.push(environmentInheritanceBlock(report.environmentInheritance));
   }
 
+  if (report.turnstileSitekeys?.state === "findings") {
+    blocks.push(turnstileSitekeysBlock(report.turnstileSitekeys));
+  }
+
   // Straight after it, because it is the same declaration asked whether it *works*: one of these
   // environments has a `pithy.config.ts` that throws when it is composed. The reader meets it here, near
   // the top, as a config that does not load — never as a footnote under the secret lists it also narrows.
@@ -2949,6 +3009,10 @@ export function renderDoctorJson(report: DoctorReport): Record<string, unknown> 
     // The same stanzas asked what is inside them (#581). Its own key rather than a field on the one
     // above, and each finding carries its own sentence — the cost of a missing `version_metadata` is not
     // the cost of a missing `vars`, and a script must not have to reconstruct which from a key name.
+    // Its own key: the lines are the report's sentences, and the two lists are what a script acts on.
+    turnstileSitekeys: report.turnstileSitekeys
+      ? { ...report.turnstileSitekeys, detail: describeTurnstileSitekeys(report.turnstileSitekeys) }
+      : null,
     environmentInheritance: report.environmentInheritance
       ? {
           state: report.environmentInheritance.state,

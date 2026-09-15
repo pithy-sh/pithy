@@ -51,22 +51,35 @@ export type TurnstileMode = z.infer<typeof TurnstileMode>;
 
 /**
  * The public sitekey for one widget, per environment. The sitekey is public — the front-end renders
- * the widget with it — so it lives in config, not in secrets. dev and staging carry Cloudflare's
- * documented test keys (wired automatically, no real widget); `prod` carries the real widget's
- * sitekey, written by `pithy turnstile provision`.
+ * the widget with it — so it lives in config, not in secrets.
+ *
+ * **This block is a build input, and `pithy turnstile provision` is what writes it.** The `pithy()` Vite
+ * plugin inlines the capability's client projection when the front end is built, and the projection reads
+ * the sitekey for the environment being built from here. Provisioning writes all three string literals in
+ * place: Cloudflare's documented test sitekey for dev and staging (no real widget), and the real widget's
+ * sitekey for prod. Nothing reaches a deployed bundle until that Worker is built and deployed again. A blank
+ * value renders no widget, and the gate on sign-in fails closed.
  *
  * The keys are Pithy's environment names verbatim, because that is what the client projection indexes
- * them by — a bundle built for `prod` reads `sitekeys.prod`. They are not free-form labels.
+ * them by — a bundle built for `prod` reads `sitekeys.prod`. They are not free-form labels, and an
+ * environment beyond these three has no sitekey: its builds render no widget, which `pithy turnstile
+ * provision` and `pithy doctor` both say.
  */
 export const TurnstileSitekeys = z
   .object({
-    dev: z.string().describe("Dev sitekey — a Cloudflare test key, wired automatically (no real widget is created)."),
+    dev: z
+      .string()
+      .describe(
+        "Dev sitekey — Cloudflare's always-pass test key, written by `pithy turnstile provision` (no real widget is created).",
+      ),
     staging: z
       .string()
-      .describe("Staging sitekey — a Cloudflare test key, wired automatically (no real widget is created)."),
-    prod: z.string().describe("Prod sitekey — the real widget's public key, set by `pithy turnstile provision`."),
+      .describe(
+        "Staging sitekey — Cloudflare's always-pass test key, written by `pithy turnstile provision` (no real widget is created).",
+      ),
+    prod: z.string().describe("Prod sitekey — the real widget's public key, written by `pithy turnstile provision`."),
   })
-  .describe("Per-environment public sitekeys the front-end renders the widget with.");
+  .describe("Per-environment public sitekeys the front-end build inlines to render the widget.");
 export type TurnstileSitekeys = z.infer<typeof TurnstileSitekeys>;
 
 /** One provisioned widget: its per-environment public sitekeys. The mode is the key under `widgets`. */

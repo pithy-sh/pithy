@@ -8,9 +8,10 @@ import { CloudflareVectorProvisioner, loadVector, type VectorModule } from "../c
 import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { type AppVectorizeBinding, applyAppBindings, appWorkflowBindings } from "../project/appBindings";
+import { resolveCapabilityWorker } from "../project/capabilityWorker";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
-import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
+import { projectCapabilities, type ResolvedWorker, resolveWorkers } from "../project/workerScope";
 import { readWranglerConfig, writeWranglerConfig } from "../project/wrangler";
 import { stanzaFor } from "../project/wranglerInheritance";
 import { assertResetConfirmed, resetConfirmPhrase } from "../seed/safety";
@@ -46,21 +47,6 @@ function loadCloudflareCreds(account: CloudflareAccountSelection | null): { acco
     });
   }
   return { accountId, apiToken };
-}
-
-/** Load the vector capability's resolved config from `pithy.config.ts`. */
-async function loadVectorConfig(projectDir: string) {
-  const { isVectorCapability } = await loadVector(projectDir);
-  // Capabilities live in each Worker's `apps/<name>/pithy.config.ts`; provisioning is one
-  // project-wide decision, so the first Worker composing this capability provides it.
-  const capability = (await resolveWorkers({ projectDir }).then(projectCapabilities)).find(isVectorCapability);
-  if (!capability) {
-    throw new ValidationError({
-      message: "The vector capability is not configured.",
-      action: "Add `vector({ indexes: { ... } })` to pithy.config.ts (run `pithy add vector`).",
-    });
-  }
-  return capability.vectorConfig;
 }
 
 /** The `wrangler.jsonc` slice the app database id is read from. */
@@ -131,8 +117,16 @@ async function buildProvisioner(projectDir: string, env: string, worker: string 
   // project is not a Cloudflare problem to report as one.
   const project = requireProjectName(await loadProject(projectDir));
   const { accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
-  const config = await loadVectorConfig(projectDir);
-  const appWorker = await resolveSingleWorker({ projectDir, ...(worker !== undefined ? { worker } : {}) });
+  // One resolution for the config and every write: the indexes provisioned are the ones the Worker they are
+  // recorded in declares (#590 review). They used to come from the first Worker composing vector.
+  const { isVectorCapability } = await loadVector(projectDir);
+  const { worker: appWorker, capability } = await resolveCapabilityWorker({
+    projectDir,
+    ...(worker !== undefined ? { worker } : {}),
+    name: "vector",
+    is: isVectorCapability,
+  });
+  const config = capability.vectorConfig;
   // Read now, not when `deployWorker` asks for it. The provisioner's `resolveEnv` seam stays — it is what
   // keeps the wrangler parsing out of the provisioner — but it now serves an answer this command already
   // has, so the refusal cannot arrive after the work.
@@ -211,7 +205,7 @@ async function recordBindings(
   workerDir: string,
   project: string,
   env: string,
-  config: Awaited<ReturnType<typeof loadVectorConfig>>,
+  config: Awaited<ReturnType<typeof buildProvisioner>>["config"],
   result: Awaited<ReturnType<VectorModule["provisionVector"]>>,
 ): Promise<void> {
   const { vectorWorkflowRegistry, VECTOR_CAPABILITY } = await loadVector(projectDir);

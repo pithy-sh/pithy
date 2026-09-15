@@ -533,6 +533,106 @@ describe("buildReconcilePlan — config keys", () => {
   });
 });
 
+/**
+ * **A key is missing only when the registration is known not to state it** (#590 review).
+ *
+ * The scanner used to record a key only when a `:` followed it, and skipped every other member. So a
+ * registration that supplied an option as a shorthand (`turnstile({ widgets })`) or through a spread
+ * (`turnstile({ ...base })`) read as missing it. `pithy upgrade` then appended the manifest default after
+ * that member, and in an object literal the later key wins: a project's real sitekeys were replaced with
+ * blanks, and `pithy doctor` failed its exit on the same drift.
+ *
+ * The rule, stated positively: a member names its key (a `key:` property, a shorthand, a method, an
+ * accessor), or it makes the registration's key set one the text cannot list (a spread, a computed key,
+ * anything else). Only a registration whose every member names its key can be missing one.
+ */
+describe("buildReconcilePlan — a registration's keys, however they are spelled", () => {
+  /** Plan the Worker, and return the missing key names for auth. */
+  async function missingFor(registration: string, manifest: Record<string, unknown> = authManifest, prelude = "") {
+    await writeManifest(dir, manifest);
+    await writeFile(join(workerDir, "pithy.config.ts"), `${prelude}${configWith(registration)}`);
+    const plan = await buildReconcilePlan({
+      account: null,
+      projectDir: dir,
+      workerDir,
+      env: "dev",
+      capabilities: composes(manifest.name as string),
+    });
+    return { plan, missing: plan.perCapability.find((cap) => cap.name === manifest.name)?.missingConfigKeys ?? [] };
+  }
+
+  /** The shipped turnstile manifest — read per test, because `PACKAGES` is declared further down the file. */
+  const turnstileManifest = () => JSON.parse(readFileSync(join(PACKAGES, "turnstile", "pithy.manifest.json"), "utf8"));
+  const WIDGETS = "const widgets = { visible: { sitekeys: { dev: 'd', staging: 's', prod: '0xREAL' } } };\n";
+
+  // The reproduction: the shipped turnstile manifest, and the two spellings that lost a prod sitekey.
+  for (const [shape, registration] of [
+    ["a shorthand", "    turnstile({\n      widgets,\n    }),"],
+    ["a spread", "    turnstile({\n      ...{ widgets },\n    }),"],
+  ] as const) {
+    test(`upgrade leaves a turnstile registration that supplies widgets as ${shape} byte for byte`, async () => {
+      const { plan, missing } = await missingFor(registration, turnstileManifest(), WIDGETS);
+      const before = await readFile(join(workerDir, "pithy.config.ts"), "utf8");
+
+      expect(missing).toEqual([]);
+      await applyReconcilePlan({
+        account: null,
+        projectDir: dir,
+        workerDir,
+        plan,
+        migrate: false,
+        env: "dev",
+        capabilities: [],
+      });
+      expect(await readFile(join(workerDir, "pithy.config.ts"), "utf8")).toBe(before);
+    });
+  }
+
+  // Every other spelling of a member that states its key — each differently from the `key:` the scanner
+  // always read, which is what a gate over only that spelling would walk past.
+  for (const [shape, registration] of [
+    ["a trailing shorthand with no comma", "    auth({ basePath }),"],
+    ["a method", '    auth({\n      basePath() {\n        return "/x";\n      },\n    }),'],
+    ["a getter", '    auth({\n      get basePath() {\n        return "/x";\n      },\n    }),'],
+    ["an async method", "    auth({\n      async basePath() {},\n    }),"],
+    ["a generator method", "    auth({\n      *basePath() {},\n    }),"],
+    ["a comment between the key and its colon", '    auth({\n      basePath /* mount */: "/x",\n    }),'],
+    ["a numeric sibling", '    auth({\n      0: "zero",\n      basePath: "/x",\n    }),'],
+  ] as const) {
+    test(`a key stated as ${shape} is present, and only the other option is missing`, async () => {
+      const { missing } = await missingFor(registration);
+      expect(missing.map((key) => key.key)).toEqual(["sessionDays"]);
+    });
+  }
+
+  for (const [shape, registration] of [
+    ["a spread beside a literal key", '    auth({\n      ...shared,\n      basePath: "/x",\n    }),'],
+    ["a computed key", '    auth({\n      ["base" + "Path"]: "/x",\n    }),'],
+  ] as const) {
+    test(`${shape} makes the key set unlistable, so nothing is reported or written`, async () => {
+      const { plan, missing } = await missingFor(registration);
+      const before = await readFile(join(workerDir, "pithy.config.ts"), "utf8");
+      expect(missing).toEqual([]);
+      await applyReconcilePlan({
+        account: null,
+        projectDir: dir,
+        workerDir,
+        plan,
+        migrate: false,
+        env: "dev",
+        capabilities: [],
+      });
+      expect(await readFile(join(workerDir, "pithy.config.ts"), "utf8")).toBe(before);
+    });
+  }
+
+  test("a registration whose every member names its key still reports what it lacks", async () => {
+    // The control: without it, a scanner that answered "present" for everything passes every test above.
+    const { missing } = await missingFor('    auth({\n      other,\n      "quoted": 1,\n    }),');
+    expect(missing.map((key) => key.key)).toEqual(["basePath", "sessionDays"]);
+  });
+});
+
 describe("buildReconcilePlan — migrations and purity", () => {
   test("surfaces the pending-migration count for the env", async () => {
     await writeManifest(dir, authManifest);

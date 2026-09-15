@@ -5,9 +5,10 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import type { SecretDispatcher, SecretWriteRequest } from "@pithy-sh/secrets/src/cli/dispatch";
+import { deprovisionTurnstile, provisionTurnstile } from "@pithy-sh/turnstile/src/provision/provisionTurnstile";
 import {
   TURNSTILE_SECRET_NAME,
   type TurnstileSecrets,
@@ -15,8 +16,10 @@ import {
 } from "@pithy-sh/turnstile/src/secret/registry";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
+import { readBootstrapVars, writeBootstrapVars } from "../devSecrets/bootstrapVars";
 import { readDevSecrets } from "../devSecrets/file";
 import { resolveDevSecretsFile } from "../devSecrets/location";
+import { linkKitPackages } from "../test-utils/linkKit";
 import { CloudflareTurnstileDeprovisioner, CloudflareTurnstileProvisioner } from "./turnstileProvisioner";
 
 /** A fake CloudflareClients exposing only the turnstile methods the (de)provisioner touches. */
@@ -45,9 +48,25 @@ function fakeDispatcher() {
 
 const dirs: string[] = [];
 
+/** The Worker config every fixture composes: the registration `pithy add turnstile` scaffolds. */
+const WORKER_CONFIG = `import { turnstile } from "@pithy-sh/turnstile/src/capability";
+
+export default {
+  capabilities: [
+    turnstile({
+      widgets: {
+        visible: {
+          sitekeys: { dev: "", staging: "", prod: "" },
+        },
+      },
+    }),
+  ],
+};
+`;
+
 /**
- * A project in the per-Worker layout: `apps/api/` owns the `wrangler.jsonc` the sitekey vars are written
- * into, and the generated `.dev.vars` that carries them (#154).
+ * A project in the per-Worker layout: `apps/api/` owns the `pithy.config.ts` the sitekeys are written into,
+ * and the `wrangler.jsonc` an older provisioner stranded sitekey vars in.
  */
 let projects = 0;
 async function project(wrangler = "{}"): Promise<{ projectDir: string; workerDir: string }> {
@@ -60,6 +79,8 @@ async function project(wrangler = "{}"): Promise<{ projectDir: string; workerDir
   const workerDir = join(projectDir, "apps", "api");
   await mkdir(workerDir, { recursive: true });
   await writeFile(join(workerDir, "wrangler.jsonc"), wrangler);
+  await writeFile(join(workerDir, "pithy.config.ts"), WORKER_CONFIG);
+  await linkKitPackages(projectDir, ["turnstile"]);
   return { projectDir, workerDir };
 }
 
@@ -71,11 +92,9 @@ async function devSecrets(projectDir: string) {
 afterEach(() => vi.clearAllMocks());
 
 describe("CloudflareTurnstileProvisioner", () => {
-  test("writeDev puts the secret in the dev secrets file and the sitekeys in .dev.vars", async () => {
-    // `turnstile-secret-keys` is a `d1` registry secret. It was going straight into `.dev.vars`,
-    // bypassing `writeDevSecrets` and with it the envelope format and the 0600 mode — the fifth
-    // producer of that same defect (#149). The sitekeys are public, UPPER_SNAKE env vars, and stay
-    // where wrangler's namespace belongs.
+  test("writeDev puts the secret in the dev secrets file, and no sitekey anywhere", async () => {
+    // `turnstile-secret-keys` is a `d1` registry secret, so it goes through `writeDevSecrets` (#149). The
+    // sitekey is not a dev value at all any more: it is a build input, written into `pithy.config.ts` (#590).
     const { cf } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project();
@@ -89,18 +108,12 @@ describe("CloudflareTurnstileProvisioner", () => {
       environments: DEFAULT_ENVIRONMENTS,
     });
 
-    await p.writeDev({ visible: { key: "1x" } }, { TURNSTILE_SITEKEY_VISIBLE: "1x00" });
+    await p.writeDev({ visible: { key: "1x" } });
 
     expect(await devSecrets(projectDir)).toEqual({
       [TURNSTILE_SECRET_NAME]: { currentVersion: "1", versions: { "1": { visible: { key: "1x" } } } },
     });
-    // The Worker's own generated file — where wrangler reads it (#154).
-    const content = await readFile(join(workerDir, ".dev.vars"), "utf8");
-    expect(content).toContain("TURNSTILE_SITEKEY_VISIBLE=1x00");
-    // The sitekeys and nothing else (#153). The secret was copied here through the transition, because
-    // dev resolved every secret from its binding; it reads the seeded row now, so a public sitekey no
-    // longer shares a file with the widget secret.
-    expect(parseDevVars(content)[TURNSTILE_SECRET_NAME]).toBeUndefined();
+    expect(await readBootstrapVars(projectDir)).toEqual({});
   });
 
   test("writeDev leaves nothing about the secret in the checkout, and no .gitignore line either", async () => {
@@ -120,7 +133,7 @@ describe("CloudflareTurnstileProvisioner", () => {
       environments: DEFAULT_ENVIRONMENTS,
     });
 
-    await p.writeDev({ visible: { key: "1x" } }, {});
+    await p.writeDev({ visible: { key: "1x" } });
 
     await expect(readFile(join(projectDir, ".gitignore"), "utf8")).rejects.toThrow();
     expect(await devSecrets(projectDir)).toEqual({
@@ -142,20 +155,20 @@ describe("CloudflareTurnstileProvisioner", () => {
       environments: DEFAULT_ENVIRONMENTS,
     });
 
-    await p.writeDev({ visible: { key: "first" } }, {});
-    await p.writeDev({ visible: { key: "second" } }, {});
+    await p.writeDev({ visible: { key: "first" } });
+    await p.writeDev({ visible: { key: "second" } });
 
     expect(await devSecrets(projectDir)).toEqual({
       [TURNSTILE_SECRET_NAME]: { currentVersion: "1", versions: { "1": { visible: { key: "second" } } } },
     });
   });
 
-  test("writeDev names the Worker the sitekeys and the injected secret never reached", async () => {
-    // The third call site to throw the delivery report away. `pithy add`'s two were fixed last round;
-    // this one still reported a provision that had placed nothing in the Worker wrangler actually runs.
+  test("removing a stranded dev sitekey names the Worker whose .dev.vars it could not regenerate", async () => {
+    // The delivery report `writeDevVars` returns is said, not dropped (the #153 lesson, third call site).
     const { cf } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project();
+    await writeBootstrapVars(projectDir, { TURNSTILE_SITEKEY_VISIBLE: "1x00" });
     await writeFile(join(workerDir, ".dev.vars"), "MINE=1\n");
     const notes: string[] = [];
     const p = new CloudflareTurnstileProvisioner({
@@ -169,18 +182,17 @@ describe("CloudflareTurnstileProvisioner", () => {
       notes: (line) => void notes.push(line),
     });
 
-    await p.writeDev({ visible: { key: "never-printed" } }, { TURNSTILE_SITEKEY_VISIBLE: "1x00" });
+    await p.removeStrandedSitekeyVars();
 
     expect(notes.join("\n")).toContain(workerDir);
     expect(notes.join("\n")).toMatch(/was not generated by pithy/);
-    // Never the secret, in a line that reaches a terminal scrollback and a CI log.
-    expect(notes.join("\n")).not.toContain("never-printed");
   });
 
-  test("a clean delivery says nothing — a line per provision about nothing is noise", async () => {
+  test("with nothing stranded it says nothing and regenerates nothing", async () => {
     const { cf } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project();
+    await writeFile(join(workerDir, ".dev.vars"), "MINE=1\n");
     const notes: string[] = [];
     const p = new CloudflareTurnstileProvisioner({
       account: { accountId: "acct-1", confirmation: "pinned" },
@@ -193,34 +205,51 @@ describe("CloudflareTurnstileProvisioner", () => {
       notes: (line) => void notes.push(line),
     });
 
-    await p.writeDev({ visible: { key: "1x" } }, { TURNSTILE_SITEKEY_VISIBLE: "1x00" });
-
+    expect(await p.removeStrandedSitekeyVars()).toEqual([]);
     expect(notes).toEqual([]);
   });
 
-  test("without a sink the report still reaches a human — a silent default is the defect again", async () => {
+  test("removeStrandedSitekeyVars takes every TURNSTILE_SITEKEY_* out of every stanza and dev.json, and nothing else", async () => {
     const { cf } = fakeCf();
     const { dispatcher } = fakeDispatcher();
-    const { projectDir, workerDir } = await project();
-    await writeFile(join(workerDir, ".dev.vars"), "MINE=1\n");
-    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    try {
-      const p = new CloudflareTurnstileProvisioner({
-        account: { accountId: "acct-1", confirmation: "pinned" },
-        cf,
-        project: PROJECT,
-        projectDir,
-        workerDir,
-        dispatcher,
-        environments: DEFAULT_ENVIRONMENTS,
-      });
+    const { projectDir, workerDir } = await project(
+      [
+        "{",
+        "  // kept",
+        '  "vars": { "ENVIRONMENT": "dev", "TURNSTILE_SITEKEY_VISIBLE": "1x00" },',
+        '  "env": {',
+        '    "staging": { "vars": { "ENVIRONMENT": "staging", "TURNSTILE_SITEKEY_VISIBLE": "1x00" } },',
+        '    "live": { "vars": { "ENVIRONMENT": "live", "TURNSTILE_SITEKEY_INVISIBLE": "1x00" } },',
+        '    "prod": { "vars": { "ENVIRONMENT": "prod", "TURNSTILE_SITEKEY_VISIBLE": "0x4AAA" } }',
+        "  }",
+        "}",
+      ].join("\n"),
+    );
+    await writeBootstrapVars(projectDir, { TURNSTILE_SITEKEY_VISIBLE: "1x00", KEEP: "1" });
+    const p = new CloudflareTurnstileProvisioner({
+      account: { accountId: "acct-1", confirmation: "pinned" },
+      cf,
+      project: PROJECT,
+      projectDir,
+      workerDir,
+      dispatcher,
+      environments: DEFAULT_ENVIRONMENTS,
+      notes: () => {},
+    });
 
-      await p.writeDev({ visible: { key: "1x" } }, { TURNSTILE_SITEKEY_VISIBLE: "1x00" });
+    const removed = await p.removeStrandedSitekeyVars();
 
-      expect(stderr.mock.calls.map((call) => String(call[0])).join("")).toContain(workerDir);
-    } finally {
-      stderr.mockRestore();
-    }
+    expect(removed).toEqual([
+      { name: "TURNSTILE_SITEKEY_VISIBLE", environment: "dev" },
+      { name: "TURNSTILE_SITEKEY_VISIBLE", environment: "staging" },
+      { name: "TURNSTILE_SITEKEY_INVISIBLE", environment: "live" },
+      { name: "TURNSTILE_SITEKEY_VISIBLE", environment: "prod" },
+    ]);
+    const written = await readFile(join(workerDir, "wrangler.jsonc"), "utf8");
+    expect(written).not.toContain("TURNSTILE_SITEKEY_");
+    expect(written).toContain("// kept");
+    expect(written).toContain('"ENVIRONMENT": "live"');
+    expect(await readBootstrapVars(projectDir)).toEqual({ KEEP: "1" });
   });
 
   test("writeManagedSecret dispatches a create with the d1/environment/json routing facts", async () => {
@@ -268,7 +297,7 @@ describe("CloudflareTurnstileProvisioner", () => {
       environments: DEFAULT_ENVIRONMENTS,
     });
 
-    await p.writeDev({ visible: { key: "1x" } }, {});
+    await p.writeDev({ visible: { key: "1x" } });
 
     const file = await devSecrets(projectDir);
     const envelope = file?.[TURNSTILE_SECRET_NAME] as { versions: Record<string, unknown> };
@@ -340,7 +369,7 @@ describe("CloudflareTurnstileProvisioner", () => {
     });
   });
 
-  test("writeManagedSitekeys writes into the env's wrangler vars, comment-preserving", async () => {
+  test("writeSitekeys writes the registration the Worker's config composes, and no Worker var", async () => {
     const { cf } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project('{\n  // staging\n  "env": { "staging": { "vars": {} } }\n}');
@@ -354,12 +383,12 @@ describe("CloudflareTurnstileProvisioner", () => {
       environments: DEFAULT_ENVIRONMENTS,
     });
 
-    await p.writeManagedSitekeys("staging", { TURNSTILE_SITEKEY_VISIBLE: "stg-key" });
+    await p.writeSitekeys({ visible: { dev: "1x-dev", staging: "1x-stg", prod: "0x-prod" } });
 
-    // Written into the WORKER's wrangler.jsonc — there is no root one to write.
-    const written = await readFile(join(workerDir, "wrangler.jsonc"), "utf8");
-    expect(written).toContain("// staging");
-    expect(written).toContain('"TURNSTILE_SITEKEY_VISIBLE": "stg-key"');
+    expect(await readFile(join(workerDir, "pithy.config.ts"), "utf8")).toContain(
+      'sitekeys: { dev: "1x-dev", staging: "1x-stg", prod: "0x-prod" }',
+    );
+    expect(await readFile(join(workerDir, "wrangler.jsonc"), "utf8")).not.toContain("TURNSTILE_SITEKEY");
   });
 
   test("ensureProductionWidget creates a managed widget for visible, reuses an existing one", async () => {
@@ -619,34 +648,28 @@ describe("CloudflareTurnstileDeprovisioner", () => {
     ]);
   });
 
-  test("clearDev takes the sitekey out of the generated .dev.vars, and leaves everything else", async () => {
+  test("clearProductionSitekeys blanks prod and leaves the test sitekeys", async () => {
     const { cf } = fakeCf();
     const { dispatcher } = fakeDispatcher();
     const { projectDir, workerDir } = await project();
-    const p = new CloudflareTurnstileProvisioner({
-      account: { accountId: "acct-1", confirmation: "pinned" },
+    const options = {
+      account: { accountId: "acct-1", confirmation: "pinned" as const },
       cf,
       project: PROJECT,
       projectDir,
       workerDir,
       dispatcher,
       environments: DEFAULT_ENVIRONMENTS,
-    });
-    await p.writeDev({ visible: { key: "1x" } }, { TURNSTILE_SITEKEY_VISIBLE: "1x00", KEEP: "1" });
-    const d = new CloudflareTurnstileDeprovisioner({
-      account: { accountId: "acct-1", confirmation: "pinned" },
-      cf,
-      project: PROJECT,
-      projectDir,
-      workerDir,
-      dispatcher,
-      environments: DEFAULT_ENVIRONMENTS,
+    };
+    await new CloudflareTurnstileProvisioner(options).writeSitekeys({
+      visible: { dev: "1x-dev", staging: "1x-stg", prod: "0x-prod" },
     });
 
-    await d.clearDev(["visible"]);
+    await new CloudflareTurnstileDeprovisioner(options).clearProductionSitekeys(["visible"]);
 
-    // The generated file is rebuilt from its sources, so removing the name is what drops the line.
-    expect(parseDevVars(await readFile(join(workerDir, ".dev.vars"), "utf8"))).toEqual({ KEEP: "1" });
+    expect(await readFile(join(workerDir, "pithy.config.ts"), "utf8")).toContain(
+      'sitekeys: { dev: "1x-dev", staging: "1x-stg", prod: "" }',
+    );
   });
 
   test("clearDev takes the secret out of the dev secrets file too", async () => {
@@ -664,7 +687,7 @@ describe("CloudflareTurnstileDeprovisioner", () => {
       dispatcher,
       environments: DEFAULT_ENVIRONMENTS,
     });
-    await p.writeDev({ visible: { key: "1x" } }, { TURNSTILE_SITEKEY_VISIBLE: "1x00" });
+    await p.writeDev({ visible: { key: "1x" } });
     const d = new CloudflareTurnstileDeprovisioner({
       account: { accountId: "acct-1", confirmation: "pinned" },
       cf,
@@ -678,7 +701,6 @@ describe("CloudflareTurnstileDeprovisioner", () => {
     await d.clearDev(["visible"]);
 
     expect(await devSecrets(projectDir)).toEqual({});
-    expect(parseDevVars(await readFile(join(workerDir, ".dev.vars"), "utf8"))).toEqual({});
   });
 });
 
@@ -724,5 +746,155 @@ describe("CloudflareTurnstileProvisioner.assertDomainAvailable on an unconfirmed
 
     listTurnstilesByDomain.mockResolvedValue([]);
     await expect(ours.assertDomainAvailable("app.example.com")).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * **A run the sitekey writer will refuse creates nothing and writes nothing** (#590 review).
+ *
+ * The writer ran last: after the dev secret, the staging secret, a real production widget and the prod
+ * secret. Its refusals — a key that is not a string literal, a registration it cannot find — read only the
+ * source, and none depends on the sitekey Cloudflare returns. So a refused run had already minted a widget
+ * and stored both secrets, while the docs said "Nothing is written", and the rerun it asked for reused the
+ * widget and warned about a secret that was in fact stored. Teardown had the same order: the widgets and
+ * secrets were deleted before `clearProductionSitekeys` refused, and the stranded vars were never removed.
+ *
+ * Driven through the real orchestrator and the real provisioners, over a stubbed Cloudflare API and a
+ * recording dispatcher, so the order under test is the one a command runs.
+ */
+describe("a refused sitekey write leaves the account and the files as they were", () => {
+  const STRANDED = '{ "env": { "prod": { "vars": { "TURNSTILE_SITEKEY_VISIBLE": "0x4AAAold" } } } }';
+
+  /** A project whose Worker config is `config`, and a real provisioner and deprovisioner over stubs. */
+  async function refusedFixture(config: string) {
+    const fake = fakeCf();
+    fake.getTurnstile.mockResolvedValue(null);
+    fake.addTurnstile.mockResolvedValue({ sitekey: "0x4AAAreal", secret: "0x4AAAsecret" });
+    const recorder = fakeDispatcher();
+    const { projectDir, workerDir } = await project(STRANDED);
+    await writeFile(join(workerDir, "pithy.config.ts"), config);
+    const options = {
+      account: { accountId: "acct-1", confirmation: "pinned" as const },
+      cf: fake.cf,
+      project: PROJECT,
+      projectDir,
+      workerDir,
+      dispatcher: recorder.dispatcher,
+      environments: DEFAULT_ENVIRONMENTS,
+    };
+    /** Every file this run could touch, as it stands. */
+    const files = async () => ({
+      config: await readFile(join(workerDir, "pithy.config.ts"), "utf8"),
+      wrangler: await readFile(join(workerDir, "wrangler.jsonc"), "utf8"),
+      devSecrets: await devSecrets(projectDir),
+    });
+    return {
+      fake,
+      recorder,
+      files,
+      provisioner: new CloudflareTurnstileProvisioner(options),
+      deprovisioner: new CloudflareTurnstileDeprovisioner(options),
+    };
+  }
+
+  const STAGING_EXPRESSION = `import { turnstile } from "@pithy-sh/turnstile/src/capability";
+
+const STAGING = process.env.STAGING_SITEKEY ?? "";
+
+export default {
+  capabilities: [
+    turnstile({
+      widgets: {
+        visible: {
+          sitekeys: { dev: "", staging: STAGING, prod: "" },
+        },
+      },
+    }),
+  ],
+};
+`;
+
+  const ONE_LINE = `import { turnstile } from "@pithy-sh/turnstile/src/capability";
+
+export default { capabilities: [turnstile({ widgets: { visible: { sitekeys: { dev: "", staging: "", prod: "" } } } })] };
+`;
+
+  const PROD_EXPRESSION = `import { turnstile } from "@pithy-sh/turnstile/src/capability";
+
+const PROD = "0x4AAAreal";
+
+export default {
+  capabilities: [
+    turnstile({
+      widgets: {
+        visible: {
+          sitekeys: { dev: "", staging: "", prod: PROD },
+        },
+      },
+    }),
+  ],
+};
+`;
+
+  for (const [shape, config, refusal] of [
+    ["a staging sitekey that is an expression", STAGING_EXPRESSION, /widgets\.visible\.sitekeys\.staging/],
+    ["a registration on one line", ONE_LINE, /widgets\.visible\.sitekeys\.dev/],
+  ] as const) {
+    test(`provision over ${shape} refuses before a widget or a secret exists`, async () => {
+      const { fake, recorder, files, provisioner } = await refusedFixture(config);
+      const before = await files();
+
+      const error = await provisionTurnstile(provisioner, {
+        modes: ["visible"],
+        productionDomain: "app.example.com",
+      }).catch((thrown: unknown) => thrown);
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as ValidationError).message).toMatch(refusal);
+      expect(fake.addTurnstile).not.toHaveBeenCalled();
+      expect(recorder.calls).toEqual([]);
+      expect(await files()).toEqual(before);
+    });
+  }
+
+  test("provision over a prod sitekey expression refuses before it creates the widget that expression cannot name", async () => {
+    // A sitekey Cloudflare has not issued yet is one no expression in the config can already resolve to.
+    const { fake, recorder, files, provisioner } = await refusedFixture(PROD_EXPRESSION.replace("0x4AAAreal", "other"));
+    const before = await files();
+
+    await expect(
+      provisionTurnstile(provisioner, { modes: ["visible"], productionDomain: "app.example.com" }),
+    ).rejects.toThrow(/widgets\.visible\.sitekeys\.prod/);
+
+    expect(fake.addTurnstile).not.toHaveBeenCalled();
+    expect(recorder.calls).toEqual([]);
+    expect(await files()).toEqual(before);
+  });
+
+  test("provision over a prod expression that already names the existing widget goes ahead", async () => {
+    // The control: the up-front check must not refuse what the writer would accept. The widget exists, so
+    // its sitekey is known before anything is written, and the expression already resolves to it.
+    const { fake, provisioner } = await refusedFixture(PROD_EXPRESSION);
+    fake.getTurnstile.mockResolvedValue({ sitekey: "0x4AAAreal" });
+
+    const result = await provisionTurnstile(provisioner, {
+      modes: ["visible"],
+      productionDomain: "app.example.com",
+    });
+
+    expect(fake.addTurnstile).not.toHaveBeenCalled();
+    expect(result.sitekeys.visible?.prod).toBe("0x4AAAreal");
+  });
+
+  test("deprovision over a prod sitekey expression refuses before a widget or a secret is deleted", async () => {
+    const { fake, recorder, files, deprovisioner } = await refusedFixture(PROD_EXPRESSION);
+    fake.getTurnstile.mockResolvedValue({ sitekey: "0x4AAAreal" });
+    const before = await files();
+
+    await expect(deprovisionTurnstile(deprovisioner, ["visible"])).rejects.toThrow(/widgets\.visible\.sitekeys\.prod/);
+
+    expect(fake.deleteTurnstile).not.toHaveBeenCalled();
+    expect(recorder.calls).toEqual([]);
+    expect(await files()).toEqual(before);
   });
 });

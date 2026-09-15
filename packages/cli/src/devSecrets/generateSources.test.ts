@@ -140,12 +140,12 @@ describe("the generated .dev.vars is built from secrets.jsonc", () => {
     expect((await generated()).SECRETS_ENCRYPTION_KEYS).toBeUndefined();
   });
 
-  test("dev.json still supplies a value no registry declares — a Turnstile sitekey has no other home", async () => {
-    await writeBootstrapVars(dir, { TURNSTILE_SITEKEY: "0x4AAA" }, paths());
+  test("dev.json still supplies a value no registry declares — a machine-local endpoint has no other home", async () => {
+    await writeBootstrapVars(dir, { LOCAL_MAIL_ENDPOINT: "http://127.0.0.1:1025" }, paths());
 
     await generateDevVars({ projectDir: dir, paths: paths() });
 
-    expect((await generated()).TURNSTILE_SITEKEY).toBe("0x4AAA");
+    expect((await generated()).LOCAL_MAIL_ENDPOINT).toBe("http://127.0.0.1:1025");
   });
 
   test("the header names the two files that are actually read", async () => {

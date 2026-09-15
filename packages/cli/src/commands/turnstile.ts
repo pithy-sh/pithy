@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { join, relative } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { isTurnstileCapability } from "@pithy-sh/turnstile/src/capability";
@@ -9,14 +10,17 @@ import {
   deprovisionTurnstile,
   enabledModes,
   provisionTurnstile,
+  type StrandedSitekeyVar,
 } from "@pithy-sh/turnstile/src/provision/provisionTurnstile";
 import { defineCommand } from "citty";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import { CloudflareTurnstileDeprovisioner, CloudflareTurnstileProvisioner } from "../capabilities/turnstileProvisioner";
+import { environmentsBuiltWithoutSitekeys } from "../capabilities/turnstileSitekeys";
 import type { ConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
+import { resolveCapabilityWorker } from "../project/capabilityWorker";
 import {
   loadProject,
   loadProjectEnvironments,
@@ -26,7 +30,7 @@ import {
   requireProjectName,
 } from "../project/config";
 import { type AddressStanza, resolveWorkerAddress } from "../project/workerAddress";
-import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
+import type { ResolvedWorker, ResolveSingleOptions } from "../project/workerScope";
 import { readWranglerConfig } from "../project/wrangler";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -43,20 +47,19 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
 }
 
 /**
- * Load the turnstile capability's resolved config. Capabilities live in each Worker's
- * `apps/<name>/pithy.config.ts`; the widget set is one project-wide decision, so the first Worker composing
- * `turnstile` provides it.
+ * The one Worker a turnstile command acts on, and **that Worker's** turnstile config — read from the same
+ * place the sitekeys are written to (#590), through {@link resolveCapabilityWorker}, the resolution every
+ * capability command that writes into a Worker shares.
  */
-async function loadTurnstileConfig(projectDir: string): Promise<TurnstileConfig> {
-  const capabilities = await resolveWorkers({ projectDir }).then(projectCapabilities);
-  const cap = capabilities.find(isTurnstileCapability);
-  if (!cap) {
-    throw new ValidationError({
-      message: "The turnstile capability is not configured.",
-      action: "Add `turnstile({ ... })` to a worker's pithy.config.ts (run `pithy add turnstile`).",
-    });
-  }
-  return cap.turnstileConfig;
+export async function resolveTurnstileTarget(
+  options: ResolveSingleOptions,
+): Promise<{ worker: ResolvedWorker; config: TurnstileConfig }> {
+  const { worker, capability } = await resolveCapabilityWorker({
+    ...options,
+    name: "turnstile",
+    is: isTurnstileCapability,
+  });
+  return { worker, config: capability.turnstileConfig };
 }
 
 /** The widget modes declared in config, or an actionable error when none are. */
@@ -138,11 +141,23 @@ async function resolveProductionDomain(worker: ResolvedWorker): Promise<string> 
   return address.hostname;
 }
 
-/** The Worker whose `wrangler.jsonc` carries the production `BASE_URL` and the per-env sitekey vars. */
+/** The Worker whose production address the widget binds to, and whose `pithy.config.ts` gets the sitekeys. */
 const workerArg = {
   type: "string",
-  description: "The web-facing worker whose wrangler.jsonc holds BASE_URL (default: the project's only worker)",
+  description:
+    "The web-facing worker: its production address binds the widget, its pithy.config.ts gets the sitekeys (default: the project's only worker)",
 } as const;
+
+/** An environment list for a sentence: `a`, `a and b`, `a, b and c`. */
+function listed(names: readonly string[]): string {
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+}
+
+/** Where each stranded var was, as an operator reads it: `TURNSTILE_SITEKEY_VISIBLE (staging)`. */
+function strandedLine(stranded: readonly StrandedSitekeyVar[]): string {
+  return stranded.map((found) => `${found.name} (${found.environment})`).join(", ");
+}
 
 const provision = defineCommand({
   meta: {
@@ -161,13 +176,12 @@ const provision = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const config = await loadTurnstileConfig(projectDir);
-      const modes = resolveModes(config);
-      const { account, accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
-      const worker = await resolveSingleWorker({
+      const { worker, config } = await resolveTurnstileTarget({
         projectDir,
         ...(args.worker !== undefined ? { worker: args.worker } : {}),
       });
+      const modes = resolveModes(config);
+      const { account, accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       const productionDomain = await resolveProductionDomain(worker);
       const cf = await cloudflareClients({ accountId, apiToken });
       // The project name scopes both the widget names (`<project>-prod-turnstile-<mode>`) and the
@@ -196,9 +210,20 @@ const provision = defineCommand({
         productionDomain,
         allowSharedDomain: args["allow-shared-domain"],
       });
+      const configFile = relative(projectDir, join(worker.dir, "pithy.config.ts"));
+      // Said here, where an operator believes Turnstile was just enabled: the builds no sitekey can reach.
+      const withoutSitekeys = environmentsBuiltWithoutSitekeys(environments);
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "turnstile provision", ...result })}\n`);
+        process.stdout.write(
+          `${formatJsonLine({
+            command: "turnstile provision",
+            ...result,
+            configFile,
+            redeployRequired: true,
+            environmentsWithoutSitekeys: withoutSitekeys,
+          })}\n`,
+        );
         return;
       }
       const created = result.widgets.filter((w) => w.created).length;
@@ -212,12 +237,26 @@ const provision = defineCommand({
           "Production widgets already existed; their secret was left as-is. If the production gate returns turnstile/config, run `pithy turnstile deprovision` then provision again.\n",
         );
       }
+      process.stdout.write(`Sitekeys written to ${configFile} for dev, staging and prod.\n`);
+      // The sitekey is inlined when the front end is built, so a deployed bundle still carries the old one.
+      process.stdout.write("The build inlines them. Redeploy staging and prod before the widget renders there.\n");
+      if (result.strandedVarsRemoved.length > 0) {
+        process.stdout.write(`Removed stranded vars nothing read: ${strandedLine(result.strandedVarsRemoved)}.\n`);
+      }
+      if (withoutSitekeys.length > 0) {
+        process.stdout.write(
+          `${listed(withoutSitekeys)} ${withoutSitekeys.length === 1 ? "has" : "have"} no sitekey. Builds there render no widget, and sign-in is blocked.\n`,
+        );
+      }
       process.stdout.write(`${formatDone()}\n`);
     }),
 });
 
 const deprovision = defineCommand({
-  meta: { name: "deprovision", description: "Delete the production widget(s) and clear Turnstile config" },
+  meta: {
+    name: "deprovision",
+    description: "Delete the production widget(s), clear their secrets, and blank the production sitekey",
+  },
   args: {
     json: { type: "boolean", default: false, description: "Machine-readable output" },
     worker: { ...workerArg },
@@ -225,13 +264,12 @@ const deprovision = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const config = await loadTurnstileConfig(projectDir);
-      const modes = resolveModes(config);
-      const { account, accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
-      const worker = await resolveSingleWorker({
+      const { worker, config } = await resolveTurnstileTarget({
         projectDir,
         ...(args.worker !== undefined ? { worker: args.worker } : {}),
       });
+      const modes = resolveModes(config);
+      const { account, accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       const cf = await cloudflareClients({ accountId, apiToken });
       // The project name scopes both the widget names teardown recomputes and the dispatcher's
       // `<project>-<env>-secrets-write` target — and it is `requireProjectName`, because a guessed one
@@ -260,7 +298,7 @@ const deprovision = defineCommand({
         process.stdout.write(`${formatJsonLine({ command: "turnstile deprovision", ...result })}\n`);
         return;
       }
-      process.stdout.write(`Production widget(s) removed and config cleared.\n`);
+      process.stdout.write("Production widget(s) removed. Secrets cleared, and the production sitekey blanked.\n");
       process.stdout.write(`${formatDone()}\n`);
     }),
 });

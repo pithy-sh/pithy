@@ -606,6 +606,8 @@ const RAW_COMPOSERS: Readonly<Record<string, string>> = {
     "Decides whether a command that names no one environment audits from the composition for none; a command that names its environment in actedOn composes for it through projectCapabilitySetFor.",
   "capabilities/secretApplicability.ts":
     "Resolves once, unstamped, only to learn which Worker directories exist; every environment's answer is composed through composeFor.",
+  "capabilities/turnstileSitekeys.ts":
+    "Reads back the one sitekeys map a pithy.config.ts holds for every environment, composed once for none after writing it; a config that computes a sitekey from its environment is checked for none, which is a limit of this entry.",
   "commands/email.ts":
     "Reads the capability's config and the domains declaration once, unstamped, for provisioning that spans every declared environment; it is not on doctor's per-environment path, and a config that varies its domains by environment is read as whichever composition the module cache holds, which is a limit of this entry.",
   "commands/media.ts":
@@ -628,6 +630,8 @@ const RAW_COMPOSERS: Readonly<Record<string, string>> = {
     "Reads the dev secrets registry, which is per project with one value per name, re-importing a config pithy add has just written.",
   "main.ts":
     "Imports every command module whole, commands/email.ts among them, to run its default export; each command it runs is held on its own.",
+  "project/capabilityWorker.ts":
+    "Resolves the one Worker a capability command writes into, for provisioning that spans every declared environment; a config that differs by environment is answered from the composition for none, which is a limit of this entry.",
   "project/deploy.ts":
     "Reads the domains declaration from a composition for no environment, and is not on doctor's per-environment path; a config that varies its domains by environment is read as whichever composition the module cache holds, which is a limit of this entry.",
   "project/deployKit.ts":
@@ -663,6 +667,10 @@ const SEALED: Readonly<Record<string, string>> = {
     "Returns the pithy vector command, which main.ts runs; the composition its run takes is the one this module's RAW_COMPOSERS entry names.",
   "capabilities/secretApplicability.ts#projectSecretApplicability":
     "Returns which secrets each environment reaches, each composed through composeFor; the raw resolve only finds the Worker directories.",
+  "capabilities/turnstileSitekeys.ts#assertTurnstileSitekeysWritable":
+    "Returns nothing; it refuses when the sitekeys map cannot be written.",
+  "capabilities/turnstileSitekeys.ts#writeTurnstileSitekeys":
+    "Returns the path of the pithy.config.ts written and whether a byte changed.",
   "devSecrets/targets.ts#resolveDevSecretsTargets":
     "Returns each Worker's directory and secret registry, which is per project with one value per name.",
   "main.ts#COMMAND_REGISTRY":
@@ -684,6 +692,10 @@ const SEALED: Readonly<Record<string, string>> = {
 const CARRYING: Readonly<Record<string, string>> = {
   "commands/email.ts#loadEmailCapability":
     "Returns the email capability instance for pithy email's provisioning, which spans every declared environment; only commands/email.ts calls it.",
+  "commands/turnstile.ts#resolveTurnstileTarget":
+    "Returns the resolved Worker and its turnstile config for pithy turnstile provision and deprovision, which write every environment's sitekeys at once; only commands/turnstile.ts calls it.",
+  "project/capabilityWorker.ts#resolveCapabilityWorker":
+    "Returns the resolved Worker and its capability instance for a capability's provisioning, which spans every declared environment; commands/media.ts, payments.ts, storage.ts, support.ts, turnstile.ts and vector.ts call it, each named in RAW_COMPOSERS.",
 };
 
 /** Every module that imports a computed specifier, and what it imports. */

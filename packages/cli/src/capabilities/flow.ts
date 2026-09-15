@@ -433,18 +433,20 @@ async function composePrerequisites(
 }
 
 /**
- * The config keys a Worker's `pithy.config.ts` already states for one capability, or none when it does not
- * compose it yet.
+ * Whether a Worker's `pithy.config.ts` already states a config key for one capability — or might, because
+ * its registration spreads or computes keys the text cannot name. Nothing is stated when it does not compose
+ * the capability yet.
  *
- * Reads through {@link locateRegistration}, the same locator `pithy upgrade` uses to decide which keys are
- * missing — one answer to "what does this registration already carry", so `add` and `upgrade` cannot
- * disagree about it. A config that cannot be read is treated as stating nothing: the capability is about to
- * be written into it, and a read failure here must not become a refusal about a required option.
+ * Reads through {@link locateRegistration}'s `statesKey`, the answer `pithy upgrade` uses to decide which
+ * keys are missing — so `add` and `upgrade` cannot disagree about it, and a registration that supplies a
+ * required option through a spread is not refused for lacking it. A config that cannot be read is treated as
+ * stating nothing: the capability is about to be written into it, and a read failure here must not become a
+ * refusal about a required option.
  */
-async function answeredConfigKeys(workerDir: string, capability: string): Promise<string[]> {
+async function answeredConfigKeys(workerDir: string, capability: string): Promise<(key: string) => boolean> {
   const outcome = await readFileOutcome(join(workerDir, "pithy.config.ts"));
-  if (outcome.state !== "read") return [];
-  return locateRegistration(outcome.text, capability)?.presentKeys ?? [];
+  const location = outcome.state === "read" ? locateRegistration(outcome.text, capability) : null;
+  return (key) => location?.statesKey(key) ?? false;
 }
 
 /**
@@ -508,7 +510,7 @@ export async function runAdd(options: RunAddOptions): Promise<AddResult> {
     // and a re-run has no `--set` because the answer is already committed to `pithy.config.ts`. Asking for
     // it again, after `install()` has run, would make the second run fail where the first succeeded.
     const unsettled = unsettledOptions(manifest.configOptions, configValues).filter(
-      (option) => !alreadyAnswered.includes(option.key),
+      (option) => !alreadyAnswered(option.key),
     );
     if (unsettled.length > 0) throw requiredOptionRefusal({ capability: manifest.name, missing: unsettled });
 

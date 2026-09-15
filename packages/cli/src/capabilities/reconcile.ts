@@ -798,10 +798,25 @@ function computeMissingBindings(
   return missing;
 }
 
-/** A located capability registration call in pithy.config.ts source. */
-type RegistrationLocation =
-  | { form: "oneliner"; indent: string; presentKeys: string[] }
-  | { form: "block"; indent: string; presentKeys: string[]; closeIndex: number };
+/**
+ * A located capability registration call in pithy.config.ts source. A block's `openIndex` and `closeIndex`
+ * are the offsets of its own `{` and `}`, so a caller can walk into it with {@link objectProperties}.
+ *
+ * **It answers "does this registration state that key?" and never hands out a key list** (#590 review). A
+ * list reads as the whole set, and it is not one when a member supplies keys the text cannot name — a
+ * spread, a computed key. `pithy upgrade` read a list, found `widgets` absent from `turnstile({ ...base })`,
+ * and appended a blank default after the spread that won at runtime. `statesKey` is true for a key a member
+ * names and for every key once the set is unlistable, so no caller can ask the question without that half.
+ */
+export type RegistrationLocation =
+  | { form: "oneliner"; indent: string; statesKey: (key: string) => boolean }
+  | {
+      form: "block";
+      indent: string;
+      statesKey: (key: string) => boolean;
+      openIndex: number;
+      closeIndex: number;
+    };
 
 /** From a `{`, the index of its matching `}` — string- and comment-aware so braces in strings/comments don't miscount. */
 function matchBrace(source: string, openIndex: number): number {
@@ -844,68 +859,212 @@ function matchBrace(source: string, openIndex: number): number {
   return -1;
 }
 
-/** True when the next non-whitespace character at or after `from` is a `:` — i.e. the token before it is a key. */
-function followedByColon(body: string, from: number): boolean {
+/** The offset of the next character at or after `from` that is neither whitespace nor inside a comment. */
+function nextToken(body: string, from: number): number {
   let k = from;
-  while (k < body.length && /\s/.test(body[k] as string)) k++;
-  return body[k] === ":";
+  while (k < body.length) {
+    if (/\s/.test(body[k] as string)) {
+      k++;
+      continue;
+    }
+    const pastComment = skipComment(body, k);
+    if (pastComment === -1) return k;
+    k = pastComment;
+  }
+  return k;
+}
+
+/** The offset past an identifier that starts at `from`, or `from` itself when none does. */
+function identifierEnd(body: string, from: number): number {
+  if (!/[A-Za-z_$]/.test(body[from] ?? "")) return from;
+  let k = from + 1;
+  while (k < body.length && /[\w$]/.test(body[k] as string)) k++;
+  return k;
+}
+
+/** One property of an object literal: its key, unquoted, and the source span of its value. */
+export interface ObjectProperty {
+  /** The key, as the object states it — a quoted key is returned unquoted. */
+  key: string;
+  /** Offset of the value's first character. */
+  valueStart: number;
+  /** Offset one past the value's last token — trailing whitespace and comments are not part of it. */
+  valueEnd: number;
+}
+
+/** The index past a string literal opened at `from`, honoring backslash escapes. */
+function skipString(body: string, from: number): number {
+  const quote = body[from];
+  let j = from + 1;
+  while (j < body.length && body[j] !== quote) {
+    if (body[j] === "\\") j += 2;
+    else j++;
+  }
+  return j + 1;
+}
+
+/** The index past a comment opened at `from`, or `-1` when `from` opens none. */
+function skipComment(body: string, from: number): number {
+  if (body[from] !== "/") return -1;
+  if (body[from + 1] === "/") {
+    const nl = body.indexOf("\n", from);
+    return nl === -1 ? body.length : nl + 1;
+  }
+  if (body[from + 1] === "*") {
+    const end = body.indexOf("*/", from + 2);
+    return end === -1 ? body.length : end + 2;
+  }
+  return -1;
 }
 
 /**
- * The top-level object keys in a registration body — string- and comment-aware (line and block comments),
- * recognizing both bare identifier keys (`basePath:`) and quoted keys (`"base-path":`, `'x':`). Scalars-only
- * bodies. A quoted key is returned unquoted, so it compares equal to the manifest option name.
+ * The end of one property value that starts at `from`: the offset past its last token before the depth-0
+ * comma that ends it, or before the end of the body. String-, comment- and bracket-aware, so a `,` or a `}`
+ * inside a string, a call or a nested object does not end the value early.
  */
-function objectKeys(body: string): string[] {
-  const keys: string[] = [];
-  let i = 0;
+function valueEnd(body: string, from: number): { end: number; next: number } {
+  let i = from;
   let depth = 0;
+  let end = from;
   while (i < body.length) {
-    const ch = body[i];
+    const ch = body[i] as string;
+    const pastComment = skipComment(body, i);
+    if (pastComment !== -1) {
+      i = pastComment;
+      continue;
+    }
     if (ch === '"' || ch === "'" || ch === "`") {
-      // Consume the whole string, then — at depth 0 and followed by `:` — record it as a quoted key.
-      const quote = ch;
-      let j = i + 1;
-      while (j < body.length && body[j] !== quote) {
-        if (body[j] === "\\") j += 2;
-        else j++;
-      }
-      if (depth === 0 && followedByColon(body, j + 1)) keys.push(body.slice(i + 1, j));
-      i = j + 1;
+      i = skipString(body, i);
+      end = i;
       continue;
     }
-    if (ch === "/" && body[i + 1] === "/") {
-      const nl = body.indexOf("\n", i);
-      if (nl === -1) break;
-      i = nl + 1;
-      continue;
-    }
-    if (ch === "/" && body[i + 1] === "*") {
-      const end = body.indexOf("*/", i + 2);
-      if (end === -1) break;
-      i = end + 2;
-      continue;
-    }
-    if (ch === "{" || ch === "[" || ch === "(") {
-      depth++;
-      i++;
-      continue;
-    }
-    if (ch === "}" || ch === "]" || ch === ")") {
-      depth--;
-      i++;
-      continue;
-    }
-    if (depth === 0 && ch !== undefined && /[A-Za-z_$]/.test(ch)) {
-      let j = i + 1;
-      while (j < body.length && /[\w$]/.test(body[j] as string)) j++;
-      if (followedByColon(body, j)) keys.push(body.slice(i, j));
-      i = j;
-      continue;
-    }
+    if (ch === "{" || ch === "[" || ch === "(") depth++;
+    else if (ch === "}" || ch === "]" || ch === ")") depth--;
+    else if (ch === "," && depth === 0) return { end, next: i + 1 };
+    if (!/\s/.test(ch)) end = i + 1;
     i++;
   }
-  return keys;
+  return { end, next: body.length };
+}
+
+/** What {@link scanProperties} read off an object literal's body. */
+interface ScannedObject {
+  /** Every member that names its key, in source order. */
+  properties: ObjectProperty[];
+  /**
+   * Whether `properties` names every key the object has. `false` when some member supplies keys the text
+   * cannot name: a spread (`...base`), a computed key (`[name]: value`), or a member this does not recognize.
+   */
+  listable: boolean;
+}
+
+/**
+ * The top-level members of an object literal's body — string- and comment-aware (line and block comments).
+ *
+ * **A member either names its key or makes the object's key set unlistable.** It names its key when it is a
+ * property (`basePath:`, `"base-path":`, `'x':`, `0:`), a shorthand (`widgets`), a method (`widgets() {}`,
+ * `async widgets() {}`, `*widgets() {}`), or an accessor (`get widgets() {}`). Anything else — a spread, a
+ * computed key, a shape this does not know — could supply any key at all, so the object is reported as
+ * `listable: false` rather than as lacking one (#590 review: a shorthand and a spread read as "missing", and
+ * `pithy upgrade` appended a blank default after them that won at runtime).
+ *
+ * Each member is skipped whole, to the comma that ends it, so nothing inside a value — a nested object, a
+ * ternary's `:` — is mistaken for a key of this one. A property's value span is what follows its colon; a
+ * shorthand's is its own identifier; a method's or an accessor's is the whole member. None of those last
+ * three opens with `{`, so a writer walking into a value never mistakes one for an object literal. Offsets
+ * are relative to `body`.
+ */
+function scanProperties(body: string): ScannedObject {
+  const properties: ObjectProperty[] = [];
+  let listable = true;
+  let i = nextToken(body, 0);
+  while (i < body.length) {
+    if (body[i] === ",") {
+      i = nextToken(body, i + 1);
+      continue;
+    }
+    const member = valueEnd(body, i);
+    const property = namedMember(body, i, member.end);
+    if (property === null) listable = false;
+    else properties.push(property);
+    i = nextToken(body, member.next);
+  }
+  return { properties, listable };
+}
+
+/** The modifiers a method or an accessor can open with. They name no key themselves. */
+const MEMBER_MODIFIERS: ReadonlySet<string> = new Set(["get", "set", "async"]);
+
+/**
+ * The property one member at `from` names, or `null` when it names none a text scan can read. `end` is the
+ * offset past the member's last token.
+ */
+function namedMember(body: string, from: number, end: number): ObjectProperty | null {
+  const ch = body[from] as string;
+  let keyEnd: number;
+  let key: string;
+  let bare = false;
+  if (ch === '"' || ch === "'") {
+    keyEnd = skipString(body, from);
+    key = body.slice(from + 1, keyEnd - 1);
+  } else if (/[0-9]/.test(ch)) {
+    keyEnd = from;
+    while (keyEnd < body.length && /[\w.]/.test(body[keyEnd] as string)) keyEnd++;
+    key = body.slice(from, keyEnd);
+  } else if (ch === "*") {
+    // A generator method: `*key() {}`.
+    const start = nextToken(body, from + 1);
+    keyEnd = identifierEnd(body, start);
+    if (keyEnd === start || body[nextToken(body, keyEnd)] !== "(") return null;
+    return { key: body.slice(start, keyEnd), valueStart: from, valueEnd: end };
+  } else {
+    keyEnd = identifierEnd(body, from);
+    // A spread, a computed key, or a shape this does not know.
+    if (keyEnd === from) return null;
+    key = body.slice(from, keyEnd);
+    bare = true;
+  }
+
+  const after = nextToken(body, keyEnd);
+  if (body[after] === ":") {
+    return { key, valueStart: nextToken(body, after + 1), valueEnd: end };
+  }
+  if (body[after] === "(") return { key, valueStart: from, valueEnd: end };
+  if (!bare) return null;
+  if (after >= body.length || body[after] === ",") return { key, valueStart: from, valueEnd: keyEnd };
+  if (MEMBER_MODIFIERS.has(key)) {
+    // `get key() {}`, `async key() {}`, `async *key() {}`: the key is the name after the modifier.
+    const start = body[after] === "*" ? nextToken(body, after + 1) : after;
+    const nameEnd = identifierEnd(body, start);
+    if (nameEnd > start && body[nextToken(body, nameEnd)] === "(") {
+      return { key: body.slice(start, nameEnd), valueStart: from, valueEnd: end };
+    }
+  }
+  return null;
+}
+
+/** Whether a scanned object states `key` — a member names it, or some member could supply any key. */
+function stating(scanned: ScannedObject): (key: string) => boolean {
+  const named = new Set(scanned.properties.map((property) => property.key));
+  return (key) => !scanned.listable || named.has(key);
+}
+
+/**
+ * The top-level properties of the object literal whose braces sit at `openIndex` and `closeIndex` in
+ * `source`, with value offsets into `source` itself — the one scanner `pithy upgrade`'s key check reads, so
+ * a writer that walks into a registration sees the keys that check sees.
+ *
+ * **A list of the members that name a key, and never proof that a key is absent.** A spread or a computed
+ * key supplies keys this cannot list. Whether a registration states a key is
+ * {@link RegistrationLocation}'s `statesKey`.
+ */
+export function objectProperties(source: string, openIndex: number, closeIndex: number): ObjectProperty[] {
+  const offset = openIndex + 1;
+  return scanProperties(source.slice(offset, closeIndex)).properties.map((property) => ({
+    key: property.key,
+    valueStart: property.valueStart + offset,
+    valueEnd: property.valueEnd + offset,
+  }));
 }
 
 /** Find a capability's registration call in pithy.config.ts source, and which option keys it already carries. */
@@ -918,11 +1077,17 @@ export function locateRegistration(source: string, name: string): RegistrationLo
   let i = parenIndex + 1;
   while (i < source.length && /\s/.test(source[i] as string)) i++;
   const ch = source[i];
-  if (ch === ")") return { form: "oneliner", indent, presentKeys: [] };
+  if (ch === ")") return { form: "oneliner", indent, statesKey: () => false };
   if (ch === "{") {
     const closeIndex = matchBrace(source, i);
     if (closeIndex === -1) return null;
-    return { form: "block", indent, presentKeys: objectKeys(source.slice(i + 1, closeIndex)), closeIndex };
+    return {
+      form: "block",
+      indent,
+      statesKey: stating(scanProperties(source.slice(i + 1, closeIndex))),
+      openIndex: i,
+      closeIndex,
+    };
   }
   return null;
 }
@@ -933,7 +1098,7 @@ function computeMissingConfigKeys(manifest: CapabilityManifest, configSource: st
   const location = locateRegistration(configSource, manifest.name);
   if (!location) return [];
   return manifest.configOptions
-    .filter((option) => !location.presentKeys.includes(option.key))
+    .filter((option) => !location.statesKey(option.key))
     .map((option) => ({
       key: option.key,
       // Conditional, because an absent default is a real state and not a missing field: an option the
@@ -1485,7 +1650,7 @@ async function applyConfigKeys(workerDir: string, plan: ReconcilePlan): Promise<
     // are re-checked — that makes a re-apply of a stale plan a no-op rather than a duplicate.
     const location = locateRegistration(source, cap.name);
     if (!location) continue;
-    const toAdd = cap.missingConfigKeys.filter((key) => !location.presentKeys.includes(key.key));
+    const toAdd = cap.missingConfigKeys.filter((key) => !location.statesKey(key.key));
     if (toAdd.length === 0) continue;
     source =
       location.form === "oneliner"

@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { existsSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { cp, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { vector as vectorCapability } from "@pithy-sh/vector/src/capability";
@@ -58,10 +58,15 @@ vi.mock("../cloudflare/clients", () => ({
 
 // Capabilities are per Worker and there is no `apps/` under the test runner's cwd, so the set is supplied.
 // `projectCapabilities` stays real — it is what `loadVectorConfig` reads the vector config out of.
+// `resolveSingleWorker` narrows by `--worker` the way the real one does, so a run can name a Worker other than
+// the first.
 vi.mock("../project/workerScope", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../project/workerScope")>()),
   resolveWorkers: async () => scope.workers,
-  resolveSingleWorker: async () => scope.workers[0],
+  resolveSingleWorker: async (options: { worker?: string }) =>
+    options.worker === undefined
+      ? scope.workers[0]
+      : scope.workers.find((worker) => (worker as { name: string }).name === options.worker),
 }));
 
 // Only the root config is stubbed. `requireProjectName` stays real, so the project name every index name
@@ -287,5 +292,45 @@ describe("pithy vector provision reads and writes the app worker's wrangler.json
     const failure = JSON.parse(run.stderr) as { error: { code: string; message: string } };
     expect(failure.error.code).toBe("validation/invalid_input");
     expect(failure.error.message).toBe(`${WORKER}'s wrangler.jsonc has no DB database_id for prod.`);
+  });
+});
+
+/**
+ * **The indexes provisioned are the ones the written-to Worker declares** (#590 review).
+ *
+ * `loadVectorConfig` read the first Worker composing vector, and every write went to `--worker`. With `api`
+ * composing vector and `web` composing nothing, `--worker web` created `api`'s indexes and recorded them in
+ * `web`'s stanza, while `api` — the Worker that compares `VECTOR_PROVISIONED` at boot — got no record.
+ */
+describe("pithy vector provision --worker names a Worker that composes no vector", () => {
+  let webDir: string;
+
+  beforeEach(async () => {
+    const built = await scaffoldedProject("pithy-vector-capability-worker-");
+    await provisionEnvironment(built.workerDir, "staging", "db-staging");
+    webDir = join(built.dir, "apps", "web");
+    await cp(built.workerDir, webDir, { recursive: true });
+    fixture.dir = built.dir;
+    fixture.workerDir = built.workerDir;
+    recorded.envs = [];
+    scope.workers = [
+      ...vectorWorkers(fixture.workerDir),
+      { name: "web", dir: webDir, config: {}, capabilities: [], target: {} },
+    ];
+    stubCredentials();
+  });
+
+  test("the run is refused by name, and no index is provisioned or recorded anywhere", async () => {
+    const api = readFileSync(join(fixture.workerDir, "wrangler.jsonc"), "utf8");
+    const web = readFileSync(join(webDir, "wrangler.jsonc"), "utf8");
+
+    const run = await runProvision({ env: "staging", json: true, worker: "web" });
+
+    expect(run.exitCode).toBe(1);
+    const failure = JSON.parse(run.stderr) as { error: { message: string } };
+    expect(failure.error.message).toBe("web does not compose the vector capability.");
+    expect(recorded.envs).toEqual([]);
+    expect(readFileSync(join(fixture.workerDir, "wrangler.jsonc"), "utf8")).toBe(api);
+    expect(readFileSync(join(webDir, "wrangler.jsonc"), "utf8")).toBe(web);
   });
 });

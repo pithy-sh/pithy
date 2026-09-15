@@ -22,7 +22,7 @@ pithy payments reconcile [--env <environment>] [--subject <holder>] [--rail <rai
 | `--env <environment>` | `reconcile` | `staging` | Which deployed environment to run the pass in. `staging` or `prod` — `dev` is local-only and is refused by name |
 | `--subject <holder>` | `reconcile` | every holder | Reconcile one holder's purchases, as `user:<id>` or `organization:<id>`. The support path: the same steps the cron runs, narrowed. An id on its own is refused — it names whichever user *or* organization carries it |
 | `--rail <rail>` | `reconcile` | every rail | Reconcile one rail: `apple`, `google`, `stripe`, `lemonSqueezy`, or `paddle`. Parsed here, so a mistyped rail is a sentence in this terminal rather than a Workflow that burns its retry budget unwatched |
-| `--worker <name>` | `provision` | the project's only Worker | The app Worker whose `wrangler.jsonc` carries the per-environment `DB` binding and receives the `PAYMENTS_RECONCILE` binding. Required when a project has several |
+| `--worker <name>` | `provision` | the project's only Worker | The app Worker whose `payments(...)` catalog is deployed, and whose `wrangler.jsonc` carries the per-environment `DB` binding and receives the `PAYMENTS_RECONCILE` binding. Required when a project has several |
 | `--dry-run` | `reconcile` | `false` | Report the drift and write nothing |
 | `--json` | both | `false` | One line of machine-readable output |
 
@@ -103,7 +103,14 @@ $ pithy payments reconcile --env staging --json
 
 Each one is a `PithyError` — the problem, then the action. Under `--json` they arrive on stderr as `{"error":{…}}`, and the process exits 1.
 
-**The capability is not configured.** No Worker under `apps/` composes `payments`.
+**The Worker does not compose `payments`.** The target, `--worker` or the project's only Worker, has no `payments(...)` registration. The config is read off the Worker the run writes into and never off a sibling: the reconcile worker is deployed with the catalog of the Worker whose stanza gets `PAYMENTS_RECONCILE`.
+
+```
+<worker> does not compose the payments capability.
+Add `payments({ ... })` to <worker>'s pithy.config.ts (run `pithy add payments`), or name the Worker that composes it with --worker.
+```
+
+`reconcile` writes into no Worker, and reads the first Worker composing `payments`. With none:
 
 ```
 The payments capability is not configured.

@@ -58,8 +58,9 @@ import {
  * something re-seeded, a removed secret's value stayed in `dev.json` forever (that module said so: "A
  * value is never removed here"), and the header below named a source it did not read.
  *
- * **`dev.json` keeps only what no registry declares.** A Turnstile sitekey is a real machine-local value
- * with no registry entry and belongs there. A name the registry *does* declare is dropped from that half
+ * **`dev.json` keeps only what no registry declares.** A machine-local endpoint is a real value with no
+ * registry entry and belongs there. A Turnstile sitekey does not: the front end reads it from `pithy.config.ts`
+ * at build time, and one found here is stranded (#590). A name the registry *does* declare is dropped from that half
  * outright, whatever it says — that is what makes deleting a secret from `secrets.jsonc` delete it from
  * every generated file, rather than falling back to a stale copy. `pithy doctor` names each one.
  *

@@ -124,6 +124,14 @@ async function commandsWhere(matches: (text: string) => boolean): Promise<string
   return hits;
 }
 
+/**
+ * Whether a command's source resolves one Worker: through `resolveSingleWorker`, or through
+ * `resolveCapabilityWorker`, which resolves it the same way and reads the capability off it (#590 review).
+ */
+function resolvesOneWorker(text: string): boolean {
+  return text.includes("resolveSingleWorker(") || text.includes("resolveCapabilityWorker(");
+}
+
 describe("capability provisioning skips an environment rather than failing the run", () => {
   /**
    * The gate that closes over the directory rather than over `FAN_OUT_COMMANDS`. A seventh command that
@@ -186,7 +194,7 @@ describe("capability provisioning skips an environment rather than failing the r
   test.each(FAN_OUT_COMMANDS)("%s reads readiness from a resolved worker", async (command) => {
     const text = await source(command);
 
-    expect(text).toContain("resolveSingleWorker(");
+    expect(resolvesOneWorker(text)).toBe(true);
     expect(text).toContain("workerDir: appWorker.dir");
   });
 
@@ -198,7 +206,7 @@ describe("capability provisioning skips an environment rather than failing the r
    * fanning out, it is about there being no root Worker to fall back on.
    */
   test("every command that resolves a single worker exposes --worker", async () => {
-    const resolving = await commandsWhere((text) => blankComments(text).includes("resolveSingleWorker("));
+    const resolving = await commandsWhere((text) => resolvesOneWorker(blankComments(text)));
     expect(resolving).toEqual(expect.arrayContaining([...FAN_OUT_COMMANDS, ...SINGLE_ENVIRONMENT_COMMANDS]));
 
     const unanswerable: string[] = [];
