@@ -415,11 +415,8 @@ export function isStoreBound(entry: Pick<SecretRegistryEntry, "backend" | "keyed
  *
  * A `d1` secret is a row, never a binding, so it takes no part.
  */
-export function refuseUnbindableStoreSecrets(
-  entries: readonly { name: string; entry: Pick<SecretRegistryEntry, "backend" | "keyed">; owner?: string }[],
-): void {
-  const seen = new Map<string, { name: string; owner?: string }>();
-  for (const { name, entry, owner } of entries) {
+export function refuseUnbindableStoreSecrets(entries: readonly StoreSecretDeclaration[]): void {
+  for (const { name, entry } of entries) {
     if (!entry || !isStoreBound(entry)) continue;
     const binding = secretBindingName(name);
     if (!isBindingName(binding)) {
@@ -428,18 +425,60 @@ export function refuseUnbindableStoreSecrets(
         action: "Rename the secret so its binding starts with a letter or an underscore.",
       });
     }
-    const first = seen.get(binding);
-    if (first && first.name !== name) {
-      const who = (one: { name: string; owner?: string }) =>
-        one.owner === undefined ? `"${one.name}"` : `"${one.name}" (${one.owner})`;
-      throw new InternalError({
-        message: `secret registry: ${who(first)} and ${who({ name, ...(owner === undefined ? {} : { owner }) })} both bind as ${binding}.`,
-        action:
-          "Rename one of them. A Worker reads a Secrets Store secret through one binding name, so two secrets cannot share it.",
-      });
-    }
-    if (!first) seen.set(binding, { name, ...(owner === undefined ? {} : { owner }) });
   }
+  const [collision] = storeBindingCollisions(entries);
+  if (collision) {
+    throw new InternalError({
+      message: `secret registry: ${declared(collision.first)} and ${declared(collision.second)} both bind as ${collision.binding}.`,
+      action:
+        "Rename one of them. A Worker reads a Secrets Store secret through one binding name, so two secrets cannot share it.",
+    });
+  }
+}
+
+/** One store secret as a collision check reads it: its key, its entry, and whose declaration it is. */
+export interface StoreSecretDeclaration {
+  /** The registry key. */
+  name: string;
+  /** The entry — only `backend` and `keyed` are read. */
+  entry: Pick<SecretRegistryEntry, "backend" | "keyed">;
+  /** Whose declaration it is — a capability, or a Worker — when the caller is merging several. */
+  owner?: string;
+}
+
+/** Two distinct store secrets that derive one binding. */
+export interface StoreBindingCollision {
+  /** The binding both derive. */
+  binding: string;
+  /** The first declaration of it. */
+  first: { name: string; owner?: string };
+  /** A later declaration, under another key. */
+  second: { name: string; owner?: string };
+}
+
+/**
+ * **Every pair of distinct store secrets that derive one binding, without throwing.** The answer
+ * {@link refuseUnbindableStoreSecrets} throws on, for a caller that must keep going — `pithy dev`
+ * withholds the one binding and starts every Worker, rather than stopping them all over it. One definition
+ * of a collision, so a registry that refuses one and a merge that withholds one cannot disagree about which.
+ */
+export function storeBindingCollisions(entries: readonly StoreSecretDeclaration[]): StoreBindingCollision[] {
+  const seen = new Map<string, { name: string; owner?: string }>();
+  const collisions: StoreBindingCollision[] = [];
+  for (const { name, entry, owner } of entries) {
+    if (!entry || !isStoreBound(entry)) continue;
+    const binding = secretBindingName(name);
+    const here = { name, ...(owner === undefined ? {} : { owner }) };
+    const first = seen.get(binding);
+    if (!first) seen.set(binding, here);
+    else if (first.name !== name) collisions.push({ binding, first, second: here });
+  }
+  return collisions;
+}
+
+/** A declaration as a refusal names it: the key, and whose it is when that is known. */
+function declared(one: { name: string; owner?: string }): string {
+  return one.owner === undefined ? `"${one.name}"` : `"${one.name}" (${one.owner})`;
 }
 
 /**
@@ -450,7 +489,6 @@ export function refuseUnbindableStoreSecrets(
  * type param preserves the precise entry literals for `SecretValue`/`SecretName`.
  */
 export function defineSecretRegistry<const R extends SecretRegistry>(registry: R): R {
-  refuseUnbindableStoreSecrets(Object.entries(registry).map(([name, entry]) => ({ name, entry })));
   for (const [name, entry] of Object.entries(registry)) {
     if (!name) throw new InternalError({ message: "secret registry: every entry needs a non-empty name." });
     // A name carrying the separator would be indistinguishable from a keyspace member, so one
@@ -565,5 +603,8 @@ export function defineSecretRegistry<const R extends SecretRegistry>(registry: R
       }
     }
   }
+  // After every entry's own axes, so an empty name is refused as empty and a malformed backend as
+  // malformed, before a binding is derived from either.
+  refuseUnbindableStoreSecrets(Object.entries(registry).map(([name, entry]) => ({ name, entry })));
   return registry;
 }

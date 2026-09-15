@@ -199,14 +199,39 @@ function declaredStoreBackedKeys(): string[] {
 
 /** The bindings one wrangler template declares, split by the two blocks this test cares about. */
 function templateBindings(path: string): { store: string[]; d1: string[] } {
+  return templateBindingsIn(readSource(path) ?? "");
+}
+
+/** {@link templateBindings}, over a template's text — so the reader itself can be run against fixtures. */
+function templateBindingsIn(text: string): { store: string[]; d1: string[] } {
   // The shared walk (#439). JSONC has the same two holes as TypeScript: a `//` inside a string value
   // is not a comment, and a whole-line rule saw no trailing one at all.
-  const source = blankComments(readSource(path) ?? "");
-  const blockOf = (key: string): string =>
-    source.match(new RegExp(`"${key}"\\s*:\\s*\\[(.*?)\\n\\s*\\]`, "s"))?.[1] ?? "";
+  const source = blankComments(text);
+  // Every array under the key, wherever it is and however it is laid out: each `"<key>": [` found, read to
+  // its own closing bracket. Brackets inside a string value do not count, so a quoted `]` ends nothing.
+  const blocksOf = (key: string): string => {
+    const blocks: string[] = [];
+    for (const match of source.matchAll(new RegExp(`"${key}"\\s*:\\s*\\[`, "g"))) {
+      const open = (match.index ?? 0) + match[0].length;
+      let depth = 1;
+      let quoted = false;
+      let at = open;
+      for (; at < source.length && depth > 0; at += 1) {
+        const char = source[at];
+        if (quoted) {
+          if (char === "\\") at += 1;
+          else if (char === '"') quoted = false;
+        } else if (char === '"') quoted = true;
+        else if (char === "[") depth += 1;
+        else if (char === "]") depth -= 1;
+      }
+      blocks.push(source.slice(open, at - 1));
+    }
+    return blocks.join("\n");
+  };
   const bindingsIn = (block: string): string[] =>
     [...block.matchAll(/"binding"\s*:\s*"([^"]+)"/g)].map((m) => m[1] as string);
-  return { store: bindingsIn(blockOf("secrets_store_secrets")), d1: bindingsIn(blockOf("d1_databases")) };
+  return { store: bindingsIn(blocksOf("secrets_store_secrets")), d1: bindingsIn(blocksOf("d1_databases")) };
 }
 
 /**
@@ -318,6 +343,42 @@ describe("a secret's declared backend is where the value actually goes", () => {
  * Worth pinning explicitly because five neighboring credential secrets were just corrected from
  * `cf-secrets-store` to `d1`: the master key must never be swept along with them.
  */
+/**
+ * **The gate's reader reaches every block (#603 review).** It read the first `secrets_store_secrets` array
+ * in a file, and only one whose `]` sat on a line of its own — so a kebab binding in `env.staging`, or in a
+ * one-line array, was a binding the casing gate never saw. Proven on fixtures, because no committed
+ * template happens to have either shape today, which is exactly when a reader's hole goes unnoticed.
+ */
+describe("the template reader", () => {
+  test("reads every secrets_store_secrets block — top level and each env — not only the first", () => {
+    const text = `{
+  "secrets_store_secrets": [
+    { "binding": "SECRETS_ENCRYPTION_KEYS", "store_id": "x", "secret_name": "y" }
+  ],
+  "env": {
+    "staging": {
+      // a comment with a ] in it, and a "binding": "COMMENTED_OUT" nobody binds
+      "secrets_store_secrets": [
+        { "binding": "email-link-signing-key", "store_id": "x", "secret_name": "y" }
+      ]
+    },
+    "prod": { "secrets_store_secrets": [{ "binding": "ONE_LINE", "store_id": "x", "secret_name": "y" }] }
+  }
+}`;
+    expect(templateBindingsIn(text).store).toEqual(["SECRETS_ENCRYPTION_KEYS", "email-link-signing-key", "ONE_LINE"]);
+  });
+
+  test("reads a one-line array with nothing after it", () => {
+    const text = `{ "name": "x", "secrets_store_secrets": [{ "binding": "email-link-signing-key", "store_id": "x", "secret_name": "y" }] }`;
+    expect(templateBindingsIn(text).store).toEqual(["email-link-signing-key"]);
+  });
+
+  test("keeps the two kinds apart: a d1 binding is never read as a store one", () => {
+    const text = `{ "d1_databases": [{ "binding": "DB" }], "secrets_store_secrets": [{ "binding": "KEY" }] }`;
+    expect(templateBindingsIn(text)).toEqual({ store: ["KEY"], d1: ["DB"] });
+  });
+});
+
 describe("the at-rest encryption key stays in the Cloudflare Secrets Store", () => {
   test("it is store-backed, and never declared as a D1 row", () => {
     expect(boundStoreBindings()).toContain(MASTER_KEY_BINDING);

@@ -8,7 +8,13 @@ import { sentenceOf } from "@pithy-sh/core/src/error/pithyError";
 import { type DevSecretsFile, ENVELOPE_SHAPE } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { loadDevSecrets } from "@pithy-sh/secrets/src/dev/loadDevSecrets";
 import { devSecretPayload, keyedSecretRefusal } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
-import { isMintableSecret, isProvisionableSecret, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
+import { secretBindingName } from "@pithy-sh/secrets/src/env/bindingName";
+import {
+  isMintableSecret,
+  isProvisionableSecret,
+  isStoreBound,
+  type SecretRegistryEntry,
+} from "@pithy-sh/secrets/src/registry";
 import { projectSecretApplicability } from "../capabilities/secretApplicability";
 import { DEV_SECRETS_FILE_NAME, resolveDevSecretsFile } from "../devSecrets/location";
 import { type DevSecretsTarget, resolveDevSecretsTargets, type UnresolvableWorker } from "../devSecrets/targets";
@@ -64,8 +70,13 @@ export type MisplacedDevSecretState =
 
 /** One declared `d1` secret found in `.dev.vars`, and what its being there means. */
 export interface MisplacedDevSecret {
-  /** The registry secret name, as it appears in both files. */
+  /** The registry secret name, as the secrets file spells it. */
   name: string;
+  /**
+   * The `.dev.vars` line, when it is spelled otherwise: a store secret's binding, `EMAIL_LINK_SIGNING_KEY`
+   * for `email-link-signing-key` (#603). Absent when the line is the name itself.
+   */
+  line?: string;
   /** Which of the two situations this is — delete the line, or move the value into the file. */
   state: MisplacedDevSecretState;
 }
@@ -294,15 +305,24 @@ export async function checkDevSecrets(options: CheckDevSecretsOptions): Promise<
       // chain, so a secret named `constructor` or `toString` read as stated in an empty file — and this
       // is the module that judges adopter-supplied names against a registry, so it is where a name
       // chosen to look like an `Object.prototype` key would be aimed.
-      const stranded = Object.hasOwn(inDevVars, name) ? inDevVars[name] : undefined;
+      // Under the key, or — for a store secret — under the binding it is read through (#603). The
+      // `.dev.vars:` block counts that binding as declared and leaves the line to this check, so a check
+      // that looked for the key alone would leave it reported by neither.
+      const binding = isStoreBound(entry) ? secretBindingName(name) : name;
+      const line = Object.hasOwn(inDevVars, name) || !Object.hasOwn(inDevVars, binding) ? name : binding;
+      const stranded = Object.hasOwn(inDevVars, line) ? inDevVars[line] : undefined;
       if (stranded !== undefined && stranded !== "") {
         // Whatever the backend. `backend` says where a *seeded* value lands — a D1 row, or a binding —
         // and it was standing in for a different question: is the root `.dev.vars` a file anything
         // reads this name out of. {@link CLOUDFLARE_ENV_KEYS} is the whole answer, and it is the list
         // the readers themselves use. Which of the two states it is depends only on whether the
         // secrets file states it too.
-        if (!isCloudflareEnvKey(name))
-          misplaced.push({ name, state: Object.hasOwn(stated, name) ? "duplicate" : "unmoved" });
+        if (!isCloudflareEnvKey(line))
+          misplaced.push({
+            name,
+            ...(line === name ? {} : { line }),
+            state: Object.hasOwn(stated, name) ? "duplicate" : "unmoved",
+          });
         continue;
       }
       // Stated is not the same as sound. `Object.hasOwn` was the whole check, so a value violating its
@@ -429,8 +449,8 @@ export function describeDevSecrets(check: DevSecretsCheck): string[] {
     // shape; "run pithy seed to see which secret and why" spent a round trip re-deriving it (#323).
     lines.push(check.unreadable);
   }
-  for (const { name, state } of check.misplaced) {
-    lines.push(describeMisplaced(name, state, check.path));
+  for (const { name, line, state } of check.misplaced) {
+    lines.push(describeMisplaced(name, state, check.path, line));
   }
   for (const { reason } of check.malformed) {
     lines.push(reason);
@@ -476,12 +496,15 @@ export function describeDevSecrets(check: DevSecretsCheck): string[] {
  * secret any more, so a line there is inert rather than competing. Saying "dev reads that one" was true
  * before #153 and is the sentence that would send an adopter the wrong way now.
  */
-function describeMisplaced(name: string, state: MisplacedDevSecretState, path: string): string {
+function describeMisplaced(name: string, state: MisplacedDevSecretState, path: string, line?: string): string {
+  // The line as it is spelled, because that is what an adopter searches the file for; the secret's own
+  // name beside it when the two differ, because that is what the secrets file is keyed by.
+  const where = line === undefined ? name : `${line} (the binding of ${name})`;
   switch (state) {
     case "duplicate":
-      return `${name} is in .dev.vars as well as ${path}. Nothing reads the .dev.vars one — delete that line.`;
+      return `${where} is in .dev.vars as well as ${path}. Nothing reads the .dev.vars one — delete that line.`;
     case "unmoved":
-      return `${name} is in .dev.vars, which dev no longer reads. Run pithy secrets edit, and write it into ${path} as ${ENVELOPE_SHAPE}.`;
+      return `${where} is in .dev.vars, which dev no longer reads. Run pithy secrets edit, and write it into ${path} as ${ENVELOPE_SHAPE}.`;
   }
 }
 

@@ -176,6 +176,23 @@ describe("defineSecretRegistry — the binding a store secret is read through (#
     ).not.toThrow();
   });
 
+  test("keys that differ only in a separator bind as one name, and are refused (#603 review)", () => {
+    expect(() =>
+      defineSecretRegistry({
+        "R2ACCESS-KEY": { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
+        R2ACCESS_KEY: { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
+      }),
+    ).toThrowError(/"R2ACCESS-KEY" and "R2ACCESS_KEY" both bind as R2ACCESS_KEY/);
+  });
+
+  test("an empty store-backed key is refused as empty, not as a binding", () => {
+    expect(() =>
+      defineSecretRegistry({
+        "": { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
+      }),
+    ).toThrowError("secret registry: every entry needs a non-empty name.");
+  });
+
   test("a store-backed key whose binding cannot be bound is refused", () => {
     expect(() =>
       defineSecretRegistry({

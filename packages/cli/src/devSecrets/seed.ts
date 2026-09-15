@@ -270,16 +270,15 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
 }
 
 /**
- * The secret a `.dev.vars` line is the binding of, when a target's registry declares one. A line is keyed by
+ * The secret a `.dev.vars` line is the binding of, when exactly one secret across the targets derives it. A line is keyed by
  * the binding (#603) and the report names secrets, so the line `EMAIL_LINK_SIGNING_KEY` reports as
  * `email-link-signing-key`.
  */
 function bindingSecret(binding: string, targets: readonly DevSecretsTarget[]): string | undefined {
-  for (const target of targets) {
-    const secret = bindingSecrets(target.registry).get(binding);
-    if (secret !== undefined) return secret;
-  }
-  return undefined;
+  const secrets = new Set(targets.flatMap((target) => bindingSecrets(target.registry).get(binding) ?? []));
+  // Two Workers' secrets on one binding is a collision the generator withholds and reports. A line still
+  // under that name came from somewhere else — a `.dev.vars.local` — and is no one secret's to claim.
+  return secrets.size === 1 ? [...secrets][0] : undefined;
 }
 
 /**

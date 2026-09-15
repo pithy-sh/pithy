@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { devVarsForRegistry } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
-import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
+import { type SecretRegistry, storeBindingCollisions } from "@pithy-sh/secrets/src/registry";
 import type { StatePathOptions } from "../notifier/state";
 import { writeFileAtomic } from "../project/atomic";
 import { ensureScaffoldPath } from "../project/scaffold";
@@ -232,13 +232,17 @@ export async function generateDevVars(options: GenerateDevVarsOptions): Promise<
   // Resolved once, here, so the value set and the report of what could not be asked for it come from one
   // answer. Two resolutions would be two chances to disagree about which Workers were readable.
   const resolution = await devSecretsResolution(options);
-  const bootstrap = options.values ?? (await devVarsSources(options, resolution.targets));
+  const sources =
+    options.values !== undefined
+      ? { values: options.values, refused: [] }
+      : await devVarsSources(options, resolution.targets);
+  const bootstrap = sources.values;
   const rootLocal = await readLocalOverrides(options.projectDir);
   const dirs = options.workerDirs ?? (await workerDirs(options.projectDir));
 
   const generated: string[] = [];
   const unchanged: string[] = [];
-  const refused: string[] = [];
+  const refused: string[] = [...sources.refused];
   const relinked: string[] = [];
   const names = new Set<string>();
 
@@ -370,12 +374,29 @@ async function devSecretsResolution(options: GenerateDevVarsOptions): Promise<De
 async function devVarsSources(
   options: GenerateDevVarsOptions,
   targets: readonly DevSecretsTarget[],
-): Promise<Record<string, string>> {
+): Promise<{ values: Record<string, string>; refused: string[] }> {
   const paths = options.paths ?? {};
   const registry: SecretRegistry = ownProperties(
     Object.assign({}, ...targets.map((target) => target.registry)) as SecretRegistry,
   );
   const secrets = await materializedSecrets(options.projectDir, registry, paths);
+
+  // **Two Workers' store secrets that bind as one name (#603).** Each registry was checked alone when it
+  // was defined; only this merge sees them side by side. One line would hand one Worker the other's value,
+  // so neither is written — withheld and said, never thrown, because the other Workers still start.
+  const refused: string[] = [];
+  const withheld = new Set<string>();
+  const declarations = targets.flatMap((target) =>
+    Object.entries(target.registry).map(([name, entry]) => ({ name, entry, owner: target.name })),
+  );
+  for (const { binding, first, second } of storeBindingCollisions(declarations)) {
+    if (withheld.has(binding)) continue;
+    withheld.add(binding);
+    delete secrets[binding];
+    refused.push(
+      `${binding} was written to no .dev.vars: "${first.name}" (${first.owner}) and "${second.name}" (${second.owner}) both bind as ${binding}, and one line would hand one Worker the other's value. Rename one.`,
+    );
+  }
 
   const boundNames = new Set(bindingSecrets(registry).keys());
   const values: Record<string, string> = {};
@@ -387,7 +408,7 @@ async function devVarsSources(
     if (Object.hasOwn(registry, name) || boundNames.has(name)) continue;
     values[name] = value;
   }
-  return { ...values, ...secrets };
+  return { values: { ...values, ...secrets }, refused };
 }
 
 /** Every `cf-secrets-store` secret this project states, as `.dev.vars` values. Empty on any failure. */
