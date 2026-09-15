@@ -6,7 +6,13 @@ import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { EncryptionConfig } from "../crypto/envelope";
 import { generateKeyB64 } from "../rotation/keyRotation";
-import { type DeprovisionTarget, deprovisionTarget, type ManagedEnvironment, managedEnvironments } from "../scope";
+import {
+  type DeprovisionTarget,
+  deprovisionTarget,
+  type ManagedEnvironment,
+  managedEnvironments,
+  otherEnvironmentsRunning,
+} from "../scope";
 
 /**
  * The CF Secrets Store entry name holding an environment's master key — `<project>-<env>-secrets-encryption-keys`.
@@ -236,9 +242,10 @@ export async function deprovisionSecrets(
   if (options.deleteKeys) await deprovisioner.deleteMasterKey(env);
   await deprovisioner.deleteDatabase(env);
 
-  for (const other of managedEnvironments(target.declared)) {
-    if (other !== env && (await deprovisioner.hasManager(other)))
-      return { environment: env, managerTokenDeleted: false };
+  // The token is kept, not refused: it is a re-mintable credential, not data, so there is nothing to protect by
+  // stopping the run. The parts that are data refuse instead, through `assertSharedLeavesLast`.
+  if ((await otherEnvironmentsRunning(env, target.declared, (other) => deprovisioner.hasManager(other))).length > 0) {
+    return { environment: env, managerTokenDeleted: false };
   }
   await deprovisioner.deleteManagerToken();
   return { environment: env, managerTokenDeleted: true };

@@ -8,12 +8,12 @@ Stands up the support inbox: the R2 bucket attachments and raw messages live in,
 
 ```
 pithy support provision [--worker <name>] [--routing-zone <zone-id>] [--inbound-address <address>] [--app-worker <name>] [--json]
-pithy support deprovision [--worker <name>] [--storage] [--routing-zone <zone-id>] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--json]
+pithy support deprovision --env <environment> [--worker <name>] [--storage] [--routing-zone <zone-id>] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--json]
 ```
 
 **Its Worker deploy is gated.** The Worker is deployed carrying a stamp naming the package version and a hash of its resolved configuration, and a run whose stamp matches both ships nothing. Anything the gate cannot establish — no Worker, no stamp, an unreachable account — deploys. `pithy deploy --env <env>` ships the same Worker without provisioning anything else, and `pithy deploy --env <env> --kit --force` re-uploads it regardless. See [`pithy deploy`](./deploy.md).
 
-**Both subcommands reach a Cloudflare account.** There is no local mode and no `--env` flag: provisioning spans every managed environment — `staging` and `prod` — in one run. Unlike `pithy email` and `pithy media`, no Secrets Store id is needed: the classification worker binds `DB` and `AI` and holds no credential to decrypt.
+**Both subcommands reach a Cloudflare account.** There is no local mode. `provision` has no `--env` flag: it spans every managed environment — `staging` and `prod` — in one run. `deprovision` is the opposite, and requires one: it tears down exactly the environment named. Unlike `pithy email` and `pithy media`, no Secrets Store id is needed: the classification worker binds `DB` and `AI` and holds no credential to decrypt.
 
 ## Flags
 
@@ -31,9 +31,10 @@ pithy support deprovision [--worker <name>] [--storage] [--routing-zone <zone-id
 
 | Flag | Default | Purpose |
 |---|---|---|
+| `--env <environment>` | none — required | The one environment to tear down, declared in `pithy.config.ts`. With none, or one not declared, it refuses and lists the environments it could act on |
 | `--worker <name>` | — | The app Worker whose `wrangler.jsonc` names the database the audit trail is written to |
-| `--storage` | `false` | **Irreversible.** Also delete the R2 bucket with every attachment and raw message in it — this is your support history |
-| `--routing-zone <zone-id>` | — | The zone the inbound rule lives on. Without it the rule is left in place and mail keeps arriving |
+| `--storage` | `false` | **Irreversible.** Also delete the R2 bucket with every attachment and raw message in it — this is your support history. Only the last environment's teardown may |
+| `--routing-zone <zone-id>` | — | Also remove the inbound rule, from this zone. Without it the rule is left in place and mail keeps arriving. Only the last environment's teardown may |
 | `--r2-access-key-id <id>` | `R2_CREDENTIALS` | Required with `--storage`: a bucket must be emptied over the S3 protocol before R2 will delete it |
 | `--r2-secret-access-key <key>` | `R2_CREDENTIALS` | The secret half of the pair |
 | `--json` | `false` | Machine-readable output |
@@ -58,7 +59,18 @@ An environment is **ready** when its stanza in the app Worker's `wrangler.jsonc`
 
 The bucket is created on the first run **however many environments skip**; it is one per project and must not wait for production. If **every** environment is skipped the run exits 1 rather than reporting a success for a run that did nothing.
 
-`deprovision` removes the routing rule (only with `--routing-zone`) and the classification workers. The bucket stays unless `--storage` is passed, and with it the key pair is resolved **before** the first worker comes down: discovering it missing at the bucket step would leave the workers gone and the bucket standing.
+`deprovision` removes **one named environment's** classification worker. There is no default environment and no "all": it used to walk every declared environment, so a run meant for staging took production's worker with it. Named nothing, or something undeclared, it refuses before any credential is read and lists what could be named.
+
+The routing rule goes only with `--routing-zone`, and first, so mail stops before its handler does. The bucket stays unless `--storage` is passed, and with it the key pair is resolved **before** the worker comes down: discovering it missing at the bucket step would leave the worker gone and the bucket standing.
+
+**The rule and the bucket go with the last environment.** Each is one per project: the bucket holds every environment's support history, and the rule delivers the project's inbound mail. A staging teardown with either flag would take production's. It refuses while any other declared environment still runs a classification worker, before anything is deleted. Tear those down first.
+
+```
+The support bucket and the inbound routing rule are shared by every environment, and prod still runs. Nothing was deleted.
+Deprovision prod first, or drop --storage and --routing-zone.
+```
+
+"Still runs" means a deployed classification worker. An app Worker whose stanza still binds the bucket after its environment's classification worker is gone is not asked about. `--storage` is the only confirmation the bucket gets: R2 objects are not counted the way retained D1 rows are.
 
 Both subcommands audit what they did, when the project composes `@pithy-sh/audit` and credentials resolve. Auditing is a no-op otherwise.
 
@@ -95,6 +107,7 @@ When **every** environment was skipped the line above is still written to stdout
 | key | type | meaning |
 |---|---|---|
 | `command` | `"support deprovision"` | The subcommand that produced this line |
+| `env` | string | The one environment torn down — the value of `--env` |
 | `storageDeleted` | boolean | Whether `--storage` was passed, and therefore whether the bucket and everything in it was deleted |
 | `routingZone` | string \| null | The zone id the rule was removed from, or `null` when `--routing-zone` was not passed and the rule was left in place |
 
@@ -171,18 +184,18 @@ $ pithy support provision --routing-zone 0a1b2c3d --inbound-address support@help
 {"command":"support provision","bucket":{"bucket":"acme-global-support","created":false,"skipped":false},"environments":["staging","prod"],"routing":{"created":true,"skipped":false},"search":[{"env":"staging","created":false,"dropped":false},{"env":"prod","created":false,"dropped":false}],"skippedEnvironments":[]}
 ```
 
-Take the workers down but keep the history and the rule:
+Take staging's worker down but keep the history and the rule:
 
 ```
-$ pithy support deprovision
-Support workers removed.
+$ pithy support deprovision --env staging
+staging: classification worker removed.
 The routing rule was left in place. Pass --routing-zone to remove it.
 Done.
 ```
 
-Take the lot down, mail included:
+Take the lot down, mail included, once production is the last environment standing:
 
 ```
-$ pithy support deprovision --routing-zone 0a1b2c3d --storage --json
-{"command":"support deprovision","storageDeleted":true,"routingZone":"0a1b2c3d"}
+$ pithy support deprovision --env prod --routing-zone 0a1b2c3d --storage --json
+{"command":"support deprovision","env":"prod","storageDeleted":true,"routingZone":"0a1b2c3d"}
 ```

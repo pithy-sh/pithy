@@ -4,11 +4,12 @@
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import {
   assertValidEnvironment,
+  DEFAULT_ENVIRONMENTS,
   type DeclaredEnvironments,
   ENVIRONMENTS,
   FEATURE_ENVIRONMENT,
 } from "@pithy-sh/core/src/naming/environment";
-import { ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
+import { deprovisionTarget, ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 
 /**
  * The `--env` flag, at the CLI edge.
@@ -105,6 +106,36 @@ export function requireManagedEnvironment(
     message: `--env must be one of ${environments.join(", ")}. Got ${JSON.stringify(value)}.`,
     action: refusalAction(value, environments),
   });
+}
+
+/**
+ * The `--env` declaration of a teardown: no default, deliberately (#591). A bare `deprovision` used to walk
+ * every declared environment, production's included. The text names the default set because citty resolves
+ * it before any project is read; {@link requireTeardownEnvironment}'s refusal names the project's own.
+ */
+export const TEARDOWN_ENV_ARG = {
+  type: "string",
+  description: `The environment to tear down: ${DEFAULT_ENVIRONMENTS.join(" | ")}, or one declared in pithy.config.ts. Required`,
+} as const;
+
+/**
+ * The `--env` of a teardown, at the CLI edge: **the one environment a `deprovision` acts on (#591).**
+ *
+ * A teardown has no default. Absent is not `dev`, not "all", and never production — so the flag is declared
+ * without {@link ENV_ARG}'s default, and this is what turns its absence into a refusal. A given value goes
+ * through {@link requireEnvironment} first, so `production` is answered with `prod` rather than with a list;
+ * then through `@pithy-sh/secrets`' `deprovisionTarget`, the one refusal every capability's teardown already
+ * gives, which names what could have been named and says nothing was deleted. The kit's orchestrator resolves
+ * the same target again, because it is the one that deletes.
+ *
+ * One helper, because five commands tear an environment down. Three were spelling the checks themselves, and
+ * two of those skipped the first.
+ */
+export function requireTeardownEnvironment(
+  value: string | undefined,
+  declared: DeclaredEnvironments | readonly string[],
+): ManagedEnvironment {
+  return deprovisionTarget({ environment: value === undefined ? undefined : requireEnvironment(value), declared });
 }
 
 /**

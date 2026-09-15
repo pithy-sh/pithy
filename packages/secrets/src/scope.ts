@@ -106,6 +106,64 @@ export function deprovisionTarget(target: DeprovisionTarget): ManagedEnvironment
 }
 
 /**
+ * The declared environments **other than `target`** whose capability Worker is still deployed, in declared
+ * order. `runs` is the capability's own question — the secrets manager, the email worker, the classification
+ * worker — asked once per other environment. The target is never asked about: its Worker is the one going.
+ */
+export async function otherEnvironmentsRunning(
+  target: ManagedEnvironment,
+  declared: DeclaredEnvironments | readonly string[],
+  runs: (env: ManagedEnvironment) => Promise<boolean>,
+): Promise<ManagedEnvironment[]> {
+  const others: ManagedEnvironment[] = [];
+  for (const env of managedEnvironments(declared)) {
+    if (env !== target && (await runs(env))) others.push(env);
+  }
+  return others;
+}
+
+/** One project-wide part of a capability a teardown was asked to delete, and the flag that asked. */
+export interface SharedPart {
+  /** What it is, lowercase, as a refusal names it — `the suppression list`. */
+  what: string;
+  /** The flag that asked for it — what the refusal says to drop. */
+  flag: string;
+}
+
+/**
+ * **A part every environment shares leaves with the last environment, never before it (#591).**
+ *
+ * {@link deprovisionTarget} makes a teardown name one environment. Some of what a capability provisions has no
+ * environment to name: email's suppression list, support's bucket and inbound rule are one per project, bound by
+ * every environment. Deleting one of those from a staging teardown takes production's with it — the same defect,
+ * one level up. So it refuses, before anything is deleted, while any other declared environment still runs the
+ * capability's Worker. The operator tears those down first, and the last teardown takes the shared part.
+ *
+ * It does not replace a count. A shared part holding retained rows is still refused by `assertRetainedAgreed`
+ * after this passes — this says *when* it may go, the count says the operator knows *what* goes.
+ *
+ * **What "still runs" does not see.** A deployed capability Worker is the proxy for "still uses it". An app
+ * Worker whose stanza still binds the shared part after its environment's capability Worker is gone is not
+ * asked about, and neither is a feature environment, which binds its own copies and is not declared.
+ */
+export async function assertSharedLeavesLast(
+  target: ManagedEnvironment,
+  declared: DeclaredEnvironments | readonly string[],
+  runs: (env: ManagedEnvironment) => Promise<boolean>,
+  shared: readonly SharedPart[],
+): Promise<void> {
+  if (shared.length === 0) return;
+  const still = await otherEnvironmentsRunning(target, declared, runs);
+  if (still.length === 0) return;
+  const parts = shared.map((part) => part.what).join(" and ");
+  const named = still.join(", ");
+  throw new ValidationError({
+    message: `${parts.charAt(0).toUpperCase()}${parts.slice(1)} ${shared.length === 1 ? "is" : "are"} shared by every environment, and ${named} still ${still.length === 1 ? "runs" : "run"}. Nothing was deleted.`,
+    action: `Deprovision ${named} first, or drop ${shared.map((part) => part.flag).join(" and ")}.`,
+  });
+}
+
+/**
  * The environment a `global` CF-Secrets-Store secret is canonically written through — **the last declared
  * one**.
  *

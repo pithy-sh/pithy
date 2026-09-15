@@ -3,7 +3,14 @@
 
 import { DEFAULT_ENVIRONMENTS, ENVIRONMENTS, isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
 import { describe, expect, test } from "vitest";
-import { canonicalGlobalEnvironment, ManagedEnvironment, managedEnvironments, resolveWriteTargets } from "./scope";
+import {
+  assertSharedLeavesLast,
+  canonicalGlobalEnvironment,
+  ManagedEnvironment,
+  managedEnvironments,
+  otherEnvironmentsRunning,
+  resolveWriteTargets,
+} from "./scope";
 
 describe("managed environments", () => {
   test("are exactly what the project declared — the default set behaves as the old closed enum did", () => {
@@ -70,5 +77,65 @@ describe("resolveWriteTargets (backend × scope routing)", () => {
     expect(resolveWriteTargets("cf-secrets-store", "global", "staging", DEFAULT_ENVIRONMENTS)).toEqual(["prod"]);
     expect(resolveWriteTargets("cf-secrets-store", "global", "prod", DEFAULT_ENVIRONMENTS)).toEqual(["prod"]);
     expect(resolveWriteTargets("cf-secrets-store", "global", "staging", ["staging", "live"])).toEqual(["live"]);
+  });
+});
+
+describe("otherEnvironmentsRunning", () => {
+  test("names every declared environment but the target that still runs, in declared order", async () => {
+    const running = new Set(["staging", "live", "prod"]);
+    const asked: string[] = [];
+    const runs = async (env: string) => {
+      asked.push(env);
+      return running.has(env);
+    };
+    expect(await otherEnvironmentsRunning("staging", ["staging", "live", "prod"], runs)).toEqual(["live", "prod"]);
+    // The target is never asked about: its own Worker is the one about to go.
+    expect(asked).toEqual(["live", "prod"]);
+  });
+
+  test("is empty when the target is the last one standing", async () => {
+    expect(await otherEnvironmentsRunning("prod", DEFAULT_ENVIRONMENTS, async (env) => env === "prod")).toEqual([]);
+  });
+});
+
+/**
+ * **#591, the shared half.** A teardown names one environment, but some of what a capability provisioned belongs to
+ * every environment — email's suppression list, support's bucket and inbound rule. Deleting one of those while
+ * another environment still runs is a staging teardown taking production's data. It goes with the last.
+ */
+describe("assertSharedLeavesLast", () => {
+  const suppression = { what: "the suppression list", flag: "--suppression" };
+
+  test("refuses while another environment still runs, naming it, the resource, and the flag to drop", async () => {
+    const run = assertSharedLeavesLast("staging", DEFAULT_ENVIRONMENTS, async (env) => env === "prod", [suppression]);
+    await expect(run).rejects.toMatchObject({
+      message: "The suppression list is shared by every environment, and prod still runs. Nothing was deleted.",
+      payload: { code: "validation/invalid_input", action: "Deprovision prod first, or drop --suppression." },
+    });
+  });
+
+  test("names every shared part asked for, and every environment still running", async () => {
+    const run = assertSharedLeavesLast("staging", ["staging", "live", "prod"], async (env) => env !== "staging", [
+      { what: "the support bucket", flag: "--storage" },
+      { what: "the inbound routing rule", flag: "--routing-zone" },
+    ]);
+    await expect(run).rejects.toMatchObject({
+      message:
+        "The support bucket and the inbound routing rule are shared by every environment, and live, prod still run. Nothing was deleted.",
+      payload: { action: "Deprovision live, prod first, or drop --storage and --routing-zone." },
+    });
+  });
+
+  test("lets the last environment take it", async () => {
+    await expect(
+      assertSharedLeavesLast("prod", DEFAULT_ENVIRONMENTS, async (env) => env === "prod", [suppression]),
+    ).resolves.toBeUndefined();
+  });
+
+  test("asks nothing when no shared part was asked for", async () => {
+    const runs = async (): Promise<boolean> => {
+      throw new Error("a teardown keeping every shared part has nothing to ask the account");
+    };
+    await expect(assertSharedLeavesLast("staging", DEFAULT_ENVIRONMENTS, runs, [])).resolves.toBeUndefined();
   });
 });

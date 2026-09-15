@@ -86,4 +86,11 @@ describe("pithy media", () => {
     const error = await failure("deprovision", { json: true, storage: true, env: "live" });
     expect(error.message).toBe('"live" is not an environment this project declares. Nothing was deleted.');
   });
+
+  // The flag goes through the naming rule before the declaration, so a misspelling is answered with the spelling.
+  test("deprovision answers --env production with prod", async () => {
+    root.config = { name: "acme" };
+    const error = await failure("deprovision", { json: true, storage: true, env: "production" });
+    expect(error.action).toBe("Use `prod`.");
+  });
 });

@@ -1497,6 +1497,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
   dryRun: ["seed", "upgrade"],
   env: [
     "deploy",
+    "email",
     "media",
     "migrate",
     "payments",
@@ -1504,6 +1505,7 @@ const SHARED_JSON_KEYS: Record<string, string[]> = {
     "secrets",
     "seed",
     "storage",
+    "support",
     "token",
     "upgrade",
     "vector",

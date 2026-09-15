@@ -30,6 +30,7 @@ import {
   projectCloudflareAccount,
   requireProjectName,
 } from "../project/config";
+import { requireTeardownEnvironment, TEARDOWN_ENV_ARG } from "../project/environment";
 import {
   type EnvironmentReadiness,
   environmentOutcomes,
@@ -335,12 +336,19 @@ const provision = defineCommand({
 });
 
 const deprovision = defineCommand({
-  meta: { name: "deprovision", description: "Remove the email workers (and optionally the suppression DB)" },
+  meta: {
+    name: "deprovision",
+    description: "Remove one environment's email worker (and, with the last, optionally the suppression DB)",
+  },
   args: {
+    // No default (#591): a bare `deprovision` removed every declared environment's email worker, production's
+    // included.
+    env: TEARDOWN_ENV_ARG,
     suppression: {
       type: "boolean",
       default: false,
-      description: "Also delete this project's suppression DB (irreversible)",
+      description:
+        "Also delete this project's suppression DB (irreversible). Every environment shares it, so only the last environment's teardown may",
     },
     "destroy-retained": { type: "string", description: DESTROY_RETAINED_DESCRIPTION },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
@@ -353,9 +361,11 @@ const deprovision = defineCommand({
       // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
       const config = await loadProject(projectDir);
       const project = requireProjectName(config);
-      // The project's own environment set (#241): what this command fans out across, rather than a
-      // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
-      const environments = loadProjectEnvironments(config);
+      // One named environment, settled before any credential is read (#591): naming nothing, or something
+      // undeclared, costs nothing and lists what could be named. The kit's teardown resolves it again — it
+      // is the one that deletes.
+      const declared = loadProjectEnvironments(config);
+      const env = requireTeardownEnvironment(args.env, declared);
       const { account, accountId, apiToken } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       const cf = await cloudflareClients({ accountId, apiToken });
       const deprovisioner = new CloudflareEmailDeprovisioner({
@@ -367,15 +377,21 @@ const deprovision = defineCommand({
         budget: new RetainedBudget(destroyRetained),
       });
 
-      await deprovisionEmail(deprovisioner, environments, { deleteSuppression: args.suppression, destroyRetained });
+      await deprovisionEmail(
+        deprovisioner,
+        { environment: env, declared },
+        { deleteSuppression: args.suppression, destroyRetained },
+      );
 
       if (args.json) {
         process.stdout.write(
-          `${formatJsonLine({ command: "email deprovision", suppressionDeleted: args.suppression })}\n`,
+          `${formatJsonLine({ command: "email deprovision", env, suppressionDeleted: args.suppression })}\n`,
         );
         return;
       }
-      process.stdout.write(`Email workers removed${args.suppression ? ", including the suppression database" : ""}.\n`);
+      process.stdout.write(
+        `${env}: email worker removed${args.suppression ? ", with the suppression database" : ""}.\n`,
+      );
       process.stdout.write(`${formatDone()}\n`);
     }),
 });

@@ -498,6 +498,19 @@ export class CloudflareSupportDeprovisioner implements SupportDeprovisioner {
     this.#audit = options.audit ?? (async () => {});
   }
 
+  /** Whether the env's classification worker is deployed — settled on a confirmed account, like every lookup here. */
+  async hasWorker(env: ManagedEnvironment): Promise<boolean> {
+    const { supportWorkerName } = await loadSupport(this.#projectDir);
+    const name = supportWorkerName(this.#project, env);
+    return Boolean(
+      await findOnConfirmedAccount({
+        ...this.#account,
+        what: `the ${name} Worker`,
+        find: () => this.#cf.workers().getWorker(name),
+      }),
+    );
+  }
+
   /** Delete the env's classification worker if it is deployed. */
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
     const { supportWorkerName } = await loadSupport(this.#projectDir);

@@ -236,6 +236,7 @@
     {
       "path": "email deprovision",
       "flags": [
+        "--env",
         "--suppression",
         "--no-suppression",
         "--destroy-retained",
@@ -563,6 +564,7 @@
       "flags": [
         "--json",
         "--no-json",
+        "--env",
         "--worker",
         "--storage",
         "--no-storage",

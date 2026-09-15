@@ -8,13 +8,13 @@ Stands up the email infrastructure — the project's shared suppression database
 
 ```
 pithy email provision [--worker <name>] [--routing-zone <zone-id>] [--inbound-address <address>] [--app-worker <name>] [--json]
-pithy email deprovision [--suppression] [--destroy-retained <n>] [--json]
+pithy email deprovision --env <environment> [--suppression] [--destroy-retained <n>] [--json]
 pithy email test --to <address> [--template <id>] [--from <address>] [--json]
 ```
 
 **Its Worker deploy is gated.** The Worker is deployed carrying a stamp naming the package version and a hash of its resolved configuration, and a run whose stamp matches both ships nothing. Anything the gate cannot establish — no Worker, no stamp, an unreachable account — deploys. `pithy deploy --env <env>` ships the same Worker without provisioning anything else, and `pithy deploy --env <env> --kit --force` re-uploads it regardless. See [`pithy deploy`](./deploy.md).
 
-**All three subcommands reach a Cloudflare account.** There is no local mode and no `--env` flag: provisioning spans every managed environment — `staging` and `prod` — in one run, and `test` sends a real message through the Cloudflare Email Sending API.
+**All three subcommands reach a Cloudflare account.** There is no local mode. `provision` has no `--env` flag: it spans every managed environment — `staging` and `prod` — in one run. `deprovision` is the opposite, and requires one: it tears down exactly the environment named. `test` sends a real message through the Cloudflare Email Sending API.
 
 ## Flags
 
@@ -32,7 +32,8 @@ pithy email test --to <address> [--template <id>] [--from <address>] [--json]
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--suppression` | `false` | **Irreversible.** Also delete this project's suppression database — every environment forgets who unsubscribed or hard-bounced |
+| `--env <environment>` | none — required | The one environment to tear down, declared in `pithy.config.ts`. With none, or one not declared, it refuses and lists the environments it could act on |
+| `--suppression` | `false` | **Irreversible.** Also delete this project's suppression database — every environment forgets who unsubscribed or hard-bounced. Only the last environment's teardown may: refused while another environment still runs an email worker |
 | `--destroy-retained <n>` | — | **Destructive.** With `--suppression`, delete a list that still holds addresses. `<n>` must equal the count the refusal printed |
 | `--json` | `false` | Machine-readable output |
 
@@ -67,9 +68,20 @@ The address is resolved through one resolver that prefers the Worker's `domains`
 
 **A run this long says where it got to.** Each environment's email worker is named as it is about to be uploaded — `▸ acme-staging-email...` — the same plain line `pithy deploy` and `pithy provision` print, from the one seam all three share. A worker the deploy gate skipped as already current says nothing, because nothing was uploaded for it. `--json` silences the lot and still writes exactly one line; a missing TTY does not, since a run in CI is the run whose log most needs this.
 
-`deprovision` deletes every environment's email worker first, because they bind the suppression database, and then deletes the database itself only when `--suppression` is passed. The global opt-out list is preserved by default; losing it is harmful.
+`deprovision` removes **one named environment's** email worker. There is no default environment and no "all": it used to walk every declared environment, so a run meant for staging removed production's worker with it. Named nothing, or something undeclared, it refuses before any credential is read and lists what could be named.
 
-**A list holding addresses is counted first.** The suppression table is declared retained, so with `--suppression` its rows are counted before the first worker goes, and the run refuses unless `--destroy-retained` names the same number — the guard `pithy migrate --rollback` spends. It is counted again at the delete.
+The suppression database goes only when `--suppression` is passed, after the worker that binds it. The opt-out list is preserved by default; losing it is harmful.
+
+**The list goes with the last environment.** It is one per project, and every environment binds it, so a staging teardown with `--suppression` would take production's list. It refuses while any other declared environment still runs an email worker, before anything is deleted. Tear those down first.
+
+```
+The suppression list is shared by every environment, and prod still runs. Nothing was deleted.
+Deprovision prod first, or drop --suppression.
+```
+
+"Still runs" means a deployed email worker. An app Worker whose stanza still binds the list after its environment's email worker is gone is not asked about.
+
+**A list holding addresses is counted first.** The suppression table is declared retained, so with `--suppression` its rows are counted before the worker goes, and the run refuses unless `--destroy-retained` names the same number — the guard `pithy migrate --rollback` spends. It is counted again at the delete.
 
 ```
 Retained 42 rows would be dropped: pithy_email_suppressions on acme-global-email-suppressions (42 rows). Refused before anything was deleted.
@@ -106,6 +118,7 @@ When **every** environment was skipped the line above is still written to stdout
 | key | type | meaning |
 |---|---|---|
 | `command` | `"email deprovision"` | The subcommand that produced this line |
+| `env` | string | The one environment torn down — the value of `--env` |
 | `suppressionDeleted` | boolean | Whether `--suppression` was passed, and therefore whether the shared suppression database was deleted |
 
 `pithy email test`
@@ -220,9 +233,9 @@ $ pithy email test --to sam@example.com --template magicLink --json
 {"command":"email test","template":"magicLink","to":"sam@example.com","from":"hello@acme.com","messageId":"msg-4821"}
 ```
 
-Take the workers down and keep the opt-out list:
+Take staging's worker down and keep the opt-out list:
 
 ```
-$ pithy email deprovision --json
-{"command":"email deprovision","suppressionDeleted":false}
+$ pithy email deprovision --env staging --json
+{"command":"email deprovision","env":"staging","suppressionDeleted":false}
 ```

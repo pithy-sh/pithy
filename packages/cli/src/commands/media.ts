@@ -3,9 +3,8 @@
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
-import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
-import { deprovisionTarget, type ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
+import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import {
@@ -20,6 +19,7 @@ import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/acc
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
+import { requireTeardownEnvironment, TEARDOWN_ENV_ARG } from "../project/environment";
 import {
   type EnvironmentReadiness,
   environmentOutcomes,
@@ -278,12 +278,9 @@ const deprovision = defineCommand({
     description: "Remove one environment's media worker (and optionally its bucket and namespace)",
   },
   args: {
-    env: {
-      type: "string",
-      // No default, deliberately (#591): a bare `--storage` teardown emptied every declared environment's
-      // storage, production's included. The refusal lists the project's own set.
-      description: `The environment to tear down: ${DEFAULT_ENVIRONMENTS.join(" | ")}, or one declared in pithy.config.ts. Required`,
-    },
+    // No default (#591): a bare `--storage` teardown emptied every declared environment's storage, production's
+    // included.
+    env: TEARDOWN_ENV_ARG,
     storage: {
       type: "boolean",
       default: false,
@@ -312,8 +309,9 @@ const deprovision = defineCommand({
       // One named environment, settled before any credential is read (#591): naming nothing, or something
       // undeclared, costs nothing and lists what could be named. The kit's teardown resolves it again — it
       // is the one that deletes.
-      const target = { environment: args.env, declared: loadProjectEnvironments(config) };
-      const env = deprovisionTarget(target);
+      const declared = loadProjectEnvironments(config);
+      const env = requireTeardownEnvironment(args.env, declared);
+      const target = { environment: env, declared };
       const { deprovisionMedia } = await loadMedia(projectDir);
       const { account, accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted

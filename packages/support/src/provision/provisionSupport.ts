@@ -5,7 +5,13 @@ import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment
 import { GLOBAL_SCOPE } from "@pithy-sh/core/src/naming/environment";
 import { resourceName } from "@pithy-sh/core/src/naming/resource";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
-import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
+import {
+  assertSharedLeavesLast,
+  type DeprovisionTarget,
+  deprovisionTarget,
+  type ManagedEnvironment,
+  managedEnvironments,
+} from "@pithy-sh/secrets/src/scope";
 import { SUPPORT_CAPABILITY } from "../workflows/specs";
 
 /**
@@ -146,9 +152,17 @@ export async function provisionSupport(
 
 /** The teardown seam — the inverse of {@link SupportProvisioner}. Every step idempotent. */
 export interface SupportDeprovisioner {
+  /**
+   * Whether the env's classification worker is deployed. Read-only. What a teardown asks of every *other*
+   * environment before it removes the bucket or the rule they share (#591).
+   */
+  hasWorker(env: ManagedEnvironment): Promise<boolean>;
   /** Delete the env's classification worker. Idempotent. */
   deleteWorker(env: ManagedEnvironment): Promise<void>;
-  /** Remove the inbound routing rule, so mail stops being delivered here. Idempotent. */
+  /**
+   * Remove the inbound routing rule, so mail stops being delivered here. Idempotent. Called only when the teardown
+   * was asked to remove it (`removeRouting`).
+   */
   removeRoutingRule(): Promise<{ removed: boolean }>;
   /**
    * Delete the R2 bucket **and everything in it** — every attachment and every raw message an adopter's
@@ -159,30 +173,47 @@ export interface SupportDeprovisioner {
 
 /** Teardown options. By default the bucket is **kept**: it holds correspondence, not cache. */
 export interface SupportDeprovisionOptions {
-  /** Also delete the R2 bucket and its contents. Off by default. */
+  /** Also delete the R2 bucket and its contents. Off by default, and only with the last environment. */
   deleteStorage?: boolean;
+  /** Also remove the inbound routing rule. Off by default, and only with the last environment. */
+  removeRouting?: boolean;
+}
+
+/** What a support teardown did. */
+export interface SupportDeprovisionResult {
+  /** The one environment torn down. */
+  env: ManagedEnvironment;
+  /** Whether this run removed the inbound routing rule. */
+  routingRuleRemoved: boolean;
 }
 
 /**
- * Tear down the support infrastructure, reversing {@link provisionSupport}.
+ * Tear down **one named environment's** support infrastructure, reversing {@link provisionSupport} for it.
  *
- * The routing rule goes **first**, and that ordering is the whole point: stop new mail arriving before
- * removing the workers that would have handled it, or messages land in a Worker with no classification
- * host during the teardown. Stored correspondence is preserved unless explicitly requested — losing an
- * adopter's support history to a teardown flag would be unrecoverable.
+ * In order, and the order is the contract:
  *
- * `environments` is the project's declaration from the root `pithy.config.ts` (#241). Every declared
- * environment is provisioned; an environment this skipped would be one the project deploys to with no
- * resources behind it — the silence the closed `ManagedEnvironment` enum used to produce.
+ * 1. Resolve the target (`@pithy-sh/secrets`' `deprovisionTarget`) — refused with nothing read when none was
+ *    named, or one the project does not declare. This used to walk every declared environment, so a run meant
+ *    for staging took production's classification worker with it (#591).
+ * 2. With `removeRouting` or `deleteStorage`: refuse while any other declared environment still runs a
+ *    classification worker (`assertSharedLeavesLast`). The rule and the bucket are one per project — the bucket
+ *    is every environment's support history — so they go with the last environment, never a staging teardown.
+ * 3. Remove the routing rule, when asked, **first**: stop new mail arriving before removing the worker that would
+ *    have handled it.
+ * 4. Delete the environment's worker, then — only when asked — the bucket and everything in it.
  */
 export async function deprovisionSupport(
   deprovisioner: SupportDeprovisioner,
-  environments: DeclaredEnvironments | readonly string[],
+  target: DeprovisionTarget,
   options: SupportDeprovisionOptions = {},
-): Promise<void> {
-  await deprovisioner.removeRoutingRule();
-  for (const env of managedEnvironments(environments)) {
-    await deprovisioner.deleteWorker(env);
-  }
+): Promise<SupportDeprovisionResult> {
+  const env = deprovisionTarget(target);
+  await assertSharedLeavesLast(env, target.declared, (other) => deprovisioner.hasWorker(other), [
+    ...(options.deleteStorage ? [{ what: "the support bucket", flag: "--storage" }] : []),
+    ...(options.removeRouting ? [{ what: "the inbound routing rule", flag: "--routing-zone" }] : []),
+  ]);
+  const routingRuleRemoved = options.removeRouting ? (await deprovisioner.removeRoutingRule()).removed : false;
+  await deprovisioner.deleteWorker(env);
   if (options.deleteStorage) await deprovisioner.deleteBucket();
+  return { env, routingRuleRemoved };
 }

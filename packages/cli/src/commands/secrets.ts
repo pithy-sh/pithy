@@ -15,7 +15,7 @@ import {
 import { secretWriteTargets } from "@pithy-sh/secrets/src/cli/writeTargets";
 import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { SecretBackend, type SecretRegistry, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
-import { canonicalGlobalEnvironment, deprovisionTarget, type ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
+import { canonicalGlobalEnvironment, type ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import {
@@ -61,7 +61,7 @@ import { resolveDevSecretsFile } from "../devSecrets/location";
 import { mergedSecretRegistry, resolveDevSecretsTargets } from "../devSecrets/targets";
 import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained } from "../migrations/confirm";
 import { loadProject, projectCloudflareAccount, projectEnvironments, requireProjectName } from "../project/config";
-import { requireManagedEnvironment } from "../project/environment";
+import { requireManagedEnvironment, requireTeardownEnvironment, TEARDOWN_ENV_ARG } from "../project/environment";
 import { resolveWorkers } from "../project/workerScope";
 import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
 import { removedStoreEntryNote } from "../provision/secretEntryRemedy";
@@ -856,12 +856,8 @@ const provision = defineCommand({
 const deprovision = defineCommand({
   meta: { name: "deprovision", description: "Remove one environment's secrets manager Worker and database" },
   args: {
-    env: {
-      type: "string",
-      // No default, deliberately (#591): a bare `deprovision` deleted every declared environment's vault. The
-      // refusal lists the project's own set; this text is resolved before any project is read.
-      description: `The environment to tear down: ${DEFAULT_ENVIRONMENTS.join(" | ")}, or one declared in pithy.config.ts. Required`,
-    },
+    // No default (#591): a bare `deprovision` deleted every declared environment's vault.
+    env: TEARDOWN_ENV_ARG,
     keys: { type: "boolean", default: false, description: "Also delete the environment's master key (irreversible)" },
     "destroy-retained": { type: "string", description: DESTROY_RETAINED_DESCRIPTION },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
@@ -872,10 +868,7 @@ const deprovision = defineCommand({
       const declared = await projectEnvironments(projectDir);
       // Settled before any credential is read: naming nothing, or something undeclared, costs nothing and
       // lists what could be named. `deprovisionSecrets` resolves it again — it is the one that deletes.
-      const environment = deprovisionTarget({
-        environment: args.env === undefined ? undefined : requireManagedEnvironment(args.env, declared),
-        declared,
-      });
+      const environment = requireTeardownEnvironment(args.env, declared);
       const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
       const { account, accountId, apiToken, storeId } = loadCloudflareCreds(
         await projectCloudflareAccount(projectDir),

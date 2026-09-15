@@ -363,6 +363,18 @@ export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
     return database ? countDatabaseRetained(database) : [];
   }
 
+  /** Whether the env's email worker is deployed — settled on a confirmed account, like every lookup here. */
+  async hasWorker(env: ManagedEnvironment): Promise<boolean> {
+    const name = emailWorkerName(this.#project, env);
+    return Boolean(
+      await findOnConfirmedAccount({
+        ...this.#account,
+        what: `the ${name} Worker`,
+        find: () => this.#cf.workers().getWorker(name),
+      }),
+    );
+  }
+
   /** Delete the env's email worker if it is deployed — and refuse if "deployed" cannot be settled (#378). */
   async deleteWorker(env: ManagedEnvironment): Promise<void> {
     const name = emailWorkerName(this.#project, env);

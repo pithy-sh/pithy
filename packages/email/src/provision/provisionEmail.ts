@@ -7,7 +7,13 @@ import { GLOBAL_SCOPE } from "@pithy-sh/core/src/naming/environment";
 import { bindingResourceName, type ProjectGlobalNaming } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceName } from "@pithy-sh/core/src/naming/resource";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
-import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
+import {
+  assertSharedLeavesLast,
+  type DeprovisionTarget,
+  deprovisionTarget,
+  type ManagedEnvironment,
+  managedEnvironments,
+} from "@pithy-sh/secrets/src/scope";
 
 /**
  * The provisioning orchestration for the email capability — the live counterpart to `pithy add email`'s
@@ -181,6 +187,11 @@ export interface EmailDeprovisioner {
    * What a teardown counts before it deletes the list (#591).
    */
   countSuppressionRetained(): Promise<RetainedRows[]>;
+  /**
+   * Whether the env's email worker is deployed. Read-only. What a teardown asks of every *other* environment
+   * before it deletes the list they share (#591).
+   */
+  hasWorker(env: ManagedEnvironment): Promise<boolean>;
   /** Delete the env's email worker. Idempotent (a missing worker is a no-op). */
   deleteWorker(env: ManagedEnvironment): Promise<void>;
   /**
@@ -204,31 +215,38 @@ export interface EmailDeprovisionOptions {
 }
 
 /**
- * Tear down the email infrastructure, reversing {@link provisionEmail}: delete every environment's worker
- * first (they bind the suppression DB), then — only when `deleteSuppression` is set — the shared
- * suppression DB. The suppression list is preserved unless explicitly requested, and a list holding rows is
- * deleted only when the operator counted them (`@pithy-sh/core`'s `assertRetainedAgreed`, #591). Idempotent
- * end to end.
+ * Tear down **one named environment's** email infrastructure, reversing {@link provisionEmail} for it.
  *
- * `environments` is the project's declaration from the root `pithy.config.ts` (#241). Every declared
- * environment is provisioned; an environment this skipped would be one the project deploys to with no
- * resources behind it — the silence the closed `ManagedEnvironment` enum used to produce.
+ * In order, and the order is the contract:
+ *
+ * 1. Resolve the target (`@pithy-sh/secrets`' `deprovisionTarget`) — refused with nothing read when none was
+ *    named, or one the project does not declare. This used to walk every declared environment, so a run meant
+ *    for staging removed production's email worker with it (#591).
+ * 2. With `deleteSuppression` only: refuse while any other declared environment still runs an email worker
+ *    (`assertSharedLeavesLast`). The list is one per project, and a staging teardown must not take production's.
+ * 3. Count the list, and refuse unless the operator counted the same (`assertRetainedAgreed`, #588's guard).
+ * 4. Delete the environment's worker (it binds the list), then — only when asked — the list.
+ *
+ * Idempotent end to end: a missing worker or database is a no-op.
  */
 export async function deprovisionEmail(
   deprovisioner: EmailDeprovisioner,
-  environments: DeclaredEnvironments | readonly string[],
+  target: DeprovisionTarget,
   options: EmailDeprovisionOptions = {},
-): Promise<void> {
-  // Counted before the first worker goes, so a refusal leaves the project exactly as it was (#591).
+): Promise<{ env: ManagedEnvironment }> {
+  const env = deprovisionTarget(target);
+  // Both checks run before the worker goes, so a refusal leaves the project exactly as it was.
   if (options.deleteSuppression) {
+    await assertSharedLeavesLast(env, target.declared, (other) => deprovisioner.hasWorker(other), [
+      { what: "the suppression list", flag: "--suppression" },
+    ]);
     assertRetainedAgreed(
       await deprovisioner.countSuppressionRetained(),
       options.destroyRetained,
       "anything was deleted",
     );
   }
-  for (const env of managedEnvironments(environments)) {
-    await deprovisioner.deleteWorker(env);
-  }
+  await deprovisioner.deleteWorker(env);
   if (options.deleteSuppression) await deprovisioner.deleteSuppressionDatabase();
+  return { env };
 }
