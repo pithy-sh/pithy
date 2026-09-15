@@ -1,5 +1,13 @@
 # @pithy-sh/email
 
+## 0.3.6
+
+### Patch Changes
+
+- [#610](https://github.com/pithy-sh/pithy/pull/610) [`2463acf`](https://github.com/pithy-sh/pithy/commit/2463acf1aa5f8daed37cfbc378fce9edd77afe69) Thanks [@kingmesal](https://github.com/kingmesal)! - A setting with a closed set of values offers them.
+  
+  `email`'s `theme` and `devDelivery`, `media`'s `recordStore` and `storage`'s `defaultVisibility` are each a `z.enum` in the capability's config and were free text at `pithy add`. Nothing declared the values, so nothing could offer them: the prompt asked for a string, `--set devDelivery=simulater` wrote the typo into `pithy.config.ts`, and the capability refused to load at the next command that read it. All four declare their values now, and a gate holds every manifest option to the enum behind it.
+
 ## 0.3.5
 
 ### Patch Changes

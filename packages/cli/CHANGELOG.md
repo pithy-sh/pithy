@@ -1,5 +1,39 @@
 # @pithy-sh/cli
 
+## 0.9.2
+
+### Patch Changes
+
+- [#608](https://github.com/pithy-sh/pithy/pull/608) [`4e09671`](https://github.com/pithy-sh/pithy/commit/4e0967141b7470be91ccce96c376ecefad17954f) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy dashboard connect` offers to open the approval page.
+  
+  The device-code flow printed a URL and a code and left the operator to select, copy and paste. It now states a key while it waits:
+  
+  ```
+  Open https://app.pithy.sh/cli and enter ABCD-EFGH.
+  Press o to open the link in the browser.
+  ▸ Waiting for approval...
+  ```
+  
+  A stated key, not a prompt. The command is already polling and must finish whether or not anybody touches the keyboard, so a blocking yes/no confirm could not work here — `pithy dev`'s `l` is the precedent and the reason. `connect`, `rotate`, `disconnect` and `status --verify` all offer it. The URL-and-code line is unconditional: a browser on another machine still gets both halves.
+  
+  The offer appears only at a real terminal — stdin and stderr, which is where these lines go. `--json`, a pipe on either of those, the new `--no-open`, and `PITHY_NO_OPEN` at any value each suppress the line as well as the open. **Windows offers nothing**: `cmd /c start` hands a URL to a command interpreter that re-parses it, `rundll32` strips the query string and `explorer.exe` refuses a URL with arguments, so the URL is printed and you open it yourself. The terminal is given back on every exit path — a normal return, a throw, `process.exit`, and Ctrl-C, which raw mode has turned into a byte.
+  
+  `DeviceAuthorization` carries an optional `verificationUriComplete`, the same page with the code already in it. It is opened when a client sends one and never printed, because it carries the code. Both URIs are now `http(s)` only, and both must name the origin the CLI was told to call: they arrive over the wire, a bare `z.url()` accepts `javascript:`, `file:` and `vscode:` alike, and an https URL anywhere on the web satisfied the scheme alone.
+  
+  One opener, one raw-mode reader. The platform dispatch moved to `platform/browser.ts` and the key reader to `terminal/keys.ts`, out of `dev/`, where `pithy dashboard` could not reach either and a second opener was one edit away. The URL is passed as an argument, never through a shell, and an opener that is missing or exits non-zero prints one line and never fails the sign-in. `ci/opener.test.ts` holds all three counts, and names every child process the CLI starts — a second opener has to start something, and a name list only catches the names somebody thought of.
+
+- [#609](https://github.com/pithy-sh/pithy/pull/609) [`91a7735`](https://github.com/pithy-sh/pithy/commit/91a77354a9fb4ec25278e77e3bada64f4866e879) Thanks [@kingmesal](https://github.com/kingmesal)! - The scope prompt says how to take all of them, and `--scope all` does it without a terminal.
+  
+  `pithy dashboard connect` asks what a management client may do, over every scope the Worker composes. `@clack/core` already binds `a` to toggle all and `i` to invert, and nothing said so — a dozen composed capabilities meant a keypress per row for anybody who had not read the dependency's source. The prompt names both keys now.
+  
+  `--scope all` is that answer headlessly. It grants every scope the Worker composes, resolved from the same list the prompt renders, so a capability's new scope is in the grant the day it ships and CI hardcodes nothing that can go stale. `--json` reports what it resolved to. `--scope all` beside another `--scope` is refused, naming both, because they are two answers to one question.
+  
+  It is never the default, and it does not move what the prompt preselects: that stays the seam's own pair plus every declared read, and every write past it is still something a person asks for.
+  
+  It works on `--update`, which is the case it exists for: widening an existing grant after composing a new capability. Reading what a Worker composes needs no address, so a scope-only update resolves one and re-points nothing.
+- Updated dependencies [[`2463acf`](https://github.com/pithy-sh/pithy/commit/2463acf1aa5f8daed37cfbc378fce9edd77afe69)]:
+  - @pithy-sh/email@0.3.6
+
 ## 0.9.1
 
 ### Patch Changes
