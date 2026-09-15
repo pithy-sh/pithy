@@ -216,14 +216,21 @@ function envCoverage(source: string): { reads: boolean; validates: boolean } {
  *   and inside a parenthesized `as`, `satisfies` or `<T>` assertion. It does not see an alias
  *   (`run: ({ args: a }) => a.env`, `const a = args; a.env`), a computed key (`args[key]`), a rest spread
  *   (`const { ...rest } = args; rest.env`), reflection (`Reflect.get(args, "env")`, `Object.entries(args)`),
- *   an assertion without parentheses around it, or the value handed on by a caller (`dashboard.ts`'s
- *   `options.env`).
+ *   an assertion without parentheses around it, parentheses with no assertion inside (`const env = (args).env`,
+ *   `const { env } = (args)`), or the value handed on by a caller (`dashboard.ts`'s `options.env`).
  * - **A destructure only when no brace comes between its `{` and `env`.** `const { env } = args`, with a type
  *   annotation, off `ctx.args`, and `({ args: { env } })` are seen. `const { flags: { dry }, env } = args` is not.
  * - **That a validator is called, not what it is applied to.** A call on a different value, or one whose result
  *   is discarded, still passes. Comments and string contents are blanked, so a validator named only in a comment
  *   or a message does not. A template literal is blanked whole, so a validator called only inside `${}` does not
  *   count either: that file is flagged, never passed.
+ * - **Blanking is a scanner, not a parser, and these pass as a validator call that runs nothing.** A validator name
+ *   inside a template literal nested in another's `${}`. A validator name inside a regex literal
+ *   (`/requireEnvironment(/`), which is not blanked. A quoted validator name after a regex literal that follows a
+ *   keyword, on the same line (`return /"/.test(s) ? "requireEnvironment(" : "";`): after `return` the `/` is read
+ *   as division, the quote inside the regex opens a string, and every quote after it falls out of step.
+ *   And a local pass-through function named like a validator (`const requireEnvironment = (v) => v;`): the name is
+ *   what is matched, never which function it binds to.
  */
 describe("every command with an --env flag validates it", () => {
   test("no command reads args.env without requireEnvironment", async () => {

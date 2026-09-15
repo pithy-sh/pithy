@@ -60,6 +60,12 @@ import type { MigrationProvider } from "kysely/migration";
  *   `/d1/database/<id>` through `cloudflareRequest` or `fetch`; `wrangler d1 delete` spawned as a subprocess;
  *   a `confineTeardown` over something that is not a seam class — a raw D1 client whose own `deleteDatabase` is
  *   the control-plane delete, let through by a rule line the gate permits; and any package other than the CLI.
+ * - **Not seen: the rule line's exemption is not scoped to a rule table.** It permits `deleteDatabase: "environment",`
+ *   (or `"read"`, `"refused"`, `"last"`) as any whole line of any CLI module, not only in a `confineTeardown` call's
+ *   `rules`. So a home-rolled forwarder passes: an object literal holding that one line, whose keys are walked and
+ *   called on the raw client — `const rules = {` / `deleteDatabase: "environment",` / `};` then
+ *   `for (const name of Object.keys(rules)) await (cf.d1Provisioner() as Record<string, Fn>)[name](id);` — deletes a
+ *   database uncounted, and the gate stayed green (planted in `commands/`, and it passed).
  */
 
 /** One database to count or delete: the account's clients, its id, and the migrations that declare its tables. */
