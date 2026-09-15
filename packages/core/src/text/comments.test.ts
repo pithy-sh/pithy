@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test } from "vitest";
-import { blankComments } from "./comments";
+import { blankComments, blankCommentsAndStrings } from "./comments";
 
 describe("blankComments", () => {
   test("prose is blanked, and the line it stood on still counts", () => {
@@ -61,5 +61,49 @@ describe("blankComments", () => {
     const blanked = blankComments(source);
     expect(blanked).toHaveLength(source.length);
     expect(blanked.indexOf("const to")).toBe(source.indexOf("const to"));
+  });
+});
+
+describe("blankCommentsAndStrings", () => {
+  // A gate asking whether a name is *called* cannot count one that is only quoted: `"requireEnvironment(args.env)"`
+  // in an error message names the validator and runs nothing. Blanking comments alone let that file pass.
+  test("a name inside a string is blanked, and the delimiters, the newlines and every offset stay", () => {
+    const source = ['const why = "requireEnvironment(x)";', "const also = 'requireEnvironment(y)';", "run(z);"].join(
+      "\n",
+    );
+    const blanked = blankCommentsAndStrings(source);
+    expect(blanked).not.toContain("requireEnvironment");
+    expect(blanked).toHaveLength(source.length);
+    expect(blanked.split("\n")).toEqual([
+      'const why = "                     ";',
+      "const also = '                     ';",
+      "run(z);",
+    ]);
+  });
+
+  // The whole template goes, interpolations included. For a presence check that fails safe: a call written only
+  // inside `${}` is not counted, so a file is flagged, never passed.
+  test("a template literal is blanked whole, across its lines", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the interpolation is the fixture, and has to arrive here uninterpolated.
+    const source = ["const t = `a ${requireEnvironment(v)}", "b`;", "requireEnvironment(w);"].join("\n");
+    const lines = blankCommentsAndStrings(source).split("\n");
+    expect(lines[0]).not.toContain("requireEnvironment");
+    expect(lines[1]).toBe(" `;");
+    expect(lines[2]).toBe("requireEnvironment(w);");
+  });
+
+  test("comments are still blanked, and a quote inside a regex still opens no string", () => {
+    const source = ["// requireEnvironment(a)", "const pattern = /^[\"']+/;", "requireEnvironment(b);"].join("\n");
+    const lines = blankCommentsAndStrings(source).split("\n");
+    expect(lines[0]?.trim()).toBe("");
+    expect(lines[1]).toBe("const pattern = /^[\"']+/;");
+    expect(lines[2]).toBe("requireEnvironment(b);");
+  });
+
+  test("a string holding an escaped quote ends where the string does", () => {
+    const source = 'const s = "say \\"requireEnvironment\\""; requireEnvironment(c);';
+    const blanked = blankCommentsAndStrings(source);
+    expect(blanked.match(/requireEnvironment/g)).toHaveLength(1);
+    expect(blanked).toContain("requireEnvironment(c);");
   });
 });

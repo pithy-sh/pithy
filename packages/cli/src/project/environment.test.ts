@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS, MAX_ENVIRONMENT_NAME } from "@pithy-sh/core/src/naming/environment";
-import { blankComments } from "@pithy-sh/core/src/text/comments";
+import { blankComments, blankCommentsAndStrings } from "@pithy-sh/core/src/text/comments";
 import type { CommandDef } from "citty";
 import { describe, expect, test } from "vitest";
 import {
@@ -170,24 +170,36 @@ describe("requireTeardownEnvironment", () => {
  */
 const ENV_VALIDATOR = /\b(?:requireEnvironment|requireManagedEnvironment|requireTeardownEnvironment)\s*\(/;
 
+/** `.env`, `?.env`, `["env"]`, `?.["env"]`, each after an optional non-null `!`. */
+const ENV_ACCESS = String.raw`\s*!?\s*(?:(?:\?\.|\.)\s*env\b|(?:\?\.)?\s*\[\s*(?:"env"|'env'|\`env\`)\s*\])`;
+
+/** citty's `args` as a value: bare, off a context (`ctx.args`), or asserted (`(args as Args)`, `(<Args>args)`). */
+const ARGS = String.raw`(?:\bargs\b|\(\s*args\s+(?:as|satisfies)\s[^;]*?\)|\(\s*<[^;]*?>\s*args\s*\))`;
+
 /**
  * Every spelling of reading `--env` off citty's `args` this gate recognizes. The gate began as a substring
- * match on `args.env`; the second and third rows are the spellings it did not see.
+ * match on `args.env`; every row after the first is a spelling it once did not see.
  */
 const ENV_READS: readonly RegExp[] = [
-  // `args.env`, `args?.env`, `args["env"]`, `args?.["env"]`
-  /\bargs\s*(?:\?\.|\.)\s*env\b/,
-  /\bargs\s*(?:\?\.)?\s*\[\s*(["'`])env\1\s*\]/,
-  // `const { env } = args`, `const { env: target, json } = args`
-  /\{[^{}]*\benv\b[^{}]*\}\s*=\s*args\b/,
+  // `args.env`, `args?.env`, `args!.env`, `args["env"]`, `ctx.args.env`, `(args as Args).env`, `(<Args>args).env`
+  new RegExp(`${ARGS}${ENV_ACCESS}`),
+  // `const { env } = args`, `const { env: target, json }: Args = args`, `const { env } = ctx.args`, `= args!`
+  new RegExp(String.raw`\{[^{}]*\benv\b[^{}]*\}\s*(?::[^=;]*)?=\s*(?:[\w$]+\s*!?\s*\??\.\s*)*${ARGS}`),
   // `run: ({ args: { env } }) =>`
   /\bargs\s*:\s*\{[^{}]*\benv\b[^{}]*\}/,
 ];
 
-/** Whether a command's source reads `--env`, and whether it names a validator in code (comments blanked). */
+/**
+ * Whether a command's source reads `--env`, and whether it calls a validator. A read is looked for with comments
+ * blanked and strings kept, so `${args.env}` in a template is still a read. A validator is looked for with strings
+ * blanked too, so one named only in a message is not a call.
+ */
 function envCoverage(source: string): { reads: boolean; validates: boolean } {
   const code = blankComments(source);
-  return { reads: ENV_READS.some((read) => read.test(code)), validates: ENV_VALIDATOR.test(code) };
+  return {
+    reads: ENV_READS.some((read) => read.test(code)),
+    validates: ENV_VALIDATOR.test(blankCommentsAndStrings(source)),
+  };
 }
 
 /**
@@ -200,11 +212,18 @@ function envCoverage(source: string): { reads: boolean; validates: boolean } {
  *
  * - **It is per file, not per read.** A file that validates one `--env` passes every other read in it.
  * - **Only `src/commands/*.ts`, one level.** A command defined anywhere else is not read.
- * - **Only a read off something named `args`.** `run: ({ args: a }) => a.env`, a computed key
- *   (`args[key]`), a rest spread (`const { ...rest } = args; rest.env`), or the value handed on by a caller
- *   (`dashboard.ts`'s `options.env`) is not a read here.
- * - **That a validator is named, not what it is applied to.** A call on a different value, or one whose result
- *   is discarded, still passes. Comments are blanked, so a validator named only in a comment does not.
+ * - **Only a read off something named `args`.** It sees `args` bare, behind `!`, off a context (`ctx.args`),
+ *   and inside a parenthesized `as`, `satisfies` or `<T>` assertion. It does not see an alias
+ *   (`run: ({ args: a }) => a.env`, `const a = args; a.env`), a computed key (`args[key]`), a rest spread
+ *   (`const { ...rest } = args; rest.env`), reflection (`Reflect.get(args, "env")`, `Object.entries(args)`),
+ *   an assertion without parentheses around it, or the value handed on by a caller (`dashboard.ts`'s
+ *   `options.env`).
+ * - **A destructure only when no brace comes between its `{` and `env`.** `const { env } = args`, with a type
+ *   annotation, off `ctx.args`, and `({ args: { env } })` are seen. `const { flags: { dry }, env } = args` is not.
+ * - **That a validator is called, not what it is applied to.** A call on a different value, or one whose result
+ *   is discarded, still passes. Comments and string contents are blanked, so a validator named only in a comment
+ *   or a message does not. A template literal is blanked whole, so a validator called only inside `${}` does not
+ *   count either: that file is flagged, never passed.
  */
 describe("every command with an --env flag validates it", () => {
   test("no command reads args.env without requireEnvironment", async () => {
@@ -226,6 +245,17 @@ describe("every command with an --env flag validates it", () => {
     ["destructured", "const { env, json } = args;"],
     ["destructured and renamed", "const {\n  env: target,\n} = args;"],
     ["destructured in the parameter", "run: ({ args: { env } }) => env,"],
+    ["args!.env", "const env = args!.env;"],
+    ['args!["env"]', 'const env = args!["env"];'],
+    ["(args as Args).env", "const env = (args as Args).env;"],
+    ["(args as unknown as Record<string, string>).env", "const env = (args as unknown as Record<string, string>).env;"],
+    ["(args satisfies Args)?.env", "const env = (args satisfies Args)?.env;"],
+    ["(<Args>args).env", "const env = (<Args>args).env;"],
+    ["ctx.args.env", "run: (ctx) => ctx.args.env,"],
+    ["destructured with a type", "const { env }: Args = args;"],
+    ["destructured off ctx.args", "const { env } = ctx.args;"],
+    ["destructured off context?.args", "const { json, env } = context?.args;"],
+    ["destructured off args!", "const { env } = args!;"],
   ])("sees an unvalidated read spelled %s", (_, source) => {
     expect(envCoverage(source)).toEqual({ reads: true, validates: false });
   });
@@ -233,6 +263,25 @@ describe("every command with an --env flag validates it", () => {
   test("a validator named only in a comment does not cover a read", () => {
     const source = "// requireEnvironment(args.env) runs later\nconst env = args.env;";
     expect(envCoverage(source)).toEqual({ reads: true, validates: false });
+  });
+
+  // A name in a string runs nothing. Blanking comments alone let a file whose only validator was a message pass.
+  test.each([
+    ["a double-quoted message", 'const env = args.env;\nconst hint = "call requireEnvironment(args.env) first";'],
+    [
+      "a single-quoted message",
+      "const env = args.env;\nconst hint = 'requireTeardownEnvironment(args.env, declared)';",
+    ],
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the interpolation is the fixture, and has to arrive here uninterpolated.
+    ["a template literal", "const env = args.env;\nconst hint = `run requireManagedEnvironment(${env}, declared)`;"],
+  ])("a validator named only in %s does not cover a read", (_, source) => {
+    expect(envCoverage(source)).toEqual({ reads: true, validates: false });
+  });
+
+  // Strings are blanked for the validator only: a read written inside a template is still a read.
+  test("a read inside a template literal is still a read", () => {
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the interpolation is the fixture, and has to arrive here uninterpolated.
+    expect(envCoverage("const line = `env: ${args.env}`;")).toEqual({ reads: true, validates: false });
   });
 
   test("each validator covers a read", () => {
@@ -243,5 +292,7 @@ describe("every command with an --env flag validates it", () => {
 
   test("a flag that merely starts with env is not a read", () => {
     expect(envCoverage("const file = args.envFile;").reads).toBe(false);
+    expect(envCoverage("const { envFile } = args;").reads).toBe(false);
+    expect(envCoverage("const { env } = parseArgs(argv);").reads).toBe(false);
   });
 });
