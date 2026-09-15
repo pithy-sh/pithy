@@ -1143,6 +1143,35 @@ describe("a feature's Worker scripts", () => {
     ]);
   });
 
+  /**
+   * **What a feature provisioned before #592 is not torn down by.** With a Secrets Store, its generated config
+   * lost the script name, and wrangler deployed it as `<script>-feature` — `acme-api-feature`. That name carries
+   * no issue and no slug, and every such branch of the project deployed over the same one, so it is not this
+   * feature's to delete: taking it would take down whichever open branch deployed last. Teardown leaves it,
+   * and the docs say to delete it by hand once no branch is live.
+   */
+  test("a pre-#592 feature's `<script>-feature` Worker is left, because no feature owns that name", async () => {
+    const { provisioners } = fakeProvisioners();
+    await writeFile(
+      manifestPath(dir),
+      JSON.stringify({ version: 1, project: "acme", issue: "69", slug: "demo", env: "feature", resources: [] }),
+    );
+    const scripts = fakeScripts(["acme-api-feature", "acme-web-feature", "acme-f69-demo-api"]);
+
+    const report = await deprovisionFeature({
+      projectDir: dir,
+      identity,
+      capabilities,
+      env: "feature",
+      provisioners,
+      scripts: scripts.seam,
+      workers,
+    });
+
+    expect(report.deleted.map((entry) => entry.name)).toEqual(["acme-f69-demo-api"]);
+    expect([...scripts.deployed].sort()).toEqual(["acme-api-feature", "acme-web-feature"]);
+  });
+
   test("a recorded script whose Worker has left the branch is still deleted", async () => {
     const { provisioners } = fakeProvisioners();
     await provision(provisioners);

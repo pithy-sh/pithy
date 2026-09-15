@@ -274,7 +274,7 @@ A feature's **Worker scripts** share the head and drop the kind: `<project>-f<is
 
 `<worker>` is the `apps/<worker>` directory, not the deploy name. `pithy init replay --worker board` deploys `apps/board` as `replay-board`, and its feature Worker is `replay-f69-demo-board` — the project once. Until #587 it was composed from the deploy name, `replay-f69-demo-replay-board`, spending the project twice out of the 63.
 
-`pithy feature destroy` looks for both shapes (#592), so a feature deployed before that change — and redeployed since, under both names — is torn down whole. Both are exact names, recomputed from the Worker's directory and its deploy name.
+`pithy feature destroy` looks for both shapes (#592), so a feature deployed before that change — and redeployed since, under both names — has both removed. Both are exact names, recomputed from the Worker's directory and its deploy name. A third name some features deployed under before #592, wrangler's `<script>-feature`, carries no feature identity and is shared by every branch that deployed it, so no teardown looks for it; [`feature.md`](commands/feature.md) says how to remove it.
 
 ## The `pithy-int-` reservation
 

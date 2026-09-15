@@ -51,7 +51,8 @@ import {
  *
  * `destroy` reverses it: delete the manifest's Worker scripts and resources, then reconcile by recomputing
  * each expected name, so a partial-failed provision — or a feature provisioned before scripts were
- * recorded (#592) — still cleans up fully.
+ * recorded (#592) — still loses everything named for it. Not a `<script>-feature` Worker such a feature may
+ * also have deployed: that name carries no feature identity, and every branch shared it.
  */
 
 /**
