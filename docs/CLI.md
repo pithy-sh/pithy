@@ -608,6 +608,8 @@ export const PUBLIC_ORIGIN = originFor(compositionEnvironment(), DOMAINS);
 const config = { domains: DOMAINS, capabilities: [ … ], app };
 ```
 
+**The CLI evaluates the config for the environment a command is about.** `pithy migrate`, `pithy upgrade`, `pithy provision` and `pithy deploy`'s pending count take an environment, and while each composes a Worker `compositionEnvironment()` answers it; `pithy dev` answers `dev`. A command that spans every environment — `pithy doctor`, `pithy secrets`, a capability's own `provision` — reads the config once, where it answers `undefined`, and `pithy doctor`'s secret checks compose each declared environment in turn.
+
 `originFor(environment, domains)` from `@pithy-sh/core/src/naming/domains` is the one answer to "where is this Worker reachable", and it is the same call `pithy` itself makes to generate `vars.BASE_URL` — so the Worker's runtime origin and the origins its capabilities were configured with cannot disagree. The declaration is **hoisted** because the origin has to exist before the capabilities that take it are constructed, and `domains: DOMAINS` beside them is the same object: one declaration, two readers. The prompt fills the const; it never writes a second `domains` key.
 
 **`pithy add` writes `PUBLIC_ORIGIN` for you**, unquoted, for every option whose manifest says its value is an origin — `auth.baseURL` and `email.baseUrl` today. A `--set` override still wins, because a Worker fronted by something Pithy does not know about has an origin no derivation can produce. And a project scaffolded before the constant existed keeps the manifest's literal rather than being handed an identifier nothing defines; `pithy upgrade` starts writing the constant the day the declaration lands.

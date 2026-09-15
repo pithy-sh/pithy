@@ -24,7 +24,7 @@ import type { Migration, MigrationProvider, MigrationResult } from "kysely/migra
 import { z } from "zod";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
-import { resolveWorkers } from "../project/workerScope";
+import { resolveWorkersFor } from "../project/composeFor";
 import { wranglerConfigPath } from "../provision/featureConfig";
 import { assertLedgerDeclared, UndeclaredMigration } from "./ledger";
 import { collectMigrationSets } from "./registry";
@@ -552,13 +552,15 @@ function driverFor(context: RunContext, groups: DatabaseGroup[]): Promise<Migrat
 export async function resolveWorkerScopes(options: {
   /** The project root — the parent of `apps/`. */
   projectDir: string;
+  /** The environment the Workers are composed for — the run's own (#595). */
+  env: string;
   /** Narrow to one Worker, by its name or its `apps/<dir>` basename. */
   worker?: string;
   /** Pre-resolved Workers, skipping `apps/` discovery. */
   workers?: WorkerScope[];
 }): Promise<WorkerScope[]> {
   if (!options.workers) {
-    return resolveWorkers({
+    return resolveWorkersFor(options.env, {
       projectDir: options.projectDir,
       ...(options.worker !== undefined ? { worker: options.worker } : {}),
     });
@@ -779,9 +781,9 @@ async function runGroups(context: RunContext, pass: MigrationPass): Promise<Work
  * as it did before.
  */
 async function projectWorkers(options: MigrationFanOutOptions): Promise<WorkerScope[]> {
-  if (!options.workers) return resolveWorkerScopes({ projectDir: options.projectDir });
+  if (!options.workers) return resolveWorkerScopes({ projectDir: options.projectDir, env: options.env });
 
-  const discovered = await resolveWorkerScopes({ projectDir: options.projectDir }).catch(() => []);
+  const discovered = await resolveWorkerScopes({ projectDir: options.projectDir, env: options.env }).catch(() => []);
   const workers = [...options.workers];
   for (const found of discovered) {
     const known = workers.some((candidate) => resolve(candidate.dir) === resolve(found.dir));
@@ -800,6 +802,7 @@ async function contextFor(options: MigrationFanOutOptions & { project?: string }
   return {
     workers: await resolveWorkerScopes({
       projectDir: options.projectDir,
+      env: options.env,
       workers: options.workers ?? groupWorkers,
       ...(options.worker !== undefined ? { worker: options.worker } : {}),
     }),

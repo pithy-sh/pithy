@@ -492,6 +492,7 @@ function emptyStoreIds(): ResolvedStoreIds {
 export async function seedProject(options: SeedProjectOptions): Promise<SeedRunReport> {
   const workers = await resolveWorkerScopes({
     projectDir: options.projectDir,
+    env: options.env,
     ...(options.worker !== undefined ? { worker: options.worker } : {}),
     ...(options.workers !== undefined ? { workers: options.workers } : {}),
   });

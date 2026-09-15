@@ -5,8 +5,8 @@ import type { Capability, SecretRegistrySeam } from "@pithy-sh/core/src/capabili
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { DEFAULT_ENVIRONMENTS, LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
-import { ENVIRONMENT_VAR } from "@pithy-sh/core/src/worker/identity";
-import { FreshCopyRefused, loadWorkerConfig, projectEnvironments, type WorkerConfig } from "../project/config";
+import { composeFor } from "../project/composeFor";
+import { FreshCopyRefused, projectEnvironments, type WorkerConfig } from "../project/config";
 import { type ResolvedWorker, resolveWorkers } from "../project/workerScope";
 import { composedManifests } from "./manifests";
 import { type BindingDeclines, honoredNames, workerDeclines } from "./reconcile";
@@ -250,8 +250,8 @@ export function secretApplicability(workers: readonly ApplicabilityWorker[]): Se
  * neither `doctor` nor `secrets ls` takes an `--env`, because a secret is per project, not per run.
  *
  * So the environment is an **input**, every declared one is taken, and a name in reach in any of them is
- * in reach. Exactly `composedPaths` in `ui/routeAllowlist.ts`, which stamps {@link ENVIRONMENT_VAR}
- * around each composition for the same reason and resolves the union the same way.
+ * in reach. Exactly `composedPaths` in `ui/routeAllowlist.ts`, which composes through the same primitive —
+ * `composeFor` in `project/composeFor.ts` — for the same reason and resolves the union the same way.
  *
  * **The union is over the compositions that exist, and not over the environments a project declares.** An
  * environment whose config throws produced no composition, so it is not in the union and contributes
@@ -274,12 +274,14 @@ async function applicabilityIn(
   projectDir: string,
   environment: string,
   manifests: ReadonlyMap<string, CapabilityManifest[]>,
-  loadConfig: FreshConfigLoader,
+  loadConfig: FreshConfigLoader | undefined,
 ): Promise<{ workers: ApplicabilityWorker[]; unwritable: boolean; failed?: UnresolvedEnvironment }> {
-  const previous = process.env[ENVIRONMENT_VAR];
-  process.env[ENVIRONMENT_VAR] = environment;
   try {
-    const workers = await resolveWorkers({ projectDir, loadConfig });
+    // The stamp, the restore and the loader are `composeFor`'s — one statement of what composing for an
+    // environment takes, rather than this module's copy of it (#595).
+    const workers = await composeFor(environment, (load) =>
+      resolveWorkers({ projectDir, loadConfig: loadConfig ?? ((workerDir) => load(workerDir, { fresh: true })) }),
+    );
     return {
       workers: workers.map((worker) => applicabilityOf(worker, manifests.get(worker.dir) ?? [])),
       unwritable: false,
@@ -302,11 +304,6 @@ async function applicabilityIn(
       unwritable: cause instanceof FreshCopyRefused,
       failed: { environment, reason: loadReason(cause) },
     };
-  } finally {
-    // Restored, not defaulted: a variable this process never had must not exist afterwards, or the next
-    // thing to read `ENVIRONMENT` in this CLI run is told something the project never said.
-    if (previous === undefined) delete process.env[ENVIRONMENT_VAR];
-    else process.env[ENVIRONMENT_VAR] = previous;
   }
 }
 
@@ -411,7 +408,7 @@ export async function projectSecretApplicability(
   projectDir: string,
   options: ProjectApplicabilityOptions = {},
 ): Promise<SecretApplicability> {
-  const loadConfig = options.loadConfig ?? ((workerDir: string) => loadWorkerConfig(workerDir, { fresh: true }));
+  const loadConfig = options.loadConfig;
   // One unstamped resolution first, and only to answer which Workers there are — a project with none has
   // no composition to take in any environment, so there is no sweep to run.
   const base = await resolveWorkers({ projectDir }).catch(() => []);

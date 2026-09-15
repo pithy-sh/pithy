@@ -15,8 +15,8 @@ import { type BindingDecline, type BindingDeclines, honoredNames, workerDeclines
 import { type ProvisionableBinding, provisionableBindings, serviceBindings } from "../feature/bindings";
 import type { FeatureResource } from "../feature/manifest";
 import { migrateProject } from "../migrations/run";
+import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, loadProjectCloudflare, requireProjectName, type WorkerConfig } from "../project/config";
-import { resolveWorkers } from "../project/workerScope";
 import { readWranglerConfig } from "../project/wrangler";
 import { seedProject } from "../seed/run";
 import { AUDIT_RESOURCE_TYPE, ProvisionAuditActions, type ResourceProvisioners } from "./resources";
@@ -372,10 +372,11 @@ export interface ProvisionEnvironmentOptions {
 
 /**
  * The real worker resolver: every Worker under `apps/`, each with its own capabilities loaded from its
- * `apps/<name>/pithy.config.ts`.
+ * `apps/<name>/pithy.config.ts` — composed for the environment being provisioned, which is the one whose
+ * resources, bindings and migrations this run writes (#595).
  */
-const defaultResolveWorkers = async (projectDir: string): Promise<ProvisionWorker[]> =>
-  (await resolveWorkers({ projectDir })).map((worker) => ({
+const defaultResolveWorkers = async (projectDir: string, environment: string): Promise<ProvisionWorker[]> =>
+  (await resolveWorkersFor(environment, { projectDir })).map((worker) => ({
     name: worker.name,
     dir: worker.dir,
     capabilities: worker.capabilities,
@@ -454,7 +455,9 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   const { scope } = options;
   // Resolve the Workers first. Their deploy names are what every service binding is retargeted at, so an
   // unresolvable target must fail here — before a single Cloudflare resource is created.
-  const workers = await (options.resolveWorkers ?? defaultResolveWorkers)(options.projectDir);
+  const workers = await (options.resolveWorkers
+    ? options.resolveWorkers(options.projectDir)
+    : defaultResolveWorkers(options.projectDir, scope.stanza));
   const { bindings, declines, wantedPerWorker, manifestFaults } = await provisionTargets({
     projectDir: options.projectDir,
     capabilities: options.capabilities,

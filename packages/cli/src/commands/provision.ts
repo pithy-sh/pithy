@@ -12,6 +12,7 @@ import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { branchIdentity } from "../feature/identity";
 import { provisionFeature } from "../feature/provision";
+import { resolveWorkersFor } from "../project/composeFor";
 import {
   loadProject,
   loadProjectCloudflare,
@@ -20,7 +21,7 @@ import {
   requireProjectName,
 } from "../project/config";
 import { requireManagedEnvironment } from "../project/environment";
-import { projectCapabilities, type ResolvedWorker, resolveWorkers } from "../project/workerScope";
+import { projectCapabilities, type ResolvedWorker } from "../project/workerScope";
 import { assertProvisionConfirmed, provisionConfirmPhrase } from "../provision/confirm";
 import {
   type ProvisionedDecline,
@@ -217,11 +218,11 @@ export function provisionProgress(options: { json: boolean }): ProvisionProgress
  *
  * The plan and the work must name the same Workers, and the cheapest way to guarantee that is to resolve
  * them once and hand the same array to both. Memoized on the promise rather than the result, so two
- * callers racing it still share one read.
+ * callers racing it still share one read. Composed for the environment being provisioned (#595).
  */
-function workerSetOnce(projectDir: string): () => Promise<ResolvedWorker[]> {
+function workerSetOnce(projectDir: string, environment: string): () => Promise<ResolvedWorker[]> {
   let pending: Promise<ResolvedWorker[]> | null = null;
-  return () => (pending ??= resolveWorkers({ projectDir }));
+  return () => (pending ??= resolveWorkersFor(environment, { projectDir }));
 }
 
 /** The provisioning view of a resolved Worker: where it lives, what it composes, what it declines. */
@@ -445,7 +446,7 @@ async function provisionDeclared(
   // The scope carries both the names and the stanza. There is no second argument to disagree with.
   const scope = environmentScope(project, environment);
   // Resolved once, read by the plan and by the run — so the two cannot name different Workers.
-  const resolved = workerSetOnce(projectDir);
+  const resolved = workerSetOnce(projectDir, scope.stanza);
   const workers = async (): Promise<ProvisionWorker[]> => provisionWorkers(await resolved());
   const progress = provisionProgress(options);
   await assertProvisionConfirmed({
@@ -532,7 +533,7 @@ async function provisionBranch(
 ): Promise<void> {
   const { identity, capabilities } = await branchIdentity(projectDir);
   const scope = featureScope(identity);
-  const resolved = workerSetOnce(projectDir);
+  const resolved = workerSetOnce(projectDir, scope.stanza);
   const workers = async (): Promise<ProvisionWorker[]> => provisionWorkers(await resolved());
   const progress = provisionProgress(options);
   // No confirmation gate here — a feature environment is created per pull request, so there is no prompt

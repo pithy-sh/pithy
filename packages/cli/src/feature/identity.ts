@@ -3,9 +3,11 @@
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
+import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, requireProjectName } from "../project/config";
-import { projectCapabilities, resolveWorkers } from "../project/workerScope";
+import { projectCapabilities } from "../project/workerScope";
 import { defaultGit, type GitRunner } from "./worktree";
 
 /** A feature's identity as read from its branch: the issue number, the slug, and the full branch name. */
@@ -72,7 +74,8 @@ export async function branchIdentity(
   // to find them again. A fallback that differs between a worktree and a clone would make destroy
   // recompute names that match nothing, delete nothing, and exit 0 — a silent leak.
   const project = requireProjectName(config);
-  const capabilities = projectCapabilities(await resolveWorkers({ projectDir }));
+  // Composed for the feature environment, which is the one these capabilities are provisioned into (#595).
+  const capabilities = projectCapabilities(await resolveWorkersFor(FEATURE_ENVIRONMENT, { projectDir }));
   return { identity: { project, issue, slug }, capabilities };
 }
 
