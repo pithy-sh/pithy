@@ -30,6 +30,7 @@ import type { DashboardClient, DeviceAuthorization } from "../dashboard/contract
 import { defaultGrant, type GrantableScope, grantableScopes } from "../dashboard/grant";
 import { type ConnectionRegistry, openConnectionRegistry } from "../dashboard/registry";
 import { describeConnectTarget, resolveConnectTarget } from "../dashboard/resolveTarget";
+import { type OpenOffer, offerToOpen, openingIsOffered } from "../platform/browser";
 import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
@@ -230,14 +231,86 @@ function isInteractive(json: boolean): boolean {
   return !json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
 }
 
-/** Show the device code on stderr, so `--json`'s stdout line stays the only machine output. */
-function announce(authorization: DeviceAuthorization): void {
-  process.stderr.write(`Open ${authorization.verificationUri} and enter ${authorization.userCode}.\n`);
-  process.stderr.write("▸ Waiting for approval...\n");
+/** The streams {@link offerIsAnswerable} reads. Injectable, because a test cannot redirect this process's. */
+export interface OfferStreams {
+  stdin: { isTTY?: boolean };
+  stderr: { isTTY?: boolean };
+  /** Unread, and named so the difference from {@link isInteractive} is visible rather than inferred. */
+  stdout?: { isTTY?: boolean };
 }
 
-/** The device-code flow, wired to this CLI's announcer. */
-const authorize = (client: DashboardClient): Promise<string> => authorizeDashboard(client, { announce });
+/**
+ * Whether the `o` offer can be both seen and answered.
+ *
+ * **It reads stdin and stderr, and {@link isInteractive} reads stdin and stdout, and the difference is
+ * not an oversight.** A prompt is drawn on stdout by `@clack/prompts`; this announcement is written to
+ * stderr, deliberately, so `--json`'s single stdout line stays the only machine output. Gating the
+ * offer on stdout therefore asked about a stream it never writes to: `pithy dashboard connect >
+ * connection.json` withheld a key a watching human could have pressed, and — the case that actually
+ * costs something — `2> log` would have stated a key nobody could see while raw mode was on.
+ */
+export function offerIsAnswerable(json: boolean, streams: OfferStreams): boolean {
+  return !json && Boolean(streams.stdin.isTTY) && Boolean(streams.stderr.isTTY);
+}
+
+/** The two flags an announcement reads: whether output is machine-readable, and whether opening is wanted. */
+type AnnounceArgs = { json: boolean; open: boolean };
+
+/** The world {@link announceFor} touches, injectable so a test asserts the lines and the target. */
+export interface AnnounceSeams {
+  /** Where a line goes. stderr, so `--json`'s stdout line stays the only machine output. */
+  write?: (line: string) => void;
+  /** The offer primitive. */
+  offerToOpen?: typeof offerToOpen;
+  /** Whether a human is at both ends of this terminal. Defaults to the command's own gate. */
+  interactive?: boolean;
+  /** The environment read for `PITHY_NO_OPEN`. */
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Show the device code, and offer `o` while the flow waits for approval.
+ *
+ * Three lines at most, all on stderr. The URL-and-code line is unconditional — somebody whose browser is
+ * on another machine, or who never presses anything, still has both halves. The offer line appears only
+ * when a key would actually be live.
+ *
+ * **`verificationUriComplete` is opened and never printed.** It carries the user code, and a code in a
+ * line somebody tees, pastes or screenshots is a code somebody else can approve with. Absent, the plain
+ * page is opened instead — the field is optional precisely so a client that has not shipped it works.
+ */
+export function announceFor(
+  args: AnnounceArgs,
+  seams: AnnounceSeams = {},
+): (authorization: DeviceAuthorization) => OpenOffer | undefined {
+  const write = seams.write ?? ((line: string) => void process.stderr.write(`${line}\n`));
+  const offer = seams.offerToOpen ?? offerToOpen;
+  // Gated on the streams this announcement actually uses — see `offerIsAnswerable`, which is where the
+  // difference from the prompts' own gate is written down.
+  const interactive =
+    seams.interactive ?? offerIsAnswerable(args.json, { stdin: process.stdin, stderr: process.stderr });
+  const env = seams.env ?? process.env;
+
+  return (authorization) => {
+    write(`Open ${authorization.verificationUri} and enter ${authorization.userCode}.`);
+    const offered = openingIsOffered({ json: args.json, isTTY: interactive, noOpen: !args.open, env })
+      ? offer({ url: authorization.verificationUriComplete ?? authorization.verificationUri, write })
+      : undefined;
+    write("▸ Waiting for approval...");
+    return offered;
+  };
+}
+
+/**
+ * The device-code flow, wired to this CLI's announcer with this run's flags baked in.
+ *
+ * A function of `args` rather than a constant, because `--json` and `--no-open` decide whether the
+ * announcement offers anything, and the four subcommands that sign in all pass their own.
+ */
+const authorizeFor =
+  (args: AnnounceArgs) =>
+  (client: DashboardClient): Promise<string> =>
+    authorizeDashboard(client, { announce: announceFor(args) });
 
 /**
  * The recorder every write to the connection row records itself through (#294).
@@ -312,6 +385,11 @@ const commonArgs = {
   worker: { type: "string", description: "Which worker's wrangler.jsonc resolves the app database (apps/<name>)" },
   origin: { type: "string", description: "The management client's origin (default https://app.pithy.sh)" },
   json: { type: "boolean", default: false, description: "Machine-readable output" },
+  open: {
+    type: "boolean",
+    default: true,
+    description: "Offer to open the approval page in a browser (--no-open never does)",
+  },
 } as const;
 
 /**
@@ -524,7 +602,7 @@ const connect = defineCommand({
           ...(publicKey === undefined
             ? {
                 client: httpDashboardClient(args.origin === undefined ? {} : { origin: args.origin }),
-                authorize,
+                authorize: authorizeFor(args),
               }
             : { publicKey }),
         }),
@@ -544,7 +622,7 @@ const rotate = defineCommand({
           registry,
           client: httpDashboardClient(args.origin === undefined ? {} : { origin: args.origin }),
           environment: args.env,
-          authorize,
+          authorize: authorizeFor(args),
         }),
       );
       process.stdout.write(formatRotateReport(report, { json: args.json }));
@@ -573,7 +651,7 @@ const disconnect = defineCommand({
             ? {}
             : {
                 client: httpDashboardClient(args.origin === undefined ? {} : { origin: args.origin }),
-                authorize,
+                authorize: authorizeFor(args),
               }),
         }),
       );
@@ -622,6 +700,7 @@ const status = defineCommand({
       const client = args.verify
         ? httpDashboardClient(args.origin === undefined ? {} : { origin: args.origin })
         : undefined;
+      const authorize = authorizeFor(args);
 
       const report = await withRegistry(args, async (registry) =>
         dashboardStatus({
