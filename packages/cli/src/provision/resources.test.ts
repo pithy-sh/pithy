@@ -3,7 +3,7 @@
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { describe, expect, test, vi } from "vitest";
-import { cloudflareProvisioners } from "./resources";
+import { cloudflareProvisioners, cloudflareWorkerScripts } from "./resources";
 
 /**
  * `find` is find-or-create's first half, and the half that decides whether the second one runs (#378).
@@ -114,5 +114,50 @@ describe("a missing resource on an unconfirmed account is not a missing resource
     const refusal = await provisioners.d1.find("acme-prod-secrets").catch((error: unknown) => error);
     expect(String(refusal)).toContain("acct-stranger");
     expect(String(refusal)).not.toContain("does not exist");
+  });
+});
+
+/**
+ * **A feature's Worker scripts, confirmed before they are deleted (#592).**
+ *
+ * `destroy` deletes a script by name, and Cloudflare's script listing answers an account nothing claims
+ * with the same empty array it answers a real absence with. So `exists` refuses on an unconfirmed
+ * account rather than answering, and a delete is never attempted there: a script of that name in some
+ * other account is somebody's deployment.
+ */
+describe("cloudflareWorkerScripts", () => {
+  function fakeWorkers(deployed: string[]) {
+    const getWorker = vi.fn(async (name: string) => (deployed.includes(name) ? { id: name } : null));
+    const deleteWorker = vi.fn(async () => {});
+    const clients = { workers: () => ({ getWorker, deleteWorker }) } as unknown as CloudflareClients;
+    return { clients, getWorker, deleteWorker };
+  }
+
+  test("on an unconfirmed account it refuses, and asks nothing", async () => {
+    const fake = fakeWorkers(["acme-f69-demo-api"]);
+    const scripts = cloudflareWorkerScripts(fake.clients, { accountId: "acct-stranger", confirmation: "ambient" });
+
+    await expect(scripts.exists("acme-f69-demo-api")).rejects.toThrow(REFUSAL);
+    expect(fake.getWorker).not.toHaveBeenCalled();
+    expect(fake.deleteWorker).not.toHaveBeenCalled();
+  });
+
+  test("on a confirmed account it says whether a script of exactly that name is deployed", async () => {
+    const fake = fakeWorkers(["acme-f69-demo-api"]);
+    const scripts = cloudflareWorkerScripts(fake.clients, { accountId: "acct-ours", confirmation: "pinned" });
+
+    expect(await scripts.exists("acme-f69-demo-api")).toBe(true);
+    expect(await scripts.exists("acme-f69-demo-web")).toBe(false);
+  });
+
+  // A feature's Workers call each other, and Cloudflare refuses to delete a callee while its caller still
+  // binds it. Every Worker teardown deletes is the feature's own and goes in the same pass, so it forces.
+  test("delete removes the script by name, whatever still binds it", async () => {
+    const fake = fakeWorkers(["acme-f69-demo-api"]);
+    const scripts = cloudflareWorkerScripts(fake.clients, { accountId: "acct-ours", confirmation: "named" });
+
+    await scripts.delete("acme-f69-demo-api");
+
+    expect(fake.deleteWorker).toHaveBeenCalledWith("acme-f69-demo-api", { force: true });
   });
 });

@@ -5,9 +5,9 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
-import { projectCapabilitySetFor, resolveWorkersFor } from "../project/composeFor";
+import { resolveWorkerSetFor, resolveWorkersFor } from "../project/composeFor";
 import { loadProject, requireProjectName } from "../project/config";
-import { type CapabilitySet, projectCapabilities } from "../project/workerScope";
+import { type CapabilitySet, capabilitySetOf, projectCapabilities, type WorkerSet } from "../project/workerScope";
 import { defaultGit, type GitRunner } from "./worktree";
 
 /** A feature's identity as read from its branch: the issue number, the slug, and the full branch name. */
@@ -89,8 +89,21 @@ export async function branchIdentity(
  * credentials outlive a `destroy` that exits 0 (#595). The set differs from provision's in one way only,
  * and on purpose: an unknowable one is reported rather than thrown, so `--local-only` can still run.
  */
-export function featureCapabilitySet(projectDir: string): Promise<CapabilitySet> {
-  return projectCapabilitySetFor(FEATURE_ENVIRONMENT, projectDir);
+export async function featureCapabilitySet(projectDir: string): Promise<CapabilitySet> {
+  return capabilitySetOf(await featureWorkerSet(projectDir));
+}
+
+/**
+ * The Workers a feature's teardown works from, composed for `feature` — one resolution for both halves.
+ *
+ * `destroy` needs the Workers themselves as well as their capabilities: the capabilities name the
+ * resources and the Secrets Store entries, and the Workers name the scripts (#592). Resolving them twice
+ * would let the two disagree, and resolving either unstamped would miss a capability a config composes
+ * only for deployed environments (#595). So this is the one resolution, and {@link featureCapabilitySet}
+ * is derived from it rather than beside it.
+ */
+export function featureWorkerSet(projectDir: string): Promise<WorkerSet> {
+  return resolveWorkerSetFor(FEATURE_ENVIRONMENT, { projectDir });
 }
 
 /**

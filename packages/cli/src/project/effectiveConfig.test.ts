@@ -7,14 +7,17 @@ import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
+  assertCreatesNoResources,
   assertDeploysRequestedEnvironment,
   assertPublishesDeclaredWorker,
   configFromArgs,
   effectiveDeployConfig,
   environmentFromArgs,
   identityOf,
+  NO_PROVISION_ARG,
   redirectedConfig,
   selectedEnvironment,
+  stanzaOf,
   TOP_LEVEL_STANZA_ARG,
   wranglerEnvironment,
 } from "./effectiveConfig";
@@ -30,6 +33,28 @@ describe("wranglerEnvironment", () => {
     // `--env dev` handed to wrangler asks for a section the project is forbidden from writing.
     expect(wranglerEnvironment(undefined)).toBeUndefined();
     expect(wranglerEnvironment("dev")).toBeUndefined();
+  });
+});
+
+describe("stanzaOf", () => {
+  const config = {
+    name: "acme-web",
+    d1_databases: [{ binding: "DB", database_name: "acme-dev-db" }],
+    env: { staging: { d1_databases: [{ binding: "DB", database_id: "uuid" }] }, prod: {} },
+  };
+
+  test("an environment wrangler finds is that stanza, and nothing of the top level", () => {
+    // `d1_databases` is not inheritable: a stanza that declares none deploys with none, not with dev's.
+    expect(stanzaOf(config, "staging")).toBe(config.env.staging);
+    expect(stanzaOf(config, "prod")).toBe(config.env.prod);
+  });
+
+  test("an environment wrangler does not find is the top level — it warns and ships it", () => {
+    expect(stanzaOf(config, "live")).toBe(config);
+  });
+
+  test("no environment is the top level", () => {
+    expect(stanzaOf(config, undefined)).toBe(config);
   });
 });
 
@@ -473,5 +498,66 @@ describe("assertPublishesDeclaredWorker", () => {
     })();
     expect(error).toBeInstanceOf(PithyError);
     expect(error?.payload.message).toContain("names no Worker");
+  });
+});
+
+/**
+ * **A deploy creates nothing (#589).**
+ *
+ * wrangler's `experimental-provision` defaults to `true` for every deploy that is not a dry run: a binding
+ * that names a resource it cannot find by id, by the Worker's existing settings, or by name is *created*.
+ * That is how `pithy deploy --env staging` left `dash-dev-secrets` and `dash-dev-db` on an account. It
+ * covers eight binding kinds today, and for R2, queues and the namespace kinds the name *is* the id — so no
+ * reading of a config can see it coming. wrangler's own switch is the only thing that covers every kind,
+ * including the next one.
+ */
+describe("assertCreatesNoResources", () => {
+  /** The refusal one argv raises, or `null` when the gate let it through. */
+  function refused(args: readonly string[]): PithyError | null {
+    try {
+      assertCreatesNoResources(args);
+      return null;
+    } catch (thrown) {
+      return thrown as PithyError;
+    }
+  }
+
+  test("the switch is wrangler's own spelling, and the only one that stops it", () => {
+    // `--experimental-auto-create=false` does not: named resources are created regardless. Read out of
+    // wrangler 4.125.0, where the option is `default: true, hidden: true, alias: ["x-provision"]`.
+    expect(NO_PROVISION_ARG).toBe("--experimental-provision=false");
+  });
+
+  test("holds an argv that turns provisioning off", () => {
+    expect(refused(["deploy", "--env", "staging", NO_PROVISION_ARG])).toBeNull();
+    expect(refused(["deploy", "--config", "/g/wrangler.jsonc", TOP_LEVEL_STANZA_ARG, NO_PROVISION_ARG])).toBeNull();
+  });
+
+  test("refuses an argv that says nothing about provisioning, because wrangler's default is to create", () => {
+    const error = refused(["deploy", "--env", "staging"]);
+    expect(error).toBeInstanceOf(PithyError);
+    expect(error?.payload.action).toContain(NO_PROVISION_ARG);
+  });
+
+  test("refuses an argv that turns it back on, in any spelling wrangler accepts", () => {
+    // The switch present is not the same fact as the switch in force. Each of these is a second statement
+    // about provisioning, and the one wrangler reads last is not a thing this gate should have to guess.
+    for (const second of [
+      "--x-provision",
+      "--experimental-provision",
+      "--experimentalProvision=true",
+      "--x-provision=true",
+    ]) {
+      expect(refused(["deploy", NO_PROVISION_ARG, second]), second).toBeInstanceOf(PithyError);
+    }
+  });
+
+  test("refuses the switch written where wrangler reads it as a positional, not an option", () => {
+    // After `--`, yargs stops parsing options. The token is there and does nothing.
+    expect(refused(["deploy", "--", NO_PROVISION_ARG])).toBeInstanceOf(PithyError);
+  });
+
+  test("a path that happens to say provision is not a statement about provisioning", () => {
+    expect(refused(["deploy", "--config=/srv/provision/wrangler.jsonc", NO_PROVISION_ARG])).toBeNull();
   });
 });

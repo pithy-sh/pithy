@@ -14,7 +14,7 @@ import { parse } from "comment-json";
 import { afterAll, describe, expect, test } from "vitest";
 import { cloudflareEnv } from "../cloudflare/config";
 import { buildEnvInventory } from "../project/envInventory";
-import { cloudflareProvisioners } from "../provision/resources";
+import { cloudflareProvisioners, cloudflareWorkerScripts } from "../provision/resources";
 import { destroyFeature } from "./destroy";
 import { provisionFeature } from "./provision";
 
@@ -144,18 +144,21 @@ let projectDir: string | null = null;
 
 const clients = hasCreds ? new CloudflareClients({ accountId, apiToken }) : null;
 const provisioners = clients ? cloudflareProvisioners(clients, { accountId, confirmation: "pinned" }) : null;
+const scripts = clients ? cloudflareWorkerScripts(clients, { accountId, confirmation: "pinned" }) : null;
 const capabilities = [shared, collabOnly];
 
 afterAll(async () => {
   // Unconditional: a failed assertion must not leak real D1/KV into the account. `destroyFeature`
   // recomputes the same names from the identity, so it deletes exactly what provision created.
-  if (projectDir && provisioners) {
+  if (projectDir && provisioners && scripts) {
     await destroyFeature({
       projectDir,
       identity: IDENTITY,
       capabilities,
+      workers: [],
       env: ENV,
       provisioners,
+      scripts,
       git: stubGit,
       registryPath: path.join(projectDir, "..", "dev-ports.json"),
       root: projectDir,
@@ -260,14 +263,16 @@ describe.skipIf(!hasCreds)("feature lifecycle — LIVE", () => {
   });
 
   test("destroy removes what provision created, and is idempotent on a second run", { timeout: 300_000 }, async () => {
-    if (!projectDir || !provisioners) throw new Error("unreachable: suite is credential-gated");
+    if (!projectDir || !provisioners || !scripts) throw new Error("unreachable: suite is credential-gated");
 
     const teardown = {
       projectDir,
       identity: IDENTITY,
       capabilities,
+      workers: [],
       env: ENV,
       provisioners,
+      scripts,
       git: stubGit,
       registryPath: path.join(projectDir, "..", "dev-ports.json"),
       root: projectDir,

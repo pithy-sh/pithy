@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { InternalError } from "../error/pithyError";
-import { assertValidEnvironment, FEATURE_ENVIRONMENT, GLOBAL_SCOPE } from "./environment";
+import { InternalError, ValidationError } from "../error/pithyError";
+import { assertValidEnvironment, FEATURE_ENVIRONMENT, GLOBAL_SCOPE, isFeatureMarker } from "./environment";
 import {
   type FeatureIdentity,
   type FeatureResourceKind,
@@ -10,6 +10,7 @@ import {
   featureSecretEntryName,
   featureWorkerName,
 } from "./feature";
+import { kebab } from "./resource";
 import { resourceNames } from "./resourceNames";
 
 /**
@@ -89,6 +90,28 @@ export interface ProjectGlobalNaming extends BindingNaming {
   readonly scope: "global";
 }
 
+/**
+ * The two names one Worker answers to before a scope has named it — **and why a scope is handed both.**
+ *
+ * `pithy init replay --worker board` writes `apps/board/wrangler.jsonc` with `"name": "replay-board"`.
+ * So the Worker's directory says `board` and its deploy name says `replay-board`, and the two scopes need
+ * different ones. A declared environment's fallback is wrangler's own `<script>-<env>`, which is built on
+ * the deploy name. A feature's name is `<project>-f<issue>-<slug>-<app>`, which already leads with the
+ * project, so it is built on the directory.
+ *
+ * This was one string until #587, and the string was the deploy name, so every feature Worker carried the
+ * project twice: `replay-f69-demo-replay-board`. That was not only untidy. The name is held to the Worker
+ * cap of 63, and the doubled segment spent that budget where the truncation lands on the part that says
+ * *which* Worker. Carrying both names is what lets each scope take the one its shape is built from, and
+ * lets neither caller choose on the scope's behalf.
+ */
+export interface ProvisionWorkerNames {
+  /** The Worker's `apps/<app>` directory basename — the name a sibling's `service` binding targets it by. */
+  readonly app: string;
+  /** The Worker's deploy name — the top-level `name` of its `wrangler.jsonc`, e.g. `replay-board`. */
+  readonly script: string;
+}
+
 /** Where a provisioning run's resources are named, and where their ids are written. */
 export interface ProvisionScope {
   /** The `env.<stanza>` key in each Worker's config that this scope's ids are written into. */
@@ -136,11 +159,15 @@ export interface ProvisionScope {
   /**
    * The script name a Worker deploys under in this scope.
    *
+   * `worker` carries **both** of the Worker's names, because the two scopes compose from different ones:
+   * a declared environment falls back to wrangler's `<script>-<env>`, and a feature composes
+   * `<project>-f<issue>-<slug>-<app>`. See {@link ProvisionWorkerNames}.
+   *
    * `declared` is the name that scope's stanza already carries, when it carries one. A scope may honor it
    * or compose its own; see {@link environmentScope} and {@link featureScope}, which answer differently
    * and say why. Passing it is how a caller asks the scope rather than deciding for itself.
    */
-  worker(worker: string, declared?: string): string;
+  worker(worker: ProvisionWorkerNames, declared?: string): string;
   /**
    * This scope's CF Secrets Store entry name for a declared secret.
    *
@@ -228,6 +255,28 @@ export function bindingResourceName(
 }
 
 /**
+ * **Is this name inside a feature's namespace** — `<project>-f<issue>-…`, the project and then a feature's
+ * marker, with something after it?
+ *
+ * The namespace, not one feature's names, because that is what has to stay disjoint: `pithy feature destroy`
+ * deletes by exact name, and a feature Worker's name has no kind suffix, so a declared environment's name
+ * that lands anywhere in here is one some branch's teardown can delete (#587). Every name {@link featureScope}
+ * composes is inside; {@link environmentScope} refuses to name a Worker inside, and `isValidEnvironment`
+ * refuses every environment whose composed names could be.
+ *
+ * **What it does not see.** It is stated for one project. A second project on the same account whose name is
+ * this one's plus `-f<issue>` — `acme-f1` beside `acme` — composes names inside `acme`'s namespace from an
+ * ordinary environment, and nothing here can tell, because a project name carries no boundary a later hyphen
+ * cannot fake. That is the hyphen ambiguity every composed name carries, one segment further left.
+ */
+export function isFeatureName(project: string, name: string): boolean {
+  const head = `${kebab(project)}-`;
+  if (!name.startsWith(head)) return false;
+  const [marker, ...rest] = name.slice(head.length).split("-");
+  return isFeatureMarker(marker ?? "") && rest.length > 0;
+}
+
+/**
  * A declared environment's scope — `staging`, `prod`, or whatever the root `pithy.config.ts` lists.
  *
  * The environment is validated here, once, before a single name exists: it is the middle segment of
@@ -265,7 +314,21 @@ export function environmentScope(project: string, environment: string): Provisio
     honorsGlobal: true,
     resource: (binding, kind, naming) =>
       bindingResourceName(project, binding, kind, naming, (thing) => names[KIND_NAMER[kind]](thing)),
-    worker: (worker, declared) => declared ?? `${worker}-${environment}`,
+    worker: ({ script }, declared) => {
+      const name = declared ?? `${script}-${environment}`;
+      // The environment rule already keeps every name composed from the environment out of a feature's
+      // namespace. A declared name and wrangler's fallback are not composed from it — the stanza says one,
+      // the deploy name leads the other — so either can still sit there, and a branch's teardown would
+      // delete the Worker (#587). Refused here, where the name is chosen, rather than spared at teardown.
+      if (isFeatureName(project, name)) {
+        throw new ValidationError({
+          message: `The ${environment} Worker "${name}" is named the way a feature's Worker is.`,
+          action: `Rename it in env.${environment}.name, or the Worker's top-level name, so it does not follow ${kebab(project)}- with f and a number.`,
+          detail: `${declared === undefined ? "Composed by wrangler from the deploy name" : `Declared in env.${environment}.name`}. A feature's Worker is <project>-f<issue>-<slug>-<app>, and \`pithy feature destroy\` deletes it by that exact name.`,
+        });
+      }
+      return name;
+    },
     secretEntry: (secret, secretScope) =>
       secretEntryName(project, secret, secretScope, () => names.secretEntry(secret)),
   };
@@ -306,8 +369,38 @@ export function featureScope(identity: FeatureIdentity): ProvisionScope {
     // part company here.
     honorsGlobal: false,
     resource: (binding, kind) => featureResourceName(identity, binding, kind),
-    worker: (worker) => featureWorkerName(identity, worker),
+    // The directory, not the deploy name: the head already carries the project, and the deploy name
+    // usually leads with it too, which composed `<project>-f<issue>-<slug>-<project>-<app>` (#587).
+    worker: ({ app }) => featureWorkerName(identity, app),
     secretEntry: (secret, secretScope) =>
       secretEntryName(identity.project, secret, secretScope, () => featureSecretEntryName(identity, secret)),
   };
+}
+
+/**
+ * **Every script name one Worker can be deployed under in a feature — what teardown looks for (#592).**
+ *
+ * The first is the name {@link featureScope} composes today, taken from the scope rather than composed a
+ * second time, so provisioning and teardown cannot disagree about it. The second is the one it composed
+ * until #587, from the deploy name: `<project>-f<issue>-<slug>-<project>-<app>`. A feature provisioned and
+ * deployed before that upgrade is still running under it, and after its next deploy it runs under both —
+ * so teardown looks for both. One entry when the two coincide, as they do for a Worker whose deploy name
+ * is its directory.
+ *
+ * **Exact names, never a prefix.** A prefix scan of `<project>-f<issue>-<slug>-` reaches a sibling whose
+ * slug extends this one's. The exact names can still meet a sibling in one shape: the doubled name for
+ * slug `demo` and deploy name `acme-api` is the current name for slug `demo-acme` and directory `api`, on
+ * the same issue number. That is the same hyphen ambiguity every feature name here carries.
+ *
+ * **They cannot meet a declared environment's Worker**, which has no suffix either and is `<project>-<env>-<app>`
+ * since #580: every name either shape yields is inside {@link isFeatureName}'s namespace, no environment may
+ * start with a feature's marker, and {@link environmentScope} refuses a declared or fallback Worker name inside
+ * it. What that does not reach is a name nothing in the kit chose — a stanza written by hand and deployed
+ * without `pithy provision --env` ever reading it, or another project on the account, as {@link isFeatureName}
+ * says.
+ */
+export function featureWorkerScriptNames(identity: FeatureIdentity, worker: ProvisionWorkerNames): string[] {
+  const current = featureScope(identity).worker(worker);
+  const beforeSingleProject = featureWorkerName(identity, worker.script);
+  return current === beforeSingleProject ? [current] : [current, beforeSingleProject];
 }

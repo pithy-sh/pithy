@@ -137,11 +137,15 @@ ${envStanzas}
       // tracked `assets` stanza carries no `directory`, because only the build knows where the client
       // output landed. `pithy deploy --env <name>` is what ships that Worker — it builds what it
       // deploys, and refuses anything that is not the environment asked for.
+      //
+      // **`--experimental-provision=false`, because a deploy is not a provision (#589).** wrangler's default
+      // creates any D1, KV or bucket a binding names and it cannot find, so `bun run deploy:staging` before
+      // `pithy provision` made resources nobody reviewed. With it, an unprovisioned binding fails the deploy.
       scripts: {
         dev: "wrangler dev",
-        deploy: "wrangler deploy --config wrangler.jsonc --env=",
-        "deploy:staging": "wrangler deploy --config wrangler.jsonc --env staging",
-        "deploy:prod": "wrangler deploy --config wrangler.jsonc --env prod",
+        deploy: "wrangler deploy --config wrangler.jsonc --env= --experimental-provision=false",
+        "deploy:staging": "wrangler deploy --config wrangler.jsonc --env staging --experimental-provision=false",
+        "deploy:prod": "wrangler deploy --config wrangler.jsonc --env prod --experimental-provision=false",
       },
       // `zod`, `kysely` and `hono` beside the kit, because every capability declares them as
       // `peerDependencies` — one copy is one type (#477) — and a peer is a requirement the *consumer*

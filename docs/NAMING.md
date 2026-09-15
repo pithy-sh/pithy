@@ -86,6 +86,8 @@ An environment is lowercase, digits, and single inner hyphens, starting with a l
 
 A custom environment is allowed, and held to the same two rules. `live` is fine. `eu-prod` is fine. `preprod-eu` is 10 characters and is refused. `global` is refused for a different reason: it occupies the same slot for a different purpose, and a project cannot have one set of names covering two scopes.
 
+**An environment cannot start the way a feature does.** A feature takes the same slot with `f<issue>`, and its Worker is `<project>-f<issue>-<slug>-<worker>` with no kind suffix. So an environment called `f1-demo` stamps `<project>-f1-demo-api` into its stanza, which is feature 1-demo's Worker character for character, and `pithy feature destroy` on `feature/1-demo` deletes it. `f1` meets it too, through a Worker called `demo-api`. An environment whose first segment is `f` and digits is refused — `f1`, `f12-ab`, `f01` — and nothing else: `fr-1`, `f1a` and `fix` are fine, because no name composed under them can be a feature's. For the same reason `pithy provision --env` refuses a Worker name that a stanza declares, or that wrangler composes from a deploy name, inside `<project>-f<issue>-`.
+
 **A project declares which of them it has.** `environments` in the root `pithy.config.ts`, defaulting to `["staging", "prod"]`, asked at `pithy init` with that default. It is the one answer to "what environments does this project have", and everything that iterates environments reads it: each Worker's `env.<name>` stanzas are generated from it, `pithy secrets provision` gives every declared environment a master key and a manager, and `--env` refuses one the project does not declare, naming the ones it does. `dev` is never listed — it is local, it is the top-level wrangler stanza rather than an `env.dev`, and it always exists.
 
 The list is **ordered, least-production first**. That is the order provisioning walks, so a mistake is made in staging before it is made in prod, and the last entry is the one a `global` account-level secret is written through.
@@ -113,7 +115,7 @@ An ephemeral feature environment is an environment, so it occupies the environme
 <project>-f<issue>-<slug>-<binding>-<kind>
 ```
 
-`pithy feature create` computes these, `provision` creates them, and `destroy` recomputes the identical strings to delete them. Nothing is stored, which is why every segment has to be derivable from `(project, issue, slug, binding, kind)` alone.
+`pithy feature create` computes these, `provision` creates them, and `destroy` recomputes the identical strings to delete them. The worktree's manifest records them too, but it is repository content rather than a trusted record: an entry is honored only when it recomputes, which is why every segment has to be derivable from `(project, issue, slug, binding, kind)` alone.
 
 There is **no Worker segment**. Two Workers that both declare `DB` are backed by one D1; a Worker that wants its own declares a different binding. Sharing is expressed in the binding name.
 
@@ -269,6 +271,10 @@ A slug over budget is not an error. It becomes a truncated head plus a six-hex h
 **The guidance that falls out of it.** Keep the branch slug to roughly 20 characters — `feature/95-project-scope` rather than `feature/95-project-scope-resources-and-limits`. Only the part after the issue number becomes the slug. If a branch needs a long name for humans, it can have one; the cost is a hashed segment in a resource that lives for the length of the review.
 
 A feature's **Worker scripts** share the head and drop the kind: `<project>-f<issue>-<slug>-<worker>`, held to the Worker script rule of 63. The worker name is truncated too if it is what is eating the budget, so a Worker directory called `collaboration-realtime-gateway` deploys rather than failing.
+
+`<worker>` is the `apps/<worker>` directory, not the deploy name. `pithy init replay --worker board` deploys `apps/board` as `replay-board`, and its feature Worker is `replay-f69-demo-board` — the project once. Until #587 it was composed from the deploy name, `replay-f69-demo-replay-board`, spending the project twice out of the 63.
+
+`pithy feature destroy` looks for both shapes (#592), so a feature deployed before that change — and redeployed since, under both names — has both removed. Both are exact names, recomputed from the Worker's directory and its deploy name. A third name some features deployed under before #592, wrangler's `<script>-feature`, carries no feature identity and is shared by every branch that deployed it, so no teardown looks for it; [`feature.md`](commands/feature.md) says how to remove it.
 
 ## The `pithy-int-` reservation
 

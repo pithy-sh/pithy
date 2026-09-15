@@ -53,6 +53,41 @@ export const GLOBAL_SCOPE = "global";
 export const FEATURE_ENVIRONMENT = "feature";
 
 /**
+ * **The segment a feature takes where an environment sits** — `f<issue>`, as in `<project>-f69-demo-db-d1`.
+ *
+ * Defined here, beside the environment rule, because the two share a slot in every composed name and the
+ * environment rule has to refuse this shape: `feature.ts` composes a feature's head with it, and
+ * {@link isValidEnvironment} refuses an environment that starts with one. A marker composed in one module and
+ * recognized in another would be two statements of one shape, and the next person to change one would not
+ * find the other.
+ */
+export function featureMarker(issue: string): string {
+  return `f${issue}`;
+}
+
+/** Every string {@link featureMarker} can compose: an `f` and one or more digits, as a whole segment. */
+const FEATURE_MARKER = /^f[0-9]+$/;
+
+/** Is this whole hyphen-delimited segment a feature's marker? `f1` and `f01` are; `f1a` and `feature` are not. */
+export function isFeatureMarker(segment: string): boolean {
+  return FEATURE_MARKER.test(segment);
+}
+
+/**
+ * Does this environment start where a feature's name does?
+ *
+ * **Exactly the environments that can collide with a feature (#587).** A declared environment composes
+ * `<project>-<env>-<thing>`, a feature `<project>-f<issue>-<slug>-<thing>`, and a feature Worker's name has no
+ * kind suffix to tell the two apart. After the shared `<project>-`, the two strings can only be equal when the
+ * environment's first segment is the feature's marker — `f1-demo` meets feature 1-demo's Worker `api`, and `f1`
+ * meets it too, through a Worker called `demo-api`. Any other first segment differs from every marker, so no
+ * name composed under it can be a feature's. So this is the whole rule, not one case of it.
+ */
+function startsWithFeatureMarker(name: string): boolean {
+  return isFeatureMarker(name.split("-")[0] ?? "");
+}
+
+/**
  * The longest an environment name may be — **the longest canonical one, `staging`**.
  *
  * This is a derivation input, not a preference: `WORKFLOW_DERIVED_PROJECT_NAME` and
@@ -77,6 +112,7 @@ export const MAX_ENVIRONMENT_NAME = Math.max(...ENVIRONMENTS.map((environment) =
  */
 export function isValidEnvironment(name: string): boolean {
   if (name === GLOBAL_SCOPE) return false;
+  if (startsWithFeatureMarker(name)) return false;
   return name.length <= MAX_ENVIRONMENT_NAME && NAME_SEGMENT.test(name);
 }
 
@@ -102,6 +138,13 @@ export function assertValidEnvironment(name: string): void {
       message: `"${GLOBAL_SCOPE}" is a scope, not an environment.`,
       action: `Name the environment one of ${ENVIRONMENTS.join(", ")}.`,
       detail: `${GLOBAL_SCOPE} occupies the environment slot of a composed name for values shared across every environment.`,
+    });
+  }
+  if (startsWithFeatureMarker(name)) {
+    throw new ValidationError({
+      message: `"${name}" starts the way a feature's name does.`,
+      action: "Start the environment with something other than f and a number.",
+      detail: `A feature takes the environment's slot with f<issue>, so <project>-${name}-<worker> can be a feature's Worker name exactly, and \`pithy feature destroy\` deletes that Worker.`,
     });
   }
   if (name.length > MAX_ENVIRONMENT_NAME && NAME_SEGMENT.test(name)) {

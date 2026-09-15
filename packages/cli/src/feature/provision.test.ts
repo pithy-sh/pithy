@@ -4,6 +4,7 @@
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
+import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
@@ -13,8 +14,14 @@ import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { CliAuditEvent } from "../audit/cliAudit";
 import { sourceFiles } from "../ci/sourceFiles";
+import type { ProvisionWorker } from "../provision/environment";
 import { featureConfigPath } from "../provision/featureConfig";
-import { ProvisionAuditActions, type ResourceProvisioner, type ResourceProvisioners } from "../provision/resources";
+import {
+  cloudflareWorkerScripts,
+  ProvisionAuditActions,
+  type ResourceProvisioner,
+  type ResourceProvisioners,
+} from "../provision/resources";
 import { emptyManifest, type FeatureResource, manifestPath, readManifest, writeManifest } from "./manifest";
 import { deletedBeforeFailure, deprovisionFeature, provisionFeature } from "./provision";
 
@@ -49,6 +56,12 @@ function fakeProvisioners() {
   };
   return { stores, provisioners: provisioners as unknown as ResourceProvisioners, typed: provisioners };
 }
+
+/**
+ * The script half of teardown, for a case that is not about scripts: an account with none deployed, and a
+ * project whose Workers the case does not resolve. The cases that are about scripts are below.
+ */
+const noScripts = { scripts: { exists: async () => false, delete: async () => {} }, workers: [] };
 
 /** A capability declaring one D1, one KV, and one R2 binding — the provisionable set under test. */
 function appCapability() {
@@ -307,9 +320,27 @@ describe("provisionFeature / deprovisionFeature", () => {
     expect(web.env.feature?.services).toEqual([{ binding: "API", service: apiName }]);
   });
 
-  test("a service binding targets the sibling's real script name, even when it differs from its directory", async () => {
+  /**
+   * **One address per feature Worker, and it is `<project>-f<issue>-<slug>-<app>` (#587).**
+   *
+   * The normal state after `pithy init acme`: `apps/api` deploys as `acme-api`, not `api`. Two things
+   * compose a feature Worker's address from that — the stanza `name` the deploy reads, and the `service`
+   * target a sibling calls it by (which the report also prints) — and the property is that they are the
+   * same string for every Worker, and that the string is built from the directory.
+   *
+   * Both halves have failed. Feature-scoping the *directory* on the service side only wrote `<feature>-api`
+   * while the Worker deployed as `<feature>-acme-api`, so every RPC through `env.API` failed while
+   * provision reported success. Feature-scoping the *deploy name* on both sides agreed, and put the project
+   * in every feature Worker twice: `acme-f69-demo-acme-api`. The expected names are literals, not
+   * `featureWorkerName` calls, so a doubled segment cannot pass by being fed the same wrong input twice.
+   *
+   * **What it does not see.** It holds `provisionFeature`, which is the only path that composes a feature
+   * Worker's script name today. A new command that composed one without a `ProvisionScope` — calling
+   * `featureWorkerName` directly, or `resourceNames(project).feature(...).worker(...)` — would not pass
+   * through here, and that function takes a plain string that cannot tell a directory from a deploy name.
+   */
+  test("gives each feature Worker one address, built from its directory, that its deploy and its callers share", async () => {
     const { provisioners } = fakeProvisioners();
-    // The normal state after `pithy init acme`: apps/api deploys as "acme-api", not "api".
     const apiDir = join(dir, "apps", "api");
     const webDir = join(dir, "apps", "web");
     await mkdir(apiDir, { recursive: true });
@@ -317,35 +348,55 @@ describe("provisionFeature / deprovisionFeature", () => {
     await mkdir(webDir, { recursive: true });
     await writeFile(join(webDir, "wrangler.jsonc"), '{\n  "name": "acme-web"\n}\n');
 
-    // A service binding names its target by its apps/<name> directory (BindingSpec.service).
-    const withService = defineCapability({
+    // Each Worker calls the other, by its apps/<name> directory (BindingSpec.service), so every Worker's
+    // address is both deployed under and called by.
+    const callsApi = defineCapability({
       name: "app",
       requiredBindings: [{ type: "service", name: "API", service: "api" }] satisfies BindingSpecInput[],
+    });
+    const callsWeb = defineCapability({
+      name: "web",
+      requiredBindings: [{ type: "service", name: "WEB", service: "web" }] satisfies BindingSpecInput[],
     });
 
     const report = await provisionFeature({
       projectDir: dir,
-      capabilities: [withService],
+      capabilities: [callsApi, callsWeb],
       identity,
       provisioners,
       resolveWorkers: async () => [
-        { name: "acme-api", dir: apiDir, capabilities: [withService] },
-        { name: "acme-web", dir: webDir, capabilities: [withService] },
+        { name: "acme-api", dir: apiDir, capabilities: [callsWeb] },
+        { name: "acme-web", dir: webDir, capabilities: [callsApi] },
       ],
       migrate: async () => {},
       seed: async () => {},
     });
 
-    // api deploys as `<feature>-acme-api`; the binding must name exactly that. Feature-scoping the directory
-    // name instead wrote `<feature>-api` — a script nobody deploys, so every RPC through env.API failed
-    // while provision reported success.
-    const deployed = featureWorkerName(identity, "acme-api");
-    expect(report.services).toEqual([{ binding: "API", service: deployed }]);
-
-    const web = parse(await readFile(featureConfigPath(webDir), "utf8")) as unknown as {
-      env: Record<string, { services?: { binding: string; service: string }[] }>;
-    };
-    expect(web.env.feature?.services).toEqual([{ binding: "API", service: deployed }]);
+    const expected = new Map([
+      ["acme-api", { dir: apiDir, name: "acme-f69-demo-api", binding: "API" }],
+      ["acme-web", { dir: webDir, name: "acme-f69-demo-web", binding: "WEB" }],
+    ]);
+    expect(report.workers).toEqual([...expected].map(([worker, { name }]) => ({ worker, name })));
+    for (const [, { dir: workerDir, name, binding }] of expected) {
+      const stanza = (
+        parse(await readFile(featureConfigPath(workerDir), "utf8")) as unknown as {
+          env: Record<string, { name?: string; services?: { binding: string; service: string }[] }>;
+        }
+      ).env.feature;
+      // The address it deploys under…
+      expect(stanza?.name).toBe(name);
+      // …is the address every caller targets, in the report and in each sibling's own stanza.
+      expect(report.services.filter((service) => service.binding === binding)).toEqual([{ binding, service: name }]);
+      for (const [, sibling] of expected) {
+        if (sibling.dir === workerDir) continue;
+        const siblingStanza = (
+          parse(await readFile(featureConfigPath(sibling.dir), "utf8")) as unknown as {
+            env: Record<string, { services?: { binding: string; service: string }[] }>;
+          }
+        ).env.feature;
+        expect(siblingStanza?.services).toEqual([{ binding, service: name }]);
+      }
+    }
   });
 
   test("a service binding naming no worker is refused before a single resource is created", async () => {
@@ -378,7 +429,14 @@ describe("provisionFeature / deprovisionFeature", () => {
     const { stores, provisioners } = fakeProvisioners();
     await provisionFeature({ projectDir: dir, capabilities, identity, provisioners, ...noBackend });
 
-    const report = await deprovisionFeature({ projectDir: dir, identity, capabilities, env: "feature", provisioners });
+    const report = await deprovisionFeature({
+      ...noScripts,
+      projectDir: dir,
+      identity,
+      capabilities,
+      env: "feature",
+      provisioners,
+    });
 
     expect(report.deleted.map((x) => x.kind).sort()).toEqual(["d1", "kv", "r2"]);
     expect(stores.d1.size + stores.kv.size + stores.r2.size).toBe(0);
@@ -393,7 +451,14 @@ describe("provisionFeature / deprovisionFeature", () => {
     // A resource that is not one of this feature's expected names must be left untouched.
     stores.kv.set("acme-f42-other-cache-kv", "foreign-id");
 
-    const report = await deprovisionFeature({ projectDir: dir, identity, capabilities, env: "feature", provisioners });
+    const report = await deprovisionFeature({
+      ...noScripts,
+      projectDir: dir,
+      identity,
+      capabilities,
+      env: "feature",
+      provisioners,
+    });
 
     expect(report.deleted).toEqual([{ kind: "kv", name: orphan, id: "orphan-id" }]);
     expect(stores.kv.has("acme-f42-other-cache-kv")).toBe(true);
@@ -407,7 +472,14 @@ describe("provisionFeature / deprovisionFeature", () => {
     const ours = featureResourceName(identity, "CACHE", "kv");
     stores.kv.set(ours, "our-id");
 
-    const report = await deprovisionFeature({ projectDir: dir, identity, capabilities, env: "feature", provisioners });
+    const report = await deprovisionFeature({
+      ...noScripts,
+      projectDir: dir,
+      identity,
+      capabilities,
+      env: "feature",
+      provisioners,
+    });
 
     expect(report.deleted).toEqual([{ kind: "kv", name: ours, id: "our-id" }]);
     expect(stores.kv.has(sibling)).toBe(true);
@@ -444,6 +516,7 @@ describe("provisionFeature / deprovisionFeature", () => {
 
     const events: CliAuditEvent[] = [];
     await deprovisionFeature({
+      ...noScripts,
       projectDir: dir,
       identity,
       capabilities,
@@ -557,6 +630,7 @@ describe("provisionFeature / deprovisionFeature", () => {
       await writeCraftedManifest([{ kind: "d1", binding: "DB", name: "looks-legit", id: "prod-d1-uuid" }]);
 
       const report = await deprovisionFeature({
+        ...noScripts,
         projectDir: dir,
         identity,
         capabilities,
@@ -575,6 +649,7 @@ describe("provisionFeature / deprovisionFeature", () => {
       await writeCraftedManifest([{ kind: "d1", binding: "DB", name, id: "our-d1" }]);
 
       const report = await deprovisionFeature({
+        ...noScripts,
         projectDir: dir,
         identity,
         capabilities,
@@ -591,7 +666,7 @@ describe("provisionFeature / deprovisionFeature", () => {
       await writeCraftedManifest([], { project: "acme", issue: "999", slug: "someone-else" });
 
       await expect(
-        deprovisionFeature({ projectDir: dir, identity, capabilities, env: "feature", provisioners }),
+        deprovisionFeature({ ...noScripts, projectDir: dir, identity, capabilities, env: "feature", provisioners }),
       ).rejects.toThrow(/different feature/i);
     });
 
@@ -713,6 +788,7 @@ describe("provisionFeature / deprovisionFeature", () => {
       expect(entries.has("acme-f69-demo-secrets-encryption-keys")).toBe(true);
 
       await deprovisionFeature({
+        ...noScripts,
         projectDir: dir,
         identity,
         capabilities: withSecrets,
@@ -858,7 +934,14 @@ describe("provisionFeature / deprovisionFeature", () => {
 
   test("destroy is idempotent: no manifest and nothing to reconcile exits cleanly with no deletions", async () => {
     const { provisioners } = fakeProvisioners();
-    const report = await deprovisionFeature({ projectDir: dir, identity, capabilities, env: "feature", provisioners });
+    const report = await deprovisionFeature({
+      ...noScripts,
+      projectDir: dir,
+      identity,
+      capabilities,
+      env: "feature",
+      provisioners,
+    });
     expect(report.deleted).toEqual([]);
   });
 });
@@ -894,7 +977,14 @@ describe("deprovisionFeature — a delete that throws", () => {
     typed[broken].delete = () => {
       throw new Error("planted: this resource will not delete");
     };
-    return await deprovisionFeature({ projectDir: dir, identity, capabilities, env: "feature", provisioners }).then(
+    return await deprovisionFeature({
+      ...noScripts,
+      projectDir: dir,
+      identity,
+      capabilities,
+      env: "feature",
+      provisioners,
+    }).then(
       () => {
         throw new Error("expected the planted delete to fail the teardown");
       },
@@ -923,7 +1013,440 @@ describe("deprovisionFeature — a delete that throws", () => {
   test("a teardown that succeeds carries no report, and neither does an unrelated throw", async () => {
     const { provisioners } = fakeProvisioners();
     await provisionFeature({ projectDir: dir, capabilities, identity, provisioners, ...noBackend });
-    await deprovisionFeature({ projectDir: dir, identity, capabilities, env: "feature", provisioners });
+    await deprovisionFeature({ ...noScripts, projectDir: dir, identity, capabilities, env: "feature", provisioners });
     expect(deletedBeforeFailure(new Error("unrelated"))).toEqual([]);
+  });
+});
+
+/**
+ * **A feature's Worker scripts are torn down with it (#592).**
+ *
+ * `destroy` handled D1, KV, R2 and Secrets Store entries, and the manifest could not record a Worker
+ * script at all. Every feature therefore left its scripts deployed, reachable on workers.dev and bound to
+ * resources teardown had just deleted — one set per branch, forever.
+ */
+describe("a feature's Worker scripts", () => {
+  let dir: string;
+  const identity: FeatureIdentity = { project: "acme", issue: "69", slug: "demo" };
+  const capabilities = [appCapability()];
+  /** The normal state after `pithy init acme`: `apps/api` deploys as `acme-api`. */
+  let workers: { name: string; dir: string; capabilities: typeof capabilities }[];
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-feature-scripts-"));
+    workers = [];
+    for (const app of ["api", "web"]) {
+      const workerDir = join(dir, "apps", app);
+      await mkdir(workerDir, { recursive: true });
+      await writeFile(join(workerDir, "wrangler.jsonc"), `{\n  "name": "acme-${app}"\n}\n`);
+      workers.push({ name: `acme-${app}`, dir: workerDir, capabilities });
+    }
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** The script half of the account, by name, mirroring the real exists/delete semantics. */
+  function fakeScripts(deployed: Iterable<string> = []) {
+    const scripts = new Set(deployed);
+    const deletes: string[] = [];
+    return {
+      deployed: scripts,
+      deletes,
+      seam: {
+        exists: async (name: string) => scripts.has(name),
+        delete: async (name: string) => {
+          deletes.push(name);
+          scripts.delete(name);
+        },
+      },
+    };
+  }
+
+  const provision = (provisioners: ResourceProvisioners) =>
+    provisionFeature({
+      projectDir: dir,
+      capabilities,
+      identity,
+      provisioners,
+      resolveWorkers: async () => workers,
+      migrate: async () => {},
+      seed: async () => {},
+    });
+
+  test("provision records every script it names, with the two names each was composed from", async () => {
+    await provision(fakeProvisioners().provisioners);
+
+    const manifest = await readManifest(manifestPath(dir));
+    // Literals, so a doubled segment cannot pass by being composed the same wrong way twice.
+    expect(manifest?.scripts).toEqual([
+      { app: "api", script: "acme-api", name: "acme-f69-demo-api" },
+      { app: "web", script: "acme-web", name: "acme-f69-demo-web" },
+    ]);
+  });
+
+  test("destroy deletes each deployed script after confirming it is there, and reports each", async () => {
+    const { provisioners } = fakeProvisioners();
+    await provision(provisioners);
+    // web was provisioned and never deployed: there is nothing to delete, and nothing to report.
+    const scripts = fakeScripts(["acme-f69-demo-api"]);
+
+    const report = await deprovisionFeature({
+      projectDir: dir,
+      identity,
+      capabilities,
+      env: "feature",
+      provisioners,
+      scripts: scripts.seam,
+      workers,
+    });
+
+    expect(report.deleted.filter((entry) => entry.kind === "worker")).toEqual([
+      { kind: "worker", name: "acme-f69-demo-api", id: "acme-f69-demo-api" },
+    ]);
+    expect(scripts.deletes).toEqual(["acme-f69-demo-api"]);
+  });
+
+  test("a feature provisioned before scripts were recorded is found by both naming shapes, and nothing else", async () => {
+    const { provisioners } = fakeProvisioners();
+    // A manifest from before #592, with no `scripts` at all.
+    await writeFile(
+      manifestPath(dir),
+      JSON.stringify({ version: 1, project: "acme", issue: "69", slug: "demo", env: "feature", resources: [] }),
+    );
+    const scripts = fakeScripts([
+      // Deployed before #587, when the project came twice.
+      "acme-f69-demo-acme-api",
+      // Redeployed since, under the single shape.
+      "acme-f69-demo-api",
+      // Not this feature's: staging, another issue, and a sibling whose slug extends this one's.
+      "acme-staging-api",
+      "acme-f70-demo-api",
+      "acme-f69-demo-extended-api",
+    ]);
+
+    const report = await deprovisionFeature({
+      projectDir: dir,
+      identity,
+      capabilities,
+      env: "feature",
+      provisioners,
+      scripts: scripts.seam,
+      workers,
+    });
+
+    expect(report.deleted.map((entry) => entry.name).sort()).toEqual(["acme-f69-demo-acme-api", "acme-f69-demo-api"]);
+    expect([...scripts.deployed].sort()).toEqual([
+      "acme-f69-demo-extended-api",
+      "acme-f70-demo-api",
+      "acme-staging-api",
+    ]);
+  });
+
+  /**
+   * **What a feature provisioned before #592 is not torn down by.** With a Secrets Store, its generated config
+   * lost the script name, and wrangler deployed it as `<script>-feature` — `acme-api-feature`. That name carries
+   * no issue and no slug, and every such branch of the project deployed over the same one, so it is not this
+   * feature's to delete: taking it would take down whichever open branch deployed last. Teardown leaves it,
+   * and the docs say to delete it by hand once no branch is live.
+   */
+  test("a pre-#592 feature's `<script>-feature` Worker is left, because no feature owns that name", async () => {
+    const { provisioners } = fakeProvisioners();
+    await writeFile(
+      manifestPath(dir),
+      JSON.stringify({ version: 1, project: "acme", issue: "69", slug: "demo", env: "feature", resources: [] }),
+    );
+    const scripts = fakeScripts(["acme-api-feature", "acme-web-feature", "acme-f69-demo-api"]);
+
+    const report = await deprovisionFeature({
+      projectDir: dir,
+      identity,
+      capabilities,
+      env: "feature",
+      provisioners,
+      scripts: scripts.seam,
+      workers,
+    });
+
+    expect(report.deleted.map((entry) => entry.name)).toEqual(["acme-f69-demo-api"]);
+    expect([...scripts.deployed].sort()).toEqual(["acme-api-feature", "acme-web-feature"]);
+  });
+
+  test("a recorded script whose Worker has left the branch is still deleted", async () => {
+    const { provisioners } = fakeProvisioners();
+    await provision(provisioners);
+    const scripts = fakeScripts(["acme-f69-demo-web"]);
+
+    // apps/web was removed after it deployed, so the Worker set no longer names it. The manifest does.
+    const report = await deprovisionFeature({
+      projectDir: dir,
+      identity,
+      capabilities,
+      env: "feature",
+      provisioners,
+      scripts: scripts.seam,
+      workers: workers.filter((worker) => worker.name !== "acme-web"),
+    });
+
+    expect(report.deleted.map((entry) => entry.name)).toContain("acme-f69-demo-web");
+    expect(scripts.deployed.size).toBe(0);
+  });
+
+  test("destroy refuses a recorded script this feature could never have named", async () => {
+    const { provisioners } = fakeProvisioners();
+    await writeManifest(manifestPath(dir), {
+      ...emptyManifest({ ...identity, env: "feature" }),
+      // A crafted branch, pointing teardown at production under a plausible-looking entry.
+      scripts: [{ app: "api", script: "acme-api", name: "acme-prod-api" }],
+    });
+    const scripts = fakeScripts(["acme-prod-api"]);
+
+    const report = await deprovisionFeature({
+      projectDir: dir,
+      identity,
+      capabilities,
+      env: "feature",
+      provisioners,
+      scripts: scripts.seam,
+      workers: [],
+    });
+
+    expect(report.deleted).toEqual([]);
+    expect(scripts.deployed.has("acme-prod-api")).toBe(true);
+  });
+
+  test("provision does not launder a foreign script forward into the manifest it rewrites", async () => {
+    await writeManifest(manifestPath(dir), {
+      ...emptyManifest({ ...identity, env: "feature" }),
+      scripts: [{ app: "api", script: "acme-api", name: "acme-prod-api" }],
+    });
+
+    await provision(fakeProvisioners().provisioners);
+
+    const manifest = await readManifest(manifestPath(dir));
+    expect(manifest?.scripts.map((script) => script.name)).toEqual(["acme-f69-demo-api", "acme-f69-demo-web"]);
+  });
+
+  test("audits every script deletion as a warning, like every other teardown", async () => {
+    const { provisioners } = fakeProvisioners();
+    await provision(provisioners);
+    const events: CliAuditEvent[] = [];
+
+    await deprovisionFeature({
+      projectDir: dir,
+      identity,
+      capabilities,
+      env: "feature",
+      provisioners,
+      scripts: fakeScripts(["acme-f69-demo-api"]).seam,
+      workers,
+      audit: async (event) => void events.push(event),
+    });
+
+    expect(events.find((event) => event.resourceId === "acme-f69-demo-api")).toMatchObject({
+      action: ProvisionAuditActions.resourceDeleted,
+      severity: "warning",
+      resourceType: "cf_worker",
+    });
+  });
+});
+
+/**
+ * **The gate for #592: everything provisioning and deploy put on the account, teardown takes off it.**
+ *
+ * Stated over the account and the manifest rather than as a list of kinds, because a list of kinds was the
+ * defect. Teardown knew D1, KV, R2 and store entries by name, and a Worker script was not on the list, so
+ * nothing ever deleted one and nothing ever failed for it.
+ *
+ * The account is one map per kind, and it answers **whatever kind it is asked for**: the provisioner set
+ * is a proxy, so a provisioning step that starts creating a kind nobody taught teardown lands in the
+ * account and fails the equality below. Deploy is stubbed the way wrangler names a feature Worker — from
+ * `env.feature.name` in the generated config provisioning wrote — so a script is on the account under the
+ * name the deploy would really use, not under the name the manifest claims.
+ *
+ * Two properties, both required:
+ *
+ * 1. **The account after teardown is the account before provisioning.** Every name the run added is gone,
+ *    and every name that was there first — staging's, a sibling feature's — is still there.
+ * 2. **Every entry the manifest records is among what teardown reports deleting**, read off the manifest's
+ *    own arrays, whatever they are called. A record nobody acts on is the shape this issue was.
+ *
+ * **The account refuses what Cloudflare refuses.** `web` binds `api` as a service, as a scaffolded front end
+ * calls its API, and the stubbed Workers manager refuses to delete a script another deployed script still
+ * binds unless the delete is forced — `DELETE /workers/scripts/<name>` without `force`. Teardown reaches it
+ * through the real `cloudflareWorkerScripts`, so the decision to force is the production one, not a stub's.
+ * `api` sorts first, so an unforced teardown fails on it before a single resource is touched, every run.
+ *
+ * The run hands teardown the whole Worker set, so a script the recomputation finds satisfies (2) even if
+ * nothing read the manifest's copy of it. The manifest-only path — a Worker removed from the branch after
+ * it deployed — is held by *a recorded script whose Worker has left the branch* above, not by this.
+ *
+ * **What it does not see.** Anything created outside the three seams provisioning is handed — the
+ * resource provisioners, the Secrets Store, and the name deploy reads from the generated config. A
+ * capability's own provisioner calling `CloudflareClients` directly, or `pithy deploy --kit` shipping a kit
+ * Worker into the feature environment under a name its host template composes, would put things on a
+ * real account this stub never hears about. So would anything a script carries with it — routes, custom
+ * domains, Durable Object storage — and an R2 bucket's objects. And the refusal is Cloudflare's as its API
+ * spec and wrangler's `delete` describe it, not observed on a live account: that the manager puts `force` on
+ * the SDK call is held by `workersManager.test.ts`, and this stub sees only that the manager was asked to.
+ */
+describe("teardown reverses everything provisioning and deploy create (#592)", () => {
+  let dir: string;
+  const identity: FeatureIdentity = { project: "acme", issue: "69", slug: "demo" };
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "pithy-feature-gate-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** One stubbed Cloudflare account: every kind, by name, and the seams provisioning and teardown take. */
+  function stubAccount() {
+    const kinds = new Map<string, Map<string, string>>();
+    const holding = (kind: string): Map<string, string> => {
+      let names = kinds.get(kind);
+      if (!names) {
+        names = new Map();
+        kinds.set(kind, names);
+      }
+      return names;
+    };
+    const byKind = new Map<string, ResourceProvisioner>();
+    const provisioners = new Proxy({} as ResourceProvisioners, {
+      get: (_target, kind) => {
+        if (typeof kind !== "string") return undefined;
+        let provisioner = byKind.get(kind);
+        if (!provisioner) {
+          provisioner = fakeKind(kind, holding(kind));
+          byKind.set(kind, provisioner);
+        }
+        return provisioner;
+      },
+    });
+    const store = {
+      storeId: "store-1",
+      exists: async (name: string) => holding("secret").has(name),
+      put: async (name: string, value: string) => void holding("secret").set(name, value),
+      remove: async (name: string) => holding("secret").delete(name),
+    };
+    /** Each deployed script's `services` targets, as its deploy uploaded them. */
+    const serviceTargets = new Map<string, string[]>();
+    const workersManager = {
+      getWorker: async (name: string) => (holding("worker").has(name) ? { id: name } : null),
+      deleteWorker: async (name: string, options?: { force?: boolean }) => {
+        const callers = [...holding("worker").keys()].filter(
+          (other) => other !== name && (serviceTargets.get(other) ?? []).includes(name),
+        );
+        if (callers.length > 0 && options?.force !== true) {
+          throw new Error(`Cloudflare refused to delete ${name}: ${callers.join(", ")} binds it.`);
+        }
+        holding("worker").delete(name);
+        serviceTargets.delete(name);
+      },
+    };
+    const scripts = cloudflareWorkerScripts({ workers: () => workersManager } as unknown as CloudflareClients, {
+      accountId: "acct-ours",
+      confirmation: "pinned",
+    });
+    /** Every name on the account, as `kind:name`, sorted — the oracle. */
+    const contents = () =>
+      [...kinds].flatMap(([kind, names]) => [...names.keys()].map((name) => `${kind}:${name}`)).sort();
+    return { provisioners, store, scripts, serviceTargets, holding, contents };
+  }
+
+  test("after provision, deploy and destroy, the account holds exactly what it held before", async () => {
+    const account = stubAccount();
+    const composed = [
+      appCapability(),
+      secrets({
+        registry: {
+          RELEASE_INGEST_SECRET: {
+            backend: "cf-secrets-store",
+            scope: "environment",
+            rotatable: true,
+            valueType: "text",
+            devValue: "random",
+          },
+        },
+      }),
+    ];
+    // The front end calls the API: the layout where the callee sorts first.
+    const callsApi = defineCapability({
+      name: "calls-api",
+      requiredBindings: [{ type: "service", name: "API", service: "api" }] satisfies BindingSpecInput[],
+    });
+    const workers: ProvisionWorker[] = [];
+    for (const app of ["api", "web"]) {
+      const workerDir = join(dir, "apps", app);
+      await mkdir(workerDir, { recursive: true });
+      await writeFile(join(workerDir, "wrangler.jsonc"), `{\n  "name": "acme-${app}"\n}\n`);
+      workers.push({
+        name: `acme-${app}`,
+        dir: workerDir,
+        capabilities: app === "web" ? [...composed, callsApi] : composed,
+      });
+    }
+
+    // What is not this feature's, and must survive it.
+    account.holding("worker").set("acme-staging-api", "acme-staging-api");
+    account.holding("worker").set("acme-f70-demo-api", "acme-f70-demo-api");
+    account.holding("d1").set("acme-staging-db", "staging-d1");
+    account.holding("secret").set("acme-staging-secrets-encryption-keys", "staging's");
+    const before = account.contents();
+
+    await provisionFeature({
+      projectDir: dir,
+      capabilities: [...composed, callsApi],
+      identity,
+      provisioners: account.provisioners,
+      store: account.store,
+      resolveWorkers: async () => workers,
+      migrate: async () => {},
+      seed: async () => {},
+    });
+    // Deploy, as wrangler names it: `--env feature` reads the stanza name out of the generated config.
+    for (const worker of workers) {
+      const generated = parse(await readFile(featureConfigPath(worker.dir), "utf8")) as unknown as {
+        env: Record<string, { name?: string; services?: { service: string }[] }>;
+      };
+      const name = generated.env.feature?.name;
+      if (name === undefined) throw new Error(`provisioning wrote no script name for ${worker.dir}`);
+      account.holding("worker").set(name, name);
+      account.serviceTargets.set(
+        name,
+        (generated.env.feature?.services ?? []).map((entry) => entry.service),
+      );
+    }
+    // Non-vacuity for the refusal: a deployed script really does bind a sibling.
+    expect(account.serviceTargets.get("acme-f69-demo-web")).toEqual(["acme-f69-demo-api"]);
+    const deployed = account.contents();
+    const manifest = await readManifest(manifestPath(dir));
+
+    const report = await deprovisionFeature({
+      projectDir: dir,
+      identity,
+      capabilities: [...composed, callsApi],
+      env: "feature",
+      provisioners: account.provisioners,
+      store: account.store,
+      scripts: account.scripts,
+      workers,
+    });
+
+    // Non-vacuity: the run really did put things on the account, of more than one kind.
+    const added = deployed.filter((entry) => !before.includes(entry));
+    expect(new Set(added.map((entry) => entry.split(":")[0])).size).toBeGreaterThan(2);
+
+    // 1. Everything the run added is gone, and nothing that was there first went with it.
+    expect(account.contents()).toEqual(before);
+
+    // 2. Every entry the manifest records, under whatever array it lives in, was deleted.
+    const recorded = Object.values(manifest ?? {}).flatMap((value): { name: string }[] =>
+      Array.isArray(value) ? value : [],
+    );
+    expect(recorded.length).toBeGreaterThan(0);
+    const deletedNames = report.deleted.map((entry) => entry.name);
+    for (const entry of recorded) expect(deletedNames).toContain(entry.name);
   });
 });

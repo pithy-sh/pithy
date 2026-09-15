@@ -11,7 +11,12 @@ import { isSourceEnvironment, wranglerConfigPath } from "../provision/featureCon
 import { settleStep, startStep } from "../terminal/progress";
 import { red } from "../terminal/style";
 import { loadWorkerConfig, loadWorkerDomains } from "./config";
-import { assertDeploysRequestedEnvironment, wranglerEnvironment } from "./effectiveConfig";
+import {
+  assertCreatesNoResources,
+  assertDeploysRequestedEnvironment,
+  NO_PROVISION_ARG,
+  wranglerEnvironment,
+} from "./effectiveConfig";
 import { detectPackageManager, execArgs, type PackageManager } from "./packageManager";
 import type { DeployVerification, VerifyDeployResult } from "./verifyDeploy";
 import { isDeployFailure, verifyDeployedVersion } from "./verifyDeploy";
@@ -172,7 +177,7 @@ function reasonOf(error: unknown): string {
 }
 
 /**
- * The default deploy step: `wrangler deploy [--env <env>]` in the worker's directory, quiet on
+ * The default deploy step: `wrangler deploy [--env <env>] --experimental-provision=false` in the worker's directory, quiet on
  * success (its output is captured and summarized, not streamed — the brand voice). Wrangler reads
  * `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID`, so CI needs no interactive login; we also pass them
  * from the project's own credentials file so a local deploy authenticates the same way.
@@ -195,6 +200,7 @@ function reasonOf(error: unknown): string {
 function defaultRunDeploy(account: CloudflareAccountSelection | null): RunDeploy {
   cloudflareEnv({ account });
   return async (target, args) => {
+    // `runWrangler` refuses an argv that leaves provisioning on, whatever name it is called by (#589).
     const { stdout } = await runWrangler(args, { account, cwd: target.dir });
     return stdout;
   };
@@ -325,7 +331,10 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
   // is being asked for — and so `dev`, which is the top-level stanza rather than an `env.dev`, does not
   // ask wrangler for an environment that no project is allowed to declare.
   const stanza = wranglerEnvironment(options.env);
-  const args = stanza ? ["deploy", "--env", stanza] : ["deploy"];
+  // **And it creates nothing (#589).** wrangler's default for a deploy is to create any resource a binding
+  // names and it cannot find, so a stanza with a `database_name` and no id made a database. Provisioning
+  // is `pithy provision`'s reviewed step; see `NO_PROVISION_ARG` for why the argv is the only place to say so.
+  const args = stanza ? ["deploy", "--env", stanza, NO_PROVISION_ARG] : ["deploy", NO_PROVISION_ARG];
   const audit = options.audit ?? (async () => {});
   const probe = options.verifyDeploy ?? ((probeOptions) => verifyDeployedVersion(probeOptions));
   const severity = deploySeverity(options.env);
@@ -358,6 +367,9 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
       // would publish something other than the requested environment refuses instead (#579). After the
       // upload the only remedy is deleting a live Worker.
       stage = "config";
+      // Asked of the exact argv about to be spawned, before the config gate reads a file, so a lost switch is
+      // this sentence on the Worker's row. The seam asks it again and is what cannot be walked around (#589).
+      assertCreatesNoResources(argv);
       await assertDeploysRequestedEnvironment({
         workerDir: worker.dir,
         env: options.env,

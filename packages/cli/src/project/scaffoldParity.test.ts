@@ -13,6 +13,7 @@ import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { HOST_WORKERS } from "../capabilities/hostRegistry";
 import { reactStub } from "../ui/react";
+import { assertCreatesNoResources, NO_PROVISION_ARG } from "./effectiveConfig";
 import { environmentWorkerName, kitRange, scaffoldProject } from "./scaffold";
 import { hasVersionMetadata } from "./versionMetadata";
 import { renameWorker } from "./workerCommand";
@@ -130,6 +131,39 @@ describe("both wrangler.jsonc producers", () => {
   });
 });
 
+/**
+ * Every `wrangler` a script runs, as the arguments after the word — one shell command at a time.
+ *
+ * Read by what a script runs rather than by what it is called, because the name is the adopter's to
+ * choose and the command is what reaches Cloudflare: `"ship:staging": "wrangler deploy …"` deploys as
+ * surely as `deploy:staging` does. It splits on `&&`, `||`, `;` and `|`, and finds `wrangler` as a word,
+ * so `bun run build && wrangler deploy` and `bunx wrangler deploy` are both seen.
+ *
+ * **What it does not see:** a wrangler reached by another name — a path to its bin, a variable, a script
+ * that runs another script (that one is read on its own), or a separator inside quotes. The kit writes
+ * none of those today; a producer that starts to is one this reader has to learn first.
+ */
+function wranglerInvocations(command: string): string[][] {
+  return command
+    .split(/&&|\|\||;|\|/)
+    .map((segment) => segment.trim().split(/\s+/))
+    .flatMap((tokens) => {
+      const at = tokens.indexOf("wrangler");
+      return at === -1 ? [] : [tokens.slice(at + 1)];
+    });
+}
+
+/**
+ * The one wrangler invocation a script may run with provisioning left to wrangler's default: plain
+ * `wrangler dev`, by exact argv.
+ *
+ * It runs the Worker locally and uploads nothing, and wrangler 4.125.0 reaches `provisionBindings` only
+ * from the two upload paths — `deployWorker` and `uploadWorkerVersion`. It is also the literal
+ * `pithy ui add` recognizes and replaces (`ui/wire.ts`), so writing the switch into it would strand every
+ * scaffolded Worker's dev script. Any other argument turns it back into a command held to the rule.
+ */
+const LOCAL_ONLY = ["dev"];
+
 describe("both package.json producers", () => {
   let dir: string;
   let added: WorkerPackage;
@@ -217,11 +251,15 @@ describe("both package.json producers", () => {
     // so this argv fails outright rather than shipping assets from whatever was built last. That Worker
     // is `pithy deploy`'s to ship, which builds what it deploys and holds the result to the environment
     // that was asked for.
+    //
+    // Chosen by what a script runs, not by its name: a `ship:staging` running `wrangler deploy` is a deploy.
     for (const [producer, pkg] of [
       ["pithy init", starter],
       ["pithy worker add", added],
     ] as const) {
-      const deploys = Object.entries(pkg.scripts ?? {}).filter(([name]) => name.startsWith("deploy"));
+      const deploys = Object.entries(pkg.scripts ?? {}).filter(([, command]) =>
+        wranglerInvocations(command).some((argv) => argv[0] === "deploy"),
+      );
       expect(deploys.length, producer).toBeGreaterThan(0);
       for (const [name, command] of deploys) {
         expect(command, `${producer}: ${name}`).toContain("--config wrangler.jsonc");
@@ -238,6 +276,44 @@ describe("both package.json producers", () => {
         expect(command, `${producer}: ${name} states no stanza`).toMatch(/--env[= ]/);
       }
     }
+  });
+
+  test("no script the kit writes lets wrangler create a resource", () => {
+    // **#589, in text the kit hands the adopter.** wrangler provisions every binding it cannot resolve
+    // unless told not to — a D1 named and not yet created, a bucket that does not exist — and an adopter
+    // running `bun run deploy:staging` before `pithy provision` got databases nobody reviewed.
+    //
+    // Held over every wrangler every script runs, by the same gate `runWrangler` asks of every spawn, and
+    // not over scripts named `deploy*`: that filter passed a `"ship:staging": "wrangler deploy …"` with
+    // no switch, written into both producers, through every CLI suite. `--experimental-provision` is a
+    // global wrangler option, so a command that never provisions accepts it as a no-op. `wrangler dev`
+    // is the one exception, by exact argv — see `LOCAL_ONLY`.
+    for (const [producer, pkg] of [
+      ["pithy init", starter],
+      ["pithy worker add", added],
+    ] as const) {
+      const invocations = Object.entries(pkg.scripts ?? {}).flatMap(([name, command]) =>
+        wranglerInvocations(command).map((argv) => ({ name, argv })),
+      );
+      // The anchor: a reader that found no wrangler anywhere would hold every script to nothing.
+      expect(invocations.length, `${producer} runs no wrangler this can read`).toBeGreaterThan(1);
+      for (const { name, argv } of invocations) {
+        if (argv.join(" ") === LOCAL_ONLY.join(" ")) continue;
+        expect(() => assertCreatesNoResources(argv), `${producer}: ${name} can create resources`).not.toThrow();
+      }
+    }
+  });
+
+  test("the script reader sees a wrangler however the command around it is written", () => {
+    // The gate over the reader. A split that missed a chained command, or a match that needed `wrangler`
+    // first, would hold the easy spelling and pass the rest.
+    expect(wranglerInvocations("wrangler deploy --env staging")).toEqual([["deploy", "--env", "staging"]]);
+    expect(wranglerInvocations("bun run build && bunx wrangler versions upload")).toEqual([["versions", "upload"]]);
+    expect(wranglerInvocations("vite build; wrangler deploy || wrangler rollback")).toEqual([["deploy"], ["rollback"]]);
+    expect(wranglerInvocations("vite build")).toEqual([]);
+    expect(() => assertCreatesNoResources(["deploy", "--env", "staging"])).toThrow();
+    expect(() => assertCreatesNoResources(["dev", "--remote"])).toThrow();
+    expect(() => assertCreatesNoResources(["deploy", NO_PROVISION_ARG])).not.toThrow();
   });
 
   test("name the package `<project>-<worker>` in both, never the bare worker", () => {

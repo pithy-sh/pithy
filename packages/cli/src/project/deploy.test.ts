@@ -141,8 +141,8 @@ describe("deployProject", () => {
     });
 
     expect(calls).toEqual([
-      { name: "pithy-api", args: ["deploy", "--env", "prod"] },
-      { name: "pithy-web", args: ["deploy", "--env", "prod"] },
+      { name: "pithy-api", args: ["deploy", "--env", "prod", "--experimental-provision=false"] },
+      { name: "pithy-web", args: ["deploy", "--env", "prod", "--experimental-provision=false"] },
     ]);
     expect(results).toEqual([
       { name: "pithy-api", ok: true, versionId: "ver-pithy-api", url: "https://pithy-api.acme.workers.dev" },
@@ -239,7 +239,7 @@ describe("deployProject", () => {
       },
     });
 
-    expect(calls).toEqual([["deploy"]]);
+    expect(calls).toEqual([["deploy", "--experimental-provision=false"]]);
   });
 
   test("records a failed worker, keeps deploying the rest, and reports the failure", async () => {
@@ -437,7 +437,7 @@ describe("deployProject", () => {
     });
 
     // vite build writes .wrangler/deploy/config.json, which redirects the plain deploy — no -c, no new flag.
-    expect(calls).toEqual([["deploy", "--env", "staging"]]);
+    expect(calls).toEqual([["deploy", "--env", "staging", "--experimental-provision=false"]]);
   });
 
   test("audits a failed build as a failed deploy of that worker, tagged with the stage", async () => {
@@ -579,7 +579,7 @@ describe("deployProject refuses a configuration that is not the requested enviro
     });
 
     expect(results[0]).toMatchObject({ name: "acme-web", ok: true, built: true });
-    expect(argv).toEqual([["deploy", "--env", "staging"]]);
+    expect(argv).toEqual([["deploy", "--env", "staging", "--experimental-provision=false"]]);
     // The acceptance criterion, read off disk: the built config is staging's, not the top level's.
     const built = JSON.parse(await readFile(join(at, "dist", "worker", "wrangler.json"), "utf8")) as {
       name: string;
@@ -647,7 +647,7 @@ describe("deployProject refuses a configuration that is not the requested enviro
     });
 
     expect(results[0]).toMatchObject({ ok: true });
-    expect(argv).toEqual([["deploy"]]);
+    expect(argv).toEqual([["deploy", "--experimental-provision=false"]]);
     const built = JSON.parse(await readFile(join(at, "dist", "worker", "wrangler.json"), "utf8")) as { name: string };
     expect(built.name).toBe("acme-web");
   });
@@ -704,7 +704,7 @@ describe("deployProject refuses a configuration that is not the requested enviro
     });
 
     expect(results[0]).toMatchObject({ ok: true });
-    expect(argv).toEqual([["deploy", "--env", "staging"]]);
+    expect(argv).toEqual([["deploy", "--env", "staging", "--experimental-provision=false"]]);
   });
 
   test("a feature environment builds against its generated config and stops passing --config", async () => {
@@ -735,7 +735,7 @@ describe("deployProject refuses a configuration that is not the requested enviro
     });
 
     expect(results[0]).toMatchObject({ ok: true, built: true });
-    expect(argv).toEqual([["deploy", "--env", "feature"]]);
+    expect(argv).toEqual([["deploy", "--env", "feature", "--experimental-provision=false"]]);
     const built = JSON.parse(await readFile(join(at, "dist", "worker", "wrangler.json"), "utf8")) as { name: string };
     expect(built.name).toBe("acme-web-pr-7");
   });
@@ -762,7 +762,14 @@ describe("deployProject refuses a configuration that is not the requested enviro
 
     expect(results[0]).toMatchObject({ ok: true });
     expect(argv).toEqual([
-      ["deploy", "--env", "feature", "--config", join(at, ".wrangler", "pithy", "wrangler.feature.jsonc")],
+      [
+        "deploy",
+        "--env",
+        "feature",
+        "--experimental-provision=false",
+        "--config",
+        join(at, ".wrangler", "pithy", "wrangler.feature.jsonc"),
+      ],
     ]);
   });
 });

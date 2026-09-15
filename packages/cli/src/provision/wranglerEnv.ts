@@ -3,7 +3,7 @@
 
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { ProvisionScope } from "@pithy-sh/core/src/naming/provisionScope";
+import type { ProvisionScope, ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
 import { parse } from "comment-json";
 import type { FeatureResource } from "../feature/manifest";
 import { writeJsonc } from "../project/jsonc";
@@ -58,6 +58,20 @@ function upsertByBinding(entries: BindingEntry[], binding: string, fields: Recor
   const existing = entries.find((entry) => entry.binding === binding);
   if (existing) Object.assign(existing, fields);
   else entries.push({ binding, ...fields });
+}
+
+/**
+ * Upsert the `secrets_store_secrets` entries provisioning owns into a stanza already being edited, by
+ * binding — an adopter's hand-added entry is left where it is. A mutation rather than an edit of its own,
+ * so the writer that owns the rest of the stanza does it in the same edit (#592).
+ */
+function upsertSecretBindings(stanza: EnvBindings, entries: readonly SecretStoreBinding[]): void {
+  stanza.secrets_store_secrets ??= [];
+  for (const entry of entries) {
+    const existing = stanza.secrets_store_secrets.find((candidate) => candidate.binding === entry.binding);
+    if (existing) Object.assign(existing, entry);
+    else stanza.secrets_store_secrets.push({ ...entry });
+  }
 }
 
 /** The `EnvBindings` keys holding a binding array — the only ones an id is upserted into. */
@@ -158,14 +172,7 @@ export async function applySecretBindings(
   if (entries.length === 0) return;
   // Always the tracked file: only `pithy secrets provision` calls this directly, and it acts on the
   // environments a project deploys to. A feature's stanza is written by the scope-driven writer below.
-  await editStanza(workerDir, stanzaKey, true, (stanza) => {
-    stanza.secrets_store_secrets ??= [];
-    for (const entry of entries) {
-      const existing = stanza.secrets_store_secrets.find((candidate) => candidate.binding === entry.binding);
-      if (existing) Object.assign(existing, entry);
-      else stanza.secrets_store_secrets.push({ ...entry });
-    }
-  });
+  await editStanza(workerDir, stanzaKey, true, (stanza) => upsertSecretBindings(stanza, entries));
 }
 
 /**
@@ -176,8 +183,12 @@ export async function applySecretBindings(
 export async function applyProvisionedEnv(options: {
   /** The Worker's directory — the one holding the `wrangler.jsonc` to edit. */
   workerDir: string;
-  /** The Worker's deploy name, from its own `wrangler.jsonc`. `scope.worker` turns it into this scope's. */
-  worker: string;
+  /**
+   * The Worker's two names — its `apps/<app>` directory and its deploy name — which `scope.worker` turns
+   * into this scope's script name. Both, because a declared environment builds on the deploy name and a
+   * feature on the directory (#587); `provisionWorkerNames` in `./environment` is where they are read.
+   */
+  worker: ProvisionWorkerNames;
   /** The scope: both the stanza written into and the names written in. */
   scope: ProvisionScope;
   /** Only the resources this Worker's own config declares. */
@@ -193,7 +204,11 @@ export async function applyProvisionedEnv(options: {
    */
   secrets: readonly SecretStoreBinding[];
 }): Promise<string> {
-  const destination = await editStanza(options.workerDir, options.scope.stanza, options.scope.source, (stanza) => {
+  // **One edit, holding everything (#592).** A feature's config is regenerated from the tracked file on
+  // every edit, so this was two edits for as long as the secrets were a second one: the second started
+  // from a stanza with no name, no ids and no services, and kept only the secrets. The Worker deployed
+  // as wrangler's `<script>-feature` — a script nothing records and teardown never deletes.
+  return editStanza(options.workerDir, options.scope.stanza, options.scope.source, (stanza) => {
     // The scope decides, and it is handed what the stanza already says (#580). A declared environment
     // reads a name it finds and composes one only when there is none; a feature ignores it, because a
     // feature's name is recomputed on teardown. Deciding here instead would put that asymmetry in a
@@ -215,16 +230,6 @@ export async function applyProvisionedEnv(options: {
         else stanza.services.push({ ...entry });
       }
     }
+    if (options.secrets.length > 0) upsertSecretBindings(stanza, options.secrets);
   });
-  if (options.secrets.length > 0) {
-    await editStanza(options.workerDir, options.scope.stanza, options.scope.source, (stanza) => {
-      stanza.secrets_store_secrets ??= [];
-      for (const entry of options.secrets) {
-        const existing = stanza.secrets_store_secrets.find((candidate) => candidate.binding === entry.binding);
-        if (existing) Object.assign(existing, entry);
-        else stanza.secrets_store_secrets.push({ ...entry });
-      }
-    });
-  }
-  return destination;
 }

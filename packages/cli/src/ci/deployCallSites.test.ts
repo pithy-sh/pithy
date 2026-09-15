@@ -34,6 +34,23 @@ import { sourceFiles } from "./sourceFiles";
  *    shipped reading the argv alone, which made it a hole shaped like its own subject — a gate that
  *    stopped modeling the shell would satisfy every other assertion here.
  *
+ * ## And every one of them creates nothing (#589)
+ *
+ * wrangler's default for a deploy is to create any resource a binding names and it cannot find — which a
+ * `pithy deploy --env staging` did, twice, on a real account. The rule is stated over the argv, because for
+ * R2, queues and the namespace kinds the name is the id and no config read can see it: **every argv the
+ * seam spawns turns provisioning off.** That is `runWrangler`'s own first statement, asked of every argv
+ * under whatever name the seam was called by, and `project/wrangler.test.ts` proves it on a live spawn —
+ * through a plain call, an alias and a `.call`. Three halves here tie the tree to it: the seam's body
+ * reaches `assertCreatesNoResources` before it spawns, each issuer's `deploy` literals carry
+ * `NO_PROVISION_ARG` where a reviewer reads the argv, and each issuer reaches the gate early too.
+ *
+ * It was held at the call sites until a review showed why it could not be. A half here counted
+ * `runWrangler(` calls as text and demanded each be gated on the same identifier, and
+ * `const ship = runWrangler; await ship(argv)` and `runWrangler.call(undefined, argv, …)`, planted beside
+ * one gated call on an argv with the switch sliced off, left every half green. No reading of text counts
+ * a call spelled some other way; a call under any name is still a call to the function that refuses.
+ *
  * A third half asks the question from the seam's side: **every caller of `runWrangler` is accounted
  * for**, either as a deploy issuer above or in {@link OTHER_WRANGLER_COMMANDS} by name and reason. That
  * is what covers a call site whose argv this file cannot read — see the reach note below.
@@ -49,6 +66,10 @@ import { sourceFiles } from "./sourceFiles";
  *   catches them is half 3: the module still has to call `runWrangler` to spawn anything, and a caller
  *   in neither table fails. Closing it inside this extractor wants a real binding analysis rather than a
  *   wider regex, which would be the enumerate-the-spellings shape this repository has been bitten by.
+ * - **The seam half reads that `runWrangler`'s body calls the gate before `spawn(`.** It is the statement
+ *   of the rule in this file, not the proof of it: the proof is a spawn, in `project/wrangler.test.ts`.
+ *   It does not model yargs either: what the gate accepts as "off" is `assertCreatesNoResources`'s
+ *   docblock, and `effectiveConfig.test.ts` plants the spellings.
  * - **It reads only `packages/cli/src`.** A module that spawned wrangler without the seam is
  *   `ci/cloudflareChildEnv.test.ts`'s to refuse, and it does: a module importing `node:child_process`
  *   that neither reaches the credentialed-child seam nor appears in that file's exception table fails
@@ -60,7 +81,8 @@ import { sourceFiles } from "./sourceFiles";
  *   deploys this CLI issues, and `project/scaffoldParity.test.ts` is what holds their `--config` — and,
  *   since #584's confirmation, their stanza: the bare `deploy` script named none, and
  *   `CLOUDFLARE_ENV=prod` turned it into a prod publish against a real wrangler. `--env=` is
- *   wrangler's own spelling for "the top level, and I mean it".
+ *   wrangler's own spelling for "the top level, and I mean it". Since #589 the same test holds every
+ *   wrangler every script runs to `assertCreatesNoResources` — chosen by what a script runs, not its name.
  *
  * It reads comment-blanked source, because every docblock on this subject quotes the argv it is about.
  */
@@ -119,6 +141,45 @@ const OTHER_WRANGLER_COMMANDS: Readonly<Record<string, string>> = {};
 
 /** The module every gate's answer about which stanza a spawn selects has to come out of. */
 const PRECEDENCE_PRIMITIVE = "selectedEnvironment";
+
+/**
+ * **The gate every deploy issuer reaches as well, whatever it publishes: a deploy creates nothing (#589).**
+ *
+ * wrangler provisions any binding it cannot resolve unless the argv turns that off, and it does so for
+ * kinds whose name is their id — so no gate over a config can see it. This one is over the argv.
+ */
+const CREATES_NOTHING_GATE = "assertCreatesNoResources";
+
+/** The seam's own function — the one every spawn reaches, under whatever name its caller gave it. */
+const SEAM_FUNCTION = "runWrangler";
+
+/** The child process call inside the seam. The gate has to come before it, or it gates nothing. */
+const CHILD_SPAWN = /\bspawn\s*\(/;
+
+/** The name an argv literal turns provisioning off by. A literal string is not it: see the test below. */
+const NO_PROVISION = "NO_PROVISION_ARG";
+
+/**
+ * Every `deploy` argv literal in one module, from its opening `["deploy"` to the bracket that closes it.
+ *
+ * Bracket-counted rather than matched to the next `]`, so an element that is itself an index or an array
+ * does not end the literal early and hide the elements after it.
+ */
+function deployLiterals(code: string): string[] {
+  const literals: string[] = [];
+  for (const match of code.matchAll(new RegExp(ISSUES_DEPLOY.source, "g"))) {
+    let depth = 0;
+    for (let index = match.index; index < code.length; index += 1) {
+      if (code[index] === "[") depth += 1;
+      if (code[index] === "]") depth -= 1;
+      if (depth === 0) {
+        literals.push(code.slice(match.index, index + 1));
+        break;
+      }
+    }
+  }
+  return literals;
+}
 
 /** One module's path as the tables above spell it — relative to `packages/cli/src`, forward slashes. */
 function named(path: string): string {
@@ -187,6 +248,41 @@ describe("every wrangler deploy this CLI issues is held to the Worker it will pu
     }
   });
 
+  test("and each of them turns wrangler's provisioning off, on the argv it spawns", () => {
+    // #589. wrangler's `experimental-provision` defaults to on, so an argv that says nothing creates every
+    // D1, KV, R2, queue and namespace it cannot find — and a kind wrangler learns next with it. Two halves,
+    // for the reason the stanza has two: the literal is where a reviewer sees the switch, and the gate is
+    // what refuses an argv that lost it however it was built.
+    for (const issuer of DEPLOY_ISSUERS.keys()) {
+      const code = MODULES.find((candidate) => candidate.key === issuer)?.code ?? "";
+      expect(
+        reaches(code, CREATES_NOTHING_GATE),
+        `${issuer} issues a deploy without reaching ${CREATES_NOTHING_GATE}`,
+      ).toBe(true);
+      const literals = deployLiterals(code);
+      expect(literals.length, `${issuer} has no deploy argv this sweep can read`).toBeGreaterThan(0);
+      for (const literal of literals) {
+        expect(
+          new RegExp(`\\b${NO_PROVISION}\\b`).test(literal),
+          `${issuer} builds ${literal.replace(/\s+/g, " ")} without ${NO_PROVISION}. wrangler creates any resource it cannot find unless the argv says otherwise.`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  test("and the seam refuses an argv that leaves provisioning on, before it spawns anything", () => {
+    // The half of #589's rule that no spelling of a call walks around. The gate above can be reached on
+    // one argv while another is spawned, and an alias or a `.call` spawns without a `runWrangler(` for any
+    // reading of a caller to count — so the refusal lives in the one function every spawn runs.
+    const body = bodyOf(MODULES.find((module) => module.key === SEAM)?.code ?? "", SEAM_FUNCTION);
+    expect(body, `${SEAM} exports no ${SEAM_FUNCTION}`).not.toBeNull();
+    const gate = (body ?? "").search(new RegExp(`\\b${CREATES_NOTHING_GATE}\\s*\\(\\s*args\\s*\\)`));
+    const child = (body ?? "").search(CHILD_SPAWN);
+    expect(child, `${SEAM_FUNCTION} spawns no child this can find`).toBeGreaterThan(-1);
+    expect(gate, `${SEAM_FUNCTION} spawns without ${CREATES_NOTHING_GATE}(args)`).toBeGreaterThan(-1);
+    expect(gate, `${SEAM_FUNCTION} asks ${CREATES_NOTHING_GATE} after it spawns`).toBeLessThan(child);
+  });
+
   test("and every gate resolves the stanza through the one statement of wrangler's precedence", () => {
     // #579's remediation, kept. The first gate derived the stanza from the argv alone — `environmentFromArgs`
     // — which approved a bare `pithy deploy` that an exported `CLOUDFLARE_ENV` published as prod: a gate
@@ -242,6 +338,18 @@ describe("every wrangler deploy this CLI issues is held to the Worker it will pu
     expect(ISSUES_DEPLOY.test("const argv = [DEPLOY, ...configArgs];")).toBe(false);
     expect(ISSUES_DEPLOY.test('const argv = [...base, "--config", path];')).toBe(false);
     expect(ISSUES_DEPLOY.test("await runWrangler(deployArgs(configPath), options);")).toBe(false);
+  });
+
+  test("a deploy literal is read to its own closing bracket, and a literal missing the switch is seen", () => {
+    // The gate over the literal half. A reader that stopped at the first `]` would read
+    // `["deploy", args[0], NO_PROVISION_ARG]` as ending before the switch and accuse a correct argv; one
+    // that ran to the end of the module would find the switch in a neighbor and excuse a wrong one.
+    expect(deployLiterals('const a = ["deploy", args[0], NO_PROVISION_ARG];')).toEqual([
+      '["deploy", args[0], NO_PROVISION_ARG]',
+    ]);
+    const two = deployLiterals('const a = ["deploy", "--env", s];\nconst b = ["deploy", NO_PROVISION_ARG];');
+    expect(two).toHaveLength(2);
+    expect(two.map((literal) => /\bNO_PROVISION_ARG\b/.test(literal))).toEqual([false, true]);
   });
 
   test("a function body is read as that function's, and stops where the next export starts", () => {
