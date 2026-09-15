@@ -81,8 +81,8 @@ import { sourceFiles } from "./sourceFiles";
  *   deploys this CLI issues, and `project/scaffoldParity.test.ts` is what holds their `--config` — and,
  *   since #584's confirmation, their stanza: the bare `deploy` script named none, and
  *   `CLOUDFLARE_ENV=prod` turned it into a prod publish against a real wrangler. `--env=` is
- *   wrangler's own spelling for "the top level, and I mean it". Since #589 the same test holds each script
- *   to `NO_PROVISION_ARG`.
+ *   wrangler's own spelling for "the top level, and I mean it". Since #589 the same test holds every
+ *   wrangler every script runs to `assertCreatesNoResources` — chosen by what a script runs, not its name.
  *
  * It reads comment-blanked source, because every docblock on this subject quotes the argv it is about.
  */
