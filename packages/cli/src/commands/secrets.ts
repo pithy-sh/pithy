@@ -62,6 +62,7 @@ import { mergedSecretRegistry, resolveDevSecretsTargets } from "../devSecrets/ta
 import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained } from "../migrations/confirm";
 import { loadProject, projectCloudflareAccount, projectEnvironments, requireProjectName } from "../project/config";
 import { requireManagedEnvironment, requireTeardownEnvironment, TEARDOWN_ENV_ARG } from "../project/environment";
+import { confineTeardown } from "../project/teardown";
 import { resolveWorkers } from "../project/workerScope";
 import { secretsStoreBindings, workerSecretRegistry } from "../provision/secretBindings";
 import { removedStoreEntryNote } from "../provision/secretEntryRemedy";
@@ -887,8 +888,25 @@ const deprovision = defineCommand({
         budget: new RetainedBudget(destroyRetained),
       });
 
-      const result = await deprovisionSecrets(
+      // Held here as well as in `deprovisionSecrets`: whichever copy runs deletes only what was typed, for this
+      // environment alone, and the shared token only once no other environment runs a manager (#591).
+      const confined = await confineTeardown({
+        kit: "@pithy-sh/secrets",
+        target: environment,
+        declared,
+        runs: (other) => deprovisioner.hasManager(other),
         deprovisioner,
+        rules: {
+          countRetained: "read",
+          hasManager: "read",
+          deleteManager: "environment",
+          deleteMasterKey: args.keys ? "environment" : "refused",
+          deleteDatabase: "environment",
+          deleteManagerToken: "last",
+        },
+      });
+      const result = await deprovisionSecrets(
+        confined,
         { environment, declared },
         { deleteKeys: args.keys, destroyRetained },
       );

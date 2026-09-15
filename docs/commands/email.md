@@ -68,7 +68,7 @@ The address is resolved through one resolver that prefers the Worker's `domains`
 
 **A run this long says where it got to.** Each environment's email worker is named as it is about to be uploaded — `▸ acme-staging-email...` — the same plain line `pithy deploy` and `pithy provision` print, from the one seam all three share. A worker the deploy gate skipped as already current says nothing, because nothing was uploaded for it. `--json` silences the lot and still writes exactly one line; a missing TTY does not, since a run in CI is the run whose log most needs this.
 
-`deprovision` removes **one named environment's** email worker. There is no default environment and no "all": it used to walk every declared environment, so a run meant for staging removed production's worker with it. Named nothing, or something undeclared, it refuses before any credential is read and lists what could be named.
+`deprovision` removes **one named environment's** email worker. There is no default environment and no "all": it used to walk every declared environment, so a run meant for staging removed production's worker with it. Named nothing, or something undeclared, it refuses before any credential is read and lists what could be named. `--env dev` is pointed at `pithy dev` instead.
 
 The suppression database goes only when `--suppression` is passed, after the worker that binds it. The opt-out list is preserved by default; losing it is harmful.
 
@@ -80,6 +80,8 @@ Deprovision prod first, or drop --suppression.
 ```
 
 "Still runs" means a deployed email worker. An app Worker whose stanza still binds the list after its environment's email worker is gone is not asked about.
+
+The command asks this itself before any teardown code runs, and hands that code a deprovisioner that deletes only what was asked for, in the named environment. A `@pithy-sh/email` older than the CLI cannot take the list early or reach another environment's worker: the reach is refused with `Update @pithy-sh/email to match this CLI, then run it again.`
 
 **A list holding addresses is counted first.** The suppression table is declared retained, so with `--suppression` its rows are counted before the worker goes, and the run refuses unless `--destroy-retained` names the same number — the guard `pithy migrate --rollback` spends. It is counted again at the delete.
 

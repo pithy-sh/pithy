@@ -25,6 +25,7 @@ import {
   readyStanza,
   requireReadyEnvironments,
 } from "../project/environmentReadiness";
+import { confineTeardown } from "../project/teardown";
 import { projectCapabilities, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -323,8 +324,27 @@ const deprovision = defineCommand({
         audit: await buildAudit(projectDir, accountId, apiToken, args.worker),
       });
 
-      const result = await deprovisionSupport(
+      // The limits are held here, not by the orchestrator. It is the project's installed copy, and one from before
+      // #591 removed the routing rule first and asked nothing after. So what every environment shares is refused
+      // now, before that copy is called, and it may delete only what was typed, for `env` alone.
+      const confined = await confineTeardown({
+        kit: "@pithy-sh/support",
+        target: env,
+        declared,
+        runs: (other) => deprovisioner.hasWorker(other),
         deprovisioner,
+        rules: {
+          hasWorker: "read",
+          deleteWorker: "environment",
+          deleteBucket: args.storage ? { what: "the support bucket", flag: "--storage" } : "refused",
+          removeRoutingRule:
+            args["routing-zone"] !== undefined
+              ? { what: "the inbound routing rule", flag: "--routing-zone" }
+              : "refused",
+        },
+      });
+      await deprovisionSupport(
+        confined,
         { environment: env, declared },
         { deleteStorage: args.storage, removeRouting: args["routing-zone"] !== undefined },
       );
@@ -333,7 +353,7 @@ const deprovision = defineCommand({
         process.stdout.write(
           `${formatJsonLine({
             command: "support deprovision",
-            env: result.env,
+            env,
             storageDeleted: args.storage,
             routingZone: args["routing-zone"] ?? null,
           })}\n`,
@@ -341,7 +361,7 @@ const deprovision = defineCommand({
         return;
       }
       process.stdout.write(
-        `${result.env}: classification worker removed${args.storage ? ", with the bucket and everything in it" : ""}.\n`,
+        `${env}: classification worker removed${args.storage ? ", with the bucket and everything in it" : ""}.\n`,
       );
       if (!args["routing-zone"]) {
         process.stdout.write("The routing rule was left in place. Pass --routing-zone to remove it.\n");

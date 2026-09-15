@@ -55,7 +55,9 @@ If **every** environment is skipped the run exits 1 rather than reporting a succ
 
 Each ready environment's deploy still needs its secrets database resolved — `<project>-<env>-secrets`, looked up live, which `pithy secrets provision` creates — and that stays a refusal, because by the time an environment is ready a missing one is a genuine failure rather than a not-yet.
 
-`deprovision` removes **one named environment's** sweep worker. Its bucket and files stay unless `--storage` is passed. There is no default environment and no "all": it used to walk every declared environment, so a `--storage` run meant for staging emptied and deleted production's bucket with it. Named nothing, or something undeclared, it refuses before any credential is read and lists what could be named. With `--storage`, the key pair is resolved **before** the worker comes down: discovering it missing at the bucket step would leave the worker gone and the bucket standing.
+`deprovision` removes **one named environment's** sweep worker. Its bucket and files stay unless `--storage` is passed. There is no default environment and no "all": it used to walk every declared environment, so a `--storage` run meant for staging emptied and deleted production's bucket with it. Named nothing, or something undeclared, it refuses before any credential is read and lists what could be named. `--env dev` is pointed at `pithy dev` instead. With `--storage`, the key pair is resolved **before** the worker comes down: discovering it missing at the bucket step would leave the worker gone and the bucket standing.
+
+The teardown runs from the project's own `@pithy-sh/storage`, and a copy from before this walked every environment. So the command hands it a deprovisioner that deletes only the named environment's worker, and its bucket only with `--storage`. A copy that reaches further is refused at the reach, with `Update @pithy-sh/storage to match this CLI, then run it again.`
 
 Both subcommands audit what they did, when the project composes `@pithy-sh/audit` and credentials resolve. Auditing is a no-op otherwise.
 

@@ -229,6 +229,8 @@ describe("every D1 delete in the CLI is counted first, or is the feature teardow
         if (!code.includes("deleteDatabase")) continue;
         // A declaration names the member once and deletes nothing; a one-line body that also calls it does not pass.
         if (/^async deleteDatabase\(/.test(code) && code.split("deleteDatabase").length === 2) continue;
+        // A teardown confinement rule names the seam method it lets through, and forwards to that method alone.
+        if (/^deleteDatabase:\s*"(?:read|environment|refused|last)",?$/.test(code)) continue;
         offenders.push(`${module.path}:${index + 1}: ${code}`);
       }
     }

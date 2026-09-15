@@ -38,7 +38,9 @@ import type { MigrationProvider } from "kysely/migration";
  *   comments blanked, for the member name `deleteDatabase` — which a call, a destructured or aliased member,
  *   or a string key still has to spell once — and permits it only in this file, in `provision/resources.ts`,
  *   and as a line that *declares* a seam method of that name (`async deleteDatabase(`), which deletes nothing
- *   itself.
+ *   itself — or as a line that is only a teardown confinement rule (`deleteDatabase: "environment",`, from
+ *   `project/teardown.ts`), which forwards to the confined deprovisioner's own method of that name and to nothing
+ *   else.
  * - **Seen, half two:** every module that deletes through `provision/resources.ts`. That module re-exposes
  *   the delete as `ResourceProvisioners.d1.delete`, which a holder can call without naming `deleteDatabase`.
  *   So every module importing it — by a static, dynamic or template-literal specifier, however the binding is
@@ -56,7 +58,8 @@ import type { MigrationProvider } from "kysely/migration";
  *   a module importing `provision/resources.ts` that passes `provisioners.d1` to a helper elsewhere, whose
  *   `target.delete(id)` imports nothing from it (planted, and it passed); a raw `DELETE` against
  *   `/d1/database/<id>` through `cloudflareRequest` or `fetch`; `wrangler d1 delete` spawned as a subprocess;
- *   and any package other than the CLI.
+ *   a `confineTeardown` over something that is not a seam class — a raw D1 client whose own `deleteDatabase` is
+ *   the control-plane delete, let through by a rule line the gate permits; and any package other than the CLI.
  */
 
 /** One database to count or delete: the account's clients, its id, and the migrations that declare its tables. */

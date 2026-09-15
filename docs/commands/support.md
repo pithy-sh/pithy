@@ -59,7 +59,7 @@ An environment is **ready** when its stanza in the app Worker's `wrangler.jsonc`
 
 The bucket is created on the first run **however many environments skip**; it is one per project and must not wait for production. If **every** environment is skipped the run exits 1 rather than reporting a success for a run that did nothing.
 
-`deprovision` removes **one named environment's** classification worker. There is no default environment and no "all": it used to walk every declared environment, so a run meant for staging took production's worker with it. Named nothing, or something undeclared, it refuses before any credential is read and lists what could be named.
+`deprovision` removes **one named environment's** classification worker. There is no default environment and no "all": it used to walk every declared environment, so a run meant for staging took production's worker with it. Named nothing, or something undeclared, it refuses before any credential is read and lists what could be named. `--env dev` is pointed at `pithy dev` instead.
 
 The routing rule goes only with `--routing-zone`, and first, so mail stops before its handler does. The bucket stays unless `--storage` is passed, and with it the key pair is resolved **before** the worker comes down: discovering it missing at the bucket step would leave the worker gone and the bucket standing.
 
@@ -71,6 +71,15 @@ Deprovision prod first, or drop --storage and --routing-zone.
 ```
 
 "Still runs" means a deployed classification worker. An app Worker whose stanza still binds the bucket after its environment's classification worker is gone is not asked about. `--storage` is the only confirmation the bucket gets: R2 objects are not counted the way retained D1 rows are.
+
+**The command holds these limits, not the installed package.** The teardown runs from the project's own `@pithy-sh/support`, and a copy from before this check removed the routing rule first and refused after. So the shared check runs before that copy is called, and the copy is handed a deprovisioner that deletes only what the flags asked for, in the named environment. A copy that reaches past that is refused at the reach:
+
+```
+@pithy-sh/support asked for deleteWorker("prod") while tearing down staging. Refused.
+Update @pithy-sh/support to match this CLI, then run it again.
+```
+
+What that copy already deleted in the named environment stays deleted.
 
 Both subcommands audit what they did, when the project composes `@pithy-sh/audit` and credentials resolve. Auditing is a no-op otherwise.
 

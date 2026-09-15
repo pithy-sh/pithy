@@ -39,6 +39,7 @@ import {
   readyStanza,
   requireReadyEnvironments,
 } from "../project/environmentReadiness";
+import { confineTeardown } from "../project/teardown";
 import { resolveWorkerAddress } from "../project/workerAddress";
 import {
   composedProjectCapabilities,
@@ -377,8 +378,25 @@ const deprovision = defineCommand({
         budget: new RetainedBudget(destroyRetained),
       });
 
-      await deprovisionEmail(
+      // Held here as well as in `deprovisionEmail`, whichever copy of it runs: the list is refused before it is called
+      // while another environment runs, and it may delete only what was typed, for `env` alone (#591).
+      const confined = await confineTeardown({
+        kit: "@pithy-sh/email",
+        target: env,
+        declared,
+        runs: (other) => deprovisioner.hasWorker(other),
         deprovisioner,
+        rules: {
+          countSuppressionRetained: "read",
+          hasWorker: "read",
+          deleteWorker: "environment",
+          deleteSuppressionDatabase: args.suppression
+            ? { what: "the suppression list", flag: "--suppression" }
+            : "refused",
+        },
+      });
+      await deprovisionEmail(
+        confined,
         { environment: env, declared },
         { deleteSuppression: args.suppression, destroyRetained },
       );

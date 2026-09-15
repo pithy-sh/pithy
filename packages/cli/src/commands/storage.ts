@@ -29,6 +29,7 @@ import {
   readyStanza,
   requireReadyEnvironments,
 } from "../project/environmentReadiness";
+import { confineTeardown } from "../project/teardown";
 import { projectCapabilities, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -331,7 +332,16 @@ const deprovision = defineCommand({
         audit: await buildAudit(projectDir, accountId, apiToken),
       });
 
-      await deprovisionStorage(deprovisioner, target, { deleteStorage: args.storage });
+      // The orchestrator is the project's installed copy, and one from before #591 walked every declared environment.
+      // So it is handed a deprovisioner that deletes only what was typed, for `env` alone. Nothing here is shared.
+      const confined = await confineTeardown({
+        kit: "@pithy-sh/storage",
+        target: env,
+        declared,
+        deprovisioner,
+        rules: { deleteWorker: "environment", deleteBucket: args.storage ? "environment" : "refused" },
+      });
+      await deprovisionStorage(confined, target, { deleteStorage: args.storage });
 
       if (args.json) {
         process.stdout.write(

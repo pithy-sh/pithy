@@ -133,6 +133,23 @@ describe("requireTeardownEnvironment", () => {
     }
   });
 
+  // `dev` is a reasonable thing to type and has nothing on Cloudflare to tear down. A list of what could be named
+  // does not say that; `requireManagedEnvironment`'s answer did, before the teardowns moved here.
+  test("refuses dev with the local answer, still saying nothing was deleted", () => {
+    try {
+      requireTeardownEnvironment("dev", DEFAULT_ENVIRONMENTS);
+      expect.unreachable("dev is local-only");
+    } catch (error) {
+      expect(error).toBeInstanceOf(PithyError);
+      expect((error as PithyError).payload.message).toBe(
+        '"dev" is not an environment this project declares. Nothing was deleted.',
+      );
+      expect((error as PithyError).payload.action).toBe(
+        "This tears down what a Cloudflare account holds, and dev is local-only. Run `pithy dev` instead.",
+      );
+    }
+  });
+
   test("the flag it reads has no default to fall back on", () => {
     expect("default" in TEARDOWN_ENV_ARG).toBe(false);
   });

@@ -169,6 +169,7 @@ const STATIC_RESIDUE: Record<string, readonly string[]> = {
   "migrations/run.ts": ["@pithy-sh/secrets"],
   "project/environment.ts": ["@pithy-sh/secrets"],
   "project/environmentReadiness.ts": ["@pithy-sh/secrets"],
+  "project/teardown.ts": ["@pithy-sh/secrets"],
   "provision/secretBindings.ts": ["@pithy-sh/secrets"],
   "seed/prepare.ts": ["@pithy-sh/secrets"],
   "seed/run.ts": ["@pithy-sh/secrets"],

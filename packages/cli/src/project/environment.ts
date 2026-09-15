@@ -118,6 +118,10 @@ export const TEARDOWN_ENV_ARG = {
   description: `The environment to tear down: ${DEFAULT_ENVIRONMENTS.join(" | ")}, or one declared in pithy.config.ts. Required`,
 } as const;
 
+/** What a teardown says to `--env dev`: there is nothing on Cloudflare to tear down, and where dev does run. */
+const TEARDOWN_DEV_ACTION =
+  "This tears down what a Cloudflare account holds, and dev is local-only. Run `pithy dev` instead.";
+
 /**
  * The `--env` of a teardown, at the CLI edge: **the one environment a `deprovision` acts on (#591).**
  *
@@ -135,7 +139,17 @@ export function requireTeardownEnvironment(
   value: string | undefined,
   declared: DeclaredEnvironments | readonly string[],
 ): ManagedEnvironment {
-  return deprovisionTarget({ environment: value === undefined ? undefined : requireEnvironment(value), declared });
+  const environment = value === undefined ? undefined : requireEnvironment(value);
+  try {
+    return deprovisionTarget({ environment, declared });
+  } catch (error) {
+    // `dev` is not missing from the declaration, it is local, and a list of what could be named does not say so.
+    // `requireManagedEnvironment` did, before the teardowns moved here. Every other refusal keeps the list.
+    if (environment === "dev" && error instanceof ValidationError) {
+      throw new ValidationError({ message: error.payload.message, action: TEARDOWN_DEV_ACTION }, { cause: error });
+    }
+    throw error;
+  }
 }
 
 /**
