@@ -29,7 +29,7 @@ import {
 import type { DashboardClient, DeviceAuthorization } from "../dashboard/contract";
 import { decideGrant, type GrantableScope, isNarrowed, readScopeRequest } from "../dashboard/grant";
 import { type ConnectionRegistry, openConnectionRegistry } from "../dashboard/registry";
-import { describeConnectTarget, resolveConnectScopes, resolveConnectTarget } from "../dashboard/resolveTarget";
+import { composedForGrant, describeConnectTarget, resolveConnectTarget } from "../dashboard/resolveTarget";
 import { type OpenOffer, offerToOpen, openingIsOffered } from "../platform/browser";
 import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
@@ -579,15 +579,13 @@ const connect = defineCommand({
       // capability, where the alternative is the hand-typed list `all` replaces.
       //
       // Empty on a key-only update, where no address was resolved and no grant is being decided.
-      const composed = target
-        ? target.worker.capabilities
-        : scopeRequest.all
-          ? await resolveConnectScopes({
-              projectDir,
-              environment: args.env,
-              ...(args.worker === undefined ? {} : { worker: args.worker }),
-            })
-          : [];
+      const composed = await composedForGrant({
+        target,
+        all: scopeRequest.all,
+        projectDir,
+        environment: args.env,
+        ...(args.worker === undefined ? {} : { worker: args.worker }),
+      });
 
       // The whole decision, in one place that a test can execute — what is stored, what is asked, and
       // what the prompt is preselected with. `connect` derives no part of it.

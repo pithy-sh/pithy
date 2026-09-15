@@ -6,7 +6,7 @@ import { controlplane } from "@pithy-sh/core/src/controlPlane/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
 import type { WorkerConfig } from "../project/config";
-import { resolveConnectScopes, resolveConnectTarget } from "./resolveTarget";
+import { composedForGrant, resolveConnectScopes, resolveConnectTarget } from "./resolveTarget";
 
 /** A capability that declares nothing but an admin surface — enough for a grant to be derived from it. */
 const support: Capability = {
@@ -30,6 +30,39 @@ function addressless(capabilities: Capability[]): {
     environment: "prod",
     discoverWorkers: async () => [{ name: "api", dir: "/project/apps/api" }],
     loadConfig: async () => ({ capabilities }) as WorkerConfig,
+  };
+}
+
+/**
+ * The same project, optionally declaring an address, with a tally of how often it was read.
+ *
+ * Whether the project is read at all is the whole question below, so the count is the assertion.
+ */
+function watched(
+  capabilities: Capability[],
+  hostname?: string,
+): {
+  options: {
+    projectDir: string;
+    environment: string;
+    discoverWorkers: () => Promise<{ name: string; dir: string }[]>;
+    loadConfig: () => Promise<WorkerConfig>;
+  };
+  reads: () => number;
+} {
+  let reads = 0;
+  return {
+    reads: () => reads,
+    options: {
+      ...addressless(capabilities),
+      loadConfig: async () => {
+        reads += 1;
+        return {
+          capabilities,
+          ...(hostname === undefined ? {} : { domains: { prod: { pattern: hostname, zone: "example.com" } } }),
+        } as WorkerConfig;
+      },
+    },
   };
 }
 
@@ -73,5 +106,70 @@ describe("resolveConnectScopes", () => {
     expect((await refusalOf(resolveConnectScopes(addressless([support])))).message).toContain(
       "does not compose the control-plane seam",
     );
+  });
+});
+
+/**
+ * **Which composed surface feeds the grant, and the one case that has to go and read it.**
+ *
+ * A resolved address already carries the composition, so it answers. Nothing else does — except
+ * `--scope all`, which is derived from the composition and is asked for on exactly the path that
+ * resolves no address: `--update --scope all`, widening an existing grant after composing a new
+ * capability.
+ *
+ * **Stated here because it was a ternary in `connect`'s `run`, where nothing could execute it.** Deleting
+ * that ternary reinstates the original defect in full — `--update --scope all` composes nothing and
+ * refuses with `--scope all found nothing to grant.` on a project whose `pithy.config.ts` answers the
+ * question — and the whole suite stayed green when it was deleted. It is one function now, and this is
+ * the test that goes red.
+ */
+describe("composedForGrant", () => {
+  test("a resolved target answers it, and the project is not read again to ask the same thing", async () => {
+    const { options, reads } = watched([controlplane(), support], "api.example.com");
+    const target = await resolveConnectTarget(options);
+    const resolving = reads();
+
+    const composed = await composedForGrant({ ...options, target, all: true });
+
+    expect(composed.map((capability) => capability.name)).toEqual(["controlplane", "support"]);
+    expect(reads()).toBe(resolving);
+  });
+
+  test("`--scope all` with no target reads the composition, on a project declaring no address at all", async () => {
+    const { options, reads } = watched([controlplane(), support]);
+
+    const composed = await composedForGrant({ ...options, target: null, all: true });
+
+    expect(composed.map((capability) => capability.name)).toEqual(["controlplane", "support"]);
+    expect(reads()).toBeGreaterThan(0);
+  });
+
+  // A key-only `--update`, and a named `--scope` on one: neither derives anything from the composition,
+  // and reading it would demand a Worker that resolves and composes the seam for a rotation that needs
+  // neither.
+  test("no target and no `all` composes nothing, and reads nothing", async () => {
+    const { options, reads } = watched([controlplane(), support]);
+
+    expect(await composedForGrant({ ...options, target: null, all: false })).toEqual([]);
+    expect(reads()).toBe(0);
+  });
+
+  // A grant read off nothing is the failure this whole path exists to avoid, so neither of these is
+  // answered with an empty set that would fall through to `--scope all found nothing to grant.`
+  test("a Worker composing no seam is refused here too, rather than composing an empty grant", async () => {
+    const { options } = watched([support]);
+
+    expect((await refusalOf(composedForGrant({ ...options, target: null, all: true }))).message).toContain(
+      "does not compose the control-plane seam",
+    );
+  });
+
+  test("a project that cannot be read at all is refused, in the loader's own words", async () => {
+    const { options } = watched([controlplane()]);
+
+    expect(
+      (await refusalOf(composedForGrant({ ...options, discoverWorkers: async () => [], target: null, all: true })))
+        .message,
+    ).toContain("No pithy.config.ts here.");
   });
 });

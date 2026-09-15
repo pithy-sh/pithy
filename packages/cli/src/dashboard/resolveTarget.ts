@@ -159,6 +159,32 @@ export async function resolveConnectTarget(
   return { worker, workerUrl: address.url, basePath, source: describeAddressSource(address.source) };
 }
 
+/**
+ * The composed surface a grant is derived from: the resolved target's, or — under `--scope all` alone —
+ * the project's own, read with no address.
+ *
+ * **One function because it is one rule, and it was a ternary in `connect`'s `run` where no test could
+ * reach it.** Deleting the middle branch reinstates the defect whole: `--update --scope all` composes
+ * nothing, so `all` finds nothing to grant and refuses on every project, and the suite stays green. The
+ * rule runs here now, and `resolveTarget.test.ts` goes red for it.
+ *
+ * Nothing else reads the composition, and that is deliberate. A key-only `--update` — including the
+ * offline `--public-key` rotation on a proxy-fronted project — derives no grant, and going to read a
+ * `pithy.config.ts` for it would demand a Worker that resolves *and* composes the seam for a rotation
+ * that needs neither.
+ */
+export async function composedForGrant(
+  options: ConnectWorkerOptions & {
+    /** The resolved target, when an address was needed. Null on an update that resolved none. */
+    target: ConnectTarget | null;
+    /** True under `--scope all` — the one grant derived from the composition rather than from the flags. */
+    all: boolean;
+  },
+): Promise<Capability[]> {
+  if (options.target) return options.target.worker.capabilities;
+  return options.all ? resolveConnectScopes(options) : [];
+}
+
 /** The line shown before registering, so an operator sees the address and where it came from. */
 export function describeConnectTarget(target: ConnectTarget): string {
   return `${target.worker.name} → ${target.workerUrl}${target.basePath} (${target.source})`;

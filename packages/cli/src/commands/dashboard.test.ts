@@ -382,6 +382,18 @@ describe("connect decides its grant in one place", () => {
     expect(SOURCE).not.toContain("defaultGrant(");
     expect(SOURCE).not.toContain("resolveScopeRequest(");
   });
+
+  /**
+   * The list the decision is made from is the same kind of claim, and was the same kind of ternary:
+   * `target ? target.worker.capabilities : all ? read it : []`, in `run`, where nothing executes it.
+   * Deleting the middle branch put `--update --scope all` back to refusing on every project with the
+   * whole suite green. It is {@link composedForGrant} now, tested in `resolveTarget.test.ts`, and what
+   * a scan can still say is that `connect` calls it rather than choosing for itself.
+   */
+  test("it takes the composed surface from `composedForGrant`, and picks it for no case itself", () => {
+    expect(SOURCE).toContain("composedForGrant(");
+    expect(SOURCE).not.toContain(".worker.capabilities");
+  });
 });
 
 const AUTHORIZATION: DeviceAuthorization = {
