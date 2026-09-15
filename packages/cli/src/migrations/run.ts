@@ -6,7 +6,13 @@ import { join, resolve } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { composeDatabases } from "@pithy-sh/core/src/data/databases";
-import { InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import {
+  InternalError,
+  NotFoundError,
+  PithyError,
+  sentenceOf,
+  ValidationError,
+} from "@pithy-sh/core/src/error/pithyError";
 import { claimMigrationOwnership } from "@pithy-sh/core/src/migrations/owner";
 import { createMigrationRegistry, type NamespacedMigrations } from "@pithy-sh/core/src/migrations/registry";
 import {
@@ -773,19 +779,47 @@ async function runGroups(context: RunContext, pass: MigrationPass): Promise<Work
 }
 
 /**
+ * The refusal when the Workers beside a pre-resolved set do not compose for the run's environment.
+ *
+ * Its own class so a reporter can say *could not be checked* rather than *no database answered*: nothing was
+ * read, because what the databases in scope would be read against is not known. `doctor` maps it to its
+ * `not-composed` line; every other caller shows it as the refusal it is.
+ */
+export class NeighborsNotComposed extends ValidationError {}
+
+/**
  * Every Worker a database in scope could be shared with — the set each group's provider is merged from.
  *
  * With nothing pre-resolved that is plain `apps/` discovery, narrowed later, never here. A caller can
- * also hand over an **already narrowed** set: `pithy add`/`remove`/`upgrade --migrate` pass the single
- * Worker they just wired. A database that Worker shares still migrates as a whole, so the rest of the
- * project is discovered alongside it. Best effort by design — a project with nothing importable (a test
- * fixture, an uninstalled checkout) contributes no neighbors and the caller's set stands alone, exactly
- * as it did before.
+ * also hand over an **already narrowed** set: `pithy add`/`remove`/`upgrade --migrate` and `doctor`'s
+ * per-Worker read pass the single Worker they are about. A database that Worker shares still migrates as a
+ * whole, and its ledger holds every Worker's rows, so the rest of the project is discovered alongside it.
+ *
+ * **A project with no Workers to discover contributes none; a project whose Workers will not compose for
+ * this environment refuses** (#586). Discovery used to swallow every failure into "no neighbors", so one
+ * Worker whose config throws for staging emptied the set, a database shared by two healthy Workers was read
+ * against one Worker's migrations, and the other's applied rows came back undeclared — with doctor advising
+ * their deletion under staging's name. A set short of a Worker is another composition's answer, and there is
+ * no way to know from here which databases the missing one shares. `pithy migrate --env`, which discovers
+ * the whole set itself, already refused on the same config.
  */
 async function projectWorkers(options: MigrationFanOutOptions): Promise<WorkerScope[]> {
   if (!options.workers) return resolveWorkerScopes({ projectDir: options.projectDir, env: options.env });
 
-  const discovered = await resolveWorkerScopes({ projectDir: options.projectDir, env: options.env }).catch(() => []);
+  let discovered: WorkerScope[];
+  try {
+    discovered = await resolveWorkerScopes({ projectDir: options.projectDir, env: options.env });
+  } catch (error) {
+    if (!(error instanceof PithyError && error.payload.code === "core/not_found")) {
+      const named = options.workers.map((worker) => worker.name).join(", ");
+      throw new NeighborsNotComposed({
+        message: `The workers beside ${named} do not all compose for ${options.env}, so the databases they may share cannot be read whole.`,
+        action: sentenceOf(error),
+        ...(error instanceof PithyError && error.payload.detail !== undefined ? { detail: error.payload.detail } : {}),
+      });
+    }
+    discovered = [];
+  }
   const workers = [...options.workers];
   for (const found of discovered) {
     const known = workers.some((candidate) => resolve(candidate.dir) === resolve(found.dir));

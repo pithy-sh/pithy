@@ -3,6 +3,8 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { D1Database } from "@cloudflare/workers-types";
+import { Miniflare } from "miniflare";
 import { describe, expect, test } from "vitest";
 import type { MigrationScope } from "../capabilities/reconcile";
 import {
@@ -13,8 +15,9 @@ import {
   renderDoctorText,
 } from "../commands/doctor";
 import { collectMigrationSets } from "../migrations/registry";
-import { type ProjectLedger, unprovisionedDatabases } from "../migrations/run";
+import { NeighborsNotComposed, type ProjectLedger, readProjectLedger, unprovisionedDatabases } from "../migrations/run";
 import { checkedWorker, doctorHarness } from "../test-utils/doctorHarness";
+import { environmentMigrations } from "./environmentMigrations";
 import type { ProjectHealth } from "./health";
 
 /**
@@ -294,6 +297,98 @@ describe("doctor reports each environment's migrations from that environment", (
     expect(migrationLines(renderDoctorText(report, "/home/u"))[1]).toBe(
       "                 staging: skipped — no Cloudflare credentials, so no database was read",
     );
+  });
+});
+
+/**
+ * **A database shared with a Worker that does not compose for the environment is not read as if it were
+ * not shared (#586).**
+ *
+ * Doctor reads one Worker's ledger, and the rest of the project is discovered beside it, because a shared
+ * D1's ledger holds every Worker's migrations. That discovery swallowed any failure into "no neighbors", so
+ * one Worker whose config throws for staging — the dashboard's prod shape — emptied the whole set. A
+ * database `a` shares with the healthy `b` was then grouped with `a`'s migrations alone, `b`'s applied row
+ * read as undeclared, and doctor printed `delete its row from pithy_migrations` under staging's name.
+ */
+describe("a Worker beside one that does not compose for the environment", () => {
+  const noop = "{ up: async () => {}, down: async () => {} }";
+
+  /** Worker `name`, binding `DB` to `staging` in staging, migrating one database; `throws` for staging. */
+  async function worker(name: string, order: number, staging: string, throws = false): Promise<string> {
+    const workerDir = join(harness.dir, "apps", name);
+    await mkdir(workerDir, { recursive: true });
+    await writeFile(
+      join(workerDir, "wrangler.jsonc"),
+      JSON.stringify({
+        name,
+        d1_databases: [{ binding: "DB", database_id: "DB" }],
+        env: { staging: { d1_databases: [{ binding: "DB", database_id: staging }] } },
+      }),
+    );
+    await writeFile(
+      join(workerDir, "pithy.config.ts"),
+      [
+        throws ? 'if (process.env.ENVIRONMENT === "staging") throw new Error("staging is not configured.");' : "",
+        "export default {",
+        "  capabilities: [",
+        `    { name: "${name}", requiredBindings: [], databases: { ${name}: { binding: "DB", tables: {}, migrationOrder: ${order}, migrations: { "0001_init": ${noop} } } } },`,
+        "  ],",
+        "};",
+        "",
+      ].join("\n"),
+    );
+    return workerDir;
+  }
+
+  test("is not answered from the Workers that did compose, and doctor says it could not be checked", async () => {
+    await writeFile(
+      join(harness.dir, "pithy.config.ts"),
+      'export default { name: "acme", environments: ["staging"] };\n',
+    );
+    const a = await worker("a", 1000, "shared-staging");
+    await worker("b", 1100, "shared-staging");
+    await worker("c", 1200, "c-staging", true);
+
+    const miniflare = new Miniflare({ modules: true, script: "export default {};", d1Databases: { REMOTE: "r" } });
+    try {
+      const d1 = (await miniflare.getD1Database("REMOTE")) as unknown as D1Database;
+      // The shared database, as a healthy staging holds it: both Workers' first migration applied.
+      await d1.exec(
+        "CREATE TABLE pithy_migrations (name varchar(255) not null primary key, timestamp varchar(255) not null)",
+      );
+      await d1.exec("INSERT INTO pithy_migrations VALUES ('1000_a_0001_init', 't'), ('1100_b_0001_init', 't')");
+
+      // Doctor's own ledger read — one Worker handed over, the rest discovered — with the REST client swapped.
+      const answer = await environmentMigrations({
+        projectDir: harness.dir,
+        worker: { name: "a", dir: a },
+        env: "staging",
+        account: null,
+        remoteSkip: null,
+        readLedger: (scope) =>
+          readProjectLedger({
+            projectDir: scope.projectDir,
+            env: scope.env,
+            account: scope.account,
+            workers: [{ name: scope.worker, dir: scope.workerDir, capabilities: scope.capabilities }],
+            remoteD1: () => d1,
+          }),
+      });
+      expect(answer).toEqual({ env: "staging", state: "not-composed" });
+      // The refusal is the fan-out's, so every caller handing over a narrowed set meets it — `pithy add`,
+      // `remove` and `upgrade --migrate` included — and not doctor's alone.
+      await expect(
+        readProjectLedger({
+          projectDir: harness.dir,
+          env: "staging",
+          account: null,
+          workers: [{ name: "a", dir: a, capabilities: [] }],
+          remoteD1: () => d1,
+        }),
+      ).rejects.toBeInstanceOf(NeighborsNotComposed);
+    } finally {
+      await miniflare.dispose();
+    }
   });
 });
 

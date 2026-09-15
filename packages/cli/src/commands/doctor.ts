@@ -993,8 +993,9 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
       // line beside it would be two reports in one (#234).
       account,
       // Each Worker composed for each environment through the same resolver the set above came from, so a
-      // test's resolver answers both — narrowed to the one Worker, so a sibling whose config throws for an
-      // environment costs that sibling's line and not this one's.
+      // test's resolver answers both — narrowed to the one Worker, so this Worker's own migration set is
+      // not lost to a sibling's throw. Its ledger read is not narrowed: a shared database holds the
+      // sibling's rows, so that read refuses and this line says it could not be checked (#586).
       composeWorker: (worker, environment) =>
         composeFor(environment, async (loadConfig) => {
           const found = await resolve({ projectDir: options.projectDir, worker: worker.name, loadConfig });

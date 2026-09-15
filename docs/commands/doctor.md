@@ -85,7 +85,7 @@ A deployed environment's line is one of four things, and none of them is ever an
 - **A count** — its ledger read, exactly as `dev`'s is below.
 - **`DB (app) not provisioned — run: pithy provision --env prod`** — the databases it migrates have no `database_id` in its stanza. Read from `wrangler.jsonc`, so it says so offline too. Never a count: there is nothing there to count against.
 - **`skipped — offline, so no database was read`**, or **`skipped — no Cloudflare credentials, so no database was read`** — a deployed read reaches your account, and this run cannot or was told not to.
-- **`couldn't be checked — pithy.config.ts does not compose for qa`** — the config throws for that environment, so there is no migration set to compare. What it threw is the `Environment configs:` block's line.
+- **`couldn't be checked — pithy.config.ts does not compose for qa`** — the config throws for that environment, so there is no migration set to compare. So does another Worker's: a database this Worker shares holds that Worker's rows too, and read against the Workers that did compose, they would come back undeclared, with advice to delete them. What it threw is the `Environment configs:` block's line.
 
 **Only `dev` fails the exit.** It is the local store, established on this machine from this checkout, which is the standard every exit-gating finding here meets. A deployed environment's answer depends on the machine — skipped offline, skipped without credentials — and its schema trailing the project is the ordinary state between a merge and the `pithy migrate --env` that ships it, so it is reported and never gating. A Worker with any environment not level is never collapsed to `healthy ✓`, so the line is on screen whenever there is something to read in it.
 

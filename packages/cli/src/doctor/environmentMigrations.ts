@@ -6,7 +6,7 @@ import type { MigrationTarget } from "@pithy-sh/core/src/migrations/runner";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { ReadLedger } from "../capabilities/reconcile";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
-import { type ProjectLedger, readProjectLedger, unprovisionedDatabases } from "../migrations/run";
+import { NeighborsNotComposed, type ProjectLedger, readProjectLedger, unprovisionedDatabases } from "../migrations/run";
 import { composeFor } from "../project/composeFor";
 import { allCapabilities } from "../project/config";
 
@@ -24,8 +24,10 @@ import { allCapabilities } from "../project/config";
  *
  * 1. **`checked`** — composed for it, its databases resolved, and its ledger read. The ledger carries its
  *    own `read`, `partial` and `unavailable`, because a read can come up short (#371).
- * 2. **`not-composed`** — its `pithy.config.ts` threw when evaluated for it. There is no migration set to
- *    compare, so nothing is read. What it threw is `Environment configs:`'s line, not this one's.
+ * 2. **`not-composed`** — its `pithy.config.ts` threw when evaluated for it, or another Worker's did, whose
+ *    databases this one's may share. There is no migration set to compare, so nothing is read, and never
+ *    the set of the Workers that did compose: a shared database's ledger holds the missing Worker's rows,
+ *    which would read as undeclared. What it threw is `Environment configs:`'s line, not this one's.
  * 3. **`not-provisioned`** — the databases it migrates have no `database_id` in its stanza. Read from files,
  *    so it is true offline too. Never a count: there is nothing there to count against.
  * 4. **`skipped`** — a deployed read that was not attempted, because the run is offline or holds no
@@ -165,8 +167,11 @@ export async function environmentMigrations(options: EnvironmentMigrationsOption
       account: options.account,
       capabilities,
     });
-  } catch {
-    // The guard takes no binding: a D1 read throws with ids and queries in it (#350).
+  } catch (error) {
+    // A Worker beside this one did not compose for `env`, so nothing was read: the same answer as this
+    // Worker's own config throwing, and not "no database answered".
+    if (error instanceof NeighborsNotComposed) return { env, state: "not-composed" };
+    // The guard keeps nothing else of what it caught: a D1 read throws with ids and queries in it (#350).
     ledger = { state: "unavailable" };
   }
   return { env, state: "checked", ledger };
