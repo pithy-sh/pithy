@@ -13,7 +13,7 @@ import type { CliAuditEmit } from "../audit/cliAudit";
 import { composedManifests, type ManifestFault } from "../capabilities/manifests";
 import { type BindingDecline, type BindingDeclines, honoredNames, workerDeclines } from "../capabilities/reconcile";
 import { type ProvisionableBinding, provisionableBindings, serviceBindings } from "../feature/bindings";
-import type { FeatureResource } from "../feature/manifest";
+import type { FeatureResource, FeatureScript } from "../feature/manifest";
 import { migrateProject } from "../migrations/run";
 import { loadProject, loadProjectCloudflare, requireProjectName, type WorkerConfig } from "../project/config";
 import { resolveWorkers } from "../project/workerScope";
@@ -86,10 +86,30 @@ const defaultSeed: BackendRunner = async ({ env, projectDir }) => {
  * decision a caller made rather than a path nobody noticed.
  */
 export interface ProvisionRecord {
-  /** Everything a previous run recorded that this scope could legitimately have created. */
-  load(): Promise<FeatureResource[]>;
+  /** Everything a previous run recorded that this scope could legitimately have created or named. */
+  load(): Promise<ProvisionRecorded>;
   /** Persist the running set. Called after each resource, so an interrupted run resumes from here. */
-  save(resources: FeatureResource[]): Promise<void>;
+  save(recorded: ProvisionRecorded): Promise<void>;
+}
+
+/**
+ * What a {@link ProvisionRecord} holds: the resources a run created, and the Worker scripts it named.
+ *
+ * **Scripts beside resources, because teardown deletes what the record lists (#592).** A script was the
+ * one thing a feature put on the account that the record had no field for, so nothing ever deleted one:
+ * every `pithy feature destroy` left its Workers deployed, bound to databases it had just removed.
+ * Provisioning does not upload a script, but it writes the name the deploy uploads under, so the name is
+ * recorded before that write — never after, where an interrupted run could leave a deployable name
+ * unrecorded.
+ */
+export interface ProvisionRecorded {
+  /** Every resource created or adopted, one per binding and kind. */
+  resources: FeatureResource[];
+  /**
+   * Every script named, one per name — including one named by an earlier run for a Worker since removed
+   * from the branch, which may still be deployed.
+   */
+  scripts: FeatureScript[];
 }
 
 /**
@@ -498,8 +518,17 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
     service: scopedName(resolveServiceTarget(workers, service.target)),
   }));
 
-  const recorded: FeatureResource[] = options.record ? await options.record.load() : [];
-  const byBinding = new Map(recorded.map((resource) => [`${resource.kind}:${resource.binding}`, resource]));
+  const recorded: ProvisionRecorded = options.record ? await options.record.load() : { resources: [], scripts: [] };
+  const byBinding = new Map(recorded.resources.map((resource) => [`${resource.kind}:${resource.binding}`, resource]));
+  // Every script this run names, over every script an earlier run named: a Worker removed from the branch
+  // since may still be deployed, and the record is the only place teardown can learn its name (#592).
+  const byScript = new Map(recorded.scripts.map((script) => [script.name, script]));
+  for (const worker of workers) {
+    const name = scopedName(worker.name);
+    byScript.set(name, { ...provisionWorkerNames(worker), name });
+  }
+  const persist = async (): Promise<void> =>
+    options.record?.save({ resources: [...byBinding.values()], scripts: [...byScript.values()] });
 
   const resources: ProvisionedResource[] = [];
   for (const { binding, kind, name, global } of bindings) {
@@ -517,7 +546,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
     // the other end, so honoring `global` in a feature namer could never quietly become a deletion.
     if (!global) {
       byBinding.set(`${kind}:${binding}`, resource);
-      await options.record?.save([...byBinding.values()]); // persist after each — a crash mid-run resumes from here.
+      await persist(); // after each — a crash mid-run resumes from here.
     }
     const provisioned: ProvisionedResource = { ...resource, created: found === null };
     resources.push(provisioned);
@@ -535,6 +564,10 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       });
     }
   }
+
+  // The script names, recorded before the first config that carries one is written. A run with no
+  // resource to create has saved nothing yet, and a deployable name must never exist unrecorded (#592).
+  await persist();
 
   // Write the ids, the scoped script name, and the service targets into **each Worker's own**
   // `wrangler.jsonc` — the file wrangler actually reads, and the file `migrate`/`seed` resolve binding ids

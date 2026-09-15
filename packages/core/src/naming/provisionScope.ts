@@ -339,3 +339,24 @@ export function featureScope(identity: FeatureIdentity): ProvisionScope {
       secretEntryName(identity.project, secret, secretScope, () => featureSecretEntryName(identity, secret)),
   };
 }
+
+/**
+ * **Every script name one Worker can be deployed under in a feature — what teardown looks for (#592).**
+ *
+ * The first is the name {@link featureScope} composes today, taken from the scope rather than composed a
+ * second time, so provisioning and teardown cannot disagree about it. The second is the one it composed
+ * until #587, from the deploy name: `<project>-f<issue>-<slug>-<project>-<app>`. A feature provisioned and
+ * deployed before that upgrade is still running under it, and after its next deploy it runs under both —
+ * so teardown looks for both. One entry when the two coincide, as they do for a Worker whose deploy name
+ * is its directory.
+ *
+ * **Exact names, never a prefix.** A prefix scan of `<project>-f<issue>-<slug>-` reaches a sibling whose
+ * slug extends this one's. The exact names can still meet a sibling in one shape: the doubled name for
+ * slug `demo` and deploy name `acme-api` is the current name for slug `demo-acme` and directory `api`, on
+ * the same issue number. That is the same hyphen ambiguity every feature name here carries.
+ */
+export function featureWorkerScriptNames(identity: FeatureIdentity, worker: ProvisionWorkerNames): string[] {
+  const current = featureScope(identity).worker(worker);
+  const beforeSingleProject = featureWorkerName(identity, worker.script);
+  return current === beforeSingleProject ? [current] : [current, beforeSingleProject];
+}

@@ -113,7 +113,7 @@ An ephemeral feature environment is an environment, so it occupies the environme
 <project>-f<issue>-<slug>-<binding>-<kind>
 ```
 
-`pithy feature create` computes these, `provision` creates them, and `destroy` recomputes the identical strings to delete them. Nothing is stored, which is why every segment has to be derivable from `(project, issue, slug, binding, kind)` alone.
+`pithy feature create` computes these, `provision` creates them, and `destroy` recomputes the identical strings to delete them. The worktree's manifest records them too, but it is repository content rather than a trusted record: an entry is honored only when it recomputes, which is why every segment has to be derivable from `(project, issue, slug, binding, kind)` alone.
 
 There is **no Worker segment**. Two Workers that both declare `DB` are backed by one D1; a Worker that wants its own declares a different binding. Sharing is expressed in the binding name.
 
@@ -271,6 +271,8 @@ A slug over budget is not an error. It becomes a truncated head plus a six-hex h
 A feature's **Worker scripts** share the head and drop the kind: `<project>-f<issue>-<slug>-<worker>`, held to the Worker script rule of 63. The worker name is truncated too if it is what is eating the budget, so a Worker directory called `collaboration-realtime-gateway` deploys rather than failing.
 
 `<worker>` is the `apps/<worker>` directory, not the deploy name. `pithy init replay --worker board` deploys `apps/board` as `replay-board`, and its feature Worker is `replay-f69-demo-board` — the project once. Until #587 it was composed from the deploy name, `replay-f69-demo-replay-board`, spending the project twice out of the 63.
+
+`pithy feature destroy` looks for both shapes (#592), so a feature deployed before that change — and redeployed since, under both names — is torn down whole. Both are exact names, recomputed from the Worker's directory and its deploy name.
 
 ## The `pithy-int-` reservation
 

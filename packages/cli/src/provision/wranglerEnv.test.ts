@@ -175,6 +175,25 @@ describe("applyProvisionedEnv", () => {
     ]);
   });
 
+  /**
+   * **One write, holding everything (#592).** A feature's config is regenerated from the tracked file on
+   * every write, so a second write for its secrets started from a stanza with no name, no ids and no
+   * services and kept only the secrets. The Worker deployed as `<script>-feature`, a name nothing records
+   * and teardown never deletes, with every binding id-less.
+   */
+  test("a feature's secrets do not cost it its name, its ids or its services", async () => {
+    await apply(feature, {
+      services: [{ binding: "WEB", service: "replay-f69-demo-web" }],
+      secrets: [{ binding: "SECRETS_ENCRYPTION_KEYS", store_id: "store-1", secret_name: "replay-f69-demo-keys" }],
+    });
+
+    const stanza = (parse(await read(feature)) as unknown as Parsed).env.feature;
+    expect(stanza?.name).toBe("replay-f69-demo-board");
+    expect(stanza?.d1_databases?.[0]?.database_id).toBe("uuid-1");
+    expect(stanza?.services).toEqual([{ binding: "WEB", service: "replay-f69-demo-web" }]);
+    expect(stanza?.secrets_store_secrets?.map((entry) => entry.binding)).toEqual(["SECRETS_ENCRYPTION_KEYS"]);
+  });
+
   /** Nothing rewrites a stanza beyond the entries it owns — an adopter's hand-added binding survives. */
   test("leaves a secrets binding it does not own alone", async () => {
     await writeFile(

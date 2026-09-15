@@ -11,6 +11,7 @@ import {
   bindingResourceName,
   environmentScope,
   featureScope,
+  featureWorkerScriptNames,
   type ProvisionWorkerNames,
 } from "./provisionScope";
 
@@ -308,6 +309,30 @@ describe("featureScope", () => {
         for (const scope of deployed) expect(scope.resource(binding, kind, naming)).not.toBe(name);
       }
     }
+  });
+});
+
+/**
+ * What `pithy feature destroy` looks for (#592): the name a feature Worker deploys under now, and the one
+ * it deployed under before #587. Literals, so a shape cannot pass by being composed wrongly twice.
+ */
+describe("featureWorkerScriptNames", () => {
+  const identity = { project: "replay", issue: "69", slug: "demo" };
+
+  it("names the single-project shape first, then the doubled one a feature deployed before #587 still runs", () => {
+    expect(featureWorkerScriptNames(identity, { app: "board", script: "replay-board" })).toEqual([
+      "replay-f69-demo-board",
+      "replay-f69-demo-replay-board",
+    ]);
+  });
+
+  it("names one script when the deploy name is the directory, so nothing is looked for twice", () => {
+    expect(featureWorkerScriptNames(identity, { app: "board", script: "board" })).toEqual(["replay-f69-demo-board"]);
+  });
+
+  it("leads with exactly the name the feature scope deploys under", () => {
+    const worker: ProvisionWorkerNames = { app: "collaboration-realtime-gateway", script: "replay-collab" };
+    expect(featureWorkerScriptNames(identity, worker)[0]).toBe(featureScope(identity).worker(worker));
   });
 });
 

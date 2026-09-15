@@ -21,6 +21,6 @@ a sibling calls, and the stanza `name` the deploy reads. Fixing only one of them
 `service` binding at a script nobody deploys.
 
 **A feature live across the upgrade redeploys under the new name.** Its next `pithy provision --feature` and
-deploy publish `<project>-f<issue>-<slug>-<app>`, and the old doubled-name script keeps running beside it —
-feature teardown does not delete Worker scripts, so remove it in Cloudflare by hand, and know that any Durable
-Object state on it stays on it.
+deploy publish `<project>-f<issue>-<slug>-<app>`, and the old doubled-name script keeps running beside it until
+`pithy feature destroy`, which looks for both names (#592). Any Durable Object state on the old script stays on
+it.
