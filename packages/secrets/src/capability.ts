@@ -4,7 +4,7 @@
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { secretsHealth } from "./admin/health";
 import { EncryptionConfig } from "./crypto/envelope";
-import { secretsTables } from "./data/tables";
+import { secretsRetainedTables, secretsTables } from "./data/tables";
 import { MASTER_KEY_BINDING } from "./env/masterKeyBinding";
 import { secretsAdminRoutes } from "./http/guards";
 import { registerSecretsRoutes, SECRETS_DEFAULT_BASE_PATH } from "./http/routes";
@@ -188,7 +188,7 @@ export function secrets(config: SecretsConfig): SecretsCapability {
         // else, and rotation history is the only record of when a key last moved. `0001_init` is this
         // database's whole history, so its `down` is a rollback's first casualty: declared retained, no
         // `down` runs here while either table holds rows unless the operator counts them (#588).
-        retained: ["pithySecretsSystemSecrets", "pithySecretsRotations"],
+        retained: secretsRetainedTables,
       },
     },
     routes: registerSecretsRoutes({ registry: () => reported.current, basePath: mountPath }),

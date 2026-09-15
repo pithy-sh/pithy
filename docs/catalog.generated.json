@@ -238,6 +238,8 @@
       "flags": [
         "--suppression",
         "--no-suppression",
+        "--destroy-retained",
+        "--destroyRetained",
         "--json",
         "--no-json"
       ]
@@ -437,8 +439,11 @@
     {
       "path": "secrets deprovision",
       "flags": [
+        "--env",
         "--keys",
         "--no-keys",
+        "--destroy-retained",
+        "--destroyRetained",
         "--json",
         "--no-json"
       ]

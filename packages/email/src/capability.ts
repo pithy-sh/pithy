@@ -12,6 +12,7 @@ import {
   type EmailSuppressionDatabase,
   emailDatabase,
   emailSuppressionDatabase,
+  emailSuppressionsRetainedTables,
   emailSuppressionTables,
   emailTables,
 } from "./data/tables";
@@ -265,7 +266,7 @@ export function email(config: EmailConfigInput): EmailCapability {
         // Every address that bounced, complained or unsubscribed. Dropping it is not a schema change — the
         // next send goes to people who asked not to be mailed, and the list cannot be rebuilt from anywhere.
         // Declared retained, so no `down` runs against it while it holds rows unless counted (#588).
-        retained: ["pithyEmailSuppressions"],
+        retained: emailSuppressionsRetainedTables,
       },
     },
     /**

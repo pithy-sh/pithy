@@ -14,7 +14,7 @@ pithy secrets rm <name> [--env <env>] [--json]
 pithy secrets ls [--all] [--json]
 pithy secrets edit [--json]
 pithy secrets provision [--json]
-pithy secrets deprovision [--keys] [--json]
+pithy secrets deprovision --env <env> [--keys] [--destroy-retained <n>] [--json]
 ```
 
 **Its Worker deploy is gated.** The Worker is deployed carrying a stamp naming the package version and a hash of its resolved configuration, and a run whose stamp matches both ships nothing. Anything the gate cannot establish — no Worker, no stamp, an unreachable account — deploys. `pithy deploy --env <env>` ships the same Worker without provisioning anything else, and `pithy deploy --env <env> --kit --force` re-uploads it regardless. See [`pithy deploy`](./deploy.md).
@@ -26,7 +26,9 @@ pithy secrets deprovision [--keys] [--json]
 | `create`, `update`, `rotate`, `rm` | `<name>` (positional, required) | The secret's name — a registry entry. |
 | `create`, `update`, `rotate`, `rm` | `--env <env>` | Target environment for an environment-scoped secret: `staging` or `prod`. Not `dev`. |
 | `rotate` | `--dry-run` | Resolve the declaration and say what would happen. Calls no issuer, writes nothing, needs no credentials. Default `false`. |
-| `deprovision` | `--keys` | Also delete each environment's master key. Irreversible: every stored secret becomes undecryptable. Default `false`. |
+| `deprovision` | `--env <env>` | **Required.** The one environment to tear down. There is no default and no "all": with none, the command refuses and lists the environments it could act on. |
+| `deprovision` | `--keys` | Also delete the environment's master key. Irreversible: every stored secret becomes undecryptable. Default `false`. |
+| `deprovision` | `--destroy-retained <n>` | **Destructive.** Delete a vault that still holds rows. `<n>` must equal the count the refusal printed. |
 | all | `--json` | Machine-readable output. Default `false`. |
 
 `--env` here is the **managed** set — every environment the root `pithy.config.ts` declares, `["staging", "prod"]` unless it says otherwise — not the three `--env` takes elsewhere. `dev` is local-only, so it is refused with a sentence pointing at `pithy dev`, and an environment the project does not declare is refused by name with the ones that are.
@@ -207,7 +209,23 @@ That is a real cost and it is worth stating the alternative rather than implying
 
 `edit` is the odd one out, and deliberately: it touches nothing but this machine's dev values at `<config>/<project>/secrets.jsonc`, the file every registry secret's local value lives in as a versioned envelope and the source generation reads. It opens a draft beside the real file, validates what comes back, and writes it atomically at `0600`. **It prints a path and a count, never a name and never a value** — `ls` is what lists names. A draft that will not validate is handed back with the problem printed above it; a draft that is still broken, that the editor abandoned, or that lost a race with another command is kept, and the refusal names its absolute path. Nothing here deletes text it could not write.
 
-`provision` stands up the per-environment infrastructure for every managed environment in order: the manager's own least-privilege token first, then per environment a dedicated D1, a minted master key, the migrated schema, and the deployed manager Worker. Every step is idempotent — running it again is a no-op. `deprovision` reverses it, and keeps the master keys unless `--keys` says otherwise.
+`provision` stands up the per-environment infrastructure for every managed environment in order: the manager's own least-privilege token first, then per environment a dedicated D1, a minted master key, the migrated schema, and the deployed manager Worker. Every step is idempotent — running it again is a no-op.
+
+**`deprovision` reverses it for one environment, named.** It used to walk every declared environment, so one run typed to clean up staging deleted production's vault with it. Now `--env` is required, and there is no default set for production to be in:
+
+```
+Name the environment to deprovision. Nothing was deleted.
+Pass --env with one of: staging, prod.
+```
+
+**A vault holding rows is counted before anything goes.** The secrets database's tables are declared retained — a sealed credential exists there and at its issuer, nowhere else — so the rows are counted before the manager is deleted, and the command refuses unless `--destroy-retained` names the same number. The same guard `pithy migrate --rollback` spends:
+
+```
+Retained 3 rows would be dropped: pithy_secrets_system_secrets on acme-prod-secrets (3 rows). Refused before anything was deleted.
+They exist nowhere else. Back them up, or pass --destroy-retained 3 to drop them.
+```
+
+A different number refuses too. The count is taken again at the delete itself, so a row written in between is a row it refuses. Then the manager Worker, the master key when `--keys` is passed, and the database go, in that order. **The shared manager token goes only with the last manager**: it is one credential every manager binds, so removing it while prod still runs one would fail every rotation there.
 
 **`provision` says where it got to.** Each environment's manager Worker is named as it is about to be uploaded — `▸ acme-staging-secrets...` — the same plain line `pithy deploy`, `pithy provision` and `pithy email provision` print, from the one seam they all share. A manager the deploy gate skipped as already current says nothing, because nothing was uploaded for it. `--json` silences the lot and still writes exactly one line; a missing TTY does not. `deprovision` deletes over the API and spawns nothing, so it has nothing to narrate.
 
@@ -302,7 +320,9 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 | key | type | meaning |
 |---|---|---|
 | `command` | string | `"secrets deprovision"`. |
-| `keysDeleted` | boolean | Whether `--keys` was passed, and so whether the master keys were deleted with the rest. |
+| `environment` | string | The one environment torn down — the value of `--env`. |
+| `keysDeleted` | boolean | Whether `--keys` was passed, and so whether the environment's master key was deleted with the rest. |
+| `managerTokenDeleted` | boolean | Whether the shared manager token was removed. `true` only when no declared environment still runs a manager. |
 
 ## Errors
 
@@ -317,6 +337,8 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 - **`Secret '<name>' is global. It holds one value across every environment, so --env cannot narrow it.`** Run it again without `--env`. Nothing was dispatched, so nothing was written — the re-run is the confirmation, and there is no flag that skips it. `rm` says *remove it from every environment* instead of *set it in*.
 - **`--env dev`.** Refused with `--env must be one of staging, prod`, and pointed at `pithy dev` — this writes to a Cloudflare account, and `dev` is local.
 - **`Cloudflare credentials are missing.`** Run `pithy init` to record the pair, or export it. Raised by every subcommand that reaches Cloudflare — not by `ls`.
+- **`Name the environment to deprovision. Nothing was deleted.`** `deprovision` only. Pass `--env` with one of the environments the refusal lists. An undeclared one is refused the same way.
+- **`Retained <n> rows would be dropped: … Refused before anything was deleted.`** `deprovision` only. The vault holds rows. Back them up, or pass `--destroy-retained <n>` with the number printed.
 - **`The CF Secrets Store id is missing.`** `provision` and `deprovision` only. Run `pithy add secrets` to record `SECRETS_STORE_ID`.
 - **No project name.** Every subcommand that resolves a path or a Workflow requires `name` in the root `pithy.config.ts` and refuses to guess one. A guess would open one checkout's secrets from another's worktree, or dispatch this project's values into another project's manager.
 - **`edit` conflicts.** The file changed while you were editing (nothing is written, merge by hand); the editor exited non-zero on changed text (your text is kept, and named); the text came back invalid twice (same).
@@ -347,6 +369,9 @@ pithy secrets rm OLD_WEBHOOK_SECRET --env staging --json
 
 # Edit this machine's dev values in $EDITOR.
 pithy secrets edit
+
+# Tear staging down. Prod is not touched; its manager keeps the shared token.
+pithy secrets deprovision --env staging --json
 ```
 
 ```json
@@ -357,7 +382,7 @@ pithy secrets edit
 {"command":"secrets rotate","name":"CLOUDFLARE_API_TOKEN","rotations":[{"name":"CLOUDFLARE_API_TOKEN","status":"unrecorded","rotation":"provider","rolled":true,"recorded":[],"stranded":["prod"]}]}
 {"command":"secrets edit","path":"/home/you/.config/pithy/acme/secrets.jsonc","changed":true,"secrets":4}
 {"command":"secrets provision","environments":[{"env":"staging","databaseId":"<database-id>","storeId":"<store-id>"},{"env":"prod","databaseId":"<database-id>","storeId":"<store-id>"}]}
-{"command":"secrets deprovision","keysDeleted":false}
+{"command":"secrets deprovision","environment":"staging","keysDeleted":false,"managerTokenDeleted":false}
 ```
 
 No example above contains a value, and none of these payloads can carry one.

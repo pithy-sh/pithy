@@ -28,6 +28,16 @@ export type EmailTables = typeof emailTables;
 export const emailSuppressionTables = {
   pithyEmailSuppressions: EmailSuppression,
 };
+
+/**
+ * The suppression list, declared **retained**: every address that bounced, complained or unsubscribed, which
+ * cannot be rebuilt from anywhere. One constant for the capability's declaration (#588) and for the CLI's
+ * teardown, which counts it before deleting the database (#591) — a second copy that drifted would count
+ * nothing and delete the list.
+ */
+export const emailSuppressionsRetainedTables = [
+  "pithyEmailSuppressions",
+] as const satisfies readonly (keyof typeof emailSuppressionTables)[];
 export type EmailSuppressionTables = typeof emailSuppressionTables;
 
 /** The typed Kysely database over the per-environment email tables (jobs + events). */

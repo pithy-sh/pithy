@@ -131,32 +131,69 @@ function rowsLabel(count: number): string {
 }
 
 /**
+ * What a refusal was raised ahead of, as the sentence ends: `Refused before <this>.` A `down` for the
+ * runner and the migration fan-out; a database deletion for a teardown that removes the database whole
+ * (#591), where "any down ran" would name an operation that was never going to happen.
+ */
+export type RefusedBefore = "any down against them ran" | "anything was deleted";
+
+/**
  * The refusal, in one wording for every place that raises it — the fan-out's preflight, which names every
- * database before any of them moves, and {@link guardRetained}, which is the floor under it.
+ * database before any of them moves, {@link guardRetained}, which is the floor under it, and a teardown
+ * that deletes a database holding retained tables (`pithy secrets deprovision`, #591).
  *
  * `consent` is what the caller passed. The action always prints the number that would work, because that
  * number is the one fact the operator has to read before typing it.
  */
-export function retainedRefusal(atRisk: readonly RetainedRows[], consent: number | undefined): ValidationError {
-  return downRefusal(refusalFor(atRisk, consent));
+export function retainedRefusal(
+  atRisk: readonly RetainedRows[],
+  consent: number | undefined,
+  before: RefusedBefore = "any down against them ran",
+): ValidationError {
+  return downRefusal(refusalFor(atRisk, consent, before));
 }
 
-function refusalFor(atRisk: readonly RetainedRows[], consent: number | undefined): ValidationError {
+/**
+ * **The preflight: refuse unless the operator counted exactly the retained rows in scope.**
+ *
+ * Absent a count, only an empty scope passes; given one, only the same number does — a count that is too
+ * high is a count of something else, and agreeing to it would let a stale number from shell history through
+ * the day the rows it described are joined by more. Call it with every database the operation will touch,
+ * counted before the first of them moves, so the refusal names them all with nothing changed.
+ *
+ * The floor under it is {@link RetainedBudget}, fed the operator's number and never this function's
+ * count.
+ */
+export function assertRetainedAgreed(
+  atRisk: readonly RetainedRows[],
+  consent: number | undefined,
+  before: RefusedBefore = "any down against them ran",
+): void {
+  const total = atRisk.reduce((sum, entry) => sum + entry.rows, 0);
+  const agreed = consent === undefined ? total === 0 : consent === total;
+  if (!agreed) throw retainedRefusal(atRisk, consent, before);
+}
+
+function refusalFor(
+  atRisk: readonly RetainedRows[],
+  consent: number | undefined,
+  before: RefusedBefore,
+): ValidationError {
   const total = atRisk.reduce((sum, entry) => sum + entry.rows, 0);
   const named = atRisk.map((entry) => `${entry.table} on ${entry.binding} (${rowsLabel(entry.rows)})`).join(", ");
   const mismatch =
     consent === undefined ? "" : `--destroy-retained ${consent} does not match the ${rowsLabel(total)} at risk. `;
   if (total === 0) {
     return new ValidationError({
-      message: `${mismatch}Nothing retained is at risk. Refused before any down ran.`,
+      message: `${mismatch}Nothing retained is at risk. Refused before ${before === "anything was deleted" ? before : "any down ran"}.`,
       action: "Run it again without --destroy-retained.",
     });
   }
   return new ValidationError({
-    message: `${mismatch}Retained ${rowsLabel(total)} would be dropped: ${named}. Refused before any down against them ran.`,
+    message: `${mismatch}Retained ${rowsLabel(total)} would be dropped: ${named}. Refused before ${before}.`,
     action: `They exist nowhere else. Back them up, or pass --destroy-retained ${total} to drop them.`,
     detail:
-      "A retained table is declared by its capability. Any down against its database is refused while it holds rows.",
+      "A retained table is declared by its capability. Any down against its database, and any deletion of the database, is refused while it holds rows.",
   });
 }
 

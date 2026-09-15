@@ -3,6 +3,7 @@
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { RetainedBudget } from "@pithy-sh/core/src/migrations/retained";
 import type { WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { type EmailCapability, isEmailCapability } from "@pithy-sh/email/src/capability";
 import { deprovisionEmail, provisionEmail } from "@pithy-sh/email/src/provision/provisionEmail";
@@ -20,6 +21,7 @@ import {
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
+import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained } from "../migrations/confirm";
 import {
   loadProject,
   loadProjectEnvironments,
@@ -339,11 +341,13 @@ const deprovision = defineCommand({
       default: false,
       description: "Also delete this project's suppression DB (irreversible)",
     },
+    "destroy-retained": { type: "string", description: DESTROY_RETAINED_DESCRIPTION },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
+      const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
       // Teardown finds resources by recomputing their names, so this must be the same name
       // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
       const config = await loadProject(projectDir);
@@ -358,9 +362,11 @@ const deprovision = defineCommand({
         cf,
         project,
         audit: await buildAudit(projectDir, accountId, apiToken),
+        // The operator's number, spent at the delete — the floor under the count `deprovisionEmail` demands (#591).
+        budget: new RetainedBudget(destroyRetained),
       });
 
-      await deprovisionEmail(deprovisioner, environments, { deleteSuppression: args.suppression });
+      await deprovisionEmail(deprovisioner, environments, { deleteSuppression: args.suppression, destroyRetained });
 
       if (args.json) {
         process.stdout.write(

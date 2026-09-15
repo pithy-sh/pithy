@@ -7,8 +7,10 @@ import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients"
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
+import { RetainedBudget, type RetainedRows } from "@pithy-sh/core/src/migrations/retained";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
 import { EMAIL_SUPPRESSIONS_MIGRATION_ORDER } from "@pithy-sh/email/src/capability";
+import { emailSuppressionsRetainedTables } from "@pithy-sh/email/src/data/tables";
 import { email_0001_suppressions } from "@pithy-sh/email/src/migrations/0001_suppressions";
 import {
   bounceRoutingRuleName,
@@ -26,9 +28,10 @@ import type { CliAuditEmit } from "../audit/cliAudit";
 import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/accountAnswer";
 import { kitSource } from "../project/kitSource";
 import { deployHostWorker, kitPackageVersion } from "./hostDeploy";
+import { countDatabaseRetained, deleteRetainedDatabase } from "./retainedDatabase";
 
-/** The suppression migration set, as provisioning runs it against the shared suppression D1. */
-function suppressionMigrationProvider(): MigrationProvider {
+/** The suppression migration set, as provisioning runs it against the shared suppression D1 and teardown counts it. */
+export function suppressionMigrationProvider(): MigrationProvider {
   const registry = createMigrationRegistry([
     {
       database: "emailSuppressions",
@@ -39,6 +42,9 @@ function suppressionMigrationProvider(): MigrationProvider {
       // and re-run the chain.
       order: EMAIL_SUPPRESSIONS_MIGRATION_ORDER,
       migrations: { "0001_suppressions": email_0001_suppressions },
+      // The capability's own declaration, never a copy. This process never constructs `email()`, so without
+      // it the list is undeclared here and a teardown's count finds nothing to refuse over (#591).
+      retained: emailSuppressionsRetainedTables,
     },
   ]);
   const provider = registry.emailSuppressions;
@@ -313,6 +319,11 @@ export interface CloudflareEmailDeprovisionerOptions {
   account: ConfirmedAccount;
   /** Audit emitter. Defaults to recording nothing, so a caller without audit wiring still works. */
   audit?: CliAuditEmit;
+  /**
+   * How many suppressed addresses this run may destroy — the operator's `--destroy-retained` number (#591).
+   * Defaults to agreeing to nothing: an empty list deletes, a populated one refuses.
+   */
+  budget?: RetainedBudget;
 }
 
 /**
@@ -325,12 +336,31 @@ export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
   readonly #project: string;
   readonly #account: ConfirmedAccount;
   readonly #audit: CliAuditEmit;
+  readonly #budget: RetainedBudget;
 
   constructor(options: CloudflareEmailDeprovisionerOptions) {
     this.#cf = options.cf;
     this.#project = options.project;
     this.#account = options.account;
     this.#audit = options.audit ?? (async () => {});
+    this.#budget = options.budget ?? new RetainedBudget(undefined);
+  }
+
+  /** This project's suppression D1, when it exists, with the migration set that declares its retained table. */
+  async #suppressionDatabase() {
+    const name = suppressionDatabaseName(this.#project);
+    const db = await findOnConfirmedAccount({
+      ...this.#account,
+      what: `the ${name} database`,
+      find: () => this.#cf.d1Provisioner().findDatabaseByName(name),
+    });
+    return db ? { cf: this.#cf, databaseId: db.uuid, name, provider: suppressionMigrationProvider() } : null;
+  }
+
+  /** The suppression list's rows, named by its database — empty when the database is absent. Read-only. */
+  async countSuppressionRetained(): Promise<RetainedRows[]> {
+    const database = await this.#suppressionDatabase();
+    return database ? countDatabaseRetained(database) : [];
   }
 
   /** Delete the env's email worker if it is deployed — and refuse if "deployed" cannot be settled (#378). */
@@ -355,19 +385,22 @@ export class CloudflareEmailDeprovisioner implements EmailDeprovisioner {
     }
   }
 
-  /** Delete this project's suppression D1 if it exists — destructive, called only on a full destroy. */
+  /**
+   * Delete this project's suppression D1 if it exists — destructive, called only on a full destroy, and
+   * refused while the list holds more rows than this run's budget agreed to destroy (#591).
+   */
   async deleteSuppressionDatabase(): Promise<void> {
-    const name = suppressionDatabaseName(this.#project);
-    const db = await this.#cf.d1Provisioner().findDatabaseByName(name);
-    if (db) {
-      await this.#cf.d1Provisioner().deleteDatabase(db.uuid);
+    const database = await this.#suppressionDatabase();
+    if (database) {
+      const { databaseId: uuid, name } = database;
+      await deleteRetainedDatabase(database, this.#budget);
       await this.#audit({
         environment: "global",
         action: "email/suppression_db_removed",
         outcome: "success",
         severity: "warning",
         resourceType: "cf_d1",
-        resourceId: db.uuid,
+        resourceId: uuid,
         metadata: { name },
       });
     }

@@ -139,11 +139,16 @@ describe("names", () => {
 });
 
 describe("deprovisionEmail", () => {
-  function fakeDeprovisioner(): { deprovisioner: EmailDeprovisioner; calls: string[] } {
+  function fakeDeprovisioner(suppressed = 0): { deprovisioner: EmailDeprovisioner; calls: string[] } {
     const calls: string[] = [];
     return {
       calls,
       deprovisioner: {
+        async countSuppressionRetained() {
+          return suppressed === 0
+            ? []
+            : [{ binding: "acme-global-email-suppressions", table: "pithy_email_suppressions", rows: suppressed }];
+        },
         async deleteWorker(env) {
           calls.push(`deleteWorker:${env}`);
         },
@@ -155,14 +160,34 @@ describe("deprovisionEmail", () => {
   }
 
   test("deletes every worker and keeps the suppression DB by default", async () => {
-    const { deprovisioner, calls } = fakeDeprovisioner();
+    const { deprovisioner, calls } = fakeDeprovisioner(4);
     await deprovisionEmail(deprovisioner, DEFAULT_ENVIRONMENTS);
     expect(calls).toEqual(["deleteWorker:staging", "deleteWorker:prod"]);
   });
 
-  test("deletes the suppression DB only when explicitly asked", async () => {
+  test("deletes an empty suppression DB when explicitly asked", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner();
     await deprovisionEmail(deprovisioner, DEFAULT_ENVIRONMENTS, { deleteSuppression: true });
+    expect(calls).toEqual(["deleteWorker:staging", "deleteWorker:prod", "deleteSuppressionDatabase"]);
+  });
+
+  /**
+   * **#591's other vault.** `--suppression` deleted every address that asked not to be mailed, with nothing
+   * counted — the same deletion of rows that exist nowhere else as the secrets teardown, one flag instead of
+   * none. #588's guard, spent here: counted before the first worker goes, and refused unless the operator
+   * counted the same.
+   */
+  test("a suppression list holding rows refuses without the count, before any worker is deleted", async () => {
+    const { deprovisioner, calls } = fakeDeprovisioner(4);
+    await expect(deprovisionEmail(deprovisioner, DEFAULT_ENVIRONMENTS, { deleteSuppression: true })).rejects.toThrow(
+      "Retained 4 rows would be dropped: pithy_email_suppressions on acme-global-email-suppressions (4 rows). Refused before anything was deleted.",
+    );
+    expect(calls).toEqual([]);
+  });
+
+  test("the exact count deletes it", async () => {
+    const { deprovisioner, calls } = fakeDeprovisioner(4);
+    await deprovisionEmail(deprovisioner, DEFAULT_ENVIRONMENTS, { deleteSuppression: true, destroyRetained: 4 });
     expect(calls).toEqual(["deleteWorker:staging", "deleteWorker:prod", "deleteSuppressionDatabase"]);
   });
 });

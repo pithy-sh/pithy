@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { assertRetainedAgreed, type RetainedRows } from "@pithy-sh/core/src/migrations/retained";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { EncryptionConfig } from "../crypto/envelope";
@@ -153,12 +155,19 @@ export async function provisionSecrets(
 }
 
 /**
- * The teardown seam — the inverse of {@link SecretsProvisioner}, removing each environment's secrets
- * infrastructure. Behind the seam so the orchestration (order, the key-deletion guard, idempotency)
- * is unit-tested without Cloudflare; the live implementation is verified by the integration suite.
- * Every step is idempotent — a missing resource is a no-op, so re-running teardown is safe.
+ * The teardown seam — the inverse of {@link SecretsProvisioner}, removing one environment's secrets
+ * infrastructure. Behind the seam so the orchestration (the target, the retained-row refusal, order, the
+ * key-deletion guard, when the shared token goes) is unit-tested without Cloudflare; the live implementation
+ * is verified by the integration suite. Every deletion is idempotent — a missing resource is a no-op.
  */
 export interface SecretsDeprovisioner {
+  /**
+   * The rows in the retained tables of the env's secrets database — the vault — named by that database.
+   * Read-only, and empty when the database is absent or holds nothing retained.
+   */
+  countRetained(env: ManagedEnvironment): Promise<RetainedRows[]>;
+  /** Whether the env's manager Worker is deployed. What decides if the shared manager token is still in use. */
+  hasManager(env: ManagedEnvironment): Promise<boolean>;
   /** Delete the env's manager worker. Idempotent (a missing worker is a no-op). */
   deleteManager(env: ManagedEnvironment): Promise<void>;
   /**
@@ -166,41 +175,103 @@ export interface SecretsDeprovisioner {
    * undecryptable — so the orchestration only calls it when explicitly asked. Idempotent.
    */
   deleteMasterKey(env: ManagedEnvironment): Promise<void>;
-  /** Delete the env's secrets D1. Idempotent (a missing database is a no-op). */
+  /**
+   * Delete the env's secrets D1. Idempotent (a missing database is a no-op). A live implementation refuses
+   * while the vault holds more rows than the operator agreed to destroy — the floor under the orchestration's
+   * exact count.
+   */
   deleteDatabase(env: ManagedEnvironment): Promise<void>;
   /**
    * Remove the manager's CF API token entirely: delete the minted account token from Cloudflare
    * **and** its `<project>-global-secrets-manager-cf-api-token` entry from the Secrets Store. Both
    * names are project-scoped, so this never reaches another project's credential. It is `global` —
-   * one token shared by both managers — so it is removed once, after every manager is gone. Safe and
-   * ungated: the token is a re-mintable access credential, not a key, so removing it orphans no
+   * one token every manager binds — so it is removed only once no declared environment runs a manager.
+   * Safe and ungated: the token is a re-mintable access credential, not a key, so removing it orphans no
    * secrets. Idempotent (a missing token or entry is a no-op).
    */
   deleteManagerToken(): Promise<void>;
 }
 
-/** Teardown options. By default the master keys are **kept** — deleting them is irreversible. */
+/** Teardown options. By default the master key is **kept** — deleting it is irreversible. */
 export interface DeprovisionOptions {
-  /** Also delete each environment's master key. Off by default; only a full destroy sets it. */
+  /** Also delete the environment's master key. Off by default. */
   deleteKeys?: boolean;
+  /**
+   * The operator's count of the retained rows to destroy — `--destroy-retained <n>`. Must equal the rows the
+   * vault holds; absent, only an empty vault is deleted.
+   */
+  destroyRetained?: number;
+}
+
+/** What a teardown was asked to act on: the environment the operator named, if any, and the project's set. */
+export interface DeprovisionTarget {
+  /** The environment named on the command line. Absent is a refusal, never a default. */
+  environment: string | undefined;
+  /** Every environment the root `pithy.config.ts` declares — what a refusal lists. */
+  declared: DeclaredEnvironments | readonly string[];
+}
+
+/** What a teardown did. */
+export interface DeprovisionResult {
+  /** The one environment torn down. */
+  environment: ManagedEnvironment;
+  /** Whether the shared manager token went too — only when no declared environment still runs a manager. */
+  managerTokenDeleted: boolean;
 }
 
 /**
- * Tear down every managed environment, reversing {@link provisionSecrets}: delete the manager worker
- * first (it binds the other resources), then — only when `deleteKeys` is set — the master key, then
- * the D1. The master key is preserved unless explicitly requested: losing it orphans every secret,
- * and a re-provision can reuse the existing key. The shared manager CF API token is deleted once at
- * the end, after every manager that binds it is gone. Idempotent end to end.
+ * **The environment a teardown acts on is one the operator named (#591).**
+ *
+ * `deprovision` used to walk every declared environment: one run, typed to clean up staging, deleted
+ * production's vault. There is no default here — not all, not the first, not "everything but prod" — because
+ * any default is a set somebody did not type, and the only environment worth defaulting away from is the one a
+ * default would eventually reach. So production is never in a default set by there being no default set.
+ *
+ * Absent, or naming an environment the project does not declare, it refuses and lists what could be named.
+ */
+export function deprovisionTarget(target: DeprovisionTarget): ManagedEnvironment {
+  const environments = managedEnvironments(target.declared);
+  const named = target.environment;
+  if (named !== undefined && environments.includes(named)) return named;
+  throw new ValidationError({
+    message:
+      named === undefined
+        ? "Name the environment to deprovision. Nothing was deleted."
+        : `${JSON.stringify(named)} is not an environment this project declares. Nothing was deleted.`,
+    action: `Pass --env with one of: ${environments.join(", ")}.`,
+  });
+}
+
+/**
+ * Tear down **one named environment**, reversing {@link provisionSecrets} for it.
+ *
+ * In order, and the order is the contract:
+ *
+ * 1. Resolve the target ({@link deprovisionTarget}) — refused with nothing read when none was named.
+ * 2. Count the vault and refuse unless the operator counted the same (`@pithy-sh/core`'s
+ *    `assertRetainedAgreed`, #588's guard spent here). Before the manager goes: a refusal after it would leave
+ *    an environment holding a vault and nothing to rotate it.
+ * 3. Delete the manager Worker (it binds the other resources), then — only when `deleteKeys` is set — the
+ *    master key, then the D1.
+ * 4. Delete the shared manager token only when no declared environment still runs a manager: it is `global`,
+ *    and removing it for staging's teardown would fail every rotation in production.
  */
 export async function deprovisionSecrets(
   deprovisioner: SecretsDeprovisioner,
-  environments: DeclaredEnvironments | readonly string[],
+  target: DeprovisionTarget,
   options: DeprovisionOptions = {},
-): Promise<void> {
-  for (const env of managedEnvironments(environments)) {
-    await deprovisioner.deleteManager(env);
-    if (options.deleteKeys) await deprovisioner.deleteMasterKey(env);
-    await deprovisioner.deleteDatabase(env);
+): Promise<DeprovisionResult> {
+  const env = deprovisionTarget(target);
+  assertRetainedAgreed(await deprovisioner.countRetained(env), options.destroyRetained, "anything was deleted");
+
+  await deprovisioner.deleteManager(env);
+  if (options.deleteKeys) await deprovisioner.deleteMasterKey(env);
+  await deprovisioner.deleteDatabase(env);
+
+  for (const other of managedEnvironments(target.declared)) {
+    if (other !== env && (await deprovisioner.hasManager(other)))
+      return { environment: env, managerTokenDeleted: false };
   }
   await deprovisioner.deleteManagerToken();
+  return { environment: env, managerTokenDeleted: true };
 }

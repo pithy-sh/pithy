@@ -8,7 +8,7 @@ Stands up the email infrastructure — the project's shared suppression database
 
 ```
 pithy email provision [--worker <name>] [--routing-zone <zone-id>] [--inbound-address <address>] [--app-worker <name>] [--json]
-pithy email deprovision [--suppression] [--json]
+pithy email deprovision [--suppression] [--destroy-retained <n>] [--json]
 pithy email test --to <address> [--template <id>] [--from <address>] [--json]
 ```
 
@@ -33,6 +33,7 @@ pithy email test --to <address> [--template <id>] [--from <address>] [--json]
 | Flag | Default | Purpose |
 |---|---|---|
 | `--suppression` | `false` | **Irreversible.** Also delete this project's suppression database — every environment forgets who unsubscribed or hard-bounced |
+| `--destroy-retained <n>` | — | **Destructive.** With `--suppression`, delete a list that still holds addresses. `<n>` must equal the count the refusal printed |
 | `--json` | `false` | Machine-readable output |
 
 `pithy email test`
@@ -67,6 +68,13 @@ The address is resolved through one resolver that prefers the Worker's `domains`
 **A run this long says where it got to.** Each environment's email worker is named as it is about to be uploaded — `▸ acme-staging-email...` — the same plain line `pithy deploy` and `pithy provision` print, from the one seam all three share. A worker the deploy gate skipped as already current says nothing, because nothing was uploaded for it. `--json` silences the lot and still writes exactly one line; a missing TTY does not, since a run in CI is the run whose log most needs this.
 
 `deprovision` deletes every environment's email worker first, because they bind the suppression database, and then deletes the database itself only when `--suppression` is passed. The global opt-out list is preserved by default; losing it is harmful.
+
+**A list holding addresses is counted first.** The suppression table is declared retained, so with `--suppression` its rows are counted before the first worker goes, and the run refuses unless `--destroy-retained` names the same number — the guard `pithy migrate --rollback` spends. It is counted again at the delete.
+
+```
+Retained 42 rows would be dropped: pithy_email_suppressions on acme-global-email-suppressions (42 rows). Refused before anything was deleted.
+They exist nowhere else. Back them up, or pass --destroy-retained 42 to drop them.
+```
 
 `test` renders one template through your project's own configuration — identity, theme, and all — and sends it over the Cloudflare Email Sending REST API. It deploys nothing. A throwaway tracking context is built so that any template renders, including marketing templates that force an unsubscribe link, but open and click tracking are both off and no link is actually tracked: this is a visual and delivery check of your configuration. A transactional template still renders without an unsubscribe link and without a `List-Unsubscribe` header, tracking context or not — the kind is declared by the template, so there is no context that could add one to a sign-in message.
 

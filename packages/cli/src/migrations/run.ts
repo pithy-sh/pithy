@@ -10,12 +10,12 @@ import { InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/sr
 import { claimMigrationOwnership } from "@pithy-sh/core/src/migrations/owner";
 import { createMigrationRegistry, type NamespacedMigrations } from "@pithy-sh/core/src/migrations/registry";
 import {
+  assertRetainedAgreed,
   beforeEachDown,
   countRetainedRows,
   downRefusal,
   RetainedBudget,
   type RetainedRows,
-  retainedRefusal,
   retainedTableNames,
 } from "@pithy-sh/core/src/migrations/retained";
 import {
@@ -955,9 +955,7 @@ async function assertRetainedCounted(
     const migrations = await group.provider.getMigrations();
     atRisk.push(...(await countRetainedRows(driver.database(group), migrations, group.binding)));
   }
-  const total = atRisk.reduce((sum, entry) => sum + entry.rows, 0);
-  const agreed = context.destroyRetained === undefined ? total === 0 : context.destroyRetained === total;
-  if (!agreed) throw retainedRefusal(atRisk, context.destroyRetained);
+  assertRetainedAgreed(atRisk, context.destroyRetained);
 }
 
 /**

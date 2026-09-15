@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { RetainedBudget } from "@pithy-sh/core/src/migrations/retained";
 import { DEFAULT_ENVIRONMENTS, type DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import {
@@ -12,7 +13,11 @@ import {
   type SecretRotationRecorder,
 } from "@pithy-sh/secrets/src/cli/dispatch";
 import { secretWriteTargets } from "@pithy-sh/secrets/src/cli/writeTargets";
-import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import {
+  deprovisionSecrets,
+  deprovisionTarget,
+  provisionSecrets,
+} from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { SecretBackend, SecretRegistry, SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { canonicalGlobalEnvironment, type ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
@@ -57,6 +62,7 @@ import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudfl
 import { editDevSecrets } from "../devSecrets/edit";
 import { resolveDevSecretsFile } from "../devSecrets/location";
 import { mergedSecretRegistry, resolveDevSecretsTargets } from "../devSecrets/targets";
+import { DESTROY_RETAINED_DESCRIPTION, parseDestroyRetained } from "../migrations/confirm";
 import { loadProject, projectCloudflareAccount, projectEnvironments, requireProjectName } from "../project/config";
 import { requireManagedEnvironment } from "../project/environment";
 import { resolveWorkers } from "../project/workerScope";
@@ -812,14 +818,29 @@ const provision = defineCommand({
 });
 
 const deprovision = defineCommand({
-  meta: { name: "deprovision", description: "Remove the secrets manager workers and databases" },
+  meta: { name: "deprovision", description: "Remove one environment's secrets manager Worker and database" },
   args: {
-    keys: { type: "boolean", default: false, description: "Also delete the master keys (irreversible)" },
+    env: {
+      type: "string",
+      // No default, deliberately (#591): a bare `deprovision` deleted every declared environment's vault. The
+      // refusal lists the project's own set; this text is resolved before any project is read.
+      description: `The environment to tear down: ${DEFAULT_ENVIRONMENTS.join(" | ")}, or one declared in pithy.config.ts. Required`,
+    },
+    keys: { type: "boolean", default: false, description: "Also delete the environment's master key (irreversible)" },
+    "destroy-retained": { type: "string", description: DESTROY_RETAINED_DESCRIPTION },
     json: { type: "boolean", default: false, description: "Machine-readable output" },
   },
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
+      const declared = await projectEnvironments(projectDir);
+      // Settled before any credential is read: naming nothing, or something undeclared, costs nothing and
+      // lists what could be named. `deprovisionSecrets` resolves it again — it is the one that deletes.
+      const environment = deprovisionTarget({
+        environment: args.env === undefined ? undefined : requireManagedEnvironment(args.env, declared),
+        declared,
+      });
+      const destroyRetained = parseDestroyRetained(args["destroy-retained"]);
       const { account, accountId, apiToken, storeId } = loadCloudflareCreds(
         await projectCloudflareAccount(projectDir),
         {
@@ -833,15 +854,35 @@ const deprovision = defineCommand({
         project: requireProjectName(await loadProject(projectDir)),
         storeId,
         audit: await buildAudit(projectDir, "dev"),
+        // The operator's number, spent at the delete — never the count the preflight is about to make.
+        budget: new RetainedBudget(destroyRetained),
       });
 
-      await deprovisionSecrets(deprovisioner, await projectEnvironments(projectDir), { deleteKeys: args.keys });
+      const result = await deprovisionSecrets(
+        deprovisioner,
+        { environment, declared },
+        { deleteKeys: args.keys, destroyRetained },
+      );
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "secrets deprovision", keysDeleted: args.keys })}\n`);
+        process.stdout.write(
+          `${formatJsonLine({
+            command: "secrets deprovision",
+            environment: result.environment,
+            keysDeleted: args.keys,
+            managerTokenDeleted: result.managerTokenDeleted,
+          })}\n`,
+        );
         return;
       }
-      process.stdout.write(`Secrets infrastructure removed${args.keys ? ", including master keys" : ""}.\n`);
+      process.stdout.write(
+        `${result.environment}: manager and database removed${args.keys ? ", and the master key" : ""}.\n`,
+      );
+      process.stdout.write(
+        result.managerTokenDeleted
+          ? "Manager token removed. No environment runs a manager.\n"
+          : "Manager token kept. Another environment still runs a manager.\n",
+      );
       process.stdout.write(`${formatDone()}\n`);
     }),
 });

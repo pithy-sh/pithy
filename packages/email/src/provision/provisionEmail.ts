@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { assertRetainedAgreed, type RetainedRows } from "@pithy-sh/core/src/migrations/retained";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { GLOBAL_SCOPE } from "@pithy-sh/core/src/naming/environment";
 import { bindingResourceName, type ProjectGlobalNaming } from "@pithy-sh/core/src/naming/provisionScope";
@@ -175,12 +176,18 @@ export async function provisionEmail(
 
 /** The teardown seam — the inverse of {@link EmailProvisioner}. Every step idempotent (a missing resource is a no-op). */
 export interface EmailDeprovisioner {
+  /**
+   * The rows the suppression list holds, named by its database — empty when the database is absent. Read-only.
+   * What a teardown counts before it deletes the list (#591).
+   */
+  countSuppressionRetained(): Promise<RetainedRows[]>;
   /** Delete the env's email worker. Idempotent (a missing worker is a no-op). */
   deleteWorker(env: ManagedEnvironment): Promise<void>;
   /**
    * Delete the shared suppression D1. **Destructive** — the global suppression list is lost, so every
    * environment forgets who unsubscribed or hard-bounced — so the orchestration only calls it when
-   * explicitly asked. Idempotent.
+   * explicitly asked. Idempotent. A live implementation refuses while the list holds more rows than the
+   * operator agreed to destroy.
    */
   deleteSuppressionDatabase(): Promise<void>;
 }
@@ -189,12 +196,19 @@ export interface EmailDeprovisioner {
 export interface EmailDeprovisionOptions {
   /** Also delete the shared suppression database. Off by default; only a full destroy sets it. */
   deleteSuppression?: boolean;
+  /**
+   * The operator's count of suppressed addresses to destroy — `--destroy-retained <n>`. With
+   * `deleteSuppression`, it must equal the rows the list holds; absent, only an empty list is deleted.
+   */
+  destroyRetained?: number;
 }
 
 /**
  * Tear down the email infrastructure, reversing {@link provisionEmail}: delete every environment's worker
  * first (they bind the suppression DB), then — only when `deleteSuppression` is set — the shared
- * suppression DB. The suppression list is preserved unless explicitly requested. Idempotent end to end.
+ * suppression DB. The suppression list is preserved unless explicitly requested, and a list holding rows is
+ * deleted only when the operator counted them (`@pithy-sh/core`'s `assertRetainedAgreed`, #591). Idempotent
+ * end to end.
  *
  * `environments` is the project's declaration from the root `pithy.config.ts` (#241). Every declared
  * environment is provisioned; an environment this skipped would be one the project deploys to with no
@@ -205,6 +219,14 @@ export async function deprovisionEmail(
   environments: DeclaredEnvironments | readonly string[],
   options: EmailDeprovisionOptions = {},
 ): Promise<void> {
+  // Counted before the first worker goes, so a refusal leaves the project exactly as it was (#591).
+  if (options.deleteSuppression) {
+    assertRetainedAgreed(
+      await deprovisioner.countSuppressionRetained(),
+      options.destroyRetained,
+      "anything was deleted",
+    );
+  }
   for (const env of managedEnvironments(environments)) {
     await deprovisioner.deleteWorker(env);
   }

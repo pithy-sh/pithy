@@ -20,6 +20,12 @@ import {
   writeManagerCfApiToken,
 } from "./secretsProvisioner";
 
+/**
+ * A D1 with no tables — what a never-migrated database answers. The teardown counts retained rows before it
+ * deletes (#591); these fakes are about names and audits, so there is nothing to count.
+ */
+const EMPTY_D1 = { prepare: () => ({ bind: () => ({ first: async () => null }) }) };
+
 /** A fake CloudflareClients exposing only the methods the (de)provisioner touches, with spies. */
 function fakeCf() {
   const findDatabaseByName = vi.fn();
@@ -38,7 +44,7 @@ function fakeCf() {
     secrets: () => ({ exists, putSecret, deleteSecret }),
     workers: () => ({ getWorker, deleteWorker, accountSubdomain }),
     accountTokens: () => ({ rollToken, deleteTokensByName }),
-    d1: () => ({}),
+    d1: () => EMPTY_D1,
   } as unknown as CloudflareClients;
   return {
     cf,
@@ -273,6 +279,7 @@ describe("two projects sharing one Cloudflare account", () => {
         getWorker: async (name: string) => (deployedWorkers.has(name) ? { id: name } : null),
         deleteWorker: async (name: string) => void deployedWorkers.delete(name),
       }),
+      d1: () => EMPTY_D1,
     } as unknown as CloudflareClients;
     return { cf, store, deletedTokenNames, databases, deployedWorkers };
   }
