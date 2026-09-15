@@ -190,7 +190,7 @@ describe("the account tier", () => {
       setting: "EMAIL_SUPPRESSIONS",
       environment: null,
       problem: "No D1 database named acme-global-email-suppressions exists on this account.",
-      action: "Run `pithy email provision --env prod`. Nothing is suppressed until it exists.",
+      action: "Run `pithy email provision`. Nothing is suppressed until it exists.",
     });
   });
 

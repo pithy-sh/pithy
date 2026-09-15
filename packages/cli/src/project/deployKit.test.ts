@@ -230,7 +230,7 @@ describe("deployKitWorkers", () => {
         capability: "email",
         worker: null,
         outcome: "skipped",
-        reason: "prod has no EMAIL_SUPPRESSIONS, SECRETS database yet. Run pithy email provision --env prod.",
+        reason: "prod has no EMAIL_SUPPRESSIONS, SECRETS database yet. Run pithy email provision.",
       });
       expect(deployed).toEqual([]);
     });
@@ -295,7 +295,7 @@ describe("deployKitWorkers", () => {
         capability: "media",
         worker: null,
         outcome: "skipped",
-        reason: "prod has no MEDIA namespace yet. Run pithy media provision --env prod.",
+        reason: "prod has no MEDIA namespace yet. Run pithy media provision.",
       });
       expect(deployed).toEqual([]);
     });

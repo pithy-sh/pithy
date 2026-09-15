@@ -35,6 +35,13 @@ import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
  * several are destructive by design (`--confirm-reset`, `--confirm-production`), and the failure being
  * chased is unfollowable *guidance* rather than a broken command.
  *
+ * **Its population is every package, not the CLI's (#596).** Command names and `--set` offers are read from
+ * every `action:` and every host-env `command:` in every package's shipped source. Flags are read from every
+ * string literal there and from every command page's prose, because a remedy reaches its reader through a
+ * constant as often as through its key. Planted and red: a host's remedy constant naming `--env` on
+ * `pithy secrets provision`, a template literal interpolating only the environment, and a page's prose. Not
+ * seen: a command name that is itself interpolated, or a citation assembled from pieces.
+ *
  * The fourth producer above is **not** covered and cannot be: an action naming the wrong package is
  * wrong about something no manifest field predicts, and checking it means the throw site carrying the
  * identity of what actually failed rather than the first name in hand. That is an error-construction
@@ -43,8 +50,15 @@ import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
 
-/** An `action:` value, as a string or template literal. Interpolation is blanked, never guessed at. */
-const ACTION = /\baction:\s*(`(?:[^`\\]|\\.)*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g;
+/**
+ * An `action:` value, or a host-env provider's `command:`, as a string or template literal. Interpolation is
+ * blanked, never guessed at.
+ *
+ * `command:` because a host renders it as guidance in the same breath: `Run <command>.`, at boot and in
+ * `pithy doctor` (`@pithy-sh/core`'s `hostEnvProviderSentence`). The key also names the `--json` payload's
+ * own command (`command: "secrets deprovision"`), which carries no `pithy ` and so cites nothing below.
+ */
+const ACTION = /\b(?:action|command):\s*(`(?:[^`\\]|\\.)*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g;
 
 /**
  * `pithy <word>` where the sentence is telling you to run it.
@@ -55,6 +69,9 @@ const ACTION = /\baction:\s*(`(?:[^`\\]|\\.)*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)
  * as wrong. A gate that cries wolf is one somebody switches off.
  */
 const IMPERATIVE = /(?:^|Run |run |`)pithy ([a-z][a-z0-9-]*)/g;
+
+/** Any string or template literal. For the flag check, which is precise enough to read every one of them. */
+const LITERAL = /(`(?:[^`\\]|\\.)*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g;
 
 /** `pithy <command…> --flag --flag`, for checking the flags against the command they are named on. */
 const WITH_FLAGS = /\bpithy ((?:[a-z][a-z0-9-]*)(?: [a-z][a-z0-9-]*)*)((?:\s+--[a-z][a-zA-Z0-9-]*)+)/g;
@@ -68,10 +85,18 @@ interface Guidance {
   text: string;
 }
 
-/** Every `action:` in shipped source, with `${…}` reduced to a placeholder. */
+/**
+ * Every `action:` and `command:` in every package's shipped source, with `${…}` reduced to a placeholder.
+ *
+ * Every package, not the CLI and core: a capability writes guidance of its own — `pithy doctor`'s settings
+ * findings, and the remedy its host prints at boot — and the email host's told an operator to run
+ * `pithy secrets provision --env <env>`, a flag that command does not have, while this gate read two
+ * packages and stayed green (#596).
+ */
 function actionStrings(): Guidance[] {
   const found: Guidance[] = [];
-  for (const group of ["packages/cli/src", "packages/core/src"]) {
+  const groups = readdirSync(join(REPO_ROOT, "packages")).map((pkg) => `packages/${pkg}/src`);
+  for (const group of groups) {
     for (const path of sourcePaths(join(REPO_ROOT, group), { keep: isShippedSource })) {
       const source = readSource(path);
       if (source === null) continue;
@@ -125,6 +150,32 @@ function unwritableChoices(): Map<string, Set<string>> {
     for (const option of manifest.configOptions ?? []) {
       for (const choice of Object.keys(option.choicesNeedingCode ?? {})) {
         found.set(option.key, (found.get(option.key) ?? new Set()).add(choice));
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * Every string literal in every package's shipped source, `${…}` reduced to a placeholder — the population the
+ * flag check reads.
+ *
+ * Wider than {@link actionStrings} on purpose. A remedy is not always written at its key: the email host's
+ * `const PROVISION = "pithy email provision --env <env>"` reached `Run <command>.` through a constant, and
+ * `email provision` has no `--env`. A `pithy <command> --flag` citation is exact enough that prose does not
+ * trip it — measured, it found nothing but real faults across the tree — so the check reads every literal
+ * rather than guessing which keys carry guidance. The command-name check stays on `action:` and `command:`:
+ * over every literal it reads `pithy needs Node …` as a command called `needs`.
+ */
+function literalStrings(): Guidance[] {
+  const found: Guidance[] = [];
+  for (const pkg of readdirSync(join(REPO_ROOT, "packages"))) {
+    for (const path of sourcePaths(join(REPO_ROOT, "packages", pkg, "src"), { keep: isShippedSource })) {
+      const source = readSource(path);
+      if (source === null) continue;
+      for (const match of blankComments(source).matchAll(LITERAL)) {
+        const literal = (match[1] as string).slice(1, -1).replace(/\$\{[^}]*\}/g, "<x>");
+        found.push({ where: relative(REPO_ROOT, path).split(sep).join("/"), text: literal });
       }
     }
   }
@@ -188,6 +239,11 @@ describe("every action line names something that exists", () => {
     expect(faults).toEqual([]);
   });
 
+  /**
+   * Over every literal in shipped source and every command page's prose. **Not seen:** a citation whose
+   * command name is interpolated (`` `pithy ${capability} provision --env` `` reduces to `pithy <x>`, which
+   * names no command), and one assembled from pieces (`["pithy secrets provision", "--env"].join(" ")`).
+   */
   test("every flag an action names exists on the command it names it on", async () => {
     const catalog = await buildDocsCatalog();
     const flagsOf = new Map(catalog.commands.map((one) => [one.path, new Set(one.flags)]));
@@ -195,7 +251,7 @@ describe("every action line names something that exists", () => {
 
     const faults: string[] = [];
     let pairs = 0;
-    for (const { where, text } of ACTIONS) {
+    for (const { where, text } of [...literalStrings(), ...commandDocs()]) {
       for (const match of text.matchAll(WITH_FLAGS)) {
         // The longest catalog path this citation starts with: `pithy add secrets --json` is the `add`
         // command with an argument, and `pithy token mint --json` is a two-word command.
@@ -212,7 +268,8 @@ describe("every action line names something that exists", () => {
         for (const flag of (match[2] as string).trim().split(/\s+/)) {
           pairs += 1;
           if (!flagsOf.get(path)?.has(flag) && !global.has(flag)) {
-            faults.push(`${where}: \`pithy ${path}\` has no ${flag} — "${text}"`);
+            // The citation, not the text: a command page is one text, and quoting all of it names nothing.
+            faults.push(`${where}: \`pithy ${path}\` has no ${flag} — "${match[0].trim()}"`);
           }
         }
       }

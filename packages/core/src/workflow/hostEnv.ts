@@ -45,7 +45,7 @@ export type HostEnvProviderKind = z.infer<typeof HostEnvProviderKind>;
 /**
  * What provides one field. The whole point of the declaration: a report that says `BASE_URL is
  * missing` sends a developer looking, and a report that says `Var BASE_URL in the host's
- * wrangler.jsonc. Run pithy email provision --env dev.` ends the search.
+ * wrangler.jsonc. Run pithy email provision.` ends the search.
  */
 export const HostEnvProvider = z
   .object({

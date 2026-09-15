@@ -163,7 +163,7 @@ email: email-link-signing-key (staging) — The link-signing key is still held i
 The move, for each environment:
 
 1. `pithy secrets provision` — creates the Secrets Store entry, `<project>-<env>-email-link-signing-key`, with a fresh value, and binds it in the app Worker's `wrangler.jsonc`. An entry that already exists is never replaced.
-2. `pithy email provision --env <env>` — redeploys the email host bound to the same entry. The host signs; the app Worker verifies. Both must bind it.
+2. `pithy email provision` — redeploys the email host bound to the same entry, in every declared environment. The host signs; the app Worker verifies. Both must bind it.
 3. `pithy deploy --env <env>` — ships the app Worker with its new binding. From here, new links sign and verify with the new key.
 4. `pithy secrets rm email-link-signing-key --env <env> --backend d1` — removes the row nothing reads. A plain `rm` routes by the declaration and would delete the live entry instead; `--backend` names the vault, one environment at a time, and is refused for anything but a removal.
 

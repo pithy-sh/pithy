@@ -171,7 +171,7 @@ describe("the account tier, three outcomes", () => {
           setting: "acme-global-email-suppressions",
           environment: null,
           problem: "No such D1 database in this account.",
-          action: "Run pithy email provision --env dev.",
+          action: "Run pithy email provision.",
         },
       ]),
     );
@@ -263,9 +263,9 @@ describe("rendering", () => {
         setting: "BASE_URL",
         environment: "prod",
         problem: "Not a URL.",
-        action: "Run pithy email provision --env prod.",
+        action: "Run pithy email provision.",
       }),
-    ).toBe("email: BASE_URL (prod) — Not a URL. Run pithy email provision --env prod.");
+    ).toBe("email: BASE_URL (prod) — Not a URL. Run pithy email provision.");
   });
 
   test("a finding about every environment at once names none", () => {
