@@ -270,6 +270,8 @@ A slug over budget is not an error. It becomes a truncated head plus a six-hex h
 
 A feature's **Worker scripts** share the head and drop the kind: `<project>-f<issue>-<slug>-<worker>`, held to the Worker script rule of 63. The worker name is truncated too if it is what is eating the budget, so a Worker directory called `collaboration-realtime-gateway` deploys rather than failing.
 
+`<worker>` is the `apps/<worker>` directory, not the deploy name. `pithy init replay --worker board` deploys `apps/board` as `replay-board`, and its feature Worker is `replay-f69-demo-board` — the project once. Until #587 it was composed from the deploy name, `replay-f69-demo-replay-board`, spending the project twice out of the 63.
+
 ## The `pithy-int-` reservation
 
 `pithy-int-` is reserved for Pithy's own live integration tests, on any account.

@@ -3,7 +3,7 @@
 
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { ProvisionScope } from "@pithy-sh/core/src/naming/provisionScope";
+import type { ProvisionScope, ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
 import { parse } from "comment-json";
 import type { FeatureResource } from "../feature/manifest";
 import { writeJsonc } from "../project/jsonc";
@@ -176,8 +176,12 @@ export async function applySecretBindings(
 export async function applyProvisionedEnv(options: {
   /** The Worker's directory — the one holding the `wrangler.jsonc` to edit. */
   workerDir: string;
-  /** The Worker's deploy name, from its own `wrangler.jsonc`. `scope.worker` turns it into this scope's. */
-  worker: string;
+  /**
+   * The Worker's two names — its `apps/<app>` directory and its deploy name — which `scope.worker` turns
+   * into this scope's script name. Both, because a declared environment builds on the deploy name and a
+   * feature on the directory (#587); `provisionWorkerNames` in `./environment` is where they are read.
+   */
+  worker: ProvisionWorkerNames;
   /** The scope: both the stanza written into and the names written in. */
   scope: ProvisionScope;
   /** Only the resources this Worker's own config declares. */

@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { relative } from "node:path";
+import { basename, relative } from "node:path";
 import type { BindingType } from "@pithy-sh/core/src/capability/bindings";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { CapabilityManifest } from "@pithy-sh/core/src/capability/manifest";
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { GLOBAL_SCOPE } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureResourceKind } from "@pithy-sh/core/src/naming/feature";
-import type { BindingNaming, ProvisionScope } from "@pithy-sh/core/src/naming/provisionScope";
+import type { BindingNaming, ProvisionScope, ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
 import type { CliAuditEmit } from "../audit/cliAudit";
 import { composedManifests, type ManifestFault } from "../capabilities/manifests";
 import { type BindingDecline, type BindingDeclines, honoredNames, workerDeclines } from "../capabilities/reconcile";
@@ -296,9 +296,13 @@ export interface ProvisionedSecret {
 
 /** One Worker as provisioning needs it: where it lives, and what *it* composes. */
 export interface ProvisionWorker {
-  /** The Worker's deploy name — its `wrangler.jsonc` `name` — which the scoped script name derives from. */
+  /** The Worker's deploy name — its `wrangler.jsonc` `name` — which a declared environment's script name falls back to. */
   name: string;
-  /** The Worker's directory — the `wrangler.jsonc` this run writes into, and the `apps/<name>` a sibling's service binding names it by. */
+  /**
+   * The Worker's directory — the `wrangler.jsonc` this run writes into, and the `apps/<name>` a sibling's
+   * service binding names it by. A feature's script name is composed from its basename; see
+   * {@link provisionWorkerNames}.
+   */
   dir: string;
   /** That Worker's own capabilities, from its `apps/<name>/pithy.config.ts`. */
   capabilities: Capability[];
@@ -371,6 +375,20 @@ export interface ProvisionEnvironmentOptions {
 }
 
 /**
+ * The two names a scope composes one Worker's script name from — its `apps/<app>` directory and its deploy
+ * name — read off the resolved Worker **once, here, for every writer.**
+ *
+ * Two computations need them: the service targets and report below ({@link scopedWorkerNames}) and the
+ * stanza `name` the deploy reads (`applyProvisionedEnv`). Each used to be handed `worker.name` on its own,
+ * which is how a feature Worker came to carry the project twice (#587) — and a fix at either one alone
+ * would have split the address a sibling calls from the address the Worker deploys under. Both reach the
+ * scope through this function, so they cannot be handed different names.
+ */
+export function provisionWorkerNames(worker: Pick<ProvisionWorker, "name" | "dir">): ProvisionWorkerNames {
+  return { app: basename(worker.dir), script: worker.name };
+}
+
+/**
  * The real worker resolver: every Worker under `apps/`, each with its own capabilities loaded from its
  * `apps/<name>/pithy.config.ts`.
  */
@@ -437,7 +455,7 @@ async function scopedWorkerNames(
     } catch {
       declared = undefined;
     }
-    names.set(worker.name, scope.worker(worker.name, declared));
+    names.set(worker.name, scope.worker(provisionWorkerNames(worker), declared));
   }
   return names;
 }
@@ -464,7 +482,17 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
   // Where each Worker lands in this scope, resolved once. Every `service` binding below and the report's
   // own worker list read it, so the three can never disagree about one Worker's address (#580).
   const scopedNames = await scopedWorkerNames(workers, scope);
-  const scopedName = (worker: string): string => scopedNames.get(worker) ?? scope.worker(worker);
+  const scopedName = (worker: string): string => {
+    const name = scopedNames.get(worker);
+    if (name !== undefined) return name;
+    // Unreachable while every caller passes a name out of `workers`, which is the set the map was built
+    // from. Composing a name here instead would be a third computation of the address — with only one of
+    // the two names a scope needs, which is the shape #587 removed.
+    throw new InternalError({
+      message: "A Worker's scoped name could not be resolved.",
+      detail: `scopedName was asked for "${worker}", which is not one of this run's resolved Workers: ${[...scopedNames.keys()].join(", ")}.`,
+    });
+  };
   const services = serviceBindings(options.capabilities).map((service) => ({
     binding: service.binding,
     service: scopedName(resolveServiceTarget(workers, service.target)),
@@ -546,7 +574,7 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
     const written = resources.filter((resource) => declared.has(resource.binding));
     const destination = await applyProvisionedEnv({
       workerDir: worker.dir,
-      worker: worker.name,
+      worker: provisionWorkerNames(worker),
       scope,
       resources: written,
       secrets: workerSecrets.bound,

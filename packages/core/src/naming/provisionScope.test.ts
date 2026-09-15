@@ -5,7 +5,14 @@ import { describe, expect, it } from "vitest";
 import { PithyError } from "../error/pithyError";
 import { FEATURE_ENVIRONMENT, GLOBAL_SCOPE } from "./environment";
 import { FEATURE_RESOURCE_KINDS } from "./feature";
-import { type BindingNaming, bindingResourceName, environmentScope, featureScope } from "./provisionScope";
+import { NAMESPACE_LIMITS } from "./limits";
+import {
+  type BindingNaming,
+  bindingResourceName,
+  environmentScope,
+  featureScope,
+  type ProvisionWorkerNames,
+} from "./provisionScope";
 
 const PROJECTS = ["acme", "replay", "a", "twenty-six-characters-long"];
 const ENVIRONMENTS = ["staging", "prod", "live", "qa"];
@@ -33,7 +40,16 @@ const BINDINGS: readonly { binding: string; naming: BindingNaming }[] = [
   { binding: "SUPPORT_BUCKET", naming: { scope: "global", resource: "support" } },
 ];
 
-const WORKERS = ["board", "acme-api", "web"];
+/**
+ * Workers as the scaffolder leaves them: a directory under `apps/`, and a deploy name that usually leads
+ * with the project and sometimes does not. The two differ in every row, so a scope reading the wrong one
+ * composes a different string rather than the same one by coincidence.
+ */
+const WORKERS: readonly ProvisionWorkerNames[] = [
+  { app: "board", script: "replay-board" },
+  { app: "api", script: "acme-api" },
+  { app: "web", script: "web-app" },
+];
 
 /** The scope segment a binding's name must carry: the stanza it lives in, or `global` if it said so. */
 function owningScope(stanza: string, naming: BindingNaming): string {
@@ -139,7 +155,10 @@ describe("environmentScope", () => {
    * deployment and every `service` binding pointing at it.
    */
   it("names a Worker as wrangler already deploys it", () => {
-    expect(environmentScope("replay", "staging").worker("replay-board")).toBe("replay-board-staging");
+    const scope = environmentScope("replay", "staging");
+    expect(scope.worker({ app: "board", script: "replay-board" })).toBe("replay-board-staging");
+    // A name the stanza already carries wins over the fallback (#580).
+    expect(scope.worker({ app: "board", script: "replay-board" }, "replay-staging-board")).toBe("replay-staging-board");
   });
 
   /**
@@ -186,7 +205,50 @@ describe("featureScope", () => {
   it("composes the names a feature's resources are provisioned under", () => {
     const scope = featureScope(identity);
     expect(scope.resource("DB", "d1", {})).toBe("replay-f241-environments-db-d1");
-    expect(scope.worker("replay-board")).toBe("replay-f241-environments-replay-board");
+    expect(scope.worker({ app: "board", script: "replay-board" })).toBe("replay-f241-environments-board");
+  });
+
+  /**
+   * **The gate for #587: a feature Worker is `<project>-f<issue>-<slug>-<app>`, composed from its directory.**
+   *
+   * It was composed from the deploy name, which already leads with the project, so every feature Worker
+   * carried it twice — `replay-f241-environments-replay-board`. Stated as the exact string over projects
+   * that are a prefix of no worker's directory, so a doubled segment cannot satisfy it by coincidence, and
+   * over a deploy name that does not lead with the project at all (`web-app`), so a scope that strips a
+   * `<project>-` prefix off the deploy name instead of reading the directory fails too.
+   *
+   * **What it does not see.** This holds the scope. It does not hold a caller that hands the scope the
+   * wrong names — `{ app: script, script }` passes here and doubles the project in a real run. That half is
+   * `provision.test.ts`'s ("one address per feature Worker"), which runs `provisionFeature` over scaffolded
+   * directories and compares the deploy name, the report and every service target. Nor does it see a name
+   * composed without a scope at all: `featureWorkerName` takes a plain string and cannot tell a directory
+   * from a deploy name.
+   */
+  it("names a feature Worker from its directory, so the project appears once", () => {
+    for (const project of PROJECTS) {
+      const scope = featureScope({ project, issue: "241", slug: "environments" });
+      for (const worker of WORKERS) {
+        expect(scope.worker(worker)).toBe(`${project}-f241-environments-${worker.app}`);
+        // A declared name is ignored — a feature's is the kit's, recomputed rather than read.
+        expect(scope.worker(worker, `${project}-staging-${worker.app}`)).toBe(
+          `${project}-f241-environments-${worker.app}`,
+        );
+      }
+    }
+  });
+
+  /**
+   * The length budget, measured against the corrected shape. `acme-f1-` is 8 characters and the slug 20,
+   * so a 34-character directory lands exactly on the Worker cap of 63 and survives verbatim. The doubled
+   * shape spent five more characters on a second `acme-` and paid for them by hashing the slug — the
+   * segment that says which branch this is.
+   */
+  it("fits a feature Worker at the cap without spending it on the project twice", () => {
+    const scope = featureScope({ project: "acme", issue: "1", slug: "s".repeat(20) });
+    const app = "w".repeat(NAMESPACE_LIMITS.worker.maxLength - "acme-f1-".length - 20 - 1);
+    const name = scope.worker({ app, script: `acme-${app}` });
+    expect(name).toBe(`acme-f1-${"s".repeat(20)}-${app}`);
+    expect(name.length).toBe(NAMESPACE_LIMITS.worker.maxLength);
   });
 
   /**

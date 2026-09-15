@@ -307,9 +307,27 @@ describe("provisionFeature / deprovisionFeature", () => {
     expect(web.env.feature?.services).toEqual([{ binding: "API", service: apiName }]);
   });
 
-  test("a service binding targets the sibling's real script name, even when it differs from its directory", async () => {
+  /**
+   * **One address per feature Worker, and it is `<project>-f<issue>-<slug>-<app>` (#587).**
+   *
+   * The normal state after `pithy init acme`: `apps/api` deploys as `acme-api`, not `api`. Two things
+   * compose a feature Worker's address from that — the stanza `name` the deploy reads, and the `service`
+   * target a sibling calls it by (which the report also prints) — and the property is that they are the
+   * same string for every Worker, and that the string is built from the directory.
+   *
+   * Both halves have failed. Feature-scoping the *directory* on the service side only wrote `<feature>-api`
+   * while the Worker deployed as `<feature>-acme-api`, so every RPC through `env.API` failed while
+   * provision reported success. Feature-scoping the *deploy name* on both sides agreed, and put the project
+   * in every feature Worker twice: `acme-f69-demo-acme-api`. The expected names are literals, not
+   * `featureWorkerName` calls, so a doubled segment cannot pass by being fed the same wrong input twice.
+   *
+   * **What it does not see.** It holds `provisionFeature`, which is the only path that composes a feature
+   * Worker's script name today. A new command that composed one without a `ProvisionScope` — calling
+   * `featureWorkerName` directly, or `resourceNames(project).feature(...).worker(...)` — would not pass
+   * through here, and that function takes a plain string that cannot tell a directory from a deploy name.
+   */
+  test("gives each feature Worker one address, built from its directory, that its deploy and its callers share", async () => {
     const { provisioners } = fakeProvisioners();
-    // The normal state after `pithy init acme`: apps/api deploys as "acme-api", not "api".
     const apiDir = join(dir, "apps", "api");
     const webDir = join(dir, "apps", "web");
     await mkdir(apiDir, { recursive: true });
@@ -317,35 +335,55 @@ describe("provisionFeature / deprovisionFeature", () => {
     await mkdir(webDir, { recursive: true });
     await writeFile(join(webDir, "wrangler.jsonc"), '{\n  "name": "acme-web"\n}\n');
 
-    // A service binding names its target by its apps/<name> directory (BindingSpec.service).
-    const withService = defineCapability({
+    // Each Worker calls the other, by its apps/<name> directory (BindingSpec.service), so every Worker's
+    // address is both deployed under and called by.
+    const callsApi = defineCapability({
       name: "app",
       requiredBindings: [{ type: "service", name: "API", service: "api" }] satisfies BindingSpecInput[],
+    });
+    const callsWeb = defineCapability({
+      name: "web",
+      requiredBindings: [{ type: "service", name: "WEB", service: "web" }] satisfies BindingSpecInput[],
     });
 
     const report = await provisionFeature({
       projectDir: dir,
-      capabilities: [withService],
+      capabilities: [callsApi, callsWeb],
       identity,
       provisioners,
       resolveWorkers: async () => [
-        { name: "acme-api", dir: apiDir, capabilities: [withService] },
-        { name: "acme-web", dir: webDir, capabilities: [withService] },
+        { name: "acme-api", dir: apiDir, capabilities: [callsWeb] },
+        { name: "acme-web", dir: webDir, capabilities: [callsApi] },
       ],
       migrate: async () => {},
       seed: async () => {},
     });
 
-    // api deploys as `<feature>-acme-api`; the binding must name exactly that. Feature-scoping the directory
-    // name instead wrote `<feature>-api` — a script nobody deploys, so every RPC through env.API failed
-    // while provision reported success.
-    const deployed = featureWorkerName(identity, "acme-api");
-    expect(report.services).toEqual([{ binding: "API", service: deployed }]);
-
-    const web = parse(await readFile(featureConfigPath(webDir), "utf8")) as unknown as {
-      env: Record<string, { services?: { binding: string; service: string }[] }>;
-    };
-    expect(web.env.feature?.services).toEqual([{ binding: "API", service: deployed }]);
+    const expected = new Map([
+      ["acme-api", { dir: apiDir, name: "acme-f69-demo-api", binding: "API" }],
+      ["acme-web", { dir: webDir, name: "acme-f69-demo-web", binding: "WEB" }],
+    ]);
+    expect(report.workers).toEqual([...expected].map(([worker, { name }]) => ({ worker, name })));
+    for (const [, { dir: workerDir, name, binding }] of expected) {
+      const stanza = (
+        parse(await readFile(featureConfigPath(workerDir), "utf8")) as unknown as {
+          env: Record<string, { name?: string; services?: { binding: string; service: string }[] }>;
+        }
+      ).env.feature;
+      // The address it deploys under…
+      expect(stanza?.name).toBe(name);
+      // …is the address every caller targets, in the report and in each sibling's own stanza.
+      expect(report.services.filter((service) => service.binding === binding)).toEqual([{ binding, service: name }]);
+      for (const [, sibling] of expected) {
+        if (sibling.dir === workerDir) continue;
+        const siblingStanza = (
+          parse(await readFile(featureConfigPath(sibling.dir), "utf8")) as unknown as {
+            env: Record<string, { services?: { binding: string; service: string }[] }>;
+          }
+        ).env.feature;
+        expect(siblingStanza?.services).toEqual([{ binding, service: name }]);
+      }
+    }
   });
 
   test("a service binding naming no worker is refused before a single resource is created", async () => {

@@ -156,7 +156,13 @@ export function featureSecretEntryName(identity: FeatureIdentity, secret: string
  * floored the slug at one character and never touched the worker segment, so it ran unbounded — 69
  * characters for a worker called `collaboration-realtime-gateway`, 109 for a 70-character one. `apps/<name>`
  * has a charset rule and no length rule, so nothing upstream was going to stop it either.
+ *
+ * **`app` is the `apps/<app>` directory, never the deploy name.** A scaffolded Worker deploys as
+ * `<project>-<app>`, and handing that here composed `<project>-f<issue>-<slug>-<project>-<app>` — the
+ * project twice, spent out of the budget above (#587). This function takes a string and cannot tell the
+ * two apart, so the provisioning path reaches it only through `featureScope`, which is handed both names
+ * and picks.
  */
-export function featureWorkerName(identity: FeatureIdentity, worker: string): string {
-  return composeFeatureName(head(identity), kebab(identity.slug), kebab(worker), "", NAMESPACE_LIMITS.worker.maxLength);
+export function featureWorkerName(identity: FeatureIdentity, app: string): string {
+  return composeFeatureName(head(identity), kebab(identity.slug), kebab(app), "", NAMESPACE_LIMITS.worker.maxLength);
 }

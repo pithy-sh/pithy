@@ -4,7 +4,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { environmentScope, featureScope } from "@pithy-sh/core/src/naming/provisionScope";
+import { environmentScope, featureScope, type ProvisionWorkerNames } from "@pithy-sh/core/src/naming/provisionScope";
 import { parse } from "comment-json";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { FeatureResource } from "../feature/manifest";
@@ -24,6 +24,9 @@ interface Stanza {
 interface Parsed {
   env: Record<string, Stanza | undefined>;
 }
+
+/** `pithy init replay --worker board`: the directory says `board`, the deploy name `replay-board`. */
+const BOARD: ProvisionWorkerNames = { app: "board", script: "replay-board" };
 
 describe("applyProvisionedEnv", () => {
   let dir: string;
@@ -56,7 +59,7 @@ describe("applyProvisionedEnv", () => {
   const apply = (scope: typeof feature, extra: Partial<Parameters<typeof applyProvisionedEnv>[0]> = {}) =>
     applyProvisionedEnv({
       workerDir: dir,
-      worker: "replay-board",
+      worker: BOARD,
       scope,
       resources,
       services: [],
@@ -114,23 +117,27 @@ describe("applyProvisionedEnv", () => {
     expect(stanza?.d1_databases?.[0]?.database_id).toBe("uuid-2");
   });
 
+  /**
+   * `<project>-f<issue>-<slug>-<app>`, with the project once. This pinned `replay-f69-demo-replay-board`
+   * until #587 — the defect, locked in by the test that should have caught it.
+   */
   test("names the Worker for the scope and points services at that scope's deployments", async () => {
-    await apply(feature, { services: [{ binding: "WEB", service: "replay-f69-demo-replay-web" }] });
+    await apply(feature, { services: [{ binding: "WEB", service: "replay-f69-demo-web" }] });
 
     const raw = await read(feature);
     const stanza = (parse(raw) as unknown as Parsed).env.feature;
 
-    expect(stanza?.name).toBe("replay-f69-demo-replay-board");
-    expect(stanza?.services).toEqual([{ binding: "WEB", service: "replay-f69-demo-replay-web" }]);
+    expect(stanza?.name).toBe("replay-f69-demo-board");
+    expect(stanza?.services).toEqual([{ binding: "WEB", service: "replay-f69-demo-web" }]);
     expect(raw).toContain("// a starting comment");
   });
 
   test("retargets a service in place rather than duplicating it", async () => {
-    await apply(feature, { services: [{ binding: "WEB", service: "replay-f69-demo-replay-web" }] });
-    await apply(feature, { services: [{ binding: "WEB", service: "replay-f69-demo-replay-web-v2" }] });
+    await apply(feature, { services: [{ binding: "WEB", service: "replay-f69-demo-web" }] });
+    await apply(feature, { services: [{ binding: "WEB", service: "replay-f69-demo-web-v2" }] });
 
     const stanza = (parse(await read(feature)) as unknown as Parsed).env.feature;
-    expect(stanza?.services).toEqual([{ binding: "WEB", service: "replay-f69-demo-replay-web-v2" }]);
+    expect(stanza?.services).toEqual([{ binding: "WEB", service: "replay-f69-demo-web-v2" }]);
   });
 
   /**
@@ -256,7 +263,7 @@ describe("applyProvisionedEnv and a declared environment name", () => {
   const provision = () =>
     applyProvisionedEnv({
       workerDir: dir,
-      worker: "replay-board",
+      worker: BOARD,
       scope: environmentScope("replay", "staging"),
       resources: [],
       services: [],
@@ -331,7 +338,7 @@ describe("a stanza applyProvisionedEnv creates", () => {
   test("goes without nothing the top level declares", async () => {
     await applyProvisionedEnv({
       workerDir: dir,
-      worker: "replay-board",
+      worker: BOARD,
       scope: staging,
       resources: [{ kind: "d1", binding: "DB", name: "replay-staging-db", id: "staging-uuid" }],
       services: [],
@@ -345,7 +352,7 @@ describe("a stanza applyProvisionedEnv creates", () => {
   test("names its own environment rather than carrying dev's", async () => {
     await applyProvisionedEnv({
       workerDir: dir,
-      worker: "replay-board",
+      worker: BOARD,
       scope: staging,
       resources: [],
       services: [],
@@ -363,7 +370,7 @@ describe("a stanza applyProvisionedEnv creates", () => {
     // would point staging at the database dev writes to, which is worse than the absent binding it fixes.
     await applyProvisionedEnv({
       workerDir: dir,
-      worker: "replay-board",
+      worker: BOARD,
       scope: staging,
       resources: [{ kind: "d1", binding: "DB", name: "replay-staging-db", id: "staging-uuid" }],
       services: [],
@@ -380,7 +387,7 @@ describe("a stanza applyProvisionedEnv creates", () => {
     const feature = featureScope({ project: "replay", issue: "69", slug: "demo" });
     await applyProvisionedEnv({
       workerDir: dir,
-      worker: "replay-board",
+      worker: BOARD,
       scope: feature,
       resources: [],
       services: [],

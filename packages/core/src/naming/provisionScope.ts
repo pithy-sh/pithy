@@ -89,6 +89,28 @@ export interface ProjectGlobalNaming extends BindingNaming {
   readonly scope: "global";
 }
 
+/**
+ * The two names one Worker answers to before a scope has named it — **and why a scope is handed both.**
+ *
+ * `pithy init replay --worker board` writes `apps/board/wrangler.jsonc` with `"name": "replay-board"`.
+ * So the Worker's directory says `board` and its deploy name says `replay-board`, and the two scopes need
+ * different ones. A declared environment's fallback is wrangler's own `<script>-<env>`, which is built on
+ * the deploy name. A feature's name is `<project>-f<issue>-<slug>-<app>`, which already leads with the
+ * project, so it is built on the directory.
+ *
+ * This was one string until #587, and the string was the deploy name, so every feature Worker carried the
+ * project twice: `replay-f69-demo-replay-board`. That was not only untidy. The name is held to the Worker
+ * cap of 63, and the doubled segment spent that budget where the truncation lands on the part that says
+ * *which* Worker. Carrying both names is what lets each scope take the one its shape is built from, and
+ * lets neither caller choose on the scope's behalf.
+ */
+export interface ProvisionWorkerNames {
+  /** The Worker's `apps/<app>` directory basename — the name a sibling's `service` binding targets it by. */
+  readonly app: string;
+  /** The Worker's deploy name — the top-level `name` of its `wrangler.jsonc`, e.g. `replay-board`. */
+  readonly script: string;
+}
+
 /** Where a provisioning run's resources are named, and where their ids are written. */
 export interface ProvisionScope {
   /** The `env.<stanza>` key in each Worker's config that this scope's ids are written into. */
@@ -136,11 +158,15 @@ export interface ProvisionScope {
   /**
    * The script name a Worker deploys under in this scope.
    *
+   * `worker` carries **both** of the Worker's names, because the two scopes compose from different ones:
+   * a declared environment falls back to wrangler's `<script>-<env>`, and a feature composes
+   * `<project>-f<issue>-<slug>-<app>`. See {@link ProvisionWorkerNames}.
+   *
    * `declared` is the name that scope's stanza already carries, when it carries one. A scope may honor it
    * or compose its own; see {@link environmentScope} and {@link featureScope}, which answer differently
    * and say why. Passing it is how a caller asks the scope rather than deciding for itself.
    */
-  worker(worker: string, declared?: string): string;
+  worker(worker: ProvisionWorkerNames, declared?: string): string;
   /**
    * This scope's CF Secrets Store entry name for a declared secret.
    *
@@ -265,7 +291,7 @@ export function environmentScope(project: string, environment: string): Provisio
     honorsGlobal: true,
     resource: (binding, kind, naming) =>
       bindingResourceName(project, binding, kind, naming, (thing) => names[KIND_NAMER[kind]](thing)),
-    worker: (worker, declared) => declared ?? `${worker}-${environment}`,
+    worker: ({ script }, declared) => declared ?? `${script}-${environment}`,
     secretEntry: (secret, secretScope) =>
       secretEntryName(project, secret, secretScope, () => names.secretEntry(secret)),
   };
@@ -306,7 +332,9 @@ export function featureScope(identity: FeatureIdentity): ProvisionScope {
     // part company here.
     honorsGlobal: false,
     resource: (binding, kind) => featureResourceName(identity, binding, kind),
-    worker: (worker) => featureWorkerName(identity, worker),
+    // The directory, not the deploy name: the head already carries the project, and the deploy name
+    // usually leads with it too, which composed `<project>-f<issue>-<slug>-<project>-<app>` (#587).
+    worker: ({ app }) => featureWorkerName(identity, app),
     secretEntry: (secret, secretScope) =>
       secretEntryName(identity.project, secret, secretScope, () => featureSecretEntryName(identity, secret)),
   };

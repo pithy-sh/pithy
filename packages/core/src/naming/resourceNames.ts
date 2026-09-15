@@ -69,8 +69,11 @@ export interface ScopedNames {
 export interface FeatureNames {
   /** A feature's D1, KV, or R2 resource — `<project>-f<issue>-<slug>-<binding>-<kind>`. */
   resource(binding: string, kind: FeatureResourceKind): string;
-  /** A feature's Worker script — `<project>-f<issue>-<slug>-<worker>`. */
-  worker(worker: string): string;
+  /**
+   * A feature's Worker script — `<project>-f<issue>-<slug>-<app>`, from the `apps/<app>` directory and
+   * never the deploy name, which already leads with the project (#587).
+   */
+  worker(app: string): string;
 }
 
 /** Everything a project can be asked to name. Created once, from the project, by {@link resourceNames}. */
@@ -167,7 +170,7 @@ export function resourceNames(project: string): ProjectNames {
       const full: FeatureIdentity = { ...identity, project: normalized };
       return {
         resource: (binding, kind) => featureResourceName(full, binding, kind),
-        worker: (worker) => featureWorkerName(full, worker),
+        worker: (app) => featureWorkerName(full, app),
       };
     },
   };

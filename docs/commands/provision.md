@@ -209,7 +209,7 @@ $ pithy provision --env staging --yes --json
 
 ```
 $ pithy provision --feature --json
-{"command":"provision","env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command-db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command-replay-board"}],"services":[],"secretBindings":[],"declined":[{"state":"read","worker":"replay-board","declines":[{"state":"honored","name":"SUPPORT_BUCKET","type":"r2","capability":"support","reason":"Attachments are off.","wantedBy":[]}]}],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret","email-link-signing-key"],"pendingSecretsRemedy":null}
+{"command":"provision","env":"feature","resources":[{"kind":"d1","binding":"DB","name":"replay-f251-one-command-db-d1","id":"3c1…","created":true}],"workers":[{"worker":"replay-board","name":"replay-f251-one-command-board"}],"services":[],"secretBindings":[],"declined":[{"state":"read","worker":"replay-board","declines":[{"state":"honored","name":"SUPPORT_BUCKET","type":"r2","capability":"support","reason":"Attachments are off.","wantedBy":[]}]}],"manifestFaults":[],"configs":[{"worker":"replay-board","path":"apps/board/.wrangler/pithy/wrangler.feature.jsonc","ids":3}],"committed":false,"pendingSecrets":["auth-session-secret","email-link-signing-key"],"pendingSecretsRemedy":null}
 ```
 
 | key | type | meaning |
@@ -224,7 +224,7 @@ $ pithy provision --feature --json
 | `resources[].created` | `boolean` | True when this run created it; false when a resource of that name already existed and was adopted |
 | `workers` | `object[]` | Each Worker and the script name it deploys under in this environment |
 | `workers[].worker` | `string` | The Worker's own deploy name — its `wrangler.jsonc` `name` |
-| `workers[].name` | `string` | The scoped script name written into `env.<name>` |
+| `workers[].name` | `string` | The scoped script name written into `env.<name>`. A declared environment keeps the name its stanza declares, else `<worker>-<env>`; a feature composes `<project>-f<issue>-<slug>-<app>` from the `apps/<app>` directory, so the project appears once |
 | `services` | `object[]` | Each `service` binding and the Worker it now targets in this environment |
 | `services[].binding` | `string` | The binding name |
 | `services[].service` | `string` | The script the binding was retargeted at |
