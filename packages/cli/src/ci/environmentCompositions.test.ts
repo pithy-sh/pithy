@@ -38,10 +38,10 @@ import { sourceFiles } from "./sourceFiles";
  *    already use) or as a default escaped it, and so did its importers. Every way a name leaves a module is
  *    now read ({@link moduleShape}): its own `export`, an export list with or without renames, `export default`
  *    of a declaration, a name or an expression, `export { a as b } from`, `export * from` and
- *    `export * as ns from`, a `class`, a `let` assigned later, and a flat destructuring. A default export has no
- *    name its importers must use, so its importers are held by the specifier they import it from. Inside a
- *    module, a declaration reaches through a carrier renamed at its import, a default or namespace import of a
- *    module that carries, and an `import()` of one.
+ *    `export * as ns from`, a `class`, a `let` assigned later by a plain `=`, and a flat destructuring. A
+ *    default export has no name its importers must use, so its importers are held by the specifier they import
+ *    it from, a directory's `index.ts` among them. Inside a module, a declaration reaches through a carrier
+ *    renamed at its import, a default or namespace import of a module that carries, and an `import()` of one.
  * 3. **Every module that assembles a backend does it inside the primitive.** `createBackend` is where a
  *    capability reads the environment at registration — the dev-login route is mounted there or not — so
  *    assembling one with no environment stamped is the #255 defect.
@@ -65,11 +65,17 @@ import { sourceFiles } from "./sourceFiles";
  * - **Carriers by name, not by binding.** A carrier's name is matched in every module, so a module declaring
  *   its own unrelated function or variable of the same name is held as if it called the carrier (a false red,
  *   never a false green). A carrier passed as a value — stored in an object, handed to a function — and called
- *   under another name is followed only as far as the module that names it.
+ *   under another name is followed only as far as the module that names it. A carrier named only as the first
+ *   branch of a ternary (`flag ? resolveWorkers : other`) is read as a property key, because `name :` is one,
+ *   and is not matched at all.
  * - **Top-level declarations, by layout.** A carrier is declared at column 0, the way biome formats one. An
  *   exported `let` assigned inside a top-level block (`{ load = … }`) or an immediately invoked function, and
- *   a nested destructuring (`export const { a: { b } } = …`), bind no text this reads. A class is followed by
- *   its name, not by its members: `Loader.load(…)` is held because it names `Loader`.
+ *   a nested destructuring (`export const { a: { b } } = …`), bind no text this reads. A name assigned later is
+ *   read by a plain `=` only: a logical assignment (`load ??= …`, `||=`, `&&=`) binds nothing. An exported
+ *   object filled after its declaration, by `Object.assign(loaders, { … })` or `loaders["load"] = …`, carries
+ *   nothing, because neither line is a declaration. An export list naming a string literal
+ *   (`export { load as "load" }`) exports nothing this reads. A class is followed by its name, not by its
+ *   members: `Loader.load(…)` is held because it names `Loader`.
  * - **Specifiers this CLI resolves.** A whole or default import is resolved when its specifier is relative or
  *   `@pithy-sh/cli/src/…`. A path alias would name a module this cannot find, and its importer is held only if
  *   it also names a carrier.
@@ -269,15 +275,28 @@ function shapeOf(key: string): ModuleShape {
   return shape;
 }
 
-/** The module a relative specifier in `from` names, as the tables spell it, or `null` for a package. */
-function resolveSpecifier(from: string, specifier: string): string | null {
+/**
+ * The module a relative specifier in `from` names, as the tables spell it, or `null` for a package.
+ *
+ * The CLI resolves as a bundler does, so a specifier naming a directory is its `index.ts`: `<path>.ts` when the
+ * tree has that module, `<path>/index.ts` when it has that one instead. A specifier naming neither resolves to
+ * `<path>.ts`, which matches no module. `tree` is the modules that exist, the CLI's own unless a test says.
+ */
+function resolveSpecifier(
+  from: string,
+  specifier: string,
+  tree: readonly string[] = MODULES.map((module) => module.key),
+): string | null {
   const own = "@pithy-sh/cli/src/";
   const path = specifier.startsWith(own)
     ? specifier.slice(own.length)
     : specifier.startsWith(".")
       ? posix.join(posix.dirname(from), specifier)
       : null;
-  return path === null ? null : `${path.replace(/\.[cm]?[jt]s$/, "")}.ts`;
+  if (path === null) return null;
+  const bare = path.replace(/\/+$/, "").replace(/\.[cm]?[jt]s$/, "");
+  const index = `${bare}/index.ts`;
+  return !tree.includes(`${bare}.ts`) && tree.includes(index) ? index : `${bare}.ts`;
 }
 
 /**
@@ -309,7 +328,7 @@ function rawLocals(declared: readonly Declaration[]): Set<string> {
     for (const { name, text } of declared) {
       if (raw.has(name)) continue;
       const body = text.slice(text.indexOf(name) + name.length);
-      if ([...raw].some((loader) => new RegExp(`(?<![.\\w$])${loader}\\b`).test(body))) {
+      if (namesIdentifier([...raw]).test(body)) {
         raw.add(name);
         grew = true;
       }
@@ -460,11 +479,25 @@ function deriveCarriers(): Carriers {
 }
 
 /**
+ * An identifier as the text of a RegExp. `$` is an identifier character and an anchor, so `zzLoad$` unescaped
+ * matches nowhere; and `\b` after it needs a word character next, so the end is spelled as "no identifier
+ * character follows" instead of a word boundary.
+ */
+function identifiers(names: readonly string[]): string {
+  return `(?:${names.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![\\w$])`;
+}
+
+/** Any of `names` as a whole identifier: not a member read, and not the tail of a longer name. */
+function namesIdentifier(names: readonly string[]): RegExp {
+  return new RegExp(`(?<![.\\w$])${identifiers(names)}`);
+}
+
+/**
  * A use of any of `names`: not a member read, not a property key, and not a type query. `typeof resolveWorkers`
  * names a loader's shape and composes nothing.
  */
 function namesAny(names: readonly string[]): RegExp {
-  return new RegExp(`(?<![.\\w$])(?<!typeof\\s+)(?:${names.join("|")})\\b(?!\\s*\\??\\s*:)`);
+  return new RegExp(`(?<![.\\w$])(?<!typeof\\s+)${identifiers(names)}(?!\\s*\\??\\s*:)`);
 }
 
 /** Every module this one takes whole or by its default export, resolved to the tables' spelling. */
@@ -574,7 +607,7 @@ const RAW_COMPOSERS: Readonly<Record<string, string>> = {
   "capabilities/secretApplicability.ts":
     "Resolves once, unstamped, only to learn which Worker directories exist; every environment's answer is composed through composeFor.",
   "commands/email.ts":
-    "Reads the capability's config and the domains declaration once, for provisioning that spans every declared environment.",
+    "Reads the capability's config and the domains declaration once, unstamped, for provisioning that spans every declared environment; it is not on doctor's per-environment path, and a config that varies its domains by environment is read as whichever composition the module cache holds, which is a limit of this entry.",
   "commands/media.ts":
     "Reads the capability's config as one project-wide declaration; a config that differs by environment is answered from the composition for none, which is a limit of this entry.",
   "commands/payments.ts":
@@ -588,16 +621,19 @@ const RAW_COMPOSERS: Readonly<Record<string, string>> = {
   "commands/testers.ts":
     "Reads the capability's config as one project-wide declaration, for its roster subcommands too; a config that differs by environment is answered from the composition for none, which is a limit of this entry.",
   "commands/turnstile.ts":
-    "Reads the widget set as one project-wide declaration, and the production address from the domains declaration.",
+    "Reads the widget set as one project-wide declaration, and the production address from the domains declaration, both unstamped; it is not on doctor's per-environment path, and a config that varies its domains by environment is read as whichever composition the module cache holds, which is a limit of this entry.",
   "commands/vector.ts":
     "Reads the capability's config as one project-wide declaration, for its per-environment subcommands too; a config that differs by environment is answered from the composition for none, which is a limit of this entry.",
   "devSecrets/targets.ts":
     "Reads the dev secrets registry, which is per project with one value per name, re-importing a config pithy add has just written.",
   "main.ts":
     "Imports every command module whole, commands/email.ts among them, to run its default export; each command it runs is held on its own.",
-  "project/deploy.ts": "Reads the domains declaration, which names every environment's address in one value.",
-  "project/deployKit.ts": "Reads the domains declaration, which names every environment's address in one value.",
-  "project/envInventory.ts": "Reads the domains declaration, which names every environment's address in one value.",
+  "project/deploy.ts":
+    "Reads the domains declaration from a composition for no environment, and is not on doctor's per-environment path; a config that varies its domains by environment is read as whichever composition the module cache holds, which is a limit of this entry.",
+  "project/deployKit.ts":
+    "Reads the domains declaration from a composition for no environment, and is not on doctor's per-environment path; a config that varies its domains by environment is read as whichever composition the module cache holds, which is a limit of this entry.",
+  "project/envInventory.ts":
+    "Reads the domains declaration from a composition for no environment, and is not on doctor's per-environment path; a config that varies its domains by environment is read as whichever composition the module cache holds, which is a limit of this entry.",
 };
 
 /**
@@ -634,11 +670,11 @@ const SEALED: Readonly<Record<string, string>> = {
   "main.ts#main":
     "Returns the root pithy command, which loads a subcommand by import() when run; each command it loads is held on its own.",
   "project/deploy.ts#deployProject":
-    "Returns the deploy report; the composition is read only for the domains declaration, which names every environment's address in one value.",
+    "Returns the deploy report; the composition is read only for the domains declaration, unstamped, and a config that varies its domains by environment is read as whichever composition the module cache holds.",
   "project/deployKit.ts#deployKitWorkers":
-    "Returns the kit deploy report; the composition is read only for the domains declaration, which names every environment's address in one value.",
+    "Returns the kit deploy report; the composition is read only for the domains declaration, unstamped, and a config that varies its domains by environment is read as whichever composition the module cache holds.",
   "project/envInventory.ts#buildEnvInventory":
-    "Returns the environment inventory; the composition is read only for the domains declaration, which names every environment's address in one value.",
+    "Returns the environment inventory; the composition is read only for the domains declaration, unstamped, and a config that varies its domains by environment is read as whichever composition the module cache holds.",
 };
 
 /**
@@ -836,6 +872,23 @@ describe("a composition for an environment is composed for it, by one primitive"
     expect(resolveSpecifier("commands/migrate.ts", "../project/envInventory.js")).toBe("project/envInventory.ts");
     expect(resolveSpecifier("commands/migrate.ts", "@pithy-sh/cli/src/commands/email")).toBe("commands/email.ts");
     expect(resolveSpecifier("commands/migrate.ts", "@pithy-sh/testers/src/config/config")).toBe(null);
+    // A directory is its index, as the bundler resolves it; a module beside it of the same name wins.
+    const tree = ["project/zzplantdir/index.ts", "commands/migrate.ts"];
+    expect(resolveSpecifier("commands/migrate.ts", "../project/zzplantdir", tree)).toBe("project/zzplantdir/index.ts");
+    expect(resolveSpecifier("commands/migrate.ts", "../project/zzplantdir/", tree)).toBe("project/zzplantdir/index.ts");
+    expect(resolveSpecifier("commands/migrate.ts", "../project/zzplantdir", [...tree, "project/zzplantdir.ts"])).toBe(
+      "project/zzplantdir.ts",
+    );
+    // An identifier with a `$` in it is an identifier, not an anchor, wherever a name enters a RegExp.
+    expect(namesAny(["zzLoad$"]).test("return zzLoad$(dir);")).toBe(true);
+    expect(namesAny(["zzLoad$"]).test("return zzLoad$x(dir);")).toBe(false);
+    expect(namesAny(["zz.Load"]).test("return zzxLoad(dir);")).toBe(false);
+    expect(
+      rawLocals([
+        { name: "zzLoad$", text: "export const zzLoad$ = async (dir) => loadWorkerConfig(dir);" },
+        { name: "zzUse", text: "export const zzUse = (dir) => zzLoad$(dir);" },
+      ]),
+    ).toEqual(new Set(["loadWorkerConfig", "zzLoad$", "zzUse"]));
     expect(
       wholeImports(
         [
