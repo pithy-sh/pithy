@@ -31,11 +31,13 @@ import {
   registryRootFor,
 } from "../feature/ports";
 import { currentBranch, defaultGit } from "../feature/worktree";
+import { openUrl as openUrlDefault } from "../platform/browser";
 import { composeFor } from "../project/composeFor";
 import { allCapabilities } from "../project/config";
 import { detectPackageManager, execArgs } from "../project/packageManager";
 import { defaultWorkerDev } from "../project/workerManifest";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "../project/workers";
+import { type KeyReader, readKeys as readKeysDefault } from "../terminal/keys";
 import { formatJsonLine } from "../terminal/output";
 import { dim, workerColor } from "../terminal/style";
 import {
@@ -56,9 +58,7 @@ import {
   type MaterializeHostConfigsOptions,
   materializeHostConfigs as materializeHostConfigsDefault,
 } from "./hostWorkers";
-import { type KeyReader, readKeys as readKeysDefault } from "./keys";
 import { type DataStream, stripAnsi, teeStream } from "./logging";
-import { openUrl as openUrlDefault } from "./openUrl";
 import {
   isAlive as isAliveDefault,
   type Sleep,

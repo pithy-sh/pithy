@@ -78,10 +78,10 @@ const CREDENTIAL_KEY = /CLOUDFLARE_(?:API_TOKEN|ACCOUNT_ID)/;
 const NOT_CLOUDFLARE: Readonly<Record<string, string>> = {
   "ci/distTypes.ts": "runs `tsc` against a packed tarball's types.",
   "ci/fileModes.ts": "runs `git ls-files` to read the index's mode bits.",
-  "dev/openUrl.ts": "runs the platform's browser opener on a localhost URL.",
   "dev/ports.ts": "runs `lsof`/`ps` to find the workerd processes a previous session left.",
   "feature/ports.ts": "runs `git rev-parse` to key the port registry on the main checkout's root.",
   "feature/worktree.ts": "runs `git worktree` to create and prune a feature's checkout.",
+  "platform/browser.ts": "runs the platform's browser opener on a URL the operator was just shown.",
   "platform/editor.ts": "runs the operator's `$EDITOR` on a config file.",
   "project/packageManager.ts":
     "runs a package manager to discover its version, and every install and uninstall the CLI makes (`runPackageManager`).",

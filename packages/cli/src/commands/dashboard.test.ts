@@ -2,9 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
-import type { CommandDef } from "citty";
+import { type ArgsDef, type CommandDef, parseArgs } from "citty";
 import { describe, expect, test } from "vitest";
+import { authorizeDashboard } from "../dashboard/connect";
+import type { DashboardClient, DeviceAuthorization } from "../dashboard/contract";
+import { OPEN_PROMPT, offerToOpen } from "../platform/browser";
+import type { KeyStream } from "../terminal/keys";
+import { readKeys } from "../terminal/keys";
 import dashboard, {
+  announceFor,
   collectScopeFlags,
   formatConnectReport,
   formatDisconnectReport,
@@ -287,5 +293,185 @@ describe("formatStatusReport", () => {
     );
     expect(out).toContain("Nothing connected to staging.");
     expect(out).toContain("pithy dashboard connect");
+  });
+});
+
+const AUTHORIZATION: DeviceAuthorization = {
+  deviceCode: "dc_1",
+  userCode: "ABCD-EFGH",
+  verificationUri: "https://app.pithy.sh/cli",
+  expiresInSeconds: 600,
+  intervalSeconds: 1,
+};
+
+/** A management client that goes pending once and then approves — one whole device flow. */
+function fakeClient(authorization: DeviceAuthorization = AUTHORIZATION): DashboardClient {
+  let polls = 0;
+  return {
+    startDeviceAuthorization: async () => authorization,
+    pollForConnectToken: async () => (polls++ === 0 ? "pending" : { connectToken: "ct_1", expiresInSeconds: 300 }),
+    createConnection: async () => {
+      throw new Error("unused");
+    },
+    rotateKey: async () => {
+      throw new Error("unused");
+    },
+    updateConnection: async () => {},
+    verifyConnection: async () => ({ status: "connected", keyId: null }),
+    deleteConnection: async () => {},
+  };
+}
+
+/** A stdin double with a real terminal's shape, so the offer is exercised rather than stubbed. */
+function fakeStdin(isTTY: boolean): KeyStream & { send: (chunk: string) => void } {
+  const listeners: ((chunk: string) => void)[] = [];
+  return {
+    isTTY,
+    setRawMode() {},
+    setEncoding() {},
+    resume() {},
+    pause() {},
+    on(_event: "data", listener: (chunk: string) => void) {
+      listeners.push(listener);
+    },
+    off(_event: "data", listener: (chunk: string) => void) {
+      const index = listeners.indexOf(listener);
+      if (index >= 0) listeners.splice(index, 1);
+    },
+    send(chunk: string) {
+      for (const listener of [...listeners]) listener(chunk);
+    },
+  } as unknown as KeyStream & { send: (chunk: string) => void };
+}
+
+/** Drive one announcement, collecting the lines and whatever the offer was pointed at. */
+function announced(
+  args: { json: boolean; open: boolean },
+  seams: { interactive?: boolean; env?: NodeJS.ProcessEnv } = {},
+  authorization: DeviceAuthorization = AUTHORIZATION,
+): { lines: string[]; urls: string[] } {
+  const lines: string[] = [];
+  const urls: string[] = [];
+  announceFor(args, {
+    write: (line) => void lines.push(line),
+    offerToOpen: (options) => {
+      urls.push(options.url);
+      // What the real primitive does when the key is live: state it, once, in its own words.
+      options.write(OPEN_PROMPT);
+      return { offered: true, stop: () => {} };
+    },
+    interactive: seams.interactive ?? true,
+    env: seams.env ?? {},
+  })(authorization);
+  return { lines, urls };
+}
+
+describe("the offer to open the approval page", () => {
+  test("names the URL and the code, then states the key, then says it is waiting", () => {
+    const { lines } = announced({ json: false, open: true });
+    expect(lines).toEqual([
+      "Open https://app.pithy.sh/cli and enter ABCD-EFGH.",
+      OPEN_PROMPT,
+      "▸ Waiting for approval...",
+    ]);
+  });
+
+  test("opens the plain verification uri when the client sends nothing better", () => {
+    expect(announced({ json: false, open: true }).urls).toEqual(["https://app.pithy.sh/cli"]);
+  });
+
+  test("opens verificationUriComplete when the client sends one, and still prints the plain page", () => {
+    const { lines, urls } = announced(
+      { json: false, open: true },
+      {},
+      {
+        ...AUTHORIZATION,
+        verificationUriComplete: "https://app.pithy.sh/cli?code=ABCD-EFGH",
+      },
+    );
+
+    expect(urls).toEqual(["https://app.pithy.sh/cli?code=ABCD-EFGH"]);
+    // Never printed: it carries the code, and a code in a line somebody tees or screenshots is a code
+    // somebody else can approve with.
+    expect(lines[0]).toBe("Open https://app.pithy.sh/cli and enter ABCD-EFGH.");
+    expect(lines.join("\n")).not.toContain("?code=");
+  });
+
+  test("--json neither offers nor opens, and the URL-and-code line still stands", () => {
+    const { lines, urls } = announced({ json: true, open: true }, { interactive: false });
+    expect(urls).toEqual([]);
+    expect(lines).toEqual(["Open https://app.pithy.sh/cli and enter ABCD-EFGH.", "▸ Waiting for approval..."]);
+  });
+
+  test("no terminal neither offers nor opens", () => {
+    const { lines, urls } = announced({ json: false, open: true }, { interactive: false });
+    expect(urls).toEqual([]);
+    expect(lines).not.toContain(OPEN_PROMPT);
+  });
+
+  test("--no-open neither offers nor opens", () => {
+    const { lines, urls } = announced({ json: false, open: false });
+    expect(urls).toEqual([]);
+    expect(lines).not.toContain(OPEN_PROMPT);
+  });
+
+  test("PITHY_NO_OPEN neither offers nor opens", () => {
+    const { lines, urls } = announced({ json: false, open: true }, { env: { PITHY_NO_OPEN: "1" } });
+    expect(urls).toEqual([]);
+    expect(lines).not.toContain(OPEN_PROMPT);
+  });
+
+  test("every subcommand that signs in takes --no-open", () => {
+    for (const name of ["connect", "rotate", "revoke-key", "disconnect", "status"]) {
+      expect(argNames(name)).toContain("open");
+    }
+  });
+
+  /**
+   * The flag is declared as `open`, not as `no-open`, and that is citty's rule rather than a preference:
+   * its parser strips a `--no-` prefix off any argument and sets the *stripped* name false. A flag
+   * literally named `no-open` would therefore never be set by `--no-open` and would do nothing at all.
+   * `ui.ts`'s `--auth`/`--no-auth` is the same shape.
+   */
+  test("--no-open is what the parser turns into open: false", () => {
+    const args = subCommands().connect?.args as ArgsDef;
+    expect(parseArgs(["--no-open"], args).open).toBe(false);
+    expect(parseArgs([], args).open).toBe(true);
+  });
+
+  /**
+   * The whole point of a stated key rather than a prompt: the poll finishes whether or not anybody
+   * touches the keyboard, and an opener that is missing is a sentence rather than a failed connect.
+   */
+  test("an opener that cannot run prints one line and the sign-in still completes", async () => {
+    const lines: string[] = [];
+    const stdin = fakeStdin(true);
+    const announce = announceFor(
+      { json: false, open: true },
+      {
+        write: (line) => void lines.push(line),
+        offerToOpen: (options) =>
+          offerToOpen({
+            ...options,
+            readKeys: (keyOptions) => readKeys({ ...keyOptions, stdin }),
+            openUrl: () => Promise.reject(new Error("spawn xdg-open ENOENT")),
+          }),
+        interactive: true,
+        env: {},
+      },
+    );
+
+    const token = await authorizeDashboard(fakeClient(), {
+      announce,
+      // The key is pressed while the flow is between polls, which is the only moment it can be.
+      sleep: async () => {
+        stdin.send("o");
+        await Promise.resolve();
+        await Promise.resolve();
+      },
+    });
+
+    expect(token).toBe("ct_1");
+    expect(lines).toContain("spawn xdg-open ENOENT");
   });
 });
