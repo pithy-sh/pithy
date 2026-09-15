@@ -5,7 +5,7 @@ import { env } from "cloudflare:test";
 import type { Migration, MigrationProvider } from "kysely/migration";
 import { beforeEach, describe, expect, test } from "vitest";
 import { InternalError } from "../error/pithyError";
-import { createMigrationRegistry } from "./registry";
+import { createMigrationRegistry, type NamespacedMigrations } from "./registry";
 import { RetainedBudget } from "./retained";
 import { dropMigrations, readMigrationLedger, rollbackMigration, runMigrations } from "./runner";
 
@@ -308,20 +308,23 @@ describe("dropMigrations", () => {
     // count what "b" declared — nothing — and run its `down` beside a table holding rows.
     // A `down` of its own, so declaring it retained marks nothing another test in this file composes.
     const keptThings: Migration = { up: createThings.up, down: async (db) => createThings.down?.(db) };
-    const sets = [
-      {
-        database: "app",
-        namespace: "a",
-        order: 100,
-        migrations: { "0001_things": keptThings },
-        retained: ["things"],
-      },
-      { database: "app", namespace: "b", order: 200, migrations: { "0001_widgets": createWidgets } },
-    ];
-    const combined = providerFor(createMigrationRegistry(sets), "app");
+    const a: NamespacedMigrations = {
+      database: "app",
+      namespace: "a",
+      order: 100,
+      migrations: { "0001_things": keptThings },
+      retained: ["things"],
+    };
+    const b: NamespacedMigrations = {
+      database: "app",
+      namespace: "b",
+      order: 200,
+      migrations: { "0001_widgets": createWidgets },
+    };
+    const combined = providerFor(createMigrationRegistry([a, b]), "app");
     await runMigrations(env.DB, combined);
     await env.DB.prepare("insert into things (label) values ('kept')").run();
-    const bOnly = providerFor(createMigrationRegistry([sets[1] as (typeof sets)[number]]), "app");
+    const bOnly = providerFor(createMigrationRegistry([b]), "app");
 
     await expect(dropMigrations(env.DB, { database: combined, reverse: bOnly })).rejects.toThrow(
       "Retained 1 row would be dropped: things on this database (1 row).",
