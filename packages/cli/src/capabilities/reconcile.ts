@@ -803,10 +803,13 @@ function computeMissingBindings(
   return missing;
 }
 
-/** A located capability registration call in pithy.config.ts source. */
+/**
+ * A located capability registration call in pithy.config.ts source. A block's `openIndex` and `closeIndex`
+ * are the offsets of its own `{` and `}`, so a caller can walk into it with {@link objectProperties}.
+ */
 type RegistrationLocation =
   | { form: "oneliner"; indent: string; presentKeys: string[] }
-  | { form: "block"; indent: string; presentKeys: string[]; closeIndex: number };
+  | { form: "block"; indent: string; presentKeys: string[]; openIndex: number; closeIndex: number };
 
 /** From a `{`, the index of its matching `}` — string- and comment-aware so braces in strings/comments don't miscount. */
 function matchBrace(source: string, openIndex: number): number {
@@ -856,61 +859,133 @@ function followedByColon(body: string, from: number): boolean {
   return body[k] === ":";
 }
 
+/** One property of an object literal: its key, unquoted, and the source span of its value. */
+export interface ObjectProperty {
+  /** The key, as the object states it — a quoted key is returned unquoted. */
+  key: string;
+  /** Offset of the value's first character. */
+  valueStart: number;
+  /** Offset one past the value's last token — trailing whitespace and comments are not part of it. */
+  valueEnd: number;
+}
+
+/** The index past a string literal opened at `from`, honoring backslash escapes. */
+function skipString(body: string, from: number): number {
+  const quote = body[from];
+  let j = from + 1;
+  while (j < body.length && body[j] !== quote) {
+    if (body[j] === "\\") j += 2;
+    else j++;
+  }
+  return j + 1;
+}
+
+/** The index past a comment opened at `from`, or `-1` when `from` opens none. */
+function skipComment(body: string, from: number): number {
+  if (body[from] !== "/") return -1;
+  if (body[from + 1] === "/") {
+    const nl = body.indexOf("\n", from);
+    return nl === -1 ? body.length : nl + 1;
+  }
+  if (body[from + 1] === "*") {
+    const end = body.indexOf("*/", from + 2);
+    return end === -1 ? body.length : end + 2;
+  }
+  return -1;
+}
+
 /**
- * The top-level object keys in a registration body — string- and comment-aware (line and block comments),
- * recognizing both bare identifier keys (`basePath:`) and quoted keys (`"base-path":`, `'x':`). Scalars-only
- * bodies. A quoted key is returned unquoted, so it compares equal to the manifest option name.
+ * The end of one property value that starts at `from`: the offset past its last token before the depth-0
+ * comma that ends it, or before the end of the body. String-, comment- and bracket-aware, so a `,` or a `}`
+ * inside a string, a call or a nested object does not end the value early.
  */
-function objectKeys(body: string): string[] {
-  const keys: string[] = [];
-  let i = 0;
+function valueEnd(body: string, from: number): { end: number; next: number } {
+  let i = from;
   let depth = 0;
+  let end = from;
   while (i < body.length) {
-    const ch = body[i];
+    const ch = body[i] as string;
+    const pastComment = skipComment(body, i);
+    if (pastComment !== -1) {
+      i = pastComment;
+      continue;
+    }
     if (ch === '"' || ch === "'" || ch === "`") {
-      // Consume the whole string, then — at depth 0 and followed by `:` — record it as a quoted key.
-      const quote = ch;
-      let j = i + 1;
-      while (j < body.length && body[j] !== quote) {
-        if (body[j] === "\\") j += 2;
-        else j++;
-      }
-      if (depth === 0 && followedByColon(body, j + 1)) keys.push(body.slice(i + 1, j));
-      i = j + 1;
+      i = skipString(body, i);
+      end = i;
       continue;
     }
-    if (ch === "/" && body[i + 1] === "/") {
-      const nl = body.indexOf("\n", i);
-      if (nl === -1) break;
-      i = nl + 1;
-      continue;
-    }
-    if (ch === "/" && body[i + 1] === "*") {
-      const end = body.indexOf("*/", i + 2);
-      if (end === -1) break;
-      i = end + 2;
-      continue;
-    }
-    if (ch === "{" || ch === "[" || ch === "(") {
-      depth++;
-      i++;
-      continue;
-    }
-    if (ch === "}" || ch === "]" || ch === ")") {
-      depth--;
-      i++;
-      continue;
-    }
-    if (depth === 0 && ch !== undefined && /[A-Za-z_$]/.test(ch)) {
-      let j = i + 1;
-      while (j < body.length && /[\w$]/.test(body[j] as string)) j++;
-      if (followedByColon(body, j)) keys.push(body.slice(i, j));
-      i = j;
-      continue;
-    }
+    if (ch === "{" || ch === "[" || ch === "(") depth++;
+    else if (ch === "}" || ch === "]" || ch === ")") depth--;
+    else if (ch === "," && depth === 0) return { end, next: i + 1 };
+    if (!/\s/.test(ch)) end = i + 1;
     i++;
   }
-  return keys;
+  return { end, next: body.length };
+}
+
+/**
+ * The top-level properties of an object literal's body — string- and comment-aware (line and block comments),
+ * recognizing both bare identifier keys (`basePath:`) and quoted keys (`"base-path":`, `'x':`). Each value is
+ * skipped whole, to the comma that ends it, so nothing inside a value — a nested object, a ternary's `:` —
+ * is mistaken for a key of this one. Offsets are relative to `body`.
+ */
+function scanProperties(body: string): ObjectProperty[] {
+  const properties: ObjectProperty[] = [];
+  let i = 0;
+  while (i < body.length) {
+    const ch = body[i] as string;
+    if (ch === "," || /\s/.test(ch)) {
+      i++;
+      continue;
+    }
+    const pastComment = skipComment(body, i);
+    if (pastComment !== -1) {
+      i = pastComment;
+      continue;
+    }
+    let key: string | null = null;
+    let afterKey = i;
+    if (ch === '"' || ch === "'" || ch === "`") {
+      afterKey = skipString(body, i);
+      if (followedByColon(body, afterKey)) key = body.slice(i + 1, afterKey - 1);
+    } else if (/[A-Za-z_$]/.test(ch)) {
+      afterKey = i + 1;
+      while (afterKey < body.length && /[\w$]/.test(body[afterKey] as string)) afterKey++;
+      if (followedByColon(body, afterKey)) key = body.slice(i, afterKey);
+    }
+    if (key === null) {
+      // Not a key: a spread, a shorthand, a method. Skip the whole member to its comma, so its insides are
+      // never read as keys of this object.
+      i = valueEnd(body, i).next;
+      continue;
+    }
+    let start = body.indexOf(":", afterKey) + 1;
+    while (start < body.length && /\s/.test(body[start] as string)) start++;
+    const { end, next } = valueEnd(body, start);
+    properties.push({ key, valueStart: start, valueEnd: end });
+    i = next;
+  }
+  return properties;
+}
+
+/** The top-level object keys in a registration body. See {@link scanProperties}. */
+function objectKeys(body: string): string[] {
+  return scanProperties(body).map((property) => property.key);
+}
+
+/**
+ * The top-level properties of the object literal whose braces sit at `openIndex` and `closeIndex` in
+ * `source`, with value offsets into `source` itself — the one scanner `pithy upgrade`'s key check reads, so
+ * a writer that walks into a registration sees the keys that check sees.
+ */
+export function objectProperties(source: string, openIndex: number, closeIndex: number): ObjectProperty[] {
+  const offset = openIndex + 1;
+  return scanProperties(source.slice(offset, closeIndex)).map((property) => ({
+    key: property.key,
+    valueStart: property.valueStart + offset,
+    valueEnd: property.valueEnd + offset,
+  }));
 }
 
 /** Find a capability's registration call in pithy.config.ts source, and which option keys it already carries. */
@@ -927,7 +1002,13 @@ export function locateRegistration(source: string, name: string): RegistrationLo
   if (ch === "{") {
     const closeIndex = matchBrace(source, i);
     if (closeIndex === -1) return null;
-    return { form: "block", indent, presentKeys: objectKeys(source.slice(i + 1, closeIndex)), closeIndex };
+    return {
+      form: "block",
+      indent,
+      presentKeys: objectKeys(source.slice(i + 1, closeIndex)),
+      openIndex: i,
+      closeIndex,
+    };
   }
   return null;
 }

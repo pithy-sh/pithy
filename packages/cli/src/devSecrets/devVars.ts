@@ -129,7 +129,7 @@ export interface WriteDevVarsOptions {
   projectDir: string;
   /**
    * The values to record in `dev.json`, by variable name. **Only what no registry declares** — a
-   * Turnstile sitekey, a machine-local endpoint. A registry secret's value belongs in `secrets.jsonc`,
+   * machine-local endpoint. Not a Turnstile sitekey: that is a build input, read from `pithy.config.ts` (#590). A registry secret's value belongs in `secrets.jsonc`,
    * which the generator reads directly (#179). Empty records nothing and regenerates anyway.
    */
   values: Record<string, string>;

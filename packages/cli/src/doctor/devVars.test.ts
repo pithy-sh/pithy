@@ -181,10 +181,14 @@ describe("the root .dev.vars — is anything reading it", () => {
 
   test("a registry secret still copied into dev.json is named, and nothing else there is", async () => {
     // #179: `pithy seed` used to copy every `cf-secrets-store` value into `dev.json` under `vars`, and
-    // the generator read that copy. Nothing reads it now. A value no registry declares — a Turnstile
-    // sitekey — is a legitimate tenant of that file and stays silent.
+    // the generator read that copy. Nothing reads it now. A value no registry declares — a machine-local
+    // endpoint — is a legitimate tenant of that file and stays silent.
     const board = await worker("board", { vars: {} });
-    await writeBootstrapVars(dir, { CONNECTION_KEY_ENCRYPTION_KEY: "stale", TURNSTILE_SITEKEY: "0x4AAA" }, paths());
+    await writeBootstrapVars(
+      dir,
+      { CONNECTION_KEY_ENCRYPTION_KEY: "stale", LOCAL_MAIL_ENDPOINT: "http://127.0.0.1:1025" },
+      paths(),
+    );
 
     const result = await check([board]);
 
@@ -192,7 +196,7 @@ describe("the root .dev.vars — is anything reading it", () => {
     const lines = describeDevVars(result).join("\n");
     expect(lines).toContain("CONNECTION_KEY_ENCRYPTION_KEY");
     expect(lines).toContain("pithy secrets edit");
-    expect(lines).not.toContain("TURNSTILE_SITEKEY");
+    expect(lines).not.toContain("LOCAL_MAIL_ENDPOINT");
     expect(lines).not.toContain("stale");
   });
 

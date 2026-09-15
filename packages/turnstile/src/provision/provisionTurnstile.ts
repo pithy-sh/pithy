@@ -3,7 +3,7 @@
 
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { resourceName } from "@pithy-sh/core/src/naming/resource";
-import type { TurnstileConfig, TurnstileMode } from "../config/config";
+import { type TurnstileConfig, type TurnstileMode, TurnstileSitekeys } from "../config/config";
 import type { TurnstileSecrets } from "../secret/registry";
 import { TEST_SECRET, testSitekey } from "./testKeys";
 
@@ -15,7 +15,7 @@ export function enabledModes(config: TurnstileConfig): TurnstileMode[] {
   return modes;
 }
 
-/** The deployed environments whose secret is written to the managed store (dev is local, via `.dev.vars`). */
+/** The deployed environments whose secret is written to the managed store (dev is local, via the dev secrets file). */
 export const MANAGED_ENVIRONMENTS = ["staging", "prod"] as const;
 export type ManagedTurnstileEnv = (typeof MANAGED_ENVIRONMENTS)[number];
 
@@ -28,10 +28,58 @@ export type ManagedTurnstileEnv = (typeof MANAGED_ENVIRONMENTS)[number];
  */
 const REAL_WIDGET_ENV = "prod" satisfies ManagedTurnstileEnv;
 
-/** The Worker var the public sitekey for a mode is surfaced under, for the front-end to render with. */
-export function sitekeyVarName(mode: TurnstileMode): string {
-  return `TURNSTILE_SITEKEY_${mode.toUpperCase()}`;
+/**
+ * The prefix of the Worker var #53's provisioner wrote each public sitekey under — `TURNSTILE_SITEKEY_VISIBLE`,
+ * `TURNSTILE_SITEKEY_INVISIBLE` — into `env.<name>.vars` and the dev `.dev.vars`.
+ *
+ * **Nothing ever read those vars, and nothing writes them now (#590).** The sitekey is a build input: the
+ * `pithy()` Vite plugin inlines the capability's client projection, and the projection reads
+ * `widgets.<mode>.sitekeys` out of `pithy.config.ts`. A runtime var cannot reach a bundle that is already
+ * built. So the name survives only to find what the old writer left behind — provisioning removes it and
+ * `pithy doctor` reports it.
+ */
+export const STRANDED_SITEKEY_VAR_PREFIX = "TURNSTILE_SITEKEY_";
+
+/**
+ * Whether a var name is one the old sitekey writer produced.
+ *
+ * **By prefix, never built from the modes a config declares today.** A var left for a mode the config has
+ * since dropped is exactly as stranded as one for a mode it still has, and a list derived from the current
+ * modes would walk past it.
+ */
+export function isStrandedSitekeyVar(name: string): boolean {
+  return name.startsWith(STRANDED_SITEKEY_VAR_PREFIX);
 }
+
+/** One stranded sitekey var a run found, and the environment whose vars held it (`dev` for the local set). */
+export interface StrandedSitekeyVar {
+  /** The var's name, e.g. `TURNSTILE_SITEKEY_VISIBLE`. */
+  name: string;
+  /** The environment it was set for — a wrangler stanza key, or `dev` for the top level and `dev.json`. */
+  environment: string;
+}
+
+/**
+ * The environments a sitekey can be stated for: the keys of {@link TurnstileSitekeys}, read off the schema.
+ *
+ * Read rather than written out, because this is the question "can a build for this environment render a
+ * widget at all?", and the schema is what answers it — `TurnstileConfig` strips any other key, so a sitekey
+ * written for `live` is gone before the projection looks.
+ */
+export const SITEKEY_ENVIRONMENTS: readonly string[] = TurnstileSitekeys.keyof().options;
+
+/**
+ * The environments in `environments` that no sitekey can be stated for — a declared environment beyond dev,
+ * staging and prod, or a feature build. **A build for one renders no widget, and sign-in there is blocked.**
+ * Nothing provisions them: no test key is accepted outside dev and staging, and the one real widget is
+ * prod's. Named so a caller can say so, rather than leave the projection to answer `enabled: false` quietly.
+ */
+export function environmentsWithoutSitekeys(environments: readonly string[]): string[] {
+  return [...new Set(environments)].filter((environment) => !SITEKEY_ENVIRONMENTS.includes(environment));
+}
+
+/** Every environment's public sitekey for each widget mode provisioning acted on. */
+export type ProvisionedSitekeys = Partial<Record<TurnstileMode, TurnstileSitekeys>>;
 
 /**
  * The production widget's name: `<project>-prod-turnstile-<mode>` (docs/NAMING.md).
@@ -61,11 +109,17 @@ function buildSecrets(modes: TurnstileMode[], key: string): TurnstileSecrets {
   return secrets;
 }
 
-/** The public test sitekeys for the enabled modes, keyed by their Worker var name. */
-function testSitekeyVars(modes: TurnstileMode[]): Record<string, string> {
-  const vars: Record<string, string> = {};
-  for (const mode of modes) vars[sitekeyVarName(mode)] = testSitekey(mode);
-  return vars;
+/**
+ * The sitekeys one widget renders with in each environment the config can state one for.
+ *
+ * dev and staging get the documented always-pass test sitekey, because those are the two environments the
+ * test *secret* is written into and the only two the gate accepts a test key's answer in
+ * (`TEST_KEY_ENVIRONMENTS`). prod gets the real widget's. The keys are the whole of `TurnstileSitekeys` —
+ * written out rather than mapped, so a fourth key added to that schema is a compile error here instead of
+ * an environment this quietly leaves blank.
+ */
+function sitekeysFor(mode: TurnstileMode, productionSitekey: string): TurnstileSitekeys {
+  return { dev: testSitekey(mode), staging: testSitekey(mode), [REAL_WIDGET_ENV]: productionSitekey };
 }
 
 /**
@@ -89,12 +143,18 @@ export interface TurnstileProvisioner {
    * sitekey. This project's own widgets are the expected steady state and never trip it.
    */
   assertDomainAvailable(domain: string): Promise<void>;
-  /** dev: upsert the turnstile secret and the public sitekey vars into their dev files. */
-  writeDev(secret: TurnstileSecrets, sitekeys: Record<string, string>): Promise<void>;
+  /** dev: upsert the turnstile secret into the dev secrets file. */
+  writeDev(secret: TurnstileSecrets): Promise<void>;
   /** Write the turnstile secret to a deployed environment's managed store (via the manager). */
   writeManagedSecret(env: ManagedTurnstileEnv, secret: TurnstileSecrets): Promise<void>;
-  /** Write the public sitekey vars into a deployed environment's worker vars. */
-  writeManagedSitekeys(env: ManagedTurnstileEnv, sitekeys: Record<string, string>): Promise<void>;
+  /**
+   * Write every environment's public sitekey into the `turnstile(...)` registration in the Worker's
+   * `pithy.config.ts` — **the input the build projects from**, and so the one place a sitekey reaches a
+   * browser from. Refuses, rather than returning, when what the config then says is not what was asked for.
+   */
+  writeSitekeys(sitekeys: ProvisionedSitekeys): Promise<void>;
+  /** Remove every `TURNSTILE_SITEKEY_*` var an older provisioner left in Worker vars, and say which. */
+  removeStrandedSitekeyVars(): Promise<StrandedSitekeyVar[]>;
   /** Reuse the production widget by name, else create it bound to the domain. `secret` is null on reuse. */
   ensureProductionWidget(mode: TurnstileMode, domain: string): Promise<{ sitekey: string; secret: string | null }>;
 }
@@ -105,10 +165,16 @@ export interface TurnstileDeprovisioner {
   deleteProductionWidget(mode: TurnstileMode): Promise<void>;
   /** Delete the turnstile secret from every deployed environment's managed store. */
   deleteManagedSecret(): Promise<void>;
-  /** Clear the turnstile secret + sitekey vars from `.dev.vars`. */
+  /** Clear the turnstile secret from the dev secrets file. */
   clearDev(modes: TurnstileMode[]): Promise<void>;
-  /** Clear the sitekey vars from the deployed environments' worker vars. */
-  clearManagedSitekeys(modes: TurnstileMode[]): Promise<void>;
+  /**
+   * Blank each mode's production sitekey in `pithy.config.ts` — the one value that names a widget teardown
+   * just deleted. The test sitekeys stay: they are Cloudflare's published constants, and a re-provision
+   * writes the same ones.
+   */
+  clearProductionSitekeys(modes: TurnstileMode[]): Promise<void>;
+  /** Remove every `TURNSTILE_SITEKEY_*` var an older provisioner left in Worker vars. */
+  removeStrandedSitekeyVars(): Promise<StrandedSitekeyVar[]>;
 }
 
 /** What provisioning resolved for one widget mode. */
@@ -129,6 +195,10 @@ export interface TurnstileProvisionResult {
    * production secret won't be healed by re-running (a deprovision + provision is needed).
    */
   productionSecretWritten: boolean;
+  /** Every environment's sitekey per mode, as written into `pithy.config.ts`. Public by definition. */
+  sitekeys: ProvisionedSitekeys;
+  /** The `TURNSTILE_SITEKEY_*` vars an older provisioner left behind, removed this run. */
+  strandedVarsRemoved: StrandedSitekeyVar[];
 }
 
 /** The modes to provision and the production domain the real widget binds to. */
@@ -147,35 +217,40 @@ export interface TurnstilePlan {
 
 /**
  * Provision Turnstile across environments. **dev and staging** get Cloudflare's documented test secret
- * (written per-environment — dev to `.dev.vars`, staging to its managed store); **`prod`** gets a real
- * widget per mode, bound to the domain, its secret written to the production managed store, and its public
- * sitekey to the production worker vars. Idempotent: a re-run reuses existing production widgets and skips
- * the production secret write (whose value can't be recovered from Cloudflare). A *mixed* production state
- * (some widgets new, some pre-existing) can't compose a consistent secret, so it errors with guidance
- * rather than write a half-secret. Before anything is written, a production domain a *foreign* widget
- * already covers is refused (`allowSharedDomain` opts out).
+ * (written per-environment — dev to the dev secrets file, staging to its managed store); **`prod`** gets a
+ * real widget per mode, bound to the domain, its secret written to the production managed store. Then
+ * every environment's public sitekey is written, in one edit, into the `turnstile(...)` registration the
+ * build projects from — test sitekeys for dev and staging, the widget's for prod — and any sitekey var an
+ * older provisioner stranded in Worker vars is removed.
+ *
+ * **The sitekeys are inlined at build time**, so nothing here reaches a deployed bundle until the Worker is
+ * built and deployed again. The caller says so.
+ *
+ * Idempotent: a re-run reuses existing production widgets and skips the production secret write (whose
+ * value can't be recovered from Cloudflare), while their sitekeys — which Cloudflare does return — are
+ * written again. A *mixed* production state (some widgets new, some pre-existing) can't compose a
+ * consistent secret, so it errors with guidance rather than write a half-secret. Before anything is
+ * written, a production domain a *foreign* widget already covers is refused (`allowSharedDomain` opts out).
  */
 export async function provisionTurnstile(
   provisioner: TurnstileProvisioner,
   plan: TurnstilePlan,
 ): Promise<TurnstileProvisionResult> {
   // First, before a single write: a domain already covered by a foreign widget is refused, so a refusal
-  // leaves no half-wired `.dev.vars` or staging secret behind.
+  // leaves no half-wired dev secret, staging secret or config edit behind.
   if (!plan.allowSharedDomain) await provisioner.assertDomainAvailable(plan.productionDomain);
 
   const testSecret = buildSecrets(plan.modes, TEST_SECRET);
-  const sitekeys = testSitekeyVars(plan.modes);
 
-  await provisioner.writeDev(testSecret, sitekeys);
+  await provisioner.writeDev(testSecret);
   await provisioner.writeManagedSecret("staging", testSecret);
-  await provisioner.writeManagedSitekeys("staging", sitekeys);
 
   const widgets: ProvisionedWidget[] = [];
   const realSecrets: TurnstileSecrets = {};
-  const prodSitekeys: Record<string, string> = {};
+  const sitekeys: ProvisionedSitekeys = {};
   for (const mode of plan.modes) {
     const { sitekey, secret } = await provisioner.ensureProductionWidget(mode, plan.productionDomain);
-    prodSitekeys[sitekeyVarName(mode)] = sitekey;
+    sitekeys[mode] = sitekeysFor(mode, sitekey);
     widgets.push({ mode, sitekey, created: secret !== null });
     if (secret !== null) realSecrets[mode] = { key: secret };
   }
@@ -193,12 +268,16 @@ export async function provisionTurnstile(
   if (productionSecretWritten) {
     await provisioner.writeManagedSecret(REAL_WIDGET_ENV, realSecrets);
   }
-  await provisioner.writeManagedSitekeys(REAL_WIDGET_ENV, prodSitekeys);
+  await provisioner.writeSitekeys(sitekeys);
+  const strandedVarsRemoved = await provisioner.removeStrandedSitekeyVars();
 
-  return { modes: plan.modes, widgets, productionSecretWritten };
+  return { modes: plan.modes, widgets, productionSecretWritten, sitekeys, strandedVarsRemoved };
 }
 
-/** Tear down Turnstile: delete each mode's production widget, the managed secret, and all config entries. */
+/**
+ * Tear down Turnstile: delete each mode's production widget and the managed secret, clear the dev secret,
+ * blank the production sitekeys in `pithy.config.ts`, and remove any stranded sitekey vars.
+ */
 export async function deprovisionTurnstile(
   deprovisioner: TurnstileDeprovisioner,
   modes: TurnstileMode[],
@@ -208,6 +287,7 @@ export async function deprovisionTurnstile(
   }
   await deprovisioner.deleteManagedSecret();
   await deprovisioner.clearDev(modes);
-  await deprovisioner.clearManagedSitekeys(modes);
+  await deprovisioner.clearProductionSitekeys(modes);
+  await deprovisioner.removeStrandedSitekeyVars();
   return { modes };
 }

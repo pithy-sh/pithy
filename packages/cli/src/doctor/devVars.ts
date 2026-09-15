@@ -238,7 +238,8 @@ export async function checkDevVars(options: CheckDevVarsOptions): Promise<DevVar
   }
 
   // The registry is what says a `dev.json` value has a better home now. A name nothing declares is a
-  // legitimate machine-local variable — a Turnstile sitekey — and `dev.json` is still where it belongs.
+  // legitimate machine-local variable — an endpoint — and `dev.json` is still where it belongs. A stranded
+  // `TURNSTILE_SITEKEY_*` is the `Turnstile:` block's to name (`doctor/turnstileSitekeys.ts`), not this one's.
   const recorded = await readBootstrapVars(options.projectDir, options.paths ?? {}).catch(() => ({}));
   const devJsonSecrets = Object.keys(recorded).filter((key) => declaredSecrets.has(key));
 

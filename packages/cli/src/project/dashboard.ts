@@ -64,7 +64,8 @@ const RESOURCE_BUILDERS: Record<ResourceKind, (accountId: string, id: string) =>
   queue: (accountId, id) => `${DASHBOARD_BASE}/${accountId}/workers/queues/${id}/metrics`,
   // `id` is the Secrets Store id, not a secret's name — the page is the store, not one entry.
   secret: (accountId, id) => `${DASHBOARD_BASE}/${accountId}/secrets-store/${id}`,
-  // `id` is the widget's sitekey (e.g. `0x4AAA…`), which `pithy turnstile` writes into wrangler vars.
+  // `id` is the widget's sitekey (e.g. `0x4AAA…`), which `pithy turnstile provision` writes into the
+  // Worker's `pithy.config.ts`, under `turnstile({ widgets: { <mode>: { sitekeys: { prod } } } })`.
   turnstile: (accountId, id) => `${DASHBOARD_BASE}/${accountId}/turnstile/widget/${id}`,
 };
 

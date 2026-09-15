@@ -14,7 +14,7 @@ import { tightenMode } from "./mode";
 
 /**
  * The bootstrap half of a generated `.dev.vars`: the values a Worker reads from an **env binding** rather
- * than from a secrets store — the dev master key, a `cf-secrets-store` secret, a Turnstile sitekey.
+ * than from a secrets store — the dev master key, a `cf-secrets-store` secret, a machine-local endpoint.
  *
  * **It lives in `dev.json`, as a second tenant (#154).** `<config>/<project>/dev.json` was already there
  * for dev-login preferences (#131), it is already machine-local, already outside every checkout, and

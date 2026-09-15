@@ -5,19 +5,18 @@ import { describe, expect, test, vi } from "vitest";
 import { TURNSTILE_SECRET_NAME, type TurnstileSecrets, turnstileSecretsRegistry } from "../secret/registry";
 import {
   deprovisionTurnstile,
+  environmentsWithoutSitekeys,
+  isStrandedSitekeyVar,
   MANAGED_ENVIRONMENTS,
   productionWidgetName,
   provisionTurnstile,
-  sitekeyVarName,
   type TurnstileDeprovisioner,
   type TurnstileProvisioner,
 } from "./provisionTurnstile";
-import { TEST_KEY_ENVIRONMENTS, TEST_SECRET, TURNSTILE_TEST_KEYS } from "./testKeys";
+import { TEST_KEY_ENVIRONMENTS, TEST_SECRET } from "./testKeys";
 
 describe("naming helpers", () => {
-  test("sitekey vars and production widget names are stable per mode", () => {
-    expect(sitekeyVarName("visible")).toBe("TURNSTILE_SITEKEY_VISIBLE");
-    expect(sitekeyVarName("invisible")).toBe("TURNSTILE_SITEKEY_INVISIBLE");
+  test("production widget names are stable per mode", () => {
     expect(productionWidgetName("acme", "invisible")).toBe("acme-prod-turnstile-invisible");
     expect(productionWidgetName("acme", "visible")).toBe("acme-prod-turnstile-visible");
   });
@@ -42,13 +41,34 @@ describe("naming helpers", () => {
   });
 });
 
+describe("isStrandedSitekeyVar", () => {
+  test("names every var the #53 writer left behind, whichever mode it was for", () => {
+    // Read by prefix, not built from the modes: a var for a mode this config no longer declares is exactly as
+    // stranded as one for a mode it does, and a list derived from today's modes would walk past it.
+    expect(isStrandedSitekeyVar("TURNSTILE_SITEKEY_VISIBLE")).toBe(true);
+    expect(isStrandedSitekeyVar("TURNSTILE_SITEKEY_INVISIBLE")).toBe(true);
+    expect(isStrandedSitekeyVar("TURNSTILE_SITEKEY_LEGACY")).toBe(true);
+    expect(isStrandedSitekeyVar("TURNSTILE_SECRET")).toBe(false);
+    expect(isStrandedSitekeyVar("MY_TURNSTILE_SITEKEY_VISIBLE")).toBe(false);
+  });
+});
+
+describe("environmentsWithoutSitekeys", () => {
+  test("names every environment a build cannot resolve a sitekey for, and none it can", () => {
+    // Literals on both sides: the three a sitekey has a slot for, and two that a project really builds.
+    expect(environmentsWithoutSitekeys(["staging", "live", "prod", "feature", "dev"])).toEqual(["live", "feature"]);
+    expect(environmentsWithoutSitekeys(["dev", "staging", "prod"])).toEqual([]);
+  });
+});
+
 /** A provisioner that records calls and creates fresh production widgets by default. */
 function fakeProvisioner(overrides: Partial<TurnstileProvisioner> = {}) {
   return {
     assertDomainAvailable: vi.fn().mockResolvedValue(undefined),
     writeDev: vi.fn().mockResolvedValue(undefined),
     writeManagedSecret: vi.fn().mockResolvedValue(undefined),
-    writeManagedSitekeys: vi.fn().mockResolvedValue(undefined),
+    writeSitekeys: vi.fn().mockResolvedValue(undefined),
+    removeStrandedSitekeyVars: vi.fn().mockResolvedValue([]),
     ensureProductionWidget: vi.fn(async (mode: string) => ({ sitekey: `real-${mode}`, secret: `secret-${mode}` })),
     ...overrides,
   } satisfies TurnstileProvisioner;
@@ -68,7 +88,8 @@ async function capturedWrites(): Promise<Map<string, TurnstileSecrets>> {
       assertDomainAvailable: async () => {},
       writeDev: async (secret) => void written.set("dev", secret),
       writeManagedSecret: async (environment, secret) => void written.set(environment, secret),
-      writeManagedSitekeys: async () => {},
+      writeSitekeys: async () => {},
+      removeStrandedSitekeyVars: async () => [],
       ensureProductionWidget: async (mode) => ({ sitekey: `real-${mode}`, secret: `secret-${mode}` }),
     },
     { modes: ["visible", "invisible"], productionDomain: "app.example.com" },
@@ -77,24 +98,44 @@ async function capturedWrites(): Promise<Map<string, TurnstileSecrets>> {
 }
 
 describe("provisionTurnstile", () => {
-  test("writes the test secret to dev (.dev.vars) and staging (managed), and a real widget to production", async () => {
+  test("writes the test secret to dev and staging, and a real widget to production", async () => {
     const p = fakeProvisioner();
     const result = await provisionTurnstile(p, { modes: ["visible"], productionDomain: "app.example.com" });
 
     const testSecret = { visible: { key: TEST_SECRET } };
-    expect(p.writeDev).toHaveBeenCalledWith(testSecret, {
-      TURNSTILE_SITEKEY_VISIBLE: TURNSTILE_TEST_KEYS.sitekey.visiblePass,
-    });
+    expect(p.writeDev).toHaveBeenCalledWith(testSecret);
     expect(p.writeManagedSecret).toHaveBeenCalledWith("staging", testSecret);
-    expect(p.writeManagedSitekeys).toHaveBeenCalledWith("staging", {
-      TURNSTILE_SITEKEY_VISIBLE: TURNSTILE_TEST_KEYS.sitekey.visiblePass,
-    });
-
     expect(p.ensureProductionWidget).toHaveBeenCalledWith("visible", "app.example.com");
     expect(p.writeManagedSecret).toHaveBeenCalledWith("prod", { visible: { key: "secret-visible" } });
-    expect(p.writeManagedSitekeys).toHaveBeenCalledWith("prod", { TURNSTILE_SITEKEY_VISIBLE: "real-visible" });
     expect(result.widgets).toEqual([{ mode: "visible", sitekey: "real-visible", created: true }]);
     expect(result.productionSecretWritten).toBe(true);
+  });
+
+  test("states every environment's sitekey in one write: test keys for dev and staging, the widget's for prod", async () => {
+    // The config the build projects from, not a Worker var nothing reads (#590). Stated as literals here
+    // rather than read off `testSitekey`, so this and the provisioner are two statements of one fact.
+    const p = fakeProvisioner();
+    const result = await provisionTurnstile(p, {
+      modes: ["visible", "invisible"],
+      productionDomain: "app.example.com",
+    });
+
+    const expected = {
+      visible: { dev: "1x00000000000000000000AA", staging: "1x00000000000000000000AA", prod: "real-visible" },
+      invisible: { dev: "1x00000000000000000000BB", staging: "1x00000000000000000000BB", prod: "real-invisible" },
+    };
+    expect(p.writeSitekeys).toHaveBeenCalledTimes(1);
+    expect(p.writeSitekeys).toHaveBeenCalledWith(expected);
+    expect(result.sitekeys).toEqual(expected);
+  });
+
+  test("removes the stranded sitekey vars and reports what it removed", async () => {
+    const stranded = [{ name: "TURNSTILE_SITEKEY_VISIBLE", environment: "prod" }];
+    const p = fakeProvisioner({ removeStrandedSitekeyVars: vi.fn().mockResolvedValue(stranded) });
+    const result = await provisionTurnstile(p, { modes: ["visible"], productionDomain: "app.example.com" });
+
+    expect(p.removeStrandedSitekeyVars).toHaveBeenCalledTimes(1);
+    expect(result.strandedVarsRemoved).toEqual(stranded);
   });
 
   test("composes the production secret across both widgets as one JSON object", async () => {
@@ -113,7 +154,8 @@ describe("provisionTurnstile", () => {
     // staging is still written (test value), but production secret is left as-is and flagged so the caller warns.
     expect(p.writeManagedSecret).toHaveBeenCalledWith("staging", expect.any(Object));
     expect(p.writeManagedSecret).not.toHaveBeenCalledWith("prod", expect.any(Object));
-    expect(p.writeManagedSitekeys).toHaveBeenCalledWith("prod", { TURNSTILE_SITEKEY_VISIBLE: "existing" });
+    // The existing widget's sitekey still reaches config: it is the one value Cloudflare does return.
+    expect(p.writeSitekeys).toHaveBeenCalledWith({ visible: expect.objectContaining({ prod: "existing" }) });
     expect(result.productionSecretWritten).toBe(false);
   });
 
@@ -130,6 +172,7 @@ describe("provisionTurnstile", () => {
     expect(p.writeDev).not.toHaveBeenCalled();
     expect(p.writeManagedSecret).not.toHaveBeenCalled();
     expect(p.ensureProductionWidget).not.toHaveBeenCalled();
+    expect(p.writeSitekeys).not.toHaveBeenCalled();
   });
 
   test("allowSharedDomain skips the guard (CF itself permits several widgets per domain)", async () => {
@@ -199,12 +242,13 @@ describe("the value provisioning hands each store", () => {
 });
 
 describe("deprovisionTurnstile", () => {
-  test("deletes each widget, the managed secret, and clears dev + managed sitekeys", async () => {
+  test("deletes each widget and the managed secret, blanks the production sitekeys, and strips stranded vars", async () => {
     const d = {
       deleteProductionWidget: vi.fn().mockResolvedValue(undefined),
       deleteManagedSecret: vi.fn().mockResolvedValue(undefined),
       clearDev: vi.fn().mockResolvedValue(undefined),
-      clearManagedSitekeys: vi.fn().mockResolvedValue(undefined),
+      clearProductionSitekeys: vi.fn().mockResolvedValue(undefined),
+      removeStrandedSitekeyVars: vi.fn().mockResolvedValue([]),
     } satisfies TurnstileDeprovisioner;
 
     await deprovisionTurnstile(d, ["visible", "invisible"]);
@@ -213,6 +257,7 @@ describe("deprovisionTurnstile", () => {
     expect(d.deleteProductionWidget).toHaveBeenCalledWith("invisible");
     expect(d.deleteManagedSecret).toHaveBeenCalledTimes(1);
     expect(d.clearDev).toHaveBeenCalledWith(["visible", "invisible"]);
-    expect(d.clearManagedSitekeys).toHaveBeenCalledWith(["visible", "invisible"]);
+    expect(d.clearProductionSitekeys).toHaveBeenCalledWith(["visible", "invisible"]);
+    expect(d.removeStrandedSitekeyVars).toHaveBeenCalledTimes(1);
   });
 });
