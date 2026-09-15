@@ -104,7 +104,16 @@ export interface WorkerScripts {
    * `true` from one is somebody else's deployment.
    */
   exists(name: string): Promise<boolean>;
-  /** Delete the script by name. Called only for a name {@link WorkerScripts.exists} just confirmed. */
+  /**
+   * Delete the script by name, **whatever still binds it**. Called only for a name {@link WorkerScripts.exists}
+   * just confirmed, and only by feature teardown for a name the feature could have deployed.
+   *
+   * Cloudflare refuses to delete a script another Worker still binds, and a feature's Workers bind each
+   * other: `web` calls `api`, and both are the feature's copies. Deleting callers first would need the graph,
+   * and teardown does not have it — a script recorded in the manifest may belong to a Worker that has left the
+   * branch, a Durable Object binding reaches a sibling too, and two Workers can call each other. Every script
+   * this deletes is the feature's own, going in the same pass, so it is forced (#592).
+   */
   delete(name: string): Promise<void>;
 }
 
@@ -122,7 +131,10 @@ export function cloudflareWorkerScripts(clients: CloudflareClients, account: Con
         what: `the ${name} Worker`,
         find: () => workers.getWorker(name),
       })) !== null,
-    delete: (name) => workers.deleteWorker(name),
+    // Forced: see `WorkerScripts.delete`. A Worker outside the feature that binds one of its Workers breaks,
+    // as it would when the feature's Worker stopped answering; the kit never writes such a binding, because
+    // a feature's service targets are always its own copies.
+    delete: (name) => workers.deleteWorker(name, { force: true }),
   };
 }
 

@@ -150,12 +150,14 @@ describe("cloudflareWorkerScripts", () => {
     expect(await scripts.exists("acme-f69-demo-web")).toBe(false);
   });
 
-  test("delete removes the script by name", async () => {
+  // A feature's Workers call each other, and Cloudflare refuses to delete a callee while its caller still
+  // binds it. Every Worker teardown deletes is the feature's own and goes in the same pass, so it forces.
+  test("delete removes the script by name, whatever still binds it", async () => {
     const fake = fakeWorkers(["acme-f69-demo-api"]);
     const scripts = cloudflareWorkerScripts(fake.clients, { accountId: "acct-ours", confirmation: "named" });
 
     await scripts.delete("acme-f69-demo-api");
 
-    expect(fake.deleteWorker).toHaveBeenCalledWith("acme-f69-demo-api");
+    expect(fake.deleteWorker).toHaveBeenCalledWith("acme-f69-demo-api", { force: true });
   });
 });

@@ -4,6 +4,7 @@
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
+import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import type { BindingSpecInput } from "@pithy-sh/core/src/capability/bindings";
 import { defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
@@ -15,7 +16,12 @@ import type { CliAuditEvent } from "../audit/cliAudit";
 import { sourceFiles } from "../ci/sourceFiles";
 import type { ProvisionWorker } from "../provision/environment";
 import { featureConfigPath } from "../provision/featureConfig";
-import { ProvisionAuditActions, type ResourceProvisioner, type ResourceProvisioners } from "../provision/resources";
+import {
+  cloudflareWorkerScripts,
+  ProvisionAuditActions,
+  type ResourceProvisioner,
+  type ResourceProvisioners,
+} from "../provision/resources";
 import { emptyManifest, type FeatureResource, manifestPath, readManifest, writeManifest } from "./manifest";
 import { deletedBeforeFailure, deprovisionFeature, provisionFeature } from "./provision";
 
@@ -1236,6 +1242,12 @@ describe("a feature's Worker scripts", () => {
  * 2. **Every entry the manifest records is among what teardown reports deleting**, read off the manifest's
  *    own arrays, whatever they are called. A record nobody acts on is the shape this issue was.
  *
+ * **The account refuses what Cloudflare refuses.** `web` binds `api` as a service, as a scaffolded front end
+ * calls its API, and the stubbed Workers manager refuses to delete a script another deployed script still
+ * binds unless the delete is forced — `DELETE /workers/scripts/<name>` without `force`. Teardown reaches it
+ * through the real `cloudflareWorkerScripts`, so the decision to force is the production one, not a stub's.
+ * `api` sorts first, so an unforced teardown fails on it before a single resource is touched, every run.
+ *
  * The run hands teardown the whole Worker set, so a script the recomputation finds satisfies (2) even if
  * nothing read the manifest's copy of it. The manifest-only path — a Worker removed from the branch after
  * it deployed — is held by *a recorded script whose Worker has left the branch* above, not by this.
@@ -1245,7 +1257,9 @@ describe("a feature's Worker scripts", () => {
  * capability's own provisioner calling `CloudflareClients` directly, or `pithy deploy --kit` shipping a kit
  * Worker into the feature environment under a name its host template composes, would put things on a
  * real account this stub never hears about. So would anything a script carries with it — routes, custom
- * domains, Durable Object storage — and an R2 bucket's objects.
+ * domains, Durable Object storage — and an R2 bucket's objects. And the refusal is Cloudflare's as its API
+ * spec and wrangler's `delete` describe it, not observed on a live account: that the manager puts `force` on
+ * the SDK call is held by `workersManager.test.ts`, and this stub sees only that the manager was asked to.
  */
 describe("teardown reverses everything provisioning and deploy create (#592)", () => {
   let dir: string;
@@ -1287,14 +1301,29 @@ describe("teardown reverses everything provisioning and deploy create (#592)", (
       put: async (name: string, value: string) => void holding("secret").set(name, value),
       remove: async (name: string) => holding("secret").delete(name),
     };
-    const scripts = {
-      exists: async (name: string) => holding("worker").has(name),
-      delete: async (name: string) => void holding("worker").delete(name),
+    /** Each deployed script's `services` targets, as its deploy uploaded them. */
+    const serviceTargets = new Map<string, string[]>();
+    const workersManager = {
+      getWorker: async (name: string) => (holding("worker").has(name) ? { id: name } : null),
+      deleteWorker: async (name: string, options?: { force?: boolean }) => {
+        const callers = [...holding("worker").keys()].filter(
+          (other) => other !== name && (serviceTargets.get(other) ?? []).includes(name),
+        );
+        if (callers.length > 0 && options?.force !== true) {
+          throw new Error(`Cloudflare refused to delete ${name}: ${callers.join(", ")} binds it.`);
+        }
+        holding("worker").delete(name);
+        serviceTargets.delete(name);
+      },
     };
+    const scripts = cloudflareWorkerScripts({ workers: () => workersManager } as unknown as CloudflareClients, {
+      accountId: "acct-ours",
+      confirmation: "pinned",
+    });
     /** Every name on the account, as `kind:name`, sorted — the oracle. */
     const contents = () =>
       [...kinds].flatMap(([kind, names]) => [...names.keys()].map((name) => `${kind}:${name}`)).sort();
-    return { provisioners, store, scripts, holding, contents };
+    return { provisioners, store, scripts, serviceTargets, holding, contents };
   }
 
   test("after provision, deploy and destroy, the account holds exactly what it held before", async () => {
@@ -1313,12 +1342,21 @@ describe("teardown reverses everything provisioning and deploy create (#592)", (
         },
       }),
     ];
+    // The front end calls the API: the layout where the callee sorts first.
+    const callsApi = defineCapability({
+      name: "calls-api",
+      requiredBindings: [{ type: "service", name: "API", service: "api" }] satisfies BindingSpecInput[],
+    });
     const workers: ProvisionWorker[] = [];
     for (const app of ["api", "web"]) {
       const workerDir = join(dir, "apps", app);
       await mkdir(workerDir, { recursive: true });
       await writeFile(join(workerDir, "wrangler.jsonc"), `{\n  "name": "acme-${app}"\n}\n`);
-      workers.push({ name: `acme-${app}`, dir: workerDir, capabilities: composed });
+      workers.push({
+        name: `acme-${app}`,
+        dir: workerDir,
+        capabilities: app === "web" ? [...composed, callsApi] : composed,
+      });
     }
 
     // What is not this feature's, and must survive it.
@@ -1330,7 +1368,7 @@ describe("teardown reverses everything provisioning and deploy create (#592)", (
 
     await provisionFeature({
       projectDir: dir,
-      capabilities: composed,
+      capabilities: [...composed, callsApi],
       identity,
       provisioners: account.provisioners,
       store: account.store,
@@ -1341,19 +1379,25 @@ describe("teardown reverses everything provisioning and deploy create (#592)", (
     // Deploy, as wrangler names it: `--env feature` reads the stanza name out of the generated config.
     for (const worker of workers) {
       const generated = parse(await readFile(featureConfigPath(worker.dir), "utf8")) as unknown as {
-        env: Record<string, { name?: string }>;
+        env: Record<string, { name?: string; services?: { service: string }[] }>;
       };
       const name = generated.env.feature?.name;
       if (name === undefined) throw new Error(`provisioning wrote no script name for ${worker.dir}`);
       account.holding("worker").set(name, name);
+      account.serviceTargets.set(
+        name,
+        (generated.env.feature?.services ?? []).map((entry) => entry.service),
+      );
     }
+    // Non-vacuity for the refusal: a deployed script really does bind a sibling.
+    expect(account.serviceTargets.get("acme-f69-demo-web")).toEqual(["acme-f69-demo-api"]);
     const deployed = account.contents();
     const manifest = await readManifest(manifestPath(dir));
 
     const report = await deprovisionFeature({
       projectDir: dir,
       identity,
-      capabilities: composed,
+      capabilities: [...composed, callsApi],
       env: "feature",
       provisioners: account.provisioners,
       store: account.store,

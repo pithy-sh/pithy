@@ -259,10 +259,23 @@ export class CloudflareWorkersManager extends CloudflareManager {
     );
   }
 
-  /** Delete a Worker script. */
-  async deleteWorker(scriptName: string): Promise<void> {
+  /**
+   * Delete a Worker script.
+   *
+   * **Cloudflare refuses the delete while another Worker still binds the script** — as a service, a Durable
+   * Object namespace, or a dispatch outbound — unless it is forced. `force` sends that flag. It is the
+   * caller's to decide, because only the caller knows whether what binds the script is going too: a set of
+   * Workers that call each other can only be deleted forced, and one Worker another project still calls
+   * should not be. Forcing also removes what Cloudflare associates with the script, its Durable Objects
+   * included. wrangler's own `delete` forces only after a person has read the list of what will break.
+   */
+  async deleteWorker(scriptName: string, options: { force?: boolean } = {}): Promise<void> {
     await cloudflareRequest(`delete worker '${scriptName}'`, () =>
-      this.getClient().workers.scripts.delete(scriptName, { account_id: this.accountId }, requestOptions),
+      this.getClient().workers.scripts.delete(
+        scriptName,
+        { account_id: this.accountId, ...(options.force === true ? { force: true } : {}) },
+        requestOptions,
+      ),
     );
   }
 

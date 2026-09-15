@@ -313,6 +313,8 @@ export interface DeprovisionFeatureOptions {
  * a moment a reachable Worker is bound to nothing. Each script is the manifest's record, then every name
  * the current Workers could have deployed under — both shapes, see `featureWorkerScriptNames` — and each
  * is deleted only once the account confirms it is there, because a named script may never have deployed.
+ * Each delete is forced, because a feature's Workers bind each other and Cloudflare refuses to delete a
+ * callee its caller still binds: `web` calling `api` sorts the callee first, and teardown never finished.
  *
  * Resources: first the exact ids recorded in the manifest, then reconcile —
  * for every binding the enabled capabilities declare, recompute the exact resource name (the same function
