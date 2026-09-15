@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { applyDomains } from "./applyDomains";
+import { composeFor } from "./composeFor";
 import { assertOriginsDeclared, checkOrigins, describeOriginDrift, originDrift } from "./domains";
 
 let dir: string;
@@ -366,5 +367,36 @@ describe("what pithy writes, pithy deploys", () => {
     // The half #264 was about. `workers_dev: false` with no route is a Worker reachable at no address,
     // and the two are written by the same call precisely so neither can arrive without the other.
     expect(raw.env.prod.routes).toEqual([APP_ROUTE]);
+  });
+});
+
+/**
+ * **Each environment's origins are its own composition's (#586).** A `pithy.config.ts` may name its domains
+ * from the environment it is composed for. The reader took the module cache, which held whichever
+ * environment this process composed last, so a deploy to staging was judged against dev's host.
+ */
+describe("an environment's origins are read from its own composition", () => {
+  test("the deploy gate and doctor's check each read the environment they answer", async () => {
+    await project('["staging", "prod"]');
+    const route = (host: string) => ({ pattern: host, custom_domain: true, zone_name: "example.com" });
+    const workerDir = await worker("board", {
+      workers_dev: false,
+      env: { staging: { routes: [route("staging.example.com")] }, prod: { routes: [route("prod.example.com")] } },
+    });
+    await writeFile(
+      join(workerDir, "pithy.config.ts"),
+      [
+        'const environment = process.env.ENVIRONMENT ?? "none";',
+        'const domain = { pattern: [environment, "example.com"].join("."), zone: "example.com" };',
+        "export default { domains: { staging: domain, prod: domain }, capabilities: [] };",
+        "",
+      ].join("\n"),
+    );
+    // What doctor's health block leaves in the module cache before this runs.
+    await composeFor("dev", (load) => load(workerDir));
+
+    await expect(assertOriginsDeclared(dir, "staging")).resolves.toBeUndefined();
+    await expect(assertOriginsDeclared(dir, "prod")).resolves.toBeUndefined();
+    expect(await checkOrigins(dir)).toEqual({ state: "ok", drift: [] });
   });
 });

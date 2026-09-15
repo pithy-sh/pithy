@@ -45,7 +45,7 @@ import { sourceFiles } from "./sourceFiles";
  *
  * - **Module granularity, not call-site granularity.** A module in {@link RAW_COMPOSERS} may add a second
  *   raw composition, for an environment, beside the one its reason describes, and pass — planted as a
- *   `loadWorkerConfig(dir)` appended to `project/workflows.ts`. Half 3 likewise
+ *   `loadWorkerConfig(dir)` appended to `project/envInventory.ts`. Half 3 likewise
  *   passes a module that assembles one backend inside the primitive and a second outside it. Reading call
  *   sites wants a binding analysis rather than a wider regex.
  * - **A seal is a sentence, not a proof.** A carrier in {@link SEALED} is believed to hand back an answer. If
@@ -290,14 +290,11 @@ const RAW_COMPOSERS: Readonly<Record<string, string>> = {
     "Reads the capability's config as one project-wide declaration, for its per-environment subcommands too; a config that differs by environment is answered from the composition for none, which is a limit of this entry.",
   "devSecrets/targets.ts":
     "Reads the dev secrets registry, which is per project with one value per name, re-importing a config pithy add has just written.",
-  "doctor/settingsSources.ts": "Reads the domains declaration, which names every environment's address in one value.",
   "main.ts":
     "Imports every command module whole, commands/email.ts among them, to run its default export; each command it runs is held on its own.",
   "project/deploy.ts": "Reads the domains declaration, which names every environment's address in one value.",
   "project/deployKit.ts": "Reads the domains declaration, which names every environment's address in one value.",
-  "project/domains.ts": "Reads the domains declaration, which names every environment's address in one value.",
   "project/envInventory.ts": "Reads the domains declaration, which names every environment's address in one value.",
-  "project/workflows.ts": "Compares the app's workflow declaration with every environment's stanza at once.",
 };
 
 /**
@@ -311,18 +308,12 @@ const SEALED: Readonly<Record<string, string>> = {
     "Returns which secrets each environment reaches, each composed through composeFor; the raw resolve only finds the Worker directories.",
   "devSecrets/targets.ts#resolveDevSecretsTargets":
     "Returns each Worker's directory and secret registry, which is per project with one value per name.",
-  "doctor/settingsSources.ts#settingsEnvironments":
-    "Returns each declared environment's name and origin, read from the domains declaration that names every environment's address in one value.",
   "project/deploy.ts#deployProject":
     "Returns the deploy report; the composition is read only for the domains declaration, which names every environment's address in one value.",
   "project/deployKit.ts#deployKitWorkers":
     "Returns the kit deploy report; the composition is read only for the domains declaration, which names every environment's address in one value.",
-  "project/domains.ts#originDrift":
-    "Returns origin drift per environment, read from the domains declaration that names every environment's address in one value.",
   "project/envInventory.ts#buildEnvInventory":
     "Returns the environment inventory; the composition is read only for the domains declaration, which names every environment's address in one value.",
-  "project/workflows.ts#workflowDrift":
-    "Returns workflow drift per environment, comparing the app's one workflow declaration with every stanza at once.",
 };
 
 /**
@@ -476,7 +467,7 @@ describe("a composition for an environment is composed for it, by one primitive"
     expect(rawLoaderPattern().test("const email = await loadEmailCapability(projectDir);")).toBe(true);
     expect(rawLoaderPattern().test("const target = await targetWorker(env, options);")).toBe(false);
     // A sealed carrier is not.
-    expect(rawLoaderPattern().test("const drift = await originDrift(projectDir, environments);")).toBe(false);
+    expect(rawLoaderPattern().test("const inventory = await buildEnvInventory(options);")).toBe(false);
     // A namespace import of a module exporting a carrier, where the call is a member read by shape.
     expect(composesRaw('import * as email from "./email";')).toBe(true);
     expect(composesRaw('const { loadEmailCapability: load } = await import("../commands/email");')).toBe(true);

@@ -5,7 +5,8 @@ import { basename } from "node:path";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { DOMAIN_ENVIRONMENTS, type WorkerDomains } from "@pithy-sh/core/src/naming/domains";
 import { isSourceEnvironment } from "../provision/featureConfig";
-import { loadProject, loadProjectEnvironments, loadWorkerConfig, loadWorkerDomains } from "./config";
+import { composeFor } from "./composeFor";
+import { loadProject, loadProjectEnvironments, loadWorkerDomains } from "./config";
 import {
   type AddressStanza,
   resolveWorkerAddress,
@@ -222,10 +223,22 @@ function servesOrigin(
  *
  * So `loaded` is carried, and a negative finding is only ever made against a config that was read. The
  * `workers.dev` finding is unaffected either way, because its evidence is the `wrangler.jsonc` alone.
+ *
+ * **Composed for the environment it answers (#586).** A `pithy.config.ts` may name its domains from the
+ * environment it is composed for — `pithy init` scaffolds exactly that — so one reading cannot answer every
+ * environment. The loader without the primitive took the module cache, which holds whichever environment
+ * this process composed last: doctor printed dev's host under staging and prod. So each environment's
+ * declaration is its own composition's, and a config that throws for one costs that one's claim alone.
  */
-async function workerDomains(workerDir: string): Promise<{ domains: WorkerDomains | undefined; loaded: boolean }> {
+async function workerDomains(
+  workerDir: string,
+  environment: string,
+): Promise<{ domains: WorkerDomains | undefined; loaded: boolean }> {
   try {
-    return { domains: loadWorkerDomains(await loadWorkerConfig(workerDir)), loaded: true };
+    return {
+      domains: await composeFor(environment, async (load) => loadWorkerDomains(await load(workerDir))),
+      loaded: true,
+    };
   } catch {
     // A config that will not import has its own, better error waiting one step later — the same rule
     // `unprovisionedBindings` states. This reader gates a deploy; it does not diagnose a broken config.
@@ -246,9 +259,9 @@ export async function originDrift(projectDir: string, environments: readonly str
     if (target.hasWrangler === false) continue;
     const config = (await readOptionalWranglerConfig(target.dir).catch(() => null)) as OriginWrangler | null;
     if (!config) continue;
-    const { domains, loaded } = await workerDomains(target.dir);
     const worker = basename(target.dir);
     for (const env of environments) {
+      const { domains, loaded } = await workerDomains(target.dir, env);
       const stanza = config.env?.[env];
       const address = resolveWorkerAddress({ environment: env, domains, stanza });
       if (!address) {

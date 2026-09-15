@@ -9,13 +9,8 @@ import type { SecretProbe } from "@pithy-sh/secrets/src/cli/dispatch";
 import { buildSecretDispatcher } from "../capabilities/secretsDispatcher";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
-import {
-  loadProject,
-  loadWorkerConfig,
-  loadWorkerDomains,
-  projectEnvironments,
-  requireProjectName,
-} from "../project/config";
+import { composeFor } from "../project/composeFor";
+import { loadProject, loadWorkerDomains, projectEnvironments, requireProjectName } from "../project/config";
 import { type AddressStanza, resolveWorkerAddress } from "../project/workerAddress";
 import { readOptionalWranglerConfig } from "../project/wrangler";
 import { checkCapabilitySettings, type SettingsAccountConnection, type SettingsCheck } from "./settings";
@@ -42,21 +37,27 @@ import { checkCapabilitySettings, type SettingsAccountConnection, type SettingsC
  * A `wrangler.jsonc` or a `pithy.config.ts` that will not read costs the origins and nothing else. The
  * declared set is the root config's, and without it there is no answer at all — which the runner turns
  * into an unchecked capability rather than into a clean pass.
+ *
+ * **Each environment's origin is read from its own composition (#586).** A `pithy.config.ts` may name its
+ * domains from the environment it is composed for, and the loader without the primitive took the module
+ * cache — whichever environment doctor composed last — so every environment was handed that one's host.
  */
 export async function settingsEnvironments(projectDir: string, workerDir: string): Promise<SettingsEnvironment[]> {
   const declared = await projectEnvironments(projectDir);
   const config = (await readOptionalWranglerConfig(workerDir).catch(() => null)) as {
     env?: Record<string, AddressStanza | undefined>;
   } | null;
-  // A negative claim about a Worker's domains needs a config that was actually read: the `pithy.config.ts`
-  // nobody could import is exactly the one that might have declared one.
-  const domains = await loadWorkerConfig(workerDir)
-    .then((worker) => loadWorkerDomains(worker))
-    .catch(() => undefined);
-  return declared.map((name) => {
+  const environments: SettingsEnvironment[] = [];
+  for (const name of declared) {
+    // A negative claim about a Worker's domains needs a config that was actually read: the `pithy.config.ts`
+    // nobody could import, or that throws for this environment, is exactly the one that might have declared one.
+    const domains = await composeFor(name, async (load) => loadWorkerDomains(await load(workerDir))).catch(
+      () => undefined,
+    );
     const address = resolveWorkerAddress({ environment: name, domains, stanza: config?.env?.[name] });
-    return { name, origin: address?.url ?? null };
-  });
+    environments.push({ name, origin: address?.url ?? null });
+  }
+  return environments;
 }
 
 /** What it takes to reach the account, all of it injectable so a unit test never calls out. */
@@ -199,10 +200,20 @@ export async function doctorSettingsCheck(options: DoctorSettingsOptions): Promi
   if (!options.workers.some((worker) => worker.capabilities.some((capability) => capability.settings))) return null;
   const project = requireProjectName(await loadProject(options.projectDir));
   const dirs = new Map(options.workers.map((worker) => [worker.name, worker.dir]));
+  // Once per Worker. The runner asks per capability, doctor hands each Worker over once per environment, and
+  // every answer composes each declared environment again — the same question, asked that many times.
+  const environments = new Map<string, Promise<SettingsEnvironment[]>>();
   return checkCapabilitySettings({
     project,
     workers: options.workers.map((worker) => ({ name: worker.name, capabilities: worker.capabilities })),
-    environments: (worker) => settingsEnvironments(options.projectDir, dirs.get(worker) ?? options.projectDir),
+    environments: (worker) => {
+      let answer = environments.get(worker);
+      if (answer === undefined) {
+        answer = settingsEnvironments(options.projectDir, dirs.get(worker) ?? options.projectDir);
+        environments.set(worker, answer);
+      }
+      return answer;
+    },
     connect: () =>
       settingsAccountConnection({
         account: options.account,

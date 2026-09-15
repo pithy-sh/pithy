@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { composeFor } from "../project/composeFor";
 import { settingsAccountConnection, settingsEnvironments } from "./settingsSources";
 
 let dir = "";
@@ -35,6 +36,29 @@ describe("the environments a check is handed", () => {
     expect(await settingsEnvironments(dir, workerDir)).toEqual([
       { name: "staging", origin: "https://staging.acme.dev" },
       { name: "prod", origin: "https://api.acme.dev" },
+    ]);
+  });
+
+  /**
+   * Each origin from its own environment's composition (#586). A config may name its domains from the
+   * environment it is composed for, and the reader took the module cache — whichever environment this process
+   * composed last — so every environment was handed that one's host.
+   */
+  test("each environment's origin is read from that environment's composition", async () => {
+    const workerDir = await project(["staging", "prod"], { name: "acme-api" });
+    await writeFile(
+      join(workerDir, "pithy.config.ts"),
+      [
+        'const environment = process.env.ENVIRONMENT ?? "none";',
+        'const domain = { pattern: [environment, "acme.dev"].join("."), zone: "acme.dev" };',
+        "export default { domains: { staging: domain, prod: domain }, capabilities: [] };",
+        "",
+      ].join("\n"),
+    );
+    await composeFor("dev", (load) => load(workerDir));
+    expect(await settingsEnvironments(dir, workerDir)).toEqual([
+      { name: "staging", origin: "https://staging.acme.dev" },
+      { name: "prod", origin: "https://prod.acme.dev" },
     ]);
   });
 
