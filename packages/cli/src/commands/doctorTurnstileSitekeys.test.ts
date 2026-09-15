@@ -17,7 +17,13 @@ const { baseOptions } = harness;
 const finding: TurnstileSitekeysCheck = {
   state: "findings",
   stranded: [
-    { worker: "board", name: "TURNSTILE_SITEKEY_VISIBLE", environment: "prod", file: "/p/apps/board/wrangler.jsonc" },
+    {
+      worker: "board",
+      name: "TURNSTILE_SITEKEY_VISIBLE",
+      environment: "prod",
+      file: "/p/apps/board/wrangler.jsonc",
+      removedBy: "board",
+    },
   ],
   unrendered: [
     { worker: "board", environment: "staging", slot: true },

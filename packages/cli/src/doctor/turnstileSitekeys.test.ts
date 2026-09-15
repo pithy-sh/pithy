@@ -1,10 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { afterAll, describe, expect, test } from "vitest";
+import { CloudflareTurnstileProvisioner } from "../capabilities/turnstileProvisioner";
+import { resolveTurnstileTarget } from "../commands/turnstile";
 import { writeBootstrapVars } from "../devSecrets/bootstrapVars";
 import { featureConfigPath } from "../provision/featureConfig";
 import { linkKitPackages } from "../test-utils/linkKit";
@@ -132,18 +136,21 @@ describe("checkTurnstileSitekeys", () => {
         name: "TURNSTILE_SITEKEY_VISIBLE",
         environment: "dev",
         file: join(workerDir, "wrangler.jsonc"),
+        removedBy: "board",
       },
       {
         worker: "board",
         name: "TURNSTILE_SITEKEY_VISIBLE",
         environment: "staging",
         file: join(workerDir, "wrangler.jsonc"),
+        removedBy: "board",
       },
       {
         worker: null,
         name: "TURNSTILE_SITEKEY_INVISIBLE",
         environment: "dev",
         file: expect.stringMatching(/dev\.json$/),
+        removedBy: "board",
       },
     ]);
     const text = describeTurnstileSitekeys(check).join("\n");
@@ -174,5 +181,93 @@ describe("checkTurnstileSitekeys", () => {
       stranded: [],
       unrendered: [],
     });
+  });
+});
+
+/**
+ * **The remedy a stranded-var line names is one that clears it** (#590 review).
+ *
+ * Doctor reported a `TURNSTILE_SITEKEY_*` in every Worker's `wrangler.jsonc` and ended every line with
+ * "pithy turnstile provision … removes this". Provisioning removes vars from the target Worker's file and
+ * `dev.json` only, and refuses a target that does not compose turnstile — which is exactly where the old split
+ * left vars. And #53's writer put sitekeys in the project root's `.dev.vars`, which doctor did not read.
+ *
+ * So the gate runs the remedy: for every finding that names a Worker, resolve it the way the command does and
+ * run the real removal on it, then check again. Every such finding must be gone. A finding that names none
+ * must say to delete it by hand.
+ */
+describe("a stranded-var finding and its remedy", () => {
+  /** api composes turnstile; web composes nothing; each holds a stranded var, as do dev.json and the root .dev.vars. */
+  async function strandedEverywhere() {
+    const projectDir = await mkdtemp(join(tmpdir(), "pithy-doctor-stranded-"));
+    dirs.push(projectDir);
+    projects += 1;
+    await writeFile(join(projectDir, "pithy.config.ts"), `export default { name: "doctor-stranded-${projects}" };\n`);
+    const stranded = (name: string) =>
+      JSON.stringify({ name, env: { prod: { vars: { TURNSTILE_SITEKEY_VISIBLE: "0x4AAAold" } } } });
+    for (const [worker, registration] of [
+      ["api", `turnstile({ widgets: { visible: { sitekeys: { ${PROVISIONED} } } } })`],
+      ["web", ""],
+    ] as const) {
+      const workerDir = join(projectDir, "apps", worker);
+      await mkdir(workerDir, { recursive: true });
+      await writeFile(join(workerDir, "wrangler.jsonc"), stranded(worker));
+      const imports = registration ? 'import { turnstile } from "@pithy-sh/turnstile/src/capability";\n' : "";
+      await writeFile(
+        join(workerDir, "pithy.config.ts"),
+        `${imports}export default { capabilities: [${registration}] };\n`,
+      );
+    }
+    await writeBootstrapVars(projectDir, { TURNSTILE_SITEKEY_INVISIBLE: "1x00" });
+    await writeFile(join(projectDir, ".dev.vars"), "KEEP=1\nTURNSTILE_SITEKEY_VISIBLE=1x00\n");
+    await linkKitPackages(projectDir, ["turnstile"]);
+    return projectDir;
+  }
+
+  /** What identifies one finding across two checks. */
+  const identity = (found: { file: string; name: string; environment: string }) =>
+    `${found.file}\u0000${found.name}\u0000${found.environment}`;
+
+  test("every finding that names a Worker is cleared by provisioning that Worker, and the rest say by hand", async () => {
+    const projectDir = await strandedEverywhere();
+    const before = await checkTurnstileSitekeys(projectDir);
+
+    // The fixture is what the review reproduced: a var in a Worker that composes no turnstile, and one in the
+    // project root's .dev.vars. Without both, the case below cannot fail on either half.
+    expect(before.stranded.map((found) => [found.worker, found.file.slice(projectDir.length)])).toEqual(
+      expect.arrayContaining([
+        ["web", join("/apps", "web", "wrangler.jsonc")],
+        [null, "/.dev.vars"],
+      ]),
+    );
+
+    for (const worker of new Set(before.stranded.map((found) => found.removedBy))) {
+      if (worker === null) continue;
+      const { worker: target } = await resolveTurnstileTarget({ projectDir, worker });
+      await new CloudflareTurnstileProvisioner({
+        account: { accountId: "acct-1", confirmation: "pinned" },
+        cf: {} as CloudflareClients,
+        project: "acme",
+        projectDir,
+        workerDir: target.dir,
+        dispatcher: { dispatch: async () => {} },
+        environments: DEFAULT_ENVIRONMENTS,
+        notes: () => {},
+      }).removeStrandedSitekeyVars();
+    }
+
+    const after = new Set((await checkTurnstileSitekeys(projectDir)).stranded.map(identity));
+    const promised = before.stranded.filter((found) => found.removedBy !== null);
+    expect(promised.length).toBeGreaterThan(0);
+    expect(promised.filter((found) => after.has(identity(found)))).toEqual([]);
+
+    const lines = describeTurnstileSitekeys(before);
+    for (const found of before.stranded.filter((each) => each.removedBy === null)) {
+      const line = lines.find((each) => each.startsWith(`${found.file}:`)) ?? "";
+      expect(line).toMatch(/by hand/);
+      expect(line).not.toContain("pithy turnstile provision");
+    }
+    // The adopter's own lines in the root .dev.vars are theirs; doctor reads the file and never edits it.
+    expect(await readFile(join(projectDir, ".dev.vars"), "utf8")).toContain("KEEP=1");
   });
 });
