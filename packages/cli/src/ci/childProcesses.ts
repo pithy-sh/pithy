@@ -34,6 +34,13 @@ import { resolve } from "node:path";
  * - **A spawning library.** `execa`, `cross-spawn`, `tinyexec` start children without this module's name
  *   anywhere in the CLI's source. None is a dependency today; adding one is outside this walk.
  * - **`cluster.fork`.** Only `child_process` and Bun's global are primitives here.
+ * - **A relative module named by anything but a literal.** An edge between two modules is a static
+ *   `import`/`export … from`, or a dynamic `import()` whose specifier is one whole string or template
+ *   literal. One that starts as a relative literal and is built from there — `` import(`../${name}`) ``,
+ *   `import("../" + name)` — is reported. One that holds no relative literal at all — `import(spec)` with
+ *   `spec` a `const` elsewhere, or `require("../dev/ports")` — is not seen: a planted
+ *   `const spec = "../dev/ports"; await import(spec)` reaching a silent spawner passed. The CLI's own
+ *   non-literal `import()`s all load an adopter's file by absolute URL, which no relative text could name.
  * - **Reference by text.** A declaration reaches another when it names it — a local name, an imported alias,
  *   `namespace.member`, or a namespace used bare. A shadowing local of the same name is read as a reference,
  *   which over-reports. A function handed in as a parameter is not followed to wherever its value was named.
@@ -563,17 +570,34 @@ export function relativeImports(module: SourceModule, all: ReadonlyMap<string, S
   return found;
 }
 
-/** Relative dynamic imports: which file, at which offset. */
+/**
+ * Relative dynamic imports: which file, at which offset — and every one this cannot resolve by its text.
+ *
+ * The specifier may be quoted either way or written as a template literal with nothing interpolated, which
+ * Biome accepts and which is the same module. A relative specifier that is *not* one whole literal —
+ * `` import(`../${name}`) ``, `import("../" + name)` — names a module only at runtime, so it is reported as
+ * unfollowable rather than skipped: an edge dropped here is a command whose silent spawn nobody sees.
+ */
 function dynamicImports(
   module: SourceModule,
   all: ReadonlyMap<string, SourceModule>,
-): { target: string; at: number }[] {
+): { found: { target: string; at: number }[]; unfollowable: string[] } {
   const found: { target: string; at: number }[] = [];
-  for (const match of module.code.matchAll(/\bimport\s*\(\s*["'](\.[^"']*)["']\s*\)/g)) {
-    const target = resolveSpecifier(module.file, match[1] as string, all);
-    if (target) found.push({ target, at: match.index });
+  const unfollowable: string[] = [];
+  for (const opened of module.code.matchAll(/\bimport\s*\(\s*(["'\x60])\./g)) {
+    const quote = opened[1] as string;
+    const whole = new RegExp(String.raw`^import\s*\(\s*${quote}(\.[^"'\x60\n]*)${quote}\s*\)`).exec(
+      module.code.slice(opened.index),
+    );
+    const spec = whole?.[1];
+    if (spec === undefined || (quote === "\x60" && spec.includes("${"))) {
+      unfollowable.push(`imports a relative module by a specifier built at runtime at offset ${opened.index}`);
+      continue;
+    }
+    const target = resolveSpecifier(module.file, spec, all);
+    if (target) found.push({ target, at: opened.index });
   }
-  return found;
+  return { found, unfollowable };
 }
 
 /** The local names in a module a declared export of `target` is reachable by, including through a namespace. */
@@ -630,7 +654,9 @@ export function childProcessReport(
     byFile.set(module.file, list);
     for (const decl of list) decls.set(`${module.file}#${decl.name}`, decl);
     imports.set(module.file, relativeImports(module, all));
-    dynamics.set(module.file, dynamicImports(module, all));
+    const dynamic = dynamicImports(module, all);
+    dynamics.set(module.file, dynamic.found);
+    for (const entry of dynamic.unfollowable) unfollowable.push(`${module.file}: ${entry}`);
 
     const own = (at: number): Declaration | undefined => list.find((decl) => at >= decl.start && at < decl.end);
     for (const call of scan.calls) {

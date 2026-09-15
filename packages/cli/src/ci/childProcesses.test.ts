@@ -113,6 +113,19 @@ describe("a silent spawner is followed however it is imported", () => {
     expect(silentCommands(walk({ "pm.ts": PM, "commands/add.ts": command }))).toEqual(["commands/add.ts#run"]);
   });
 
+  test("through a dynamic import written as a template literal", () => {
+    // Biome accepts the spelling, and the child_process specifier already allowed it; the relative edge did
+    // not, so a command reaching a silent spawner this way ran silent with every narration test green.
+    const command = "export default async function run() {\n  (await import(`../pm`)).install();\n}\n";
+    expect(silentCommands(walk({ "pm.ts": PM, "commands/add.ts": command }))).toEqual(["commands/add.ts#run"]);
+  });
+
+  test("through a template-literal dynamic import, destructured", () => {
+    const command =
+      "export default async function run() {\n  const { install: go } = await import(`../pm`);\n  go();\n}\n";
+    expect(silentCommands(walk({ "pm.ts": PM, "commands/add.ts": command }))).toEqual(["commands/add.ts#run"]);
+  });
+
   test("and a step raised under an alias narrates it", () => {
     const command =
       'import { install } from "../pm";\nimport { startStep as say } from "../terminal/progress";\nexport default function run() {\n  say("Installing");\n  install();\n}\n';
@@ -168,6 +181,10 @@ describe("what the walk cannot follow is reported, not skipped", () => {
       'const name = "node:child_process";\nexport async function install() {\n  (await import(name)).execFile("npm");\n}\n',
     "a re-export of a primitive": 'export { execFile } from "node:child_process";\n',
     "Bun's global as a value": 'const runtime = Bun;\nexport function install() {\n  runtime.spawn(["npm"]);\n}\n',
+    "a relative module whose specifier is interpolated":
+      "export async function install(name: string) {\n  (await import(`../${name}`)).install();\n}\n",
+    "a relative module whose specifier is concatenated":
+      'export async function install(name: string) {\n  (await import("../" + name)).install();\n}\n',
   };
 
   for (const [what, pm] of Object.entries(cases)) {

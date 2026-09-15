@@ -35,7 +35,8 @@ import { isTestFile, readSource, sourcePaths } from "./sourceFiles";
  *
  * 1. *The walk.* Every use of `child_process` it meets must be one it can follow. A binding passed as a
  *    value, a re-export, a specifier held in a variable fail here, naming the file, rather than being
- *    skipped. This is the half that keeps the reach equal to the claim.
+ *    skipped — and so does a relative `import()` whose specifier is built at runtime from a literal. This is
+ *    the half that keeps the reach equal to the claim.
  * 2. *The producer.* A top-level declaration that starts a captured child — or calls one that does — raises
  *    a step, or is called by something that does. What reaches a `pithy <command>` module still silent is the
  *    defect.
@@ -69,7 +70,9 @@ import { isTestFile, readSource, sourcePaths } from "./sourceFiles";
  *   how every seam here is written; a default assigned in one place and called through a parameter somewhere
  *   the name never appears is not followed, and nor is a silent chain that `commands/`, `bin.ts` and `main.ts`
  *   never name.
- * - **What `./childProcesses.ts` lists**: a specifier assembled at runtime, a spawning library, `cluster.fork`.
+ * - **What `./childProcesses.ts` lists**: a specifier assembled at runtime, a spawning library, `cluster.fork`,
+ *   and a relative module imported through a variable or a `require` — `await import(spec)` reaching a
+ *   silent spawner was planted in a command and passed.
  * - **Anything outside `packages/cli/src`, and `ci/` inside it.** The repo's `scripts/worktree.ts` runs its
  *   install with `stdio: "inherit"`, so it streams rather than hides; it is not held here either way. `ci/` is
  *   this tree's own gates, which vitest runs and `pithy` never reaches.
@@ -88,8 +91,10 @@ import { isTestFile, readSource, sourcePaths } from "./sourceFiles";
  * was planted and went red: an `execFile` imported `as ef` in `worker remove`; `import * as cp` and
  * `cp.execFileSync` in `remove`'s steps; `runWrangler` imported `as wr` into `worker rename`; the same reached
  * by destructuring `import * as wrangler`; `util.promisify` over a destructured, renamed dynamic import in
- * `feature create`; a dynamic import written as a template literal; an `execFileSync` in the help renderer
- * that only `bin.ts` reaches; the step deleted from `runPackageManager`; and `execFile` exported as a value.
+ * `feature create`; `child_process` imported through a template literal; a silent spawner in `dev/ports.ts`
+ * reached from a command by `` await import(`../dev/ports`) ``, red as a silent command, and by
+ * `` import(`../dev/${"ports"}`) ``, red as an unfollowable import; an `execFileSync` in the help renderer that
+ * only `bin.ts` reaches; the step deleted from `runPackageManager`; and `execFile` exported as a value.
  * `./childProcesses.test.ts` keeps every spelling as a fixture, so the parser cannot lose one quietly.
  */
 
@@ -165,7 +170,7 @@ describe("a long command narrates itself", () => {
   const all = modules();
   const report = childProcessReport(all, POLICY);
 
-  test("the walk follows every use of child_process it meets", () => {
+  test("the walk follows every use of child_process, and every relative dynamic import, it meets", () => {
     expect(report.unfollowable.map((entry) => entry.replace(`${REPO_ROOT}/`, ""))).toEqual([]);
   });
 

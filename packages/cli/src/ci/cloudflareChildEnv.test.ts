@@ -80,13 +80,12 @@ const NOT_CLOUDFLARE: Readonly<Record<string, string>> = {
   "ci/fileModes.ts": "runs `git ls-files` to read the index's mode bits.",
   "dev/openUrl.ts": "runs the platform's browser opener on a localhost URL.",
   "dev/ports.ts": "runs `lsof`/`ps` to find the workerd processes a previous session left.",
-  "feature/create.ts": "runs the project's package manager to install a new worktree's dependencies.",
   "feature/ports.ts": "runs `git rev-parse` to key the port registry on the main checkout's root.",
   "feature/worktree.ts": "runs `git worktree` to create and prune a feature's checkout.",
   "platform/editor.ts": "runs the operator's `$EDITOR` on a config file.",
-  "project/packageManager.ts": "runs a package manager to discover its version.",
+  "project/packageManager.ts":
+    "runs a package manager to discover its version, and every install and uninstall the CLI makes (`runPackageManager`).",
   "project/templateFiles.ts": "runs `git ls-files` to enumerate a template's tracked files.",
-  "project/workerCommand.ts": "runs the project's package manager to install after a worker is added.",
 };
 
 /** One module's path as the exception table spells it — repo-relative to `packages/cli/src`. */
@@ -127,10 +126,10 @@ describe("the credentialed-child seam", () => {
     // is a helper away, because the giveaway is the key, not the call.
     //
     // The declared non-Cloudflare spawners are out of scope here rather than exempt from the rule. A
-    // module may legitimately do both — `project/workerCommand.ts` runs `<pm> install` *and* reads the
-    // pair to ask the account which scripts are live over REST — and at file granularity those two facts
-    // are indistinguishable from an overlay. The test above is what establishes that such a module's
-    // child cannot reach Cloudflare; this one asks about the rest.
+    // module may legitimately do both — spawn a package manager *and* read the pair to ask the account
+    // something over REST — and at file granularity those two facts are indistinguishable from an
+    // overlay. The test above is what establishes that such a module's child cannot reach Cloudflare;
+    // this one asks about the rest.
     const offenders = cliModules()
       .filter((m) => SPAWNS.test(m.code) && CREDENTIAL_KEY.test(m.code))
       .filter((m) => key(SEAM) !== m.key && !(m.key in NOT_CLOUDFLARE))
