@@ -200,9 +200,7 @@ function reasonOf(error: unknown): string {
 function defaultRunDeploy(account: CloudflareAccountSelection | null): RunDeploy {
   cloudflareEnv({ account });
   return async (target, args) => {
-    // At the spawn itself, as well as before it in `deployProject`: the argv held there and the argv spawned
-    // here are one value only while nothing between them rebuilds it. This is where that stops mattering.
-    assertCreatesNoResources(args);
+    // `runWrangler` refuses an argv that leaves provisioning on, whatever name it is called by (#589).
     const { stdout } = await runWrangler(args, { account, cwd: target.dir });
     return stdout;
   };
@@ -369,8 +367,8 @@ export async function deployProject(options: DeployProjectOptions): Promise<Work
       // would publish something other than the requested environment refuses instead (#579). After the
       // upload the only remedy is deleting a live Worker.
       stage = "config";
-      // Asked of the exact argv about to be spawned, so an argv that lost the switch — however it came to be
-      // built — refuses rather than creates. A resource made by a deploy has no command that takes it back.
+      // Asked of the exact argv about to be spawned, before the config gate reads a file, so a lost switch is
+      // this sentence on the Worker's row. The seam asks it again and is what cannot be walked around (#589).
       assertCreatesNoResources(argv);
       await assertDeploysRequestedEnvironment({
         workerDir: worker.dir,

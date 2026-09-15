@@ -139,13 +139,15 @@ function optionName(token: string): string | null {
  * provisioning counts, so an alias wrangler adds later is refused too. Only tokens before `--` are options;
  * the switch written after one does nothing, and is refused.
  *
- * **What it does not see.** It holds the argv it is handed, and nothing else. A spawn site that asks it
- * about one argv and spawns another is invisible here — so each site asks it twice: before anything is
- * written or narrated, and again as the statement straight before `runWrangler`, on the identifier spawned.
- * `ci/deployCallSites.test.ts` holds that second call's shape, and each site's argv literal to the switch.
- * It does not model yargs beyond "the one option naming provisioning is this one": a wrangler that read
- * provisioning from somewhere other than the argv would pass it, and 4.125.0 reads no config key or
- * variable for it.
+ * **Where it is asked.** `runWrangler` asks it of every argv, first, so no spawn through the seam — under
+ * any name the seam is called by — reaches wrangler without it. The two deploy issuers ask it earlier as
+ * well, beside their other gates and before a config is written or read, so a lost switch is refused
+ * there with the rest. `ci/deployCallSites.test.ts` holds both, and each issuer's argv literal to the
+ * switch. A spawn that goes around the seam is `ci/cloudflareChildEnv.test.ts`'s to refuse.
+ *
+ * **What it does not see.** It holds the argv it is handed, and nothing else. It does not model yargs
+ * beyond "the one option naming provisioning is this one": a wrangler that read provisioning from
+ * somewhere other than the argv would pass it, and 4.125.0 reads no config key or variable for it.
  */
 export function assertCreatesNoResources(args: readonly string[]): void {
   const end = args.indexOf(END_OF_OPTIONS);

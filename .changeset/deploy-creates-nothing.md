@@ -11,8 +11,8 @@ and for R2, queues and the namespace kinds the name is the id — so no reading 
 bucket from one wrangler is about to make.
 
 Every `wrangler deploy` the CLI runs now carries `--experimental-provision=false`, for the Workers under
-`apps/` and the kit's alike, and `assertCreatesNoResources` refuses an argv without it at both spawn
-sites. wrangler rejects unknown arguments, so if it ever drops the switch a deploy fails loudly instead of
+`apps/` and the kit's alike, and `runWrangler` refuses any argv without it before it spawns — so no
+caller reaches wrangler around the rule, under whatever name it calls the seam by. wrangler rejects unknown arguments, so if it ever drops the switch a deploy fails loudly instead of
 creating anything. `pithy deploy --kit` no longer creates a media or storage bucket nobody provisioned; that
 Worker's row fails. The `deploy` scripts `pithy init` and `pithy worker add` write carry the switch too.
 

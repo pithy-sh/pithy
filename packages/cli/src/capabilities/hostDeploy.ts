@@ -195,8 +195,7 @@ async function readDeployedStamp(read: ReadWorkerVars | undefined, scriptName: s
  */
 function defaultRunDeploy(account: WranglerAccount): RunHostDeploy {
   return async (args, dir) => {
-    // At the spawn itself, as well as before it in `deployHostWorker` — see `project/deploy.ts`'s runner.
-    assertCreatesNoResources(args);
+    // `runWrangler` refuses an argv that leaves provisioning on, whatever name it is called by (#589).
     await runWrangler([...args], { account, cwd: dir });
   };
 }
