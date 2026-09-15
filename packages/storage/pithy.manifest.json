@@ -58,6 +58,7 @@
     },
     {
       "key": "defaultVisibility",
+      "choices": ["private", "public"],
       "default": "private",
       "describe": "Visibility for an upload that does not name one. Private, so a forgotten field can never publish a file."
     },

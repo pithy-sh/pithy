@@ -49,6 +49,7 @@
     },
     {
       "key": "slugs",
+      "choices": ["chosen", "derived"],
       "default": "chosen",
       "describe": "Who picks an organization's short name. `chosen` is the original behavior: a create request may carry a `slug`, and one it omits is derived from the name. `derived` refuses a supplied one outright, for a product where no URL contains a short name and nobody is meant to pick — the create route is reachable by anybody signed in, so generating it in a browser instead makes derivation a convention rather than a rule."
     },

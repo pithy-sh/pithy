@@ -383,6 +383,65 @@ describe("createOrganization", () => {
     expect(membership.organizationId).toBe(organization.id);
   });
 
+  test("a commit whose fault D1 has not been taught to name still answers as the founding it was", async () => {
+    // The third way a batch can end, and the one neither case above covers: it *commits*, and then the
+    // call throws a fault matching none of `withD1Retry`'s transient signatures — that list is only "the
+    // signatures Cloudflare is known to surface", so an unrecognized envelope reaches the catch directly,
+    // with no retry and no idempotency guard. The rows are there. Asking "does anybody hold this slug"
+    // answers yes about *our own* committed row, and calling that a clash refuses a founding that
+    // happened. The question is whose row it is, which is why `organizationIdWithSlug` returns an id.
+    let batches = 0;
+    const unnamedFault = wrapping(env.DB, async (statements) => {
+      batches += 1;
+      if (batches > 1) return;
+      await env.DB.batch(statements);
+      throw new Error("D1_ERROR: something D1 has not been taught to say");
+    });
+
+    const { organization, membership } = await createOrganization(unnamedFault, NESTING, {
+      name: "Acme",
+      slug: "acme",
+      founderUserId: FOUNDER,
+    });
+
+    // One founding, one batch: nothing retried, and the rows returned are the rows that landed.
+    expect(batches).toBe(1);
+    expect(await count("pithy_organization_organizations")).toBe(1);
+    expect(await count("pithy_organization_memberships")).toBe(1);
+    const row = await env.DB.prepare("select id, slug from pithy_organization_organizations").first<{
+      id: string;
+      slug: string;
+    }>();
+    expect(row?.id).toBe(organization.id);
+    expect(row?.slug).toBe("acme");
+    expect(membership.organizationId).toBe(organization.id);
+  });
+
+  test("a stranger's row under the same fault is still a refusal", async () => {
+    // The other half, so the fix above cannot be "call every unnamed fault a success". Here the batch
+    // rolls back and somebody else holds the slug: a different id, and the caller must be told.
+    let batches = 0;
+    const unnamedFault = wrapping(env.DB, async () => {
+      batches += 1;
+      if (batches > 1) return;
+      await createOrganization(env.DB, NESTING, { name: "Rival", slug: "acme", founderUserId: "user_rival" });
+      throw new Error("D1_ERROR: something D1 has not been taught to say");
+    });
+
+    const failure = await createOrganization(unnamedFault, NESTING, {
+      name: "Acme",
+      slug: "acme",
+      founderUserId: FOUNDER,
+    }).catch((error: unknown) => error);
+
+    expect(codeOf(failure)).toBe("organization/slug_taken");
+    expect(await count("pithy_organization_organizations")).toBe(1);
+    const holder = await env.DB.prepare("select user_id from pithy_organization_memberships").first<{
+      user_id: string;
+    }>();
+    expect(holder?.user_id).toBe("user_rival");
+  });
+
   test("one person may found several organizations", async () => {
     // Membership uniqueness is per (organization, user), not per user. An agency running two customers'
     // accounts is the ordinary case, not an edge one.

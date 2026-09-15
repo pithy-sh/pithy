@@ -295,12 +295,17 @@ async function foundOrganization<Role extends string>(
       ]),
     );
   } catch (cause) {
-    throw foundingFailure(
-      (await organizationIdWithSlug(d1, attempt.slug)) !== undefined,
-      attempt.slug,
-      cause instanceof Error ? cause.name : "unknown",
-      cause,
-    );
+    // **Who holds the slug, not whether anybody does.** A batch that commits and then throws is the
+    // ordinary shape of a transport fault D1 has not been taught to name — `withD1Retry` only retries the
+    // signatures Cloudflare is known to surface, so an unrecognized envelope arrives here with the rows
+    // already written. "A row exists with this slug" is true of our own committed row, and refusing on it
+    // denies a founding that happened; with a derived slug the loop then retries under ids minted once,
+    // so the next attempt collides on the primary key and the caller is told the account could not be
+    // created while it sits in D1. The id is the question, exactly as on the guard path below.
+    const holder = await organizationIdWithSlug(d1, attempt.slug);
+    if (holder !== organization.id) {
+      throw foundingFailure(holder !== undefined, attempt.slug, cause instanceof Error ? cause.name : "unknown", cause);
+    }
   }
 
   // `undefined` is `withD1Retry`'s idempotency guard: a unique-constraint failure on a *retry*, which it
