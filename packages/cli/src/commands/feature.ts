@@ -10,13 +10,13 @@ import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { createFeature } from "../feature/create";
 import { type DestroyReport, destroyedBeforeFailure, destroyFeature } from "../feature/destroy";
-import { branchIdentityWithoutWorkers, deriveIdentityFromBranch } from "../feature/identity";
+import { branchIdentityWithoutWorkers, deriveIdentityFromBranch, featureCapabilitySet } from "../feature/identity";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { behindRemote, mainRepoRoot } from "../feature/worktree";
 import { migrateProject } from "../migrations/run";
 import { loadProject, loadProjectCloudflare, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireEnvironment } from "../project/environment";
-import { type CapabilitySet, isUnknown, projectCapabilitySet } from "../project/workerScope";
+import { type CapabilitySet, isUnknown } from "../project/workerScope";
 import { AUDIT_DESTINATION_ENV, cloudflareProvisioners, type ResourceProvisioners } from "../provision/resources";
 import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
 import { seedProject } from "../seed/run";
@@ -271,7 +271,7 @@ const destroy = defineCommand({
         `--local-only` says the remote half is not wanted.
       */
       const identity = await branchIdentityWithoutWorkers(projectDir);
-      const capabilities = await projectCapabilitySet(projectDir);
+      const capabilities = await featureCapabilitySet(projectDir);
       if (isUnknown(capabilities) && !args["local-only"]) {
         throw new ValidationError({
           // The set's own diagnosis, which names the worker and says whether the config is broken or

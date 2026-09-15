@@ -6,11 +6,15 @@ import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { ENVIRONMENT_VAR } from "@pithy-sh/core/src/worker/identity";
 import { cachedEvaluation, type LoadWorkerConfigOptions, loadWorkerConfig, type WorkerConfig } from "./config";
 import {
+  type CapabilitySet,
+  capabilitySetOf,
   type ResolvedWorker,
   type ResolveOptions,
   type ResolveSingleOptions,
   resolveSingleWorker,
+  resolveWorkerSet,
   resolveWorkers,
+  type WorkerSet,
 } from "./workerScope";
 
 /**
@@ -145,4 +149,24 @@ export function resolveWorkersFor(
 /** The one Worker a command acts on, composed for `environment`. {@link resolveSingleWorker}, told which one. */
 export function resolveSingleWorkerFor(environment: string, options: ResolveSingleOptions): Promise<ResolvedWorker> {
   return composeFor(environment, (load) => resolveSingleWorker({ ...options, loadConfig: options.loadConfig ?? load }));
+}
+
+/**
+ * Every Worker in the project composed for `environment`, or why that set is unknowable.
+ * {@link resolveWorkerSet}, told which one — for a caller deriving policy from the whole set.
+ */
+export function resolveWorkerSetFor(environment: string, options: ResolveOptions): Promise<WorkerSet> {
+  return composeFor(environment, (load) => resolveWorkerSet({ ...options, loadConfig: options.loadConfig ?? load }));
+}
+
+/**
+ * Every capability composed anywhere in the project for `environment`, or why that set is unknowable.
+ * `projectCapabilitySet`, told which one.
+ */
+export async function projectCapabilitySetFor(
+  environment: string,
+  projectDir: string,
+  seams: Omit<ResolveOptions, "projectDir"> = {},
+): Promise<CapabilitySet> {
+  return capabilitySetOf(await resolveWorkerSetFor(environment, { projectDir, ...seams }));
 }

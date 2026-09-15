@@ -16,6 +16,7 @@ import { createCliAudit } from "../audit/cliAudit";
 import { resolveSecretRegistry } from "../capabilities/secrets";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
+import { resolveWorkerSetFor } from "../project/composeFor";
 import { loadProject, loadProjectCloudflare, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
 import {
@@ -24,7 +25,6 @@ import {
   isUnknown,
   projectCapabilities,
   type ResolvedWorker,
-  resolveWorkerSet,
   type WorkerSet,
 } from "../project/workerScope";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
@@ -192,7 +192,7 @@ function mergedSecretRegistry(workers: readonly ResolvedWorker[]): SecretRegistr
  * CI lost permissions silently, with nothing in the run saying the capability set was unknown.
  *
  * A project with genuinely **no** Workers still resolves normally: `ci-system` is a project-level profile
- * and mints fine before the first `pithy worker add`. See {@link resolveWorkerSet} for the difference.
+ * and mints fine before the first `pithy worker add`. See `resolveWorkerSet` for the difference.
  *
  * The refusal quotes the set's own diagnosis rather than inventing one, so it names the worker.
  */
@@ -218,7 +218,9 @@ async function buildEngine(projectDir: string, env: string): Promise<TokenEngine
   const { accountId, apiToken, storeId } = loadCreds(loadProjectCloudflare(config) ?? null);
   const cf = await cloudflareClients({ accountId, apiToken });
   // Never best-effort. See {@link tokenProfiles}: an emptied capability set is a silently narrowed credential.
-  const workerSet = await resolveWorkerSet({ projectDir });
+  // Composed for the environment the token is for: a capability that environment alone composes carries
+  // `ciPermissions` CI there needs, and one it does not compose grants nothing there (#595).
+  const workerSet = await resolveWorkerSetFor(env, { projectDir });
   const workers = isUnknown(workerSet) ? [] : workerSet;
   const registry = mergedSecretRegistry(workers);
   return {

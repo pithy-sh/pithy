@@ -5,9 +5,9 @@ import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { FEATURE_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { FeatureIdentity } from "@pithy-sh/core/src/naming/feature";
-import { resolveWorkersFor } from "../project/composeFor";
+import { projectCapabilitySetFor, resolveWorkersFor } from "../project/composeFor";
 import { loadProject, requireProjectName } from "../project/config";
-import { projectCapabilities } from "../project/workerScope";
+import { type CapabilitySet, projectCapabilities } from "../project/workerScope";
 import { defaultGit, type GitRunner } from "./worktree";
 
 /** A feature's identity as read from its branch: the issue number, the slug, and the full branch name. */
@@ -77,6 +77,20 @@ export async function branchIdentity(
   // Composed for the feature environment, which is the one these capabilities are provisioned into (#595).
   const capabilities = projectCapabilities(await resolveWorkersFor(FEATURE_ENVIRONMENT, { projectDir }));
   return { identity: { project, issue, slug }, capabilities };
+}
+
+/**
+ * The capabilities a feature's teardown deletes by — **composed for the environment {@link branchIdentity}
+ * composed them for**, or why that set is unknowable (#455).
+ *
+ * Teardown reconciles resources by recomputed name and removes Secrets Store entries by recomputed name,
+ * both from this set, and the manifest records neither the entries nor a resource created before it was
+ * written. So a capability composed for `feature` alone and not here is one whose resources and live
+ * credentials outlive a `destroy` that exits 0 (#595). The set differs from provision's in one way only,
+ * and on purpose: an unknowable one is reported rather than thrown, so `--local-only` can still run.
+ */
+export function featureCapabilitySet(projectDir: string): Promise<CapabilitySet> {
+  return projectCapabilitySetFor(FEATURE_ENVIRONMENT, projectDir);
 }
 
 /**

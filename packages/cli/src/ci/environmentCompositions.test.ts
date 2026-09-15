@@ -18,8 +18,9 @@ import { sourceFiles } from "./sourceFiles";
  *
  * 1. **`ENVIRONMENT` is written into this process by the primitive alone.** A module that writes
  *    `process.env` and names the variable is the primitive, or it is a second statement of the rule.
- * 2. **Every module that composes Workers without the primitive is named here, with why its composition
- *    is not for one environment** ({@link RAW_COMPOSERS}). A module naming a raw loader lands in the table
+ * 2. **Every module that composes Workers through a loader `project/config.ts` or `project/workerScope.ts`
+ *    exports, without the primitive, is named here, with why its composition is not for one environment**
+ *    ({@link RAW_COMPOSERS}). A module naming a raw loader lands in the table
  *    or fails; a table entry whose module stopped naming one fails too, so the table cannot drift into a
  *    list of reasons nobody re-reads (#211).
  * 3. **Every module that assembles a backend does it inside the primitive.** `createBackend` is where a
@@ -39,6 +40,13 @@ import { sourceFiles } from "./sourceFiles";
  *   `loadWorkerConfig(dir)` appended to `project/workflows.ts`. Half 3 likewise
  *   passes a module that assembles one backend inside the primitive and a second outside it. Reading call
  *   sites wants a binding analysis rather than a wider regex.
+ * - **A composition carried out of a third module.** The loaders are derived from the two modules that
+ *   define them ({@link rawLoaders}); a function another module exports that composes raw inside it is not
+ *   followed, so its callers are not held. `commands/add.ts`'s `targetWorker`, reached from
+ *   `commands/remove.ts`, is one today. Planted: an `export async function everyWorker(dir) { return
+ *   resolveWorkerSet({ projectDir: dir }); }` in `project/domains.ts`, already listed, and a call to it
+ *   from `commands/migrate.ts` — green. Following it module by module names nearly fifty modules through
+ *   wrappers that compose for no environment on purpose, which is a binding analysis this file does not do.
  * - **Which environment.** `composeFor("dev", …)` in a command about staging reaches the primitive and
  *   passes. The environments this CLI composes for are held by behavior —
  *   `migrations/environmentComposition.test.ts` — not by source text.
@@ -59,7 +67,68 @@ const CLI_SRC = join(import.meta.dirname, "..");
 const PRIMITIVE = "project/composeFor.ts";
 
 /** The primitive's exports, any of which is a composition through it. */
-const PRIMITIVE_EXPORTS = /\b(?:composeFor|composeForSync|resolveWorkersFor|resolveSingleWorkerFor)\b/;
+const PRIMITIVE_EXPORTS =
+  /\b(?:composeFor|composeForSync|resolveWorkersFor|resolveSingleWorkerFor|resolveWorkerSetFor|projectCapabilitySetFor)\b/;
+
+/** The modules that define the Worker loaders: a config's evaluation, and the resolvers over it. */
+const LOADER_MODULES: readonly string[] = ["project/config.ts", "project/workerScope.ts"];
+
+/** The loader every other one reaches: the evaluation of one Worker's `pithy.config.ts`. */
+const EVALUATES_A_WORKER_CONFIG = "loadWorkerConfig";
+
+/**
+ * Every top-level function a module declares — `function`, or a `const` bound to one — with its text.
+ *
+ * Read by layout rather than by parse: biome opens a top-level declaration at column 0 and closes it
+ * there, so a declaration runs to the next line that starts with anything but whitespace or a closer.
+ * Comments are already blanked, so a docblock never starts one.
+ */
+function topLevelFunctions(code: string): { name: string; exported: boolean; text: string }[] {
+  const found: { name: string; exported: boolean; text: string }[] = [];
+  let current: { name: string; exported: boolean; lines: string[] } | null = null;
+  for (const line of code.split("\n")) {
+    if (/^[^\s})\]]/.test(line)) {
+      if (current !== null)
+        found.push({ name: current.name, exported: current.exported, text: current.lines.join("\n") });
+      const head = /^(export\s+)?(?:async\s+function\s*\*?|function\s*\*?|const)\s+([\w$]+)/.exec(line);
+      current = head === null ? null : { name: head[2] as string, exported: head[1] !== undefined, lines: [] };
+    }
+    current?.lines.push(line);
+  }
+  if (current !== null) found.push({ name: current.name, exported: current.exported, text: current.lines.join("\n") });
+  return found;
+}
+
+/**
+ * **Every loader that composes Workers with no environment stamped, derived from the modules that define
+ * them** — never a list typed here.
+ *
+ * The list typed here was four names long and the defining module exported six loaders:
+ * `resolveWorkerSet` and `projectCapabilitySet` compose every Worker exactly as `resolveWorkers` does, and
+ * `commands/feature.ts`, `commands/token.ts` and `audit/cliAudit.ts` spent them unlisted while this gate was
+ * green. So the set is the evaluation itself plus every top-level function in {@link LOADER_MODULES} that
+ * reaches one already in it, to a fixed point, and a loader added beside them next year is in it by being
+ * written. Only the exported ones are importable, so only they are matched elsewhere.
+ */
+function rawLoaders(): string[] {
+  const declared = LOADER_MODULES.flatMap((key) =>
+    topLevelFunctions(MODULES.find((module) => module.key === key)?.code ?? ""),
+  );
+  const raw = new Set([EVALUATES_A_WORKER_CONFIG]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const { name, text } of declared) {
+      if (raw.has(name)) continue;
+      const body = text.slice(text.indexOf(name) + name.length);
+      if ([...raw].some((loader) => new RegExp(`(?<![.\\w$])${loader}\\b`).test(body))) {
+        raw.add(name);
+        grew = true;
+      }
+    }
+  }
+  const exported = new Set(declared.filter((fn) => fn.exported).map((fn) => fn.name));
+  return [...raw].filter((name) => exported.has(name)).sort();
+}
 
 /**
  * A module that names a Worker loader which composes for no environment on its own.
@@ -75,8 +144,9 @@ const PRIMITIVE_EXPORTS = /\b(?:composeFor|composeForSync|resolveWorkersFor|reso
  * real compositions, both green. What neither can avoid is taking the whole defining module, by namespace or
  * by `import()`, so that is what is matched. Nothing in the tree does either today.
  */
-const RAW_LOADER =
-  /(?<![.\w$])(?:loadWorkerConfig|resolveWorkers|resolveWorkersReporting|resolveSingleWorker)\b(?!\s*\??\s*:)/;
+function rawLoaderPattern(): RegExp {
+  return new RegExp(`(?<![.\\w$])(?:${rawLoaders().join("|")})\\b(?!\\s*\\??\\s*:)`);
+}
 
 /** A namespace import or an `import()` of a module that defines a raw loader. */
 const LOADER_MODULE_WHOLE =
@@ -84,7 +154,7 @@ const LOADER_MODULE_WHOLE =
 
 /** Whether a module composes Workers through a raw loader, by any of the spellings above. */
 function composesRaw(code: string): boolean {
-  return RAW_LOADER.test(code) || LOADER_MODULE_WHOLE.test(code);
+  return rawLoaderPattern().test(code) || LOADER_MODULE_WHOLE.test(code);
 }
 
 /** A module that assembles a backend: a call to `createBackend`, or an import of it under any alias. */
@@ -111,6 +181,8 @@ const NAMES_ENVIRONMENT = /\bENVIRONMENT(?:_VAR)?\b/;
 const RAW_COMPOSERS: Readonly<Record<string, string>> = {
   "project/config.ts": "Defines loadWorkerConfig, which the primitive's loader spends.",
   "project/workerScope.ts": "Defines the Worker resolvers, which the primitive hands its loader to.",
+  "audit/cliAudit.ts":
+    "Decides whether a command that names no one environment audits from the composition for none; a command that names its environment in actedOn composes for it through projectCapabilitySetFor.",
   "capabilities/secretApplicability.ts":
     "Resolves once, unstamped, only to learn which Worker directories exist; every environment's answer is composed through composeFor.",
   "commands/add.ts":
@@ -190,6 +262,20 @@ describe("a composition for an environment is composed for it, by one primitive"
     ).toEqual([PRIMITIVE]);
   });
 
+  test("the raw loaders are derived from the modules that define them, and include every one planted against", () => {
+    expect(
+      rawLoaders(),
+      "The loaders derived from project/config.ts and project/workerScope.ts changed. A new one is held by this gate already; confirm it composes Workers, and that a removed one no longer does.",
+    ).toEqual([
+      "loadWorkerConfig",
+      "projectCapabilitySet",
+      "resolveSingleWorker",
+      "resolveWorkerSet",
+      "resolveWorkers",
+      "resolveWorkersReporting",
+    ]);
+  });
+
   test("every module composing Workers without the primitive is named, with why", () => {
     const composers = MODULES.filter((module) => module.key !== PRIMITIVE && composesRaw(module.code))
       .map((module) => module.key)
@@ -222,15 +308,40 @@ describe("a composition for an environment is composed for it, by one primitive"
 
   test("the extractors see the spellings they claim, and miss the ones the docblock names", () => {
     // Loaders: the call, the import, an alias, and the shorthand — and not a seam's key or member.
-    expect(RAW_LOADER.test("const workers = await resolveWorkers({ projectDir });")).toBe(true);
-    expect(RAW_LOADER.test('import { resolveWorkers as every } from "../project/workerScope";')).toBe(true);
-    expect(RAW_LOADER.test("const seams = { loadWorkerConfig };")).toBe(true);
-    expect(RAW_LOADER.test("const found = await resolveSingleWorker(options);")).toBe(true);
-    expect(RAW_LOADER.test("resolveWorkers?: (options: { projectDir: string }) => Promise<W[]>;")).toBe(false);
-    expect(RAW_LOADER.test("const resolve = options.resolveWorkers ?? fallback;")).toBe(false);
-    expect(RAW_LOADER.test("const workers = await resolveWorkersFor(env, { projectDir });")).toBe(false);
+    expect(rawLoaderPattern().test("const workers = await resolveWorkers({ projectDir });")).toBe(true);
+    expect(rawLoaderPattern().test('import { resolveWorkers as every } from "../project/workerScope";')).toBe(true);
+    expect(rawLoaderPattern().test("const seams = { loadWorkerConfig };")).toBe(true);
+    expect(rawLoaderPattern().test("const found = await resolveSingleWorker(options);")).toBe(true);
+    expect(rawLoaderPattern().test("resolveWorkers?: (options: { projectDir: string }) => Promise<W[]>;")).toBe(false);
+    expect(rawLoaderPattern().test("const resolve = options.resolveWorkers ?? fallback;")).toBe(false);
+    expect(rawLoaderPattern().test("const workers = await resolveWorkersFor(env, { projectDir });")).toBe(false);
+    // The two loaders the typed list missed, and their twins through the primitive.
+    expect(rawLoaderPattern().test("const workerSet = await resolveWorkerSet({ projectDir });")).toBe(true);
+    expect(rawLoaderPattern().test('import { projectCapabilitySet as union } from "../project/workerScope";')).toBe(
+      true,
+    );
+    expect(rawLoaderPattern().test("await projectCapabilitySetFor(env, projectDir)")).toBe(false);
+    // A pure fold over Workers already composed is not a loader.
+    expect(rawLoaderPattern().test("const union = projectCapabilities(workers);")).toBe(false);
+    // The derivation reads both declaration shapes, exported or not, and follows a private helper.
+    const shapes = topLevelFunctions(
+      [
+        "const helper = (dir) => loadWorkerConfig(dir);",
+        "export async function viaHelper(dir) {",
+        "  return helper(dir);",
+        "}",
+        "export const arrow = async (dir) => {",
+        "  return 1;",
+        "};",
+      ].join("\n"),
+    );
+    expect(shapes.map(({ name, exported }) => `${exported ? "export " : ""}${name}`)).toEqual([
+      "helper",
+      "export viaHelper",
+      "export arrow",
+    ]);
     // The two shapes the skips let through, and what catches them instead.
-    expect(RAW_LOADER.test('const { resolveWorkers: all } = await import("./workerScope");')).toBe(false);
+    expect(rawLoaderPattern().test('const { resolveWorkers: all } = await import("./workerScope");')).toBe(false);
     expect(composesRaw('const { resolveWorkers: all } = await import("./workerScope");')).toBe(true);
     expect(composesRaw('import * as scope from "../project/workerScope";')).toBe(true);
     expect(composesRaw('import * as config from "./config";')).toBe(true);
