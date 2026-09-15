@@ -1,5 +1,27 @@
 # @pithy-sh/cloudflare
 
+## 0.3.0
+
+### Minor Changes
+
+- [#597](https://github.com/pithy-sh/pithy/pull/597) [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy feature destroy` finishes for a feature whose Workers call each other.
+  
+  Cloudflare refuses to delete a Worker another Worker still binds unless the delete is forced. Teardown deleted a
+  feature's scripts in `apps/` order without forcing, so `apps/web` calling `apps/api` put the callee first: the
+  delete was refused, nothing else was removed, the manifest was kept, and every re-run failed the same way.
+  
+  **Each script teardown deletes is now forced.** Every one is the feature's own and goes in the same pass. Deleting
+  callers first was the alternative, and it needs a graph teardown does not have: a recorded script may belong to a
+  Worker that has left the branch, Durable Object bindings reach siblings too, and two Workers can call each other.
+  Forcing also removes the Durable Objects a feature Worker hosts, which are the feature's.
+  
+  `CloudflareWorkersManager.deleteWorker` takes `{ force }`. Without it, nothing changes for any other caller.
+
+### Patch Changes
+
+- Updated dependencies [[`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`32186ff`](https://github.com/pithy-sh/pithy/commit/32186ff9efe385665496f1ecafe315f4e248ae3a)]:
+  - @pithy-sh/core@0.7.0
+
 ## 0.2.3
 
 ### Patch Changes

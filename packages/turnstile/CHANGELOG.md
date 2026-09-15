@@ -1,5 +1,39 @@
 # @pithy-sh/turnstile
 
+## 0.3.0
+
+### Minor Changes
+
+- [#599](https://github.com/pithy-sh/pithy/pull/599) [`ead1740`](https://github.com/pithy-sh/pithy/commit/ead17401ae8ad75366e86658604460d0aae14816) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy turnstile provision` refuses before it creates anything.
+  
+  The sitekey writer ran last, after the dev secret, the staging secret, a real production widget and the prod secret. Its refusals read only the config source, so a refused run had already minted a widget and stored both secrets. The docs said "Nothing is written". The rerun reused the widget and warned about a secret that was in fact stored. `deprovision` deleted the widgets and secrets before its sitekey edit refused, and left the stranded vars behind.
+  
+  Every refusal is now decided first: a domain another widget covers, production widgets of which some exist and some do not, and a sitekey the writer would refuse. A production sitekey Cloudflare has not issued yet can only go into a string literal. `deprovision` checks its edit before it deletes anything. A config whose `turnstile({` does not open a line is refused with a sentence that says so.
+  
+  `TurnstileProvisioner` gains `findProductionWidget` and `assertSitekeysWritable`, and `TurnstileDeprovisioner` gains `assertSitekeysWritable`. `PlannedSitekeys` is the shape they check.
+
+- [#599](https://github.com/pithy-sh/pithy/pull/599) [`ead1740`](https://github.com/pithy-sh/pithy/commit/ead17401ae8ad75366e86658604460d0aae14816) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy turnstile provision` writes the sitekeys where the front end reads them.
+  
+  A sitekey is a build input. The `pithy()` Vite plugin inlines the turnstile capability's client projection, and the projection reads `widgets.<mode>.sitekeys.<environment>` out of `pithy.config.ts`. Provisioning wrote `TURNSTILE_SITEKEY_<MODE>` into Worker vars and `.dev.vars` instead, where nothing read them. The config stayed blank, no widget rendered, and sign-in failed closed on staging and prod behind a successful provision.
+  
+  Provisioning now writes every environment's sitekey into the target Worker's `turnstile({ ... })` registration: Cloudflare's test sitekey for dev and staging, the real widget's for prod. String literals only, in place. An expression that already resolves to the value is left alone. The config is loaded back through the real loader, and a value the capability does not then resolve restores the file and refuses. Its output says a redeploy is required, because the build inlines the value.
+  
+  - **Stranded vars are removed.** Provision and deprovision strip any `TURNSTILE_SITEKEY_*` from the Worker's `wrangler.jsonc` and from `dev.json`. `pithy doctor` names any still in a Worker's `wrangler.jsonc`, in `dev.json`, or in the project root's `.dev.vars`, where [#53](https://github.com/pithy-sh/pithy/issues/53)'s writer put them.
+  - **`pithy doctor` has a `Turnstile:` block.** It names each environment whose build renders no widget, with the remedy when there is one. It reports and never fails the exit. `--json` carries it as `turnstileSitekeys`.
+  - **Environments beyond dev, staging and prod are named.** A declared `live` and every feature build have no sitekey slot, so their builds render no widget. `provision` lists them in `environmentsWithoutSitekeys` instead of leaving the bundle to say `enabled: false` in silence.
+  - **One Worker for the read and the write.** The widget modes came from the first Worker composing turnstile while the sitekeys went to `--worker`. Both now come from the `--worker` target.
+  - **`pithy add turnstile` scaffolds a visible widget**, so provisioning runs without a hand edit. It used to render `turnstile()`, whose default gates login with a widget nobody declared.
+  
+  `--json` for `turnstile provision` adds `sitekeys`, `strandedVarsRemoved`, `configFile`, `redeployRequired` and `environmentsWithoutSitekeys`.
+  
+  `@pithy-sh/turnstile`'s `TurnstileProvisioner` seam changes shape: `writeDev` takes the secret alone, `writeManagedSitekeys` is replaced by `writeSitekeys` and `removeStrandedSitekeyVars`, and the deprovisioner's `clearManagedSitekeys` by `clearProductionSitekeys` and `removeStrandedSitekeyVars`. `sitekeyVarName` is gone; `isStrandedSitekeyVar` finds what it named.
+
+### Patch Changes
+
+- Updated dependencies [[`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`32186ff`](https://github.com/pithy-sh/pithy/commit/32186ff9efe385665496f1ecafe315f4e248ae3a)]:
+  - @pithy-sh/core@0.7.0
+  - @pithy-sh/secrets@0.2.4
+
 ## 0.2.3
 
 ### Patch Changes

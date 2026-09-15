@@ -1,5 +1,80 @@
 # @pithy-sh/email
 
+## 0.3.4
+
+### Patch Changes
+
+- [#601](https://github.com/pithy-sh/pithy/pull/601) [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f) Thanks [@kingmesal](https://github.com/kingmesal)! - A rollback no longer empties the secrets vault, or production's suppression list.
+  
+  `pithy migrate --rollback` steps back one migration in every database in scope. The secrets database's whole
+  history is one migration whose `down` drops `pithy_secrets_system_secrets`, so any rollback destroyed every
+  stored secret in place. And `EMAIL_SUPPRESSIONS` is one database bound by every environment, so a staging
+  rollback also dropped production's suppression list.
+  
+  A capability now declares a table **retained** (`DatabaseSpec.retained`). `secrets` retains both vault tables;
+  `email` retains `pithy_email_suppressions`. No `down` runs against a database while a retained table in it
+  holds rows. A rollback, a `seed --redo` reset and a `remove --drop` all refuse, name each table and the row
+  count, and move nothing. `--destroy-retained <n>` overrides, and `n` must equal the printed count. The refusal
+  lives in the migration runner, recorded on each migration's own `down`, so a new command that reverses
+  migrations inherits it.
+  
+  A rollback or reset scoped to one environment keeps any database another environment's stanza also binds,
+  and says so. `--binding` narrows a run to one database. A rollback outside `dev` needs the phrase
+  `yes, i really want to roll back <env>` (`--confirm-rollback`). After a partial rollback failure the remedy
+  points at `pithy doctor`, not at a second rollback.
+  
+  `--json` gains `workers[].databases[].boundBy` on `migrate`, and `reset[].retained` and `reset[].boundBy` on
+  `seed --redo`.
+
+- [#601](https://github.com/pithy-sh/pithy/pull/601) [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy secrets deprovision` tears down one named environment, and counts the vault first.
+  
+  It used to walk every declared environment. One run, typed to clean up staging, deleted production's secrets database with it, and nothing asked.
+  
+  - **`--env` is required.** There is no default and no "all". With none, it refuses and lists the environments it could act on. Production is never in a default set, because there is no default set.
+  - **A vault holding rows is counted before anything goes.** The refusal names the database and the count, and `--destroy-retained <n>` must match it. The same guard `pithy migrate --rollback` spends. It is counted again at the delete, so a row written in between is refused.
+  - **The shared manager token goes with the last manager only.** Removing it for staging would have failed every rotation in prod.
+  - **`pithy email deprovision --suppression` gets the same count.** The suppression list is retained too. It is counted before the first worker goes, and `--destroy-retained <n>` must match.
+  
+  `--json` for `secrets deprovision` now carries `env` and `managerTokenDeleted`.
+
+- [#601](https://github.com/pithy-sh/pithy/pull/601) [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy email deprovision` and `pithy support deprovision` tear down one named environment, and leave what every environment shares to the last one.
+  
+  Both walked every declared environment. A run meant for staging removed production's email worker, or its classification worker. `email deprovision --suppression` from staging deleted the suppression list production binds. `support deprovision --storage` deleted the one support bucket, every environment's history in it, and `--routing-zone` stopped production's inbound mail.
+  
+  - **`--env` is required.** No default, no "all". With none, or one the project does not declare, it refuses before any credential is read and lists the environments it could act on. The same refusal the secrets, storage and media teardowns give.
+  - **A shared part goes with the last environment.** `--suppression`, `--storage` and `--routing-zone` refuse while another declared environment still runs the capability's worker, naming it, before anything is deleted. The rule is `assertSharedLeavesLast` in `@pithy-sh/secrets`' `scope`, beside `deprovisionTarget`.
+  - **The suppression list is still counted.** A list holding rows needs `--destroy-retained <n>` as before. The bucket's confirmation is `--storage` itself: R2 objects are not counted.
+  - **`--json` carries `env`** on both.
+  
+  `--env production` on any of the five teardowns is now answered with `prod`, rather than with a list that omits it.
+
+- [#601](https://github.com/pithy-sh/pithy/pull/601) [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f) Thanks [@kingmesal](https://github.com/kingmesal)! - A remedy names only flags its command has.
+  
+  The email host's boot and `pithy doctor` messages said `Run pithy secrets provision --env <env>.` for both host secrets, and `Run pithy email provision --env <env>.` for every binding and var. `pithy doctor`'s missing-suppression-list finding named `pithy email provision --env prod`, and `pithy deploy --kit` named `pithy <capability> provision --env <env>` for a skipped kit Worker. None of those commands takes `--env`. citty ignored a flag a command did not declare, so an operator who typed `--env staging` provisioned every declared environment, production included, believing they had named one. The CLI refuses such a flag now, so a remedy naming one fails rather than misleads.
+  
+  Each now names the command as it runs: `pithy secrets provision`, `pithy email provision`, `pithy <capability> provision`. `docs/commands/deploy.md` and `docs/commands/secrets.md` say the same.
+  
+  The gate that holds action lines to the CLI read two packages and one key. It reads every package now: command names from every `action:` and host-env `command:`, flags from every string literal and every command page's prose.
+
+- [#601](https://github.com/pithy-sh/pithy/pull/601) [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f) Thanks [@kingmesal](https://github.com/kingmesal)! - `email-link-signing-key` is a Secrets Store entry per environment, and a link verifies only where it was minted.
+  
+  It was an encrypted row in each environment's D1 vault, declared `global`. A rollback, a `seed --redo` or a teardown an operator agrees to reaches the vault, and a staging rollback took the key. It is the one secret whose loss outlives the system: every link already in an inbox stops verifying.
+  
+  - **The key lives outside every D1.** `backend: "cf-secrets-store"`, `scope: "environment"`: one entry, `<project>-<env>-email-link-signing-key`, none shared. `pithy secrets provision` creates it when absent and binds it in the app Worker; `pithy email provision` binds the same entry in the email host. The host signs, the app verifies.
+  - **A token names its audience.** Callback tokens are `v: 2` and carry `aud`, the origin their links point at. The routes refuse a token presented anywhere else, so a key misconfigured as shared still cannot let a staging link act on production — the unsubscribe route included, which writes into the suppression list both environments bind.
+  - **Rotation keeps its versions.** The entry holds the `{ currentVersion, versions }` envelope, so a link minted under a retained previous version still verifies.
+  - **`pithy doctor` reports the move.** A missing Secrets Store entry, and a key still held in an environment's D1 vault, are each a `Settings:` finding for that environment.
+  - **`pithy secrets rm --backend d1`** removes the row a moved declaration left behind, one named environment at a time. A plain `rm` routes by the declaration and would delete the live entry.
+  
+  **Moving the key invalidates links already sent.** The D1 value is sealed under a master key no command can read, so it cannot be carried into the new entry as a previous version, and links minted before this release name no audience. They answer `email/invalid_token`. The path is in `docs/commands/secrets.md#moving-a-secret-off-d1`.
+
+- [#600](https://github.com/pithy-sh/pithy/pull/600) [`32186ff`](https://github.com/pithy-sh/pithy/commit/32186ff9efe385665496f1ecafe315f4e248ae3a) Thanks [@kingmesal](https://github.com/kingmesal)! - Every `pithy` command refuses a flag it does not declare. `pithy doctor --bogus-flag yes` exited 0 with the output of `pithy doctor`, and a typo in a safety flag ran the unsafe version. It now exits 1 with `Unknown flag: --bogus-flag.` and the flags the command does take; under `--json` the refusal is one `{ "error": … }` line, `validation/invalid_input`, with an `unrecognized_keys` issue per flag. It is refused wherever it is typed, so `pithy secrets rotate API_KEY --dry-rn` is refused rather than run for real. A group refuses one too, so `pithy token --json` is no longer answered with usage. The check runs before `--version` and the hidden root flags, so neither prints over a typo.
+  
+  Remedies that cited an undeclared `--env` no longer do: the email settings check and host-env report name `pithy email provision` and `pithy secrets provision`, and `pithy deploy --kit` names `pithy <capability> provision`. Each spans every environment and takes no `--env`.
+- Updated dependencies [[`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`32186ff`](https://github.com/pithy-sh/pithy/commit/32186ff9efe385665496f1ecafe315f4e248ae3a)]:
+  - @pithy-sh/core@0.7.0
+  - @pithy-sh/secrets@0.2.4
+
 ## 0.3.3
 
 ### Patch Changes

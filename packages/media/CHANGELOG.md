@@ -1,5 +1,24 @@
 # @pithy-sh/media
 
+## 0.2.4
+
+### Patch Changes
+
+- [#601](https://github.com/pithy-sh/pithy/pull/601) [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy storage deprovision` and `pithy media deprovision` tear down one named environment.
+  
+  Both walked every declared environment. `--storage`, run to clear staging's uploads, emptied and deleted production's bucket with it, and `media` took production's `MEDIA` namespace too. Nothing asked, and there was no way to name one environment.
+  
+  - **`--env` is required.** No default, no "all". With none, or one the project does not declare, it refuses before any credential is read and lists the environments it could act on. The same refusal `pithy secrets deprovision` gives, from the same function, now in `@pithy-sh/secrets`' `scope`.
+  - **Only that environment's worker comes down.** Its bucket, and for media its namespace, go only with `--storage`.
+  - **`--json` carries `env`.** `secrets deprovision` emits the same key rather than `environment`, so three teardowns and the eight commands that already said `env` agree.
+  
+  The gate on D1 deletes now sees a delete made through `pithy feature destroy`'s provisioners, not only one that spells `deleteDatabase`. `feature destroy` itself still deletes a feature's own `SECRETS` and `EMAIL_SUPPRESSIONS` without a count, deliberately, and `docs/commands/feature.md` says so.
+- Updated dependencies [[`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`32186ff`](https://github.com/pithy-sh/pithy/commit/32186ff9efe385665496f1ecafe315f4e248ae3a)]:
+  - @pithy-sh/core@0.7.0
+  - @pithy-sh/secrets@0.2.4
+  - @pithy-sh/cloudflare@0.3.0
+  - @pithy-sh/storage@0.2.4
+
 ## 0.2.3
 
 ### Patch Changes

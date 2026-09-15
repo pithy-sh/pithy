@@ -1,5 +1,276 @@
 # @pithy-sh/cli
 
+## 0.9.0
+
+### Minor Changes
+
+- [#597](https://github.com/pithy-sh/pithy/pull/597) [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy feature destroy` deletes the feature's Worker scripts.
+  
+  It deleted D1, KV, R2 and Secrets Store entries, and the feature manifest had no field for a script. Every
+  teardown left its Workers deployed, answering on workers.dev and bound to databases it had just removed — one
+  set per branch.
+  
+  **The manifest records every script name provisioning writes**, as `scripts`, before the config carrying it is
+  written. `destroy` deletes each one the account confirms is deployed, scripts before resources, and reports each
+  in `deletedResources` with `kind: "worker"`. A recorded name is honored only when it recomputes from the Worker's
+  own two names, like every other manifest entry.
+  
+  **A feature provisioned before this has its own names torn down too.** Its manifest names no scripts, so
+  `destroy` recomputes them from `apps/` in the two shapes that carry the feature's identity —
+  `<project>-f<issue>-<slug>-<app>`, and the doubled `<project>-f<issue>-<slug>-<project>-<app>` from before [#587](https://github.com/pithy-sh/pithy/issues/587).
+  Exact names, never a prefix. `featureWorkerScriptNames` in `@pithy-sh/core` is that pair.
+  
+  **A feature with a Secrets Store deployed under a name nobody recorded.** Provisioning wrote its generated
+  config twice, once for the resources and once for the secrets, and the second write regenerated it from the
+  tracked `wrangler.jsonc`: the script name, every binding id and every service target were dropped, and wrangler
+  deployed the Worker as `<script>-feature`. It is one write now.
+  
+  **That `<script>-feature` Worker is not removed by `destroy`.** The name carries no issue and no slug, and every
+  such branch of the project deployed over the same one, so no feature's teardown can claim it without taking down
+  whichever branch deployed last. Once none is live, delete it with `wrangler delete --name <script>-feature`.
+  
+  `deprovisionFeature` and `destroyFeature` take `scripts` beside `provisioners`, and `workers`. The command builds
+  both account seams from one set of clients, so neither can run without the other.
+
+- [#599](https://github.com/pithy-sh/pithy/pull/599) [`ead1740`](https://github.com/pithy-sh/pithy/commit/ead17401ae8ad75366e86658604460d0aae14816) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy turnstile provision` writes the sitekeys where the front end reads them.
+  
+  A sitekey is a build input. The `pithy()` Vite plugin inlines the turnstile capability's client projection, and the projection reads `widgets.<mode>.sitekeys.<environment>` out of `pithy.config.ts`. Provisioning wrote `TURNSTILE_SITEKEY_<MODE>` into Worker vars and `.dev.vars` instead, where nothing read them. The config stayed blank, no widget rendered, and sign-in failed closed on staging and prod behind a successful provision.
+  
+  Provisioning now writes every environment's sitekey into the target Worker's `turnstile({ ... })` registration: Cloudflare's test sitekey for dev and staging, the real widget's for prod. String literals only, in place. An expression that already resolves to the value is left alone. The config is loaded back through the real loader, and a value the capability does not then resolve restores the file and refuses. Its output says a redeploy is required, because the build inlines the value.
+  
+  - **Stranded vars are removed.** Provision and deprovision strip any `TURNSTILE_SITEKEY_*` from the Worker's `wrangler.jsonc` and from `dev.json`. `pithy doctor` names any still in a Worker's `wrangler.jsonc`, in `dev.json`, or in the project root's `.dev.vars`, where [#53](https://github.com/pithy-sh/pithy/issues/53)'s writer put them.
+  - **`pithy doctor` has a `Turnstile:` block.** It names each environment whose build renders no widget, with the remedy when there is one. It reports and never fails the exit. `--json` carries it as `turnstileSitekeys`.
+  - **Environments beyond dev, staging and prod are named.** A declared `live` and every feature build have no sitekey slot, so their builds render no widget. `provision` lists them in `environmentsWithoutSitekeys` instead of leaving the bundle to say `enabled: false` in silence.
+  - **One Worker for the read and the write.** The widget modes came from the first Worker composing turnstile while the sitekeys went to `--worker`. Both now come from the `--worker` target.
+  - **`pithy add turnstile` scaffolds a visible widget**, so provisioning runs without a hand edit. It used to render `turnstile()`, whose default gates login with a widget nobody declared.
+  
+  `--json` for `turnstile provision` adds `sitekeys`, `strandedVarsRemoved`, `configFile`, `redeployRequired` and `environmentsWithoutSitekeys`.
+  
+  `@pithy-sh/turnstile`'s `TurnstileProvisioner` seam changes shape: `writeDev` takes the secret alone, `writeManagedSitekeys` is replaced by `writeSitekeys` and `removeStrandedSitekeyVars`, and the deprovisioner's `clearManagedSitekeys` by `clearProductionSitekeys` and `removeStrandedSitekeyVars`. `sitekeyVarName` is gone; `isStrandedSitekeyVar` finds what it named.
+
+- [#600](https://github.com/pithy-sh/pithy/pull/600) [`32186ff`](https://github.com/pithy-sh/pithy/commit/32186ff9efe385665496f1ecafe315f4e248ae3a) Thanks [@kingmesal](https://github.com/kingmesal)! - Every `pithy` command refuses a flag it does not declare. `pithy doctor --bogus-flag yes` exited 0 with the output of `pithy doctor`, and a typo in a safety flag ran the unsafe version. It now exits 1 with `Unknown flag: --bogus-flag.` and the flags the command does take; under `--json` the refusal is one `{ "error": … }` line, `validation/invalid_input`, with an `unrecognized_keys` issue per flag. It is refused wherever it is typed, so `pithy secrets rotate API_KEY --dry-rn` is refused rather than run for real. A group refuses one too, so `pithy token --json` is no longer answered with usage. The check runs before `--version` and the hidden root flags, so neither prints over a typo.
+  
+  Remedies that cited an undeclared `--env` no longer do: the email settings check and host-env report name `pithy email provision` and `pithy secrets provision`, and `pithy deploy --kit` names `pithy <capability> provision`. Each spans every environment and takes no `--env`.
+
+### Patch Changes
+
+- [#601](https://github.com/pithy-sh/pithy/pull/601) [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f) Thanks [@kingmesal](https://github.com/kingmesal)! - A rollback no longer empties the secrets vault, or production's suppression list.
+  
+  `pithy migrate --rollback` steps back one migration in every database in scope. The secrets database's whole
+  history is one migration whose `down` drops `pithy_secrets_system_secrets`, so any rollback destroyed every
+  stored secret in place. And `EMAIL_SUPPRESSIONS` is one database bound by every environment, so a staging
+  rollback also dropped production's suppression list.
+  
+  A capability now declares a table **retained** (`DatabaseSpec.retained`). `secrets` retains both vault tables;
+  `email` retains `pithy_email_suppressions`. No `down` runs against a database while a retained table in it
+  holds rows. A rollback, a `seed --redo` reset and a `remove --drop` all refuse, name each table and the row
+  count, and move nothing. `--destroy-retained <n>` overrides, and `n` must equal the printed count. The refusal
+  lives in the migration runner, recorded on each migration's own `down`, so a new command that reverses
+  migrations inherits it.
+  
+  A rollback or reset scoped to one environment keeps any database another environment's stanza also binds,
+  and says so. `--binding` narrows a run to one database. A rollback outside `dev` needs the phrase
+  `yes, i really want to roll back <env>` (`--confirm-rollback`). After a partial rollback failure the remedy
+  points at `pithy doctor`, not at a second rollback.
+  
+  `--json` gains `workers[].databases[].boundBy` on `migrate`, and `reset[].retained` and `reset[].boundBy` on
+  `seed --redo`.
+
+- [#601](https://github.com/pithy-sh/pithy/pull/601) [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy secrets deprovision` tears down one named environment, and counts the vault first.
+  
+  It used to walk every declared environment. One run, typed to clean up staging, deleted production's secrets database with it, and nothing asked.
+  
+  - **`--env` is required.** There is no default and no "all". With none, it refuses and lists the environments it could act on. Production is never in a default set, because there is no default set.
+  - **A vault holding rows is counted before anything goes.** The refusal names the database and the count, and `--destroy-retained <n>` must match it. The same guard `pithy migrate --rollback` spends. It is counted again at the delete, so a row written in between is refused.
+  - **The shared manager token goes with the last manager only.** Removing it for staging would have failed every rotation in prod.
+  - **`pithy email deprovision --suppression` gets the same count.** The suppression list is retained too. It is counted before the first worker goes, and `--destroy-retained <n>` must match.
+  
+  `--json` for `secrets deprovision` now carries `env` and `managerTokenDeleted`.
+
+- [#599](https://github.com/pithy-sh/pithy/pull/599) [`ead1740`](https://github.com/pithy-sh/pithy/commit/ead17401ae8ad75366e86658604460d0aae14816) Thanks [@kingmesal](https://github.com/kingmesal)! - `vector`, `storage`, `media`, `payments` and `support` provision the capability the `--worker` target composes.
+  
+  Each read its config from the first Worker composing the capability and wrote into `--worker`. With two Workers, `pithy vector provision --worker web` created `api`'s indexes and recorded them in `web`, which composed no vector, while `api` got no `VECTOR_PROVISIONED` record. The other four deployed or bound one Worker's capability against another's app database.
+  
+  One resolution now names the Worker and reads the capability off it. A Worker that does not compose the capability is refused before anything is created: `web does not compose the vector capability.` `pithy turnstile` resolves through the same function. `pithy payments reconcile` writes into no Worker and still reads the first Worker composing `payments`.
+
+- [#600](https://github.com/pithy-sh/pithy/pull/600) [`32186ff`](https://github.com/pithy-sh/pithy/commit/32186ff9efe385665496f1ecafe315f4e248ae3a) Thanks [@kingmesal](https://github.com/kingmesal)! - A command about one environment composes each Worker for that environment. `pithy migrate --env`, `pithy upgrade --env` and `pithy deploy --env`'s pending count evaluated `pithy.config.ts` with `compositionEnvironment()` answering `undefined`, so a config whose migrations differ by environment was counted and migrated with the wrong set. `pithy feature destroy` composed for none while `pithy provision --feature` composed for `feature`, so a capability a config composes for deployed environments alone was provisioned and never torn down, its Secrets Store entries included; it now composes for `feature` too. `pithy token` derives CI permissions from `--env`'s composition, and whether `pithy deploy --env` and `pithy secrets --env` record an audit row is answered from that environment's. They, `pithy provision`, `pithy dashboard connect` and `pithy dev` now compose through one primitive, `project/composeFor.ts`, which stamps `ENVIRONMENT`, re-reads a config this run already evaluated for another environment, and restores what it found. `pithy remove --drop --env` reverses the migrations of that environment's composition; it reversed those of a composition for none, carried out of the Worker picker `pithy add`, `ui` and `worker sync` share, which now composes for the environment its caller names.
+
+- [#598](https://github.com/pithy-sh/pithy/pull/598) [`ef0c77d`](https://github.com/pithy-sh/pithy/commit/ef0c77d550677a53503633301dfe79d9389f9929) Thanks [@kingmesal](https://github.com/kingmesal)! - A deploy creates nothing.
+  
+  `pithy deploy --env staging` left two empty D1 databases on an account, seven seconds before the upload.
+  wrangler's `experimental-provision` is on by default for every deploy that is not a dry run: a binding it
+  cannot resolve by id, by the live script's settings, or by name is created. It covers eight binding kinds,
+  and for R2, queues and the namespace kinds the name is the id — so no reading of a config can tell a real
+  bucket from one wrangler is about to make.
+  
+  Every `wrangler deploy` the CLI runs now carries `--experimental-provision=false`, for the Workers under
+  `apps/` and the kit's alike, and `runWrangler` refuses any argv without it before it spawns — so no
+  caller reaches wrangler around the rule, under whatever name it calls the seam by. wrangler rejects unknown arguments, so if it ever drops the switch a deploy fails loudly instead of
+  creating anything. `pithy deploy --kit` no longer creates a media or storage bucket nobody provisioned; that
+  Worker's row fails. The `deploy` scripts `pithy init` and `pithy worker add` write carry the switch too.
+  
+  The readable half is the refusal before anything is built. It read `env.<name>` of the tracked file, which
+  missed three deploys: a bare one, which it never asked about; `--env dev`, which has no `env.dev`; and a
+  feature environment, whose ids live in the generated config. It now reads the stanza the deploy ships —
+  including the top level wrangler falls back to for a Worker with no `env.<name>` — and names each D1 and KV
+  binding with no id. A bare deploy and `--env dev` are sent to `--env staging` or `--env prod`, because dev
+  is local and has nothing to provision. `pithy env`'s line under a local stanza now says a bare deploy
+  refuses it.
+
+- [#600](https://github.com/pithy-sh/pithy/pull/600) [`32186ff`](https://github.com/pithy-sh/pithy/commit/32186ff9efe385665496f1ecafe315f4e248ae3a) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy doctor` reports migrations for every environment, each under its own name. It reported `dev`'s ledger alone, from a composition for no environment, and accepted an undeclared `--env` silently, so `pithy doctor --env prod` printed `2 pending — run: pithy migrate --env dev` on a project whose prod had no database. The `migrations` check now has one line per environment — `dev`, then each declared one — each composed and read for that environment: a count, `not provisioned` when its databases have no id, `skipped` when offline or without Cloudflare credentials, or `couldn't be checked` when its config, or another Worker's, does not compose. A read handed one Worker, which `pithy add`, `remove` and `upgrade --migrate` make too, refuses when the rest of the project does not compose for that environment, rather than reading a shared database as if the missing Worker's rows were undeclared. Only `dev` fails the exit. In `--json` the check is `{ ok, environments }` in place of `{ ok, ledger, env }`. Every other per-environment part of doctor composes for its environment too, never for none: each declared stanza's missing bindings come from that environment's composition, a prerequisite, option key or Durable Object export only a deployed environment's composition needs is reported, and the settings check judges every environment's capability instances. The Workers doctor lists are `dev`'s composition.
+
+- [#599](https://github.com/pithy-sh/pithy/pull/599) [`ead1740`](https://github.com/pithy-sh/pithy/commit/ead17401ae8ad75366e86658604460d0aae14816) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy doctor` names `pithy turnstile provision` only where it clears a stranded sitekey var.
+  
+  Every stranded-var line ended "pithy turnstile provision … removes this". Provisioning edits its target Worker's `wrangler.jsonc` and `dev.json`, and refuses a Worker that composes no turnstile, which is where the old modes-from-one, vars-to-another split left them. Those lines never cleared. The project root's `.dev.vars`, where [#53](https://github.com/pithy-sh/pithy/issues/53)'s writer put the dev sitekey, was not read at all.
+  
+  Each finding now carries `removedBy` in `--json`: the Worker whose `pithy turnstile provision --worker <name>` clears it, or `null`. A `null` line says to delete the var by hand. The root `.dev.vars` is read and never edited.
+
+- [#601](https://github.com/pithy-sh/pithy/pull/601) [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy email deprovision` and `pithy support deprovision` tear down one named environment, and leave what every environment shares to the last one.
+  
+  Both walked every declared environment. A run meant for staging removed production's email worker, or its classification worker. `email deprovision --suppression` from staging deleted the suppression list production binds. `support deprovision --storage` deleted the one support bucket, every environment's history in it, and `--routing-zone` stopped production's inbound mail.
+  
+  - **`--env` is required.** No default, no "all". With none, or one the project does not declare, it refuses before any credential is read and lists the environments it could act on. The same refusal the secrets, storage and media teardowns give.
+  - **A shared part goes with the last environment.** `--suppression`, `--storage` and `--routing-zone` refuse while another declared environment still runs the capability's worker, naming it, before anything is deleted. The rule is `assertSharedLeavesLast` in `@pithy-sh/secrets`' `scope`, beside `deprovisionTarget`.
+  - **The suppression list is still counted.** A list holding rows needs `--destroy-retained <n>` as before. The bucket's confirmation is `--storage` itself: R2 objects are not counted.
+  - **`--json` carries `env`** on both.
+  
+  `--env production` on any of the five teardowns is now answered with `prod`, rather than with a list that omits it.
+
+- [#597](https://github.com/pithy-sh/pithy/pull/597) [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy feature destroy` finishes for a feature whose Workers call each other.
+  
+  Cloudflare refuses to delete a Worker another Worker still binds unless the delete is forced. Teardown deleted a
+  feature's scripts in `apps/` order without forcing, so `apps/web` calling `apps/api` put the callee first: the
+  delete was refused, nothing else was removed, the manifest was kept, and every re-run failed the same way.
+  
+  **Each script teardown deletes is now forced.** Every one is the feature's own and goes in the same pass. Deleting
+  callers first was the alternative, and it needs a graph teardown does not have: a recorded script may belong to a
+  Worker that has left the branch, Durable Object bindings reach siblings too, and two Workers can call each other.
+  Forcing also removes the Durable Objects a feature Worker hosts, which are the feature's.
+  
+  `CloudflareWorkersManager.deleteWorker` takes `{ force }`. Without it, nothing changes for any other caller.
+
+- [#597](https://github.com/pithy-sh/pithy/pull/597) [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8) Thanks [@kingmesal](https://github.com/kingmesal)! - A feature Worker carries the project once: `replay-f69-demo-board`, not `replay-f69-demo-replay-board`.
+  
+  `featureWorkerName` documents `<project>-f<issue>-<slug>-<worker>`, where the last segment is the `apps/<worker>`
+  directory. Provisioning handed it the deploy name instead, and a scaffolded Worker's deploy name already leads
+  with the project. The doubled segment was not only untidy: the name is held to the Worker cap of 63, and the
+  second `<project>-` was paid for by hashing the slug or the directory — the segments a reader needs.
+  
+  **`ProvisionScope.worker` now takes both of a Worker's names, `{ app, script }`.** The two scopes compose from
+  different ones. A feature builds on the directory. A declared environment still falls back to wrangler's
+  `<script>-<env>`, so staging and production names are unchanged — a declared name still wins, and a stanza that
+  names nothing still deploys where it always did. Code calling `scope.worker("replay-board")` passes
+  `{ app: "board", script: "replay-board" }`.
+  
+  Both computations of the address read those names from one function, `provisionWorkerNames`: the service target
+  a sibling calls, and the stanza `name` the deploy reads. Fixing only one of them would have pointed every
+  `service` binding at a script nobody deploys.
+  
+  **A feature live across the upgrade redeploys under the new name.** Its next `pithy provision --feature` and
+  deploy publish `<project>-f<issue>-<slug>-<app>`, and the old doubled-name script keeps running beside it until
+  `pithy feature destroy`, which looks for both names ([#592](https://github.com/pithy-sh/pithy/issues/592)). Any Durable Object state on the old script stays on
+  it.
+
+- [#601](https://github.com/pithy-sh/pithy/pull/601) [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy migrate` and `pithy seed` say what they are on, while they are on it.
+  
+  On a remote environment every migration statement and every seeded row is a REST round trip. A run took
+  minutes and printed its first character when it had finished, so a slow schema change and a hung one looked
+  the same, and the instinct was Ctrl-C in the middle of it. Each step is now named as it starts, one plain
+  `▸` line: the check before the first write (`▸ Checking DB, SECRETS...`), each database and the Workers it
+  serves (`▸ DB (app) for api, collab...`), each migration (`▸ Applying 0300_auth_0001_init to DB...`,
+  `▸ Rolling back … on DB...`), and each seeded store (`▸ Seeding things on DB for api...`).
+  
+  The end-of-run report is unchanged, byte for byte. `--json` prints none of it and still writes exactly one
+  line. A missing TTY prints all of it. Reading the ledger stays quiet, so `pithy doctor` and `pithy deploy`'s
+  pre-upload check are unchanged.
+  
+  **The same lines now appear in every command that migrates or seeds as a side effect:** `pithy provision`,
+  `pithy add`, `pithy remove --drop`, `pithy upgrade --migrate`, `pithy feature create` and `pithy feature sync`.
+  Under `--json` they do not.
+  
+  Core gains `beforeEachMigration`, the hook that hears each migration's name and direction ahead of its body.
+  It keeps a `down`'s retained declaration, which a hand-rolled wrapper would lose.
+  
+  The gate that finds long commands by their captured subprocesses cannot see a command slow on REST. Migrate
+  and seed are held by runtime gates that require every round trip through their store seams to follow a step
+  naming that store. No other REST-bound command is held by anything, and `ci/narration.test.ts` says so.
+
+- [#601](https://github.com/pithy-sh/pithy/pull/601) [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f) Thanks [@kingmesal](https://github.com/kingmesal)! - The narration gate follows a relative `import()` written as a template literal, and refuses one built at runtime.
+  
+  A command that reached a silent package-manager spawn through `` await import(`../dev/ports`) `` passed every narration test. The edge between modules read only quoted specifiers. A template literal with nothing interpolated is now the same edge. A relative specifier built from a literal, `` import(`../${name}`) `` or `import("../" + name)`, fails the build naming the file. An `import(spec)` through a variable is not seen, and `ci/childProcesses.ts` says so.
+  
+  Two CLI gates the same work left red are green again: the credentialed-child exceptions no longer name two modules that stopped spawning, and `ci/childProcesses.test.ts` is registered as reading only its own package. No command's behavior changes.
+
+- [#601](https://github.com/pithy-sh/pithy/pull/601) [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy add`, `pithy remove`, `pithy worker add` and `pithy feature create` say when they are installing.
+  
+  Each ran its package manager captured and silent. A cold `bun add` or `<pm> install` is minutes with nothing on
+  the terminal, which reads as a hang. Every package-manager run now goes through one primitive that names the
+  command line before the child starts: `▸ Running bun add @pithy-sh/auth...`, `▸ Running bun remove …`,
+  `▸ Running bun install...`. `pithy add --eject` names the install that promotes a fork's dependencies the same
+  way. `--json` prints none of it and still writes exactly one line. A missing TTY prints all of it.
+  
+  The narration gate claimed every captured subprocess and looked for `runWrangler(` by name, so it saw none of
+  these. It now finds children through `child_process` itself — however the binding is imported, aliased,
+  namespaced, destructured or `promisify`'d — and follows every declaration that reaches one to a step. What it
+  cannot follow fails the build. What it does not see is written in `ci/narration.test.ts`.
+
+- [#601](https://github.com/pithy-sh/pithy/pull/601) [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f) Thanks [@kingmesal](https://github.com/kingmesal)! - A remedy names only flags its command has.
+  
+  The email host's boot and `pithy doctor` messages said `Run pithy secrets provision --env <env>.` for both host secrets, and `Run pithy email provision --env <env>.` for every binding and var. `pithy doctor`'s missing-suppression-list finding named `pithy email provision --env prod`, and `pithy deploy --kit` named `pithy <capability> provision --env <env>` for a skipped kit Worker. None of those commands takes `--env`. citty ignored a flag a command did not declare, so an operator who typed `--env staging` provisioned every declared environment, production included, believing they had named one. The CLI refuses such a flag now, so a remedy naming one fails rather than misleads.
+  
+  Each now names the command as it runs: `pithy secrets provision`, `pithy email provision`, `pithy <capability> provision`. `docs/commands/deploy.md` and `docs/commands/secrets.md` say the same.
+  
+  The gate that holds action lines to the CLI read two packages and one key. It reads every package now: command names from every `action:` and host-env `command:`, flags from every string literal and every command page's prose.
+
+- [#601](https://github.com/pithy-sh/pithy/pull/601) [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy remove --drop` counts retained rows over the whole database, not the capability it drops.
+  
+  A drop reversed one capability's migrations with a provider built from that capability alone, so both the preflight and the runner's own guard counted what it declared. A capability sharing `SECRETS` with the vault declares nothing, so its `down` ran while the vault held rows. A `down` that dropped the vault's table took it.
+  
+  - **The count is database-wide, as a rollback's is.** The drop merges the Worker's whole composition with every Worker discovered beside it, and counts every table any of them declares retained. Only the dropped capability's migrations are reversed, and only its databases are visited, so dropping a capability from `DB` is not refused over the vault.
+  - **Core's `dropMigrations` takes the part and the database apart**: `dropMigrations(db, { database, reverse })`. It counts `database`, reverses `reverse`, and refuses to reverse a migration `database` does not carry.
+
+- [#601](https://github.com/pithy-sh/pithy/pull/601) [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy storage deprovision` and `pithy media deprovision` tear down one named environment.
+  
+  Both walked every declared environment. `--storage`, run to clear staging's uploads, emptied and deleted production's bucket with it, and `media` took production's `MEDIA` namespace too. Nothing asked, and there was no way to name one environment.
+  
+  - **`--env` is required.** No default, no "all". With none, or one the project does not declare, it refuses before any credential is read and lists the environments it could act on. The same refusal `pithy secrets deprovision` gives, from the same function, now in `@pithy-sh/secrets`' `scope`.
+  - **Only that environment's worker comes down.** Its bucket, and for media its namespace, go only with `--storage`.
+  - **`--json` carries `env`.** `secrets deprovision` emits the same key rather than `environment`, so three teardowns and the eight commands that already said `env` agree.
+  
+  The gate on D1 deletes now sees a delete made through `pithy feature destroy`'s provisioners, not only one that spells `deleteDatabase`. `feature destroy` itself still deletes a feature's own `SECRETS` and `EMAIL_SUPPRESSIONS` without a count, deliberately, and `docs/commands/feature.md` says so.
+
+- [#601](https://github.com/pithy-sh/pithy/pull/601) [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f) Thanks [@kingmesal](https://github.com/kingmesal)! - `email-link-signing-key` is a Secrets Store entry per environment, and a link verifies only where it was minted.
+  
+  It was an encrypted row in each environment's D1 vault, declared `global`. A rollback, a `seed --redo` or a teardown an operator agrees to reaches the vault, and a staging rollback took the key. It is the one secret whose loss outlives the system: every link already in an inbox stops verifying.
+  
+  - **The key lives outside every D1.** `backend: "cf-secrets-store"`, `scope: "environment"`: one entry, `<project>-<env>-email-link-signing-key`, none shared. `pithy secrets provision` creates it when absent and binds it in the app Worker; `pithy email provision` binds the same entry in the email host. The host signs, the app verifies.
+  - **A token names its audience.** Callback tokens are `v: 2` and carry `aud`, the origin their links point at. The routes refuse a token presented anywhere else, so a key misconfigured as shared still cannot let a staging link act on production — the unsubscribe route included, which writes into the suppression list both environments bind.
+  - **Rotation keeps its versions.** The entry holds the `{ currentVersion, versions }` envelope, so a link minted under a retained previous version still verifies.
+  - **`pithy doctor` reports the move.** A missing Secrets Store entry, and a key still held in an environment's D1 vault, are each a `Settings:` finding for that environment.
+  - **`pithy secrets rm --backend d1`** removes the row a moved declaration left behind, one named environment at a time. A plain `rm` routes by the declaration and would delete the live entry.
+  
+  **Moving the key invalidates links already sent.** The D1 value is sealed under a master key no command can read, so it cannot be carried into the new entry as a previous version, and links minted before this release name no audience. They answer `email/invalid_token`. The path is in `docs/commands/secrets.md#moving-a-secret-off-d1`.
+
+- [#599](https://github.com/pithy-sh/pithy/pull/599) [`ead1740`](https://github.com/pithy-sh/pithy/commit/ead17401ae8ad75366e86658604460d0aae14816) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy turnstile provision` refuses before it creates anything.
+  
+  The sitekey writer ran last, after the dev secret, the staging secret, a real production widget and the prod secret. Its refusals read only the config source, so a refused run had already minted a widget and stored both secrets. The docs said "Nothing is written". The rerun reused the widget and warned about a secret that was in fact stored. `deprovision` deleted the widgets and secrets before its sitekey edit refused, and left the stranded vars behind.
+  
+  Every refusal is now decided first: a domain another widget covers, production widgets of which some exist and some do not, and a sitekey the writer would refuse. A production sitekey Cloudflare has not issued yet can only go into a string literal. `deprovision` checks its edit before it deletes anything. A config whose `turnstile({` does not open a line is refused with a sentence that says so.
+  
+  `TurnstileProvisioner` gains `findProductionWidget` and `assertSitekeysWritable`, and `TurnstileDeprovisioner` gains `assertSitekeysWritable`. `PlannedSitekeys` is the shape they check.
+
+- [#599](https://github.com/pithy-sh/pithy/pull/599) [`ead1740`](https://github.com/pithy-sh/pithy/commit/ead17401ae8ad75366e86658604460d0aae14816) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy upgrade` no longer overwrites an option a registration supplies as a shorthand or through a spread.
+  
+  The key scanner recorded a key only when a colon followed it. `turnstile({ widgets })` and `turnstile({ ...base })` read as missing `widgets`, so `pithy upgrade` appended the manifest default after them. The later key wins, and a project's real sitekeys were replaced with blanks. `pithy doctor` reported the same drift and failed its exit.
+  
+  A key now counts as present however it is written: `key: value`, a shorthand, a method or an accessor. A registration that spreads or computes keys might carry any option, so nothing is reported or written for it. `pithy add` asks the same question before refusing a required option, so a spread registration is not refused either.
+- Updated dependencies [[`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`ead1740`](https://github.com/pithy-sh/pithy/commit/ead17401ae8ad75366e86658604460d0aae14816), [`ead1740`](https://github.com/pithy-sh/pithy/commit/ead17401ae8ad75366e86658604460d0aae14816), [`32186ff`](https://github.com/pithy-sh/pithy/commit/32186ff9efe385665496f1ecafe315f4e248ae3a)]:
+  - @pithy-sh/core@0.7.0
+  - @pithy-sh/secrets@0.2.4
+  - @pithy-sh/email@0.3.4
+  - @pithy-sh/cloudflare@0.3.0
+  - @pithy-sh/turnstile@0.3.0
+
 ## 0.8.0
 
 ### Minor Changes

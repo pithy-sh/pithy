@@ -1,5 +1,27 @@
 # @pithy-sh/support
 
+## 0.2.7
+
+### Patch Changes
+
+- [#601](https://github.com/pithy-sh/pithy/pull/601) [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f) Thanks [@kingmesal](https://github.com/kingmesal)! - `pithy email deprovision` and `pithy support deprovision` tear down one named environment, and leave what every environment shares to the last one.
+  
+  Both walked every declared environment. A run meant for staging removed production's email worker, or its classification worker. `email deprovision --suppression` from staging deleted the suppression list production binds. `support deprovision --storage` deleted the one support bucket, every environment's history in it, and `--routing-zone` stopped production's inbound mail.
+  
+  - **`--env` is required.** No default, no "all". With none, or one the project does not declare, it refuses before any credential is read and lists the environments it could act on. The same refusal the secrets, storage and media teardowns give.
+  - **A shared part goes with the last environment.** `--suppression`, `--storage` and `--routing-zone` refuse while another declared environment still runs the capability's worker, naming it, before anything is deleted. The rule is `assertSharedLeavesLast` in `@pithy-sh/secrets`' `scope`, beside `deprovisionTarget`.
+  - **The suppression list is still counted.** A list holding rows needs `--destroy-retained <n>` as before. The bucket's confirmation is `--storage` itself: R2 objects are not counted.
+  - **`--json` carries `env`** on both.
+  
+  `--env production` on any of the five teardowns is now answered with `prod`, rather than with a list that omits it.
+- Updated dependencies [[`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`db6674a`](https://github.com/pithy-sh/pithy/commit/db6674a775fc14c4e20410352bdd90c1c54abed8), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`d7a7168`](https://github.com/pithy-sh/pithy/commit/d7a7168e2ce7d2769d220e39d55e095a4477a31f), [`32186ff`](https://github.com/pithy-sh/pithy/commit/32186ff9efe385665496f1ecafe315f4e248ae3a)]:
+  - @pithy-sh/core@0.7.0
+  - @pithy-sh/secrets@0.2.4
+  - @pithy-sh/email@0.3.4
+  - @pithy-sh/storage@0.2.4
+  - @pithy-sh/auth@0.6.2
+  - @pithy-sh/payments@0.3.4
+
 ## 0.2.6
 
 ### Patch Changes
