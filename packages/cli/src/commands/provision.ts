@@ -401,14 +401,14 @@ export function writeReport(
       // it asks `storeEntryRemedy`, which is the whole answer, over the registry facts doctor reads too:
       // the scope decides whether the command carries `--env`, and `isProvisionableSecret` decides which
       // of the two commands it is.
-      const declared = options.registry[secret.binding];
+      const declared = options.registry[secret.secret];
       process.stdout.write(
         `${secret.binding} has no store entry yet. ${storeEntryRemedy([
           {
-            binding: secret.binding,
+            secret: secret.secret,
             scope: declared?.scope ?? "environment",
             env: report.env,
-            provisionable: declared !== undefined && isProvisionableSecret(secret.binding, declared),
+            provisionable: declared !== undefined && isProvisionableSecret(secret.secret, declared),
           },
         ])}\n`,
       );

@@ -76,6 +76,20 @@ describe("aggregateSecretRegistries", () => {
     expect(() => aggregateSecretRegistries([a, b])).toThrowError(/declared incompatibly/);
   });
 
+  test("throws when two capabilities declare store secrets that bind as one name, naming both (#603)", () => {
+    const kebab = defineSecretRegistry({
+      "npm-token": { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
+    });
+    const snake = defineSecretRegistry({
+      NPM_TOKEN: { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
+    });
+    const a = defineCapability({ name: "release", requiredBindings: [], secretRegistry: kebab });
+    const b = defineCapability({ name: "rogue", requiredBindings: [], secretRegistry: snake });
+    expect(() => aggregateSecretRegistries([a, b])).toThrowError(
+      /"npm-token" \(release\) and "NPM_TOKEN" \(rogue\) both bind as NPM_TOKEN/,
+    );
+  });
+
   test("throws on a divergent re-declaration of the same secret name", () => {
     const a = defineCapability({ name: "email", requiredBindings: [], secretRegistry: signingKey });
     const divergent = defineSecretRegistry({
@@ -224,8 +238,9 @@ describe("sharedSecretsStore — an unset secret in one capability, a read in an
   const workerEnv = {
     SECRETS: undefined,
     SECRETS_ENCRYPTION_KEYS: "",
-    "auth-session-secret": "sess",
-    "payments-webhook-secret": "whsec",
+    // Bound as the kit binds them: each key in SCREAMING_SNAKE_CASE (#603).
+    AUTH_SESSION_SECRET: "sess",
+    PAYMENTS_WEBHOOK_SECRET: "whsec",
   } as unknown as SecretsStoreEnv;
 
   function composed(): void {

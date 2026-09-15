@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { secretWriteTargets } from "@pithy-sh/secrets/src/cli/writeTargets";
+import { secretBindingName } from "@pithy-sh/secrets/src/env/bindingName";
 import { MASTER_KEY_BINDING } from "@pithy-sh/secrets/src/env/masterKeyBinding";
 import {
   defineSecretRegistry,
@@ -172,9 +173,10 @@ function provisionLines(registry: SecretRegistry, env: string): string[] {
     resources: [],
     workers: [],
     services: [],
-    secretBindings: Object.entries(registry).map(([binding, entry]) => ({
-      binding,
-      entry: scope.secretEntry(binding, entry.scope),
+    secretBindings: Object.entries(registry).map(([secret, entry]) => ({
+      secret,
+      binding: secretBindingName(secret),
+      entry: scope.secretEntry(secret, entry.scope),
       bound: false,
       minted: false,
     })),
@@ -336,13 +338,13 @@ describe("both reports answer the same way, for every cell", () => {
  */
 describe("storeEntryRemedy", () => {
   test("a value the kit composes is answered with the one command that composes it", () => {
-    expect(storeEntryRemedy([{ binding: "FOO", scope: "environment", env: "staging", provisionable: true }])).toBe(
+    expect(storeEntryRemedy([{ secret: "FOO", scope: "environment", env: "staging", provisionable: true }])).toBe(
       "Run pithy secrets provision — it creates the store entries and writes the stanza.",
     );
   });
 
   test("a value only the operator holds is answered with the create that supplies it", () => {
-    expect(storeEntryRemedy([{ binding: "FOO", scope: "environment", env: "staging", provisionable: false }])).toBe(
+    expect(storeEntryRemedy([{ secret: "FOO", scope: "environment", env: "staging", provisionable: false }])).toBe(
       "Run pithy secrets create FOO --env staging to supply its value, then pithy secrets provision to write the stanza.",
     );
   });
@@ -355,8 +357,8 @@ describe("storeEntryRemedy", () => {
   test("a mixed group names the create it needs and the provision they share", () => {
     expect(
       storeEntryRemedy([
-        { binding: "FOO", scope: "environment", env: "staging", provisionable: true },
-        { binding: "BAR", scope: "environment", env: "staging", provisionable: false },
+        { secret: "FOO", scope: "environment", env: "staging", provisionable: true },
+        { secret: "BAR", scope: "environment", env: "staging", provisionable: false },
       ]),
     ).toBe(
       "Run pithy secrets create BAR --env staging to supply its value, then pithy secrets provision to write the stanza.",
@@ -365,15 +367,26 @@ describe("storeEntryRemedy", () => {
 });
 
 describe("supplyStoreEntryCommand", () => {
-  test("an environment-scoped secret carries the --env its entry belongs to", () => {
+  test("the command takes the secret's key, never the binding it is read through (#603)", () => {
     expect(
-      supplyStoreEntryCommand({ binding: "FOO", scope: "environment", env: "staging", provisionable: false }),
-    ).toBe("pithy secrets create FOO --env staging");
+      supplyStoreEntryCommand({
+        secret: "stripe-secret-key",
+        scope: "environment",
+        env: "staging",
+        provisionable: false,
+      }),
+    ).toBe("pithy secrets create stripe-secret-key --env staging");
+  });
+
+  test("an environment-scoped secret carries the --env its entry belongs to", () => {
+    expect(supplyStoreEntryCommand({ secret: "FOO", scope: "environment", env: "staging", provisionable: false })).toBe(
+      "pithy secrets create FOO --env staging",
+    );
   });
 
   /** A global secret is one entry every environment binds, and the write rule refuses to narrow it. */
   test("a global secret carries no --env at all", () => {
-    expect(supplyStoreEntryCommand({ binding: "FOO", scope: "global", env: "staging", provisionable: false })).toBe(
+    expect(supplyStoreEntryCommand({ secret: "FOO", scope: "global", env: "staging", provisionable: false })).toBe(
       "pithy secrets create FOO",
     );
   });
@@ -382,7 +395,7 @@ describe("supplyStoreEntryCommand", () => {
 describe("supplyStoreEntriesRemedy", () => {
   test("one entry reads in the singular, and names both acts", () => {
     expect(
-      supplyStoreEntriesRemedy([{ binding: "FOO", scope: "environment", env: "staging", provisionable: false }]),
+      supplyStoreEntriesRemedy([{ secret: "FOO", scope: "environment", env: "staging", provisionable: false }]),
     ).toBe(
       "Run pithy secrets create FOO --env staging to supply its value, then pithy secrets provision to write the stanza.",
     );
@@ -395,8 +408,8 @@ describe("supplyStoreEntriesRemedy", () => {
   test("a global entry short in every stanza is one command and one provision", () => {
     expect(
       supplyStoreEntriesRemedy([
-        { binding: "FOO", scope: "global", env: "staging", provisionable: false },
-        { binding: "FOO", scope: "global", env: "prod", provisionable: false },
+        { secret: "FOO", scope: "global", env: "staging", provisionable: false },
+        { secret: "FOO", scope: "global", env: "prod", provisionable: false },
       ]),
     ).toBe("Run pithy secrets create FOO to supply its value, then pithy secrets provision to write every stanza.");
   });
@@ -404,8 +417,8 @@ describe("supplyStoreEntriesRemedy", () => {
   test("several entries in one stanza are several commands and one provision", () => {
     expect(
       supplyStoreEntriesRemedy([
-        { binding: "FOO", scope: "environment", env: "staging", provisionable: false },
-        { binding: "BAR", scope: "environment", env: "staging", provisionable: false },
+        { secret: "FOO", scope: "environment", env: "staging", provisionable: false },
+        { secret: "BAR", scope: "environment", env: "staging", provisionable: false },
       ]),
     ).toBe(
       "Run pithy secrets create FOO --env staging, pithy secrets create BAR --env staging to supply their values, then pithy secrets provision to write the stanza.",

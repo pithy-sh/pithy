@@ -59,13 +59,13 @@ export function storeSecretMinter(options: {
   audit?: CliAuditEmit;
 }): MintStoreSecret {
   const audit = options.audit ?? (async () => {});
-  return async ({ binding, secretName, entry }) => {
+  return async ({ secret, binding, secretName, entry }) => {
     // Defense in depth. `secretsStoreBindings` asks `isMintableSecret` before calling, so arriving here
     // with a supplied secret is a bug — and one that would write a random string where an OAuth client
     // secret was meant, leaving a gap that looks filled in. It refuses instead of inventing.
     if (!isMintableSecret(entry) || entry.devValue === undefined) {
       throw new InternalError({
-        message: `Secret '${binding}' declares no value of its own, so nothing may mint one.`,
+        message: `Secret '${secret}' declares no value of its own, so nothing may mint one.`,
         detail: `mint called for ${secretName}, whose registry entry has no devValue.`,
       });
     }

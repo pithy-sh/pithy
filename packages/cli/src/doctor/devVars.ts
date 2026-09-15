@@ -13,6 +13,7 @@ import { type DevSecretsTarget, resolveDevSecretsTargets, type UnresolvableWorke
 import type { StatePathOptions } from "../notifier/state";
 import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, requireProjectName } from "../project/config";
+import { bindingSecrets } from "../provision/secretBindings";
 import { mintedTokensPath } from "../tokens/mintedTokens";
 import { declaredVars } from "./wranglerVars";
 
@@ -206,7 +207,10 @@ export async function checkDevVars(options: CheckDevVarsOptions): Promise<DevVar
 
   // What the registries declare, and what the compositions require. Two different answers to "does
   // anything read this name", kept apart because they have two different fixes.
-  const declaredSecrets = new Set(targets.flatMap((target) => Object.keys(target.registry)));
+  // A store secret's `.dev.vars` line is its binding (#603), so the binding is a declared name here too.
+  const declaredSecrets = new Set(
+    targets.flatMap((target) => [...Object.keys(target.registry), ...bindingSecrets(target.registry).keys()]),
+  );
   const wants = new Map<string, string[]>();
   for (const worker of workers) {
     const names = new Set<string>();

@@ -15,6 +15,7 @@ import { environmentScope, type SecretNameScope } from "@pithy-sh/core/src/namin
 import { email } from "@pithy-sh/email/src/capability";
 import {
   EMAIL_LINK_SIGNING_KEY,
+  EMAIL_LINK_SIGNING_KEY_BINDING,
   emailSigningRegistry,
   resolveSigningKeys,
 } from "@pithy-sh/email/src/crypto/signingKey";
@@ -604,7 +605,7 @@ describe("the link-signing key survives the vault (#596)", () => {
   /** What the Worker is handed for the key: its generated `.dev.vars`, the dev face of its Secrets Store binding. */
   async function bound(): Promise<string | undefined> {
     const text = await readFile(join(h.projectDir, "apps", "api", ".dev.vars"), "utf8").catch(() => "");
-    return parseDevVars(text)[EMAIL_LINK_SIGNING_KEY];
+    return parseDevVars(text)[EMAIL_LINK_SIGNING_KEY_BINDING];
   }
 
   /** Verify `token` the way the callback route does — the key resolved from its binding, the vault as it now is. */
@@ -615,7 +616,7 @@ describe("the link-signing key survives the vault (#596)", () => {
         const keys = await resolveSigningKeys({
           SECRETS: db,
           SECRETS_ENCRYPTION_KEYS: masterKey,
-          [EMAIL_LINK_SIGNING_KEY]: binding,
+          [EMAIL_LINK_SIGNING_KEY_BINDING]: binding,
         } as SecretsStoreEnv);
         await verifyToken(token, keys, new Date(), AUDIENCE);
         return true;

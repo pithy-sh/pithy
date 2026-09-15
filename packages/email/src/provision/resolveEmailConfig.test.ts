@@ -67,6 +67,35 @@ describe("resolveEmailConfig", () => {
     expect(config.send_email).toEqual([{ name: "EMAIL", remote: true }]);
   });
 
+  test("the link-signing key's binding is filled with this environment's entry (#603)", () => {
+    const config = resolveEmailConfig(
+      {
+        ...template,
+        secrets_store_secrets: [
+          ...template.secrets_store_secrets,
+          { binding: "EMAIL_LINK_SIGNING_KEY", store_id: "<filled>", secret_name: "<filled>" },
+        ],
+      },
+      {
+        project: "acme",
+        env: "staging",
+        appDatabaseId: "app-123",
+        suppressionDatabaseId: "sup-456",
+        secretsDatabaseId: "sec-789",
+        storeId: "store-abc",
+        baseUrl: "https://api.staging.example.com",
+        theme: { ...defaultTheme, appName: "Acme" },
+      },
+    );
+
+    // The entry keeps the registry key's name; only the binding is SCREAMING_SNAKE_CASE.
+    expect(config.secrets_store_secrets[1]).toEqual({
+      binding: "EMAIL_LINK_SIGNING_KEY",
+      store_id: "store-abc",
+      secret_name: "acme-staging-email-link-signing-key",
+    });
+  });
+
   test("a second project resolves to entirely different worker and Workflow names", () => {
     const config = resolveEmailConfig(template, {
       project: "globex",

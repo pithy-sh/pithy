@@ -4,6 +4,7 @@
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { ProvisionScope, SecretNameScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { isSecretsCapability } from "@pithy-sh/secrets/src/capability";
+import { secretBindingName } from "@pithy-sh/secrets/src/env/bindingName";
 import { isMintableSecret, type SecretRegistry, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
 import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsStore";
 
@@ -21,6 +22,10 @@ import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsSt
  * certainly exists. The entry **name** comes from the scope, so a feature binds its own master key and
  * `staging` binds staging's — the join key is the binding, and the binding never changes.
  *
+ * **The binding is the registry key in SCREAMING_SNAKE_CASE, never the key itself (#603).**
+ * `secretBindingName` derives it, here and in the reader, so `email-link-signing-key` is bound as
+ * `EMAIL_LINK_SIGNING_KEY` and read as `EMAIL_LINK_SIGNING_KEY`. The entry name keeps the registry key.
+ *
  * **`dev` never gets a stanza, and that is deliberate rather than an omission.** Local dev materializes
  * every `cf-secrets-store` secret into the generated `.dev.vars` (#179), so a stanza there would name
  * store entries a local run never reads. Provisioning only ever writes `scope.stanza`, which is a
@@ -29,7 +34,7 @@ import { aggregateSecretRegistries } from "@pithy-sh/secrets/src/sharedSecretsSt
 
 /** One `secrets_store_secrets` entry, complete — wrangler rejects an entry missing any of the three. */
 export interface SecretStoreBinding {
-  /** The Worker binding name, which is the registry key: the same name every read site uses. */
+  /** The Worker binding name — the registry key through `secretBindingName`, the name every read site uses. */
   binding: string;
   /** The account's one Secrets Store. */
   store_id: string;
@@ -58,8 +63,9 @@ export function workerSecretRegistry(capabilities: readonly Capability[]): Secre
 }
 
 /**
- * The registry entries that need a `secrets_store_secrets` binding — one predicate, so a stanza writer
- * and a stanza reader cannot disagree about what belongs in one.
+ * The registry keys that need a `secrets_store_secrets` binding — one predicate, so a stanza writer
+ * and a stanza reader cannot disagree about what belongs in one. Keys, not bindings: each is bound as
+ * `secretBindingName(key)`.
  *
  * **A keyspace is skipped.** It has no single value and therefore no single entry; its members are
  * written one key at a time by the application that mints them, and a binding under the bare name would
@@ -68,12 +74,22 @@ export function workerSecretRegistry(capabilities: readonly Capability[]): Secre
 export function boundSecretNames(registry: SecretRegistry): string[] {
   return Object.entries(registry)
     .filter(([, entry]) => entry.backend === "cf-secrets-store" && !entry.keyed)
-    .map(([binding]) => binding);
+    .map(([name]) => name);
+}
+
+/**
+ * Each binding a registry's store secrets are read through, and the registry key it was derived from.
+ * `defineSecretRegistry` refuses two keys that derive one binding, so the map is exact.
+ */
+export function bindingSecrets(registry: SecretRegistry): Map<string, string> {
+  return new Map(boundSecretNames(registry).map((secret) => [secretBindingName(secret), secret]));
 }
 
 /** One secret a run is about to create: what the Worker binds it as, what it is called here, what it is. */
 export interface MintTarget {
-  /** The Worker binding name, which is the registry key. */
+  /** The secret's registry key. */
+  secret: string;
+  /** The Worker binding it is read through. */
   binding: string;
   /** The store entry to write, named for this scope. */
   secretName: string;
@@ -101,6 +117,8 @@ export type MintStoreSecret = (target: MintTarget) => Promise<void>;
  * the registry entry, known here, so the answer travels instead of being derived twice.
  */
 export interface MissingSecretBinding {
+  /** The secret's registry key — what `pithy secrets create` takes. */
+  secret: string;
   /** The binding the Worker declares. */
   binding: string;
   /** The Secrets Store entry that binding resolves to in this environment. */
@@ -147,19 +165,20 @@ export async function secretsStoreBindings(options: {
   const bound: SecretStoreBinding[] = [];
   const missing: MissingSecretBinding[] = [];
   const minted: string[] = [];
-  for (const binding of boundSecretNames(options.registry)) {
-    const entry = options.registry[binding] as SecretRegistry[string];
-    const secretName = options.scope.secretEntry(binding, entry.scope as SecretNameScope);
+  for (const secret of boundSecretNames(options.registry)) {
+    const entry = options.registry[secret] as SecretRegistry[string];
+    const binding = secretBindingName(secret);
+    const secretName = options.scope.secretEntry(secret, entry.scope as SecretNameScope);
     let present = await options.exists(secretName);
     if (!present && options.mint && isMintableSecret(entry)) {
-      await options.mint({ binding, secretName, entry });
-      minted.push(binding);
+      await options.mint({ secret, binding, secretName, entry });
+      minted.push(secret);
       present = true;
     }
     if (present) {
       bound.push({ binding, store_id: options.storeId, secret_name: secretName });
     } else {
-      missing.push({ binding, entry: secretName });
+      missing.push({ secret, binding, entry: secretName });
     }
   }
   return { bound, missing, minted };

@@ -157,6 +157,34 @@ describe("defineSecretRegistry", () => {
   });
 });
 
+describe("defineSecretRegistry — the binding a store secret is read through (#603)", () => {
+  test("two store-backed keys that bind as one name are refused, naming both", () => {
+    expect(() =>
+      defineSecretRegistry({
+        "npm-token": { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
+        NPM_TOKEN: { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
+      }),
+    ).toThrowError(/"npm-token" and "NPM_TOKEN" both bind as NPM_TOKEN/);
+  });
+
+  test("a d1 key sharing a store key's binding shape is not a binding, and is allowed", () => {
+    expect(() =>
+      defineSecretRegistry({
+        "npm-token": { backend: "cf-secrets-store", scope: "global", rotatable: false, valueType: "text" },
+        NPM_TOKEN: { backend: "d1", scope: "environment", rotatable: false, valueType: "text" },
+      }),
+    ).not.toThrow();
+  });
+
+  test("a store-backed key whose binding cannot be bound is refused", () => {
+    expect(() =>
+      defineSecretRegistry({
+        "2fa-key": { backend: "cf-secrets-store", scope: "environment", rotatable: false, valueType: "text" },
+      }),
+    ).toThrowError(/"2fa-key" binds as 2FA_KEY, which a Worker cannot bind/);
+  });
+});
+
 describe("defineSecretRegistry — keyed entries", () => {
   test("accepts a keyed entry: a keyspace, not a name", () => {
     const registry = defineSecretRegistry({

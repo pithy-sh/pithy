@@ -886,6 +886,33 @@ describe("checkSecretBindings", () => {
     expect(check?.state).toBe("ok");
   });
 
+  test("a kebab-case key is judged by the binding it derives, never by the key (#603)", async () => {
+    const registry = defineSecretRegistry({
+      "email-link-signing-key": {
+        backend: "cf-secrets-store",
+        scope: "environment",
+        rotatable: true,
+        valueType: "text",
+      },
+    });
+    const entry = (env: string) => ({ store_id: STORE_ID, secret_name: `replay-${env}-email-link-signing-key` });
+    const stanzas = (binding: string) =>
+      Object.fromEntries(ENVIRONMENTS.map((env) => [env, { secrets_store_secrets: [{ binding, ...entry(env) }] }]));
+    const check = (target: DevSecretsTarget) =>
+      checkSecretBindings({ projectDir: dir, targets: [target], environments: ENVIRONMENTS, project: PROJECT });
+
+    const bound = await worker("board", stanzas("EMAIL_LINK_SIGNING_KEY"));
+    expect(await check({ ...bound, registry })).toEqual({ state: "ok", missing: [] });
+
+    const underTheKey = await worker("board", stanzas("email-link-signing-key"));
+    const result = await check({ ...underTheKey, registry });
+    expect(result?.state).toBe("unbound");
+    expect(result?.missing.map((one) => [one.env, one.binding])).toEqual([
+      ["staging", "EMAIL_LINK_SIGNING_KEY"],
+      ["prod", "EMAIL_LINK_SIGNING_KEY"],
+    ]);
+  });
+
   test("a project where no Worker composes secrets has no answer to give", async () => {
     expect(
       await checkSecretBindings({ projectDir: dir, targets: [], environments: ENVIRONMENTS, project: PROJECT }),
@@ -1005,7 +1032,7 @@ describe("what the configuration cannot reach", () => {
       project: PROJECT,
     });
     expect(check?.state).toBe("unbound");
-    expect(check?.missing.map((entry) => entry.binding)).toContain("support-r2-credentials");
+    expect(check?.missing.map((entry) => entry.secret)).toContain("support-r2-credentials");
   });
 
   test("and is not reported when it does not", async () => {

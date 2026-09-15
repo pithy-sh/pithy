@@ -4,7 +4,7 @@
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { SecretsStoreEnv } from "./env/bindings";
-import type { SecretRegistry, SecretRegistryEntry } from "./registry";
+import { refuseUnbindableStoreSecrets, type SecretRegistry, type SecretRegistryEntry } from "./registry";
 import { d1KeyedIO, type SecretsAccessor, secretsStore } from "./secretsStore";
 
 /**
@@ -223,5 +223,10 @@ export function aggregateSecretRegistries(capabilities: readonly Capability[]): 
       owners[name] = cap.name;
     }
   }
+  // Names that differ can still be one binding (#603): each capability's own registry was checked when it
+  // was defined, and only the merge can see two capabilities' keys side by side.
+  refuseUnbindableStoreSecrets(
+    Object.entries(combined).map(([name, entry]) => ({ name, entry, owner: owners[name] as string })),
+  );
   return combined;
 }

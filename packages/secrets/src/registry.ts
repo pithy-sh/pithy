@@ -5,6 +5,7 @@ import { DevSecretValue } from "@pithy-sh/core/src/capability/devSecret";
 import { SecretOrigin, SecretRotation } from "@pithy-sh/core/src/capability/secretOrigin";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { z } from "zod";
+import { isBindingName, secretBindingName } from "./env/bindingName";
 import { MASTER_KEY_BINDING } from "./env/masterKeyBinding";
 import { KEYSPACE_SEPARATOR } from "./keyspace";
 import type { ValueRotator } from "./rotation/valueRotator";
@@ -397,6 +398,50 @@ function validateSecretDeclaration(name: string, entry: SecretRegistryEntry): vo
   }
 }
 
+/** Whether a registry entry is read through a Worker binding of its own: a named `cf-secrets-store` secret. */
+export function isStoreBound(entry: Pick<SecretRegistryEntry, "backend" | "keyed">): boolean {
+  return entry.backend === "cf-secrets-store" && !entry.keyed;
+}
+
+/**
+ * **Refuse store secrets a Worker could not bind, or could not tell apart (#603).**
+ *
+ * A `cf-secrets-store` secret is read through `secretBindingName(key)`, not through its key. So two keys
+ * that derive one binding — `npm-token` and `NPM_TOKEN` — are one binding in `wrangler.jsonc` and two
+ * secrets in the registry, and whichever the stanza writer reached last would silently answer for both.
+ * And a key whose binding starts with a digit names something wrangler refuses. Both are the author's
+ * mistake, so both are refused where the author is, naming the keys. `owner` says whose declaration a key
+ * came from, when the caller is merging several.
+ *
+ * A `d1` secret is a row, never a binding, so it takes no part.
+ */
+export function refuseUnbindableStoreSecrets(
+  entries: readonly { name: string; entry: Pick<SecretRegistryEntry, "backend" | "keyed">; owner?: string }[],
+): void {
+  const seen = new Map<string, { name: string; owner?: string }>();
+  for (const { name, entry, owner } of entries) {
+    if (!entry || !isStoreBound(entry)) continue;
+    const binding = secretBindingName(name);
+    if (!isBindingName(binding)) {
+      throw new InternalError({
+        message: `secret registry: entry "${name}" binds as ${binding}, which a Worker cannot bind — a binding may not start with a digit.`,
+        action: "Rename the secret so its binding starts with a letter or an underscore.",
+      });
+    }
+    const first = seen.get(binding);
+    if (first && first.name !== name) {
+      const who = (one: { name: string; owner?: string }) =>
+        one.owner === undefined ? `"${one.name}"` : `"${one.name}" (${one.owner})`;
+      throw new InternalError({
+        message: `secret registry: ${who(first)} and ${who({ name, ...(owner === undefined ? {} : { owner }) })} both bind as ${binding}.`,
+        action:
+          "Rename one of them. A Worker reads a Secrets Store secret through one binding name, so two secrets cannot share it.",
+      });
+    }
+    if (!first) seen.set(binding, { name, ...(owner === undefined ? {} : { owner }) });
+  }
+}
+
 /**
  * Author a registry. Validates each entry's enum axes, that `rotatable` is a boolean, and that
  * every `json` entry carries a Zod schema, so a malformed registry fails at define time
@@ -405,6 +450,7 @@ function validateSecretDeclaration(name: string, entry: SecretRegistryEntry): vo
  * type param preserves the precise entry literals for `SecretValue`/`SecretName`.
  */
 export function defineSecretRegistry<const R extends SecretRegistry>(registry: R): R {
+  refuseUnbindableStoreSecrets(Object.entries(registry).map(([name, entry]) => ({ name, entry })));
   for (const [name, entry] of Object.entries(registry)) {
     if (!name) throw new InternalError({ message: "secret registry: every entry needs a non-empty name." });
     // A name carrying the separator would be indistinguishable from a keyspace member, so one

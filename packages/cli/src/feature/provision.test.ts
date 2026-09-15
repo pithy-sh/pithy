@@ -737,7 +737,7 @@ describe("provisionFeature / deprovisionFeature", () => {
       // `minted: false` — the master key is `json` against `EncryptionConfig`, so it declares no
       // `devValue` and the #321 minter never touches it. `provisionFeature` writes it itself, above.
       expect(report.secretBindings).toEqual([
-        { binding: "SECRETS_ENCRYPTION_KEYS", entry, bound: true, minted: false },
+        { secret: "SECRETS_ENCRYPTION_KEYS", binding: "SECRETS_ENCRYPTION_KEYS", entry, bound: true, minted: false },
       ]);
 
       const wrangler = parse(await readFile(featureConfigPath(join(dir, "apps", "app")), "utf8")) as unknown as {
@@ -844,6 +844,7 @@ describe("provisionFeature / deprovisionFeature", () => {
 
         const ingest = report.secretBindings.find((secret) => secret.binding === "RELEASE_INGEST_SECRET");
         expect(ingest).toEqual({
+          secret: "RELEASE_INGEST_SECRET",
           binding: "RELEASE_INGEST_SECRET",
           entry: "acme-f69-demo-release-ingest-secret",
           bound: true,

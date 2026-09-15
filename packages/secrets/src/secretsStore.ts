@@ -11,6 +11,7 @@ import {
   initialVersionedValue,
   type VersionedValue,
 } from "./crypto/versionedValue";
+import { secretBindingName } from "./env/bindingName";
 import { resolveBinding, type SecretBinding, type SecretsStoreEnv } from "./env/bindings";
 import { SecretInvalidValueError, SecretNotFoundError } from "./error/errors";
 import { keyedSecretName } from "./keyspace";
@@ -686,7 +687,9 @@ export async function secretsStore<R extends SecretRegistry>(
         // Three facts, three sentences. No row at all is unprovisioned. A row that would not open is
         // `secrets/crypto_failed` against this name and no other — a different remedy, so a different
         // sentence. Anything else resolves.
-        if (!value) throw unprovisioned(name, isBound(bindings, name));
+        // Either spelling is the #153 mistake: the raw key is what an old `.dev.vars` line carries, the derived
+        // binding is what a store secret's line carries now.
+        if (!value) throw unprovisioned(name, isBound(bindings, name) || isBound(bindings, secretBindingName(name)));
         if (value.state === "unreadable") throw unreadableSecret(name);
         resolved[name] = resolveVersioned(entry, name, value.value);
       } catch (error) {
@@ -699,7 +702,9 @@ export async function secretsStore<R extends SecretRegistry>(
     const entry = registry[name];
     if (!entry) continue;
     try {
-      resolved[name] = resolveInjected(entry, name, await resolveBinding(bindings[name], name));
+      // Through its binding, never its key (#603): `email-link-signing-key` is bound as `EMAIL_LINK_SIGNING_KEY`.
+      const binding = secretBindingName(name);
+      resolved[name] = resolveInjected(entry, name, await resolveBinding(bindings[binding], binding, name));
     } catch (error) {
       failures[name] = held(error);
     }

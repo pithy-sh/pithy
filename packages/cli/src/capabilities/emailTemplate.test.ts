@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { environmentScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import { email } from "@pithy-sh/email/src/capability";
-import { EMAIL_LINK_SIGNING_KEY } from "@pithy-sh/email/src/crypto/signingKey";
+import { EMAIL_LINK_SIGNING_KEY, EMAIL_LINK_SIGNING_KEY_BINDING } from "@pithy-sh/email/src/crypto/signingKey";
 import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
 import {
   type EmailWorkerWranglerTemplate,
@@ -80,7 +80,7 @@ describe("the committed email worker template", () => {
         secret_name: masterKeySecretName("acme", "staging"),
       },
       {
-        binding: EMAIL_LINK_SIGNING_KEY,
+        binding: EMAIL_LINK_SIGNING_KEY_BINDING,
         store_id: "store-abc",
         // The entry `pithy secrets provision` created for staging, through the namer that created it (#596).
         secret_name: environmentScope("acme", "staging").secretEntry(EMAIL_LINK_SIGNING_KEY, "environment"),

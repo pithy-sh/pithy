@@ -40,7 +40,7 @@ function completeEnv(overrides: Record<string, unknown> = {}): Record<string, un
     EMAIL_SUPPRESSIONS: d1(),
     SECRETS: d1(),
     SECRETS_ENCRYPTION_KEYS: '{"current":"v1","keys":{"v1":"k"}}',
-    "email-link-signing-key": '{"currentVersion":"1","versions":{"1":"k"}}',
+    EMAIL_LINK_SIGNING_KEY: '{"currentVersion":"1","versions":{"1":"k"}}',
     EMAIL: { send: async () => ({}) },
     EMAIL_SENDER: { create: async () => ({}), get: async () => ({}) },
     EMAIL_SCHEDULER: { create: async () => ({}) },
@@ -73,7 +73,8 @@ describe("the email host's env declaration", () => {
       "EMAIL_SUPPRESSIONS",
       "SECRETS",
       "SECRETS_ENCRYPTION_KEYS",
-      "email-link-signing-key",
+      // The binding, not the registry key (#603).
+      "EMAIL_LINK_SIGNING_KEY",
       "EMAIL",
       "EMAIL_SENDER",
       "EMAIL_SCHEDULER",

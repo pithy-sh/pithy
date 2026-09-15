@@ -7,6 +7,7 @@ import type { DevSecretsFile } from "@pithy-sh/secrets/src/dev/devSecretsFile";
 import { migrateDevSecrets, mintMissingDevSecrets, seedDevSecrets } from "@pithy-sh/secrets/src/dev/seedDevSecrets";
 import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import type { StatePathOptions } from "../notifier/state";
+import { bindingSecrets } from "../provision/secretBindings";
 import { writeDevVars } from "./devVars";
 import { readDevSecrets, writeDevSecrets } from "./file";
 import { resolveDevSecretsFile } from "./location";
@@ -258,7 +259,7 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
     // What the generated files actually carry, never what was handed to a writer — a value no quoting
     // survives is refused, and reporting it as written is how a command claims a binding the Worker does
     // not have. Narrowed to this project's `cf-secrets-store` secrets, which is what this field means.
-    devVars: wrote.names.filter((name) => isBindingSecret(name, targets)),
+    devVars: wrote.names.flatMap((binding) => bindingSecret(binding, targets) ?? []),
     // A secret one Worker cannot mint may be another's to seed. Only the ones nothing supplied are missing.
     missing: sorted(missing).filter((name) => !seeded.has(name) && !unchanged.has(name)),
     undeclared: undeclared.sort(),
@@ -268,11 +269,17 @@ export async function seedProjectDevSecrets(options: SeedProjectDevSecretsOption
   };
 }
 
-/** Whether any target's registry declares `name` as a secret a Worker reads from a `.dev.vars` binding. */
-function isBindingSecret(name: string, targets: readonly DevSecretsTarget[]): boolean {
-  return targets.some(
-    (target) => Object.hasOwn(target.registry, name) && target.registry[name]?.backend === "cf-secrets-store",
-  );
+/**
+ * The secret a `.dev.vars` line is the binding of, when a target's registry declares one. A line is keyed by
+ * the binding (#603) and the report names secrets, so the line `EMAIL_LINK_SIGNING_KEY` reports as
+ * `email-link-signing-key`.
+ */
+function bindingSecret(binding: string, targets: readonly DevSecretsTarget[]): string | undefined {
+  for (const target of targets) {
+    const secret = bindingSecrets(target.registry).get(binding);
+    if (secret !== undefined) return secret;
+  }
+  return undefined;
 }
 
 /**

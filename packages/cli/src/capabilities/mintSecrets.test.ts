@@ -50,7 +50,12 @@ describe("storeSecretMinter", () => {
     const store = recordingStore();
     const mint = storeSecretMinter({ store, environment: "staging" });
 
-    await mint({ binding: "RELEASE_INGEST_SECRET", secretName: "replay-staging-release-ingest-secret", entry });
+    await mint({
+      secret: "RELEASE_INGEST_SECRET",
+      binding: "RELEASE_INGEST_SECRET",
+      secretName: "replay-staging-release-ingest-secret",
+      entry,
+    });
 
     const stored = store.written.get("replay-staging-release-ingest-secret");
     expect(stored).toBeDefined();
@@ -64,8 +69,8 @@ describe("storeSecretMinter", () => {
     const store = recordingStore();
     const mint = storeSecretMinter({ store, environment: "staging" });
 
-    await mint({ binding: "A", secretName: "a", entry });
-    await mint({ binding: "B", secretName: "b", entry });
+    await mint({ secret: "A", binding: "A", secretName: "a", entry });
+    await mint({ secret: "B", binding: "B", secretName: "b", entry });
 
     expect(store.written.get("a")).not.toEqual(store.written.get("b"));
   });
@@ -84,7 +89,12 @@ describe("storeSecretMinter", () => {
       audit: async (event) => void events.push(event),
     });
 
-    await mint({ binding: "RELEASE_INGEST_SECRET", secretName: "replay-staging-release-ingest-secret", entry });
+    await mint({
+      secret: "RELEASE_INGEST_SECRET",
+      binding: "RELEASE_INGEST_SECRET",
+      secretName: "replay-staging-release-ingest-secret",
+      entry,
+    });
 
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
@@ -118,7 +128,12 @@ describe("storeSecretMinter", () => {
     const mint = storeSecretMinter({ store, environment: "staging" });
     const bootstrap: SecretRegistryEntry = { ...entry, scope: "global", bootstrap: true };
 
-    await mint({ binding: "BOOTSTRAP_KEY", secretName: "replay-global-bootstrap-key", entry: bootstrap });
+    await mint({
+      secret: "BOOTSTRAP_KEY",
+      binding: "BOOTSTRAP_KEY",
+      secretName: "replay-global-bootstrap-key",
+      entry: bootstrap,
+    });
 
     const stored = store.written.get("replay-global-bootstrap-key");
     // The bare minted value: 32 bytes of CSPRNG entropy, base64url and unpadded. Not JSON, not encoded.
@@ -141,7 +156,12 @@ describe("storeSecretMinter", () => {
     };
 
     await expect(
-      mint({ binding: "STRIPE_SECRET_KEY", secretName: "replay-global-stripe", entry: supplied }),
+      mint({
+        secret: "STRIPE_SECRET_KEY",
+        binding: "STRIPE_SECRET_KEY",
+        secretName: "replay-global-stripe",
+        entry: supplied,
+      }),
     ).rejects.toThrow(InternalError);
     expect(store.written.size).toBe(0);
   });

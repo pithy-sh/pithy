@@ -126,6 +126,19 @@ describe("secretsStore — d1 backend", () => {
     expect(secrets.get("NPM_TOKEN")).toBe("from-binding");
   });
 
+  test("a kebab-case store secret is read through its SCREAMING_SNAKE_CASE binding, and only that (#603)", async () => {
+    const registry = defineSecretRegistry({
+      "link-signing-key": { backend: "cf-secrets-store", scope: "environment", rotatable: true, valueType: "text" },
+    });
+
+    // The binding a Worker actually has. The registry key, spelled as-is, is not a binding name.
+    const bound = await secretsStore(envWith({ LINK_SIGNING_KEY: "from-the-binding" }), registry);
+    expect(bound.get("link-signing-key")).toBe("from-the-binding");
+
+    const misspelled = await secretsStore(envWith({ "link-signing-key": "under-the-raw-key" }), registry);
+    expect(() => misspelled.get("link-signing-key")).toThrowError(/LINK_SIGNING_KEY/);
+  });
+
   test("a cf-secrets-store value written as the uniform envelope round-trips as a one-entry envelope", async () => {
     const registry = defineSecretRegistry({
       CLOUDFLARE_API_TOKEN: { backend: "cf-secrets-store", scope: "global", rotatable: true, valueType: "text" },

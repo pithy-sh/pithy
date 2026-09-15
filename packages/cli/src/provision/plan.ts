@@ -108,10 +108,10 @@ function plannedSecrets(workers: readonly ProvisionWorker[], scope: ProvisionSco
   for (const worker of workers) {
     const registry = workerSecretRegistry(worker.capabilities);
     if (!registry) continue;
-    for (const binding of boundSecretNames(registry)) {
-      const entry = registry[binding];
+    for (const secret of boundSecretNames(registry)) {
+      const entry = registry[secret];
       if (!entry) continue;
-      const name = scope.secretEntry(binding, entry.scope as SecretNameScope);
+      const name = scope.secretEntry(secret, entry.scope as SecretNameScope);
       if (seen.has(name)) continue;
       seen.add(name);
       names.push(name);

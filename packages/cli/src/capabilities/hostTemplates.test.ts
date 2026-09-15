@@ -16,6 +16,7 @@ import { mediaSecretsRegistry } from "@pithy-sh/media/src/secret/registry";
 import { PaymentsConfig } from "@pithy-sh/payments/src/config/config";
 import { resolvePaymentsConfig } from "@pithy-sh/payments/src/provision/resolvePaymentsConfig";
 import { paymentsSecretsRegistry } from "@pithy-sh/payments/src/secret/registry";
+import { secretBindingName } from "@pithy-sh/secrets/src/env/bindingName";
 import { managerCfApiTokenSecretName, masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { ManagerWranglerTemplate } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import { resolveManagerConfig } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
@@ -453,9 +454,10 @@ describe("the committed worker templates", () => {
       const registry = HOST_SECRET_REGISTRIES[capability] ?? {};
       for (const env of managedEnvironments(DEFAULT_ENVIRONMENTS)) {
         const scope = environmentScope(PROJECT, env);
+        // Keyed by the binding each secret is read through, never by its registry key (#603).
         const expected = Object.fromEntries(
           boundSecretNames(registry).map((name) => [
-            name,
+            secretBindingName(name),
             scope.secretEntry(name, registry[name]?.scope as SecretNameScope),
           ]),
         );

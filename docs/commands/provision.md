@@ -233,7 +233,8 @@ $ pithy provision --feature --json
 | `services[].binding` | `string` | The binding name |
 | `services[].service` | `string` | The script the binding was retargeted at |
 | `secretBindings` | `object[]` | Every `cf-secrets-store` secret this environment declares |
-| `secretBindings[].binding` | `string` | The Worker binding name, which is the registry key |
+| `secretBindings[].secret` | `string` | The secret's registry key — the name `pithy secrets create` takes |
+| `secretBindings[].binding` | `string` | The Worker binding it is read through: the registry key in SCREAMING_SNAKE_CASE, so `email-link-signing-key` binds as `EMAIL_LINK_SIGNING_KEY` |
 | `secretBindings[].entry` | `string` | The Secrets Store entry it resolves to in this environment |
 | `secretBindings[].bound` | `boolean` | True when the entry exists and the binding was written. False when the secret is declared and its entry has never been created — binding it anyway would make wrangler refuse the whole config |
 | `secretBindings[].minted` | `boolean` | True when **this run** created the value, because the registry declared it may be minted. False on a re-run, which leaves an existing value alone |

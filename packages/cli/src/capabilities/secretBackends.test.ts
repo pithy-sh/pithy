@@ -4,6 +4,7 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
+import { isBindingName, secretBindingName } from "@pithy-sh/secrets/src/env/bindingName";
 import { describe, expect, test } from "vitest";
 import { isShippedSource, readSource, sourcePaths } from "../ci/sourceFiles";
 
@@ -174,8 +175,9 @@ function keyOf(
 /**
  * Every registry key declared `backend: "cf-secrets-store"`.
  *
- * For a store-backed secret the registry key **is** the Worker binding name (`secretsStore` resolves
- * it as `resolveBinding(bindings[name], name)`), which is what makes the comparison below meaningful.
+ * Keys, not bindings. A store-backed secret is read through `secretBindingName(key)` — `secretsStore`
+ * resolves it as `resolveBinding(bindings[secretBindingName(name)], …)` — so the comparison below derives
+ * each binding through the same function rather than treating the key as one (#603).
  *
  * Driven off a plain text count of the declaration rather than off one regex that has to match both the
  * declaration and its key. A regex that fails to match reports nothing; a count that finds a declaration
@@ -207,9 +209,13 @@ function templateBindings(path: string): { store: string[]; d1: string[] } {
   return { store: bindingsIn(blockOf("secrets_store_secrets")), d1: bindingsIn(blockOf("d1_databases")) };
 }
 
-/** Every committed wrangler template, with its bindings. */
+/**
+ * Every committed wrangler template, with its bindings: each package's own, and the scaffold `pithy init`
+ * copies, which is the one an adopter's project starts from.
+ */
 function templates(): { path: string; store: string[]; d1: string[] }[] {
-  return sourceFiles(isWranglerTemplate).map((path) => ({ path, ...templateBindings(path) }));
+  const scaffold = sourcePaths(join(REPO_ROOT, "templates"), { keep: isWranglerTemplate });
+  return [...sourceFiles(isWranglerTemplate), ...scaffold].map((path) => ({ path, ...templateBindings(path) }));
 }
 
 /** Every `secrets_store_secrets[].binding` across every committed wrangler template. */
@@ -241,12 +247,34 @@ describe("a secret's declared backend is where the value actually goes", () => {
     expect(boundStoreBindings().length).toBeGreaterThan(0);
   });
 
-  test("every `cf-secrets-store` secret is bound by some wrangler template", () => {
+  test("every `cf-secrets-store` secret's binding is bound by some wrangler template", () => {
     const bound = new Set(boundStoreBindings());
-    const unbound = declaredStoreBackedKeys().filter((key) => !bound.has(key));
+    const unbound = declaredStoreBackedKeys()
+      .map((key) => secretBindingName(key))
+      .filter((binding) => !bound.has(binding));
     // An unbound store-backed secret resolves to a binding that does not exist at runtime. Either add
-    // the `secrets_store_secrets` entry, or declare the secret `d1` — whichever is actually true.
+    // the `secrets_store_secrets` entry — under the derived binding, never the registry key — or declare
+    // the secret `d1`, whichever is actually true.
     expect(unbound).toEqual([]);
+  });
+
+  /**
+   * **The invariant, not the list (#603).** A binding is an environment name, and every one a template
+   * declares is SCREAMING_SNAKE_CASE. `"binding": "email-link-signing-key"` shipped in the email host's
+   * template and in every stanza `pithy secrets provision` wrote, and the test above passed on it, because it
+   * compared registry keys to template bindings and both were the raw key. This one asks what a binding
+   * must look like, so a raw key reaching a template fails whatever it is compared against.
+   */
+  test("every Secrets Store binding a template declares is SCREAMING_SNAKE_CASE", () => {
+    const misspelled = templates().flatMap((t) =>
+      t.store
+        .filter((binding) => !isBindingName(binding))
+        .map((binding) => `${t.path.slice(REPO_ROOT.length + 1)}: ${binding}`),
+    );
+    expect(misspelled).toEqual([]);
+    // And the derivation agrees with every template binding a declared key reaches, so the two cannot
+    // come apart by the template being right and the code reading another name.
+    for (const key of declaredStoreBackedKeys()) expect(isBindingName(secretBindingName(key))).toBe(true);
   });
 
   test("the extractor names every declaration shape, and refuses the ones it cannot", () => {

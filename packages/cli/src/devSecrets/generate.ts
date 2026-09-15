@@ -11,6 +11,7 @@ import type { StatePathOptions } from "../notifier/state";
 import { writeFileAtomic } from "../project/atomic";
 import { ensureScaffoldPath } from "../project/scaffold";
 import { discoverWorkers } from "../project/workers";
+import { bindingSecrets } from "../provision/secretBindings";
 import { readBootstrapVars } from "./bootstrapVars";
 import { encodeDevVarsValue, readDevVarsSource } from "./devVars";
 import { readDevSecrets } from "./file";
@@ -376,11 +377,14 @@ async function devVarsSources(
   );
   const secrets = await materializedSecrets(options.projectDir, registry, paths);
 
+  const boundNames = new Set(bindingSecrets(registry).keys());
   const values: Record<string, string> = {};
   for (const [name, value] of Object.entries(await readBootstrapVars(options.projectDir, paths))) {
     // A registry name is the secrets file's to answer, whatever `dev.json` still holds. This is the line
     // that makes a removal take effect.
-    if (Object.hasOwn(registry, name)) continue;
+    // Its binding too (#603): a store secret's line is `EMAIL_LINK_SIGNING_KEY`, and a `dev.json` value
+    // under that name would otherwise stand in for it once the secrets file stops stating one.
+    if (Object.hasOwn(registry, name) || boundNames.has(name)) continue;
     values[name] = value;
   }
   return { ...values, ...secrets };

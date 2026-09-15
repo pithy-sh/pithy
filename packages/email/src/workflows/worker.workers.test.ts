@@ -4,7 +4,6 @@
 import { env } from "cloudflare:test";
 import { storeEntryText } from "@pithy-sh/secrets/src/store/entryText";
 import { beforeEach, describe, expect, test } from "vitest";
-import { EMAIL_LINK_SIGNING_KEY } from "../crypto/signingKey";
 import { emailDatabase } from "../data/tables";
 import { email_0001_init } from "../migrations/0001_init";
 import emailHost, { type EmailWorkerEnv } from "./worker";
@@ -68,7 +67,7 @@ function workerEnv(overrides: Partial<EmailWorkerEnv> = {}): EmailWorkerEnv {
     SECRETS: env.SECRETS,
     SECRETS_ENCRYPTION_KEYS: env.SECRETS_ENCRYPTION_KEYS,
     // The link-signing key as its Secrets Store binding carries it (#596).
-    [EMAIL_LINK_SIGNING_KEY]: storeEntryText({}, "worker-test-signing-key"),
+    EMAIL_LINK_SIGNING_KEY: storeEntryText({}, "worker-test-signing-key"),
     EMAIL: { send: async () => {} },
     EMAIL_SENDER: { create: async () => ({}), get: async () => ({ status: async () => ({ status: "running" }) }) },
     EMAIL_SCHEDULER: fakeScheduler(),

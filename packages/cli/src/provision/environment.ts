@@ -20,7 +20,12 @@ import { loadProject, loadProjectCloudflare, requireProjectName, type WorkerConf
 import { readWranglerConfig } from "../project/wrangler";
 import { seedProject } from "../seed/run";
 import { AUDIT_RESOURCE_TYPE, ProvisionAuditActions, type ResourceProvisioners } from "./resources";
-import type { MissingSecretBinding, SecretStoreBinding } from "./secretBindings";
+import {
+  bindingSecrets,
+  type MissingSecretBinding,
+  type SecretStoreBinding,
+  workerSecretRegistry,
+} from "./secretBindings";
 import { applyProvisionedEnv, type ServiceEntry } from "./wranglerEnv";
 
 /**
@@ -294,7 +299,9 @@ export interface ProvisionedConfig {
 
 /** One declared Secrets Store secret, and whether the environment now binds it. */
 export interface ProvisionedSecret {
-  /** The Worker binding name, which is the registry key. */
+  /** The secret's registry key — what `pithy secrets create` and the registry are keyed by. */
+  secret: string;
+  /** The Worker binding it is read through: the key in SCREAMING_SNAKE_CASE (#603). */
   binding: string;
   /** The store entry it resolves to in this environment. */
   entry: string;
@@ -593,19 +600,28 @@ export async function provisionEnvironment(options: ProvisionEnvironmentOptions)
       minted: [],
     };
     const minted = new Set(workerSecrets.minted);
+    const keys = bindingSecrets(workerSecretRegistry(worker.capabilities) ?? {});
     for (const entry of workerSecrets.bound) {
+      const secret = keys.get(entry.binding) ?? entry.binding;
       secrets.push({
+        secret,
         binding: entry.binding,
         entry: entry.secret_name,
         bound: true,
-        minted: minted.has(entry.binding),
+        minted: minted.has(secret),
       });
     }
     // The entry name comes from the producer, which read the registry and knows each secret's scope.
     // Recomposing it here meant supplying one, and the only one available was `"environment"` — a wrong
     // address for every `global` secret, in the report an operator reads to go create the value.
     for (const secret of workerSecrets.missing) {
-      secrets.push({ binding: secret.binding, entry: secret.entry, bound: false, minted: false });
+      secrets.push({
+        secret: secret.secret,
+        binding: secret.binding,
+        entry: secret.entry,
+        bound: false,
+        minted: false,
+      });
     }
     const written = resources.filter((resource) => declared.has(resource.binding));
     const destination = await applyProvisionedEnv({
