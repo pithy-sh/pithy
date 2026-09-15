@@ -476,7 +476,8 @@
       "flags": [
         "--env",
         "--json",
-        "--no-json"
+        "--no-json",
+        "--backend"
       ]
     },
     {

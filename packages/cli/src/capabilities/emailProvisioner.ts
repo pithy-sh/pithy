@@ -90,7 +90,7 @@ export interface CloudflareEmailProvisionerOptions {
   project: string;
   /** The broad bootstrap token (`.dev.vars` `CLOUDFLARE_API_TOKEN`) that authenticates the worker deploy. */
   apiToken: string;
-  /** The CF Secrets Store id holding the per-env master keys (the email worker decrypts its signing key). */
+  /** The CF Secrets Store id holding the per-env master keys (and the per-env link-signing key the email worker binds). */
   storeId: string;
   /** The resolved brand theme (from the app's `email()` config), serialized into the worker's `EMAIL_THEME` var. */
   theme: EmailTheme;

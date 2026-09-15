@@ -131,7 +131,12 @@ describe("tracking", () => {
     const result = await renderEmail("welcome", validPayloads.welcome, theme, { ...tracking });
     const match = result.html.match(/\/_pithy\/email\/c\/([A-Za-z0-9_.-]+)/);
     expect(match).not.toBeNull();
-    const claims = await verifyToken(match?.[1] ?? "", { versions: { "1": tracking.key } }, new Date());
+    const claims = await verifyToken(
+      match?.[1] ?? "",
+      { versions: { "1": tracking.key } },
+      new Date(),
+      tracking.baseUrl,
+    );
     expect(claims).toMatchObject({
       kind: "click",
       destination: "https://acme.test/start",
@@ -213,7 +218,8 @@ describe("tracking", () => {
     expect(clicks.length).toBe(2);
     const labels = await Promise.all(
       clicks.map(
-        async (m) => (await verifyToken(m[1] ?? "", { versions: { "1": tracking.key } }, new Date())).linkLabel,
+        async (m) =>
+          (await verifyToken(m[1] ?? "", { versions: { "1": tracking.key } }, new Date(), tracking.baseUrl)).linkLabel,
       ),
     );
     expect(labels.sort()).toEqual(["newsletter-article-0", "newsletter-article-1"]);

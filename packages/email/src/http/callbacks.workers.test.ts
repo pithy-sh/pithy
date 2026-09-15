@@ -4,8 +4,9 @@
 import { env } from "cloudflare:test";
 import type { PithyHonoEnv } from "@pithy-sh/core/src/capability/capability";
 import { pithyErrorHandler } from "@pithy-sh/core/src/error/http";
+import { encodeVersionedValue, type VersionedValue } from "@pithy-sh/secrets/src/crypto/versionedValue";
 import { configureSharedSecrets, resetSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
-import { seedSecrets } from "@pithy-sh/secrets/src/test-utils/secretFixtures";
+import { storeEntryText } from "@pithy-sh/secrets/src/store/entryText";
 import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { EMAIL_LINK_SIGNING_KEY, emailSigningRegistry } from "../crypto/signingKey";
@@ -14,15 +15,29 @@ import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
 import { email_0001_init } from "../migrations/0001_init";
 import { email_0001_suppressions } from "../migrations/0001_suppressions";
 import { CALLBACK_BASE } from "../templates/engine";
-import { handleClick, handleOpen, handleUnsubscribe, registerCallbacks, type SigningKeys } from "./callbacks";
+import {
+  type CallbackRequest,
+  handleClick,
+  handleOpen,
+  handleUnsubscribe,
+  registerCallbacks,
+  type SigningKeys,
+} from "./callbacks";
 
 const KEY = "callback-signing-key";
 const keys: SigningKeys = { versions: { "1": KEY } };
 const now = new Date("2026-06-18T12:00:00.000Z");
 const expiresAt = new Date("2026-12-18T12:00:00.000Z");
+/** The origin the direct-handler cases mint for and present at. */
+const ORIGIN = "https://api.acme.test";
 
 function token(claims: TokenClaims): Promise<string> {
-  return mintToken(claims, { key: KEY, kid: "1", expiresAt });
+  return mintToken(claims, { key: KEY, kid: "1", expiresAt, audience: ORIGIN });
+}
+
+/** A token as it arrives on this origin's callback route. */
+function at(token: string): CallbackRequest {
+  return { token, url: `${ORIGIN}${CALLBACK_BASE}/x/${token}` };
 }
 
 async function eventsFor(jobId: string): Promise<{ type: string; recipient: string; link_url: string | null }[]> {
@@ -42,10 +57,9 @@ beforeEach(async () => {
   await email_0001_init.up(emailDatabase(env.DB));
   await email_0001_suppressions.up(emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS));
   // The registered routes resolve the signing key through the shared per-invocation accessor, so
-  // configure it from email's own slice before each case (and reset after), and provision the key as
-  // the encrypted row the accessor reads.
+  // configure it from email's own slice before each case (and reset after). The key itself is the
+  // Secrets Store entry each route's env binds — see `callbackApp`.
   configureSharedSecrets({ registry: emailSigningRegistry });
-  await seedSecrets(env, emailSigningRegistry, { [EMAIL_LINK_SIGNING_KEY]: KEY });
 });
 
 afterEach(() => resetSharedSecrets());
@@ -60,7 +74,7 @@ describe("click callback", () => {
       linkLabel: "cta",
       campaignId: "spring",
     });
-    const res = await handleClick(emailDatabase(env.DB), keys, t, now);
+    const res = await handleClick(emailDatabase(env.DB), keys, at(t), now);
 
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("https://acme.test/welcome");
@@ -77,7 +91,7 @@ describe("click callback", () => {
       destination: "https://acme.test/x",
     });
     const forged = `${t}tamper`;
-    await expect(handleClick(emailDatabase(env.DB), keys, forged, now)).rejects.toMatchObject({
+    await expect(handleClick(emailDatabase(env.DB), keys, at(forged), now)).rejects.toMatchObject({
       payload: { code: "email/invalid_token" },
     });
     expect(await eventsFor("job-2")).toEqual([]);
@@ -90,14 +104,14 @@ describe("click callback", () => {
       recipient: "u@example.com",
       destination: "javascript:alert(1)",
     });
-    await expect(handleClick(emailDatabase(env.DB), keys, t, now)).rejects.toMatchObject({
+    await expect(handleClick(emailDatabase(env.DB), keys, at(t), now)).rejects.toMatchObject({
       payload: { code: "email/invalid_token" },
     });
   });
 
   test("rejects a token minted for a different callback kind", async () => {
     const t = await token({ kind: "open", jobId: "job-4", recipient: "u@example.com" });
-    await expect(handleClick(emailDatabase(env.DB), keys, t, now)).rejects.toMatchObject({
+    await expect(handleClick(emailDatabase(env.DB), keys, at(t), now)).rejects.toMatchObject({
       payload: { code: "email/invalid_token" },
     });
   });
@@ -106,7 +120,7 @@ describe("click callback", () => {
 describe("open callback", () => {
   test("records the open and returns a PNG pixel, tolerating the .png suffix", async () => {
     const t = await token({ kind: "open", jobId: "job-5", recipient: "u@example.com", campaignId: "spring" });
-    const res = await handleOpen(emailDatabase(env.DB), keys, `${t}.png`, now);
+    const res = await handleOpen(emailDatabase(env.DB), keys, at(`${t}.png`), now);
 
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/png");
@@ -121,7 +135,7 @@ describe("unsubscribe callback", () => {
       emailDatabase(env.DB),
       emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS),
       keys,
-      t,
+      at(t),
       now,
     );
 
@@ -140,7 +154,7 @@ describe("unsubscribe callback", () => {
       emailDatabase(env.DB),
       emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS),
       keys,
-      t,
+      at(t),
       now,
       "too_many_emails",
     );
@@ -155,7 +169,13 @@ describe("unsubscribe callback", () => {
     const t = await token({ kind: "unsubscribe", jobId: "job-7", recipient: "u@example.com" });
     const afterExpiry = new Date("2027-01-01T00:00:00.000Z");
     await expect(
-      handleUnsubscribe(emailDatabase(env.DB), emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS), keys, t, afterExpiry),
+      handleUnsubscribe(
+        emailDatabase(env.DB),
+        emailSuppressionDatabase(env.EMAIL_SUPPRESSIONS),
+        keys,
+        at(t),
+        afterExpiry,
+      ),
     ).rejects.toMatchObject({ payload: { code: "email/invalid_token" } });
     const count = await env.EMAIL_SUPPRESSIONS.prepare("select count(*) as n from pithy_email_suppressions").first<{
       n: number;
@@ -165,19 +185,25 @@ describe("unsubscribe callback", () => {
 });
 
 /** A token valid against the wall clock — the registered routes verify against a real `new Date()`. */
-function liveToken(claims: TokenClaims): Promise<string> {
-  return mintToken(claims, { key: KEY, kid: "1", expiresAt: new Date(Date.now() + 86_400_000) });
+function liveToken(claims: TokenClaims, audience = "http://localhost"): Promise<string> {
+  // `app.request` resolves a bare path against `http://localhost`, so that is the origin a route sees.
+  return mintToken(claims, { key: KEY, kid: "1", expiresAt: new Date(Date.now() + 86_400_000), audience });
 }
 
 /**
  * The three routes as `registerCallbacks` mounts them — the app-level peer of the direct-handler cases
  * above, so the `zValidator("param" | "query", …, validationHook)` declarations on the route line are
- * actually exercised. The signing key resolves through the shared secrets accessor, from the row
- * `beforeEach` seeded: a fresh envelope, so its one version is `"1"` — the same `kid` `liveToken()`
- * mints with. The env carries the `SECRETS` database and the master key and nothing else; a `d1`
- * secret is never read from a binding (#153).
+ * actually exercised. The signing key resolves through the shared secrets accessor from the binding a
+ * deployed Worker gets from its `secrets_store_secrets` stanza: the entry's text, exactly as provisioning
+ * writes it (`storeEntryText`) — a fresh envelope, so its one version is `"1"`, the `kid` `liveToken()`
+ * mints with. A case that wants another version set passes the envelope it wants the entry to hold.
+ *
+ * There is no `SECRETS` database here and no master key, and that is the assertion (#596): the key lives
+ * outside every D1, so nothing a migration, a reset or a teardown does to one can reach it.
  */
-function callbackApp(): (path: string, init?: RequestInit) => Promise<Response> {
+function callbackApp(
+  entry: VersionedValue | undefined = undefined,
+): (path: string, init?: RequestInit) => Promise<Response> {
   const app = new Hono<PithyHonoEnv>();
   app.onError(pithyErrorHandler);
   registerCallbacks(app);
@@ -185,8 +211,7 @@ function callbackApp(): (path: string, init?: RequestInit) => Promise<Response> 
     app.request(path, init, {
       DB: env.DB,
       EMAIL_SUPPRESSIONS: env.EMAIL_SUPPRESSIONS,
-      SECRETS: env.SECRETS,
-      SECRETS_ENCRYPTION_KEYS: env.SECRETS_ENCRYPTION_KEYS,
+      [EMAIL_LINK_SIGNING_KEY]: entry ? encodeVersionedValue(entry) : storeEntryText({}, KEY),
     });
 }
 
@@ -263,6 +288,61 @@ describe("registered callback routes", () => {
       .bind("twice@example.com")
       .first<{ n: number }>();
     expect(count?.n).toBe(1);
+  });
+
+  test("after a rotation, a link minted under the previous version still verifies", async () => {
+    // The entry holds both versions, current `2` — what a rotation that retains the prior key leaves
+    // behind. A link already in an inbox carries `kid: "1"`, and must keep working until `1` is pruned.
+    const rotated = callbackApp({ currentVersion: "2", versions: { "1": KEY, "2": "the-key-after-rotation" } });
+    const before = await liveToken({
+      kind: "click",
+      jobId: "job-route-r",
+      recipient: "u@example.com",
+      destination: "https://acme.test/welcome",
+    });
+    expect((await rotated(`${CALLBACK_BASE}/c/${before}`)).status).toBe(302);
+
+    // And pruned, it stops: the version set is the whole of what verifies. The shared accessor caches a
+    // resolution for its TTL, as it does in a Worker, so the prune is read the way a new isolate reads it.
+    resetSharedSecrets();
+    configureSharedSecrets({ registry: emailSigningRegistry });
+    const pruned = callbackApp({ currentVersion: "2", versions: { "2": "the-key-after-rotation" } });
+    const res = await pruned(`${CALLBACK_BASE}/c/${before}`);
+    expect(res.status).toBe(400);
+    expect(await errCode(res)).toBe("email/invalid_token");
+  });
+
+  test("a token minted for another origin is refused at every route, under the very key that signed it", async () => {
+    // One key across two environments is a misconfiguration, and this is what it must not be able to do:
+    // a staging link acting on production's routes — the unsubscribe among them, which writes into the
+    // suppression list both environments bind.
+    const app = callbackApp();
+    const staging = "https://staging.acme.test";
+    const click = await liveToken(
+      { kind: "click", jobId: "job-route-x", recipient: "u@example.com", destination: "https://acme.test/welcome" },
+      staging,
+    );
+    const open = await liveToken({ kind: "open", jobId: "job-route-x", recipient: "u@example.com" }, staging);
+    const unsubscribe = await liveToken(
+      { kind: "unsubscribe", jobId: "job-route-x", recipient: "cross@example.com" },
+      staging,
+    );
+
+    for (const [path, init] of [
+      [`${CALLBACK_BASE}/c/${click}`, {}],
+      [`${CALLBACK_BASE}/o/${open}.png`, {}],
+      [`${CALLBACK_BASE}/u/${unsubscribe}`, {}],
+      [`${CALLBACK_BASE}/u/${unsubscribe}`, { method: "POST" }],
+    ] as const) {
+      const res = await app(path, init);
+      expect(res.status).toBe(400);
+      expect(await errCode(res)).toBe("email/invalid_token");
+    }
+    expect(await eventsFor("job-route-x")).toEqual([]);
+    const count = await env.EMAIL_SUPPRESSIONS.prepare("select count(*) as n from pithy_email_suppressions").first<{
+      n: number;
+    }>();
+    expect(count?.n).toBe(0);
   });
 
   test("an over-long token is rejected as validation/invalid_input", async () => {

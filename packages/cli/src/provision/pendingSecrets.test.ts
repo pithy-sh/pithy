@@ -71,7 +71,9 @@ describe("the secrets provision defers, and who can create them", () => {
    * make each of them `[] === []` — the vacuity this repository has shipped before (#321's own tests).
    */
   test("the kit as shipped gives both modes something to defer", () => {
-    for (const mode of MODES) expect(pendingSecrets(SHIPPED, mode).names.length).toBeGreaterThan(1);
+    // One, since #596 moved the link-signing key to the Secrets Store: `pithy provision` creates and binds a
+    // mintable store secret in the same pass, so it is no longer deferred. The session secret still is.
+    for (const mode of MODES) expect(pendingSecrets(SHIPPED, mode).names.length).toBeGreaterThan(0);
     expect(MODES.length).toBe(2);
   });
 
@@ -84,7 +86,8 @@ describe("the secrets provision defers, and who can create them", () => {
     const [declared, feature] = MODES.map((mode) => pendingSecrets(SHIPPED, mode).names);
     expect(declared).toEqual(feature);
     expect(declared).toContain("auth-session-secret");
-    expect(declared).toContain("email-link-signing-key");
+    // A Secrets Store secret is created where it is bound, so nothing defers it (#596).
+    expect(declared).not.toContain("email-link-signing-key");
   });
 
   /** `--env`'s answer is unchanged: one command, and it is the one that deploys the managers. */
@@ -93,7 +96,7 @@ describe("the secrets provision defers, and who can create them", () => {
     if (mode === undefined) throw new Error("no declared-environment mode");
     const lines = pendingSecretLines(pendingSecrets(SHIPPED, mode));
     expect(commandsNamed(lines)).toEqual(["pithy secrets provision"]);
-    expect(lines.join("\n")).toContain("auth-session-secret, email-link-signing-key");
+    expect(lines.join("\n")).toContain("auth-session-secret");
   });
 
   /**

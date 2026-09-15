@@ -5,6 +5,7 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { defineHostEnv, type HostEnvProvider } from "@pithy-sh/core/src/workflow/hostEnv";
 import type { SecretBinding } from "@pithy-sh/secrets/src/env/bindings";
 import { z } from "zod";
+import { EMAIL_LINK_SIGNING_KEY } from "../crypto/signingKey";
 import type { EmailSender } from "../send/sender";
 import { defaultTheme, EmailTheme } from "../templates/theme";
 import type { SendWorkflowInstances } from "./instances";
@@ -85,13 +86,18 @@ export const EmailHostEnv = z
     EMAIL_SUPPRESSIONS: d1Binding("The shared suppression database every environment of this project binds").describe(
       "The durable suppression D1 database — one per project, bound identically in every environment, so an unsubscribe or a hard bounce applies everywhere the project sends from. Named `<project>-global-email-suppressions`.",
     ),
-    SECRETS: d1Binding("The per-environment secrets database the link-signing key is read from").describe(
-      "The per-environment secrets D1 database. The link-signing key is stored here as an encrypted row and read through `@pithy-sh/secrets`; without it, tracking and unsubscribe links cannot be signed.",
+    SECRETS: d1Binding("The per-environment secrets database").describe(
+      "The per-environment secrets D1 database, bound on every prebuilt host that reads through `@pithy-sh/secrets`. The link-signing key is not in it: that is a Secrets Store entry, below (#596).",
     ),
     SECRETS_ENCRYPTION_KEYS: z
       .union([z.string().min(1), callable<SecretBinding>("get", "The master key binding")])
       .describe(
         "The master key that decrypts the secrets database — a Cloudflare Secrets Store binding in a deployed environment, and the same name as a plain string in `.dev.vars` locally. The one secret read outside the `secretsStore` accessor, because it is what makes the accessor work.",
+      ),
+    [EMAIL_LINK_SIGNING_KEY]: z
+      .union([z.string().min(1), callable<SecretBinding>("get", "The link-signing key binding")])
+      .describe(
+        "The key every tracking and unsubscribe link is signed with — a Cloudflare Secrets Store entry for this environment, bound under the registry name, and the same entry the app Worker verifies those links against. Locally it is the same name in `.dev.vars`. Without it no link can be signed, and a marketing send cannot render.",
       ),
     EMAIL: callable<EmailSender>("send", "The Cloudflare Email Service send binding").describe(
       "The Cloudflare Email Service `send_email` binding — the only thing in the kit that puts a message on the wire. `wrangler dev` simulates it locally; `remote: true` (the default under `pithy dev`) sends for real from the developer's machine.",
@@ -193,6 +199,11 @@ export const emailHostEnv = defineHostEnv({
     SECRETS_ENCRYPTION_KEYS: {
       kind: "secret",
       name: "SECRETS_ENCRYPTION_KEYS",
+      command: "pithy secrets provision --env <env>",
+    },
+    [EMAIL_LINK_SIGNING_KEY]: {
+      kind: "secret",
+      name: EMAIL_LINK_SIGNING_KEY,
       command: "pithy secrets provision --env <env>",
     },
     EMAIL: binding("EMAIL"),

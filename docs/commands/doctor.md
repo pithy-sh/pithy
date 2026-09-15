@@ -536,7 +536,7 @@ Every finding is a **problem line and an action line**, naming the `pithy` comma
 
 **It never writes anything.** Doctor reports; `pithy upgrade`, `pithy <capability> provision`, and the command each line names are what fix it. `secretBindings` and `devVars` are untouched by it and are not folded in — both answer project-wiring questions that exist with no capability composed, and both keep their current contracts.
 
-`@pithy-sh/email` declares the first check: an onboarded sending domain for `fromAddress`, a link-signing key that exists per environment, a `BASE_URL` an environment actually answers on, an `EMAIL_THEME` that survives the round trip through its one JSON var, and the shared suppression database.
+`@pithy-sh/email` declares the first check: an onboarded sending domain for `fromAddress`, a link-signing key with its Secrets Store entry in each environment — and not still in that environment's D1 vault, where a project provisioned before #596 holds it (the move is in [`pithy secrets`](secrets.md#moving-a-secret-off-d1)) — a `BASE_URL` an environment actually answers on, an `EMAIL_THEME` that survives the round trip through its one JSON var, and the shared suppression database.
 
 A **`Local delivery:`** block answers the one question none of the above asks: does a message sent from *this machine* leave it. `Settings:` says whether the values work; every other block says whether something is there. Neither says whether a magic link triggered from localhost is delivered through Cloudflare Email Service or written to a file on disk — and that is what a developer is really waiting on when they sit watching an inbox. It depends on a Cloudflare login and on the delivery mode the config selected, both readable here for nothing.
 

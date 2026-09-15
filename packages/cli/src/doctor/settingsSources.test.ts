@@ -105,7 +105,47 @@ describe("reaching the account", () => {
 
     expect(await answer.reader.zone("acme.dev")).toBe(true);
     expect(await answer.reader.zone("example.com")).toBe(false);
-    expect(await answer.reader.secret({ name: "email-link-signing-key", environment: "prod" })).toBe(true);
+    expect(await answer.reader.vaultSecret({ name: "email-link-signing-key", environment: "prod" })).toBe(true);
+  });
+
+  test("a Secrets Store entry is asked of the project's store, by the name it was created under", async () => {
+    const exists = vi.fn(async (name: string) => name === "acme-prod-email-link-signing-key");
+    const stores: string[] = [];
+    const answer = await settingsAccountConnection({
+      account: null,
+      project: "acme",
+      offline: false,
+      env: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "tok", SECRETS_STORE_ID: "store-1" },
+      homedir: dir,
+      connect: async () =>
+        ({
+          secrets: (storeId: string) => {
+            stores.push(storeId);
+            return { exists };
+          },
+        }) as never,
+      probe: async () => ({ probe: async () => false }),
+    });
+    if (answer.state !== "reachable") throw new Error("expected reachable");
+    expect(await answer.reader.storeEntry("acme-prod-email-link-signing-key")).toBe(true);
+    expect(await answer.reader.storeEntry("acme-staging-email-link-signing-key")).toBe(false);
+    expect(stores.every((id) => id === "store-1")).toBe(true);
+  });
+
+  test("with no store id recorded, a store question is not answered at all", async () => {
+    const answer = await settingsAccountConnection({
+      account: null,
+      project: "acme",
+      offline: false,
+      env: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "tok" },
+      homedir: dir,
+      connect: async () => ({ secrets: () => ({ exists: async () => false }) }) as never,
+      probe: async () => ({ probe: async () => false }),
+    });
+    if (answer.state !== "reachable") throw new Error("expected reachable");
+    // `false` would report every entry missing on a machine that simply never recorded the id. A refusal is
+    // the runner's `unchecked`, which is the truth.
+    await expect(answer.reader.storeEntry("acme-prod-email-link-signing-key")).rejects.toThrow();
   });
 
   test("a secret asked about an environment no manager owns is not a claim", async () => {
@@ -125,6 +165,6 @@ describe("reaching the account", () => {
     if (answer.state !== "reachable") throw new Error("expected reachable");
     // `dev` is local Miniflare — there is no manager Worker to ask, so the question is refused rather
     // than answered `false`, and the runner reports the capability's account tier as unchecked.
-    await expect(answer.reader.secret({ name: "email-link-signing-key", environment: "dev" })).rejects.toThrow();
+    await expect(answer.reader.vaultSecret({ name: "email-link-signing-key", environment: "dev" })).rejects.toThrow();
   });
 });

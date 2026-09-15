@@ -128,7 +128,7 @@ function loadCloudflareCreds(account: CloudflareAccountSelection | null): {
   if (!storeId) {
     throw new ValidationError({
       message: "The CF Secrets Store id is missing.",
-      action: "Run pithy add secrets to record SECRETS_STORE_ID (the email worker decrypts its signing key from it).",
+      action: "Run pithy add secrets to record SECRETS_STORE_ID (the email worker binds its link-signing key from it).",
     });
   }
   return { account: { accountId, confirmation }, accountId, apiToken, storeId };
@@ -199,7 +199,8 @@ function buildResolveEnv(
     if (!secretsDb) {
       throw new ValidationError({
         message: `The ${env} secrets database (${managerWorkerName(project, env)}) does not exist.`,
-        action: "Run `pithy secrets provision` first — the email worker reads its signing key from it.",
+        action:
+          "Run `pithy secrets provision` first — the email worker binds it, and that run creates the link-signing key it signs with.",
       });
     }
     return { appDatabaseId, secretsDatabaseId: secretsDb.uuid, baseUrl };

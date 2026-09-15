@@ -4,20 +4,26 @@
 import { readdir, readFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
+import { environmentScope, type SecretNameScope } from "@pithy-sh/core/src/naming/provisionScope";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
+import { emailSigningRegistry } from "@pithy-sh/email/src/crypto/signingKey";
 import type { EmailWorkerWranglerTemplate } from "@pithy-sh/email/src/provision/resolveEmailConfig";
 import { resolveEmailConfig } from "@pithy-sh/email/src/provision/resolveEmailConfig";
 import { defaultTheme } from "@pithy-sh/email/src/templates/theme";
 import { MediaConfig } from "@pithy-sh/media/src/config/config";
 import { resolveMediaConfig } from "@pithy-sh/media/src/provision/resolveMediaConfig";
+import { mediaSecretsRegistry } from "@pithy-sh/media/src/secret/registry";
 import { PaymentsConfig } from "@pithy-sh/payments/src/config/config";
 import { resolvePaymentsConfig } from "@pithy-sh/payments/src/provision/resolvePaymentsConfig";
+import { paymentsSecretsRegistry } from "@pithy-sh/payments/src/secret/registry";
 import { managerCfApiTokenSecretName, masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { ManagerWranglerTemplate } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import { resolveManagerConfig } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
+import type { SecretRegistry } from "@pithy-sh/secrets/src/registry";
 import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/src/scope";
 import { StorageConfig } from "@pithy-sh/storage/src/config/config";
 import { resolveStorageConfig } from "@pithy-sh/storage/src/provision/resolveStorageConfig";
+import { storageSecretsRegistry } from "@pithy-sh/storage/src/secret/registry";
 import { SupportConfig } from "@pithy-sh/support/src/config/config";
 import { resolveSupportConfig } from "@pithy-sh/support/src/provision/resolveSupportConfig";
 import { TestersConfig } from "@pithy-sh/testers/src/config/config";
@@ -27,6 +33,7 @@ import { resolveVectorConfig } from "@pithy-sh/vector/src/provision/resolveVecto
 import { parse } from "comment-json";
 import { describe, expect, test } from "vitest";
 import { kitSource } from "../project/kitSource";
+import { boundSecretNames } from "../provision/secretBindings";
 import { KIT_ROOT } from "../test-utils/kitRoot";
 
 /**
@@ -112,6 +119,21 @@ interface HostCoverage {
  * deliberate property worth failing on if it changes in either direction.
  */
 const READS_THE_MASTER_KEY: ReadonlySet<string> = new Set(["email", "media", "storage", "payments", "secrets"]);
+
+/**
+ * The registry each host Worker resolves its secrets from — the argument its `worker.ts` hands
+ * `configureSharedSecrets`, restated because that module imports `cloudflare:workers` and cannot load here.
+ *
+ * **What the gate below does not see:** a host that starts reading a registry and is not listed here. Adding
+ * a `configureSharedSecrets` call to a host's `worker.ts` means adding its registry to this map, and nothing
+ * enforces that. A host absent from the map is asserted to bind no store secret beyond the master key.
+ */
+const HOST_SECRET_REGISTRIES: Readonly<Record<string, SecretRegistry>> = {
+  email: emailSigningRegistry,
+  media: mediaSecretsRegistry,
+  storage: storageSecretsRegistry,
+  payments: paymentsSecretsRegistry,
+};
 
 /**
  * The sending identity testers copies from the email capability when a project composes one.
@@ -412,6 +434,42 @@ describe("the committed worker templates", () => {
       CLOUDFLARE_API_TOKEN: managerCfApiTokenSecretName(PROJECT),
     });
   });
+
+  /**
+   * **A host binds every Secrets Store secret it reads, at the entry provisioning writes (#596).**
+   *
+   * Stated as what must be true of each resolved config, never as a list of names: the set of bindings is
+   * {@link boundSecretNames} over the registry the host reads — the predicate `pithy secrets provision` binds
+   * the app Worker with — and each entry name is `environmentScope(...).secretEntry(...)`, the namer that
+   * created the entry. So the app Worker and the host that both sign or verify a link cannot be bound to two
+   * different entries, and a host cannot be deployed reading a secret it has no binding for.
+   *
+   * A binding a host carries that its registry does not declare is not a failure here. The master key is the
+   * one every host carries, and the test above owns it.
+   */
+  test.each(COVERAGE)(
+    "$capability binds each Secrets Store secret it reads, at the entry provisioning created",
+    async ({ capability, entry, resolve: resolveFor }) => {
+      const registry = HOST_SECRET_REGISTRIES[capability] ?? {};
+      for (const env of managedEnvironments(DEFAULT_ENVIRONMENTS)) {
+        const scope = environmentScope(PROJECT, env);
+        const expected = Object.fromEntries(
+          boundSecretNames(registry).map((name) => [
+            name,
+            scope.secretEntry(name, registry[name]?.scope as SecretNameScope),
+          ]),
+        );
+        for (const [mode, config] of Object.entries(await resolveFor(env, entry))) {
+          const bound = Object.fromEntries(
+            (config.secrets_store_secrets ?? [])
+              .filter((binding) => binding.binding in expected)
+              .map((binding) => [binding.binding, binding.secret_name]),
+          );
+          expect(bound, `${capability} (${mode}) in ${env}`).toEqual(expected);
+        }
+      }
+    },
+  );
 
   test.each(COVERAGE)(
     "$capability binds the master key it should, under this environment's name",

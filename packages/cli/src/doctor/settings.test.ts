@@ -29,7 +29,8 @@ const environments: SettingsEnvironment[] = [
 const reader: SettingsAccountReader = {
   d1Databases: async () => ["acme-global-email-suppressions"],
   zone: async () => true,
-  secret: async () => true,
+  vaultSecret: async () => false,
+  storeEntry: async () => true,
 };
 
 const reachable: SettingsAccountConnection = { state: "reachable", reader };

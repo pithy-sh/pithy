@@ -25,6 +25,7 @@ pithy secrets deprovision --env <env> [--keys] [--destroy-retained <n>] [--json]
 |---|---|---|
 | `create`, `update`, `rotate`, `rm` | `<name>` (positional, required) | The secret's name — a registry entry. |
 | `create`, `update`, `rotate`, `rm` | `--env <env>` | Target environment for an environment-scoped secret: `staging` or `prod`. Not `dev`. |
+| `rm` | `--backend <d1\|cf-secrets-store>` | Remove the value from this store instead of the one the registry names — for a value a secret left behind when its declaration moved. Needs `--env`. See [Moving a secret off D1](#moving-a-secret-off-d1). |
 | `rotate` | `--dry-run` | Resolve the declaration and say what would happen. Calls no issuer, writes nothing, needs no credentials. Default `false`. |
 | `deprovision` | `--env <env>` | **Required.** The one environment to tear down. There is no default and no "all": with none, the command refuses and lists the environments it could act on. |
 | `deprovision` | `--keys` | Also delete the environment's master key. Irreversible: every stored secret becomes undecryptable. Default `false`. |
@@ -36,7 +37,7 @@ pithy secrets deprovision --env <env> [--keys] [--destroy-retained <n>] [--json]
 **`--env` on a `global` secret is refused, not ignored.** A global secret is defined by holding one value everywhere, so naming an environment asks for something the scope does not permit. The command says so and stops, with nothing written:
 
 ```
-email-link-signing-key is global. It holds one value across every environment, so --env cannot narrow it.
+payments-provider-credentials is global. It holds one value across every environment, so --env cannot narrow it.
 Run it again without --env to set it in every environment.
 ```
 
@@ -142,10 +143,33 @@ Under `--json` that is `environments` naming every environment that reads it, pl
 **A `global` D1 write is the one fan-out, and it is not a transaction.** Each environment is a separate Workflow in a separate Worker; there is no rollback across them, and a compensating write is itself a Workflow that can fail. So the guarantee the command gives is narrower than "all or nothing", and it is stated rather than implied: **no ordinary command can create a split**, because a narrowed global write is refused before anything is dispatched. A *fault* part-way through the fan-out still can, and when it does the command names the environments it reached before it failed — on stdout, before the error:
 
 ```
-email-link-signing-key written to staging, canary before this failed.
+partner-webhook-secret written to staging, canary before this failed.
 ```
 
 Under `--json` that is one line with `"interrupted": true`, `environments` naming only what landed, the `{ "error": … }` line on stderr, and exit code 1. Nothing reports success. A `global` CF-Secrets-Store secret needs none of this: it is one account-level entry every environment binds, so there is one write and nothing for it to disagree with.
+
+### Moving a secret off D1
+
+A declaration can change its backend between releases, and the value it held does not move with it. `email-link-signing-key` did (#596): it was an encrypted row in each environment's D1 vault, and it is now a Secrets Store entry per environment. The vault is where a rollback, a `seed --redo` or a teardown reaches once an operator agrees to it, and on one project a staging rollback took the key. A Secrets Store entry lives outside every D1, so none of them can.
+
+`pithy doctor` reports a project that still holds it:
+
+```
+email: email-link-signing-key (staging) — The link-signing key is still held in staging's D1 vault, where nothing reads it. Links signed with it before the move no longer verify. Once the Secrets Store entry is bound and deployed, run `pithy secrets rm email-link-signing-key --env staging --backend d1`. See docs/commands/secrets.md#moving-a-secret-off-d1.
+```
+
+**Moving a key that has signed live mail invalidates those links.** Every tracking and unsubscribe link already in an inbox was signed with the D1 value. The only way to keep one verifying would be to carry that value into the new entry as a previous version — and it cannot be carried: it is sealed under a master key that never leaves the environment's manager Worker, so no command reads it back out. Links minted before this release also name no audience, which the verifier now requires, so a carried key would not save them either. **Those links answer `email/invalid_token` from the moment the new entry is deployed.** For elective mail that includes the one-click unsubscribe link; an opt-out that arrives another way still belongs in the suppression list. An environment that has sent no tracked or elective mail loses nothing.
+
+The move, for each environment:
+
+1. `pithy secrets provision` — creates the Secrets Store entry, `<project>-<env>-email-link-signing-key`, with a fresh value, and binds it in the app Worker's `wrangler.jsonc`. An entry that already exists is never replaced.
+2. `pithy email provision --env <env>` — redeploys the email host bound to the same entry. The host signs; the app Worker verifies. Both must bind it.
+3. `pithy deploy --env <env>` — ships the app Worker with its new binding. From here, new links sign and verify with the new key.
+4. `pithy secrets rm email-link-signing-key --env <env> --backend d1` — removes the row nothing reads. A plain `rm` routes by the declaration and would delete the live entry instead; `--backend` names the vault, one environment at a time, and is refused for anything but a removal.
+
+`pithy doctor` is clean for that environment once the entry exists and the row is gone.
+
+**What `--backend` does not do.** It removes a value from a store; it never writes one where the declaration does not read it, and it never picks the environments for you. It sees the one name you give it — the vault cannot be listed, so a secret some other declaration moved off D1 is found by its own check or not at all.
 
 ### `rotate` — replacing a value against the declaration that says how
 
@@ -237,6 +261,8 @@ One line on stdout. A failure is one `{"error": …}` line on stderr and a non-z
 
 ### `secrets create` · `secrets update` · `secrets rm`
 
+`rm --backend d1` reports the same line: `environments` names the one vault the row was removed from, and `accountEntry` is absent, because a vault row is not an account entry.
+
 | key | type | meaning |
 |---|---|---|
 | `command` | string | `"secrets create"`, `"secrets update"`, or `"secrets delete"` — `rm` reports the mode it ran, which is `delete`. |
@@ -309,7 +335,7 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 
 **`provision` creates every secret the registry says nobody chooses.** A registry entry declares whether its value is *arbitrary* — a session signing key, a link signing key: any random string works, because nothing outside the project validates one. Provisioning creates those rather than printing a `pithy secrets create` line for each. A `cf-secrets-store` secret is written and bound in the same pass (`wired[].created`); for a `d1` secret every environment's manager is **asked first** — it holds the master key and is the only thing that can say whether a value is already there — and only then written to (`generated`). **An existing value is never replaced, on either path.** Replacing a session secret signs everyone out, replacing a link key stops verifying links already in inboxes, and replacing a key-encryption key orphans everything sealed under it — so creating a missing secret and replacing a live one are different acts, and only the first happens here. A secret whose value must match something issued elsewhere — an OAuth client secret, a payment rail's key — declares nothing, and stays a question for the person who can answer it.
 
-**A `global` secret has one value in every environment, or the command stops.** `global` is the promise that a link signed in staging verifies wherever the recipient's click lands, and it is a property of the whole declaration rather than of any one environment — so it is decided across every environment at once, before anything is written. All present, and nothing happens; all absent, and one minted value goes to each. **Split — some environments hold it, some do not — and the run fails, naming the secret and both sides.** That state is what a run interrupted part-way through leaves behind, and completing it means minting a *second* value for a secret defined by having one. There is one repair, and it is destructive: remove the secret everywhere with `pithy secrets rm <name>`, then run this again. The other-sounding option — give the empty environments the value the others hold — cannot be performed by anyone. A `d1` secret is sealed under a master key that never leaves its environment's manager Worker, so nothing reads the value back out to copy it. The refusal therefore names that one command and says what it costs: a live signing key destroyed, and everything signed by it stops verifying.
+**A `global` secret has one value in every environment, or the command stops.** `global` is the promise that every environment reads one value, and it is a property of the whole declaration rather than of any one environment — so it is decided across every environment at once, before anything is written. All present, and nothing happens; all absent, and one minted value goes to each. **Split — some environments hold it, some do not — and the run fails, naming the secret and both sides.** That state is what a run interrupted part-way through leaves behind, and completing it means minting a *second* value for a secret defined by having one. There is one repair, and it is destructive: remove the secret everywhere with `pithy secrets rm <name>`, then run this again. The other-sounding option — give the empty environments the value the others hold — cannot be performed by anyone. A `d1` secret is sealed under a master key that never leaves its environment's manager Worker, so nothing reads the value back out to copy it. The refusal therefore names that one command and says what it costs: a live signing key destroyed, and everything signed by it stops verifying.
 
 **A run that fails part-way says what it wrote.** The fan-out creates a signing key per environment, so a fault after the first write leaves key material behind. Whatever landed is printed before the failure — as `created in <environments>` lines, or as `generated` beside `"interrupted": true` under `--json` — and the failure itself goes to stderr with exit code 1. That report is what makes the destructive repair safe to perform: it names the environments a previous run reached.
 
@@ -376,7 +402,7 @@ pithy secrets deprovision --env staging --json
 
 ```json
 {"command":"secrets create","name":"STRIPE_SECRET_KEY","environments":["prod"]}
-{"command":"secrets update","name":"email-link-signing-key","environments":["staging","canary"],"interrupted":true}
+{"command":"secrets update","name":"partner-webhook-secret","environments":["staging","canary"],"interrupted":true}
 {"command":"secrets ls","secrets":[{"name":"SESSION_SIGNING_KEY","description":"d1 · environment · rotatable"},{"name":"TENANT_KEYS","description":"d1 · environment · keyspace"}]}
 {"command":"secrets rotate","name":"SESSION_SIGNING_KEY","rotations":[{"name":"SESSION_SIGNING_KEY","status":"rotated","rotation":"local","rolled":false,"recorded":["prod"],"stranded":[]}]}
 {"command":"secrets rotate","name":"CLOUDFLARE_API_TOKEN","rotations":[{"name":"CLOUDFLARE_API_TOKEN","status":"unrecorded","rotation":"provider","rolled":true,"recorded":[],"stranded":["prod"]}]}

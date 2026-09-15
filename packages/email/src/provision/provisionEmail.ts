@@ -28,7 +28,7 @@ import { type ManagedEnvironment, managedEnvironments } from "@pithy-sh/secrets/
  *
  * **Operator prerequisites (out of band, like the secrets store):** the sending domain must be onboarded
  * onto Cloudflare Email Service, one Email Routing rule must point bounce/complaint mail at the production
- * app worker, and the link-signing key must exist (`pithy secrets create email-link-signing-key`). These
+ * app worker, and the link-signing key must exist (`pithy secrets provision` creates each environment's Secrets Store entry). These
  * are one-time account/DNS actions provisioning does not own.
  */
 

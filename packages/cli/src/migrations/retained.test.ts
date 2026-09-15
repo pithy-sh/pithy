@@ -1,17 +1,42 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
+import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
+import { parseDevVars } from "@pithy-sh/cloudflare/src/env/devVars";
 import { type Capability, defineCapability } from "@pithy-sh/core/src/capability/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { RetainedBudget } from "@pithy-sh/core/src/migrations/retained";
 import { dropMigrations, rollbackMigration, runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import { environmentScope, type SecretNameScope } from "@pithy-sh/core/src/naming/provisionScope";
 import { email } from "@pithy-sh/email/src/capability";
+import {
+  EMAIL_LINK_SIGNING_KEY,
+  emailSigningRegistry,
+  resolveSigningKeys,
+} from "@pithy-sh/email/src/crypto/signingKey";
+import { mintToken, verifyToken } from "@pithy-sh/email/src/crypto/token";
 import { secrets } from "@pithy-sh/secrets/src/capability";
+import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
+import { deprovisionSecrets, masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import {
+  aggregateSecretRegistries,
+  configureSharedSecrets,
+  resetSharedSecrets,
+} from "@pithy-sh/secrets/src/sharedSecretsStore";
+import { storeEntryText } from "@pithy-sh/secrets/src/store/entryText";
+import { SystemSecretsStore } from "@pithy-sh/secrets/src/store/systemSecretsStore";
+import { devEncryptionKeys } from "@pithy-sh/secrets/src/test-utils/devEncryptionKeys";
 import type { Migration } from "kysely/migration";
 import { Miniflare } from "miniflare";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { CloudflareSecretsDeprovisioner } from "../capabilities/secretsProvisioner";
+import { seedProjectDevSecrets } from "../devSecrets/seed";
+import { localDevStorePath } from "../devSecrets/store";
+import type { StatePathOptions } from "../notifier/state";
 import { appCapability, createTable, migrateHarness } from "../test-utils/migrateHarness";
 import { rollbackConfirmPhrase } from "./confirm";
 import { dropCapabilityTables, migrateProject, previewReset, resetProject } from "./run";
@@ -389,5 +414,223 @@ describe("a database other environments bind (#588)", () => {
     } finally {
       await mf.dispose();
     }
+  });
+});
+
+/**
+ * **#596: the link-signing key is in none of the databases a rollback, a reset or a teardown reaches.**
+ *
+ * The guards above refuse to destroy the vault by accident. They cannot help once somebody agrees to — an
+ * exact `--destroy-retained` count is permission — and on 2026-09-14 the thing that went with staging's vault
+ * was the one secret whose loss outlives the system: the key that signed every link already in an inbox.
+ *
+ * So this proves the other half. A project composing the real `secrets()` and `email()` capabilities is seeded
+ * the way `pithy seed` seeds it, and then each destructive act is run to completion — agreed, not refused —
+ * and the key is asked for afterwards the way a Worker asks: from its binding, through `resolveSigningKeys`,
+ * verifying a link minted before the act. A vault gone and a key intact is the whole assertion.
+ *
+ * **What it covers and what it does not.** Rollback and `seed --redo`'s reset run against the project's real
+ * local D1. Deprovision runs the real `CloudflareSecretsDeprovisioner` against a stubbed account, so it proves
+ * the teardown names no Secrets Store entry but its own master key and token — not what Cloudflare does.
+ */
+describe("the link-signing key survives the vault (#596)", () => {
+  const h = migrateHarness();
+  let config = "";
+  const paths = (): StatePathOptions => ({
+    platform: "linux",
+    homedir: "/home/nobody",
+    env: { PITHY_CONFIG_DIR: config },
+  });
+
+  beforeEach(async () => {
+    config = await mkdtemp(join(tmpdir(), "pithy-596-config-"));
+    await mkdir(join(config, "acme"), { recursive: true, mode: 0o700 });
+    await writeFile(join(h.projectDir, "pithy.config.ts"), 'export default { name: "acme" };\n');
+    // A Worker is a directory with a config; the `.dev.vars` generator writes only to those.
+    await writeFile(join(h.projectDir, "apps", "api", "wrangler.jsonc"), '{ "name": "api" }\n');
+  });
+  afterEach(async () => {
+    await rm(config, { recursive: true, force: true });
+  });
+
+  const mail = (): Capability => email({ fromAddress: "noreply@acme.test", baseUrl: "https://api.acme.test" });
+  const composed = (): Capability[] => [vault(), mail(), appCapability()];
+  const masterKey = devEncryptionKeys();
+  const base = () => ({ account: null, projectDir: h.projectDir, env: "dev", project: "acme" });
+
+  /** `pithy seed`'s dev-secrets half, against this project's real local `SECRETS` D1. */
+  async function seed(): Promise<void> {
+    await seedProjectDevSecrets({
+      projectDir: h.projectDir,
+      paths: paths(),
+      targets: [
+        { name: "api", dir: join(h.projectDir, "apps", "api"), registry: aggregateSecretRegistries(composed()) },
+      ],
+      openStore: async () => {
+        const mf = new Miniflare({
+          modules: true,
+          script: "export default {};",
+          d1Databases: { D: "SECRETS" },
+          d1Persist: persistDir(h.projectDir),
+        });
+        const db = (await mf.getD1Database("D")) as unknown as D1Database;
+        return {
+          ready: true,
+          store: await SystemSecretsStore.fromEnv({ SECRETS: db, SECRETS_ENCRYPTION_KEYS: masterKey }),
+          persistPath: localDevStorePath(h.projectDir),
+          dispose: () => mf.dispose(),
+        };
+      },
+    });
+  }
+
+  /** What the Worker is handed for the key: its generated `.dev.vars`, the dev face of its Secrets Store binding. */
+  async function bound(): Promise<string | undefined> {
+    const text = await readFile(join(h.projectDir, "apps", "api", ".dev.vars"), "utf8").catch(() => "");
+    return parseDevVars(text)[EMAIL_LINK_SIGNING_KEY];
+  }
+
+  /** Verify `token` the way the callback route does — the key resolved from its binding, the vault as it now is. */
+  async function verifies(token: string, binding: string): Promise<boolean> {
+    return withLocal(h.projectDir, "SECRETS", async (db) => {
+      configureSharedSecrets({ registry: aggregateSecretRegistries(composed()) });
+      try {
+        const keys = await resolveSigningKeys({
+          SECRETS: db,
+          SECRETS_ENCRYPTION_KEYS: masterKey,
+          [EMAIL_LINK_SIGNING_KEY]: binding,
+        } as SecretsStoreEnv);
+        await verifyToken(token, keys, new Date(), AUDIENCE);
+        return true;
+      } finally {
+        resetSharedSecrets();
+      }
+    });
+  }
+
+  const AUDIENCE = "https://api.acme.test";
+
+  /** A link minted now, under the key the Worker currently binds. */
+  async function mintedUnder(binding: string): Promise<string> {
+    const envelope = JSON.parse(binding) as { currentVersion: string; versions: Record<string, string> };
+    return mintToken(
+      { kind: "unsubscribe", jobId: "job-1", recipient: "u@example.com" },
+      {
+        key: envelope.versions[envelope.currentVersion] ?? "",
+        kid: envelope.currentVersion,
+        expiresAt: new Date(Date.now() + 86_400_000),
+        audience: AUDIENCE,
+      },
+    );
+  }
+
+  test("seeded, the key is bound to the Worker and absent from the vault", async () => {
+    await migrateProject({ ...base(), workers: [h.api(composed())] });
+    await seed();
+    expect(await bound()).toBeDefined();
+    await withLocal(h.projectDir, "SECRETS", async (db) => {
+      const row = await db
+        .prepare("select name from pithy_secrets_system_secrets where name = ?")
+        .bind(EMAIL_LINK_SIGNING_KEY)
+        .first();
+      expect(row).toBeNull();
+    });
+  });
+
+  test("a rollback that destroys the vault leaves the key, and a link minted before it still verifies", async () => {
+    const workers = [h.api(composed())];
+    await migrateProject({ ...base(), workers });
+    await seed();
+    await withLocal(h.projectDir, "SECRETS", (db) => storeSecrets(db, 3));
+    const key = (await bound()) ?? "";
+    const link = await mintedUnder(key);
+    const held = (await withLocal(h.projectDir, "SECRETS", (db) => rowsIn(db, "pithy_secrets_system_secrets"))) ?? 0;
+
+    await migrateProject({ ...base(), workers, rollback: true, destroyRetained: held });
+
+    await withLocal(h.projectDir, "SECRETS", async (db) =>
+      expect(await rowsIn(db, "pithy_secrets_system_secrets")).toBeNull(),
+    );
+    expect(await bound()).toBe(key);
+    expect(await verifies(link, key)).toBe(true);
+  });
+
+  test("seed --redo, agreed, empties the vault and re-seeds without replacing the key", async () => {
+    const workers = [h.api(composed())];
+    await migrateProject({ ...base(), workers });
+    await seed();
+    await withLocal(h.projectDir, "SECRETS", (db) => storeSecrets(db, 2));
+    const key = (await bound()) ?? "";
+    const link = await mintedUnder(key);
+    const held = (await withLocal(h.projectDir, "SECRETS", (db) => rowsIn(db, "pithy_secrets_system_secrets"))) ?? 0;
+
+    await resetProject({ ...base(), workers, destroyRetained: held });
+    await withLocal(h.projectDir, "SECRETS", async (db) =>
+      expect(await rowsIn(db, "pithy_secrets_system_secrets")).toBe(0),
+    );
+    await seed();
+
+    expect(await bound()).toBe(key);
+    expect(await verifies(link, key)).toBe(true);
+  });
+
+  test("a deprovision that deletes the vault and the master key leaves the key's Secrets Store entry", async () => {
+    await migrateProject({ ...base(), workers: [h.api([vault()])] });
+    await withLocal(h.projectDir, "SECRETS", (db) => storeSecrets(db, 2));
+
+    const entry = environmentScope("acme", "staging").secretEntry(
+      EMAIL_LINK_SIGNING_KEY,
+      emailSigningRegistry[EMAIL_LINK_SIGNING_KEY].scope as SecretNameScope,
+    );
+    const store = new Map<string, string>([
+      [masterKeySecretName("acme", "staging"), masterKey],
+      [entry, storeEntryText({}, "the-staging-link-key")],
+    ]);
+    const databases = new Map([["acme-staging-secrets", "db-staging"]]);
+    const mf = new Miniflare({
+      modules: true,
+      script: "export default {};",
+      d1Databases: { D: "SECRETS" },
+      d1Persist: persistDir(h.projectDir),
+    });
+    try {
+      const vaultDb = await mf.getD1Database("D");
+      const cf = {
+        secrets: () => ({
+          exists: async (name: string) => store.has(name),
+          deleteSecret: async (name: string) => void store.delete(name),
+        }),
+        accountTokens: () => ({ deleteTokensByName: async () => 0 }),
+        d1Provisioner: () => ({
+          findDatabaseByName: async (name: string) => {
+            const uuid = databases.get(name);
+            return uuid ? { uuid, name } : null;
+          },
+          deleteDatabase: async (uuid: string) => {
+            for (const [name, id] of databases) if (id === uuid) databases.delete(name);
+          },
+        }),
+        workers: () => ({ getWorker: async () => null, deleteWorker: async () => {} }),
+        d1: () => vaultDb,
+      } as unknown as CloudflareClients;
+
+      await deprovisionSecrets(
+        new CloudflareSecretsDeprovisioner({
+          account: { accountId: "acct-1", confirmation: "pinned" },
+          cf,
+          project: "acme",
+          storeId: "store-1",
+          budget: new RetainedBudget(2),
+        }),
+        { environment: "staging", declared: ["staging", "prod"] },
+        { deleteKeys: true, destroyRetained: 2 },
+      );
+    } finally {
+      await mf.dispose();
+    }
+
+    expect(databases.size).toBe(0);
+    expect(store.has(masterKeySecretName("acme", "staging"))).toBe(false);
+    expect(store.get(entry)).toBe(storeEntryText({}, "the-staging-link-key"));
   });
 });

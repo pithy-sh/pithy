@@ -6,9 +6,9 @@ import { NonRetryableError } from "cloudflare:workflows";
 import type { D1Database, ExecutionContext } from "@cloudflare/workers-types";
 import { classifiedSteps } from "@pithy-sh/core/src/workflow/faults";
 import { requireHostEnv } from "@pithy-sh/core/src/workflow/hostEnv";
-import type { SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
+import type { SecretBinding, SecretsStoreEnv } from "@pithy-sh/secrets/src/env/bindings";
 import { configureSharedSecrets } from "@pithy-sh/secrets/src/sharedSecretsStore";
-import { emailSigningRegistry, resolveSigningKeys } from "../crypto/signingKey";
+import { EMAIL_LINK_SIGNING_KEY, emailSigningRegistry, resolveSigningKeys } from "../crypto/signingKey";
 import { emailDatabase, emailSuppressionDatabase } from "../data/tables";
 import { mintBatchId } from "../send/batchIdentity";
 import type { SendWorkflowBinding } from "../send/enqueue";
@@ -55,6 +55,8 @@ import { type BatchSendReport, runSendBatch, type SendBatchDeps } from "./sendBa
 export interface EmailWorkerEnv extends SecretsStoreEnv {
   /** The app database the per-environment jobs/events tables live in. */
   DB: D1Database;
+  /** The link-signing key: this environment's Secrets Store entry, or its `.dev.vars` string locally (#596). */
+  [EMAIL_LINK_SIGNING_KEY]: SecretBinding | string;
   /** The shared, durable suppression database. */
   EMAIL_SUPPRESSIONS: D1Database;
   /** The Cloudflare Email Service send binding. */

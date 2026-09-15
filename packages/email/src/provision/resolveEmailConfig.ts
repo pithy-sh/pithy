@@ -3,6 +3,7 @@
 
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import type { LocaleCatalogs } from "@pithy-sh/core/src/i18n/catalog";
+import { environmentScope, type SecretNameScope } from "@pithy-sh/core/src/naming/provisionScope";
 import type {
   HostD1Binding,
   HostSecretsStoreBinding,
@@ -15,6 +16,7 @@ import { workflowKey } from "@pithy-sh/core/src/workflow/naming";
 import type { WorkflowRegistry } from "@pithy-sh/core/src/workflow/spec";
 import { masterKeySecretName } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
+import { EMAIL_LINK_SIGNING_KEY, emailSigningRegistry } from "../crypto/signingKey";
 import { emailCatalogVarName } from "../templates/messages";
 import type { EmailTheme } from "../templates/theme";
 import { EmailScheduleParams, EmailSendParams } from "../workflows/params";
@@ -143,9 +145,9 @@ export interface EmailConfigParams {
   appDatabaseId: string;
   /** The shared suppression database id (same in every environment). */
   suppressionDatabaseId: string;
-  /** This environment's secrets database id (`<project>-<env>-secrets`) — holds the signing key. */
+  /** This environment's secrets database id (`<project>-<env>-secrets`). The signing key is not in it (#596). */
   secretsDatabaseId: string;
-  /** The CF Secrets Store id holding the per-env master key. */
+  /** The CF Secrets Store id holding the per-env master key and the per-env link-signing key. */
   storeId: string;
   /** The app worker's public base URL for this environment — callback links are built against it. */
   baseUrl: string;
@@ -208,6 +210,15 @@ export function resolveEmailConfig(
     secretsStoreId: storeId,
     // The master key entry is project- and env-scoped, matching what the secrets manager wrote.
     masterKeySecretName: masterKeySecretName(project, env),
+    // The link-signing key, at the entry `pithy secrets provision` created and bound the app Worker to —
+    // composed by the same `environmentScope(...).secretEntry` call, from the declaration's own scope, so
+    // the Worker that signs a link and the Worker that verifies it cannot be handed two different keys.
+    secretNames: {
+      [EMAIL_LINK_SIGNING_KEY]: environmentScope(project, env).secretEntry(
+        EMAIL_LINK_SIGNING_KEY,
+        emailSigningRegistry[EMAIL_LINK_SIGNING_KEY].scope as SecretNameScope,
+      ),
+    },
     // The theme and the catalogs travel the same way, and they have to: the host composes no
     // capabilities, so the brand and the words are both things only a provision run can hand it.
     vars: { EMAIL_THEME: JSON.stringify(theme), BASE_URL: baseUrl, ...emailMessagesVars(params.messages) },

@@ -138,11 +138,11 @@ Cloudflare credentials are missing.
 Run pithy init to record CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN, or export them.
 ```
 
-**No Secrets Store id.** The email worker decrypts its signing key from it. All three subcommands resolve credentials through the same reader, so `deprovision` and `test` are refused without it too, though neither writes a secret.
+**No Secrets Store id.** The email worker binds its master key and its link-signing key from it. All three subcommands resolve credentials through the same reader, so `deprovision` and `test` are refused without it too, though neither writes a secret.
 
 ```
 The CF Secrets Store id is missing.
-Run pithy add secrets to record SECRETS_STORE_ID (the email worker decrypts its signing key from it).
+Run pithy add secrets to record SECRETS_STORE_ID (the email worker binds its link-signing key from it).
 ```
 
 **The project has no name.** The suppression database is found by name and reused, so a guessed name would adopt another project's opt-out list.
@@ -176,7 +176,7 @@ Declare it in the Worker's pithy.config.ts — `domains: { prod: { pattern: "…
 
 ```
 The prod secrets database (acme-prod-secrets) does not exist.
-Run `pithy secrets provision` first — the email worker reads its signing key from it.
+Run `pithy secrets provision` first — the email worker binds it, and that run creates the link-signing key it signs with.
 ```
 
 **An unknown template.**
