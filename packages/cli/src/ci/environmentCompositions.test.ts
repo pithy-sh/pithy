@@ -116,7 +116,7 @@ const RAW_COMPOSERS: Readonly<Record<string, string>> = {
   "commands/add.ts":
     "Chooses the Worker pithy add and pithy remove write wiring into, for every environment at once; pithy remove --drop reverses the migrations of that composition, which is a limit of this entry.",
   "commands/doctor.ts":
-    "Resolves once for a report over every environment; its per-environment secret answers come from secretApplicability.",
+    "Resolves once for a report over every environment; its per-environment migration answers compose inside composeFor, and its secret answers come from secretApplicability.",
   "commands/email.ts":
     "Reads the capability's config and the domains declaration once, for provisioning that spans every declared environment.",
   "commands/media.ts":

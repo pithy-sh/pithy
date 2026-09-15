@@ -98,19 +98,27 @@ describe("a ledger row the project no longer declares", () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: h.projectDir,
-      env: "dev",
+      environments: [],
+      remoteSkip: null,
+      // The fixture's composition is in memory, with no config on disk to evaluate for dev.
+      composeWorker: async () => worker.capabilities,
       workers: [{ name: worker.name, dir: worker.dir, capabilities: worker.capabilities }],
     });
 
     expect(health.ok).toBe(false);
     expect(checkedWorker(health).migrations).toEqual({
       ok: false,
-      ledger: {
-        state: "read",
-        pending: 0,
-        undeclared: [{ database: "app", binding: "DB", name: "1000_app_0002_tenant" }],
-      },
-      env: "dev",
+      environments: [
+        {
+          env: "dev",
+          state: "checked",
+          ledger: {
+            state: "read",
+            pending: 0,
+            undeclared: [{ database: "app", binding: "DB", name: "1000_app_0002_tenant" }],
+          },
+        },
+      ],
     });
   });
 

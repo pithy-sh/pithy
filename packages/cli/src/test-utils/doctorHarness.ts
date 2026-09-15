@@ -5,9 +5,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, vi } from "vitest";
-import type { ReconcilePlan } from "../capabilities/reconcile";
+import type { ReadLedger, ReconcilePlan } from "../capabilities/reconcile";
 import type { DoctorReportOptions } from "../commands/doctor";
 import type { BuildPlan, ProjectHealth, WorkerHealth } from "../doctor/health";
+import type { ProjectLedger } from "../migrations/run";
 import type { FetchLike } from "../notifier/check";
 import type { ShellInfo } from "../platform/shell";
 import type { ProjectConfig } from "../project/config";
@@ -77,6 +78,19 @@ export const planStub = (plan: ReconcilePlan): BuildPlan =>
 /** A plan builder keyed by Worker — for a project whose Workers differ. */
 export const planStubPer = (plans: Record<string, ReconcilePlan>): BuildPlan =>
   vi.fn(async (options) => plans[options.worker ?? ""] ?? cleanPlanFor(options.worker ?? ""));
+
+/**
+ * A ledger seam keyed by Worker and then by environment — for a project whose environments differ. An
+ * environment a Worker does not name reads level, which is the state every other suite starts from.
+ *
+ * It answers from the `env` it is handed and nothing else, so a report that asked the wrong environment
+ * gets the wrong environment's number rather than the right one by coincidence (#586).
+ */
+export const ledgerStubPer = (ledgers: Record<string, Record<string, ProjectLedger>>): ReadLedger =>
+  vi.fn(
+    async (scope): Promise<ProjectLedger> =>
+      ledgers[scope.worker]?.[scope.env] ?? { state: "read", pending: 0, undeclared: [] },
+  );
 
 /** The Worker set doctor's resolver seam returns; `ResolvedWorker` is satisfied structurally. */
 export const workerSet = (...names: string[]) =>

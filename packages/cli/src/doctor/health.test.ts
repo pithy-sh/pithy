@@ -2,10 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, test, vi } from "vitest";
-import { type BuildReconcilePlanOptions, buildReconcilePlan, type ReconcilePlan } from "../capabilities/reconcile";
+import {
+  type BuildReconcilePlanOptions,
+  buildReconcilePlan,
+  type MigrationScope,
+  type ReconcilePlan,
+} from "../capabilities/reconcile";
 import type { ProjectLedger } from "../migrations/run";
 import { checkedWorker } from "../test-utils/doctorHarness";
-import { type BuildPlan, buildProjectHealth, defaultBuildPlan } from "./health";
+import { type BuildPlan, buildProjectHealth, defaultBuildPlan, type ProjectHealthOptions } from "./health";
 
 /** A plan builder keyed by Worker, so health is tested without touching a project on disk. */
 function planStub(plans: Record<string, ReconcilePlan>): BuildPlan {
@@ -34,6 +39,16 @@ function clean(worker: string): ReconcilePlan {
   };
 }
 
+/**
+ * No declared environment, a run that can reach an account, and a composition that is each double's own
+ * empty one — the migration check reduced to `dev` for suites that are about something else.
+ */
+const declaredNone = {
+  environments: [],
+  remoteSkip: null,
+  composeWorker: async () => [],
+} satisfies Pick<ProjectHealthOptions, "environments" | "remoteSkip" | "composeWorker">;
+
 const api = { name: "api", dir: "/p/apps/api", capabilities: [] };
 const collab = { name: "collab", dir: "/p/apps/collab", capabilities: [] };
 
@@ -42,7 +57,7 @@ describe("buildProjectHealth", () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api],
       buildPlan: planStub({ api: clean("api") }),
     });
@@ -53,8 +68,7 @@ describe("buildProjectHealth", () => {
     expect(checkedWorker(health).bindings.ok).toBe(true);
     expect(checkedWorker(health).migrations).toEqual({
       ok: true,
-      ledger: { state: "read", pending: 0, undeclared: [] },
-      env: "dev",
+      environments: [{ env: "dev", state: "checked", ledger: { state: "read", pending: 0, undeclared: [] } }],
     });
   });
 
@@ -76,7 +90,7 @@ describe("buildProjectHealth", () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api],
       buildPlan: planStub({ api: plan }),
     });
@@ -103,7 +117,7 @@ describe("buildProjectHealth", () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api],
       buildPlan: planStub({ api: plan }),
     });
@@ -131,7 +145,7 @@ describe("buildProjectHealth", () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api],
       buildPlan: planStub({ api: plan }),
     });
@@ -140,19 +154,19 @@ describe("buildProjectHealth", () => {
     expect(checkedWorker(health).bindings.missingExports).toEqual(["MultiplayerSession"]);
   });
 
-  test("migrations check surfaces the pending count and env", async () => {
+  test("migrations check surfaces dev's pending count, under dev's name", async () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api],
-      buildPlan: planStub({ api: { ...clean("api"), ledger: { state: "read", pending: 2, undeclared: [] } } }),
+      readLedger: async () => ({ state: "read", pending: 2, undeclared: [] }),
+      buildPlan: planStub({ api: clean("api") }),
     });
     expect(health.ok).toBe(false);
     expect(checkedWorker(health).migrations).toEqual({
       ok: false,
-      ledger: { state: "read", pending: 2, undeclared: [] },
-      env: "dev",
+      environments: [{ env: "dev", state: "checked", ledger: { state: "read", pending: 2, undeclared: [] } }],
     });
   });
 
@@ -162,15 +176,35 @@ describe("buildProjectHealth", () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api],
-      buildPlan: planStub({ api: { ...clean("api"), ledger: { state: "read", pending: 0, undeclared } } }),
+      readLedger: async () => ({ state: "read", pending: 0, undeclared }),
+      buildPlan: planStub({ api: clean("api") }),
     });
     expect(health.ok).toBe(false);
     expect(checkedWorker(health).migrations).toEqual({
       ok: false,
-      ledger: { state: "read", pending: 0, undeclared },
-      env: "dev",
+      environments: [{ env: "dev", state: "checked", ledger: { state: "read", pending: 0, undeclared } }],
+    });
+  });
+
+  test("a deployed environment behind is reported on the check and does not fail it", async () => {
+    const health = await buildProjectHealth({
+      account: null,
+      projectDir: "/p",
+      ...declaredNone,
+      environments: ["staging"],
+      workers: [api],
+      readLedger: async (scope) => ({ state: "read", pending: scope.env === "staging" ? 4 : 0, undeclared: [] }),
+      buildPlan: planStub({ api: clean("api") }),
+    });
+    expect(health.ok).toBe(true);
+    expect(checkedWorker(health).migrations).toEqual({
+      ok: true,
+      environments: [
+        { env: "dev", state: "checked", ledger: { state: "read", pending: 0, undeclared: [] } },
+        { env: "staging", state: "checked", ledger: { state: "read", pending: 4, undeclared: [] } },
+      ],
     });
   });
 
@@ -178,7 +212,7 @@ describe("buildProjectHealth", () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api],
       buildPlan: planStub({
         api: { ...clean("api"), entitlements: { state: "read", gates: ["src/routes/reports.ts"] } },
@@ -197,7 +231,7 @@ describe("buildProjectHealth", () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api],
       buildPlan: planStub({ api: clean("api") }),
     });
@@ -209,35 +243,46 @@ describe("buildProjectHealth", () => {
     expect(defaultBuildPlan).toBe(buildReconcilePlan);
   });
 
-  test("forwards each worker's directory, name, capabilities, and the shared readLedger seam", async () => {
+  test("forwards each worker's directory, name and capabilities, and reads each environment once per worker", async () => {
     const build = planStub({ api: clean("api"), collab: clean("collab") });
-    const readLedger = vi.fn(async (): Promise<ProjectLedger> => ({ state: "read", pending: 0, undeclared: [] }));
+    const readLedger = vi.fn(
+      async (_scope: MigrationScope): Promise<ProjectLedger> => ({ state: "read", pending: 0, undeclared: [] }),
+    );
     await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "staging",
+      ...declaredNone,
+      environments: ["staging"],
       workers: [api, collab],
       readLedger,
       buildPlan: build,
     });
+    // The plan is `upgrade`'s engine and is built for dev. It is handed dev's answer, never the seam, so
+    // the store is read once per environment and not a second time for the plan.
     expect(build).toHaveBeenNthCalledWith(1, {
       projectDir: "/p",
       workerDir: "/p/apps/api",
       worker: "api",
-      env: "staging",
+      env: "dev",
       account: null,
       capabilities: [],
-      readLedger,
+      readLedger: expect.any(Function),
     });
     expect(build).toHaveBeenNthCalledWith(2, {
       projectDir: "/p",
       workerDir: "/p/apps/collab",
       worker: "collab",
-      env: "staging",
+      env: "dev",
       account: null,
       capabilities: [],
-      readLedger,
+      readLedger: expect.any(Function),
     });
+    expect(readLedger.mock.calls.map(([scope]) => [scope.worker, scope.env])).toEqual([
+      ["api", "dev"],
+      ["api", "staging"],
+      ["collab", "dev"],
+      ["collab", "staging"],
+    ]);
   });
 });
 
@@ -246,7 +291,7 @@ describe("buildProjectHealth — per Worker", () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api, collab],
       buildPlan: planStub({ api: clean("api"), collab: clean("collab") }),
     });
@@ -269,7 +314,7 @@ describe("buildProjectHealth — per Worker", () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api, collab],
       buildPlan: planStub({ api: clean("api"), collab: drifted }),
     });
@@ -295,7 +340,7 @@ describe("buildProjectHealth — per Worker", () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api, collab],
       buildPlan: build,
     });
@@ -318,7 +363,7 @@ describe("buildProjectHealth — per Worker", () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [],
       buildPlan: planStub({}),
     });
@@ -344,7 +389,7 @@ describe("buildProjectHealth — manifests", () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api],
       buildPlan: planStub({ api: clean("api") }),
       readManifests: async () => ({ manifests: [], faults: [] }),
@@ -358,7 +403,7 @@ describe("buildProjectHealth — manifests", () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api, collab],
       buildPlan: planStub({ api: clean("api"), collab: clean("collab") }),
       readManifests: async () => ({ manifests: [], faults: [fault] }),
@@ -375,7 +420,7 @@ describe("buildProjectHealth — manifests", () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api, collab],
       buildPlan: planStub({ api: clean("api"), collab: clean("collab") }),
       readManifests: scan,
@@ -409,7 +454,7 @@ describe("buildProjectHealth — project-global bindings", () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api],
       buildPlan: planStub({ api: clean("api") }),
       readManifests: async () => ({ manifests: [], faults: [] }),
@@ -425,7 +470,7 @@ describe("buildProjectHealth — project-global bindings", () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api, collab],
       buildPlan: planStub({ api: clean("api"), collab: clean("collab") }),
       readManifests: async () => ({ manifests: [], faults: [] }),
@@ -441,7 +486,7 @@ describe("buildProjectHealth — project-global bindings", () => {
     await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api, collab],
       buildPlan: planStub({ api: clean("api"), collab: clean("collab") }),
       readManifests: async () => ({ manifests: [], faults: [] }),
@@ -473,7 +518,7 @@ describe("buildProjectHealth — capability resolution", () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api],
       buildPlan: planStub({ api: clean("api") }),
       readManifests: async () => ({ manifests: [], faults: [] }),
@@ -490,7 +535,7 @@ describe("buildProjectHealth — capability resolution", () => {
     const health = await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api, collab],
       buildPlan: planStub({ api: clean("api"), collab: clean("collab") }),
       readManifests: async () => ({ manifests: [], faults: [] }),
@@ -506,7 +551,7 @@ describe("buildProjectHealth — capability resolution", () => {
     await buildProjectHealth({
       account: null,
       projectDir: "/p",
-      env: "dev",
+      ...declaredNone,
       workers: [api, collab],
       buildPlan: planStub({ api: clean("api"), collab: clean("collab") }),
       readManifests: async () => ({ manifests: [], faults: [] }),

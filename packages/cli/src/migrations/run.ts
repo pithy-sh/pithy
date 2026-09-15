@@ -18,6 +18,7 @@ import {
   rollbackMigration,
   runMigrations,
 } from "@pithy-sh/core/src/migrations/runner";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { partialWriteReport } from "@pithy-sh/secrets/src/cli/partialWrite";
 import { parse } from "comment-json";
 import type { Migration, MigrationProvider, MigrationResult } from "kysely/migration";
@@ -25,6 +26,7 @@ import { z } from "zod";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { resolveWorkersFor } from "../project/composeFor";
+import { isPlaceholder } from "../project/envInventory";
 import { wranglerConfigPath } from "../provision/featureConfig";
 import { assertLedgerDeclared, UndeclaredMigration } from "./ledger";
 import { collectMigrationSets } from "./registry";
@@ -1009,6 +1011,35 @@ export async function readProjectLedger(options: MigrationFanOutOptions): Promis
   } finally {
     await driver.dispose();
   }
+}
+
+/**
+ * The databases a migration for `env` would reach **that have no database to reach** — the ones this
+ * Worker set migrates, bound in `env`'s stanza with no real `database_id`, or with no `env` stanza at all.
+ *
+ * Read from files alone, so it answers offline and without an account. A non-empty answer is the state
+ * `pithy migrate --env <env>` refuses with "has no database_id", and the one `pithy doctor` reports as
+ * *not provisioned* instead of attempting a read (#586): there is nothing there to have a count, and a
+ * count printed under that environment's name could only have come from somewhere else.
+ *
+ * `dev` never has one. Its databases are Miniflare stores keyed on the binding when no id is given, so
+ * every local binding resolves. A scaffold placeholder such as `<database_id>` is not an id.
+ */
+export async function unprovisionedDatabases(env: string, workers: readonly WorkerScope[]): Promise<MigrationTarget[]> {
+  if (env === LOCAL_ENVIRONMENT) return [];
+  const unprovisioned: MigrationTarget[] = [];
+  for (const worker of workers) {
+    const plan = buildPlan(worker);
+    if (plan.length === 0) continue;
+    const config = await readWranglerConfig(worker.dir, env);
+    const remote = idsFor(config.env?.[env]?.d1_databases, true);
+    for (const entry of plan) {
+      const id = remote.get(entry.binding);
+      if (id === undefined || isPlaceholder(id))
+        unprovisioned.push({ binding: entry.binding, database: entry.database });
+    }
+  }
+  return unprovisioned;
 }
 
 /** Options for {@link dropCapabilityTables}: the capability, the Worker it is wired into, and the env. */

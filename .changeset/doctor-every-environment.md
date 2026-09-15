@@ -1,0 +1,5 @@
+---
+"@pithy-sh/cli": patch
+---
+
+`pithy doctor` reports migrations for every environment, each under its own name. It reported `dev`'s ledger alone, from a composition for no environment, and accepted an undeclared `--env` silently, so `pithy doctor --env prod` printed `2 pending — run: pithy migrate --env dev` on a project whose prod had no database. The `migrations` check now has one line per environment — `dev`, then each declared one — each composed and read for that environment: a count, `not provisioned` when its databases have no id, `skipped` when offline or without Cloudflare credentials, or `couldn't be checked` when its config does not compose. Only `dev` fails the exit. In `--json` the check is `{ ok, environments }` in place of `{ ok, ledger, env }`.

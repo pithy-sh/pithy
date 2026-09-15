@@ -2,14 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConflictError } from "@pithy-sh/core/src/error/pithyError";
 import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { describe, expect, test } from "vitest";
+import type { ResolvedWorker } from "../project/workerScope";
 import {
   cleanPlanFor,
   doctorHarness,
+  ledgerStubPer,
   planStub,
   planStubPer,
   registryFetch,
@@ -285,11 +288,42 @@ describe("docs/commands/doctor.md", () => {
    * Every optional block is on screen at once, which is what makes it the example worth pasting.
    */
   test("the full report is what the renderer prints for a project in drift", async () => {
+    // `api` migrates one database, provisioned for staging and not for prod — outside `apps/`, so no probe
+    // that walks the project's Workers reads a stanza the transcript is not about.
+    const apiDir = join(harness.dir, "fixture", "api");
+    await mkdir(apiDir, { recursive: true });
+    await writeFile(
+      join(apiDir, "wrangler.jsonc"),
+      JSON.stringify({
+        name: "api",
+        d1_databases: [{ binding: "DB" }],
+        env: {
+          staging: { d1_databases: [{ binding: "DB", database_id: "acme-staging-db-id" }] },
+          prod: { d1_databases: [{ binding: "DB" }] },
+        },
+      }),
+    );
+    const noop = { up: async () => {}, down: async () => {} };
+    const app = {
+      name: "app",
+      requiredBindings: [],
+      databases: { app: { binding: "DB", tables: {}, migrationOrder: 1000, migrations: { "0001_init": noop } } },
+    };
+    const [collab] = workerSet("collab");
     const report = await buildDoctorReport(
       docOptions(
         harness.baseOptions({
           fetch: registryFetch({ cli: "1.3.0", core: "1.2.0", auth: "1.2.0", leaderboard: "1.2.0" }),
-          resolveWorkers: async () => workerSet("api", "collab"),
+          resolveWorkers: async () => [
+            { name: "api", dir: apiDir, capabilities: [app] } as unknown as ResolvedWorker,
+            collab as ResolvedWorker,
+          ],
+          readLedger: ledgerStubPer({
+            api: {
+              dev: { state: "read", pending: 2, undeclared: [] },
+              staging: { state: "read", pending: 1, undeclared: [] },
+            },
+          }),
           // `collab` is unlisted, so the stub gives it a clean plan — the healthy Worker that collapses to a line.
           buildPlan: planStubPer({
             api: {
@@ -308,7 +342,7 @@ describe("docs/commands/doctor.md", () => {
                   ],
                 },
               ],
-              ledger: { state: "read", pending: 2, undeclared: [] },
+              ledger: { state: "read", pending: 0, undeclared: [] },
               entitlements: { state: "read", gates: [] },
               missingPrerequisites: [],
               declinedBindings: { state: "read", declines: [] },
@@ -354,12 +388,14 @@ describe("docs/commands/doctor.md", () => {
       docOptions(
         harness.baseOptions({
           resolveWorkers: async () => workerSet("api"),
-          buildPlan: planStub({
-            ...cleanPlanFor("api"),
-            ledger: {
-              state: "read",
-              pending: 0,
-              undeclared: [{ database: "app", binding: "DB", name: "0250_audit_0002_tenant" }],
+          buildPlan: planStub(cleanPlanFor("api")),
+          readLedger: ledgerStubPer({
+            api: {
+              dev: {
+                state: "read",
+                pending: 0,
+                undeclared: [{ database: "app", binding: "DB", name: "0250_audit_0002_tenant" }],
+              },
             },
           }),
         }),
@@ -383,12 +419,14 @@ describe("docs/commands/doctor.md", () => {
       docOptions(
         harness.baseOptions({
           resolveWorkers: async () => workerSet("api"),
-          buildPlan: planStub({
-            ...cleanPlanFor("api"),
-            ledger: {
-              state: "partial",
-              counted: { pending: 2, undeclared: [] },
-              unreadable: [{ database: "collab", binding: "COLLAB_DB" }],
+          buildPlan: planStub(cleanPlanFor("api")),
+          readLedger: ledgerStubPer({
+            api: {
+              dev: {
+                state: "partial",
+                counted: { pending: 2, undeclared: [] },
+                unreadable: [{ database: "collab", binding: "COLLAB_DB" }],
+              },
             },
           }),
         }),

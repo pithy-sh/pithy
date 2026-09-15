@@ -17,6 +17,7 @@ import {
   checkedWorker,
   cleanPlanFor,
   doctorHarness,
+  ledgerStubPer,
   planStub,
   planStubPer,
   registryFetch,
@@ -161,12 +162,18 @@ describe("renderDoctorText", () => {
               ],
             },
           ],
-          ledger: { state: "read", pending: 2, undeclared: [] },
+          ledger: { state: "read", pending: 0, undeclared: [] },
           entitlements: { state: "read", gates: [] },
           missingPrerequisites: [],
           declinedBindings: { state: "read", declines: [] },
           generatedValues: { state: "read", drift: [], stalePins: [] },
           missingVersionMetadata: false,
+        }),
+        readLedger: ledgerStubPer({
+          api: {
+            dev: { state: "read", pending: 2, undeclared: [] },
+            staging: { state: "read", pending: 1, undeclared: [] },
+          },
         }),
       }),
     );
@@ -199,7 +206,9 @@ describe("renderDoctorText", () => {
         "    config       parses against every capability schema ✓",
         "    bindings     MEDIA_BUCKET (r2) missing from wrangler.jsonc",
         "                 env: staging, prod",
-        "    migrations   2 pending — run: pithy migrate --env dev",
+        "    migrations   dev: 2 pending — run: pithy migrate --env dev",
+        "                 staging: 1 pending — run: pithy migrate --env staging",
+        "                 prod: none pending, none undeclared ✓",
         "    entitlements no gated route without a provider ✓",
         "",
         "Cloudflare: token active; checked: API tokens — no other product was reached",
@@ -219,10 +228,8 @@ describe("renderDoctorText", () => {
         fetch: registryFetch({ cli: "1.3.0", core: "1.2.0", auth: "1.2.0", leaderboard: "1.2.0" }),
         installedCapabilities: async () => [{ name: "@pithy-sh/core", version: "1.2.0" }],
         resolveWorkers: async () => workerSet("api", "collab"),
-        buildPlan: planStubPer({
-          api: cleanPlanFor("api"),
-          collab: { ...cleanPlanFor("collab"), ledger: { state: "read", pending: 2, undeclared: [] } },
-        }),
+        buildPlan: planStubPer({ api: cleanPlanFor("api"), collab: cleanPlanFor("collab") }),
+        readLedger: ledgerStubPer({ collab: { dev: { state: "read", pending: 2, undeclared: [] } } }),
       }),
     );
     const text = renderDoctorText(report, "/home/u");
@@ -234,7 +241,9 @@ describe("renderDoctorText", () => {
         "    prereqs      every composed capability has its peers ✓",
         "    config       parses against every capability schema ✓",
         "    bindings     all required bindings present ✓",
-        "    migrations   2 pending — run: pithy migrate --env dev",
+        "    migrations   dev: 2 pending — run: pithy migrate --env dev",
+        "                 staging: none pending, none undeclared ✓",
+        "                 prod: none pending, none undeclared ✓",
         "    entitlements no gated route without a provider ✓",
       ].join("\n"),
     );
@@ -981,12 +990,13 @@ describe("renderDoctorText", () => {
         installedVersion: "1.3.0",
         fetch: registryFetch({ cli: "1.3.0", core: "1.2.0" }),
         installedCapabilities: async () => [{ name: "@pithy-sh/core", version: "1.2.0" }],
-        buildPlan: planStub({
-          ...cleanPlan,
-          ledger: {
-            state: "read",
-            pending: 0,
-            undeclared: [{ database: "app", binding: "DB", name: "0250_audit_0002_tenant" }],
+        readLedger: ledgerStubPer({
+          api: {
+            dev: {
+              state: "read",
+              pending: 0,
+              undeclared: [{ database: "app", binding: "DB", name: "0250_audit_0002_tenant" }],
+            },
           },
         }),
       }),
@@ -994,8 +1004,8 @@ describe("renderDoctorText", () => {
     const text = renderDoctorText(report, "/home/u");
     expect(text).toContain(
       [
-        "    migrations   DB records 0250_audit_0002_tenant. This project no longer declares it.",
-        "                 Nothing migrates until the ledger and the declaration agree. This is the local dev store, so wiping it is cheap: delete .wrangler/state, then run pithy migrate --env dev again.",
+        "    migrations   dev: DB records 0250_audit_0002_tenant. This project no longer declares it.",
+        "                   Nothing migrates until the ledger and the declaration agree. This is the local dev store, so wiping it is cheap: delete .wrangler/state, then run pithy migrate --env dev again.",
       ].join("\n"),
     );
     expect(doctorExitCode(report)).toBe(1);
@@ -1191,9 +1201,8 @@ describe("doctorExitCode", () => {
     const report = await buildDoctorReport(
       baseOptions({
         resolveWorkers: async () => workerSet("api", "collab", "web"),
-        buildPlan: planStubPer({
-          collab: { ...cleanPlanFor("collab"), ledger: { state: "read", pending: 1, undeclared: [] } },
-        }),
+        buildPlan: planStubPer({}),
+        readLedger: ledgerStubPer({ collab: { dev: { state: "read", pending: 1, undeclared: [] } } }),
       }),
     );
     expect(report.project?.health.workers.map((worker) => worker.state === "checked" && worker.ok)).toEqual([
@@ -1259,12 +1268,15 @@ describe("doctorExitCode", () => {
 
   test("non-zero when migrations are pending", async () => {
     const report = await buildDoctorReport(
-      baseOptions({ buildPlan: planStub({ ...cleanPlan, ledger: { state: "read", pending: 3, undeclared: [] } }) }),
+      baseOptions({ readLedger: ledgerStubPer({ api: { dev: { state: "read", pending: 3, undeclared: [] } } }) }),
     );
     expect(checkedWorker(report.project?.health).migrations).toEqual({
       ok: false,
-      ledger: { state: "read", pending: 3, undeclared: [] },
-      env: "dev",
+      environments: [
+        { env: "dev", state: "checked", ledger: { state: "read", pending: 3, undeclared: [] } },
+        { env: "staging", state: "checked", ledger: { state: "read", pending: 0, undeclared: [] } },
+        { env: "prod", state: "checked", ledger: { state: "read", pending: 0, undeclared: [] } },
+      ],
     });
     expect(doctorExitCode(report)).toBe(1);
   });
@@ -1478,22 +1490,25 @@ describe("--worker", () => {
 
     await buildDoctorReport(baseOptions({ resolveWorkers }));
     await buildDoctorReport(baseOptions({ worker: "api", resolveWorkers }));
-    expect(seen).toEqual([{ projectDir: dir }, { projectDir: dir, worker: "api" }]);
+    // The set resolutions. Every other call composes one Worker for one environment the migration check
+    // answers, narrowed to that Worker by name whether or not the flag was given (#586).
+    const sets = seen.filter((call) => !("loadConfig" in call));
+    expect(sets).toEqual([{ projectDir: dir }, { projectDir: dir, worker: "api" }]);
+    expect(seen.filter((call) => "loadConfig" in call).map((call) => call.worker)).toEqual(Array(6).fill("api"));
   });
 
   test("narrows the exit gate — an unrelated unhealthy worker no longer fails the run", async () => {
     const all = workerSet("api", "collab");
     const resolveWorkers = async ({ worker }: { projectDir: string; worker?: string }) =>
       worker === undefined ? all : all.filter((candidate) => candidate.name === worker);
-    const buildPlan = planStubPer({
-      collab: { ...cleanPlanFor("collab"), ledger: { state: "read", pending: 2, undeclared: [] } },
-    });
+    const buildPlan = planStubPer({});
+    const readLedger = ledgerStubPer({ collab: { dev: { state: "read", pending: 2, undeclared: [] } } });
 
-    const whole = await buildDoctorReport(baseOptions({ resolveWorkers, buildPlan }));
+    const whole = await buildDoctorReport(baseOptions({ resolveWorkers, buildPlan, readLedger }));
     expect(whole.project?.health.workers.map((worker) => worker.worker)).toEqual(["api", "collab"]);
     expect(doctorExitCode(whole)).toBe(1);
 
-    const narrowed = await buildDoctorReport(baseOptions({ worker: "api", resolveWorkers, buildPlan }));
+    const narrowed = await buildDoctorReport(baseOptions({ worker: "api", resolveWorkers, buildPlan, readLedger }));
     expect(narrowed.project?.health.workers.map((worker) => worker.worker)).toEqual(["api"]);
     expect(doctorExitCode(narrowed)).toBe(0);
   });

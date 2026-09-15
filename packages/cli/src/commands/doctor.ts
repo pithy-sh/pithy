@@ -43,6 +43,7 @@ import {
   describeEnvironmentInheritance,
   type EnvironmentInheritanceCheck,
 } from "../doctor/environmentInheritance";
+import type { EnvironmentMigrations, RemoteSkip } from "../doctor/environmentMigrations";
 import { checkEnvironments, describeEnvironmentDrift, type EnvironmentsCheck } from "../doctor/environments";
 import {
   buildProjectHealth,
@@ -82,7 +83,14 @@ import { readState, setNotifierFlag, stateDir, stateFilePath, writeState } from 
 import { classifyBump } from "../notifier/version";
 import { readRcFile } from "../platform/rc";
 import { detectShell, type ShellInfo } from "../platform/shell";
-import { loadProject, type ProjectConfig, projectCloudflareAccount } from "../project/config";
+import { composeFor } from "../project/composeFor";
+import {
+  loadProject,
+  loadProjectEnvironments,
+  type ProjectConfig,
+  projectCloudflareAccount,
+  type WorkerConfig,
+} from "../project/config";
 import { checkOrigins, describeOriginDrift, type OriginsCheck } from "../project/domains";
 import { checkExtensions, describeExtension, type ExtensionsCheck } from "../project/extensions";
 import { type ResolvedWorker, resolveWorkers } from "../project/workerScope";
@@ -603,11 +611,19 @@ export interface DoctorReportOptions {
   installedCapabilities?: (projectDir: string) => Promise<{ name: string; version: string }[]>;
   /** Project-config loader seam; defaults to {@link loadProject} (a `NotFoundError` marks "outside a project"). */
   loadProject?: (projectDir: string) => Promise<ProjectConfig>;
-  /** Worker-set resolver seam; defaults to {@link resolveWorkers}. The health block reports one entry per Worker. */
-  resolveWorkers?: (options: { projectDir: string; worker?: string }) => Promise<ResolvedWorker[]>;
+  /**
+   * Worker-set resolver seam; defaults to {@link resolveWorkers}. The health block reports one entry per
+   * Worker. It is also how each Worker is composed for each environment the migration check answers: called
+   * inside `composeFor` with that environment's loader, narrowed to the one Worker (#586).
+   */
+  resolveWorkers?: (options: {
+    projectDir: string;
+    worker?: string;
+    loadConfig?: (workerDir: string) => Promise<WorkerConfig>;
+  }) => Promise<ResolvedWorker[]>;
   /** Health plan-builder seam, forwarded to {@link buildProjectHealth}. */
   buildPlan?: (options: BuildReconcilePlanOptions) => Promise<ReconcilePlan>;
-  /** Migration-ledger seam for the health plan. */
+  /** Migration-ledger seam, called once per Worker per environment the migration check answers. */
   readLedger?: BuildReconcilePlanOptions["readLedger"];
   /**
    * Capability-resolution seam, forwarded to {@link buildProjectHealth}. Defaults to the real check.
@@ -899,6 +915,23 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   const notifierEnabled = !disabledByEnv && !disabledByState;
   const notifierDisabledBy = disabledByEnv ? "env" : disabledByState ? "state" : null;
 
+  // Credentials are checked whether or not a project loaded: `.dev.vars` is read from the directory, and
+  // "are my credentials right" is a question worth answering before `pithy init` as much as after. Asked
+  // before the project block, because the migration check reads each deployed environment's ledger only
+  // when this run can reach an account — and it has to decide that from the same resolution the
+  // `Cloudflare:` line reports, or the two halves of one report disagree about the machine (#586).
+  const cloudflare = await probed<CloudflareAccess>(probeCloudflare, {
+    state: "probe_failed",
+    missing: [],
+    tokenStatus: null,
+    credentialSplit: null,
+  });
+  const remoteSkip: RemoteSkip | null = offline
+    ? "offline"
+    : cloudflare.state === "unconfigured"
+      ? "no-credentials"
+      : null;
+
   // Project block — omitted outside a Pithy project.
   let project: ProjectStatus | null = null;
   let projectLoadError: string | null = null;
@@ -921,8 +954,17 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
   // is reported as a broken project rather than mistaken for "outside a project".
   let inProject = false;
   try {
-    await load(options.projectDir);
+    const rootConfig = await load(options.projectDir);
     inProject = true;
+    // The deployed environments the migration check answers, beside `dev`. A declaration that will not
+    // parse answers none of them rather than a default the project did not write: `Environments:` reports
+    // the declaration, and a count under a name nobody declared is the #586 defect in another spelling.
+    let declared: readonly string[];
+    try {
+      declared = loadProjectEnvironments(rootConfig);
+    } catch {
+      declared = [];
+    }
     const installedCaps = await listCapabilities(options.projectDir);
     const capabilities: CapabilityStatus[] = [];
     for (const cap of installedCaps) {
@@ -944,11 +986,23 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     extensions = checkExtensions(workers.map((worker) => ({ name: worker.name, capabilities: worker.capabilities })));
     const health = await buildProjectHealth({
       projectDir: options.projectDir,
-      env: "dev",
+      environments: declared,
+      remoteSkip,
       // The same account the `Cloudflare:` block above reports on, resolved once at the top of this
       // function. A doctor that counted pending migrations against one account and named another in the
       // line beside it would be two reports in one (#234).
       account,
+      // Each Worker composed for each environment through the same resolver the set above came from, so a
+      // test's resolver answers both — narrowed to the one Worker, so a sibling whose config throws for an
+      // environment costs that sibling's line and not this one's.
+      composeWorker: (worker, environment) =>
+        composeFor(environment, async (loadConfig) => {
+          const found = await resolve({ projectDir: options.projectDir, worker: worker.name, loadConfig });
+          // By directory, never the first one found: another Worker's composition is not this one's.
+          const composed = found.find((candidate) => candidate.dir === worker.dir);
+          if (composed === undefined) throw new ValidationError({ message: `${worker.name} did not resolve.` });
+          return composed.capabilities;
+        }),
       workers: workers.map((worker) => ({
         name: worker.name,
         dir: worker.dir,
@@ -976,17 +1030,12 @@ export async function buildDoctorReport(options: DoctorReportOptions): Promise<D
     }
   }
 
-  // Credentials are checked whether or not a project loaded: `.dev.vars` is read from the directory, and
-  // "are my credentials right" is a question worth answering before `pithy init` as much as after.
   // Every probe below is guarded, and each failure lands on that check's own value (#371). None of them
-  // is load-bearing: they are eleven independent questions about one project, and there is no order in
-  // which one's answer is a precondition for another's.
-  const cloudflare = await probed<CloudflareAccess>(probeCloudflare, {
-    state: "probe_failed",
-    missing: [],
-    tokenStatus: null,
-    credentialSplit: null,
-  });
+  // is load-bearing: they are independent questions about one project, and there is no order in which one's
+  // answer is a precondition for another's. The credentials probe is the exception in placement only — it
+  // runs above the project block, because the migration check decides from it whether a deployed read is
+  // attempted — and it is load-bearing for nothing: an unknown answer attempts the read and reports it.
+  //
   // The name is different, and it is asked only of a project whose root config actually loaded. It is not a
   // question about the directory, it is a question about a config: "is the `name` in this file still the one
   // every provisioned resource was named under". With no readable config there is no name and no question,
@@ -1314,38 +1363,110 @@ function healthLine(label: string, content: string): string {
   return `${HEALTH_INDENT}${label.padEnd(HEALTH_LABEL)}${content}`;
 }
 
+/** One sentence of the `migrations` check: its first line, and the lines that continue it. */
+interface MigrationSentence {
+  first: string;
+  cont: string[];
+}
+
 /**
- * The `migrations` check's lines, in every state its ledger can be in (#371).
+ * One environment's `migrations` sentences, each led by the environment's name (#586) — unindented; the
+ * caller lays them out under the check's label.
  *
- * **A database that could not be read gets its own sentence, and it is not "0 pending".** That was the
- * fault: an unreachable D1 contributed nothing to the sum, so the line said the schema was level with the
- * project when nothing had compared them. The unread databases are named — the only actionable fact — and
- * nothing derived from what the read threw appears, because a D1 failure's own words name an id or a query.
+ * **Every sentence is about the environment that leads it, and every command in it names that one.** The
+ * line used to be one environment's answer with no name on it, read under whatever the reader believed
+ * they had asked about. So the name leads every first line, and a continuation line belongs to the
+ * environment above it.
+ *
+ * **A database that could not be read gets its own sentence, and it is not "0 pending"** (#371). The
+ * unread databases are named — the only actionable fact — and nothing derived from what the read threw
+ * appears, because a D1 failure's own words name an id or a query.
  */
-function migrationLines(health: MigrationHealth): string[] {
-  const lines: string[] = [];
-  const ledger = health.ledger;
+function environmentMigrationLines(entry: EnvironmentMigrations): MigrationSentence[] {
+  const env = entry.env;
+  switch (entry.state) {
+    case "not-composed":
+      return [{ first: `${env}: couldn't be checked — pithy.config.ts does not compose for ${env}`, cont: [] }];
+    case "not-provisioned": {
+      const named = entry.unprovisioned.map((target) => `${target.binding} (${target.database})`).join(", ");
+      return [{ first: `${env}: ${named} not provisioned — run: pithy provision --env ${env}`, cont: [] }];
+    }
+    case "skipped":
+      return [
+        {
+          first:
+            entry.reason === "offline"
+              ? `${env}: skipped — offline, so no database was read`
+              : `${env}: skipped — no Cloudflare credentials, so no database was read`,
+          cont: [],
+        },
+      ];
+    case "checked":
+      break;
+    default:
+      entry satisfies never;
+      return [];
+  }
+  const ledger = entry.ledger;
   if (ledger.state === "unavailable") {
-    lines.push(healthLine("migrations", "couldn't be checked — no database in scope answered"));
-    lines.push(`${HEALTH_CONT}The schema may be behind or ahead; this run established neither.`);
-    return lines;
+    return [
+      {
+        first: `${env}: couldn't be checked — no database in scope answered`,
+        cont: ["The schema may be behind or ahead; this run established neither."],
+      },
+    ];
   }
   const counted = ledger.state === "read" ? ledger : ledger.counted;
+  const sentences: MigrationSentence[] = [];
   if (counted.pending > 0) {
-    lines.push(healthLine("migrations", `${counted.pending} pending — run: pithy migrate --env ${health.env}`));
+    sentences.push({ first: `${env}: ${counted.pending} pending — run: pithy migrate --env ${env}`, cont: [] });
   }
   // The other direction, and the one nothing reported until #282. It is not "N pending" with a
   // different number: nothing is pending, migrate refuses outright, and the remedy is neither `pithy
   // migrate` nor `pithy upgrade`. So it gets its own sentence, written once in `migrations/ledger.ts`
   // and printed here exactly as `pithy migrate` refuses with it — two commands, one wording.
   if (counted.undeclared.length > 0) {
-    lines.push(healthLine(lines.length === 0 ? "migrations" : "", describeUndeclared(counted.undeclared)));
-    lines.push(`${HEALTH_CONT}${undeclaredRemedy(health.env)}`);
+    sentences.push({ first: `${env}: ${describeUndeclared(counted.undeclared)}`, cont: [undeclaredRemedy(env)] });
   }
   if (ledger.state === "partial") {
-    const named = ledger.unreadable.map((entry) => `${entry.binding} (${entry.database})`).join(", ");
-    lines.push(healthLine(lines.length === 0 ? "migrations" : "", `couldn't read ${named}`));
-    lines.push(`${HEALTH_CONT}Every number above counts the databases that answered, and not those.`);
+    const named = ledger.unreadable.map((target) => `${target.binding} (${target.database})`).join(", ");
+    sentences.push({
+      first: `${env}: couldn't read ${named}`,
+      cont: ["Every number above counts the databases that answered, and not those."],
+    });
+  }
+  if (sentences.length === 0) sentences.push({ first: `${env}: none pending, none undeclared ✓`, cont: [] });
+  return sentences;
+}
+
+/** Whether an environment's answer is a whole read with nothing on either side of it. */
+function migrationsLevel(entry: EnvironmentMigrations): boolean {
+  return (
+    entry.state === "checked" &&
+    entry.ledger.state === "read" &&
+    entry.ledger.pending === 0 &&
+    entry.ledger.undeclared.length === 0
+  );
+}
+
+/** Whether a Worker has a deployed environment's migrations to report on a Worker every check passed. */
+function hasMigrationNotes(worker: WorkerChecks): boolean {
+  return worker.migrations.environments.some((entry) => !migrationsLevel(entry));
+}
+
+/**
+ * The `migrations` check's lines: every environment, `dev` first, each under its own name (#586). The
+ * label sits on the first line only; every other environment aligns beneath it, and a sentence's
+ * continuation sits two columns further in.
+ */
+function migrationLines(health: MigrationHealth): string[] {
+  const lines: string[] = [];
+  for (const entry of health.environments) {
+    for (const sentence of environmentMigrationLines(entry)) {
+      lines.push(healthLine(lines.length === 0 ? "migrations" : "", sentence.first));
+      // Two further columns in, so a continuation reads as its environment's and not as the next one's.
+      for (const text of sentence.cont) lines.push(`${HEALTH_CONT}  ${text}`);
+    }
   }
   return lines;
 }
@@ -1377,7 +1498,10 @@ function projectHasGreenFindings(health: ProjectHealth): boolean {
   // (no command rewrites that stanza).
   const scope = health.bindingScope;
   if (scope.split.length > 0 || scope.divergent.length > 0 || scope.partial) return true;
-  return health.workers.some((worker) => worker.state !== "unavailable" && hasBindingNotes(worker));
+  // A deployed environment's migrations are the same kind of finding: reported, never gating (#586).
+  return health.workers.some(
+    (worker) => worker.state !== "unavailable" && (hasBindingNotes(worker) || hasMigrationNotes(worker)),
+  );
 }
 
 /** Whether a Worker's checks carry a declined binding or a generated value the kit would now write differently. */
@@ -1551,11 +1675,9 @@ function workerHealthLines(health: WorkerChecks): string[] {
   }
   lines.push(...bindingLines);
 
-  if (health.migrations.ok) {
-    lines.push(healthLine("migrations", "none pending, none undeclared ✓"));
-  } else {
-    lines.push(...migrationLines(health.migrations));
-  }
+  // Every environment, whether or not the check passed: `ok` is `dev`'s alone, and a deployed environment
+  // behind is reported rather than gated, so it has to print on a passing Worker too (#586).
+  lines.push(...migrationLines(health.migrations));
 
   if (health.entitlements.ok) {
     lines.push(healthLine("entitlements", "no gated route without a provider ✓"));
@@ -2056,7 +2178,9 @@ function healthBlock(health: ProjectHealth): string {
     // a `healthy ✓` here is how a deliberate absence becomes indistinguishable from a forgotten one,
     // which is the collapse #440 exists to remove. A generated value the kit would now write differently
     // is the same collapse on the value rather than the absence (#499), so it holds the line open too.
-    if (worker.ok && !hasBindingNotes(worker)) {
+    // And a Worker with an environment whose migrations are not level is never collapsed either: that
+    // environment's line is the only place its state is said, and it does not fail `ok` (#586).
+    if (worker.ok && !hasBindingNotes(worker) && !hasMigrationNotes(worker)) {
       lines.push(`  ${worker.worker}: healthy ✓`);
       continue;
     }
