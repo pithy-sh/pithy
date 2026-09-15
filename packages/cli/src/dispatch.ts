@@ -41,7 +41,7 @@ export interface UsageTarget {
 }
 
 /** citty's lazy subcommand value: a definition, a promise of one, or a thunk returning either. */
-type SubCommand = CommandDef | Promise<CommandDef> | (() => CommandDef | Promise<CommandDef>);
+export type SubCommand = CommandDef | Promise<CommandDef> | (() => CommandDef | Promise<CommandDef>);
 
 /** Resolve one of citty's three subcommand spellings to a definition. */
 async function resolve(value: SubCommand): Promise<CommandDef> {
@@ -95,7 +95,10 @@ export function ownNamesOnly(cmd: CommandDef): CommandDef {
  * is tried first and the alias scan only runs when it misses — which is the miss path already, and the
  * path that ends in "unknown command" either way.
  */
-async function findSubCommand(subCommands: Record<string, SubCommand>, name: string): Promise<CommandDef | undefined> {
+export async function findSubCommand(
+  subCommands: Record<string, SubCommand>,
+  name: string,
+): Promise<CommandDef | undefined> {
   const direct = Object.hasOwn(subCommands, name) ? subCommands[name] : undefined;
   if (direct !== undefined) return resolve(direct);
   for (const value of Object.values(subCommands)) {
@@ -117,9 +120,10 @@ function actsOnItsOwn(cmd: CommandDef): boolean {
  * belongs to citty.
  *
  * Flags are skipped rather than resolved: only commands that dispatch are walked into, and a dispatching
- * command in this tree declares no `args` of its own, so a leading `-` is a builtin (`--help`,
- * `--version`) or a flag for a group that has none. The walk stops the moment a token resolves to
- * nothing, so an unknown command reaches citty exactly as before.
+ * command in this tree declares no `args` of its own, so the only flag that reaches this walk is one every
+ * command takes (`--help`). A flag a group does not declare never gets here — `bin.ts` refuses it first
+ * (`declaredFlags.ts`), so `pithy token --json` is a mistake named, not a question answered. The walk
+ * stops the moment a token resolves to nothing, so an unknown command reaches citty exactly as before.
  */
 export async function usageTarget(root: CommandDef, argv: readonly string[]): Promise<UsageTarget | null> {
   let cmd = root;

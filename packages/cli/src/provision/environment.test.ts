@@ -835,8 +835,8 @@ describe("provisionEnvironment, for a declared environment", () => {
       const { provisioners } = fakeProvisioners();
       const saved: { binding: string; name: string }[][] = [];
       const record = {
-        load: async () => [],
-        save: async (resources: { binding: string; name: string }[]) => void saved.push(resources),
+        load: async () => ({ resources: [], scripts: [] }),
+        save: async ({ resources }: { resources: { binding: string; name: string }[] }) => void saved.push(resources),
       };
 
       // A feature names nothing `global` in the first place — `featureScope` takes the naming and ignores

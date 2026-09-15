@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import type { WorkflowHostTemplate } from "@pithy-sh/core/src/workflow/host";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { configFromArgs, TOP_LEVEL_STANZA_ARG } from "../project/effectiveConfig";
+import { configFromArgs, NO_PROVISION_ARG, TOP_LEVEL_STANZA_ARG } from "../project/effectiveConfig";
 import { DEPLOY_STAMP_VAR, deployStamp } from "../provision/deployStamp";
 import { narrate, type ProgressEvent } from "../terminal/progress";
 import { deployHostWorker, type HostDeployOptions } from "./hostDeploy";
@@ -298,7 +298,13 @@ describe("the stanza a kit Worker is published under", () => {
     await run({ vars: null, processEnv: { CLOUDFLARE_ENV: "prod" } });
     // The literal argv, not a re-derivation of it. `--env=` is wrangler's own spelling for the top-level
     // stanza — it names that form in the warning it prints when a command specifies no environment.
-    expect(deploys[0]?.args).toEqual(["deploy", "--config", join(dir, ".wrangler.prod.json"), "--env="]);
+    expect(deploys[0]?.args).toEqual([
+      "deploy",
+      "--config",
+      join(dir, ".wrangler.prod.json"),
+      "--env=",
+      "--experimental-provision=false",
+    ]);
     expect(TOP_LEVEL_STANZA_ARG).toBe("--env=");
   });
 
@@ -327,5 +333,27 @@ describe("the stanza a kit Worker is published under", () => {
     // there, and a deploy nothing holds is the shape every producer of this class has arrived in.
     await expect(run({ vars: null, config: { ...config(), name: "" } })).rejects.toThrowError(/names no Worker/);
     expect(await readdir(dir)).toEqual([]);
+  });
+});
+
+/**
+ * **`pithy deploy --kit` creates nothing, and a bucket name is not an id anything can check (#589).**
+ *
+ * Media and storage derive their bucket from the project and nothing confirms it exists, so under
+ * wrangler's default a kit deploy against an environment that never ran `pithy media provision` *made
+ * the bucket*. For R2 the name is the id: no offline read of this config can tell a real bucket from one
+ * wrangler is about to create. What stops it is the argv, so that is what is asserted — on the config a
+ * provisioner hands over, bucket and all.
+ */
+describe("a kit Worker's deploy creates no resource", () => {
+  test("a named bucket ships on an argv that turns wrangler's provisioning off", async () => {
+    const withBucket = config({
+      name: "acme-prod-media",
+      r2_buckets: [{ binding: "MEDIA_BUCKET", bucket_name: "acme-prod-media" }],
+    });
+    await run({ vars: null, config: withBucket });
+    expect(deploys[0]?.config).toMatchObject({ r2_buckets: [{ bucket_name: "acme-prod-media" }] });
+    expect(deploys[0]?.args).toContain("--experimental-provision=false");
+    expect(NO_PROVISION_ARG).toBe("--experimental-provision=false");
   });
 });

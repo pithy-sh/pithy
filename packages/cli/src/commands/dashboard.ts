@@ -30,9 +30,10 @@ import type { DashboardClient, DeviceAuthorization } from "../dashboard/contract
 import { defaultGrant, type GrantableScope, grantableScopes } from "../dashboard/grant";
 import { type ConnectionRegistry, openConnectionRegistry } from "../dashboard/registry";
 import { describeConnectTarget, resolveConnectTarget } from "../dashboard/resolveTarget";
+import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { ENV_ARG, requireEnvironment } from "../project/environment";
-import { projectCapabilities, resolveWorkers } from "../project/workerScope";
+import { projectCapabilities } from "../project/workerScope";
 import { isProductionEnv } from "../seed/safety";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 import { dim } from "../terminal/style";
@@ -259,7 +260,7 @@ const authorize = (client: DashboardClient): Promise<string> => authorizeDashboa
  * `openConnectionRegistry`'s, stated once, ahead of the fan-out.
  */
 async function openAudit(projectDir: string, env: string, account: CloudflareAccountSelection | null) {
-  const capabilities = await resolveWorkers({ projectDir }).then(projectCapabilities).catch(NO_CAPABILITIES);
+  const capabilities = await resolveWorkersFor(env, { projectDir }).then(projectCapabilities).catch(NO_CAPABILITIES);
   const resolved = resolveCloudflare({ account });
   const accountId = resolved.mismatch ? "" : (resolved.vars.CLOUDFLARE_ACCOUNT_ID ?? "");
   const apiToken = resolved.mismatch ? "" : (resolved.vars.CLOUDFLARE_API_TOKEN ?? "");

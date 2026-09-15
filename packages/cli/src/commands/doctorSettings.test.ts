@@ -156,7 +156,7 @@ describe("the probe itself could not run", () => {
     // it after a config that would not import would conclude this project has no settings questions.
     const built = await buildDoctorReport(
       harness.healthyOptions({
-        resolveWorkers: async () => {
+        resolveWorkersFor: async () => {
           throw new ConflictError({ message: "apps/api/pithy.config.ts would not import." });
         },
       }),

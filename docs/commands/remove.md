@@ -17,7 +17,7 @@ pithy remove <capability> [--worker <name>] [--drop [--env <env>] [--destroy-ret
 | `<capability>` | positional | — | The capability name, e.g. `auth`. Required |
 | `--worker <name>` | string | — | Which Worker to unwire it from (`apps/<name>`). Optional in a single-Worker project |
 | `--drop` | boolean | `false` | Also roll back the capability's migrations, dropping its tables |
-| `--env <env>` | string | `dev` | With `--drop`, the environment whose tables to drop. `dev`, `staging`, `prod`, or a custom name |
+| `--env <env>` | string | `dev` | With `--drop`, the environment whose tables to drop, and the environment the Worker's `pithy.config.ts` is composed for — so the migrations reversed are the ones that environment declares. `dev`, `staging`, `prod`, or a custom name |
 | `--destroy-retained <n>` | string | — | With `--drop`. **DESTRUCTIVE.** Let the drop destroy rows in retained tables. Must equal the row count the refusal printed |
 | `--json` | boolean | `false` | **Not supported.** Passing it fails before anything is read or changed |
 

@@ -44,15 +44,14 @@ import type { SendWorkflowInstances } from "./instances";
 /**
  * The command that writes every provisioned value here. Stated once so nine action lines cannot drift.
  *
- * No `--env`: `pithy email provision` spans every declared environment and takes no such flag, and citty
- * ignores one it does not declare — so a remedy naming it runs every environment while the operator believes
- * they named one (#596).
+ * No `--env`: it spans every declared environment in one run and declares no such flag, and a flag a
+ * command does not declare is refused (#594) — so a remedy naming one is a remedy that cannot be followed.
  */
 const PROVISION = "pithy email provision";
 
 /**
  * The command that writes both host secrets below. No `--env`, for the same reason: `pithy secrets provision`
- * provisions every declared environment, production included, whatever else is typed after it.
+ * provisions every declared environment in one run and declares no such flag.
  */
 const SECRETS_PROVISION = "pithy secrets provision";
 

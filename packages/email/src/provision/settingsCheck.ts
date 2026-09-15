@@ -213,8 +213,8 @@ async function accountFindings(
       setting: "EMAIL_SUPPRESSIONS",
       environment: null,
       problem: `No D1 database named ${suppressions} exists on this account.`,
-      // One database for the whole project, and one run creates it. No `--env`: the command spans every
-      // declared environment and takes no such flag (#596).
+      // One database for the whole project, and one run creates it. `pithy email provision` spans every
+      // declared environment and takes no `--env`, so naming one here was a flag the CLI refuses (#594).
       action: "Run `pithy email provision`. Nothing is suppressed until it exists.",
     });
   }

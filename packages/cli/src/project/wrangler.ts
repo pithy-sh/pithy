@@ -7,6 +7,7 @@ import { ConflictError, InternalError, NotFoundError } from "@pithy-sh/core/src/
 import { parse } from "comment-json";
 import { cloudflareChildEnv, credentialedChildEnv } from "../cloudflare/childEnv";
 import type { CloudflareAccountSelection, CloudflareCredentials } from "../cloudflare/config";
+import { assertCreatesNoResources } from "./effectiveConfig";
 import { writeJsonc } from "./jsonc";
 import { detectPackageManager, execArgs } from "./packageManager";
 import { readOptionalFile } from "./readOptionalFile";
@@ -169,10 +170,29 @@ function wranglerChildEnv(account: WranglerAccount): Record<string, string> {
   return cloudflareChildEnv({ account });
 }
 
+/**
+ * **And nothing it spawns creates a Cloudflare resource (#589).** wrangler provisions any binding it cannot
+ * resolve unless the argv turns that off, so every argv is held to {@link assertCreatesNoResources} here,
+ * first — before the runner is resolved, the credentials are read, or a child exists.
+ *
+ * Here, rather than at the callers that deploy, because a rule held by callers is only as wide as the
+ * sweep that finds them. `ci/deployCallSites.test.ts` counted `runWrangler(` as text, and a review planted
+ * `const ship = runWrangler; await ship(argv)` and `runWrangler.call(undefined, argv, …)` beside a gated
+ * call, on an argv with the switch sliced off: both left it green. Under any name, a call is a call to
+ * this function.
+ *
+ * Every argv, not every deploy. `--experimental-provision` is a global wrangler option — every command
+ * accepts it, and every command's experimental flags read provisioning from it with a default of on — so
+ * there is no set of provisioning commands to keep current and no argv shape to recognize a deploy by.
+ * A spawn that is not a deploy carries the switch as a no-op; wrangler 4.125.0 `types` exits 0 with it.
+ *
+ * `bin` is not an exemption. It is how tests reach a stand-in, and a stand-in is held to the same rule.
+ */
 export async function runWrangler(
   args: string[],
   options: WranglerOptions,
 ): Promise<{ stdout: string; stderr: string }> {
+  assertCreatesNoResources(args);
   const runner = options.bin
     ? { command: options.bin, args }
     : execArgs(await detectPackageManager(options.cwd ?? process.cwd()), "wrangler", args);

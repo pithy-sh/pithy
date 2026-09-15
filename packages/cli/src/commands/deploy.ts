@@ -94,16 +94,17 @@ export function deploySelection(args: { apps: boolean; kit: boolean }): { apps: 
  *
  * **`--kit`, or `--force`, with no `--env`.** A kit Worker is deployed per environment, always: its
  * configuration is stamped into its vars, so `<project>-staging-email` and `<project>-prod-email` are
- * genuinely separate Workers and there is no top-level stanza to fall back on. A bare `pithy deploy`
- * still runs — it ships `apps/` and says the kit half needed an environment — because that is the
- * command's old behavior and it must keep working. Asking for the kit half by name and getting silence
- * is the thing that must not.
+ * genuinely separate Workers and there is no top-level stanza to fall back on. A bare `pithy deploy` is
+ * not refused *here* — its kit half says it needed an environment — because asking for both halves and
+ * getting one is a different fact from asking for the kit half by name and getting silence, which is the
+ * thing that must not happen. It is refused elsewhere, by `assertEnvironmentProvisioned`, whenever the
+ * top-level stanza has a D1 or KV binding with no id (#589) — the shape `pithy add` writes one in.
  *
  * **`--kit`, or `--force`, with `--env dev`.** There is no deployed kit Worker in `dev`: it runs
  * locally under `pithy dev`, and `pithy <capability> provision` fans out over the managed environments
  * only. So a run narrowed to the kit half in `dev` has nothing whatever to do, and `--force` has no
- * deploy to force. `pithy deploy --env dev` itself still runs — it ships `apps/` and says the kit's
- * Workers are local, the same trade the bare deploy makes.
+ * deploy to force. `pithy deploy --env dev` is not refused here — its kit half says the Workers are local,
+ * the same trade the bare deploy makes — and meets the same id-less binding refusal the bare deploy does.
  *
  * **Every one of these is asked of {@link deploySelection}, not of the raw flags.** `--apps --kit` is
  * the same selection as naming neither, and it was the one combination that disagreed with its own
@@ -185,9 +186,15 @@ export default defineCommand({
       // publish — a deploy that authenticates against the wrong tenant succeeds, and says nothing.
       // Refuse before anything is built or spawned. A binding with no id fails *inside* wrangler, on a
       // field the adopter never wrote, after `init`, `add`, `migrate` and `dev` have all succeeded —
-      // and with no hint that provisioning was a step they had missed (#240). Only for a named `--env`:
-      // a bare deploy ships the top-level stanza, whose ids `pithy dev` resolves from Miniflare.
-      if (gateApps && env) await assertEnvironmentProvisioned(projectDir, env);
+      // and with no hint that provisioning was a step they had missed (#240).
+      //
+      // **For every deploy of `apps/`, a bare one included (#589).** This read `gateApps && env`, on the
+      // reasoning that a bare deploy ships the top-level stanza "whose ids `pithy dev` resolves from
+      // Miniflare". That is exactly why it must be read: those are `database_name`s with no id, the shape
+      // wrangler's default provisioning *created* databases from. The same read skipped `--env dev`, which
+      // looked for an `env.dev` no project may declare. The deploy's argv now creates nothing either way;
+      // this is what says so in a sentence instead of in wrangler's stderr.
+      if (selection.apps) await assertEnvironmentProvisioned(projectDir, env);
       // And the other half of "is this environment ready to be real": does its config name every origin
       // it will answer on (#253). Refused here for the same reason the binding check is — deploy knows
       // the environment and the config, and this is the last moment before a staging Worker starts

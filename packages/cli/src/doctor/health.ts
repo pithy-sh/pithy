@@ -2,22 +2,30 @@
 // SPDX-License-Identifier: MIT
 
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { type AvailableManifests, availableManifests, type ManifestFault } from "../capabilities/manifests";
 import type { MissingPrerequisite } from "../capabilities/prerequisites";
 import {
   type BindingDeclines,
   type BuildReconcilePlanOptions,
   buildReconcilePlan,
+  type CapabilityReconcile,
   type EntitlementGap,
   type GeneratedValues,
   type ReadLedger,
   type ReconcilePlan,
 } from "../capabilities/reconcile";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
-import type { ProjectLedger, readProjectLedger } from "../migrations/run";
-import type { WorkerConfig } from "../project/config";
 import { type BindingScopeHealth, bindingScopeHealth } from "./bindingScope";
 import { type CapabilityReachHealth, type ComposedWorker, capabilityReachHealth } from "./capabilityReach";
+import {
+  type ComposeWorker,
+  composeWorkerFor,
+  type EnvironmentMigrations,
+  environmentMigrations,
+  type RemoteSkip,
+  type WorkerComposition,
+} from "./environmentMigrations";
 
 /**
  * The read-only project-health engine behind `pithy doctor`'s `Project health` block — the *same*
@@ -77,26 +85,35 @@ export interface BindingHealth {
 }
 
 /**
- * The `migrations` check: the target environment's ledger against what this Worker declares — **both
- * directions**.
+ * The `migrations` check: **every environment's** ledger against what this Worker declares for that
+ * environment — both directions, one answer per environment (#586).
  *
  * `pending` alone passed a database `pithy migrate` refused to touch. An extra applied migration is
  * invisible to declared-minus-applied: nothing is missing, so nothing is pending, so the check was
  * green while the migrator read the same ledger as a corrupted chain and applied nothing (#282). Each
  * half fails the check on its own, because either one means the schema is not where the project says.
+ *
+ * It was one environment, and it was `dev`'s, whatever the reader believed they had asked about (#586).
+ * Each environment is now its own {@link EnvironmentMigrations}, composed for itself and read for itself.
  */
 export interface MigrationHealth {
+  /**
+   * `dev`'s answer alone: checked, every database read, nothing pending and nothing undeclared.
+   *
+   * **A deployed environment is reported and never fails the exit.** Its read reaches an account, so it
+   * is skipped offline and without credentials, and an answer that exists on one machine and not another
+   * cannot gate CI. Its schema trailing the project is also the ordinary state between a merge and the
+   * `pithy migrate --env` a deploy runs — a red over it would be a red on every project mid-release.
+   * `dev` is the local store, established on this machine from this checkout, which is the standard every
+   * exit-gating finding in `pithy doctor` meets.
+   */
   ok: boolean;
   /**
-   * The environment's ledger, exactly as {@link readProjectLedger} answered it — the counts behind their
-   * discriminant rather than flattened onto this object (#371).
-   *
-   * Flattening was the fault. A database that could not be read contributed nothing to `pending`, so a
-   * project whose D1 was unreachable read as `0 pending` — the same two fields a healthy project has, and
-   * a green line about a schema nobody had compared.
+   * One answer per environment, `dev` first, then the declared ones in declaration order. Each carries its
+   * ledger behind its own discriminant, never flattened (#371): a database that could not be read is not
+   * `0 pending`.
    */
-  ledger: ProjectLedger;
-  env: string;
+  environments: EnvironmentMigrations[];
 }
 
 /**
@@ -235,39 +252,48 @@ export type ReadCapabilityReach = (
 /** The shared engine, exported so a test can assert doctor and upgrade use one implementation. */
 export const defaultBuildPlan: BuildPlan = buildReconcilePlan;
 
-/** The minimum a health check needs to know about a Worker — what `resolveWorkers` already returns. */
+/**
+ * The minimum a health check needs to know about a Worker: which one, and where. **Never what it composes** —
+ * every check reads the Worker as composed for its own environment, through
+ * {@link ProjectHealthOptions.composeWorker} (#586).
+ */
 export interface HealthWorker {
   /** The Worker's name. */
   name: string;
   /** The Worker's directory (`apps/<name>/`) — the config and wrangler stanzas the plan reads. */
   dir: string;
-  /** That Worker's composed capabilities, forwarded to the plan for its migration count. */
-  capabilities?: Capability[];
-  /**
-   * That Worker's own `pithy.config.ts`, as `resolveWorkers` already returns it. The plan reads
-   * `declinedBindings` off it — the whole object, because the reader also refuses a key that is nearly
-   * that one and can only see one if it is handed what the adopter wrote. Optional because the
-   * resolver is a test seam: a double with no config is a Worker that declines nothing.
-   */
-  config?: WorkerConfig;
 }
 
 /** Options for {@link buildProjectHealth}. */
 export interface ProjectHealthOptions {
   /** The project root — where the capability manifests resolve from. */
   projectDir: string;
-  /** The environment the migration check is computed for. */
-  env: string;
+  /**
+   * The deployed environments the root `pithy.config.ts` declares, in declaration order. The migration
+   * check answers each of them and `dev` besides, each composed and read for itself (#586).
+   */
+  environments: readonly string[];
+  /**
+   * Why a deployed environment's ledger will not be read this run — `offline`, `no-credentials` — or `null`
+   * when it will. `doctor` decides it from the same resolution its `Cloudflare:` block reports on.
+   */
+  remoteSkip: RemoteSkip | null;
   /**
    * The Cloudflare account this project belongs to, or `null` when it names none. `doctor` already
-   * resolves it for the `Cloudflare:` block; the pending-migration count inside each plan is the read
-   * that needs it, and it was reading whichever credentials file the machine defaulted to (#234).
+   * resolves it for the `Cloudflare:` block; the migration reads are what need it, and they were reading
+   * whichever credentials file the machine defaulted to (#234).
    */
   account: CloudflareAccountSelection | null;
   /** The Workers to check, in report order. Doctor resolves them once and passes them in. */
   workers: HealthWorker[];
   /** Test seam: read the migration ledger without a real Miniflare/D1 run. */
   readLedger?: ReadLedger;
+  /**
+   * Composition seam: one Worker as evaluated for one environment. Defaults to that Worker's own config
+   * loaded through `composeFor` — see `doctor/environmentMigrations.ts`. Called once per Worker per
+   * environment, and that one composition answers both the environment's migrations and its plan.
+   */
+  composeWorker?: ComposeWorker;
   /** Test seam: substitute the plan builder. Defaults to the shared reconcile engine. */
   buildPlan?: BuildPlan;
   /** Test seam: substitute the manifest scan. Defaults to the real `node_modules/@pithy-sh` read. */
@@ -292,8 +318,88 @@ function groupMissingBindings(plan: ReconcilePlan): BindingHealth["missing"] {
   return [...byKey.values()];
 }
 
-/** Project one Worker's reconcile plan into its three health checks. */
-function healthFromPlan(worker: string, plan: ReconcilePlan): WorkerHealth {
+/**
+ * **One Worker's plan, with every per-environment part of it taken from that environment's own plan.**
+ *
+ * A plan reports, for every stanza in `wrangler.jsonc`, the bindings its composition needs there and the
+ * stanza lacks. Which bindings a stanza needs is its composition's to say, so a declared environment's
+ * stanza is taken from the plan built for that environment and from no other: `dev`'s plan saying what
+ * `prod` lacks is `dev`'s composition answering for `prod` (#586). A stanza no environment declares has no
+ * composition of its own, so `dev`'s answer stands for it, and `Environments:` reports the stanza. A
+ * declared environment with no plan — its config did not compose — contributes nothing, and `dev`'s answer
+ * does not stand in for it; `Environment configs:` fails the exit on that config.
+ *
+ * Three findings are properties of a composition rather than of a stanza, and each environment's is
+ * added to `dev`'s: a Durable Object class any environment binds is an export the one entry needs, an option
+ * key missing from a capability only `prod` composes is still missing from the one registration, and a
+ * prerequisite `prod`'s composition lacks is a Worker that does not start in `prod`.
+ *
+ * The rest — declines, generated values, entitlements, ejected capabilities — is `dev`'s plan, from `dev`'s
+ * composition, and is what {@link buildProjectHealth} says it is.
+ */
+function mergeEnvironmentPlans(
+  local: ReconcilePlan,
+  deployed: ReadonlyMap<string, ReconcilePlan | null>,
+): ReconcilePlan {
+  const byName = new Map<string, CapabilityReconcile>();
+  for (const cap of local.perCapability) {
+    byName.set(cap.name, {
+      ...cap,
+      missingBindings: cap.missingBindings.filter((binding) => !deployed.has(binding.env)),
+    });
+  }
+  const prerequisites = [...local.missingPrerequisites];
+  for (const [env, plan] of deployed) {
+    if (plan === null) continue;
+    for (const cap of plan.perCapability) {
+      const entry = byName.get(cap.name) ?? {
+        name: cap.name,
+        missingBindings: [],
+        missingConfigKeys: [],
+        missingEntryExports: [],
+      };
+      entry.missingBindings = [
+        ...entry.missingBindings,
+        ...cap.missingBindings.filter((binding) => binding.env === env),
+      ];
+      entry.missingEntryExports = [...new Set([...entry.missingEntryExports, ...cap.missingEntryExports])];
+      const keys = new Set(entry.missingConfigKeys.map((option) => option.key));
+      entry.missingConfigKeys = [
+        ...entry.missingConfigKeys,
+        ...cap.missingConfigKeys.filter((option) => !keys.has(option.key)),
+      ];
+      byName.set(cap.name, entry);
+    }
+    for (const missing of plan.missingPrerequisites) {
+      const known = prerequisites.some(
+        (entry) => entry.capability === missing.capability && entry.requires === missing.requires,
+      );
+      if (!known) prerequisites.push(missing);
+    }
+  }
+  const perCapability = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+  return { ...local, perCapability, missingPrerequisites: prerequisites };
+}
+
+/**
+ * The `migrations` check from its per-environment answers. `ok` is `dev`'s alone — see
+ * {@link MigrationHealth.ok} for why a deployed environment reports and does not gate.
+ */
+function migrationHealth(environments: EnvironmentMigrations[]): MigrationHealth {
+  const local = environments.find((entry) => entry.env === LOCAL_ENVIRONMENT);
+  // `ok` only on a whole read with nothing on either side of it. A `partial` ledger is a database this
+  // check did not compare, and a check that did not run is not a check that passed — the same standard
+  // `pithy doctor` already applies to a manifest it could not parse (#184).
+  const ok =
+    local?.state === "checked" &&
+    local.ledger.state === "read" &&
+    local.ledger.pending === 0 &&
+    local.ledger.undeclared.length === 0;
+  return { ok, environments };
+}
+
+/** Project one Worker's reconcile plan, and its per-environment migration answers, into its five checks. */
+function healthFromPlan(worker: string, plan: ReconcilePlan, migrations: MigrationHealth): WorkerHealth {
   const drift = plan.perCapability
     .filter((cap) => cap.missingConfigKeys.length > 0)
     .map((cap) => ({ capability: cap.name, keys: cap.missingConfigKeys.map((key) => key.key) }));
@@ -316,17 +422,6 @@ function healthFromPlan(worker: string, plan: ReconcilePlan): WorkerHealth {
     missingExports,
     declinedBindings,
     generatedValues,
-  };
-
-  // `ok` only on a whole read with nothing on either side of it. A `partial` ledger is a database this
-  // check did not compare, and a check that did not run is not a check that passed — the same standard
-  // `pithy doctor` already applies to a manifest it could not parse (#184). It is also what today's
-  // behavior was: an unreadable ledger threw, and the exit was non-zero.
-  const ledger = plan.ledger;
-  const migrations: MigrationHealth = {
-    ok: ledger.state === "read" && ledger.pending === 0 && ledger.undeclared.length === 0,
-    ledger,
-    env: plan.env,
   };
 
   // `ok` only on a scan that ran and found nothing, on the same standard the migrations check applies: a
@@ -352,13 +447,26 @@ function healthFromPlan(worker: string, plan: ReconcilePlan): WorkerHealth {
 }
 
 /**
- * Build the project's health from one read-only reconcile plan per Worker. For each Worker, `config` fails
- * when a capability's `pithy.config.ts` registration is missing manifest options; `bindings` fails when a
- * required binding is absent from an environment; `migrations` fails when the target env has unapplied migrations **or** has applied one
- * this Worker no longer declares; `entitlements` fails when a route gates on an entitlement no composed capability resolves;
- * `prerequisites` fails when a composed capability declares a peer the Worker does not compose, which is
- * the one that means the Worker will not start at all. The project is healthy only when every Worker is.
- * Writes nothing — safe to run on every `pithy doctor` invocation.
+ * Build the project's health from one read-only reconcile plan per Worker per environment. For each Worker,
+ * `config` fails when a capability's `pithy.config.ts` registration is missing manifest options; `bindings`
+ * fails when a required binding is absent from an environment; `migrations` reports every environment and
+ * fails when `dev` has unapplied migrations **or** has applied one this Worker no longer declares;
+ * `entitlements` fails when a route gates on an entitlement no composed capability resolves; `prerequisites`
+ * fails when a composed capability declares a peer the Worker does not compose, which is the one that means
+ * the Worker will not start at all. The project is healthy only when every Worker is. Writes nothing — safe
+ * to run on every `pithy doctor` invocation.
+ *
+ * ## The invariant, and where it stops
+ *
+ * **No per-environment answer here is taken from a composition built for another environment, or for
+ * none (#586).** Every Worker is composed once for each environment, through `composeWorker` — the primitive
+ * in `project/composeFor.ts` by default — and nothing in this function holds a composition it did not get
+ * from there. An environment's migrations, the bindings its stanza lacks, and what its composition asks of
+ * the entry, the registration and the other capabilities are that environment's.
+ *
+ * What is `dev`'s, and said to be: declines, generated values, entitlements and ejected capabilities come
+ * from the plan built for `dev`. A config that declines a binding in `prod` alone, or composes an
+ * entitlement provider for `prod` alone, is answered by `dev`'s composition on those four lines.
  */
 export async function buildProjectHealth(options: ProjectHealthOptions): Promise<ProjectHealth> {
   const build = options.buildPlan ?? defaultBuildPlan;
@@ -376,11 +484,6 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
   // *between* Workers, so the disagreement lives across them and no per-Worker answer can see it.
   const bindingScope = await readScope(options.projectDir);
 
-  // Read once, at the project, for the reason both of the above are: the CLI resolves every capability
-  // from the project root, so "can this be reached" has one answer for the whole project however many
-  // Workers compose it. The Workers are handed over for what they compose, never for where to look.
-  const capabilityReach = await readReach(options.projectDir, options.workers);
-
   // **One Worker at a time (#371).** The wiring is per Worker, so a failure to read it is per Worker too —
   // and this is a diagnostic, so one Worker nobody could check must never cost the report on the others.
   // The manifest scan above is not a contributor to this loop: it is read once, at the project, and every
@@ -388,26 +491,112 @@ export async function buildProjectHealth(options: ProjectHealthOptions): Promise
   //
   // The guard takes no binding. A plan reaches a customer's D1 and imports their config, so what it throws
   // is throw-site context; the Worker's name is the actionable fact and `doctor` already prints it.
+  //
+  // **Every environment, each answered for itself (#586).** `dev` first, then the declared ones in the
+  // order the project declares them. Each Worker is composed once per environment, and that one composition
+  // answers both that environment's migrations and that environment's plan. `environmentMigrations` never
+  // throws, so an environment that cannot be answered costs its own line and not its neighbors'.
+  //
+  // **No part of this answers from a composition for another environment, or for none.** The per-environment
+  // parts — migrations, and the bindings each declared stanza lacks — are each environment's own. The rest
+  // of a Worker's checks — config drift, declines, generated values, entitlements, prerequisites — are the
+  // plan for `dev`, built from the composition for `dev`: the Worker as `pithy dev` runs it, and named so.
+  const compose = options.composeWorker ?? composeWorkerFor;
+  const environments = [LOCAL_ENVIRONMENT, ...options.environments.filter((env) => env !== LOCAL_ENVIRONMENT)];
   const workers: WorkerHealth[] = [];
+  // Each Worker's compositions that succeeded, in environment order, for the capability-resolution read.
+  const composedByWorker: WorkerComposition[][] = [];
   for (const worker of options.workers) {
-    let plan: ReconcilePlan;
-    try {
-      plan = await build({
+    const target = { name: worker.name, dir: worker.dir };
+    const compositions = new Map<string, Promise<WorkerComposition>>();
+    const composed: ComposeWorker = (_worker, env) => {
+      const known = compositions.get(env);
+      if (known !== undefined) return known;
+      const composition = compose(target, env);
+      // Held for the plan below, which awaits it again; the migration answer reads the rejection first.
+      composition.catch(() => undefined);
+      compositions.set(env, composition);
+      return composition;
+    };
+    const answers: EnvironmentMigrations[] = [];
+    for (const env of environments) {
+      answers.push(
+        await environmentMigrations({
+          projectDir: options.projectDir,
+          worker: target,
+          env,
+          account: options.account,
+          remoteSkip: options.remoteSkip,
+          compose: composed,
+          ...(options.readLedger ? { readLedger: options.readLedger } : {}),
+        }),
+      );
+    }
+
+    // One plan per environment that composed. The plan is `upgrade`'s engine and reads one environment's
+    // ledger; doctor has just read every environment's, so each plan is handed that answer rather than
+    // reading the store a second time.
+    const planFor = async (env: string): Promise<ReconcilePlan | null> => {
+      let composition: WorkerComposition;
+      try {
+        composition = await composed(target, env);
+      } catch {
+        return null;
+      }
+      const answer = answers.find((entry) => entry.env === env);
+      return build({
         projectDir: options.projectDir,
         workerDir: worker.dir,
         worker: worker.name,
-        env: options.env,
+        env,
         account: options.account,
-        capabilities: worker.capabilities,
-        ...(worker.config ? { workerConfig: worker.config } : {}),
-        readLedger: options.readLedger,
+        capabilities: composition.capabilities,
+        ...(composition.config ? { workerConfig: composition.config } : {}),
+        readLedger: async () => (answer?.state === "checked" ? answer.ledger : { state: "unavailable" }),
       });
+    };
+
+    let plan: ReconcilePlan | null;
+    try {
+      const local = await planFor(LOCAL_ENVIRONMENT);
+      const deployed = new Map<string, ReconcilePlan | null>();
+      // `dev` did not compose: nothing on this Worker's checks has a composition to be answered from.
+      if (local !== null) for (const env of environments.slice(1)) deployed.set(env, await planFor(env));
+      plan = local === null ? null : mergeEnvironmentPlans(local, deployed);
     } catch {
-      workers.push({ state: "unavailable", worker: worker.name });
-      continue;
+      plan = null;
     }
-    workers.push(healthFromPlan(worker.name, plan));
+    workers.push(
+      plan === null
+        ? { state: "unavailable", worker: worker.name }
+        : healthFromPlan(worker.name, plan, migrationHealth(answers)),
+    );
+    const succeeded: WorkerComposition[] = [];
+    for (const env of environments) {
+      try {
+        succeeded.push(await composed(target, env));
+      } catch {
+        // Not composed for `env`: its migrations line says so, and `Environment configs:` fails the exit.
+      }
+    }
+    composedByWorker.push(succeeded);
   }
+
+  // Read once, at the project, for the reason both of the above are: the CLI resolves every capability
+  // from the project root, so "can this be reached" has one answer for the whole project however many
+  // Workers compose it. The Workers are handed over for what they compose, never for where to look — and
+  // what they compose is every environment's composition, so a capability one environment composes alone
+  // is still asked about (#586). An environment that did not compose contributes nothing.
+  const reachable: ComposedWorker[] = [];
+  for (const [index, worker] of options.workers.entries()) {
+    const seen = new Map<string, Capability>();
+    for (const composition of composedByWorker[index] ?? []) {
+      for (const capability of composition.capabilities)
+        if (!seen.has(capability.name)) seen.set(capability.name, capability);
+    }
+    reachable.push({ name: worker.name, dir: worker.dir, capabilities: [...seen.values()] });
+  }
+  const capabilityReach = await readReach(options.projectDir, reachable);
 
   const manifests: ManifestHealth = { ok: faults.length === 0, faults };
   // An unchecked Worker fails the project, on the same standard #184 set for an unreadable manifest: a

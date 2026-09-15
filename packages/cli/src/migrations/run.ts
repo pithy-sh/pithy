@@ -6,7 +6,13 @@ import { basename, join, resolve } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { composeDatabases } from "@pithy-sh/core/src/data/databases";
-import { InternalError, NotFoundError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import {
+  InternalError,
+  NotFoundError,
+  PithyError,
+  sentenceOf,
+  ValidationError,
+} from "@pithy-sh/core/src/error/pithyError";
 import { claimMigrationOwnership } from "@pithy-sh/core/src/migrations/owner";
 import { createMigrationRegistry, type NamespacedMigrations } from "@pithy-sh/core/src/migrations/registry";
 import {
@@ -29,13 +35,15 @@ import {
   rollbackMigration,
   runMigrations,
 } from "@pithy-sh/core/src/migrations/runner";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { partialWriteReport } from "@pithy-sh/secrets/src/cli/partialWrite";
 import { parse } from "comment-json";
 import type { Migration, MigrationProvider, MigrationResult } from "kysely/migration";
 import { z } from "zod";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
-import { resolveWorkers } from "../project/workerScope";
+import { resolveWorkersFor } from "../project/composeFor";
+import { isPlaceholder } from "../project/envInventory";
 import { provisionConfigPath, wranglerConfigPath } from "../provision/featureConfig";
 import { startStep } from "../terminal/progress";
 import { assertRollbackConfirmed } from "./confirm";
@@ -636,13 +644,15 @@ function driverFor(context: RunContext, groups: DatabaseGroup[]): Promise<Migrat
 export async function resolveWorkerScopes(options: {
   /** The project root — the parent of `apps/`. */
   projectDir: string;
+  /** The environment the Workers are composed for — the run's own (#595). */
+  env: string;
   /** Narrow to one Worker, by its name or its `apps/<dir>` basename. */
   worker?: string;
   /** Pre-resolved Workers, skipping `apps/` discovery. */
   workers?: WorkerScope[];
 }): Promise<WorkerScope[]> {
   if (!options.workers) {
-    return resolveWorkers({
+    return resolveWorkersFor(options.env, {
       projectDir: options.projectDir,
       ...(options.worker !== undefined ? { worker: options.worker } : {}),
     });
@@ -992,25 +1002,58 @@ async function assertRetainedCounted(
 }
 
 /**
+ * The refusal when the Workers beside a pre-resolved set do not compose for the run's environment.
+ *
+ * Its own class so a reporter can say *could not be checked* rather than *no database answered*: nothing was
+ * read, because what the databases in scope would be read against is not known. `doctor` maps it to its
+ * `not-composed` line; every other caller shows it as the refusal it is.
+ */
+export class NeighborsNotComposed extends ValidationError {}
+
+/**
  * Every Worker a database in scope could be shared with — the set each group's provider is merged from.
  *
  * With nothing pre-resolved that is plain `apps/` discovery, narrowed later, never here. A caller can
- * also hand over an **already narrowed** set: `pithy add`/`remove`/`upgrade --migrate` pass the single
- * Worker they just wired. A database that Worker shares still migrates as a whole, so the rest of the
- * project is discovered alongside it. Best effort by design — a project with nothing importable (a test
- * fixture, an uninstalled checkout) contributes no neighbors and the caller's set stands alone, exactly
- * as it did before.
+ * also hand over an **already narrowed** set: `pithy add`/`remove`/`upgrade --migrate` and `doctor`'s
+ * per-Worker read pass the single Worker they are about. A database that Worker shares still migrates as a
+ * whole, and its ledger holds every Worker's rows, so the rest of the project is discovered alongside it.
+ *
+ * **A project with no Workers to discover contributes none; a project whose Workers will not compose for
+ * this environment refuses** (#586). Discovery used to swallow every failure into "no neighbors", so one
+ * Worker whose config throws for staging emptied the set, a database shared by two healthy Workers was read
+ * against one Worker's migrations, and the other's applied rows came back undeclared — with doctor advising
+ * their deletion under staging's name. A set short of a Worker is another composition's answer, and there is
+ * no way to know from here which databases the missing one shares. `pithy migrate --env`, which discovers
+ * the whole set itself, already refused on the same config.
  */
 async function projectWorkers(options: MigrationFanOutOptions): Promise<WorkerScope[]> {
-  if (!options.workers) return resolveWorkerScopes({ projectDir: options.projectDir });
+  if (!options.workers) return resolveWorkerScopes({ projectDir: options.projectDir, env: options.env });
 
-  const discovered = await resolveWorkerScopes({ projectDir: options.projectDir }).catch(() => []);
+  const named = options.workers.map((worker) => worker.name).join(", ");
+  const discovered = await discoverNeighbors(options.projectDir, options.env, named);
   const workers = [...options.workers];
   for (const found of discovered) {
     const known = workers.some((candidate) => resolve(candidate.dir) === resolve(found.dir));
     if (!known) workers.push(found);
   }
   return workers;
+}
+
+/**
+ * Every Worker in the project, composed for `env`, for a caller that already holds the Worker `named` is
+ * about. No Workers to discover is none; a Worker that will not compose is {@link NeighborsNotComposed}.
+ */
+async function discoverNeighbors(projectDir: string, env: string, named: string): Promise<WorkerScope[]> {
+  try {
+    return await resolveWorkerScopes({ projectDir, env });
+  } catch (error) {
+    if (error instanceof PithyError && error.payload.code === "core/not_found") return [];
+    throw new NeighborsNotComposed({
+      message: `The workers beside ${named} do not all compose for ${env}, so the databases they may share cannot be read whole.`,
+      action: sentenceOf(error),
+      ...(error instanceof PithyError && error.payload.detail !== undefined ? { detail: error.payload.detail } : {}),
+    });
+  }
 }
 
 /**
@@ -1025,6 +1068,7 @@ async function contextFor(
   return {
     workers: await resolveWorkerScopes({
       projectDir: options.projectDir,
+      env: options.env,
       workers: options.workers ?? groupWorkers,
       ...(options.worker !== undefined ? { worker: options.worker } : {}),
     }),
@@ -1259,6 +1303,35 @@ export async function readProjectLedger(options: MigrationFanOutOptions): Promis
   }
 }
 
+/**
+ * The databases a migration for `env` would reach **that have no database to reach** — the ones this
+ * Worker set migrates, bound in `env`'s stanza with no real `database_id`, or with no `env` stanza at all.
+ *
+ * Read from files alone, so it answers offline and without an account. A non-empty answer is the state
+ * `pithy migrate --env <env>` refuses with "has no database_id", and the one `pithy doctor` reports as
+ * *not provisioned* instead of attempting a read (#586): there is nothing there to have a count, and a
+ * count printed under that environment's name could only have come from somewhere else.
+ *
+ * `dev` never has one. Its databases are Miniflare stores keyed on the binding when no id is given, so
+ * every local binding resolves. A scaffold placeholder such as `<database_id>` is not an id.
+ */
+export async function unprovisionedDatabases(env: string, workers: readonly WorkerScope[]): Promise<MigrationTarget[]> {
+  if (env === LOCAL_ENVIRONMENT) return [];
+  const unprovisioned: MigrationTarget[] = [];
+  for (const worker of workers) {
+    const plan = buildPlan(worker);
+    if (plan.length === 0) continue;
+    const config = await readWranglerConfig(worker.dir, env);
+    const remote = idsFor(config.env?.[env]?.d1_databases, true);
+    for (const entry of plan) {
+      const id = remote.get(entry.binding);
+      if (id === undefined || isPlaceholder(id))
+        unprovisioned.push({ binding: entry.binding, database: entry.database });
+    }
+  }
+  return unprovisioned;
+}
+
 /** Options for {@link dropCapabilityTables}: the capability, the Worker it is wired into, and the env. */
 export interface DropCapabilityOptions {
   /** The capability being removed, whose migrations to reverse. */
@@ -1310,12 +1383,15 @@ export interface DropCapabilityOptions {
  * retained there — a capability that shares `SECRETS` and declares nothing is still refused while the vault
  * holds rows. Only the databases the dropped capability declares are visited.
  *
- * What it cannot count: a retained table declared only by a Worker whose `pithy.config.ts` does not load
- * (discovery is best effort, as it is for a migrate), and one declared by no capability at all.
+ * **The neighbors are composed for the drop's environment, and a neighbor that will not compose refuses
+ * (#586, #595)** — exactly as {@link projectWorkers} does for a migrate. A neighbor left out is a retained
+ * table left uncounted, and this is the most destructive thing `pithy remove` can do. A project with no
+ * other Worker to discover contributes none. What it cannot count: a table declared retained by no
+ * capability at all.
  */
 export async function dropCapabilityTables(options: DropCapabilityOptions): Promise<DatabaseRun[]> {
   const home = resolve(options.workerDir);
-  const discovered = await resolveWorkerScopes({ projectDir: options.persistRoot }).catch(() => []);
+  const discovered = await discoverNeighbors(options.persistRoot, options.env, basename(home));
   const composed = options.composition.some((capability) => capability.name === options.capability.name)
     ? options.composition
     : [...options.composition, options.capability];

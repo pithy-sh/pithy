@@ -353,6 +353,18 @@ describe("CloudflareWorkersManager", () => {
       await manager.deleteWorker("w1");
       expect(mockScriptsDelete).toHaveBeenCalledWith("w1", { account_id: "acct-1" }, { timeout: 10000, maxRetries: 3 });
     });
+
+    // Without `force`, Cloudflare refuses to delete a script another Worker still binds. A caller deleting
+    // a set of Workers that call each other has to be able to say so, or the callee can never go.
+    it("sends force when asked, so a script another Worker still binds is deleted", async () => {
+      mockScriptsDelete.mockResolvedValue(undefined);
+      await manager.deleteWorker("w1", { force: true });
+      expect(mockScriptsDelete).toHaveBeenCalledWith(
+        "w1",
+        { account_id: "acct-1", force: true },
+        { timeout: 10000, maxRetries: 3 },
+      );
+    });
   });
 
   describe("versions", () => {

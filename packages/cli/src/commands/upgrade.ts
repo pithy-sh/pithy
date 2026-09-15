@@ -16,9 +16,9 @@ import {
   type RunMigrate,
 } from "../capabilities/reconcile";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
+import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, projectCloudflareAccount, requireProjectName, type WorkerConfig } from "../project/config";
 import { envArg, requireEnvironment } from "../project/environment";
-import { resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -68,7 +68,11 @@ export interface UpgradeRunOptions {
   dryRun: boolean;
   /** Run each Worker's pending migrations after reconciling it. */
   migrate: boolean;
-  /** Worker-set resolver seam; defaults to {@link resolveWorkers}. */
+  /**
+   * Worker-set resolver seam; defaults to {@link resolveWorkersFor} for `env`. The Workers are composed for
+   * the environment the plan counts migrations in and `--migrate` applies them to — composed for none, a
+   * config whose migrations differ by environment planned against the wrong set (#595).
+   */
   resolveWorkers?: (options: { projectDir: string; worker?: string }) => Promise<UpgradeWorker[]>;
   /** Test seam: read the migration ledger without a real Miniflare/D1 run. */
   readLedger?: ReadLedger;
@@ -175,7 +179,7 @@ async function proposalProject(projectDir: string): Promise<string | undefined> 
  * `dryRun`) applied to its own `apps/<name>/` wiring — no Worker's drift can reach another's files.
  */
 export async function runUpgrade(options: UpgradeRunOptions): Promise<UpgradeRun> {
-  const resolve = options.resolveWorkers ?? resolveWorkers;
+  const resolve = options.resolveWorkers ?? ((scope) => resolveWorkersFor(options.env, scope));
   const scan = options.readManifests ?? availableManifests;
   const { faults } = await scan(options.projectDir);
   const workers = await resolve({

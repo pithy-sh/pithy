@@ -3,9 +3,10 @@
 
 import { isControlPlaneCapability } from "@pithy-sh/core/src/controlPlane/capability";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { resolveSingleWorkerFor } from "../project/composeFor";
 import { loadWorkerDomains } from "../project/config";
 import { type AddressStanza, describeAddressSource, resolveWorkerAddress } from "../project/workerAddress";
-import { type ResolvedWorker, resolveSingleWorker } from "../project/workerScope";
+import type { ResolvedWorker } from "../project/workerScope";
 import { readWranglerConfig } from "../project/wrangler";
 
 /**
@@ -69,7 +70,9 @@ export async function resolveConnectTarget(options: {
   /** `--worker-url`, when given. Overrides the resolver. */
   workerUrl?: string | undefined;
 }): Promise<ConnectTarget> {
-  const worker = await resolveSingleWorker({
+  // Composed for the environment being connected: whether it composes the control-plane seam, and where,
+  // is that environment's answer (#595).
+  const worker = await resolveSingleWorkerFor(options.environment, {
     projectDir: options.projectDir,
     ...(options.worker === undefined ? {} : { worker: options.worker }),
   });

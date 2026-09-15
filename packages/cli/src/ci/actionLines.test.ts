@@ -46,6 +46,14 @@ import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
  * wrong about something no manifest field predicts, and checking it means the throw site carrying the
  * identity of what actually failed rather than the first name in hand. That is an error-construction
  * discipline, and it needs its own issue rather than being closed by implication here.
+ *
+ * **A remedy the CLI refuses is still a remedy that cannot be followed.** `@pithy-sh/email`'s settings check
+ * told operators to run `pithy email provision --env <x>` and `pithy secrets provision --env <x>`, neither of
+ * which declares `--env`. That was advice the CLI ignored until #594 made it advice the CLI refuses — which
+ * makes the typo visible to whoever runs it, and no more followable. This gate is what keeps it out of the
+ * source. What it still cannot see is the pair named above: a command whose name is interpolated
+ * (`deployKit.ts`'s `pithy ${capability} provision`), which blanks to a path no command has and is skipped
+ * rather than guessed at, and a citation assembled from pieces.
  */
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");

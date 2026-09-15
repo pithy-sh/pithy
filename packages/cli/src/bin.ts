@@ -67,6 +67,32 @@ const argv = process.argv.slice(2);
  */
 if (!colorEnabled()) process.env.NO_COLOR = "1";
 
+const { main } = await import("./main");
+const { ownNamesOnly, usageTarget } = await import("./dispatch");
+const { asksForJson, refuseUndeclaredFlags } = await import("./declaredFlags");
+const { withErrorReporting } = await import("./terminal/output");
+
+/**
+ * One tree, for every reader below and for citty, answering only to the names it declares.
+ *
+ * citty resolves a subcommand with `name in subCommands`, so an object literal answered `valueOf`,
+ * `constructor` and every other `Object.prototype` member — with a raw `TypeError` for one and a
+ * silent exit 0 for another. Hardened here rather than at each `defineCommand`, and hardened *before*
+ * any walk so every reader sees the same tree. See `dispatch.ts`.
+ */
+const root = ownNamesOnly(main);
+
+/**
+ * **Every flag is one its command declares, and this is the one place that is checked (#594).**
+ *
+ * First, before anything answers the invocation: before `--version` and the hidden root flags, which would
+ * otherwise print and exit 0 over `pithy doctor --dry-rn --version`, and before citty, which parses an
+ * undeclared flag without a word — and whose own argument errors would otherwise win the race and print
+ * usage into the stdout a `--json` caller is parsing. Those flags are themselves declared on every command,
+ * so asking for them is never refused. See `declaredFlags.ts`.
+ */
+await withErrorReporting(asksForJson(argv), () => refuseUndeclaredFlags(root, argv));
+
 if (wantsVersion(argv)) {
   // citty answers its version builtin only when it is the sole argument, so `pithy add --version` would
   // run `add`. docs/CLI.md §1.2 promises the flag works on any command; see `rootFlags.ts` for the rule.
@@ -82,19 +108,7 @@ if (wantsVersion(argv)) {
   }
 
   const { runMain, showUsage } = await import("citty");
-  const { main } = await import("./main");
-  const { ownNamesOnly, usageTarget } = await import("./dispatch");
   const { showRootUsage } = await import("./help/rootUsage");
-
-  /**
-   * One tree, for the walk and for citty, answering only to the names it declares.
-   *
-   * citty resolves a subcommand with `name in subCommands`, so an object literal answered `valueOf`,
-   * `constructor` and every other `Object.prototype` member — with a raw `TypeError` for one and a
-   * silent exit 0 for another. Hardened here rather than at each `defineCommand`, and hardened *before*
-   * the walk so both readers see the same tree. See `dispatch.ts`.
-   */
-  const root = ownNamesOnly(main);
 
   /**
    * Ours at the root, citty's everywhere below it — and handed to *both* places a root screen comes from.

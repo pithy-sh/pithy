@@ -6,6 +6,7 @@ import { createWriteStream, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { isContinuousIntegration } from "@pithy-sh/core/src/env/ci";
 import { messageOf, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import type { DevLogin } from "@pithy-sh/core/src/seed/devLogin";
 import { findEntitlementGap } from "../capabilities/entitlementGap";
 import type { CloudflareAccountSelection } from "../cloudflare/config";
@@ -30,7 +31,8 @@ import {
   registryRootFor,
 } from "../feature/ports";
 import { currentBranch, defaultGit } from "../feature/worktree";
-import { allCapabilities, loadWorkerConfig } from "../project/config";
+import { composeFor } from "../project/composeFor";
+import { allCapabilities } from "../project/config";
 import { detectPackageManager, execArgs } from "../project/packageManager";
 import { defaultWorkerDev } from "../project/workerManifest";
 import { discoverWorkers as discoverWorkersDefault, type WorkerTarget } from "../project/workers";
@@ -99,7 +101,9 @@ export interface LogSink {
  */
 const defaultCheckEntitlements = async (workerDir: string): Promise<string[]> => {
   try {
-    return await findEntitlementGap(workerDir, allCapabilities(await loadWorkerConfig(workerDir)));
+    // Composed for `dev`, the environment this session serves (#595).
+    const capabilities = await composeFor(LOCAL_ENVIRONMENT, async (load) => allCapabilities(await load(workerDir)));
+    return await findEntitlementGap(workerDir, capabilities);
   } catch {
     return [];
   }
