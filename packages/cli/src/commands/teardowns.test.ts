@@ -243,7 +243,7 @@ describe("a shared part is refused before any orchestrator is called", () => {
   });
 });
 
-describe("an orchestrator that reaches past the named environment is stopped at the first reach", () => {
+describe("an orchestrator that reaches past the named environment is stopped", () => {
   test.each([
     ["support", { storage: false }],
     ["email", { suppression: false }],
@@ -256,19 +256,85 @@ describe("an orchestrator that reaches past the named environment is stopped at 
     expect(error?.message).toMatch(/while tearing down staging\. Refused\.$/);
     expect(state.calls.filter((call) => call.endsWith(":prod"))).toEqual([]);
   });
+});
 
-  // Nothing typed asked for these, so an orchestrator reaching for them is refused, whatever its options said.
-  test.each([
-    ["support", { storage: false }, "removeRoutingRule"],
-    ["email", { suppression: false }, "deleteSuppressionDatabase"],
-    ["storage", { storage: false }, "deleteBucket:staging"],
-    ["media", { storage: false }, "deleteBucket:staging"],
-    ["secrets", { keys: false }, "deleteMasterKey:staging"],
-  ])("%s refuses a delete its flags did not ask for", async (name, flags, unasked) => {
-    state.orchestrator = RECKLESS[name];
+/**
+ * **Every delete rule, one at a time.** The reckless orchestrators above are refused at the first method they reach,
+ * which hides every rule after it: loosening `deleteWorker` to `"read"` in email still refuses — at nothing, because
+ * the suppression list came first. So each row below runs an orchestrator that makes exactly one call, and says
+ * whether that call is refused, made, or skipped. Loosening any single rule turns its row red.
+ *
+ * `"read"` rules are not rowed: a lookup deletes nothing, so there is nothing past it to loosen into.
+ */
+type Outcome = "refused" | "made" | "skipped";
+const RULES: [
+  command: string,
+  flags: Record<string, unknown>,
+  method: keyof Recorded,
+  arg: string | undefined,
+  outcome: Outcome,
+][] = [
+  // support: the worker is one environment's; the bucket and the routing rule are shared, and only when asked.
+  ["support", { storage: false }, "deleteWorker", "prod", "refused"],
+  ["support", { storage: false }, "deleteWorker", "staging", "made"],
+  ["support", { storage: false }, "deleteBucket", undefined, "refused"],
+  ["support", { storage: true, ...R2 }, "deleteBucket", undefined, "made"],
+  ["support", { storage: false }, "removeRoutingRule", undefined, "refused"],
+  ["support", { storage: false, "routing-zone": "zone" }, "removeRoutingRule", undefined, "made"],
+  // email: the worker is one environment's; the suppression list is shared, and only when asked.
+  ["email", { suppression: false }, "deleteWorker", "prod", "refused"],
+  ["email", { suppression: false }, "deleteWorker", "staging", "made"],
+  ["email", { suppression: false }, "deleteSuppressionDatabase", undefined, "refused"],
+  ["email", { suppression: true, "destroy-retained": "0" }, "deleteSuppressionDatabase", undefined, "made"],
+  // storage: the worker is one environment's; so is the bucket, and only when asked.
+  ["storage", { storage: false }, "deleteWorker", "prod", "refused"],
+  ["storage", { storage: false }, "deleteWorker", "staging", "made"],
+  ["storage", { storage: false }, "deleteBucket", "staging", "refused"],
+  ["storage", { storage: true, ...R2 }, "deleteBucket", "prod", "refused"],
+  ["storage", { storage: true, ...R2 }, "deleteBucket", "staging", "made"],
+  // media: as storage, with a namespace beside the bucket.
+  ["media", { storage: false }, "deleteWorker", "prod", "refused"],
+  ["media", { storage: false }, "deleteWorker", "staging", "made"],
+  ["media", { storage: false }, "deleteBucket", "staging", "refused"],
+  ["media", { storage: true, ...R2 }, "deleteBucket", "prod", "refused"],
+  ["media", { storage: true, ...R2 }, "deleteBucket", "staging", "made"],
+  ["media", { storage: false }, "deleteKvNamespace", "staging", "refused"],
+  ["media", { storage: true, ...R2 }, "deleteKvNamespace", "prod", "refused"],
+  ["media", { storage: true, ...R2 }, "deleteKvNamespace", "staging", "made"],
+  // secrets: the manager and database are one environment's; so is the master key, and only when asked.
+  ["secrets", { keys: false }, "deleteManager", "prod", "refused"],
+  ["secrets", { keys: false }, "deleteManager", "staging", "made"],
+  ["secrets", { keys: false }, "deleteDatabase", "prod", "refused"],
+  ["secrets", { keys: false }, "deleteDatabase", "staging", "made"],
+  ["secrets", { keys: false }, "deleteMasterKey", "staging", "refused"],
+  ["secrets", { keys: true }, "deleteMasterKey", "prod", "refused"],
+  ["secrets", { keys: true }, "deleteMasterKey", "staging", "made"],
+  // The token is kept, not refused, while another environment runs a manager — and made once none does.
+  ["secrets", { keys: false }, "deleteManagerToken", undefined, "skipped"],
+  ["secrets", { keys: false }, "deleteManagerToken", undefined, "made"],
+];
+
+describe("each teardown rule holds on its own", () => {
+  test.each(RULES)("%s %j: %s(%s) is %s", async (name, flags, method, arg, outcome) => {
+    // A shared part may go only once no other environment runs; "skipped" is the token while prod still does.
+    if (outcome === "skipped") state.running.add("prod");
+    state.orchestrator = async (d) => {
+      const deprovisioner = d as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+      await deprovisioner[method]?.(...(arg === undefined ? [] : [arg]));
+      return { environment: "staging", managerTokenDeleted: outcome === "made" };
+    };
     const error = await deprovision(name, { env: "staging", ...flags });
-    expect(error?.message).toMatch(/Refused\.$/);
-    expect(state.calls).not.toContain(unasked);
+    const call = arg === undefined ? method : `${method}:${arg}`;
+    expect(state.invoked).toBe(1);
+    if (outcome === "refused") {
+      expect(error?.message).toMatch(
+        new RegExp(`asked for ${method}\\(.*\\) while tearing down staging\\. Refused\\.$`),
+      );
+      expect(state.calls).toEqual([]);
+    } else {
+      expect(error).toBeUndefined();
+      expect(state.calls).toEqual(outcome === "made" ? [call] : []);
+    }
   });
 });
 
