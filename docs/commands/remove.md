@@ -27,7 +27,7 @@ The precise inverse of `add` — and of `add --eject` — for one Worker, in thi
 
 **Refuse if something depends on it.** Another capability wired into the same Worker that requires this one stops the removal, naming the dependents and the order to remove them in.
 
-**Drop the tables, if asked.** First, while the capability's `down` code is still present — after the uninstall there would be nothing left to reverse them with. Gated on a confirmation, and refused outright when a sibling Worker still wires the capability: Workers sharing a binding name share one physical D1, so reversing migrations for one would delete data the other is serving.
+**Drop the tables, if asked.** First, while the capability's `down` code is still present — after the uninstall there would be nothing left to reverse them with. Gated on a confirmation, and refused outright when a sibling Worker still wires the capability: Workers sharing a binding name share one physical D1, so reversing migrations for one would delete data the other is serving. Each migration it reverses is named as it starts: `▸ Rolling back 0300_auth_0001_init on DB...`.
 
 **Unwire the Worker.** The import and the registration call come out of `apps/<name>/pithy.config.ts`; the capability's bindings come out of every environment stanza in its `wrangler.jsonc`; and its Durable Object exports come out of the module `main` names — the package is about to be uninstalled, or the fork deleted, so a re-export left behind is a Worker that no longer builds. A binding another capability in that Worker still needs stays, and so does an export of the same class from a module of your own.
 

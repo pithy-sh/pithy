@@ -29,6 +29,10 @@ pithy seed [--worker <name>] [--env <name>] [--dry-run] [--redo] [--yes] \
 
 `pithy seed` loads test data into an environment from the same Zod schemas and codecs that define your tables and KV stores — no separate fixture format, no hand-written SQL. Fixtures are authored with `defineSeed` (the peer of `defineCapability`) and composed library-before-app, exactly like migrations. The full authoring model — `defineSeed`, media `once`/`always`, the standard asset-metadata convention, the env-safety layers — is documented in `docs/SEED.md`; this page covers the command itself.
 
+### While it runs
+
+Each write is named as it starts, one plain line each: `▸ Seeding things on DB for api...` for a D1 table, the same shape for a KV store, an R2 key and a media file, with the store it lands in and the Worker it is written through. A remote seed is a REST round trip per write, and this is how a slow one is told apart from a hung one. `--redo` narrates its reset first, in `pithy migrate`'s words. The report below still prints once, at the end, unchanged. `--json` prints none of it; a missing TTY prints all of it.
+
 ### Idempotency
 
 Every `pithy seed` run is safe to repeat. D1 rows insert with `INSERT OR IGNORE`; KV entries `put` by key; a `once` media asset uploads on its first run only and skips on every run after. Re-running `pithy seed` against an environment that already has the fixtures loaded writes nothing new and changes nothing existing.

@@ -12,6 +12,7 @@ import { createMigrationRegistry, type NamespacedMigrations } from "@pithy-sh/co
 import {
   assertRetainedAgreed,
   beforeEachDown,
+  beforeEachMigration,
   countRetainedRows,
   downRefusal,
   RetainedBudget,
@@ -36,6 +37,7 @@ import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import { resolveWorkers } from "../project/workerScope";
 import { provisionConfigPath, wranglerConfigPath } from "../provision/featureConfig";
+import { startStep } from "../terminal/progress";
 import { assertRollbackConfirmed } from "./confirm";
 import { assertLedgerDeclared, UndeclaredMigration } from "./ledger";
 import { collectMigrationSets } from "./registry";
@@ -866,6 +868,9 @@ async function runGroups(context: RunContext, pass: MigrationPass): Promise<Work
     return report;
   }
 
+  // Before the driver and the preflight, which on a remote environment are round trips of their own: the
+  // claim, the ledger and the retained count each read every database before the first write (#583).
+  startStep(`Checking ${[...new Set(groups.map((group) => group.binding))].join(", ")}`);
   const driver = await driverFor(context, groups);
   try {
     await claimGroups(context, driver, groups);
@@ -881,12 +886,15 @@ async function runGroups(context: RunContext, pass: MigrationPass): Promise<Work
         continue;
       }
       const target = { binding: group.binding, database: group.database };
+      startStep(
+        `${group.binding} (${group.database}) for ${[...new Set(group.entries.map((entry) => entry.worker))].join(", ")}`,
+      );
       let results: MigrationResult[];
       // `try`/`catch` rather than `.catch()`: a pass that throws before it returns a promise — a driver
       // handing back a database that is not there, a provider that will not build — is not a rejected
       // promise, and a `.catch()` would not see it (#371).
       try {
-        results = await pass.execute(driver.database(group), refuseSharedDowns(group, context.env), target, { budget });
+        results = await pass.execute(driver.database(group), narrateMigrations(group, context.env), target, { budget });
       } catch (error) {
         // The guard takes no binding. The two names are what an operator acts on; what a migration
         // throws is already on the error being rethrown, untouched.
@@ -905,6 +913,20 @@ async function runGroups(context: RunContext, pass: MigrationPass): Promise<Work
   } finally {
     await driver.dispose();
   }
+}
+
+/**
+ * **The provider a pass runs: each migration named as it starts, and no `down` against a shared database.**
+ *
+ * One step per migration body, because on a remote environment each one is its own D1 round trip and a
+ * fresh database applies a dozen of them (#583). Start-only: the per-Worker report is still printed once,
+ * at the end, byte for byte what it was, so the transcripts the docs pin do not move. Wrapped outside the
+ * shared-database refusal, so the step names the migration that was refused.
+ */
+function narrateMigrations(group: DatabaseGroup, env: string): MigrationProvider {
+  return beforeEachMigration(refuseSharedDowns(group, env), async (name, direction) => {
+    startStep(direction === "Up" ? `Applying ${name} to ${group.binding}` : `Rolling back ${name} on ${group.binding}`);
+  });
 }
 
 /** The refusal for a database another environment binds — named, and never reversed (#588). */
@@ -1189,6 +1211,11 @@ export type ProjectLedger = z.infer<typeof ProjectLedger>;
  * **The guard takes no binding.** What a D1 read throws names a database id, a token, or a query, and none
  * of that is anybody's business but the adopter's — so nothing derived from it is kept, which is a
  * property of the code rather than a promise about it (#350).
+ *
+ * **It raises no step, and that is decided (#583).** Every run that writes a schema names each database and
+ * migration as it reaches it; this one reads, and its callers are `pithy doctor` and `pithy deploy`'s check
+ * before the first upload — a report with its own shape, and a warning that has to come first. A `▸` line
+ * about reading a ledger belongs in neither. `migrations/narration.test.ts` holds the silence.
  */
 export async function readProjectLedger(options: MigrationFanOutOptions): Promise<ProjectLedger> {
   const context = await contextFor(options);

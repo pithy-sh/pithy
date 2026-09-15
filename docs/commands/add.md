@@ -69,7 +69,7 @@ What is left out is left out because wrangler would refuse the file: a `vectoriz
 
 **Eject, if asked.** Before the migrations, because eject repoints the config import at the local copy and promotes the capability's runtime dependencies into your project, and the migrate step has to load the config with everything it imports present.
 
-**Run that Worker's dev migrations.** The config is re-read after wiring, so the migration that just arrived is in the registry. Local Miniflare state lives at the project root, shared with `wrangler dev`.
+**Run that Worker's dev migrations.** The config is re-read after wiring, so the migration that just arrived is in the registry. Local Miniflare state lives at the project root, shared with `wrangler dev`. Each database and migration is named as it starts, as `pithy migrate` names them. `--json` prints none of it.
 
 **Bootstrap what is left.** Dev-only values a capability needs to boot — the master key `pithy add secrets` mints, the session secret `auth` needs — land in `$PITHY_CONFIG_DIR/<project>/secrets.jsonc`, outside every checkout. What only a provision command can supply comes back as a note instead.
 

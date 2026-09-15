@@ -34,6 +34,16 @@ import { isTestFile, readSource, sourcePaths } from "./sourceFiles";
  * command name: a module that shells wrangler for the first time next year is in the population the day
  * it is written, and a command that calls a narrating producer from a bare `run:` fails here. Both were
  * planted and both went red before this was committed.
+ *
+ * **What it does not see: a command that is slow without spawning anything (#583).** A remote D1 statement,
+ * a KV put, an R2 upload is a REST round trip, and a command made of hundreds of them passes every assertion
+ * here while printing nothing. `pithy migrate` and `pithy seed` were exactly that. They are held by their own
+ * runtime gates, which hand a run its stores through the run's seams and require every round trip to follow a
+ * step naming its store: `migrations/narration.test.ts` for everything through `runGroups` (migrate, rollback,
+ * `seed --redo`'s reset, `remove --drop`) and `seed/narration.test.ts` for the seed writes. **Nothing holds
+ * any other REST-bound command.** One written next year that loops over `cloudflareClients` — or an existing
+ * one that grows a loop — is silent, and no test here or there fails. No needle was found that names "this
+ * is slow" without also naming every one-shot API call in the CLI, so the hole is stated rather than papered.
  */
 
 /** The repo root, four levels up from `packages/cli/src/ci`. */

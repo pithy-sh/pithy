@@ -104,6 +104,8 @@ Nothing in the plan reaches your account to produce it: the resource set, the Wo
 
 That pairing is also what makes an interrupted run readable. Provisioning is idempotent and safe to re-run, but idempotence only helps if you know where it stopped: the last `▸` line names the resource that was in flight.
 
+The migrations and seeds that close a run narrate the same way, in `pithy migrate`'s and `pithy seed`'s own words: `▸ DB (app) for board...`, `▸ Applying 0300_auth_0001_init to DB...`.
+
 Plain lines, printed once, never redrawn — so the history survives in your scrollback and in a CI log, and a non-interactive run gets the same bytes without escape codes. Under `--json` none of it is printed: that output is exactly one line, as it is for every command.
 
 ## A manifest it could not read

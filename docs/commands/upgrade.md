@@ -36,7 +36,7 @@ Per Worker, a plan reports five things.
 
 **Missing Durable Object exports.** A `durable_objects.bindings` entry is half of a Durable Object; the other half is `export { <Class> } from "…";` on the module `main` names, which is what wrangler resolves `class_name` against. A class bound in `wrangler.jsonc` and absent from the entry is drift a config read alone cannot see — the binding is there and the class is nowhere — so it is reported per capability and written by an apply.
 
-**Pending migrations**, counted for `--env`. Reported by default; applied only with `--migrate`.
+**Pending migrations**, counted for `--env`. Reported by default; applied only with `--migrate`, which names each database and migration as it starts, as `pithy migrate` does. `--json` prints none of it.
 
 Two things sit outside that list. `entitlements` names this Worker's own source files that gate a route on an entitlement while nothing the Worker composes provides one — report-only, because which capability to compose is your decision, not the CLI's. And `missingVersionMetadata` covers the `version_metadata` binding named `CF_VERSION_METADATA`: without it a Worker cannot report which build is running, so log records carry no `version`, audit events carry no build id, and `pithy deploy` cannot verify the deploy it just made. An upgrade adds it. A config naming a *different* binding is reported and left alone.
 

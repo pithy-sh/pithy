@@ -44,7 +44,7 @@ import { declareRetainedDown, retainedTablesOf, retainedTablesOfDown } from "./r
  *   hand, so long as it yields the capability's own migration objects (or spreads of them).
  * - **Not seen:** a Kysely `Migrator` constructed outside `runner.ts`; a `down` whose capability was never
  *   constructed in this process and whose set never passed through the registry; a `down` re-wrapped in a
- *   new function by anything but {@link beforeEachDown}; and a table no capability declares — a capability
+ *   new function by anything but {@link beforeEachDown} or {@link beforeEachMigration}; and a table no capability declares — a capability
  *   removed from the config takes its declaration with it.
  */
 
@@ -245,32 +245,67 @@ export function guardRetained(
   });
 }
 
+/** Which way one migration is about to move — Kysely's own spelling, as a `MigrationResult` carries it. */
+export type MigrationDirection = "Up" | "Down";
+
+/** Called ahead of one migration's body, with its composed name and the direction it is about to move. */
+export type BeforeMigration = (name: string, direction: MigrationDirection) => Promise<void>;
+
 /**
- * Wrap a provider so `before` runs ahead of every `down` it yields — and a throw from `before` means the
- * `down` never runs. Ups pass through untouched.
+ * Wrap a provider so `before` runs ahead of every migration body it yields, in each of `directions` — and a
+ * throw from `before` means that body never runs. A direction not listed passes through untouched.
  *
  * **Each new `down` keeps the declaration of the one it wraps.** That is the reason this is the one way to
- * wrap a provider's downs: a hand-rolled wrapper is a new function the declaration has never heard of, and
- * {@link guardRetained} handed it would find nothing declared and let every `down` through.
+ * wrap a provider's migrations: a hand-rolled wrapper is a new function the declaration has never heard of,
+ * and {@link guardRetained} handed it would find nothing declared and let every `down` through.
  */
-export function beforeEachDown(provider: MigrationProvider, before: () => Promise<void>): MigrationProvider {
-  const wrapped: MigrationProvider = {
+function wrapEach(
+  provider: MigrationProvider,
+  before: BeforeMigration,
+  directions: readonly MigrationDirection[],
+): MigrationProvider {
+  return {
     getMigrations: async (): Promise<Record<string, Migration>> => {
       const migrations = await provider.getMigrations();
       return Object.fromEntries(
         Object.entries(migrations).map(([name, migration]) => {
-          const down = migration.down;
-          if (!down) return [name, migration];
-          const guardedDown = async (db: Parameters<typeof down>[0]): Promise<void> => {
-            await before();
+          const { up, down } = migration;
+          const wrappedUp = directions.includes("Up")
+            ? async (db: Parameters<typeof up>[0]): Promise<void> => {
+                await before(name, "Up");
+                await up(db);
+              }
+            : up;
+          if (!down || !directions.includes("Down")) return [name, { ...migration, up: wrappedUp }];
+          const wrappedDown = async (db: Parameters<typeof down>[0]): Promise<void> => {
+            await before(name, "Down");
             await down(db);
           };
-          declareRetainedDown(guardedDown, retainedTablesOfDown(down));
-          const guarded: Migration = { up: migration.up, down: guardedDown };
-          return [name, guarded];
+          declareRetainedDown(wrappedDown, retainedTablesOfDown(down));
+          const wrapped: Migration = { up: wrappedUp, down: wrappedDown };
+          return [name, wrapped];
         }),
       );
     },
   };
-  return wrapped;
+}
+
+/**
+ * Wrap a provider so `before` runs ahead of every `down` it yields — and a throw from `before` means the
+ * `down` never runs. Ups pass through untouched. A declared `down` stays declared: see {@link wrapEach}.
+ */
+export function beforeEachDown(provider: MigrationProvider, before: () => Promise<void>): MigrationProvider {
+  return wrapEach(provider, () => before(), ["Down"]);
+}
+
+/**
+ * Wrap a provider so `before` hears each migration's name and direction ahead of its body, up or down (#583).
+ *
+ * The seam a caller uses to say which migration it is on while it is on it: the CLI raises a `▸` step here,
+ * because a remote migration is a D1 round trip per statement and an operator watching nothing happen
+ * cannot tell a slow schema change from a hung one. Core carries no terminal concern — it hands over the
+ * name and the direction, and what is done with them is the caller's. A declared `down` stays declared.
+ */
+export function beforeEachMigration(provider: MigrationProvider, before: BeforeMigration): MigrationProvider {
+  return wrapEach(provider, before, ["Up", "Down"]);
 }
