@@ -27,7 +27,13 @@ import {
   type StatusReport,
 } from "../dashboard/connect";
 import type { DashboardClient, DeviceAuthorization } from "../dashboard/contract";
-import { defaultGrant, type GrantableScope, grantableScopes } from "../dashboard/grant";
+import {
+  defaultGrant,
+  type GrantableScope,
+  grantableScopes,
+  readScopeRequest,
+  resolveScopeRequest,
+} from "../dashboard/grant";
 import { type ConnectionRegistry, openConnectionRegistry } from "../dashboard/registry";
 import { describeConnectTarget, resolveConnectTarget } from "../dashboard/resolveTarget";
 import { resolveWorkersFor } from "../project/composeFor";
@@ -327,14 +333,19 @@ const commonArgs = {
  * point of showing the list at all: `keys:rotate` and `audit:events:read_detail` are exactly the grants
  * somebody may not want to make, and a grant nobody is shown is a grant nobody considers. `ping` is
  * absent throughout; it is not grantable (docs/CONTROL-PLANE.md §8).
+ *
+ * **The message names the keys, because `@clack/core` binds them and says nothing.** `a` toggles every
+ * option and `i` inverts the selection — already there, on every multiselect, findable only by reading
+ * the dependency's source. On a Worker composing a dozen capabilities, the common answer is a keypress
+ * per row without them. `--scope all` is the same answer without a terminal.
  */
-async function promptScopes(
+export async function promptScopes(
   grantable: readonly GrantableScope[],
   preselected: ControlPlaneScope[],
 ): Promise<ControlPlaneScope[]> {
   const { isCancel, multiselect } = await import("@clack/prompts");
   const answer = await multiselect({
-    message: "What may this management client do?",
+    message: `What may this management client do?\n${dim("a toggles all. i inverts.")}`,
     options: grantable.map((entry) => ({
       value: entry.scope,
       label: entry.scope,
@@ -407,7 +418,10 @@ const connect = defineCommand({
       description: "Which worker composes the admin surface (apps/<name>). Required when the project has several",
     },
     "worker-url": { type: "string", description: "Override the resolved worker URL for this environment" },
-    scope: { type: "string", description: "Grant one scope: --scope manifest:read (repeatable)" },
+    scope: {
+      type: "string",
+      description: "Grant one scope: --scope manifest:read (repeatable). --scope all grants every composed scope",
+    },
     update: { type: "boolean", default: false, description: "Re-point an existing connection's URL and scopes" },
     "public-key": { type: "string", description: "Register a JWK you generated yourself — no dashboard involved" },
     issuer: { type: "string", description: "With --public-key: the iss your own management client presents" },
@@ -417,7 +431,11 @@ const connect = defineCommand({
   // `rawArgs` because a repeated `--scope` only survives there.
   run: ({ args, rawArgs }) =>
     withErrorReporting(args.json, async () => {
-      const scopes = collectScopeFlags(rawArgs) as ControlPlaneScope[];
+      // `all` is told from a named grant here, before a project is read: refusing `--scope all --scope
+      // manifest:read` is an argument rule, and an argument rule that waited on a Worker would report a
+      // broken project instead of the contradiction the operator typed.
+      const scopeRequest = readScopeRequest(collectScopeFlags(rawArgs));
+      const narrowed = scopeRequest.all || scopeRequest.scopes.length > 0;
       const offlinePath = args["public-key"] !== undefined;
 
       // Cross-arg rules, checked here rather than by a helper: docs/STACK.md proposes
@@ -441,7 +459,7 @@ const connect = defineCommand({
           action: "Drop --key-id. The dashboard mints the keypair and names the key.",
         });
       }
-      if (args.update && args["worker-url"] === undefined && scopes.length === 0 && !offlinePath) {
+      if (args.update && args["worker-url"] === undefined && !narrowed && !offlinePath) {
         throw new ValidationError({
           message: "Nothing to update.",
           action: "Pass --worker-url, --scope, or both.",
@@ -492,12 +510,15 @@ const connect = defineCommand({
       // Collapsing those two is a real bug rather than a tidy-up: an operator who deselected every scope
       // at the prompt would have been handed the full default set, `keys:rotate` included — the exact
       // opposite of what they just said. So an explicit empty selection is passed through as empty.
-      const granted: ControlPlaneScope[] | undefined =
-        scopes.length > 0
-          ? scopes
-          : interactive && !args.update
-            ? await promptScopes(grantableScopes(composed), defaultGrant(composed))
-            : undefined;
+      //
+      // One list, read once, feeding both answers: what the prompt renders is what `--scope all`
+      // resolves to, so a capability's new scope is in the grant the day it ships either way.
+      const grantable = grantableScopes(composed);
+      const granted: ControlPlaneScope[] | undefined = narrowed
+        ? resolveScopeRequest(scopeRequest, grantable)
+        : interactive && !args.update
+          ? await promptScopes(grantable, defaultGrant(composed))
+          : undefined;
 
       // One load, two answers. `--project` overrides only the *name* sent to the client; whether this
       // environment holds live data is the project's policy either way, and it is exactly the list that

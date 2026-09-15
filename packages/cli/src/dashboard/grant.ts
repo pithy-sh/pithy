@@ -4,6 +4,7 @@
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
 import { type ControlPlaneScope, SEAM_SCOPES } from "@pithy-sh/core/src/controlPlane/scope/scope";
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 
 /**
  * What `pithy dashboard connect` grants when nobody narrowed it — derived from the Worker's own
@@ -121,4 +122,78 @@ export function defaultGrant(capabilities: readonly Capability[]): ControlPlaneS
     if (grantable.read && !grant.includes(grantable.scope)) grant.push(grantable.scope);
   }
   return grant;
+}
+
+/**
+ * The `--scope` value that means every scope the Worker composes.
+ *
+ * It cannot collide with a scope: `ControlPlaneScope` is `resource:action`, colon required, so no
+ * capability can ever declare a scope spelled `all`. The word is free to mean this and only this.
+ */
+export const ALL_SCOPES = "all";
+
+/** What `--scope` asked for: everything the Worker composes, or the scopes named one by one. */
+export interface ScopeRequest {
+  /** True when `--scope all` was passed. */
+  all: boolean;
+  /** The scopes named individually. Empty under `all`, and empty when no `--scope` was passed at all. */
+  scopes: ControlPlaneScope[];
+}
+
+/**
+ * Read the `--scope` values off the command line, with `all` told apart from a named grant.
+ *
+ * **Here, before anything is resolved**, because this is an argument rule and an argument rule should
+ * not wait on a project. `--scope all --scope manifest:read` is two different answers to one question,
+ * and a CLI that silently kept one of them would decide an authorization on the operator's behalf. Both
+ * are named in the refusal: which one was dropped is exactly what somebody needs to see.
+ *
+ * `all` twice is still `all`. It names one thing however often it is typed, and refusing that would be
+ * a rule about repetition rather than about ambiguity.
+ */
+export function readScopeRequest(requested: readonly string[]): ScopeRequest {
+  const named = requested.filter((value) => value !== ALL_SCOPES);
+  if (named.length === requested.length) return { all: false, scopes: [...named] };
+  if (named.length > 0) {
+    const narrowing = named.map((scope) => `--scope ${scope}`).join(" ");
+    throw new ValidationError({
+      message: `--scope all grants everything. ${narrowing} narrows it.`,
+      action: "Pass one or the other.",
+      detail: `--scope ${ALL_SCOPES} passed with ${narrowing}`,
+    });
+  }
+  return { all: true, scopes: [] };
+}
+
+/**
+ * The grant to store, given what was asked for and what the Worker composes.
+ *
+ * **`all` is resolved from {@link grantableScopes} — the very list the prompt renders** — so a capability
+ * that ships a scope is granted by it the day it lands, with nothing here to keep in step. A set written
+ * out here would be a second copy of a federated taxonomy, and it would be wrong on the next release:
+ * that is the mistake {@link defaultGrant} exists to avoid, and `all` must not reintroduce it one flag
+ * over.
+ *
+ * **It is wider than {@link defaultGrant}, and it moves it not at all.** The default ticks the seam's pair
+ * and every declared read; what `all` adds beyond that is every *write* the composed capabilities expose
+ * — a secret rotated, a support thread archived. Those are the grants somebody may not want to make, so
+ * they stay a thing a person asks for out loud. `all` never becomes the default, and a Worker that grows
+ * a write does not quietly widen anybody's next connect.
+ *
+ * A named grant is passed through untouched, empty included — an operator who deselected everything is
+ * granted nothing, not handed a default (#248).
+ */
+export function resolveScopeRequest(request: ScopeRequest, grantable: readonly GrantableScope[]): ControlPlaneScope[] {
+  if (!request.all) return [...request.scopes];
+
+  const every = grantable.map((entry) => entry.scope);
+  if (every.length === 0) {
+    throw new ValidationError({
+      message: "--scope all found nothing to grant.",
+      action: "It reads what the Worker composes, and no Worker was read here. Pass --worker-url, or name each scope.",
+      detail:
+        "grantable scope list was empty: no worker resolved, or none of its capabilities declares a scoped admin route",
+    });
+  }
+  return every;
 }

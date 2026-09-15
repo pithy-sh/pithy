@@ -1,9 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { resolve } from "node:path";
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { controlplane } from "@pithy-sh/core/src/controlPlane/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import type { CommandDef } from "citty";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+import { readSource } from "../ci/sourceFiles";
+import { defaultGrant, grantableScopes } from "../dashboard/grant";
 import dashboard, {
   collectScopeFlags,
   formatConnectReport,
@@ -14,6 +20,16 @@ import dashboard, {
 } from "./dashboard";
 
 const JWK = { kty: "OKP", crv: "Ed25519", x: "kHo4iZ3rG3Jm2m7L9pQwXyZ0aBcDeFgHiJkLmNoPqRs" } as const;
+
+/** A composed capability with an admin surface — one read and one write, which is what a grant decides. */
+const support: Capability = {
+  name: "support",
+  requiredBindings: [],
+  adminRoutes: [
+    { method: "GET", path: "/support/tickets", scope: "support:tickets:read", summary: "Page the queue." },
+    { method: "POST", path: "/support/tickets/:id/close", scope: "support:tickets:close", summary: "Close one." },
+  ],
+};
 
 /** The subcommands, resolved from the citty parent. */
 function subCommands(): Record<string, CommandDef> {
@@ -287,5 +303,69 @@ describe("formatStatusReport", () => {
     );
     expect(out).toContain("Nothing connected to staging.");
     expect(out).toContain("pithy dashboard connect");
+  });
+});
+
+describe("the scope prompt", () => {
+  /** What `multiselect` was handed, captured from the mocked prompt. */
+  async function renderedPrompt(): Promise<Record<string, unknown>> {
+    const seen: Record<string, unknown>[] = [];
+    vi.doMock("@clack/prompts", () => ({
+      isCancel: () => false,
+      multiselect: async (options: Record<string, unknown>) => {
+        seen.push(options);
+        return options.initialValues;
+      },
+    }));
+    vi.resetModules();
+    const { promptScopes } = await import("./dashboard");
+    await promptScopes(grantableScopes([controlplane(), support]), defaultGrant([controlplane(), support]));
+    vi.doUnmock("@clack/prompts");
+    return seen[0] as Record<string, unknown>;
+  }
+
+  test("says how to take all of them: `a` toggles all, `i` inverts", async () => {
+    const message = String((await renderedPrompt()).message);
+
+    expect(message).toContain("a toggles all");
+    expect(message).toContain("i inverts");
+  });
+
+  test("offers exactly what the Worker composes, described in each capability's words", async () => {
+    const options = (await renderedPrompt()).options as { value: string; hint: string }[];
+
+    expect(options.map((option) => option.value)).toEqual([
+      "manifest:read",
+      "keys:rotate",
+      "support:tickets:read",
+      "support:tickets:close",
+    ]);
+    expect(options[3]?.hint).toContain("support");
+  });
+
+  test("preselects the default grant, which still leaves keys:rotate's peers to be chosen", async () => {
+    expect((await renderedPrompt()).initialValues).toEqual(["manifest:read", "keys:rotate", "support:tickets:read"]);
+  });
+});
+
+/**
+ * The gate.
+ *
+ * **The invariant: the prompt and `--scope all` read one list, resolved once.** Two calls to
+ * `grantableScopes` is how they come to disagree — one filtered, one not, one taken before a capability
+ * was composed and one after — and nothing in a suite of unit tests would notice, because each half
+ * would be right about the list it was given.
+ *
+ * Stated over the source because that is where the wiring lives: `connect`'s `run` needs a project, a
+ * registry, and a device-code flow to execute, and none of those has anything to say about which list
+ * fed which caller.
+ */
+describe("the prompt and --scope all are fed the same list", () => {
+  const SOURCE = blankComments(readSource(resolve(import.meta.dirname, "dashboard.ts")) ?? "");
+
+  test("`grantableScopes` is called once, and both callers take that value", () => {
+    expect(SOURCE.split("grantableScopes(").length - 1).toBe(1);
+    expect(SOURCE).toContain("promptScopes(grantable,");
+    expect(SOURCE).toContain("resolveScopeRequest(scopeRequest, grantable)");
   });
 });
