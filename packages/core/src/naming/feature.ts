@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { ValidationError } from "../error/pithyError";
+import { featureMarker } from "./environment";
 import { MAX_ISSUE_DIGITS, NAMESPACE_LIMITS } from "./limits";
 import { assertValidProjectName, fitSegment, kebab } from "./resource";
 
@@ -63,7 +64,7 @@ function assertIssue(issue: string): void {
 function head(identity: FeatureIdentity): string {
   assertValidProjectName(identity.project);
   assertIssue(identity.issue);
-  return `${kebab(identity.project)}-f${identity.issue}`;
+  return `${kebab(identity.project)}-${featureMarker(identity.issue)}`;
 }
 
 /**

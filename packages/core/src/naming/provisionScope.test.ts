@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "vitest";
-import { PithyError } from "../error/pithyError";
-import { FEATURE_ENVIRONMENT, GLOBAL_SCOPE } from "./environment";
+import { PithyError, ValidationError } from "../error/pithyError";
+import { FEATURE_ENVIRONMENT, GLOBAL_SCOPE, isValidEnvironment } from "./environment";
 import { FEATURE_RESOURCE_KINDS } from "./feature";
 import { NAMESPACE_LIMITS } from "./limits";
 import {
@@ -12,6 +12,7 @@ import {
   environmentScope,
   featureScope,
   featureWorkerScriptNames,
+  isFeatureName,
   type ProvisionWorkerNames,
 } from "./provisionScope";
 
@@ -309,6 +310,77 @@ describe("featureScope", () => {
         for (const scope of deployed) expect(scope.resource(binding, kind, naming)).not.toBe(name);
       }
     }
+  });
+});
+
+/**
+ * **A declared environment names nothing inside a feature's namespace (#587).**
+ *
+ * `pithy feature destroy` deletes by exact name, and a feature Worker's name has no suffix: it is
+ * `<project>-f<issue>-<slug>-<app>`, which is also the #580 shape of a declared environment called
+ * `f<issue>-<slug>`. So the property is stated over the whole namespace — every name that leads with the
+ * project and then a feature's marker — rather than over the names one feature happens to compose, and it is
+ * swept over every name a declared environment's scope produces: its resources, its environment secrets,
+ * the Worker name the scaffold stamps into its stanza, and the Worker name it falls back to.
+ *
+ * The environments swept are every marker-shaped candidate there is room for in seven characters, and the
+ * ones the rule keeps. A candidate the rule refuses is skipped, so the sweep is the rule's own reach: if the
+ * rule stops refusing one, that environment's names reach the namespace and fail here.
+ */
+describe("a declared environment and a feature's namespace (#587)", () => {
+  const marked = ["0", "1", "9", "01", "12", "123", "12345", "123456"].flatMap((digits) =>
+    ["", "-a", "-ab", "-x1", "-demo"].map((tail) => `f${digits}${tail}`),
+  );
+  const CANDIDATES = [...marked, ...ENVIRONMENTS, "feature", "fr-1", "f-1", "f1a", "fix-f1"];
+
+  it("holds every name a feature composes inside the namespace, so the sweep below is not vacuous", () => {
+    for (const project of PROJECTS) {
+      for (const issue of ["1", "01", "69", "123456"]) {
+        const identity = { project, issue, slug: "demo" };
+        const feature = featureScope(identity);
+        for (const worker of WORKERS) {
+          for (const name of featureWorkerScriptNames(identity, worker))
+            expect(isFeatureName(project, name)).toBe(true);
+        }
+        for (const { binding, naming } of BINDINGS) {
+          for (const kind of FEATURE_RESOURCE_KINDS) {
+            expect(isFeatureName(project, feature.resource(binding, kind, naming))).toBe(true);
+          }
+        }
+        expect(isFeatureName(project, feature.secretEntry("SECRETS_ENCRYPTION_KEYS", "environment"))).toBe(true);
+      }
+    }
+  });
+
+  it("gives no declared environment a name inside it", () => {
+    const swept = CANDIDATES.filter((env) => isValidEnvironment(env));
+    // Environments that start with an f are kept, so the rule is not simply "no f".
+    expect(swept.filter((env) => env.startsWith("f")).length).toBeGreaterThan(2);
+    for (const project of PROJECTS) {
+      for (const env of swept) {
+        const scope = environmentScope(project, env);
+        const names: string[] = [scope.secretEntry("SECRETS_ENCRYPTION_KEYS", "environment")];
+        for (const { binding, naming } of BINDINGS) {
+          for (const kind of FEATURE_RESOURCE_KINDS) names.push(scope.resource(binding, kind, naming));
+        }
+        for (const worker of WORKERS) {
+          names.push(scope.worker(worker));
+          // What the scaffold stamps into the stanza since #580, read back as the declared name.
+          names.push(scope.worker(worker, `${project}-${env}-${worker.app}`));
+        }
+        for (const name of names) expect(isFeatureName(project, name), `${project}/${env}: ${name}`).toBe(false);
+      }
+    }
+  });
+
+  it("refuses a Worker name an environment's stanza declares inside it, however it came to be written", () => {
+    const scope = environmentScope("acme", "staging");
+    // Written by hand, or left from an environment declared before the rule.
+    expect(() => scope.worker({ app: "api", script: "acme-api" }, "acme-f1-demo-api")).toThrow(ValidationError);
+    // Or reached through wrangler's fallback, from a deploy name that already sits there.
+    expect(() => scope.worker({ app: "api", script: "acme-f1-demo" })).toThrow(ValidationError);
+    // A name that only resembles one is still the environment's.
+    expect(scope.worker({ app: "api", script: "acme-api" }, "acme-staging-f1-api")).toBe("acme-staging-f1-api");
   });
 });
 

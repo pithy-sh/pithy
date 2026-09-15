@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { InternalError } from "../error/pithyError";
-import { assertValidEnvironment, FEATURE_ENVIRONMENT, GLOBAL_SCOPE } from "./environment";
+import { InternalError, ValidationError } from "../error/pithyError";
+import { assertValidEnvironment, FEATURE_ENVIRONMENT, GLOBAL_SCOPE, isFeatureMarker } from "./environment";
 import {
   type FeatureIdentity,
   type FeatureResourceKind,
@@ -10,6 +10,7 @@ import {
   featureSecretEntryName,
   featureWorkerName,
 } from "./feature";
+import { kebab } from "./resource";
 import { resourceNames } from "./resourceNames";
 
 /**
@@ -254,6 +255,28 @@ export function bindingResourceName(
 }
 
 /**
+ * **Is this name inside a feature's namespace** — `<project>-f<issue>-…`, the project and then a feature's
+ * marker, with something after it?
+ *
+ * The namespace, not one feature's names, because that is what has to stay disjoint: `pithy feature destroy`
+ * deletes by exact name, and a feature Worker's name has no kind suffix, so a declared environment's name
+ * that lands anywhere in here is one some branch's teardown can delete (#587). Every name {@link featureScope}
+ * composes is inside; {@link environmentScope} refuses to name a Worker inside, and `isValidEnvironment`
+ * refuses every environment whose composed names could be.
+ *
+ * **What it does not see.** It is stated for one project. A second project on the same account whose name is
+ * this one's plus `-f<issue>` — `acme-f1` beside `acme` — composes names inside `acme`'s namespace from an
+ * ordinary environment, and nothing here can tell, because a project name carries no boundary a later hyphen
+ * cannot fake. That is the hyphen ambiguity every composed name carries, one segment further left.
+ */
+export function isFeatureName(project: string, name: string): boolean {
+  const head = `${kebab(project)}-`;
+  if (!name.startsWith(head)) return false;
+  const [marker, ...rest] = name.slice(head.length).split("-");
+  return isFeatureMarker(marker ?? "") && rest.length > 0;
+}
+
+/**
  * A declared environment's scope — `staging`, `prod`, or whatever the root `pithy.config.ts` lists.
  *
  * The environment is validated here, once, before a single name exists: it is the middle segment of
@@ -291,7 +314,21 @@ export function environmentScope(project: string, environment: string): Provisio
     honorsGlobal: true,
     resource: (binding, kind, naming) =>
       bindingResourceName(project, binding, kind, naming, (thing) => names[KIND_NAMER[kind]](thing)),
-    worker: ({ script }, declared) => declared ?? `${script}-${environment}`,
+    worker: ({ script }, declared) => {
+      const name = declared ?? `${script}-${environment}`;
+      // The environment rule already keeps every name composed from the environment out of a feature's
+      // namespace. A declared name and wrangler's fallback are not composed from it — the stanza says one,
+      // the deploy name leads the other — so either can still sit there, and a branch's teardown would
+      // delete the Worker (#587). Refused here, where the name is chosen, rather than spared at teardown.
+      if (isFeatureName(project, name)) {
+        throw new ValidationError({
+          message: `The ${environment} Worker "${name}" is named the way a feature's Worker is.`,
+          action: `Rename it in env.${environment}.name, or the Worker's top-level name, so it does not follow ${kebab(project)}- with f and a number.`,
+          detail: `${declared === undefined ? "Composed by wrangler from the deploy name" : `Declared in env.${environment}.name`}. A feature's Worker is <project>-f<issue>-<slug>-<app>, and \`pithy feature destroy\` deletes it by that exact name.`,
+        });
+      }
+      return name;
+    },
     secretEntry: (secret, secretScope) =>
       secretEntryName(project, secret, secretScope, () => names.secretEntry(secret)),
   };
@@ -354,6 +391,13 @@ export function featureScope(identity: FeatureIdentity): ProvisionScope {
  * slug extends this one's. The exact names can still meet a sibling in one shape: the doubled name for
  * slug `demo` and deploy name `acme-api` is the current name for slug `demo-acme` and directory `api`, on
  * the same issue number. That is the same hyphen ambiguity every feature name here carries.
+ *
+ * **They cannot meet a declared environment's Worker**, which has no suffix either and is `<project>-<env>-<app>`
+ * since #580: every name either shape yields is inside {@link isFeatureName}'s namespace, no environment may
+ * start with a feature's marker, and {@link environmentScope} refuses a declared or fallback Worker name inside
+ * it. What that does not reach is a name nothing in the kit chose — a stanza written by hand and deployed
+ * without `pithy provision --env` ever reading it, or another project on the account, as {@link isFeatureName}
+ * says.
  */
 export function featureWorkerScriptNames(identity: FeatureIdentity, worker: ProvisionWorkerNames): string[] {
   const current = featureScope(identity).worker(worker);
