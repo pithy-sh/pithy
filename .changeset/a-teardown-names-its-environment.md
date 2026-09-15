@@ -14,4 +14,4 @@ It used to walk every declared environment. One run, typed to clean up staging, 
 - **The shared manager token goes with the last manager only.** Removing it for staging would have failed every rotation in prod.
 - **`pithy email deprovision --suppression` gets the same count.** The suppression list is retained too. It is counted before the first worker goes, and `--destroy-retained <n>` must match.
 
-`--json` for `secrets deprovision` now carries `environment` and `managerTokenDeleted`.
+`--json` for `secrets deprovision` now carries `env` and `managerTokenDeleted`.

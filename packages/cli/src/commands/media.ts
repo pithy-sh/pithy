@@ -3,8 +3,9 @@
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { DEFAULT_ENVIRONMENTS } from "@pithy-sh/core/src/naming/environment";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
-import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
+import { deprovisionTarget, type ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import {
@@ -272,12 +273,22 @@ const provision = defineCommand({
 });
 
 const deprovision = defineCommand({
-  meta: { name: "deprovision", description: "Remove the media workers (and optionally the bucket and namespace)" },
+  meta: {
+    name: "deprovision",
+    description: "Remove one environment's media worker (and optionally its bucket and namespace)",
+  },
   args: {
+    env: {
+      type: "string",
+      // No default, deliberately (#591): a bare `--storage` teardown emptied every declared environment's
+      // storage, production's included. The refusal lists the project's own set.
+      description: `The environment to tear down: ${DEFAULT_ENVIRONMENTS.join(" | ")}, or one declared in pithy.config.ts. Required`,
+    },
     storage: {
       type: "boolean",
       default: false,
-      description: "Also delete the R2 bucket with every object in it, and the MEDIA KV namespace (irreversible)",
+      description:
+        "Also delete the environment's R2 bucket with every object in it, and its MEDIA KV namespace (irreversible)",
     },
     "r2-access-key-id": {
       type: "string",
@@ -298,9 +309,11 @@ const deprovision = defineCommand({
       // `provision` used. A guess would match nothing, delete nothing, and still exit 0.
       const config = await loadProject(projectDir);
       const project = requireProjectName(config);
-      // The project's own environment set (#241): what this command fans out across, rather than a
-      // pair the CLI assumed. A project declaring `live` gets `live` provisioned and torn down too.
-      const environments = loadProjectEnvironments(config);
+      // One named environment, settled before any credential is read (#591): naming nothing, or something
+      // undeclared, costs nothing and lists what could be named. The kit's teardown resolves it again — it
+      // is the one that deletes.
+      const target = { environment: args.env, declared: loadProjectEnvironments(config) };
+      const env = deprovisionTarget(target);
       const { deprovisionMedia } = await loadMedia(projectDir);
       const { account, accountId, apiToken, r2Raw } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
       // Resolve the key pair up front, before a single worker comes down. A bucket cannot be deleted
@@ -319,14 +332,16 @@ const deprovision = defineCommand({
         audit: await buildAudit(projectDir, accountId, apiToken),
       });
 
-      await deprovisionMedia(deprovisioner, environments, { deleteStorage: args.storage });
+      await deprovisionMedia(deprovisioner, target, { deleteStorage: args.storage });
 
       if (args.json) {
-        process.stdout.write(`${formatJsonLine({ command: "media deprovision", storageDeleted: args.storage })}\n`);
+        process.stdout.write(
+          `${formatJsonLine({ command: "media deprovision", env, storageDeleted: args.storage })}\n`,
+        );
         return;
       }
       process.stdout.write(
-        `Media workers removed${args.storage ? ", including the bucket, its objects, and the namespace" : ""}.\n`,
+        `${env}: media worker removed${args.storage ? ", with its bucket, its objects, and its namespace" : ""}.\n`,
       );
       process.stdout.write(`${formatDone()}\n`);
     }),

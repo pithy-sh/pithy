@@ -175,22 +175,29 @@ describe("deprovisionMedia", () => {
     };
   }
 
-  test("deletes every worker and keeps the stored media by default", async () => {
+  const staging = { environment: "staging", declared: DEFAULT_ENVIRONMENTS };
+
+  test("deletes the named environment's worker and keeps the stored media by default", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner();
-    await deprovisionMedia(deprovisioner, DEFAULT_ENVIRONMENTS);
-    expect(calls).toEqual(["deleteWorker:staging", "deleteWorker:prod"]);
+    await deprovisionMedia(deprovisioner, staging);
+    expect(calls).toEqual(["deleteWorker:staging"]);
   });
 
-  test("deletes the bucket and namespace only when explicitly asked, after the workers", async () => {
+  test("a staging teardown with --storage deletes staging's bucket and namespace, after its worker, and never production's (#591)", async () => {
     const { deprovisioner, calls } = fakeDeprovisioner();
-    await deprovisionMedia(deprovisioner, DEFAULT_ENVIRONMENTS, { deleteStorage: true });
-    expect(calls).toEqual([
-      "deleteWorker:staging",
-      "deleteWorker:prod",
-      "deleteBucket:staging",
-      "deleteKvNamespace:staging",
-      "deleteBucket:prod",
-      "deleteKvNamespace:prod",
-    ]);
+    await deprovisionMedia(deprovisioner, staging, { deleteStorage: true });
+    expect(calls).toEqual(["deleteWorker:staging", "deleteBucket:staging", "deleteKvNamespace:staging"]);
+  });
+
+  test("naming no environment refuses, lists the declared ones, and deletes nothing", async () => {
+    const { deprovisioner, calls } = fakeDeprovisioner();
+    await expect(
+      deprovisionMedia(
+        deprovisioner,
+        { environment: undefined, declared: DEFAULT_ENVIRONMENTS },
+        { deleteStorage: true },
+      ),
+    ).rejects.toThrow("Name the environment to deprovision. Nothing was deleted.");
+    expect(calls).toEqual([]);
   });
 });

@@ -329,6 +329,7 @@
     {
       "path": "media deprovision",
       "flags": [
+        "--env",
         "--storage",
         "--no-storage",
         "--r2-access-key-id",
@@ -528,6 +529,7 @@
     {
       "path": "storage deprovision",
       "flags": [
+        "--env",
         "--storage",
         "--no-storage",
         "--r2-access-key-id",

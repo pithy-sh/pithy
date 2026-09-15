@@ -346,7 +346,7 @@ A `keyspace` marker is the one entry an operator must not try to set: its member
 | key | type | meaning |
 |---|---|---|
 | `command` | string | `"secrets deprovision"`. |
-| `environment` | string | The one environment torn down — the value of `--env`. |
+| `env` | string | The one environment torn down — the value of `--env`. |
 | `keysDeleted` | boolean | Whether `--keys` was passed, and so whether the environment's master key was deleted with the rest. |
 | `managerTokenDeleted` | boolean | Whether the shared manager token was removed. `true` only when no declared environment still runs a manager. |
 

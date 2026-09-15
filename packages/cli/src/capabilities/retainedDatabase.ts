@@ -33,16 +33,29 @@ import type { MigrationProvider } from "kysely/migration";
  *
  * ## Its reach, stated so it can be checked
  *
- * - **Seen:** every D1 deletion in the CLI's own sources outside `provision/resources.ts`. The gate in
- *   `retainedDatabase.test.ts` reads every non-test `.ts` under `packages/cli/src`, skipping comment lines,
- *   for the member name `deleteDatabase` — which a call, a destructured or aliased member, or a string key
- *   still has to spell once — and permits it only in this file, in `provision/resources.ts`, and as a line
- *   that *declares* a seam method of that name (`async deleteDatabase(`), which deletes nothing itself.
- * - **Deliberately not routed:** `provision/resources.ts`, a feature environment's `DB`/KV/R2 teardown. A
- *   feature binds no secrets or suppression database of its own — those are declared-environment, durable,
- *   and outlive every branch — so nothing retained lives in what it deletes.
- * - **Not seen:** a member name built at runtime (`d1["delete" + "Database"]`), a raw `DELETE` against
- *   `/d1/database/<id>` through `cloudflareRequest` or `fetch`, `wrangler d1 delete` spawned as a subprocess,
+ * - **Seen, half one:** every module in the CLI's own sources that names the control-plane delete. The gate
+ *   in `retainedDatabase.test.ts` reads every shipped `.ts` under `packages/cli/src` through `ci/sourceFiles`,
+ *   comments blanked, for the member name `deleteDatabase` — which a call, a destructured or aliased member,
+ *   or a string key still has to spell once — and permits it only in this file, in `provision/resources.ts`,
+ *   and as a line that *declares* a seam method of that name (`async deleteDatabase(`), which deletes nothing
+ *   itself.
+ * - **Seen, half two:** every module that deletes through `provision/resources.ts`. That module re-exposes
+ *   the delete as `ResourceProvisioners.d1.delete`, which a holder can call without naming `deleteDatabase`.
+ *   So every module importing it — by a static, dynamic or template-literal specifier, however the binding is
+ *   aliased — that says `delete` in code (strings blanked) or as a string key must be `feature/provision.ts`.
+ *   Planted and red: `cloudflareProvisioners(cf, account).d1.delete(id)` under an `as` alias, the same as
+ *   `d1["delete"](id)`, and `const { delete: remove } = d1` behind a template-literal dynamic import.
+ * - **Deliberately not counted: a feature environment's teardown** (`pithy feature destroy`, through
+ *   `provision/resources.ts`). That includes retained databases. A feature ignores `global` and names its own
+ *   copy of every `d1` binding its capabilities declare (`provision/environment.ts`), so a branch composing
+ *   `secrets` or `email` has its own `SECRETS` and `EMAIL_SUPPRESSIONS`, and `destroy` deletes them with the
+ *   rest, rows and all. They are the branch's own, and the branch is ephemeral by definition: the teardown is
+ *   what the merge-to-main CI job runs headlessly, where nobody can type a count. What it never reaches is a
+ *   declared environment's database — every name it deletes is recomputed from the feature's identity.
+ * - **Not seen:** a member name built at runtime (`d1["delete" + "Database"]`); a delete handed on by value —
+ *   a module importing `provision/resources.ts` that passes `provisioners.d1` to a helper elsewhere, whose
+ *   `target.delete(id)` imports nothing from it (planted, and it passed); a raw `DELETE` against
+ *   `/d1/database/<id>` through `cloudflareRequest` or `fetch`; `wrangler d1 delete` spawned as a subprocess;
  *   and any package other than the CLI.
  */
 

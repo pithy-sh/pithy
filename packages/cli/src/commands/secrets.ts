@@ -13,13 +13,9 @@ import {
   type SecretRotationRecorder,
 } from "@pithy-sh/secrets/src/cli/dispatch";
 import { secretWriteTargets } from "@pithy-sh/secrets/src/cli/writeTargets";
-import {
-  deprovisionSecrets,
-  deprovisionTarget,
-  provisionSecrets,
-} from "@pithy-sh/secrets/src/provision/provisionSecrets";
+import { deprovisionSecrets, provisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { SecretBackend, type SecretRegistry, type SecretRegistryEntry } from "@pithy-sh/secrets/src/registry";
-import { canonicalGlobalEnvironment, type ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
+import { canonicalGlobalEnvironment, deprovisionTarget, type ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
 import { createProjectCliAudit } from "../audit/cliAudit";
 import {
@@ -908,7 +904,7 @@ const deprovision = defineCommand({
         process.stdout.write(
           `${formatJsonLine({
             command: "secrets deprovision",
-            environment: result.environment,
+            env: result.environment,
             keysDeleted: args.keys,
             managerTokenDeleted: result.managerTokenDeleted,
           })}\n`,

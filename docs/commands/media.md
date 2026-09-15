@@ -8,12 +8,12 @@ Stands up what `pithy add media` only wired: the per-environment R2 bucket, the 
 
 ```
 pithy media provision [--worker <name>] [--api-token <token>] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--r2-api-token <token>] [--json]
-pithy media deprovision [--storage] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--json]
+pithy media deprovision --env <environment> [--storage] [--r2-access-key-id <id>] [--r2-secret-access-key <key>] [--json]
 ```
 
 **Its Worker deploy is gated.** The Worker is deployed carrying a stamp naming the package version and a hash of its resolved configuration, and a run whose stamp matches both ships nothing. Anything the gate cannot establish — no Worker, no stamp, an unreachable account — deploys. `pithy deploy --env <env>` ships the same Worker without provisioning anything else, and `pithy deploy --env <env> --kit --force` re-uploads it regardless. See [`pithy deploy`](./deploy.md).
 
-**Both subcommands reach a Cloudflare account.** There is no local mode and no `--env` flag: provisioning spans every managed environment — `staging` and `prod` — in one run.
+**Both subcommands reach a Cloudflare account.** There is no local mode. `provision` has no `--env` flag: it spans every managed environment — `staging` and `prod` — in one run. `deprovision` is the opposite, and requires one: it tears down exactly the environment named.
 
 ## Flags
 
@@ -32,7 +32,8 @@ pithy media deprovision [--storage] [--r2-access-key-id <id>] [--r2-secret-acces
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--storage` | `false` | **Irreversible.** Also delete the R2 bucket with every object in it, and the `MEDIA` KV namespace |
+| `--env <environment>` | none — required | The one environment to tear down, declared in `pithy.config.ts`. With none, or one not declared, it refuses and lists the environments it could act on |
+| `--storage` | `false` | **Irreversible.** Also delete that environment's R2 bucket with every object in it, and its `MEDIA` KV namespace |
 | `--r2-access-key-id <id>` | `R2_CREDENTIALS` | Required with `--storage`: a bucket must be emptied over the S3 protocol before R2 will delete it |
 | `--r2-secret-access-key <key>` | `R2_CREDENTIALS` | The secret half of the pair |
 | `--json` | `false` | Machine-readable output |
@@ -54,7 +55,7 @@ If **every** environment is skipped the run exits 1 rather than reporting a succ
 
 Each ready environment's deploy still needs its secrets database resolved — `<project>-<env>-secrets`, looked up live, which `pithy secrets provision` creates — and that stays a refusal, because by the time an environment is ready a missing one is a genuine failure rather than a not-yet.
 
-`deprovision` removes the media workers. The bucket, its objects, and the namespace stay unless `--storage` is passed. With `--storage`, the key pair is resolved **before** the first worker comes down: discovering it missing at the bucket step would leave the workers gone and the bucket standing.
+`deprovision` removes **one named environment's** media worker. Its bucket, its objects, and its namespace stay unless `--storage` is passed. There is no default environment and no "all": it used to walk every declared environment, so a `--storage` run meant for staging deleted production's bucket and namespace with it. Named nothing, or something undeclared, it refuses before any credential is read and lists what could be named. With `--storage`, the key pair is resolved **before** the worker comes down: discovering it missing at the bucket step would leave the worker gone and the bucket standing.
 
 Both subcommands audit what they did, when the project composes `@pithy-sh/audit` and credentials resolve. Auditing is a no-op otherwise.
 
@@ -83,7 +84,8 @@ When **every** environment was skipped the line above is still written to stdout
 | key | type | meaning |
 |---|---|---|
 | `command` | `"media deprovision"` | The subcommand that produced this line |
-| `storageDeleted` | boolean | Whether `--storage` was passed, and therefore whether the bucket, its objects, and the namespace were deleted |
+| `env` | string | The one environment torn down — the value of `--env` |
+| `storageDeleted` | boolean | Whether `--storage` was passed, and therefore whether that environment's bucket, its objects, and its namespace were deleted |
 
 A failing run writes `{"error":{…}}` to stderr instead and exits 1 — the same public payload the HTTP surface encodes, with `detail` stripped.
 
@@ -171,17 +173,17 @@ $ pithy media provision --json
 {"command":"media provision","environments":[{"env":"staging","bucketName":"acme-staging-media","kvNamespaceId":null}],"skippedEnvironments":[{"env":"prod","reason":"env.prod has no DB database_id.","action":"Run pithy provision --env prod."}]}
 ```
 
-Take the workers down and leave the objects alone:
+Take staging's worker down and leave the objects alone:
 
 ```
-$ pithy media deprovision
-Media workers removed.
+$ pithy media deprovision --env staging
+staging: media worker removed.
 Done.
 ```
 
-Take everything down, including the bytes:
+Take all of staging down, including the bytes. Production is untouched:
 
 ```
-$ pithy media deprovision --storage --json
-{"command":"media deprovision","storageDeleted":true}
+$ pithy media deprovision --env staging --storage --json
+{"command":"media deprovision","env":"staging","storageDeleted":true}
 ```

@@ -1,13 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { assertRetainedAgreed, type RetainedRows } from "@pithy-sh/core/src/migrations/retained";
 import type { DeclaredEnvironments } from "@pithy-sh/core/src/naming/environment";
 import { resourceNames } from "@pithy-sh/core/src/naming/resourceNames";
 import type { EncryptionConfig } from "../crypto/envelope";
 import { generateKeyB64 } from "../rotation/keyRotation";
-import { type ManagedEnvironment, managedEnvironments } from "../scope";
+import { type DeprovisionTarget, deprovisionTarget, type ManagedEnvironment, managedEnvironments } from "../scope";
 
 /**
  * The CF Secrets Store entry name holding an environment's master key — `<project>-<env>-secrets-encryption-keys`.
@@ -203,43 +202,12 @@ export interface DeprovisionOptions {
   destroyRetained?: number;
 }
 
-/** What a teardown was asked to act on: the environment the operator named, if any, and the project's set. */
-export interface DeprovisionTarget {
-  /** The environment named on the command line. Absent is a refusal, never a default. */
-  environment: string | undefined;
-  /** Every environment the root `pithy.config.ts` declares — what a refusal lists. */
-  declared: DeclaredEnvironments | readonly string[];
-}
-
 /** What a teardown did. */
 export interface DeprovisionResult {
   /** The one environment torn down. */
   environment: ManagedEnvironment;
   /** Whether the shared manager token went too — only when no declared environment still runs a manager. */
   managerTokenDeleted: boolean;
-}
-
-/**
- * **The environment a teardown acts on is one the operator named (#591).**
- *
- * `deprovision` used to walk every declared environment: one run, typed to clean up staging, deleted
- * production's vault. There is no default here — not all, not the first, not "everything but prod" — because
- * any default is a set somebody did not type, and the only environment worth defaulting away from is the one a
- * default would eventually reach. So production is never in a default set by there being no default set.
- *
- * Absent, or naming an environment the project does not declare, it refuses and lists what could be named.
- */
-export function deprovisionTarget(target: DeprovisionTarget): ManagedEnvironment {
-  const environments = managedEnvironments(target.declared);
-  const named = target.environment;
-  if (named !== undefined && environments.includes(named)) return named;
-  throw new ValidationError({
-    message:
-      named === undefined
-        ? "Name the environment to deprovision. Nothing was deleted."
-        : `${JSON.stringify(named)} is not an environment this project declares. Nothing was deleted.`,
-    action: `Pass --env with one of: ${environments.join(", ")}.`,
-  });
 }
 
 /**

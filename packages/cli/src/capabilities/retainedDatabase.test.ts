@@ -1,20 +1,22 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { readdir, readFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import type { D1Database } from "@cloudflare/workers-types";
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
 import { InternalError } from "@pithy-sh/core/src/error/pithyError";
 import { createMigrationRegistry } from "@pithy-sh/core/src/migrations/registry";
 import { RetainedBudget } from "@pithy-sh/core/src/migrations/retained";
 import { runMigrations } from "@pithy-sh/core/src/migrations/runner";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { suppressionDatabaseName } from "@pithy-sh/email/src/provision/provisionEmail";
 import { deprovisionSecrets } from "@pithy-sh/secrets/src/provision/provisionSecrets";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { MigrationProvider } from "kysely/migration";
 import { Miniflare } from "miniflare";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { blankStrings } from "../ci/childProcesses";
+import { readSource, sourcePaths } from "../ci/sourceFiles";
 import { KIT_ROOT } from "../test-utils/kitRoot";
 import { CloudflareEmailDeprovisioner, suppressionMigrationProvider } from "./emailProvisioner";
 import { deleteRetainedDatabase } from "./retainedDatabase";
@@ -167,45 +169,81 @@ describe("deleteRetainedDatabase", () => {
   });
 });
 
-/** Every non-test `.ts` file under `dir`, recursively. */
-async function sources(dir: string): Promise<string[]> {
-  const found: string[] = [];
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) found.push(...(await sources(path)));
-    else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) found.push(path);
+/** Every shipped module under the CLI's `src`, keyed by its path below `src`, with comments blanked. */
+function cliModules(): { path: string; file: string; code: string }[] {
+  const root = join(KIT_ROOT, "src");
+  const modules: { path: string; file: string; code: string }[] = [];
+  for (const file of sourcePaths(root)) {
+    const text = readSource(file);
+    if (text !== null)
+      modules.push({ path: relative(root, file).split(sep).join("/"), file, code: blankComments(text) });
   }
-  return found;
+  return modules;
+}
+
+/** The feature teardown's provisioners: the one module that exposes a D1 delete without counting it. */
+const RESOURCES = join(KIT_ROOT, "src", "provision", "resources.ts");
+
+/** Whether `module` imports `provision/resources.ts` — by a static, dynamic or template specifier, however aliased. */
+function importsResources(module: { file: string; code: string }): boolean {
+  for (const match of module.code.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*)(["'\x60])(\.[^"'\x60]*)\1/g)) {
+    const target = resolve(dirname(module.file), (match[2] as string).replace(/\.(?:js|ts)$/, ""));
+    if (`${target}.ts` === RESOURCES || target === RESOURCES) return true;
+  }
+  return false;
 }
 
 /**
- * **The reach, checked rather than asserted.** Every place the CLI's own sources name Cloudflare's D1 delete
- * is the primitive above, or `provision/resources.ts` — a feature environment's teardown, which binds no
- * retained database (see `retainedDatabase.ts`). A seam method *declared* with the same name
- * (`async deleteDatabase(env)`) is a name, not a delete; its body has to reach one of the two to delete
- * anything. Any other spelling — a call, a destructured or aliased member, a string key — names the member
- * once and is listed here.
+ * **The reach, checked rather than asserted.** Every D1 deletion in the CLI's own sources is the counted
+ * primitive, `deleteRetainedDatabase`, or the feature teardown — which is deliberately uncounted, and says
+ * so in `retainedDatabase.ts`. Two things have to be true for that, and each is a test:
+ *
+ * 1. **Only two modules name the control-plane delete.** `deleteDatabase` is spelled in `retainedDatabase.ts`
+ *    and `provision/resources.ts`, and nowhere else — a call, a destructured or aliased member, and a string
+ *    key all spell it once. A seam method *declared* with the name (`async deleteDatabase(env)`) is a name,
+ *    not a delete; its body has to reach one of the two to delete anything.
+ * 2. **Only the feature teardown deletes through `provision/resources.ts`.** That module re-exposes the delete
+ *    as `ResourceProvisioners.d1.delete`, so a module holding its provisioners can delete a vault without
+ *    naming `deleteDatabase` at all (#591's review planted exactly that, and the first half stayed green).
+ *    Every module that imports it — found by the specifier, which an alias cannot rename — and says `delete`
+ *    in code is `feature/provision.ts`.
  *
  * What this cannot see is written in `retainedDatabase.ts`'s header.
  */
-describe("every D1 delete in the CLI is counted first", () => {
-  test("the only sources naming the control-plane delete are the primitive and the feature teardown", async () => {
-    const root = join(KIT_ROOT, "src");
+describe("every D1 delete in the CLI is counted first, or is the feature teardown", () => {
+  test("this walk sees the CLI, so a miss is a failure and not a silent pass", () => {
+    const modules = cliModules();
+    expect(modules.length).toBeGreaterThan(200);
+    expect(modules.filter(importsResources).map((module) => module.path)).toEqual(
+      expect.arrayContaining(["commands/feature.ts", "feature/provision.ts"]),
+    );
+  });
+
+  test("the only sources naming the control-plane delete are the primitive and the feature teardown's provisioners", () => {
     const permitted = new Set(["capabilities/retainedDatabase.ts", "provision/resources.ts"]);
     const offenders: string[] = [];
-    for (const file of await sources(root)) {
-      const path = relative(root, file);
-      if (permitted.has(path)) continue;
-      const lines = (await readFile(file, "utf8")).split("\n");
-      for (const [index, line] of lines.entries()) {
+    for (const module of cliModules()) {
+      if (permitted.has(module.path)) continue;
+      for (const [index, line] of module.code.split("\n").entries()) {
         const code = line.trim();
-        if (code.startsWith("*") || code.startsWith("//") || code.startsWith("/*")) continue;
         if (!code.includes("deleteDatabase")) continue;
         // A declaration names the member once and deletes nothing; a one-line body that also calls it does not pass.
         if (/^async deleteDatabase\(/.test(code) && code.split("deleteDatabase").length === 2) continue;
-        offenders.push(`${path}:${index + 1}: ${code}`);
+        offenders.push(`${module.path}:${index + 1}: ${code}`);
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  test("the only module that deletes through the feature teardown's provisioners is the feature teardown", () => {
+    const offenders = cliModules()
+      .filter((module) => module.path !== "provision/resources.ts" && importsResources(module))
+      .filter((module) => {
+        // `delete` as a word in code, strings blanked so a flag's description does not count — and the one
+        // spelling blanking would hide, a string key, read from the unblanked code.
+        return /\bdelete\b/.test(blankStrings(module.code)) || /\[\s*["'\x60]delete["'\x60]\s*\]/.test(module.code);
+      })
+      .map((module) => module.path);
+    expect(offenders).toEqual(["feature/provision.ts"]);
   });
 });

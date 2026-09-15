@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { type DeclaredEnvironments, isValidEnvironment } from "@pithy-sh/core/src/naming/environment";
 import { z } from "zod";
 import type { SecretBackend, SecretScope } from "./registry";
@@ -67,6 +68,41 @@ export type ManagedEnvironment = z.output<typeof ManagedEnvironment>;
  */
 export function managedEnvironments(declared: DeclaredEnvironments | readonly string[]): ManagedEnvironment[] {
   return [...declared];
+}
+
+/** What a teardown was asked to act on: the environment the operator named, if any, and the project's set. */
+export interface DeprovisionTarget {
+  /** The environment named on the command line. Absent is a refusal, never a default. */
+  environment: string | undefined;
+  /** Every environment the root `pithy.config.ts` declares — what a refusal lists. */
+  declared: DeclaredEnvironments | readonly string[];
+}
+
+/**
+ * **The environment a teardown acts on is one the operator named (#591).**
+ *
+ * `secrets deprovision` used to walk every declared environment: one run, typed to clean up staging, deleted
+ * production's vault. `storage deprovision --storage` and `media deprovision --storage` walked them the same
+ * way, emptying and deleting production's buckets with staging's. There is no default here — not all, not the
+ * first, not "everything but prod" — because any default is a set somebody did not type, and the only
+ * environment worth defaulting away from is the one a default would eventually reach. So production is never
+ * in a default set by there being no default set.
+ *
+ * Absent, or naming an environment the project does not declare, it refuses and lists what could be named.
+ * Every capability teardown that deletes a per-environment resource resolves its one environment here, so the
+ * refusal reads the same wherever it is met.
+ */
+export function deprovisionTarget(target: DeprovisionTarget): ManagedEnvironment {
+  const environments = managedEnvironments(target.declared);
+  const named = target.environment;
+  if (named !== undefined && environments.includes(named)) return named;
+  throw new ValidationError({
+    message:
+      named === undefined
+        ? "Name the environment to deprovision. Nothing was deleted."
+        : `${JSON.stringify(named)} is not an environment this project declares. Nothing was deleted.`,
+    action: `Pass --env with one of: ${environments.join(", ")}.`,
+  });
 }
 
 /**
