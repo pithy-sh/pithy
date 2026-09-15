@@ -16,6 +16,7 @@ import dashboard, {
   formatDisconnectReport,
   formatRotateReport,
   formatStatusReport,
+  offerIsAnswerable,
   parsePublicKey,
 } from "./dashboard";
 
@@ -401,6 +402,26 @@ describe("the offer to open the approval page", () => {
     const { lines, urls } = announced({ json: true, open: true }, { interactive: false });
     expect(urls).toEqual([]);
     expect(lines).toEqual(["Open https://app.pithy.sh/cli and enter ABCD-EFGH.", "▸ Waiting for approval..."]);
+  });
+
+  /**
+   * **The gate reads the stream the offer is written to.** Every line of this announcement goes to
+   * stderr, so `pithy dashboard connect > connection.json` leaves a human watching a real terminal —
+   * and the old gate, which required `stdout.isTTY`, silently withheld a key that would have worked.
+   * The opposite case is the one that matters more: `2> log` means nobody sees the offer line, so
+   * stating a key there would strand raw mode against an audience of nobody.
+   */
+  test("the offer's gate reads stdin and stderr, because that is where it speaks", () => {
+    const tty = { isTTY: true } as NodeJS.ReadStream & NodeJS.WriteStream;
+    const piped = { isTTY: false } as NodeJS.ReadStream & NodeJS.WriteStream;
+
+    expect(offerIsAnswerable(false, { stdin: tty, stderr: tty })).toBe(true);
+    // stdout redirected, stderr still a terminal: the offer is visible and answerable.
+    expect(offerIsAnswerable(false, { stdin: tty, stderr: tty, stdout: piped })).toBe(true);
+    // stderr redirected: the line reaches nobody, so no key is stated.
+    expect(offerIsAnswerable(false, { stdin: tty, stderr: piped })).toBe(false);
+    expect(offerIsAnswerable(false, { stdin: piped, stderr: tty })).toBe(false);
+    expect(offerIsAnswerable(true, { stdin: tty, stderr: tty })).toBe(false);
   });
 
   test("no terminal neither offers nor opens", () => {

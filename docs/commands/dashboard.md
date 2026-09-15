@@ -79,7 +79,9 @@ A stated key, not a prompt. The command is already polling and finishes whether 
 
 What opens is the approval page. If your management client sends a `verificationUriComplete` — the same page with the code already filled in — that is what `o` opens, and it is never printed, because it carries the code. Both are `http(s)` or the CLI refuses them.
 
-The offer appears only where a key can be pressed. `--json`, a pipe on stdin or stdout, `--no-open`, and `PITHY_NO_OPEN` at any value each suppress the line as well as the open. An opener that is missing — a headless box with no `xdg-open` — prints one line and the sign-in carries on.
+The offer appears only where a key can be pressed. `--json`, a pipe on stdin or stderr, `--no-open`, and `PITHY_NO_OPEN` at any value each suppress the line as well as the open. An opener that is missing — a headless box with no `xdg-open` — prints one line and the sign-in carries on.
+
+**Windows offers nothing, deliberately.** There is no `o` on Windows: the URL and the code are printed, and you open the page yourself. Every mechanism available is either a command interpreter or drops what this URL needs. `cmd /c start` re-parses its own command line, so `&`, `|`, `^`, `>` and `%VAR%` — all legal in a URL, and this URL arrives over the wire from whatever `--origin` names — stop being an address and become commands. `rundll32 url.dll,FileProtocolHandler` strips the query string, and `explorer.exe` will not open a URL carrying arguments, so both lose the code the page needs. PowerShell works and is still an interpreter reading a string somebody else sent. A missing convenience is a line in this table; a shell injection is an incident.
 
 **`rotate`** appends a successor key and proves it. **It never expires the old one**, and that ordering is the entire safety property (`docs/CONTROL-PLANE.md` §6): append, prove, then expire, with expiry belonging to the management client once *it* has proven the successor from *its* infrastructure. Two live keys is a normal state. A stale key costs nothing; expiring one that turns out to be the only working credential costs the connection, with no authenticated path back.
 

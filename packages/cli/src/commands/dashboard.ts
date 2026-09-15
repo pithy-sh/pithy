@@ -231,6 +231,28 @@ function isInteractive(json: boolean): boolean {
   return !json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
 }
 
+/** The streams {@link offerIsAnswerable} reads. Injectable, because a test cannot redirect this process's. */
+export interface OfferStreams {
+  stdin: { isTTY?: boolean };
+  stderr: { isTTY?: boolean };
+  /** Unread, and named so the difference from {@link isInteractive} is visible rather than inferred. */
+  stdout?: { isTTY?: boolean };
+}
+
+/**
+ * Whether the `o` offer can be both seen and answered.
+ *
+ * **It reads stdin and stderr, and {@link isInteractive} reads stdin and stdout, and the difference is
+ * not an oversight.** A prompt is drawn on stdout by `@clack/prompts`; this announcement is written to
+ * stderr, deliberately, so `--json`'s single stdout line stays the only machine output. Gating the
+ * offer on stdout therefore asked about a stream it never writes to: `pithy dashboard connect >
+ * connection.json` withheld a key a watching human could have pressed, and — the case that actually
+ * costs something — `2> log` would have stated a key nobody could see while raw mode was on.
+ */
+export function offerIsAnswerable(json: boolean, streams: OfferStreams): boolean {
+  return !json && Boolean(streams.stdin.isTTY) && Boolean(streams.stderr.isTTY);
+}
+
 /** The two flags an announcement reads: whether output is machine-readable, and whether opening is wanted. */
 type AnnounceArgs = { json: boolean; open: boolean };
 
@@ -263,8 +285,10 @@ export function announceFor(
 ): (authorization: DeviceAuthorization) => OpenOffer | undefined {
   const write = seams.write ?? ((line: string) => void process.stderr.write(`${line}\n`));
   const offer = seams.offerToOpen ?? offerToOpen;
-  // The same three-term gate every other prompt in this command reads, and no fourth spelling of it.
-  const interactive = seams.interactive ?? isInteractive(args.json);
+  // Gated on the streams this announcement actually uses — see `offerIsAnswerable`, which is where the
+  // difference from the prompts' own gate is written down.
+  const interactive =
+    seams.interactive ?? offerIsAnswerable(args.json, { stdin: process.stdin, stderr: process.stderr });
   const env = seams.env ?? process.env;
 
   return (authorization) => {

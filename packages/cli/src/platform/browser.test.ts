@@ -68,9 +68,69 @@ const CLEAR = { json: false, isTTY: true, noOpen: false, env: {} as NodeJS.Proce
 describe("openCommand", () => {
   test("uses each platform's own opener, and hands the URL over as one argument", () => {
     expect(openCommand(URL, "darwin")).toEqual({ command: "open", args: [URL] });
-    expect(openCommand(URL, "win32")).toEqual({ command: "cmd", args: ["/c", "start", "", URL] });
     expect(openCommand(URL, "linux")).toEqual({ command: "xdg-open", args: [URL] });
     expect(openCommand(URL, "freebsd")).toEqual({ command: "xdg-open", args: [URL] });
+  });
+
+  /** Windows has no opener the kit will use. See the module docblock: every candidate is a shell or drops the query. */
+  test("windows has no opener at all, rather than a shell", () => {
+    expect(openCommand(URL, "win32")).toBeNull();
+  });
+
+  /**
+   * **No platform's opener is a command interpreter.** `cmd /c start` was the first Windows branch, and
+   * it is a shell handed a network string: `cmd.exe` re-parses its own command line, so `&`, `|`, `^`,
+   * `>` and `%VAR%` — every one of them legal in an https URL, and all of them reachable, because the
+   * URL arrives from whatever origin `--origin` named — stop being part of the address and start being
+   * syntax.
+   */
+  test("no platform hands the URL to a command interpreter", () => {
+    const interpreters = new Set(["cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "sh", "bash", "zsh"]);
+    for (const platform of ["darwin", "win32", "linux", "freebsd"] as const) {
+      const opener = openCommand(URL, platform);
+      if (opener === null) continue;
+      expect(interpreters.has(opener.command)).toBe(false);
+      expect(opener.args.filter((argument) => argument === URL)).toEqual([URL]);
+    }
+  });
+
+  test("a URL carrying shell metacharacters reaches argv byte for byte", () => {
+    const hostile = "https://app.pithy.sh/cli?a=1&b=2|c^d>e%USERPROFILE%";
+    for (const platform of ["darwin", "win32", "linux", "freebsd"] as const) {
+      const opener = openCommand(hostile, platform);
+      if (opener === null) continue;
+      expect(opener.args).toContain(hostile);
+    }
+  });
+});
+
+describe("windows", () => {
+  test("openUrl refuses, naming the limitation rather than spawning anything", async () => {
+    const counted = countingSpawn();
+    const error: unknown = await openUrl(URL, { platform: "win32", spawn: counted.spawn }).then(
+      () => undefined,
+      (thrown: unknown) => thrown,
+    );
+    if (!(error instanceof PithyError)) throw new Error("expected a PithyError");
+    expect(counted.calls).toBe(0);
+    expect(`${error.message} ${error.payload.action ?? ""}`).toContain("Windows");
+    expect(error.payload.action).toContain(URL);
+  });
+
+  test("no key is stated where no key can work", () => {
+    const stdin = fakeStdin(true);
+    const written: string[] = [];
+    const offer = offerToOpen({
+      url: URL,
+      platform: "win32",
+      write: (line) => written.push(line),
+      readKeys: over(stdin),
+      openUrl: async () => {},
+    });
+    expect(offer.offered).toBe(false);
+    expect(written).toEqual([]);
+    expect(stdin.rawModes).toEqual([]);
+    offer.stop();
   });
 });
 
@@ -90,6 +150,44 @@ describe("openUrl", () => {
       },
     });
     expect(calls).toEqual([{ command: "xdg-open", args: [URL], detached: true }]);
+  });
+
+  /**
+   * The opener is handed a URL the parser produced, not the string that came over the wire. One parse
+   * decides both that the address is a web address and what is spawned, so no opener can ever receive a
+   * spelling the check did not read.
+   */
+  test("the opener receives the parsed address, not the raw string", async () => {
+    const calls: string[][] = [];
+    await openUrl("https://app.pithy.sh/cli?b=2&a=1", {
+      platform: "linux",
+      spawn: (_command, args) => {
+        calls.push(args);
+        return {
+          once: (event: "spawn" | "error", listener: (error: Error) => void) => {
+            if (event === "spawn") queueMicrotask(() => listener(new Error("unused")));
+          },
+          unref: () => {},
+        };
+      },
+    });
+    expect(calls).toEqual([["https://app.pithy.sh/cli?b=2&a=1"]]);
+
+    const bare: string[][] = [];
+    await openUrl("https://app.pithy.sh", {
+      platform: "linux",
+      spawn: (_command, args) => {
+        bare.push(args);
+        return {
+          once: (event: "spawn" | "error", listener: (error: Error) => void) => {
+            if (event === "spawn") queueMicrotask(() => listener(new Error("unused")));
+          },
+          unref: () => {},
+        };
+      },
+    });
+    // `new URL(…).href` roots a bare origin. The opener sees what the parser read, path and all.
+    expect(bare).toEqual([["https://app.pithy.sh/"]]);
   });
 
   test("a missing opener is an actionable refusal carrying the URL to open by hand", async () => {

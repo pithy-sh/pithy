@@ -92,7 +92,7 @@ One keypair per connection — per customer, per project, per environment. A lea
 pithy dashboard connect --env prod
 ```
 
-1. The CLI starts a **device-code flow** against the management client's origin, prints a short user code, and offers `o` to open your browser. Same shape as `wrangler login`. *This* leg is genuine user delegation, which is why a browser authorization flow belongs here and not on the machine-to-machine leg.
+1. The CLI starts a **device-code flow** against the management client's origin, prints a short user code, and offers `o` to open your browser — on macOS and Linux; Windows prints the URL and opens nothing, for the reason `docs/commands/dashboard.md` gives. Same shape as `wrangler login`. *This* leg is genuine user delegation, which is why a browser authorization flow belongs here and not on the machine-to-machine leg.
 2. You approve in the browser. The CLI polls and receives a short-lived connect token.
 3. The CLI requests a connection for this project, environment, the scopes you chose, and **the seam's address on this Worker** — its URL and its base path.
 4. The dashboard generates an Ed25519 keypair, keeps the private half, and returns `{ connectionId, keyId, publicKeyJwk, issuer }`.

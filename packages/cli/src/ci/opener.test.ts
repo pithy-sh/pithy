@@ -28,20 +28,27 @@ import { isTestFile, readSource, sourcePaths } from "./sourceFiles";
  *
  * - **A spawning library.** `execa` or `cross-spawn` opening a browser names no primitive this walk knows.
  *   None is a dependency; `./childProcesses.ts` carries the same hole for the same reason.
- * - **An executable built at runtime.** The command literal is what assertion 2 reads, so
- *   `spawn(["xdg", "open"].join("-"), …)` passes it — but such a module still fails assertion 1, which
- *   reads the text.
+ * - **An executable built at runtime.** The command literal is what the browser-name rule reads, so
+ *   `spawn(["xdg", "open"].join("-"), …)` passes it — but such a module still fails the census, which
+ *   records the site as `command`, and the text rule, which reads the source.
+ * - **A module that already spawns, opening a URL with the process it already starts.** `project/
+ *   deploy.ts` handing wrangler a URL is a row that is already in the census. The census catches new
+ *   processes, not new arguments to old ones.
  * - **Raw mode reached through something other than `setRawMode`.** There is no other way from Node, but
  *   a native addon would not be seen.
  * - **Anything outside `packages/cli/src`, and `ci/` inside it** — this tree's own gates, which vitest
  *   runs and `pithy` never loads.
  *
  * **The reach was measured in the real tree.** Each of these was planted and went red: a
- * `spawn("open", …)` in `commands/dashboard.ts`, on the spawn rule; the same with `"cmd"`, on the same
- * rule, which is the spelling a Windows-first second opener would use; the same with `"xdg-open"`, on
- * that rule *and* on the text rule; a hand-rolled `process.stdin.setRawMode(true)` in
+ * `spawn("open", …)` in `commands/dashboard.ts`, on the browser-name rule; the same with `"cmd"`, on the
+ * same rule, which is the spelling a Windows-first second opener would use; the same with `"xdg-open"`,
+ * on that rule *and* on the text rule; a hand-rolled `process.stdin.setRawMode(true)` in
  * `dev/orchestrator.ts`, and a third importer of `terminal/keys`, both on the reader rule; and a second
  * `"Press k to open the link in the browser."` in `commands/dashboard.ts`, on the sentence rule.
+ *
+ * And the one that was green when it should not have been, which is why the census exists:
+ * `spawn("firefox", [url])` in `commands/dashboard.ts` — a second opener under a name the list did not
+ * hold — passed every rule above. It fails the census, by name.
  *
  * One near miss is worth recording: a planted opener that called a *local* `spawnPlant` rather than a
  * `child_process` binding passed the spawn rule, because that walk finds primitives by the module
@@ -66,8 +73,49 @@ const KEYS = resolve(CLI_SRC, "terminal", "keys.ts");
 /** The one composition of the two, and the one other consumer of the reader — `pithy dev`'s `l`. */
 const KEY_READERS = [BROWSER, resolve(CLI_SRC, "dev", "orchestrator.ts")];
 
-/** Every spelling of "hand this to the desktop", so a second opener cannot rename its way past this. */
-const BROWSER_COMMANDS: ReadonlySet<string> = new Set(["open", "xdg-open", "cmd", "start"]);
+/** The spellings that are unmistakably "hand this to the desktop", reported with a sentence of their own. */
+const BROWSER_COMMANDS: ReadonlySet<string> = new Set([
+  "open",
+  "xdg-open",
+  "cmd",
+  "start",
+  "rundll32",
+  "explorer",
+  "explorer.exe",
+  "powershell",
+  "powershell.exe",
+  "pwsh",
+]);
+
+/**
+ * **Every child process this CLI starts, and why.**
+ *
+ * The four-name list above was the whole of the old rule, and its comment claimed a second opener could
+ * not rename its way past it. It could: `spawn("firefox", [url])` in `commands/dashboard.ts` was planted
+ * and the gate stayed green. A name list only ever catches the names somebody thought of.
+ *
+ * So the population is every spawn site instead. A second opener has to start *something*, and whatever
+ * it starts appears here as a row that is not in this census — by its own name, or as `command` when it
+ * is computed. The cost is that an unrelated new child process also lands here, which is the same trade
+ * `ci/narration.test.ts` makes and for the same reason: an enumerated population names the offender,
+ * where a boolean says only that something is wrong.
+ *
+ * The key is `<module> <executable as written>`; the value is why that module starts that process.
+ */
+const SPAWNS: Readonly<Record<string, string>> = {
+  'dev/ports.ts "lsof"': "Finds what already holds a dev port, to name the process rather than the number.",
+  'dev/ports.ts "ps"': "Names the process holding a port, when lsof is not installed.",
+  "dev/orchestrator.ts command": "Runs each worker's dev server — the command is the resolved package manager.",
+  'feature/ports.ts "git"': "Reads the branch a feature's port block belongs to.",
+  'feature/worktree.ts "git"': "Creates and removes the worktree a feature branch lives in.",
+  "platform/browser.ts command": "The one browser opener. The command is this platform's, from `openCommand`.",
+  "platform/editor.ts command":
+    "The one editor launcher. The command is `$VISUAL`, `$EDITOR`, or the platform default.",
+  "project/deploy.ts command": "Runs wrangler to deploy, through the project's own package manager.",
+  "project/packageManager.ts command": "Runs the adopter's package manager — the command is which one they use.",
+  'project/templateFiles.ts "git"': "Reads a template's tracked files, so a scaffold copies what git knows.",
+  "project/wrangler.ts command": "Runs wrangler for everything that is not a deploy, through the package manager.",
+};
 
 /** The offer, as a human reads it. A second phrasing is a second product. */
 const OFFER = "to open the link in the browser";
@@ -133,6 +181,19 @@ describe("one opener, one key reader, one sentence", () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  /**
+   * The rule the name list cannot state: **a second opener has to start something, and everything this
+   * CLI starts is named here.** A new row is a new child process — an opener under any name, or a
+   * computed command — and the author either explains it in {@link SPAWNS} or stops starting it.
+   */
+  test("every child process this CLI starts is one somebody named", () => {
+    const census = new Set<string>();
+    for (const [file, calls] of report.calls) {
+      for (const call of calls) census.add(`${relative(CLI_SRC, file)} ${call.executable}`);
+    }
+    expect([...census].sort()).toEqual(Object.keys(SPAWNS).sort());
   });
 
   test("one module takes the terminal's own handling away, and two argued callers reach it", () => {

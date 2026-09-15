@@ -43,27 +43,70 @@ export interface OpenUrlOptions {
   spawn?: OpenSpawn;
 }
 
-/** Whether this is an address a browser should be handed. Unparseable is not, and nor is any other scheme. */
-function isWebAddress(url: string): boolean {
+/**
+ * The address as the parser read it, or null for anything a browser should not be handed.
+ *
+ * **One parse decides both questions.** What is checked and what is spawned are the same value, so no
+ * opener can receive a spelling the check did not read — a second `new URL` at the spawn would be a
+ * second chance for the two to disagree.
+ */
+function webAddress(url: string): string | null {
   try {
-    const { protocol } = new URL(url);
-    return protocol === "http:" || protocol === "https:";
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
+/** Whether this is an address a browser should be handed. Unparseable is not, and nor is any other scheme. */
+function isWebAddress(url: string): boolean {
+  return webAddress(url) !== null;
+}
+
 /**
- * The opener for one platform. macOS and Windows ship their own; everything else is `xdg-open`, which
- * is the freedesktop standard and present on any Linux with a desktop session.
+ * The opener for one platform, or **null where the kit will not open one**. macOS ships `open`;
+ * everything but Windows is `xdg-open`, the freedesktop standard present on any Linux with a desktop
+ * session.
  *
- * The empty string on Windows is not noise: `start` reads its first quoted argument as the *window
- * title*, so a URL passed without it is consumed as a title and nothing opens.
+ * ## Windows opens nothing, deliberately (#607 review)
+ *
+ * The first Windows branch was `cmd /c start "" <url>`, and that is a shell handed a network string.
+ * `cmd.exe` re-parses its own command line, so `&`, `|`, `^`, `>` and `%VAR%` — every one legal in an
+ * https URL, and every one arriving from whatever origin `--origin` named — stop being part of the
+ * address and become syntax. Node quotes an argument containing spaces; it does not escape `cmd`'s
+ * metacharacters. `…/cli?a=1&calc` is command execution, from a URL the kit was handed over the wire.
+ *
+ * The no-shell candidates were checked rather than assumed, and each is documented to drop exactly the
+ * URLs this feature exists for — ones carrying a query:
+ *
+ * - **`rundll32 url.dll,FileProtocolHandler`** strips the query string (reported from Windows 7 onward),
+ *   and fails outright on a fragment.
+ * - **`explorer.exe <url>`** cannot open a URL carrying arguments.
+ *
+ * What does work is PowerShell with an encoded command and an escaped argument — which is what the
+ * `open` package does, and which is still an interpreter reading a string we were handed. **So Windows
+ * gets no opener.** `pithy` prints the URL, as it always did, and states that opening is not offered
+ * there. A missing convenience on one platform is a line in `docs/commands/dashboard.md`; a shell
+ * injection in an MIT kit somebody else deploys is an incident.
+ *
+ * **Do not "fix" this by shelling out.** If Windows is to open a link, it needs a mechanism that takes
+ * the URL as an argument and parses nothing — and the next person to look should record what they
+ * checked here, as this entry does.
  */
-export function openCommand(url: string, platform: NodeJS.Platform): { command: string; args: string[] } {
+export function openCommand(url: string, platform: NodeJS.Platform): { command: string; args: string[] } | null {
   if (platform === "darwin") return { command: "open", args: [url] };
-  if (platform === "win32") return { command: "cmd", args: ["/c", "start", "", url] };
+  if (platform === "win32") return null;
   return { command: "xdg-open", args: [url] };
+}
+
+/** The refusal for a platform with no opener, so the URL is still the answer. */
+function noOpener(url: string): InternalError {
+  return new InternalError({
+    message: "Opening a browser is not offered on Windows.",
+    action: `Open ${url} yourself.`,
+    detail: "no opener on win32: every candidate is a command interpreter or drops the query string",
+  });
 }
 
 /**
@@ -78,7 +121,8 @@ export function openCommand(url: string, platform: NodeJS.Platform): { command: 
  * carrying the URL, so the answer to "it did not open" is a line the developer can click.
  */
 export function openUrl(url: string, options: OpenUrlOptions = {}): Promise<void> {
-  if (!isWebAddress(url)) {
+  const address = webAddress(url);
+  if (address === null) {
     return Promise.reject(
       new ValidationError({
         message: "That link isn't a web address.",
@@ -90,7 +134,9 @@ export function openUrl(url: string, options: OpenUrlOptions = {}): Promise<void
 
   const platform = options.platform ?? process.platform;
   const spawnChild = options.spawn ?? ((command, args, opts) => spawn(command, args, opts));
-  const { command, args } = openCommand(url, platform);
+  const opener = openCommand(address, platform);
+  if (opener === null) return Promise.reject(noOpener(address));
+  const { command, args } = opener;
 
   return new Promise<void>((resolve, reject) => {
     const child = spawnChild(command, args, { detached: true, stdio: "ignore" });
@@ -99,7 +145,7 @@ export function openUrl(url: string, options: OpenUrlOptions = {}): Promise<void
       reject(
         new InternalError({
           message: "Could not open a browser.",
-          action: `Open ${url} yourself.`,
+          action: `Open ${address} yourself.`,
           detail: `${command} failed: ${error.message}`,
         }),
       );
@@ -150,6 +196,8 @@ export const OPEN_PROMPT = "Press o to open the link in the browser.";
 export interface OfferToOpenOptions {
   /** What to open. Refused, silently and offerlessly, if it is not http(s). */
   url: string;
+  /** Which platform's opener decides whether there is anything to offer. Defaults to this process's. */
+  platform?: NodeJS.Platform;
   /** Where the offer line and any failure go — stderr in `dashboard`, the log line in `dev`. */
   write: (line: string) => void;
   /** The key reader seam. Defaults to the real one over `process.stdin`. */
@@ -193,6 +241,9 @@ const NOT_LISTENING: KeyReader = { active: false, stop: () => {} };
  */
 export function offerToOpen(options: OfferToOpenOptions): OpenOffer {
   if (!isWebAddress(options.url)) return INERT;
+  // A stated key that cannot work is worse than no line: on a platform with no opener, say nothing and
+  // leave the printed URL to be the whole of the answer.
+  if (openCommand(options.url, options.platform ?? process.platform) === null) return INERT;
 
   const read = options.readKeys ?? readKeysDefault;
   const open = options.openUrl ?? ((url: string) => openUrl(url));
