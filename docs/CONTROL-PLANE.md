@@ -461,6 +461,7 @@ Every command is non-interactive and `--json` capable, like the rest of the CLI.
 pithy dashboard connect --env prod
 pithy dashboard connect --env prod --update --worker-url https://api.example.com
 pithy dashboard connect --env prod --public-key ./client.jwk.json --scope manifest:read
+pithy dashboard connect --env prod --scope all
 pithy dashboard rotate --env prod
 pithy dashboard revoke-key --env prod --key-id cpk_2026_07
 pithy dashboard disconnect --env prod

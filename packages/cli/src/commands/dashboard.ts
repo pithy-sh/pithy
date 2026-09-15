@@ -27,9 +27,9 @@ import {
   type StatusReport,
 } from "../dashboard/connect";
 import type { DashboardClient, DeviceAuthorization } from "../dashboard/contract";
-import { defaultGrant, type GrantableScope, grantableScopes } from "../dashboard/grant";
+import { decideGrant, type GrantableScope, isNarrowed, readScopeRequest } from "../dashboard/grant";
 import { type ConnectionRegistry, openConnectionRegistry } from "../dashboard/registry";
-import { describeConnectTarget, resolveConnectTarget } from "../dashboard/resolveTarget";
+import { describeConnectTarget, resolveConnectScopes, resolveConnectTarget } from "../dashboard/resolveTarget";
 import { type OpenOffer, offerToOpen, openingIsOffered } from "../platform/browser";
 import { resolveWorkersFor } from "../project/composeFor";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
@@ -405,14 +405,19 @@ const commonArgs = {
  * point of showing the list at all: `keys:rotate` and `audit:events:read_detail` are exactly the grants
  * somebody may not want to make, and a grant nobody is shown is a grant nobody considers. `ping` is
  * absent throughout; it is not grantable (docs/CONTROL-PLANE.md §8).
+ *
+ * **The message names the keys, because `@clack/core` binds them and says nothing.** `a` toggles every
+ * option and `i` inverts the selection — already there, on every multiselect, findable only by reading
+ * the dependency's source. On a Worker composing a dozen capabilities, the common answer is a keypress
+ * per row without them. `--scope all` is the same answer without a terminal.
  */
-async function promptScopes(
+export async function promptScopes(
   grantable: readonly GrantableScope[],
   preselected: ControlPlaneScope[],
 ): Promise<ControlPlaneScope[]> {
   const { isCancel, multiselect } = await import("@clack/prompts");
   const answer = await multiselect({
-    message: "What may this management client do?",
+    message: `What may this management client do?\n${dim("a toggles all. i inverts.")}`,
     options: grantable.map((entry) => ({
       value: entry.scope,
       label: entry.scope,
@@ -485,7 +490,10 @@ const connect = defineCommand({
       description: "Which worker composes the admin surface (apps/<name>). Required when the project has several",
     },
     "worker-url": { type: "string", description: "Override the resolved worker URL for this environment" },
-    scope: { type: "string", description: "Grant one scope: --scope manifest:read (repeatable)" },
+    scope: {
+      type: "string",
+      description: "Grant one scope: --scope manifest:read (repeatable). --scope all grants every composed scope",
+    },
     update: { type: "boolean", default: false, description: "Re-point an existing connection's URL and scopes" },
     "public-key": { type: "string", description: "Register a JWK you generated yourself — no dashboard involved" },
     issuer: { type: "string", description: "With --public-key: the iss your own management client presents" },
@@ -495,7 +503,11 @@ const connect = defineCommand({
   // `rawArgs` because a repeated `--scope` only survives there.
   run: ({ args, rawArgs }) =>
     withErrorReporting(args.json, async () => {
-      const scopes = collectScopeFlags(rawArgs) as ControlPlaneScope[];
+      // `all` is told from a named grant here, before a project is read: refusing `--scope all --scope
+      // manifest:read` is an argument rule, and an argument rule that waited on a Worker would report a
+      // broken project instead of the contradiction the operator typed.
+      const scopeRequest = readScopeRequest(collectScopeFlags(rawArgs));
+      const narrowed = isNarrowed(scopeRequest);
       const offlinePath = args["public-key"] !== undefined;
 
       // Cross-arg rules, checked here rather than by a helper: docs/STACK.md proposes
@@ -519,7 +531,7 @@ const connect = defineCommand({
           action: "Drop --key-id. The dashboard mints the keypair and names the key.",
         });
       }
-      if (args.update && args["worker-url"] === undefined && scopes.length === 0 && !offlinePath) {
+      if (args.update && args["worker-url"] === undefined && !narrowed && !offlinePath) {
         throw new ValidationError({
           message: "Nothing to update.",
           action: "Pass --worker-url, --scope, or both.",
@@ -559,23 +571,33 @@ const connect = defineCommand({
           });
       if (target && interactive) process.stdout.write(`${dim(describeConnectTarget(target))}\n`);
       const workerUrl = target?.workerUrl ?? args["worker-url"];
-      // What this Worker composes, which is what the grant is derived from. Empty on a key-only update,
-      // where no address was resolved and no grant is being decided.
-      const composed = target?.worker.capabilities ?? [];
-
-      // Only on a create. On an update, no `--scope` means "leave the grant alone", and a prompt that
-      // defaulted to everything would quietly widen it.
+      // What this Worker composes, which is what the grant is derived from.
       //
-      // `undefined` means "not specified — use the default grant"; `[]` means "deliberately nothing".
-      // Collapsing those two is a real bug rather than a tidy-up: an operator who deselected every scope
-      // at the prompt would have been handed the full default set, `keys:rotate` included — the exact
-      // opposite of what they just said. So an explicit empty selection is passed through as empty.
-      const granted: ControlPlaneScope[] | undefined =
-        scopes.length > 0
-          ? scopes
-          : interactive && !args.update
-            ? await promptScopes(grantableScopes(composed), defaultGrant(composed))
-            : undefined;
+      // `--scope all` reads that composed surface, and composing needs no address — so a scope-only
+      // update resolves the Worker without resolving, or re-pointing, its address. Without this, `all`
+      // was refused on the one path it exists for: widening an existing grant after composing a new
+      // capability, where the alternative is the hand-typed list `all` replaces.
+      //
+      // Empty on a key-only update, where no address was resolved and no grant is being decided.
+      const composed = target
+        ? target.worker.capabilities
+        : scopeRequest.all
+          ? await resolveConnectScopes({
+              projectDir,
+              environment: args.env,
+              ...(args.worker === undefined ? {} : { worker: args.worker }),
+            })
+          : [];
+
+      // The whole decision, in one place that a test can execute — what is stored, what is asked, and
+      // what the prompt is preselected with. `connect` derives no part of it.
+      const granted = await decideGrant({
+        request: scopeRequest,
+        composed,
+        interactive,
+        update: args.update,
+        prompt: promptScopes,
+      });
 
       // One load, two answers. `--project` overrides only the *name* sent to the client; whether this
       // environment holds live data is the project's policy either way, and it is exactly the list that

@@ -1,11 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
+import { resolve } from "node:path";
+import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { controlplane } from "@pithy-sh/core/src/controlPlane/capability";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
+import { blankComments } from "@pithy-sh/core/src/text/comments";
 import { type ArgsDef, type CommandDef, parseArgs } from "citty";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+import { readSource } from "../ci/sourceFiles";
 import { authorizeDashboard } from "../dashboard/connect";
 import type { DashboardClient, DeviceAuthorization } from "../dashboard/contract";
+import { defaultGrant, grantableScopes } from "../dashboard/grant";
 import { OPEN_PROMPT, offerToOpen } from "../platform/browser";
 import type { KeyStream } from "../terminal/keys";
 import { readKeys } from "../terminal/keys";
@@ -21,6 +27,16 @@ import dashboard, {
 } from "./dashboard";
 
 const JWK = { kty: "OKP", crv: "Ed25519", x: "kHo4iZ3rG3Jm2m7L9pQwXyZ0aBcDeFgHiJkLmNoPqRs" } as const;
+
+/** A composed capability with an admin surface — one read and one write, which is what a grant decides. */
+const support: Capability = {
+  name: "support",
+  requiredBindings: [],
+  adminRoutes: [
+    { method: "GET", path: "/support/tickets", scope: "support:tickets:read", summary: "Page the queue." },
+    { method: "POST", path: "/support/tickets/:id/close", scope: "support:tickets:close", summary: "Close one." },
+  ],
+};
 
 /** The subcommands, resolved from the citty parent. */
 function subCommands(): Record<string, CommandDef> {
@@ -294,6 +310,77 @@ describe("formatStatusReport", () => {
     );
     expect(out).toContain("Nothing connected to staging.");
     expect(out).toContain("pithy dashboard connect");
+  });
+});
+
+describe("the scope prompt", () => {
+  /** What `multiselect` was handed, captured from the mocked prompt. */
+  async function renderedPrompt(): Promise<Record<string, unknown>> {
+    const seen: Record<string, unknown>[] = [];
+    vi.doMock("@clack/prompts", () => ({
+      isCancel: () => false,
+      multiselect: async (options: Record<string, unknown>) => {
+        seen.push(options);
+        return options.initialValues;
+      },
+    }));
+    vi.resetModules();
+    const { promptScopes } = await import("./dashboard");
+    await promptScopes(grantableScopes([controlplane(), support]), defaultGrant([controlplane(), support]));
+    vi.doUnmock("@clack/prompts");
+    return seen[0] as Record<string, unknown>;
+  }
+
+  test("says how to take all of them: `a` toggles all, `i` inverts", async () => {
+    const message = String((await renderedPrompt()).message);
+
+    expect(message).toContain("a toggles all");
+    expect(message).toContain("i inverts");
+  });
+
+  test("offers exactly what the Worker composes, described in each capability's words", async () => {
+    const options = (await renderedPrompt()).options as { value: string; hint: string }[];
+
+    expect(options.map((option) => option.value)).toEqual([
+      "manifest:read",
+      "keys:rotate",
+      "support:tickets:read",
+      "support:tickets:close",
+    ]);
+    expect(options[3]?.hint).toContain("support");
+  });
+
+  test("preselects the default grant, which still leaves keys:rotate's peers to be chosen", async () => {
+    expect((await renderedPrompt()).initialValues).toEqual(["manifest:read", "keys:rotate", "support:tickets:read"]);
+  });
+});
+
+/**
+ * The gate, and what it is no longer asked to hold.
+ *
+ * **The decision itself is tested where it runs** — `decideGrant` in `dashboard/grant.ts`, every branch,
+ * with the prompt as a seam (`grant.test.ts`). This file used to carry the whole invariant as three
+ * substring checks over `dashboard.ts`, and its reach was smaller than its claim: dropping `request.all`
+ * from the narrowed test disconnected `--scope all` from the command, and changing the prompt's
+ * preselection widened every connect, and both stayed green here.
+ *
+ * **What is left for a source scan is the one thing a unit test cannot see: that `connect` still routes
+ * through the decision rather than making its own.** The invariant it used to state — one list, feeding
+ * the prompt and `--scope all` alike — is now structural instead of asserted: `decideGrant` computes
+ * `grantableScopes` once, internally, and hands it to both. There is no second call to keep in step.
+ *
+ * Blind spot, stated: this reads `dashboard.ts` only, and a decision re-inlined in a module it imports
+ * would pass. Nothing else in the tree decides a grant.
+ */
+describe("connect decides its grant in one place", () => {
+  const SOURCE = blankComments(readSource(resolve(import.meta.dirname, "dashboard.ts")) ?? "");
+
+  test("it calls `decideGrant`, and derives no part of the grant itself", () => {
+    expect(SOURCE).toContain("decideGrant(");
+    // The three the decision owns. `connect` naming any of them is a second decision, by definition.
+    expect(SOURCE).not.toContain("grantableScopes(");
+    expect(SOURCE).not.toContain("defaultGrant(");
+    expect(SOURCE).not.toContain("resolveScopeRequest(");
   });
 });
 

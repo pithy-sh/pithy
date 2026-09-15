@@ -28,7 +28,7 @@ pithy dashboard status [--env <environment>] [--worker <name>] [--verify] [--ori
 | `--worker <name>` | all five | resolved | Which Worker resolves the app database (`apps/<name>`). On `connect` it also names the Worker that composes the admin surface, and is required when the project has several |
 | `--origin <url>` | all five | `https://app.pithy.sh` | The management client's origin. Re-points every call at a self-hosted one |
 | `--worker-url <url>` | `connect` | resolved | Override the resolved Worker URL for this environment. The only way to say so when a proxy fronts your Worker |
-| `--scope <scope>` | `connect` | the seam's own, plus every declared read | Grant one scope, narrowing the default. Repeatable — the raw argv is read, so several survive |
+| `--scope <scope>` | `connect` | the seam's own, plus every declared read | Grant one scope, narrowing the default. Repeatable — the raw argv is read, so several survive. `--scope all` grants every scope the Worker composes |
 | `--update` | `connect` | `false` | Re-point an existing connection's URL and scopes instead of creating one |
 | `--public-key <file>` | `connect` | — | Register a JWK you generated yourself. No dashboard is contacted |
 | `--issuer <url>` | `connect` | — | With `--public-key`: the `iss` your own client presents. Required on that path, and rejected off it |
@@ -55,7 +55,23 @@ It is derived, never listed. Each capability declares its admin routes with the 
 
 **A read is a route, not a name.** A scope joins the default only when *every* declared route requiring it is a `GET`. `scopeCovers` matches exactly — no prefixes, no wildcards — so holding a scope confers every route that requires it, and one mutating route anywhere makes the whole scope a write however it is spelled. That is why `keys:rotate` is not derived: it gates a key listing and two key writes. It stays in the default because it always has, and because dropping it would break `pithy dashboard rotate` on every new connection — but nothing the derivation adds can write.
 
-At a terminal `connect` lists every operation your Worker exposes, described in each capability's own words, preselected to that default — because narrowing is the point of showing the list. `--scope` answers the same question non-interactively and narrows to exactly what you pass. An explicitly empty selection is passed through as empty rather than collapsed into the default: an operator who deselected everything must not be handed `keys:rotate` anyway. On an update, no `--scope` means "leave the grant alone".
+At a terminal `connect` lists every operation your Worker exposes, described in each capability's own words, preselected to that default — because narrowing is the point of showing the list. **`a` toggles all of them and `i` inverts the selection**, and the prompt says so. `--scope` answers the same question non-interactively and narrows to exactly what you pass. An explicitly empty selection is passed through as empty rather than collapsed into the default: an operator who deselected everything must not be handed `keys:rotate` anyway. On an update, no `--scope` means "leave the grant alone".
+
+**`--scope all` is the `a` key without a terminal.** It grants every scope the Worker composes, writes included, resolved from the same list the prompt renders — so a capability's new scope is in the grant the day it ships, and CI never hardcodes a set that goes stale. `--json` reports what it resolved to, as it reports any grant. It is never the default, and it does not change what the prompt preselects: everything past the reads is still something you ask for.
+
+It works on `--update` too, which is the case it exists for: widening an existing grant after composing a new capability, without naming each scope by hand. Reading what a Worker composes needs no address, so a scope-only update resolves one and re-points nothing — the registered URL is left exactly as it was.
+
+```
+$ pithy dashboard connect --env prod --scope all --json
+{"command":"dashboard.connect",…,"scopes":["manifest:read","keys:rotate","audit:events:read","audit:events:read_detail","support:threads:read","support:threads:archive","support:threads:reply"],…}
+```
+
+`--scope all` beside another `--scope` is refused, because they are two answers to one question and keeping either silently would decide an authorization for you.
+
+```
+--scope all grants everything. --scope manifest:read narrows it.
+Pass one or the other.
+```
 
 Whatever you end up with is printed on the `Scopes` line and stored on your row, and your Worker enforces that row and nothing else. A narrowed grant refuses every call it left out with `controlplane/insufficient_scope`, and the manifest tells a client which routes those are before it tries.
 
@@ -222,6 +238,20 @@ Pass --issuer https://<your-client> — it is the iss every one of your tokens m
 ```
 Nothing to update.
 Pass --worker-url, --scope, or both.
+```
+
+**`--scope all` beside a named scope.** Both are named in the refusal, so which one would have been dropped is never a guess.
+
+```
+--scope all grants everything. --scope manifest:read narrows it.
+Pass one or the other.
+```
+
+**`--scope all` on a Worker that exposes nothing.** The composed surface is read — on an update too, without an address — so this is the one case left: a Worker composing the seam and no capability that declares a scoped admin route.
+
+```
+--scope all found nothing to grant.
+It reads what the Worker composes, and this one declares no scoped admin route. Compose a capability with one, deploy, then connect again.
 ```
 
 **A public key that is not an Ed25519 JWK.** A file that is not JSON, a P-256 key, and a private key carrying a `d` component are each refused here rather than written into your authorization row. A key with no id — no `--key-id` and no `kid` — is refused too: every token names its key in the `kid` header, and a key nobody can address is a key nobody can use.

@@ -4,9 +4,17 @@
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { controlplane } from "@pithy-sh/core/src/controlPlane/capability";
 import type { AdminRoute } from "@pithy-sh/core/src/controlPlane/discovery/adminRoute";
-import { SEAM_SCOPES } from "@pithy-sh/core/src/controlPlane/scope/scope";
+import { type ControlPlaneScope, SEAM_SCOPES } from "@pithy-sh/core/src/controlPlane/scope/scope";
+import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { describe, expect, test } from "vitest";
-import { defaultGrant, grantableScopes } from "./grant";
+import {
+  decideGrant,
+  defaultGrant,
+  type GrantableScope,
+  grantableScopes,
+  readScopeRequest,
+  resolveScopeRequest,
+} from "./grant";
 
 /** A capability that declares nothing but an admin surface — enough for the derivation to read. */
 function capabilityWith(name: string, adminRoutes: AdminRoute[]): Capability {
@@ -117,5 +125,304 @@ describe("a read default never grants a write", () => {
     // And each trap is refused: a read name over a POST, and a read route sharing a scope with a DELETE.
     expect(added).not.toContain("hostile:wipe:read");
     expect(added).not.toContain("hostile:things:read");
+  });
+});
+
+/** An audit surface: one scope per detail level, which is how the default comes to leave one out. */
+const audit = capabilityWith("audit", [
+  { method: "GET", path: "/audit/events", scope: "audit:events:read", summary: "Page the trail." },
+  { method: "GET", path: "/audit/events/:id", scope: "audit:events:read_detail", summary: "One event, in full." },
+]);
+
+describe("readScopeRequest", () => {
+  test("`all` asks for everything, and carries no names of its own", () => {
+    expect(readScopeRequest(["all"])).toEqual({ all: true, scopes: [] });
+  });
+
+  test("named scopes are passed through in the order they were typed", () => {
+    expect(readScopeRequest(["support:tickets:read", "keys:rotate"])).toEqual({
+      all: false,
+      scopes: ["support:tickets:read", "keys:rotate"],
+    });
+  });
+
+  test("no --scope at all asks for nothing — the caller decides what absent means", () => {
+    expect(readScopeRequest([])).toEqual({ all: false, scopes: [] });
+  });
+
+  test("`all` beside another scope is refused, naming both", () => {
+    const error = ((): unknown => {
+      try {
+        readScopeRequest(["all", "manifest:read"]);
+      } catch (thrown) {
+        return thrown;
+      }
+      return null;
+    })();
+
+    expect(error).toBeInstanceOf(PithyError);
+    const message = (error as PithyError).payload.message;
+    expect(message).toContain("--scope all");
+    expect(message).toContain("--scope manifest:read");
+  });
+
+  test("the refusal does not depend on which was typed first, and names every one", () => {
+    const error = ((): PithyError => {
+      try {
+        readScopeRequest(["manifest:read", "support:tickets:read", "all"]);
+      } catch (thrown) {
+        return thrown as PithyError;
+      }
+      throw new Error("readScopeRequest accepted `all` beside two named scopes");
+    })();
+
+    expect(error.payload.message).toContain("--scope manifest:read --scope support:tickets:read");
+  });
+
+  test("`all` twice is still `all` — it names one thing, however often", () => {
+    expect(readScopeRequest(["all", "all"])).toEqual({ all: true, scopes: [] });
+  });
+});
+
+describe("resolveScopeRequest", () => {
+  test("a named grant is exactly what was named — `all` existing widens nothing", () => {
+    const grantable = grantableScopes([controlplane(), audit, support]);
+
+    expect(resolveScopeRequest({ all: false, scopes: ["support:tickets:read"] }, grantable)).toEqual([
+      "support:tickets:read",
+    ]);
+  });
+
+  test("an empty selection stays empty, rather than collapsing into a default", () => {
+    expect(resolveScopeRequest({ all: false, scopes: [] }, grantableScopes([controlplane()]))).toEqual([]);
+  });
+
+  test("`all` over nothing grantable is refused, not stored as a grant of nothing", () => {
+    const error = ((): PithyError => {
+      try {
+        resolveScopeRequest({ all: true, scopes: [] }, []);
+      } catch (thrown) {
+        return thrown as PithyError;
+      }
+      throw new Error("resolveScopeRequest resolved `all` to an empty grant");
+    })();
+
+    expect(error.payload.message).toContain("--scope all");
+    expect(error.payload.action).toBeTruthy();
+  });
+});
+
+/**
+ * The gate.
+ *
+ * **The invariant: `--scope all` is every scope the prompt would render, and nothing else.** Stated
+ * against frozen literals rather than against a list recomputed from the resolver, so a resolver that
+ * went back to a hardcoded set — or that started filtering — fails here instead of agreeing with itself.
+ *
+ * The real seam is composed, not a synthetic stand-in, because the seam is what carries `keys:rotate`:
+ * a resolution derived from the read default, or from anything else that classifies, would drop it.
+ */
+describe("--scope all resolves to the list the prompt renders", () => {
+  /** The whole surface of `[controlplane(), audit, support]`, in composition order. Written out. */
+  const EVERY_SCOPE = [
+    "manifest:read",
+    "keys:rotate",
+    "audit:events:read",
+    "audit:events:read_detail",
+    "support:tickets:read",
+    "support:tickets:close",
+  ];
+
+  test("every scope the composed Worker declares, the seam's own included", () => {
+    const composed: Capability[] = [controlplane(), audit, support];
+
+    expect(resolveScopeRequest(readScopeRequest(["all"]), grantableScopes(composed))).toEqual(EVERY_SCOPE);
+  });
+
+  test("and it is the prompt's own list — the same values, in the same order", () => {
+    const composed: Capability[] = [controlplane(), audit, support];
+    const rendered = grantableScopes(composed);
+
+    expect(resolveScopeRequest({ all: true, scopes: [] }, rendered)).toEqual(rendered.map((entry) => entry.scope));
+  });
+
+  test("a capability added to the fixture is granted, with nothing in the resolver to change", () => {
+    const newly = capabilityWith("newly", [
+      { method: "GET", path: "/newly/things", scope: "newly:things:read", summary: "List the new things." },
+      { method: "POST", path: "/newly/things", scope: "newly:things:write", summary: "Make one." },
+    ]);
+    const composed: Capability[] = [controlplane(), audit, support, newly];
+
+    expect(resolveScopeRequest(readScopeRequest(["all"]), grantableScopes(composed))).toEqual([
+      "manifest:read",
+      "keys:rotate",
+      "audit:events:read",
+      "audit:events:read_detail",
+      "support:tickets:read",
+      "support:tickets:close",
+      "newly:things:read",
+      "newly:things:write",
+    ]);
+  });
+
+  test("an unscoped route is no more grantable here than at the prompt — ping is absent", () => {
+    expect(resolveScopeRequest(readScopeRequest(["all"]), grantableScopes([controlplane()]))).toEqual([
+      "manifest:read",
+      "keys:rotate",
+    ]);
+  });
+
+  test("`all` does not become the default, and does not move what the prompt preselects", () => {
+    const composed: Capability[] = [controlplane(), audit, support];
+
+    // The preselection, unchanged: every read, plus the seam's pair. Written out, not derived.
+    expect(defaultGrant(composed)).toEqual([
+      "manifest:read",
+      "keys:rotate",
+      "audit:events:read",
+      "audit:events:read_detail",
+      "support:tickets:read",
+    ]);
+    // And `all` is strictly more than that — it is why it has to be asked for.
+    expect(resolveScopeRequest(readScopeRequest(["all"]), grantableScopes(composed))).toContain(
+      "support:tickets:close",
+    );
+  });
+});
+
+/**
+ * The decision itself, which is the thing `connect` was trusting a source scan to hold.
+ *
+ * **Every branch that decides a grant runs here, with the prompt as a seam.** The old gate counted
+ * substrings in `dashboard.ts` and could not reach either line that matters: dropping `request.all`
+ * from the narrowed test disconnected `--scope all` from the command entirely — stored the *default*
+ * grant while the operator asked for everything, silently, exit 0, even under `--json` — and the suite
+ * stayed green. So did changing what the prompt is preselected with.
+ *
+ * The preselection is asserted against a frozen literal rather than against `defaultGrant(composed)`
+ * recomputed here: a test that derives the expected value from the same function the code calls agrees
+ * with a plant that changes both.
+ */
+describe("decideGrant", () => {
+  const composed: Capability[] = [controlplane(), audit, support];
+
+  /** A prompt that must not be reached. Reaching it is the defect, so it says so rather than returning. */
+  const unasked = (): Promise<ControlPlaneScope[]> => {
+    throw new Error("the prompt was reached");
+  };
+
+  /** A prompt that answers, and records what it was handed. */
+  function asked(answer: ControlPlaneScope[]): {
+    prompt: (grantable: readonly GrantableScope[], preselected: ControlPlaneScope[]) => Promise<ControlPlaneScope[]>;
+    seen: { offered: ControlPlaneScope[]; preselected: ControlPlaneScope[] }[];
+  } {
+    const seen: { offered: ControlPlaneScope[]; preselected: ControlPlaneScope[] }[] = [];
+    return {
+      seen,
+      prompt: async (grantable, preselected) => {
+        seen.push({ offered: grantable.map((entry) => entry.scope), preselected });
+        return answer;
+      },
+    };
+  }
+
+  test("`--scope all` grants every composed scope, and never asks", async () => {
+    const granted = await decideGrant({
+      request: readScopeRequest(["all"]),
+      composed,
+      interactive: true,
+      update: false,
+      prompt: unasked,
+    });
+
+    expect(granted).toEqual([
+      "manifest:read",
+      "keys:rotate",
+      "audit:events:read",
+      "audit:events:read_detail",
+      "support:tickets:read",
+      "support:tickets:close",
+    ]);
+  });
+
+  test("`--scope all` on an update grants the same, rather than leaving the grant alone", async () => {
+    const granted = await decideGrant({
+      request: readScopeRequest(["all"]),
+      composed,
+      interactive: false,
+      update: true,
+      prompt: unasked,
+    });
+
+    expect(granted).toContain("support:tickets:close");
+  });
+
+  test("a named grant is exactly what was named", async () => {
+    const granted = await decideGrant({
+      request: readScopeRequest(["support:tickets:read"]),
+      composed,
+      interactive: true,
+      update: false,
+      prompt: unasked,
+    });
+
+    expect(granted).toEqual(["support:tickets:read"]);
+  });
+
+  test("no --scope, at a terminal, on a create: it asks, preselected to the default grant", async () => {
+    const { prompt, seen } = asked(["manifest:read"]);
+
+    const granted = await decideGrant({
+      request: readScopeRequest([]),
+      composed,
+      interactive: true,
+      update: false,
+      prompt,
+    });
+
+    expect(granted).toEqual(["manifest:read"]);
+    // Every read, plus the seam's pair — written out, so widening the preselection fails here.
+    expect(seen[0]?.preselected).toEqual([
+      "manifest:read",
+      "keys:rotate",
+      "audit:events:read",
+      "audit:events:read_detail",
+      "support:tickets:read",
+    ]);
+    // And the list it offered is the whole surface, which is what `all` resolves to.
+    expect(seen[0]?.offered).toEqual([
+      "manifest:read",
+      "keys:rotate",
+      "audit:events:read",
+      "audit:events:read_detail",
+      "support:tickets:read",
+      "support:tickets:close",
+    ]);
+  });
+
+  test("an empty answer at the prompt stays empty, rather than collapsing into the default", async () => {
+    const { prompt } = asked([]);
+
+    expect(
+      await decideGrant({ request: readScopeRequest([]), composed, interactive: true, update: false, prompt }),
+    ).toEqual([]);
+  });
+
+  test("no --scope on an update leaves the grant alone, and never asks", async () => {
+    expect(
+      await decideGrant({ request: readScopeRequest([]), composed, interactive: true, update: true, prompt: unasked }),
+    ).toBeUndefined();
+  });
+
+  test("no --scope with no terminal leaves the grant alone, and never asks", async () => {
+    expect(
+      await decideGrant({
+        request: readScopeRequest([]),
+        composed,
+        interactive: false,
+        update: false,
+        prompt: unasked,
+      }),
+    ).toBeUndefined();
   });
 });
