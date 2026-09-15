@@ -28,7 +28,7 @@ pithy add --list [--json]
 
 One capability, one Worker, in this order.
 
-**Install the package.** The package name comes from the catalog, never from interpolating the capability name — `controlplane` ships inside `@pithy-sh/core`, so `@pithy-sh/controlplane` is a package that has never existed. The project's own package manager runs the install, detected from its lockfile: `bun.lock`, `pnpm-lock.yaml`, `yarn.lock`, `package-lock.json`, npm when there is none. A `@pithy-sh/*` package a linked checkout already provides is skipped, and nothing then declares it in a `package.json`.
+**Install the package.** The package name comes from the catalog, never from interpolating the capability name — `controlplane` ships inside `@pithy-sh/core`, so `@pithy-sh/controlplane` is a package that has never existed. The project's own package manager runs the install, detected from its lockfile: `bun.lock`, `pnpm-lock.yaml`, `yarn.lock`, `package-lock.json`, npm when there is none. A `@pithy-sh/*` package a linked checkout already provides is skipped, and nothing then declares it in a `package.json`. A cold install can take minutes with nothing to show for it, so it is named as it starts, in the manager's own words: `▸ Running bun add @pithy-sh/auth...`. `--json` prints none of it.
 
 **Read the real manifest.** `node_modules/@pithy-sh/<pkg>/pithy.manifest.json`, validated. What the package says it needs is what gets wired — the catalog is a discovery list, not the contract.
 
@@ -67,7 +67,7 @@ What is left out is left out because wrangler would refuse the file: a `vectoriz
 
 **An option with no default is required.** That is the whole declaration: a capability that states a default has an answer the kit is willing to pick, and one that states none has an answer only you can give. A prompt asks it with nothing to accept by pressing enter, and a run with no human is refused unless it carries `--set key=value`. `payments.billingSubject` is the first — whether an entitlement is held by a person or a company, which lands in a column and a UNIQUE index — and nothing guesses it. An option that also states its choices is asked as a list, and `--set` refuses anything outside them.
 
-**Eject, if asked.** Before the migrations, because eject repoints the config import at the local copy and promotes the capability's runtime dependencies into your project, and the migrate step has to load the config with everything it imports present.
+**Eject, if asked.** Before the migrations, because eject repoints the config import at the local copy and promotes the capability's runtime dependencies into your project, and the migrate step has to load the config with everything it imports present. That install is named as it starts, the same way.
 
 **Run that Worker's dev migrations.** The config is re-read after wiring, so the migration that just arrived is in the registry. Local Miniflare state lives at the project root, shared with `wrangler dev`. Each database and migration is named as it starts, as `pithy migrate` names them. `--json` prints none of it.
 
