@@ -20,6 +20,7 @@ import { environmentsBuiltWithoutSitekeys } from "../capabilities/turnstileSitek
 import type { ConfirmedAccount } from "../cloudflare/accountAnswer";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
+import { resolveCapabilityWorker } from "../project/capabilityWorker";
 import {
   loadProject,
   loadProjectEnvironments,
@@ -29,7 +30,7 @@ import {
   requireProjectName,
 } from "../project/config";
 import { type AddressStanza, resolveWorkerAddress } from "../project/workerAddress";
-import { type ResolvedWorker, type ResolveSingleOptions, resolveSingleWorker } from "../project/workerScope";
+import type { ResolvedWorker, ResolveSingleOptions } from "../project/workerScope";
 import { readWranglerConfig } from "../project/wrangler";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
@@ -47,24 +48,17 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
 
 /**
  * The one Worker a turnstile command acts on, and **that Worker's** turnstile config — read from the same
- * place the sitekeys are written to (#590).
- *
- * This used to be two resolutions. The config came from the first Worker in the project composing
- * `turnstile`, and every write went to `resolveSingleWorker({ worker })`. With several Workers the widget
- * modes were one Worker's and the sitekeys landed in another's registration. One resolution now answers
- * both, so they cannot disagree.
+ * place the sitekeys are written to (#590), through {@link resolveCapabilityWorker}, the resolution every
+ * capability command that writes into a Worker shares.
  */
 export async function resolveTurnstileTarget(
   options: ResolveSingleOptions,
 ): Promise<{ worker: ResolvedWorker; config: TurnstileConfig }> {
-  const worker = await resolveSingleWorker(options);
-  const capability = worker.capabilities.find(isTurnstileCapability);
-  if (!capability) {
-    throw new ValidationError({
-      message: `${worker.name} does not compose the turnstile capability.`,
-      action: `Add \`turnstile({ ... })\` to ${worker.name}'s pithy.config.ts (run \`pithy add turnstile\`), or name the Worker that composes it with --worker.`,
-    });
-  }
+  const { worker, capability } = await resolveCapabilityWorker({
+    ...options,
+    name: "turnstile",
+    is: isTurnstileCapability,
+  });
   return { worker, config: capability.turnstileConfig };
 }
 

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { cp, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -91,10 +91,15 @@ vi.mock("../audit/cliAudit", () => ({ createProjectCliAudit: async () => async (
 
 // Capabilities are per Worker and there is no `apps/` under the test runner's cwd, so the set is supplied.
 // `projectCapabilities` and `composedProjectCapabilities` stay real — they are what each command reads.
+// `resolveSingleWorker` narrows by `--worker` the way the real one does, so a run can name a Worker other than
+// the first — which is the only way a config read off the wrong Worker is visible.
 vi.mock("../project/workerScope", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../project/workerScope")>()),
   resolveWorkers: async () => scope.workers,
-  resolveSingleWorker: async () => scope.workers[0],
+  resolveSingleWorker: async (options: { worker?: string }) =>
+    options.worker === undefined
+      ? scope.workers[0]
+      : scope.workers.find((worker) => (worker as { name: string }).name === options.worker),
 }));
 
 // Only the root config is stubbed. `requireProjectName` and `loadProjectEnvironments` stay real, so the
@@ -382,7 +387,7 @@ interface Run {
 }
 
 /** Drive one command's real `provision` subcommand to completion, from inside the fixture project. */
-async function runProvision(command: string, json: boolean): Promise<Run> {
+async function runProvision(command: string, json: boolean, extra: Record<string, unknown> = {}): Promise<Run> {
   const fixtureFor = FIXTURES[command];
   if (!fixtureFor) {
     throw new Error(
@@ -413,7 +418,7 @@ async function runProvision(command: string, json: boolean): Promise<Run> {
     throw new Error("exited");
   }) as never);
   try {
-    await entry.run?.({ args: { ...args, json }, rawArgs: [] } as never);
+    await entry.run?.({ args: { ...args, ...extra, json }, rawArgs: [] } as never);
   } catch (error) {
     if (!(error instanceof Error) || error.message !== "exited") throw error;
   } finally {
@@ -651,4 +656,69 @@ describe("a skipped environment's stanza after a run", () => {
     expect(stepsFor("staging").length).toBeGreaterThan(0);
     expect(stanzaBytes(fixture.workerDir, "prod")).toBe(before);
   });
+});
+
+/**
+ * **A capability's config is read off the Worker the run writes into** (#590 review).
+ *
+ * `media`, `payments`, `storage` and `support` read their config from the first Worker composing the
+ * capability and wrote into `--worker`: readiness, bindings, the app database a host is deployed against.
+ * With two Workers, `--worker web` provisioned `api`'s capability against `web`, which composes none of it.
+ *
+ * Here `api` composes everything and `web` composes nothing, and both carry a staging app database, so a run
+ * that borrowed `api`'s config would pass readiness and write into `web`. Enrolled off the commands directory
+ * like every case above: a new fan-out command is held to this unless it is named below with its reason.
+ *
+ * What it does not see: a command outside the fan-out set (`vectorWorkerRouting.test.ts` and
+ * `turnstile.test.ts` hold `vector` and `turnstile` to the same case), and a command that borrows a sibling's
+ * config only when the target composes the capability too. `web` here composes nothing, so that second shape
+ * reads as correct; `project/capabilityWorker.test.ts` holds the resolver every command routes through to it.
+ */
+describe("a --worker that does not compose the capability", () => {
+  /**
+   * The commands whose provisioned resource belongs to the project, not to one Worker, and so read the
+   * project's composition on purpose. Each entry says why; a command is not here because it fails the case.
+   */
+  const PROJECT_WIDE: Record<string, string> = {
+    email: "One email host sends every Worker's mail, and carries the project's catalogs.",
+    testers: "One daily pass runs for the project, and its host composes nothing of any one Worker.",
+  };
+
+  let webDir: string;
+
+  beforeEach(async () => {
+    const built = await scaffoldedProject("pithy-capability-worker-");
+    await provisionEnvironment(built.workerDir, "staging", "db-staging");
+    webDir = join(built.dir, "apps", "web");
+    await cp(built.workerDir, webDir, { recursive: true });
+    fixture.dir = built.dir;
+    fixture.workerDir = built.workerDir;
+    recorded.calls = [];
+    scope.workers = [
+      ...projectWorkers(fixture.workerDir),
+      { name: "web", dir: webDir, config: {}, capabilities: [], target: {} },
+    ];
+    stubCredentials();
+  });
+
+  test("every project-wide exemption names a fan-out command that exists", () => {
+    for (const command of Object.keys(PROJECT_WIDE)) expect(fanOutCommands()).toContain(command);
+  });
+
+  test.each(fanOutCommands().filter((command) => !(command in PROJECT_WIDE)))(
+    "pithy %s provision --worker web is refused by name, and nothing is created or written",
+    async (command) => {
+      const api = readFileSync(join(fixture.workerDir, "wrangler.jsonc"), "utf8");
+      const web = readFileSync(join(webDir, "wrangler.jsonc"), "utf8");
+
+      const run = await runProvision(command, true, { worker: "web" });
+
+      expect(run.exitCode).toBe(1);
+      const failure = JSON.parse(run.stderr) as { error: { message: string } };
+      expect(failure.error.message).toBe(`web does not compose the ${command} capability.`);
+      expect(recorded.calls).toEqual([]);
+      expect(readFileSync(join(fixture.workerDir, "wrangler.jsonc"), "utf8")).toBe(api);
+      expect(readFileSync(join(webDir, "wrangler.jsonc"), "utf8")).toBe(web);
+    },
+  );
 });

@@ -21,7 +21,7 @@ pithy media deprovision [--storage] [--r2-access-key-id <id>] [--r2-secret-acces
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--worker <name>` | the project's only Worker | The app Worker whose `wrangler.jsonc` carries the per-environment `DB` binding. Required when a project has several |
+| `--worker <name>` | the project's only Worker | The app Worker whose `media(...)` registration is provisioned, and whose `wrangler.jsonc` carries the per-environment `DB` binding. Required when a project has several |
 | `--api-token <token>` | `CLOUDFLARE_API_TOKEN` | The token the media Worker mints Images and Stream direct-upload URLs with. The default is a broad token; supply a scoped Images + Stream one for production |
 | `--r2-access-key-id <id>` | `R2_CREDENTIALS` | R2 S3 access key id the Worker presigns uploads and downloads with. Made under R2 → Manage API tokens |
 | `--r2-secret-access-key <key>` | `R2_CREDENTIALS` | The secret half of the pair. Passing one of the two without the other is refused |
@@ -91,11 +91,11 @@ A failing run writes `{"error":{…}}` to stderr instead and exits 1 — the sam
 
 Each is a `PithyError`: the problem, then the action.
 
-**The capability is not configured.** No Worker's `pithy.config.ts` composes `media`.
+**The Worker does not compose `media`.** The target, `--worker` or the project's only Worker, has no `media(...)` registration. The config is read off the Worker the run writes into and never off a sibling: the media host is deployed against that Worker's app database, where its tables live.
 
 ```
-The media capability is not configured.
-Add `media({ ... })` to pithy.config.ts (run `pithy add media`).
+<worker> does not compose the media capability.
+Add `media({ ... })` to <worker>'s pithy.config.ts (run `pithy add media`), or name the Worker that composes it with --worker.
 ```
 
 **The capability will not load.** Distinct from the above, and classified rather than assumed. `@pithy-sh/media` missing answers `The media capability is not installed.` with `pithy add media`; the package present with one of its own imports unresolved answers `The media capability could not be loaded.` and tells you to install the project's dependencies — `pithy add` cannot fix that one. A package that resolves and throws or will not parse answers `The media capability is installed and will not load.`

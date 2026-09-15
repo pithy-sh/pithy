@@ -21,7 +21,7 @@ pithy storage deprovision [--storage] [--r2-access-key-id <id>] [--r2-secret-acc
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--worker <name>` | the project's only Worker | The app Worker whose `wrangler.jsonc` carries the per-environment `DB` binding and receives the sweep Workflow binding. Required when a project has several |
+| `--worker <name>` | the project's only Worker | The app Worker whose `storage(...)` registration is provisioned, and whose `wrangler.jsonc` carries the per-environment `DB` binding and receives the sweep Workflow binding. Required when a project has several |
 | `--api-token <token>` | `CLOUDFLARE_API_TOKEN` | The token carried beside the R2 key pair, so the object store can prove bucket access. The default is a broad token; supply an R2-scoped one for production |
 | `--r2-access-key-id <id>` | `R2_CREDENTIALS` | R2 S3 access key id the Worker presigns uploads and downloads with. Made under R2 → Manage API tokens |
 | `--r2-secret-access-key <key>` | `R2_CREDENTIALS` | The secret half of the pair. Passing one of the two without the other is refused |
@@ -90,11 +90,11 @@ A failing run writes `{"error":{…}}` to stderr instead and exits 1 — the sam
 
 Each is a `PithyError`: the problem, then the action.
 
-**The capability is not configured.** No Worker's `pithy.config.ts` composes `storage`.
+**The Worker does not compose `storage`.** The target, `--worker` or the project's only Worker, has no `storage(...)` registration. The config is read off the Worker the run writes into and never off a sibling: the bucket and sweep are provisioned for the Worker whose stanza gets the sweep binding.
 
 ```
-The storage capability is not configured.
-Add `storage({ ... })` to pithy.config.ts (run `pithy add storage`).
+<worker> does not compose the storage capability.
+Add `storage({ ... })` to <worker>'s pithy.config.ts (run `pithy add storage`), or name the Worker that composes it with --worker.
 ```
 
 **The capability will not load.** Distinct from the above, and classified rather than assumed. `@pithy-sh/storage` missing answers `The storage capability is not installed.` with `pithy add storage`; the package present with one of its own imports unresolved answers `The storage capability could not be loaded.` and tells you to install the project's dependencies — `pithy add` cannot fix that one. A package that resolves and throws or will not parse answers `The storage capability is installed and will not load.`

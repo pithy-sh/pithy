@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import type { CloudflareClients } from "@pithy-sh/cloudflare/src/client/clients";
-import { fromZodError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { fromZodError, InternalError, ValidationError } from "@pithy-sh/core/src/error/pithyError";
 import { managerWorkerName } from "@pithy-sh/secrets/src/provision/resolveManagerConfig";
 import type { ManagedEnvironment } from "@pithy-sh/secrets/src/scope";
 import { defineCommand } from "citty";
@@ -16,6 +16,7 @@ import { type ConfirmedAccount, findOnConfirmedAccount } from "../cloudflare/acc
 import { cloudflareClients, cloudflareWorkflows } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { applyAppBindings, appWorkflowBindings } from "../project/appBindings";
+import { resolveCapabilityWorker } from "../project/capabilityWorker";
 import { loadProject, loadProjectEnvironments, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { envArg, requireManagedEnvironment } from "../project/environment";
 import {
@@ -26,7 +27,7 @@ import {
   readyStanza,
   requireReadyEnvironments,
 } from "../project/environmentReadiness";
-import { projectCapabilities, type ResolvedWorker, resolveSingleWorker, resolveWorkers } from "../project/workerScope";
+import { projectCapabilities, type ResolvedWorker, resolveWorkers } from "../project/workerScope";
 import { formatDone, formatJsonLine, withErrorReporting } from "../terminal/output";
 
 /**
@@ -58,11 +59,14 @@ async function buildAudit(projectDir: string, accountId: string, apiToken: strin
   return createProjectCliAudit({ projectDir, accountId, apiToken });
 }
 
-/** Load the payments capability's resolved catalog from `pithy.config.ts`. */
-async function loadPaymentsConfig(projectDir: string) {
+/**
+ * The payments catalog a run that writes into no Worker reads: the first Worker composing payments.
+ *
+ * `reconcile` alone, which dispatches into an already-deployed Workflow and touches no Worker's files. A run
+ * that writes into a Worker reads that Worker's own capability through `resolveCapabilityWorker` instead.
+ */
+async function loadProjectPaymentsConfig(projectDir: string) {
   const { isPaymentsCapability } = await loadPayments(projectDir);
-  // Capabilities live in each Worker's `apps/<name>/pithy.config.ts`; provisioning is one project-wide
-  // decision, so the first Worker composing this capability provides it.
   const capability = (await resolveWorkers({ projectDir }).then(projectCapabilities)).find(isPaymentsCapability);
   if (!capability) {
     throw new ValidationError({
@@ -72,6 +76,12 @@ async function loadPaymentsConfig(projectDir: string) {
   }
   return capability.paymentsConfig;
 }
+
+/**
+ * Where a run's payments config comes from. `worker` for a run that deploys against and writes into one app
+ * Worker — the config is that Worker's own. `project` for a run that writes into none.
+ */
+type PaymentsSource = { kind: "worker"; worker?: string } | { kind: "project" };
 
 /**
  * The Cloudflare credentials this command provisions with, for **the account the project belongs to**.
@@ -168,7 +178,7 @@ function buildResolveEnv(
  * lead with. `requireProjectName` refuses to guess: the deployed script name has to be the same one the
  * app's `script_name` binding points at, and a guess would bind a Worker that does not exist.
  */
-async function buildProvisioner(projectDir: string, worker?: string) {
+async function buildProvisioner(projectDir: string, source: PaymentsSource) {
   // The name first, before the credentials: both are local checks, and a config that cannot name the
   // project is not a Cloudflare problem to report as one.
   const config = await loadProject(projectDir);
@@ -176,20 +186,37 @@ async function buildProvisioner(projectDir: string, worker?: string) {
   // The project's own environment set, read once here and carried, so provisioning and `--env` agree.
   const environments = loadProjectEnvironments(config);
   const { account, accountId, apiToken, storeId } = loadCloudflareCreds(await projectCloudflareAccount(projectDir));
-  const paymentsConfig = await loadPaymentsConfig(projectDir);
+  // A run that writes into a Worker reads the catalog off **that** Worker, in the same resolution that names
+  // it — the reconcile worker is deployed with the catalog of the Worker whose stanza gets its binding, never
+  // a sibling's (#590 review). `reconcile` resolves no Worker: it dispatches into an already-deployed
+  // Workflow, and resolving one would be a new way for a support query to fail.
+  let appWorker: ResolvedWorker | undefined;
+  let paymentsConfig: Awaited<ReturnType<typeof loadProjectPaymentsConfig>>;
+  if (source.kind === "worker") {
+    const { isPaymentsCapability } = await loadPayments(projectDir);
+    const resolved = await resolveCapabilityWorker({
+      projectDir,
+      ...(source.worker !== undefined ? { worker: source.worker } : {}),
+      name: "payments",
+      is: isPaymentsCapability,
+    });
+    appWorker = resolved.worker;
+    paymentsConfig = resolved.capability.paymentsConfig;
+  } else {
+    paymentsConfig = await loadProjectPaymentsConfig(projectDir);
+  }
   // Which environments a run can act on, read once per run and memoized. An environment whose app database
-  // is not provisioned yet is skipped and reported, never fatal (#512). A thunk rather than an eager read
-  // because `reconcile` shares this builder and dispatches into an already-deployed Workflow — making it
-  // resolve a Worker and read that Worker's `wrangler.jsonc` would be a new way for a support query to
-  // fail, and `resolveSingleWorker` genuinely can fail (a project with several Workers and no `--worker`).
-  // So the Worker is resolved **inside** the thunk, not beside it.
+  // is not provisioned yet is skipped and reported, never fatal (#512). A thunk rather than an eager read,
+  // because only `provision` deploys and reads a stanza.
   let readiness: Promise<{ appWorker: ResolvedWorker; readiness: EnvironmentReadiness }> | undefined;
   const appReadiness = () => {
     readiness ??= (async () => {
-      const appWorker = await resolveSingleWorker({
-        projectDir,
-        ...(worker !== undefined ? { worker } : {}),
-      });
+      if (appWorker === undefined) {
+        throw new InternalError({
+          message: "This payments run resolved no app Worker, so it has no environment to deploy.",
+          detail: "appReadiness called from a run built with source kind `project`",
+        });
+      }
       return {
         appWorker,
         readiness: await environmentReadiness({
@@ -235,7 +262,10 @@ const provision = defineCommand({
   run: ({ args }) =>
     withErrorReporting(args.json, async () => {
       const projectDir = process.cwd();
-      const { provisioner, project, appReadiness } = await buildProvisioner(projectDir, args.worker);
+      const { provisioner, project, appReadiness } = await buildProvisioner(projectDir, {
+        kind: "worker",
+        ...(args.worker !== undefined ? { worker: args.worker } : {}),
+      });
       const { paymentsWorkflowRegistry, PAYMENTS_CAPABILITY } = await loadPayments(projectDir);
 
       // The account check first, before a single deploy. Failing here means failing before one environment is
@@ -313,7 +343,7 @@ const reconcile = defineCommand({
       // project's own config, so the whole check still happens before any Cloudflare client is built.
       requireProjectName(config);
       const env = requireManagedEnvironment(args.env, loadProjectEnvironments(config));
-      const { provisioner } = await buildProvisioner(projectDir);
+      const { provisioner } = await buildProvisioner(projectDir, { kind: "project" });
       const { PaymentsReconcileParams, decodeSubjectReference } = await loadPayments(projectDir);
 
       // Decoded through payments' own strict decoder, never split here. `--subject ada` is the shape

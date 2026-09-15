@@ -21,7 +21,7 @@ pithy support deprovision [--worker <name>] [--storage] [--routing-zone <zone-id
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--worker <name>` | the project's only Worker | The app Worker whose `wrangler.jsonc` carries the per-environment `DB` binding. Required when a project has several |
+| `--worker <name>` | the project's only Worker | The app Worker whose `support(...)` registration is provisioned, and whose `wrangler.jsonc` carries the per-environment `DB` binding. Required when a project has several |
 | `--routing-zone <zone-id>` | — | Cloudflare Zone ID of the (sub)domain receiving the mail. Email Routing must already be enabled on it |
 | `--inbound-address <address>` | — | The exact recipient address the rule matches, e.g. `support@help.example.com`. It must also be listed in `support()`'s `inboundAddresses`, which is what claims it |
 | `--app-worker <name>` | — | Deployed name of the production app worker running `createEntrypoint` with the support capability composed |
@@ -111,11 +111,11 @@ The inbound routing options are incomplete.
 Pass --routing-zone, --inbound-address, and --app-worker together, or none of them.
 ```
 
-**The capability is not configured.** No Worker's `pithy.config.ts` composes `support`.
+**The Worker does not compose `support`.** The target, `--worker` or the project's only Worker, has no `support(...)` registration. The config is read off the Worker the run writes into and never off a sibling: the classification hosts are deployed against that Worker's app database, where its tables live.
 
 ```
-The support capability is not configured.
-Add `support({ ... })` to a worker's pithy.config.ts (run `pithy add support`).
+<worker> does not compose the support capability.
+Add `support({ ... })` to <worker>'s pithy.config.ts (run `pithy add support`), or name the Worker that composes it with --worker.
 ```
 
 **The capability will not load.** Distinct from the above, and classified rather than assumed. `@pithy-sh/support` missing answers `The support capability is not installed.` with `pithy add support`; the package present with one of its own imports unresolved answers `The support capability could not be loaded.` and tells you to install the project's dependencies — `pithy add` cannot fix that one. A package that resolves and throws or will not parse answers `The support capability is installed and will not load.`
