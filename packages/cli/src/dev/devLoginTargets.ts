@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Pithy
 // SPDX-License-Identifier: MIT
 
-import { allCapabilities, loadWorkerConfig } from "../project/config";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
+import { composeFor } from "../project/composeFor";
+import { allCapabilities } from "../project/config";
 import { parseWorkerManifest } from "../project/workerManifest";
 import type { DevLoginTarget } from "./devLogin";
 
@@ -48,7 +50,9 @@ export interface DevLoginTargetOptions {
 /** Whether a worker's own config composes auth. A config that will not load composes nothing. */
 async function composesAuthDefault(dir: string): Promise<boolean> {
   try {
-    return allCapabilities(await loadWorkerConfig(dir)).some((capability) => capability.name === "auth");
+    // Composed for `dev`: the route this looks for is mounted only in a composition for `dev` (#595).
+    const capabilities = await composeFor(LOCAL_ENVIRONMENT, async (load) => allCapabilities(await load(dir)));
+    return capabilities.some((capability) => capability.name === "auth");
   } catch {
     return false;
   }

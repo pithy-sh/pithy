@@ -25,13 +25,8 @@ import {
   stanzaHasBinding,
   type WranglerStanza,
 } from "../project/bindingEntries";
-import {
-  allCapabilities,
-  loadWorkerConfig,
-  readDeclinedBindings,
-  readPinnedBindings,
-  type WorkerConfig,
-} from "../project/config";
+import { composeFor } from "../project/composeFor";
+import { allCapabilities, readDeclinedBindings, readPinnedBindings, type WorkerConfig } from "../project/config";
 import { readOptionalFile } from "../project/readOptionalFile";
 import { applyVersionMetadata, hasVersionMetadata } from "../project/versionMetadata";
 import { workerIdentity } from "../project/workerIdentity";
@@ -1024,7 +1019,10 @@ export async function buildReconcilePlan(options: BuildReconcilePlanOptions): Pr
   // the migration ledger identifies it; the plan this returns is read by a person or a script holding the
   // checkout, where the `apps/` directory is the useful handle. Collapsing them is pithy-sh/pithy#144.
   const deployedAs = options.worker ?? basename(workerDir);
-  const capabilities = options.capabilities ?? allCapabilities(await loadWorkerConfig(workerDir));
+  // Composed for `env`, because the plan's migration count is `env`'s and a config may compose a different
+  // registry for each (#595).
+  const capabilities =
+    options.capabilities ?? (await composeFor(env, async (load) => allCapabilities(await load(workerDir))));
   const readLedger = options.readLedger ?? defaultReadLedger;
 
   // Both the project root and this Worker's own `node_modules` (#507). The root alone was wrong wherever

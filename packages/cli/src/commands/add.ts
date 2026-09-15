@@ -5,6 +5,7 @@ import { join, relative } from "node:path";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
 import { CONFIG_SEAMS } from "@pithy-sh/core/src/capability/manifest";
 import { ValidationError } from "@pithy-sh/core/src/error/pithyError";
+import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { defineCommand } from "citty";
 import { type CliAuditEmit, type CreateCliAuditOptions, createRemoteCliAudit } from "../audit/cliAudit";
 import type { ConfigValue } from "../capabilities/add";
@@ -22,8 +23,9 @@ import { requiredOptionRefusal } from "../capabilities/requiredOptions";
 import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareEnv } from "../cloudflare/config";
 import type { DatabaseRun } from "../migrations/run";
+import { resolveSingleWorkerFor } from "../project/composeFor";
 import { loadProject, projectCloudflareAccount, requireProjectName } from "../project/config";
-import { type ResolvedWorker, type ResolveOptions, resolveSingleWorker } from "../project/workerScope";
+import type { ResolvedWorker, ResolveOptions } from "../project/workerScope";
 import { formatDone, formatJsonLine, formatList, withErrorReporting } from "../terminal/output";
 
 /** What {@link buildAudit} needs, plus the factory seam a test observes. */
@@ -103,14 +105,21 @@ export interface TargetWorkerOptions extends ResolveOptions {
 }
 
 /**
- * The Worker a wiring command acts on — shared by `pithy add` and `pithy remove`, which must resolve it
- * the same way. `--worker` names it; a single-Worker project needs no ceremony; several Workers prompt a
- * human and raise an actionable error for anyone else. The prompt is attached **only** when a human is
- * attached, so an agent driving `--json` is told what to pass instead of hanging on a question.
+ * The Worker a wiring command acts on — shared by `pithy add`, `pithy remove`, `pithy ui` and `pithy worker
+ * sync`, which must resolve it the same way. `--worker` names it; a single-Worker project needs no ceremony;
+ * several Workers prompt a human and raise an actionable error for anyone else. The prompt is attached
+ * **only** when a human is attached, so an agent driving `--json` is told what to pass instead of hanging on
+ * a question.
+ *
+ * **Composed for `environment`, which every caller names (#595).** What comes back is a composition — the
+ * capabilities and the config the command goes on to read — and it was composed for no environment, so
+ * `pithy remove --drop --env staging` reversed the migrations of a config evaluated for none. There is no
+ * form of this that composes for none: a caller whose command is about no one environment says which
+ * composition it reads, and why, at the call.
  */
-export function targetWorker(options: TargetWorkerOptions): Promise<ResolvedWorker> {
+export function targetWorker(environment: string, options: TargetWorkerOptions): Promise<ResolvedWorker> {
   const { interactive, worker, ...resolve } = options;
-  return resolveSingleWorker({
+  return resolveSingleWorkerFor(environment, {
     ...resolve,
     ...(worker === undefined ? {} : { worker }),
     ...(interactive ? { prompt: promptWorker } : {}),
@@ -317,8 +326,10 @@ export default defineCommand({
       }
 
       const interactive = !args.json && Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
-      // Which Worker gets the wiring. One worker needs no ceremony; several never guess.
-      const target = await targetWorker({
+      // Which Worker gets the wiring. One worker needs no ceremony; several never guess. Composed for dev,
+      // because what is read off it is dev's: the audit below names dev, and the migrate add finishes with
+      // is dev's. The wiring itself is file edits, composed by the add flow for itself.
+      const target = await targetWorker(LOCAL_ENVIRONMENT, {
         projectDir,
         interactive,
         ...(args.worker === undefined ? {} : { worker: args.worker }),

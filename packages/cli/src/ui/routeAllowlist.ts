@@ -5,7 +5,7 @@ import { createBackend } from "@pithy-sh/core/src/createBackend";
 import { CI_ENV } from "@pithy-sh/core/src/env/ci";
 import { LOCAL_ENVIRONMENT } from "@pithy-sh/core/src/naming/environment";
 import { HEALTH_PATH } from "@pithy-sh/core/src/worker/health";
-import { ENVIRONMENT_VAR } from "@pithy-sh/core/src/worker/identity";
+import { composeForSync } from "../project/composeFor";
 import type { WorkerConfig } from "../project/config";
 
 /**
@@ -109,7 +109,8 @@ export function workerFirstPatterns(paths: readonly string[]): string[] {
  * gate reads `process.env` (`@pithy-sh/core`'s `env/ambient`), which workerd populates from the script's
  * own vars before the first request. Under Node it is the host's. Setting it around a synchronous
  * composition and restoring it in a `finally` is therefore not a trick played on the capability; it is
- * the only way to ask it the question it answers.
+ * the only way to ask it the question it answers. The stamp and its restore are `composeForSync`'s, in
+ * `project/composeFor.ts` — the one statement of what composing for an environment takes (#595).
  *
  * ## Why `CI` is cleared rather than honored
  *
@@ -122,18 +123,17 @@ export function workerFirstPatterns(paths: readonly string[]): string[] {
  * even seen by the code meant to answer it.
  */
 function composedPathsIn(config: WorkerConfig, environment: string): string[] {
-  const previousEnvironment = process.env[ENVIRONMENT_VAR];
   const previousCi = process.env[CI_ENV];
-  process.env[ENVIRONMENT_VAR] = environment;
   delete process.env[CI_ENV];
   try {
-    const app = createBackend({ capabilities: config.capabilities, ...(config.app ? { app: config.app } : {}) });
-    return app.routes.map((route) => route.path);
+    return composeForSync(environment, () =>
+      createBackend({ capabilities: config.capabilities, ...(config.app ? { app: config.app } : {}) }).routes.map(
+        (route) => route.path,
+      ),
+    );
   } finally {
     // Restored, not defaulted: a variable this process never had must not exist afterwards, or the next
-    // thing to read `ENVIRONMENT` in this CLI run is told something the project never said.
-    if (previousEnvironment === undefined) delete process.env[ENVIRONMENT_VAR];
-    else process.env[ENVIRONMENT_VAR] = previousEnvironment;
+    // thing to read `CI` in this CLI run is told something the shell never said.
     if (previousCi === undefined) delete process.env[CI_ENV];
     else process.env[CI_ENV] = previousCi;
   }

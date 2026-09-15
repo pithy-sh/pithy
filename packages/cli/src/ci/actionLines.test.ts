@@ -39,6 +39,14 @@ import { isShippedSource, readSource, sourcePaths } from "./sourceFiles";
  * wrong about something no manifest field predicts, and checking it means the throw site carrying the
  * identity of what actually failed rather than the first name in hand. That is an error-construction
  * discipline, and it needs its own issue rather than being closed by implication here.
+ *
+ * **Nor is a remedy spelled anywhere but an `action:` literal.** Every package's `src` is scanned — it was
+ * `cli` and `core` only, and `@pithy-sh/email`'s settings check told operators to run `pithy email
+ * provision --env <x>` and `pithy secrets provision --env <x>`, neither of which declares `--env`. That was
+ * advice the CLI ignored until #594 made it advice the CLI refuses. What the scan still cannot see: a
+ * command held in a constant or a `command:` field (`email/src/workflows/hostEnv.ts`'s `PROVISION`), and
+ * a command whose name is interpolated (`deployKit.ts`'s `pithy ${capability} provision`), which blanks
+ * to a path no command has and is skipped rather than guessed at.
  */
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..", "..", "..");
@@ -68,10 +76,10 @@ interface Guidance {
   text: string;
 }
 
-/** Every `action:` in shipped source, with `${…}` reduced to a placeholder. */
+/** Every `action:` in every package's shipped source, with `${…}` reduced to a placeholder. */
 function actionStrings(): Guidance[] {
   const found: Guidance[] = [];
-  for (const group of ["packages/cli/src", "packages/core/src"]) {
+  for (const group of readdirSync(join(REPO_ROOT, "packages")).map((pkg) => `packages/${pkg}/src`)) {
     for (const path of sourcePaths(join(REPO_ROOT, group), { keep: isShippedSource })) {
       const source = readSource(path);
       if (source === null) continue;

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { PithyError } from "@pithy-sh/core/src/error/pithyError";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { reconcileAppWorkflows } from "./appWorkflows";
+import { composeFor } from "./composeFor";
 import { assertWorkflowsBound, checkWorkflows, describeWorkflowDrift, workflowDrift } from "./workflows";
 
 /**
@@ -310,5 +311,38 @@ describe("checkWorkflows", () => {
     await worker("board", { env: { prod: {} } }, DIGEST);
 
     expect(await checkWorkflows(dir)).toEqual({ state: "could-not-check", drift: [] });
+  });
+});
+
+/**
+ * **Each stanza is compared with its own environment's declaration (#586).** An app may schedule a job
+ * differently per environment. The reader took the module cache, which held whichever environment this
+ * process composed last, so every stanza was compared with that one's schedule.
+ */
+describe("an environment's declaration is read from its own composition", () => {
+  test("the deploy gate and doctor's check each compare the environment they answer", async () => {
+    await project('["staging", "prod"]');
+    const stanza = (env: string, cron: string) => ({
+      workflows: [{ binding: "DIGEST", name: `${PROJECT}-${env}-board-digest`, class_name: "DigestWorkflow" }],
+      triggers: { crons: [cron] },
+    });
+    const workerDir = await worker("board", {
+      env: { staging: stanza("staging", "0 1 * * *"), prod: stanza("prod", "0 2 * * *") },
+    });
+    await writeFile(
+      join(workerDir, "pithy.config.ts"),
+      [
+        'const crons = { staging: "0 1 * * *", prod: "0 2 * * *" };',
+        'const schedule = crons[process.env.ENVIRONMENT] ?? "0 9 * * *";',
+        'export default { app: { name: "board", workflows: { digest: { binding: "DIGEST", className: "DigestWorkflow", schedule } } }, capabilities: [] };',
+        "",
+      ].join("\n"),
+    );
+    // What doctor's health block leaves in the module cache before this runs.
+    await composeFor("dev", (load) => load(workerDir));
+
+    await expect(assertWorkflowsBound(dir, "staging")).resolves.toBeUndefined();
+    await expect(assertWorkflowsBound(dir, "prod")).resolves.toBeUndefined();
+    expect(await checkWorkflows(dir)).toEqual({ state: "ok", drift: [] });
   });
 });

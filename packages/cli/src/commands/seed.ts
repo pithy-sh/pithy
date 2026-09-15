@@ -170,6 +170,7 @@ export default defineCommand({
       // to know whether the project composes `audit` at all.
       const workers = await resolveWorkerScopes({
         projectDir,
+        env,
         ...(args.worker !== undefined ? { worker: args.worker } : {}),
       });
 

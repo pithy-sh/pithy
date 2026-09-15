@@ -4,10 +4,11 @@
 import { randomUUID } from "node:crypto";
 import { unlinkSync } from "node:fs";
 import { access, copyFile, lstat, readdir, rm } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ProfileOverride } from "@pithy-sh/cloudflare/src/tokens/profiles";
 import type { Capability } from "@pithy-sh/core/src/capability/capability";
+import { compositionEnvironment } from "@pithy-sh/core/src/env/ambient";
 import {
   causeMessage,
   failurePosition,
@@ -788,6 +789,11 @@ async function importConfig(path: string, missing: () => never, fresh = false): 
   // and node refuses that where Bun did not. Idempotent, so every caller may say it.
   await registerTypeScriptResolution();
 
+  // Recorded before the import rather than after it, and only the first time: a module that threw while
+  // evaluating is cached as that throw, so the environment it threw under is as much a fact about the cache
+  // as the environment a clean evaluation ran under. See {@link cachedEvaluation}.
+  if (!fresh && !evaluations.has(resolve(path))) evaluations.set(resolve(path), compositionEnvironment());
+
   let module: { default?: unknown };
   try {
     module = fresh ? await importFreshCopy(path) : ((await import(pathToFileURL(path).href)) as { default?: unknown });
@@ -809,6 +815,29 @@ async function importConfig(path: string, missing: () => never, fresh = false): 
     });
   }
   return module.default;
+}
+
+/**
+ * The `ENVIRONMENT` each config this process imported **from the module cache** was evaluated under.
+ *
+ * Keyed on the resolved path, which is what the cache is keyed on too. A fresh copy is never recorded: it is
+ * a different file, evaluated once and thrown away, and it leaves the cached module exactly as it was.
+ */
+const evaluations = new Map<string, string | undefined>();
+
+/**
+ * The environment a Worker's cached `pithy.config.ts` was evaluated under, or `undefined` when this process
+ * has not imported it from the cache yet.
+ *
+ * **The fact `project/composeFor.ts` needs, and nobody else.** A config is code, and an adopter's reads
+ * `ENVIRONMENT` while it is evaluated — `originFor(compositionEnvironment(), DOMAINS)` is scaffolded into
+ * every one. The module cache is keyed on the path, so the second import of a config hands back the first
+ * evaluation whatever `ENVIRONMENT` says now. A composition for staging that finds the cache holding an
+ * evaluation for no environment has to re-read the file; one that finds staging's can take it (#595).
+ */
+export function cachedEvaluation(workerDir: string): { environment: string | undefined } | undefined {
+  const path = resolve(join(workerDir, "pithy.config.ts"));
+  return evaluations.has(path) ? { environment: evaluations.get(path) } : undefined;
 }
 
 /** Options for {@link loadWorkerConfig}. */

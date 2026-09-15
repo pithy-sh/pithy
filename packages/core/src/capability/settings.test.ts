@@ -14,7 +14,7 @@ const declaration = defineHostEnv({
     LINK_TTL_DAYS: z.coerce.number().int().positive().default(90).describe("How long a link lives."),
   }),
   provided: {
-    BASE_URL: { kind: "var", name: "BASE_URL", command: "pithy email provision --env dev" },
+    BASE_URL: { kind: "var", name: "BASE_URL", command: "pithy email provision" },
     LINK_TTL_DAYS: { kind: "var", name: "LINK_TTL_DAYS" },
   },
 });
@@ -50,7 +50,7 @@ describe("host env problems become settings findings", () => {
     expect(findings.every((finding) => finding.environment === "prod")).toBe(true);
     // The provider sentence is the action, so doctor and the host's own refusal say the same words.
     expect(findings[0]?.action).toContain("Var BASE_URL in the host's wrangler.jsonc.");
-    expect(findings[0]?.action).toContain("pithy email provision --env dev");
+    expect(findings[0]?.action).toContain("pithy email provision");
     expect(findings[1]?.action).toBe("Var LINK_TTL_DAYS in the host's wrangler.jsonc.");
   });
 

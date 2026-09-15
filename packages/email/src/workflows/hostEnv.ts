@@ -40,8 +40,13 @@ import type { SendWorkflowInstances } from "./instances";
  * without executing the Worker — the same constraint `@pithy-sh/core`'s host modules carry.
  */
 
-/** The command that writes every provisioned value here. Stated once so nine action lines cannot drift. */
-const PROVISION = "pithy email provision --env <env>";
+/**
+ * The command that writes every provisioned value here. Stated once so nine action lines cannot drift.
+ *
+ * No `--env`: it spans every declared environment in one run and declares no such flag, and a flag a
+ * command does not declare is refused (#594) — so a remedy naming one is a remedy that cannot be followed.
+ */
+const PROVISION = "pithy email provision";
 
 /** A binding `pithy email provision` wires into the resolved `wrangler.jsonc`. */
 const binding = (name: string): HostEnvProvider => ({ kind: "binding", name, command: PROVISION });
@@ -193,7 +198,7 @@ export const emailHostEnv = defineHostEnv({
     SECRETS_ENCRYPTION_KEYS: {
       kind: "secret",
       name: "SECRETS_ENCRYPTION_KEYS",
-      command: "pithy secrets provision --env <env>",
+      command: "pithy secrets provision",
     },
     EMAIL: binding("EMAIL"),
     EMAIL_SENDER: binding("EMAIL_SENDER"),

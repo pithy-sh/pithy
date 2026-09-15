@@ -313,6 +313,38 @@ describe("an unknowable capability set", () => {
     expect(stderr.join("")).toMatch(/not recorded/i);
   });
 
+  /**
+   * Whether `pithy deploy --env prod` records a row is whether prod composes `audit` (#595). The Worker
+   * here composes for every environment but prod, where its config throws — so the composition for none
+   * answers "no trail" silently, and only a composition for prod can know the set is unknowable there.
+   */
+  test("createProjectCliAudit composes for the environment acted on, and for none when it names none", async () => {
+    const worker = await writeWorker(dir, "api", { name: "api" });
+    await writeFile(
+      join(worker, "pithy.config.ts"),
+      [
+        'if (process.env.ENVIRONMENT === "prod") throw new Error("prod is not configured");',
+        'export default { capabilities: [{ name: "app", requiredBindings: [] }] };',
+        "",
+      ].join("\n"),
+    );
+
+    const spanning = await createProjectCliAudit({ projectDir: dir, accountId: "acct", apiToken: "tok" });
+    await spanning({ action: "email/provisioned", outcome: "success" });
+    expect(stderr.join("")).toBe("");
+
+    const prod = await createProjectCliAudit({
+      projectDir: dir,
+      accountId: "acct",
+      apiToken: "tok",
+      env: "prod",
+      actedOn: "prod",
+    });
+    await prod({ action: "deploy/worker_deployed", outcome: "success" });
+    expect(stderr.join("")).toMatch(/not recorded/i);
+    expect(stderr.join("")).toMatch(/deploy\/worker_deployed/);
+  });
+
   test("createProjectCliAudit is inert without credentials, and reaches for nothing", async () => {
     const emit = await createProjectCliAudit({ projectDir: dir, accountId: "", apiToken: "", env: "prod" });
     await expect(emit({ action: "deploy/worker_deployed", outcome: "success" })).resolves.toBeUndefined();

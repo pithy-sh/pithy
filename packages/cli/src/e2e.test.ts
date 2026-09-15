@@ -161,7 +161,8 @@ test("pithy add auth --with-prerequisites composes secrets, email and auth, and 
   const workerDir = await scaffoldLinked(target);
 
   const added = await cli(["add", "auth", "--worker", "board", "--with-prerequisites", "--json"], target);
-  expect(added.code).toBe(0);
+  // The refusal's own line rides on the assertion, so a non-zero exit names its cause rather than a bare `1`.
+  expect(added.code, added.stderr).toBe(0);
   const result = JSON.parse(added.stdout.trim()) as {
     capability: string;
     prerequisites: string[];
@@ -210,16 +211,30 @@ test("pithy add auth --with-prerequisites composes secrets, email and auth, and 
   const checked = await cli(["doctor", "--json"], target);
   const health = JSON.parse(checked.stdout.trim()) as {
     project: {
-      health: { workers: { migrations: { ok: boolean; ledger: { state: string; pending: number } } }[] };
+      health: { workers: { migrations: { ok: boolean; environments: unknown[] } }[] };
     };
   };
   // `ledger.state` is asserted beside the count, because since #371 a count on its own no longer says the
   // comparison happened: a database that could not be read reports no `pending` at all, and matching on
   // `ok` alone would pass on a `partial` read of a schema nobody compared.
-  expect(health.project.health.workers[0]?.migrations).toMatchObject({
+  //
+  // One answer per environment since #586: `dev` read and level, and the two deployed environments the
+  // scaffold declares reported as what they are — nothing provisioned, so no count. Their state is reported
+  // and never gates, so the exit is `dev`'s answer, and a fresh project exits 0.
+  const unprovisioned = [
+    { binding: "SECRETS", database: "secrets" },
+    { binding: "DB", database: "app" },
+    { binding: "EMAIL_SUPPRESSIONS", database: "emailSuppressions" },
+  ];
+  expect(health.project.health.workers[0]?.migrations).toEqual({
     ok: true,
-    ledger: { state: "read", pending: 0 },
+    environments: [
+      { env: "dev", state: "checked", ledger: { state: "read", pending: 0, undeclared: [] } },
+      { env: "staging", state: "not-provisioned", unprovisioned },
+      { env: "prod", state: "not-provisioned", unprovisioned },
+    ],
   });
+  expect(checked.code, checked.stderr).toBe(0);
 }, 300_000);
 
 test("pithy doctor reports a composed capability whose prerequisite is absent, and fails the exit", async () => {

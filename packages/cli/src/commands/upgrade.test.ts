@@ -605,7 +605,15 @@ describe("runUpgrade — a worker that will not reconcile", () => {
   });
 
   test("either failure still fails the run — the gate does not weaken, it stops taking the report with it", async () => {
-    const clean = await runUpgrade({ ...base, dryRun: true, projectDir: dir });
+    // Both ledgers read. A stub rather than the real read, because the Workers here are a double over a
+    // scaffold with nothing installed: the real read discovers the rest of the project beside them, and a
+    // project whose configs will not compose is refused there rather than read as having no neighbors (#586).
+    const clean = await runUpgrade({
+      ...base,
+      dryRun: true,
+      projectDir: dir,
+      readLedger: async () => ({ state: "read" as const, pending: 0, undeclared: [] }),
+    });
     expect(upgradeIncomplete(clean)).toBe(false);
 
     // The composition case: `#371` degrades the ledger, so this Worker comes back `reconciled`. The

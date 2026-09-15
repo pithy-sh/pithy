@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { composeFor } from "../project/composeFor";
 import { settingsAccountConnection, settingsEnvironments } from "./settingsSources";
 
 let dir = "";
@@ -35,6 +36,29 @@ describe("the environments a check is handed", () => {
     expect(await settingsEnvironments(dir, workerDir)).toEqual([
       { name: "staging", origin: "https://staging.acme.dev" },
       { name: "prod", origin: "https://api.acme.dev" },
+    ]);
+  });
+
+  /**
+   * Each origin from its own environment's composition (#586). A config may name its domains from the
+   * environment it is composed for, and the reader took the module cache — whichever environment this process
+   * composed last — so every environment was handed that one's host.
+   */
+  test("each environment's origin is read from that environment's composition", async () => {
+    const workerDir = await project(["staging", "prod"], { name: "acme-api" });
+    await writeFile(
+      join(workerDir, "pithy.config.ts"),
+      [
+        'const environment = process.env.ENVIRONMENT ?? "none";',
+        'const domain = { pattern: [environment, "acme.dev"].join("."), zone: "acme.dev" };',
+        "export default { domains: { staging: domain, prod: domain }, capabilities: [] };",
+        "",
+      ].join("\n"),
+    );
+    await composeFor("dev", (load) => load(workerDir));
+    expect(await settingsEnvironments(dir, workerDir)).toEqual([
+      { name: "staging", origin: "https://staging.acme.dev" },
+      { name: "prod", origin: "https://prod.acme.dev" },
     ]);
   });
 
@@ -83,6 +107,7 @@ describe("reaching the account", () => {
   test("credentials resolve into a reader that asks Cloudflare once per question", async () => {
     const listDatabases = vi.fn(async () => [{ name: "acme-global-email-suppressions", uuid: "id" }]);
     const findZoneForHostname = vi.fn(async (hostname: string) => (hostname === "acme.dev" ? { id: "z" } : null));
+    const secretProbe = vi.fn(async () => true);
     const answer = await settingsAccountConnection({
       account: null,
       project: "acme",
@@ -94,7 +119,7 @@ describe("reaching the account", () => {
           d1Provisioner: () => ({ listDatabases }),
           zones: () => ({ findZoneForHostname }),
         }) as never,
-      probe: async () => ({ probe: async () => true }),
+      probe: async () => ({ probe: secretProbe }),
     });
     if (answer.state !== "reachable") throw new Error(`expected reachable, got ${answer.reason}`);
 
@@ -106,6 +131,9 @@ describe("reaching the account", () => {
     expect(await answer.reader.zone("acme.dev")).toBe(true);
     expect(await answer.reader.zone("example.com")).toBe(false);
     expect(await answer.reader.secret({ name: "email-link-signing-key", environment: "prod" })).toBe(true);
+    // Doctor judges every environment's composition of a capability, and each asks the manager this again.
+    expect(await answer.reader.secret({ name: "email-link-signing-key", environment: "prod" })).toBe(true);
+    expect(secretProbe).toHaveBeenCalledTimes(1);
   });
 
   test("a secret asked about an environment no manager owns is not a claim", async () => {

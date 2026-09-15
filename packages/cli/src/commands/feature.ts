@@ -10,13 +10,13 @@ import { cloudflareClients } from "../cloudflare/clients";
 import { type CloudflareAccountSelection, cloudflareAccountConfirmation, cloudflareEnv } from "../cloudflare/config";
 import { createFeature } from "../feature/create";
 import { type DestroyReport, destroyedBeforeFailure, destroyFeature, type RemoteTeardown } from "../feature/destroy";
-import { branchIdentityWithoutWorkers, deriveIdentityFromBranch } from "../feature/identity";
+import { branchIdentityWithoutWorkers, deriveIdentityFromBranch, featureWorkerSet } from "../feature/identity";
 import { syncFeatureDevConfig } from "../feature/sync";
 import { behindRemote, mainRepoRoot } from "../feature/worktree";
 import { migrateProject } from "../migrations/run";
 import { loadProject, loadProjectCloudflare, projectCloudflareAccount, requireProjectName } from "../project/config";
 import { requireEnvironment } from "../project/environment";
-import { type CapabilitySet, capabilitySetOf, isUnknown, resolveWorkerSet } from "../project/workerScope";
+import { type CapabilitySet, capabilitySetOf, isUnknown } from "../project/workerScope";
 import { AUDIT_DESTINATION_ENV, cloudflareProvisioners, cloudflareWorkerScripts } from "../provision/resources";
 import { cloudflareSecretsStore, type SecretsStore } from "../provision/store";
 import { seedProject } from "../seed/run";
@@ -285,8 +285,11 @@ const destroy = defineCommand({
         `--local-only` says the remote half is not wanted.
       */
       const identity = await branchIdentityWithoutWorkers(projectDir);
-      // Resolved once: the capabilities name the resources, and the Workers name the scripts (#592).
-      const workerSet = await resolveWorkerSet({ projectDir });
+      // Resolved once, and composed for `feature` — the environment `provision --feature` composed for
+      // (#595): the capabilities name the resources, and the Workers name the scripts (#592). Two
+      // resolutions could disagree, and an unstamped one misses a capability a config composes only
+      // for deployed environments, leaving its resources and credentials in the account.
+      const workerSet = await featureWorkerSet(projectDir);
       const capabilities = capabilitySetOf(workerSet);
       if (isUnknown(capabilities) && !args["local-only"]) {
         throw new ValidationError({

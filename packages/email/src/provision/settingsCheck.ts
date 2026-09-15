@@ -186,11 +186,6 @@ function localForAddress(config: EmailSettingsInput): SettingsFinding[] {
   ];
 }
 
-/** The last declared environment — the one a project-wide remedy is named for. */
-function lastEnvironment(context: SettingsCheckContext): string {
-  return context.environments.at(-1)?.name ?? "prod";
-}
-
 /** The account half: the zone, the suppression database, and the signing key. */
 async function accountFindings(
   config: EmailSettingsInput,
@@ -216,9 +211,9 @@ async function accountFindings(
       setting: "EMAIL_SUPPRESSIONS",
       environment: null,
       problem: `No D1 database named ${suppressions} exists on this account.`,
-      // One database for the whole project, so the remedy is one run in any environment — named as the
-      // last declared one, which is the environment an operator is least likely to have skipped.
-      action: `Run \`pithy email provision --env ${lastEnvironment(context)}\`. Nothing is suppressed until it exists.`,
+      // One database for the whole project, and one run creates it. `pithy email provision` spans every
+      // declared environment and takes no `--env`, so naming one here was a flag the CLI refuses (#594).
+      action: "Run `pithy email provision`. Nothing is suppressed until it exists.",
     });
   }
 
@@ -232,7 +227,8 @@ async function accountFindings(
       setting: EMAIL_LINK_SIGNING_KEY,
       environment: environment.name,
       problem: `The link-signing key has no value in ${environment.name}, so no tracking or unsubscribe link can be signed.`,
-      action: `Run \`pithy secrets provision --env ${environment.name}\`.`,
+      // No `--env`: `pithy secrets provision` spans every declared environment and declares no such flag (#594).
+      action: "Run `pithy secrets provision`.",
     });
   }
 

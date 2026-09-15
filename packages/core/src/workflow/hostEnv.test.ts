@@ -44,7 +44,7 @@ const declaration = defineHostEnv({
     MAX_ATTEMPTS: z.coerce.number().int().positive().optional().describe("How many times a send is retried."),
   }),
   provided: {
-    EMAIL_JOBS: { kind: "binding", name: "EMAIL_JOBS", command: "pithy email provision --env dev" },
+    EMAIL_JOBS: { kind: "binding", name: "EMAIL_JOBS", command: "pithy email provision" },
     BASE_URL: { kind: "var", name: "BASE_URL" },
     EMAIL_THEME: { kind: "config", name: "email.theme" },
     MAX_ATTEMPTS: { kind: "var", name: "MAX_ATTEMPTS" },
@@ -116,7 +116,7 @@ describe("checkHostEnv", () => {
     expect(theme?.reason).toBe("Not JSON.");
 
     const jobs = report.problems.find((problem) => problem.field === "EMAIL_JOBS");
-    expect(jobs?.provider.command).toBe("pithy email provision --env dev");
+    expect(jobs?.provider.command).toBe("pithy email provision");
   });
 
   test("an env that is not an object at all is a problem per declared field, not a crash", () => {
@@ -134,7 +134,7 @@ describe("renderHostEnvProblems", () => {
     expect(block).toContain("BASE_URL");
     expect(block).toContain("Var BASE_URL");
     expect(block).toContain("Binding EMAIL_JOBS");
-    expect(block).toContain("Run pithy email provision --env dev.");
+    expect(block).toContain("Run pithy email provision.");
     expect(block).toContain("Config key email.theme");
   });
 
